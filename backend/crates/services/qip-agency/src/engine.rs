@@ -22,15 +22,26 @@
 //! keeping the outcome in [`ActionOutcomeMemory`] and holding the policy to
 //! what it predicted. [`widen`] is the one path by which a policy gains
 //! authority, and it returns a record of who widened it on what evidence.
+//!
+//! A shadowed pass learns too, and says so. [`execute`] marks `Act` as
+//! *shadowed* rather than passed, so [`learn`] admits an outcome after it
+//! only when the outcome declares itself [`Observed::Simulated`], and admits
+//! a [`Observed::Measured`] outcome only after an `Act` that passed. Either
+//! way round is refused: a simulated effect filed as measured is a
+//! prediction wearing an observation's clothes, and a measured effect after a
+//! shadowed act is a measurement of nothing. [`learn_shadowed`] is the seam a
+//! composition root calls after a shadowed pass, with the evidence
+//! [`crate::simulated`] computes from the pass's own branches.
 
 use crate::affordance::{AffordanceGraph, ToolEdgeDraft};
 use crate::attribution::EffectAttribution;
 use crate::autonomy::{ActionPolicy, Authority};
+use crate::causal::Objective;
 use crate::comparison::ComparisonDraft;
 use crate::generate::{Simulated, Structural, StructuralDecl};
 use crate::goal::GoalSpec;
-use crate::guard::{ActionGuard, ApprovalChain, GuardDecl, PassDecl};
-use crate::memory::{ActionOutcomeDraft, ActionOutcomeMemory};
+use crate::guard::{ActionGuard, ApprovalChain, GuardDecl, PassDecl, Voice};
+use crate::memory::{ActionOutcome, ActionOutcomeDraft, ActionOutcomeMemory, Observed};
 use crate::plan::{
     ActingIdentity, Candidate, InterventionPlan, PlanNode, Proposal, Selection, Step, select,
 };
@@ -72,15 +83,29 @@ pub const ORDER: [Stage; 11] = [
 ];
 
 /// The stages one pass of the loop has been through.
+///
+/// `Act` has a third state beside passed and failed: *shadowed*, which
+/// [`execute`] records when it called nothing. It is kept off `passed`
+/// because a report listing `Act` among the stages that passed would say an
+/// action happened, and it is kept off `failed` because nothing refused the
+/// pass. The stages after it may still run, but only on an outcome that
+/// declares itself simulated ([`learn`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StageLog {
     passed: Vec<Stage>,
     failed: Option<Stage>,
+    shadowed_act: bool,
 }
 
 impl StageLog {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The position the next stage must hold: every stage that passed, plus
+    /// the shadowed `Act` that holds its slot without having passed.
+    fn position(&self) -> usize {
+        self.passed.len() + usize::from(self.shadowed_act)
     }
 
     /// Refuse `stage` unless it is the next in [`ORDER`] and nothing failed.
@@ -90,7 +115,7 @@ impl StageLog {
                 "{failed:?} failed, so {stage:?} may not run; start a new pass"
             )));
         }
-        match ORDER.get(self.passed.len()) {
+        match ORDER.get(self.position()) {
             Some(next) if *next == stage => Ok(()),
             Some(next) => Err(Error::guard(format!(
                 "{stage:?} is out of order; {next:?} must pass first"
@@ -103,6 +128,19 @@ impl StageLog {
         self.expect(stage)?;
         self.passed.push(stage);
         Ok(())
+    }
+
+    /// Record that `Act` ran in shadow: every check cleared and nothing was
+    /// sent. Admitted only where `Act` itself would be.
+    fn shadow_act(&mut self) -> Result<(), Error> {
+        self.expect(Stage::Act)?;
+        self.shadowed_act = true;
+        Ok(())
+    }
+
+    /// Whether `Act` was shadowed rather than passed.
+    pub fn act_shadowed(&self) -> bool {
+        self.shadowed_act
     }
 
     /// Record that `stage` ran and failed. Every later stage is then refused.
@@ -231,6 +269,9 @@ pub struct Acted {
     /// The goal and plan approvals, and the execution record once anything
     /// was sent. `None` when no guard was supplied, or it refused.
     pub approvals: Option<ApprovalChain>,
+    /// The voices the guard admitted this pass: one per step sent, so the
+    /// journal can carry what was said under which name (R12-AGENCY-1064).
+    pub released: Vec<Voice>,
 }
 
 /// A plan that has cleared the gate, and the context it is executed in.
@@ -245,8 +286,9 @@ pub struct Gated<'a> {
 /// The only caller of an [`Adapter`].
 ///
 /// Refuses unless `log` shows simulation and the gate passed. With no policy,
-/// or one at shadow, it calls nothing and leaves `Act` unrecorded, so nothing
-/// can later be attributed to an action that never happened. At
+/// or one at shadow, it calls nothing and records `Act` as shadowed rather
+/// than passed, so nothing can later be attributed to an action that never
+/// happened: [`learn`] admits only an outcome that says it is simulated. At
 /// narrow-reversible every step is checked before the first is sent: one of
 /// another class, or one whose tool is not declared reversible, refuses the
 /// whole plan with no call made.
@@ -320,9 +362,11 @@ pub fn execute(
                  stand in front of every adapter call, and nothing is sent without them",
             ));
         }
+        log.shadow_act()?;
         return Ok(Acted {
             execution: Execution::Shadow(steps),
             approvals: None,
+            released: Vec::new(),
         });
     };
     let (mut chain, cleared) = match guard.preflight(gated.goal, &priced) {
@@ -332,17 +376,21 @@ pub fn execute(
             return Ok(Acted {
                 execution: Execution::Withheld(refusal.message().to_string()),
                 approvals: None,
+                released: Vec::new(),
             });
         }
     };
     if acting.is_none() {
+        log.shadow_act()?;
         return Ok(Acted {
             execution: Execution::Shadow(steps),
             approvals: Some(chain),
+            released: Vec::new(),
         });
     }
 
     guard.execution(&mut chain, &gated.goal.acting_identity, &steps)?;
+    let voices_from = guard.voices().count();
     for step in &cleared {
         let sent = guard
             .authorise(step)
@@ -355,6 +403,7 @@ pub fn execute(
                     attempted: steps,
                 },
                 approvals: Some(chain),
+                released: guard.voices().skip(voices_from).cloned().collect(),
             });
         }
     }
@@ -362,6 +411,7 @@ pub fn execute(
     Ok(Acted {
         execution: Execution::Executed(steps),
         approvals: Some(chain),
+        released: guard.voices().skip(voices_from).cloned().collect(),
     })
 }
 
@@ -395,11 +445,17 @@ pub fn widen(
 }
 
 /// R12-AGENCY-6107 / 6108 / 054: after an action, observe its effect,
-/// attribute it and update, in that order, and only after `Act` passed.
+/// attribute it and update, in that order, and only after `Act` passed or
+/// was shadowed.
 ///
 /// Refused, with the stage that refused it recorded as failed:
-/// * an outcome whose action sequence is not the tools that ran — an effect
-///   credited to something that never happened (observe-effect);
+/// * an outcome whose action sequence is not the tools that ran (or, after a
+///   shadowed act, would have run) — an effect credited to something that
+///   never happened (observe-effect);
+/// * an outcome whose [`Observed`] does not match how `Act` ended: a
+///   measured effect after a shadowed act measured nothing, and a simulated
+///   effect after an executed act is a prediction standing in for the
+///   observation that exists (observe-effect);
 /// * an attribution that does not validate, measures another class of action,
 ///   or is less sure of itself than the outcome claims to be: an outcome
 ///   recorded at confidence 0.9 on an attribution identified at 0.2 is a
@@ -411,12 +467,25 @@ pub fn widen(
 /// Returns the authority the policy now holds.
 pub fn learn(
     log: &mut StageLog,
-    executed: &[Step],
+    steps: &[Step],
     policy: &mut ActionPolicy,
     memory: &mut ActionOutcomeMemory,
     outcome: ActionOutcomeDraft,
     attribution: &EffectAttribution,
 ) -> Result<Authority, Error> {
+    learn_outcome(log, steps, policy, memory, outcome, attribution).map(|(authority, _)| authority)
+}
+
+/// [`learn`], also returning the outcome as kept, so a caller can journal
+/// the record the memory holds rather than the draft it was given.
+fn learn_outcome(
+    log: &mut StageLog,
+    steps: &[Step],
+    policy: &mut ActionPolicy,
+    memory: &mut ActionOutcomeMemory,
+    outcome: ActionOutcomeDraft,
+    attribution: &EffectAttribution,
+) -> Result<(Authority, ActionOutcome), Error> {
     log.expect(Stage::ObserveEffect)?;
     let outcome = match outcome.build() {
         Ok(outcome) => outcome,
@@ -425,7 +494,7 @@ pub fn learn(
             return Err(refusal);
         }
     };
-    let ran: Vec<&str> = executed.iter().map(|s| s.tool.as_str()).collect();
+    let ran: Vec<&str> = steps.iter().map(|s| s.tool.as_str()).collect();
     let claimed: Vec<&str> = outcome.action_sequence.iter().map(String::as_str).collect();
     if ran != claimed {
         log.fail(Stage::ObserveEffect)?;
@@ -433,6 +502,23 @@ pub fn learn(
             "the outcome credits {claimed:?}, but {ran:?} ran; an effect is recorded against \
              the action that happened"
         )));
+    }
+    match (log.act_shadowed(), outcome.observed) {
+        (true, Observed::Measured) => {
+            log.fail(Stage::ObserveEffect)?;
+            return Err(Error::denied(
+                "the act was shadowed and nothing ran, so no effect was measured in the world; \
+                 learn from the simulated outcome and declare it simulated",
+            ));
+        }
+        (false, Observed::Simulated) => {
+            log.fail(Stage::ObserveEffect)?;
+            return Err(Error::denied(
+                "the act ran, so its effect is the one observed; a simulated outcome is a \
+                 prediction, and learning from it would overwrite the measurement that exists",
+            ));
+        }
+        (true, Observed::Simulated) | (false, Observed::Measured) => {}
     }
     log.pass(Stage::ObserveEffect)?;
 
@@ -447,10 +533,110 @@ pub fn learn(
         .checked_sub(outcome.no_action_counterfactual)
         .ok_or_else(|| Error::numeric("attributed effect overflowed"))?;
     let side_effects = outcome.side_effects.clone();
-    memory.keep(outcome);
+    memory.keep(outcome.clone());
     let authority = policy.observe(effect, &side_effects);
     log.pass(Stage::Update)?;
-    Ok(authority)
+    Ok((authority, outcome))
+}
+
+/// What one learning left: the record the memory kept, the attribution it
+/// was learned on, the effect (`observed - counterfactual`) the policy was
+/// held to, and the authority it held before and after. The policy's
+/// predicted interval and side effects are carried so a reader of the log
+/// can recompute `after` from `effect` alone (R12-AGENCY-7133).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Learned {
+    pub outcome: ActionOutcome,
+    pub attribution: EffectAttribution,
+    pub effect: Decimal,
+    pub predicted_uplift: (Decimal, Decimal),
+    pub predicted_side_effects: BTreeSet<String>,
+    pub before: Authority,
+    pub after: Authority,
+}
+
+/// How a learning ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LearningOutcome {
+    Learned(Box<Learned>),
+    /// Nothing was learned, and why: the outcome needed was absent, or a
+    /// stage refused the one offered.
+    Withheld(String),
+}
+
+/// One learning, with the stages the pass had been through once it ended.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Learning {
+    pub passed: Vec<Stage>,
+    pub failed: Option<Stage>,
+    pub outcome: LearningOutcome,
+}
+
+impl Learning {
+    /// A learning that never reached the engine: the pass's own stages, and
+    /// the reason nothing was offered. A composition root records this
+    /// rather than inventing an outcome.
+    pub fn withheld(report: &Report, reason: impl Into<String>) -> Self {
+        Self {
+            passed: report.passed.clone(),
+            failed: report.failed,
+            outcome: LearningOutcome::Withheld(reason.into()),
+        }
+    }
+}
+
+/// [`learn`] after a shadowed pass, from its report.
+///
+/// The pass must have ended [`Outcome::Shadowed`] with `Act` shadowed; any
+/// other report is refused as an `Err`, because a caller offering a
+/// simulated outcome for a pass that did not shadow a plan has confused two
+/// passes. A stage that refuses the outcome is not an `Err`: it ends as
+/// [`LearningOutcome::Withheld`] with the stage recorded failed, so the
+/// refusal is journaled beside the pass like the act stage's own refusals.
+pub fn learn_shadowed(
+    report: &Report,
+    policy: &mut ActionPolicy,
+    memory: &mut ActionOutcomeMemory,
+    outcome: ActionOutcomeDraft,
+    attribution: &EffectAttribution,
+) -> Result<Learning, Error> {
+    let Outcome::Shadowed(steps) = &report.outcome else {
+        return Err(Error::guard(
+            "the pass was not shadowed, so it simulated no action to learn from",
+        ));
+    };
+    if !report.act_shadowed || report.failed.is_some() {
+        return Err(Error::guard(
+            "the report says shadowed but its stage log does not; the two describe different \
+             passes",
+        ));
+    }
+    let mut log = StageLog {
+        passed: report.passed.clone(),
+        failed: report.failed,
+        shadowed_act: report.act_shadowed,
+    };
+    let before = policy.authority();
+    let outcome = match learn_outcome(&mut log, steps, policy, memory, outcome, attribution) {
+        Ok((after, outcome)) => LearningOutcome::Learned(Box::new(Learned {
+            effect: outcome
+                .actual_observations
+                .checked_sub(outcome.no_action_counterfactual)
+                .ok_or_else(|| Error::numeric("attributed effect overflowed"))?,
+            outcome,
+            attribution: attribution.clone(),
+            predicted_uplift: policy.predicted_uplift(),
+            predicted_side_effects: policy.predicted_side_effects().clone(),
+            before,
+            after,
+        })),
+        Err(refusal) => LearningOutcome::Withheld(refusal.message().to_string()),
+    };
+    Ok(Learning {
+        passed: log.passed,
+        failed: log.failed,
+        outcome,
+    })
 }
 
 fn attribute(
@@ -539,6 +725,28 @@ pub struct Request {
     pub touches: Vec<Subject>,
 }
 
+/// The candidate the gate let through, as the pass knew it: where it came
+/// from, what it predicted, and how well its levers are identified. Carried
+/// so a learning after the pass reads the plan's own prediction rather than
+/// re-deriving one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChosenCandidate {
+    /// Index into [`Report::candidates`].
+    pub index: usize,
+    pub label: String,
+    /// The comparison's expected effect: the prediction the outcome is
+    /// scored against.
+    pub expected_causal_effect: Decimal,
+    /// The horizon the plan's effect is expected at.
+    pub time_to_effect_secs: u64,
+    /// The weakest lever's identifiability under the request's evidence —
+    /// the figure the gate admitted the plan on, and the ceiling on how sure
+    /// any attribution of its effect may be.
+    pub identifiability: Decimal,
+    /// The action classes of the tools the plan's steps use.
+    pub methods: BTreeSet<Method>,
+}
+
 /// How a pass ended.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
@@ -576,6 +784,9 @@ pub struct Report {
     pub approvals: Option<ApprovalChain>,
     /// Every registry decision the guard has audited, this pass included.
     pub audit: Vec<ToolAudit>,
+    /// The voices the guard admitted this pass, one per step sent
+    /// (R12-AGENCY-1064). Empty in shadow and when nothing was sent.
+    pub released: Vec<Voice>,
     /// A label per candidate, in index order: `proposal N` for the
     /// operator's, the steps for a generated one.
     pub candidates: Vec<String>,
@@ -584,6 +795,14 @@ pub struct Report {
     /// Why the goal is not legally eligible, when an eligibility register
     /// was consulted and refused; empty otherwise.
     pub eligibility: Vec<String>,
+    /// `Act` was shadowed: every check cleared and nothing was sent. Off
+    /// `passed` on purpose; see [`StageLog`].
+    pub act_shadowed: bool,
+    /// The candidate the gate admitted, when one was.
+    pub chosen: Option<ChosenCandidate>,
+    /// The objective the simulations were scored on, when a structural model
+    /// was declared; a simulated effect is signed toward it.
+    pub objective: Option<Objective>,
 }
 
 fn report(
@@ -600,9 +819,13 @@ fn report(
         outcome,
         approvals: None,
         audit: Vec::new(),
+        released: Vec::new(),
         candidates: Vec::new(),
         simulations: Vec::new(),
         eligibility: Vec::new(),
+        act_shadowed: log.shadowed_act,
+        chosen: None,
+        objective: None,
     }
 }
 
@@ -849,7 +1072,11 @@ fn stages(
         }
     }
     let origin: Vec<usize> = candidates.iter().map(|(i, _)| *i).collect();
-    let Selection { chosen, refused } = select(
+    let Selection {
+        chosen,
+        origin: chosen_from,
+        refused,
+    } = select(
         &request.goal,
         &graph,
         &request.identity,
@@ -869,11 +1096,49 @@ fn stages(
             done.candidates = labels.clone();
             done.simulations = simulations.clone();
             done.eligibility = refusals.clone();
+            done.objective = structural.as_ref().map(|s| s.objective().clone());
             done
         };
     let Candidate::Plan(plan) = chosen else {
         return Ok(finish(log, levers, refused, Outcome::NoAction));
     };
+    // The plan's own prediction and the evidence it was admitted on, kept
+    // for whatever learns from this pass. The index `select` returned counts
+    // the candidates it was given; `origin` maps it back to the label list.
+    let chosen = chosen_from
+        .and_then(|c| origin.get(c.index).map(|index| (*index, c.comparison)))
+        .map(|(index, comparison)| -> Result<ChosenCandidate, Error> {
+            let mut steps = Vec::new();
+            plan.root.all_steps(&mut steps);
+            let mut identifiability = Decimal::ONE;
+            let mut methods = BTreeSet::new();
+            for step in &steps {
+                identifiability = identifiability.min(
+                    request
+                        .evidence
+                        .get(&step.variable)
+                        .map_or(Decimal::ZERO, |e| e.identifiability),
+                );
+                if let Some(edge) = graph
+                    .edges(&step.variable)
+                    .iter()
+                    .find(|e| e.tool == step.tool)
+                {
+                    methods.insert(edge.method);
+                }
+            }
+            Ok(ChosenCandidate {
+                index,
+                label: labels.get(index).cloned().ok_or_else(|| {
+                    Error::numeric(format!("chosen candidate {index} has no label"))
+                })?,
+                expected_causal_effect: comparison.expected_causal_effect,
+                time_to_effect_secs: comparison.time_to_effect_secs,
+                identifiability,
+                methods,
+            })
+        })
+        .transpose()?;
 
     if plan.root.simulate(&request.observed_facts).is_empty() {
         log.fail(Stage::Simulate)?;
@@ -913,6 +1178,8 @@ fn stages(
     };
     let mut done = finish(log, levers, refused, outcome);
     done.approvals = acted.approvals;
+    done.released = acted.released;
     done.audit = guard.map(|g| g.audit().to_vec()).unwrap_or_default();
+    done.chosen = chosen;
     Ok(done)
 }

@@ -17,7 +17,8 @@ use qip_capital_fabric::{
     CapitalLocation, DemandKind, RealisedDemand, Region, SettlementConvention,
 };
 use qip_contracts::edge::DeductionKind;
-use qip_contracts::venue::VenueId;
+use qip_contracts::signal::StrategyId;
+use qip_contracts::venue::{VenueClass, VenueId};
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, ObjectId, dec};
@@ -27,12 +28,15 @@ use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
+use qip_kernel::central::{ArbitragePolicy, CentralConfig, WhitelistedMarket, WhitelistedVenue};
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
+use qip_kernel::hedge_review::HedgePolicyDeclaration;
 use qip_kernel::platform::Platform;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
+use qip_risk::hedge::HedgeAxis;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_simulation_engine::costs::CostModel;
 use qip_twin::asof::TwinMarket;
@@ -335,6 +339,134 @@ fn the_alternatives_to_a_trade_are_priced_and_stay_simulated() -> Result<()> {
     assert!(
         platform.outcomes().forgone().as_f64_for_statistics().abs() < f64::EPSILON,
         "nothing was recorded as declined, so nothing was forgone"
+    );
+    Ok(())
+}
+
+/// A deployment that has whitelisted a second venue and declared a hedge.
+fn config_with_a_second_venue_and_a_hedge() -> PlatformConfig {
+    let arbitrage = ArbitragePolicy {
+        strategy: StrategyId::new("central-momentum"),
+        funding_instrument: "USD".to_string(),
+        venues: [(
+            "XALT".to_string(),
+            WhitelistedVenue {
+                class: VenueClass::Exchange,
+                taker_cost: dec!("0.0005"),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        markets: vec![WhitelistedMarket {
+            venue: "XALT".to_string(),
+            market: "AAA-USD@XALT".to_string(),
+            base: "AAA".to_string(),
+            quote: "USD".to_string(),
+        }],
+        start_sizes: [("AAA".to_string(), dec!("100"))].into_iter().collect(),
+    };
+    let hedge = HedgePolicyDeclaration::new(
+        "technology-concentration",
+        HedgeAxis::Sector,
+        "InformationTechnology",
+        object("BBB"),
+        dec!("1"),
+    );
+    PlatformConfig::default()
+        .with_central(CentralConfig {
+            arbitrage: Some(arbitrage),
+            ..CentralConfig::default()
+        })
+        .with_hedge_policies(vec![hedge])
+}
+
+#[test]
+fn a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge() -> Result<()> {
+    // R12-CAPITAL-4091. `AlternativeMenu::standard` names no venue and no
+    // hedge, so until the platform widened it every scored decision carried
+    // neither arm and "no regret on venue or hedge" was a question never
+    // asked. The menu is read off the configuration at assembly, and the
+    // production market the LEARN stage builds carries the hedge
+    // instrument's bars, because the twin refuses to size a hedge it has no
+    // history for and would otherwise refuse the whole set.
+    let mut platform = platform(config_with_a_second_venue_and_a_hedge())?;
+    let menu = platform.counterfactuals().menu();
+    assert_eq!(
+        menu.venue.as_ref().map(|option| option.venue.as_str()),
+        Some("XALT"),
+        "the premise: the menu names the whitelisted venue"
+    );
+    assert_eq!(
+        menu.hedge
+            .as_ref()
+            .map(|(instrument, _)| instrument.clone()),
+        Some(object("BBB")),
+        "the premise: the menu names the declared hedge"
+    );
+    platform.observe(observations("AAA", 90));
+    platform.observe(observations("BBB", 90));
+    let order_id = fill_one(&mut platform, start())?;
+
+    // Priced against a market the test holds: both arms are in the set.
+    let mut bars = twin_bars("AAA", 90, 30);
+    bars.extend(twin_bars("BBB", 90, 30));
+    let mut market = TwinMarket::new(bars, CostModel::liquid_equity(), 20)?;
+    let set = platform.evaluate_alternatives(&order_id, &mut market)?;
+    assert!(
+        set.by_kind("do_not_trade").is_some(),
+        "the premise: the set was priced"
+    );
+    let venue = set
+        .by_kind("different_venue")
+        .expect("a scored decision carries the different-venue alternative");
+    assert_eq!(
+        venue.counterfactual_action,
+        qip_twin::counterfactual::Alternative::DifferentVenue {
+            venue: VenueId::new("XALT"),
+        }
+    );
+    let hedge = set
+        .by_kind("different_hedge")
+        .expect("a scored decision carries the different-hedge alternative");
+    assert_eq!(
+        hedge.counterfactual_action,
+        qip_twin::counterfactual::Alternative::DifferentHedge {
+            hedge: object("BBB"),
+            ratio: dec!("1"),
+        }
+    );
+
+    // Priced on the production path: the LEARN stage's own market holds the
+    // hedge instrument's bars, so the fill is scored rather than refused.
+    assert_eq!(
+        platform.filled_awaiting_score(),
+        1,
+        "the premise: one fill waits"
+    );
+    platform.observe(
+        twin_bars("AAA", 0, 5)
+            .into_iter()
+            .chain(twin_bars("BBB", 0, 5))
+            .map(|bar| SensedRecord::Bar(Box::new(bar)))
+            .collect(),
+    );
+    let later = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let learn = later.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        !learn.detail.contains("unscored"),
+        "the fill was refused rather than priced: {}",
+        learn.detail
+    );
+    assert_eq!(platform.filled_awaiting_score(), 0);
+    let scores = platform.fill_scores();
+    assert_eq!(
+        scores
+            .iter()
+            .filter(|score| score.order_id == order_id)
+            .count(),
+        1,
+        "the fill was not priced: {:?}",
+        learn.detail
     );
     Ok(())
 }

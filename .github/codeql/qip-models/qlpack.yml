@@ -1,0 +1,13 @@
+# The repository's CodeQL model pack (ADR 0117, Amendment 3). It carries no
+# queries: `library: true` and `extensionTargets` make it a set of data
+# extensions injected into `codeql/rust-all`, the library every Rust security
+# query in the `security-and-quality` suite is built on. Loaded by
+# codeql-analysis.yml through `--additional-packs` and `--model-packs`; see
+# README.md beside this file for what each row claims and how to check it.
+name: qip/rust-models
+version: 0.1.0
+library: true
+extensionTargets:
+  codeql/rust-all: '*'
+dataExtensions:
+  - models/*.yml

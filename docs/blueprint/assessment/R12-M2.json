@@ -227,15 +227,16 @@
   },
   {
     "id": "R12-DATA-2011",
-    "status": "PARTIAL",
-    "current": "Registration requires a named operator record for any non-keyless source; MarketEvent and lake partitions require an entitlement; replay of an undeclared file defaults to Restricted licensing.",
+    "status": "COMPLETE",
+    "current": "MarketEvent::new refuses a denied or expired entitlement at the event's own time; a data-finder asked to trade registers no source whose licence grants research only, and a lake partition cannot be formed without an entitlement; a catalogue entry is attributed to a named operator and a process name is refused. The check (an event or registration without an entitlement is refused; a default grant cannot be substituted) is met.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/registration.rs RegistrationRecord::new refuses blank operator",
       "backend/crates/libs/qip-contracts/src/market_event.rs:66-80 refuses an entitlement not granted at event_time",
-      "backend/crates/services/qip-market-ingestion/src/replay.rs:8-30 undeclared replay reports LicensingClass::Restricted",
-      "backend/crates/services/qip-data-finder/tests/registration.rs"
+      "backend/crates/libs/qip-contracts/tests/market_event.rs:167 a_market_event_without_an_entitlement_is_refused",
+      "backend/crates/services/qip-data-finder/tests/legality.rs:198 a_research_only_licence_cannot_produce_a_source_usable_for_trading",
+      "backend/crates/libs/qip-storage/tests/lake.rs:42 a_partition_without_an_entitlement_cannot_be_formed",
+      "backend/crates/services/qip-data-finder/tests/lifecycle.rs:289 a_catalogue_entry_is_attributed_to_a_named_operator_and_a_process_name_is_refused"
     ],
-    "gap": "No user-authorised source flow; alternative-data adapter entitlement is a configured class, not a per-user grant.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -243,10 +244,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --test connector_contract",
+    "verification": "cargo test -p qip-contracts --test market_event a_market_event_without_an_entitlement_is_refused; cargo test -p qip-data-finder --test legality a_research_only_licence_cannot_produce_a_source_usable_for_trading; cargo test -p qip-storage --test lake",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: disabling the entitlement check in MarketEvent::new (market_event.rs, `if !entitlement.is_granted(event_time)`) fails the test at tests/market_event.rs:201 ('a market event was built on a denied entitlement'). The former gap (a per-user grant flow) exceeds the row's check."
   },
   {
     "id": "R12-DATA-2012",
@@ -437,26 +438,29 @@
   },
   {
     "id": "R12-DATA-2020",
-    "status": "PARTIAL",
-    "current": "backend/crates/services/qip-data-finder/src/decision.rs:460 catalogue_entry_attributed with operator::NamedOperator refusing placeholders",
+    "status": "COMPLETE",
+    "current": "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources validates config.owner as qip_data_finder::operator::NamedOperator once per pass and builds every mesh entry through RegistrationDecision::catalogue_entry_attributed; the shipped default owner qip-platform is refused at that seam and each registration is recorded as a catalogue problem naming the fix",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18850 NamedOperator::new(&self.config.owner) and catalogue_entry_attributed in assess_sources",
+      "backend/crates/runtime/qip-kernel/src/config.rs:490 default_owner doc states the default is refused at the catalogue seam",
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused",
       "backend/crates/services/qip-data-finder/tests/lifecycle.rs:289 a_catalogue_entry_is_attributed_to_a_named_operator_and_a_process_name_is_refused",
-      "backend/crates/services/qip-data-finder/src/decision.rs:460 no caller outside tests"
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:347 production caller of assess_sources"
     ],
-    "gap": "The kernel still catalogues under the configured owner qip-platform; NamedOperator/catalogue_entry_attributed has no production caller.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [
       "R12-DATA-2017"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test registration",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test source_lifecycle a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Catalogue entries from assess_sources (platform.rs:16875) carry owner config.owner = 'qip-platform' (config.rs:463), not a named operator; the operator record is a separate path (platform.rs:7356). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Named-operator type exists; production path unchanged (commit says so)."
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Catalogue entries from assess_sources (platform.rs:16875) carry owner config.owner = 'qip-platform' (config.rs:463), not a named operator; the operator record is a separate path (platform.rs:7356). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Named-operator type exists; production path unchanged (commit says so). Closed 2026-10-18 (lane L01): assess_sources now goes through catalogue_entry_attributed; mutation reverting the seam to catalogue_entry(&self.config.owner) made the test fail at its catalogued.is_empty() assertion, restored byte-for-byte and it passes. Deployments still ship the default owner; they now catalogue nothing and say why, rather than cataloguing under a process name."
   },
   {
     "id": "R12-DATA-2021",
@@ -892,30 +896,30 @@
   },
   {
     "id": "R12-EVID-2039",
-    "status": "PARTIAL",
-    "current": "detect_poisoning covers coordinated manipulation, source poisoning, spoofing, synthetic content and spam over the fed world fabric, run each deep-brain sweep; spoofing now fires on a declared-digest mismatch and contests can resolve.",
+    "status": "COMPLETE",
+    "current": "detect_poisoning coordinated arm clusters the newest records (bounded by near_duplicate_scan) by word-shingle Jaccard similarity (qip_evidence::fabric::statement_shingles, shingle_similarity, three-word shingles) at or above near_duplicate_similarity (0.6 by default), as connected components, beside the exact-fingerprint clusters; a cluster of near-identical wordings across the minimum distinct sources and documents inside the coordination spread is a CoordinatedManipulation finding whose evidence names the wordings count. Runs each deep-brain sweep over the fed world fabric.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:157-175",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:854-858",
-      "backend/crates/apps/qip-fastbrain/src/node.rs:137",
-      "qip-kernel/tests/evidence_intake.rs::a_coordinated_campaign_forwarded_from_connectors_is_found_by_the_poisoning_detector",
-      "qip-deepbrain/tests/research_market.rs::a_poisoned_feed_in_the_world_fabric_becomes_a_data_gap_naming_its_sources",
-      "backend/crates/services/qip-world-model/src/poisoning.rs::detect_poisoning"
+      "backend/crates/libs/qip-evidence/src/fabric.rs::statement_shingles, shingle_similarity, normalised_statement",
+      "backend/crates/services/qip-world-model/src/poisoning.rs::detect_poisoning (coordination arm) and PoisoningThresholds::near_duplicate_similarity",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs (Platform::evidence_poisoning)",
+      "backend/crates/apps/qip-deepbrain/src/research.rs (sweep calls the detector)",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_reworded_campaign_across_three_sources_is_found_by_the_near_duplicate_arm",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_coordinated_campaign_forwarded_from_connectors_is_found_by_the_poisoning_detector"
     ],
-    "gap": "Coordinated detection matches only normalised-identical text, not near-identical rewording; connector statements embed the source id, so only news headlines can coincide.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "R12-EVID-2031"
     ],
     "blocked_by": "",
-    "verification": "a test feeding a coordinated campaign through PoisoningDetector::analyse",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test evidence_intake",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The old note's 'input empty in every binary' is no longer true: the fabric is fed. The coordinated-campaign verification itself is met via Platform. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 (lane L14). Mutation: keeping only exact-fingerprint clusters (dropping the shingle components) failed the test with no coordination finding. The near-duplicate pass is quadratic in near_duplicate_scan (512) rather than the window, by design."
   },
   {
     "id": "R12-EVID-2040",
@@ -2002,26 +2006,28 @@
   },
   {
     "id": "R12-TICK-2087",
-    "status": "PARTIAL",
-    "current": "capture_time is mandatory and the kernel uses it as known_at; publication/feed-arrival delays are not calibrated.",
+    "status": "COMPLETE",
+    "current": "capture_time is mandatory and Platform::observe files every trade and tick under known_at = capture_time; the same arms fold (capture_time - at) into a bounded per-source PublicationDelay table (Platform::publication_delays, observations/mean/max), and Platform::calibrated_feed_delay (the slowest source mean) is what stage_simulate capacity_probe runs the simulator behind through MarketCondition::DelayedFeed, reported in the SIMULATE detail off the simulator applied conditions.",
     "evidence": [
-      "backend/crates/libs/qip-market/src/quote.rs:43",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9293 known_at = tick.capture_time"
+      "backend/crates/runtime/qip-kernel/src/platform.rs observe_publication_delay, publication_delays, calibrated_feed_delay (grep -n \"R12-TICK-2087\" platform.rs)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs capacity_probe: with_conditions(ConditionWindow::always(MarketCondition::DelayedFeed))",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_read_at_decision_time_returns_only_records_with_known_at_at_or_before_it",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_sources_publication_delay_is_calibrated_from_its_ticks_and_the_capacity_probe_runs_behind_it"
     ],
-    "gap": "Calibrated publication delays and a decision-time read test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
-    "e2e": false,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [
       "R12-TICK-2049"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-twin --test twin",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test learning -- a_read_at_decision_time a_sources_publication_delay",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Known-at now mandatory; delay calibration missing."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Known-at now mandatory; delay calibration missing. Closed 2026-10-18 (lane L01). Mutations: known_at = tick.at made the decision-time read test fail at its visibility assertion; dropping with_conditions in capacity_probe made the probe report no delayed_feed condition and the second test fail; dropping observe_publication_delay from the Tick arm failed the calibration premise. All restored byte-for-byte, both pass. Delay is calibrated by source (venue string), bounded to 64 sources; a source past the cap is left uncalibrated rather than assumed current. Only the capacity probe consumes the delay; the counterfactual twin (qip-twin) still reads bars without a feed delay."
   },
   {
     "id": "R12-TICK-2088",

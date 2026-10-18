@@ -64,13 +64,14 @@
   {
     "id": "R12-GOV-10004",
     "status": "PARTIAL",
-    "current": "Two project-scoped org policies disable service-account key creation/upload; tested. No other constraints (external IP, locations, shielded VM) and nothing at organisation scope.",
+    "current": "Four project-scoped org policies in main.tf under project_key_policies_enabled: iam.disableServiceAccountKeyCreation, iam.disableServiceAccountKeyUpload, compute.vmExternalIpAccess (deny_all) and compute.requireShieldedVm, each asserted inside its own resource body by an acceptance test. ADR 0118's folder root (infrastructure/foundation/main.tf) enforces key creation/upload, storage.uniformBucketLevelAccess, compute.skipDefaultNetworkCreation and compute.vmExternalIpAccess at folder scope, which a project owner cannot override; dev sets project_key_policies_enabled = false because it sits in that folder.",
     "evidence": [
-      "infrastructure/terraform/main.tf:1327 google_org_policy_policy disable_service_account_key_creation",
-      "infrastructure/terraform/main.tf:1342 disable_service_account_key_upload",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2137 organization_policy_disables_service_account_key_creation"
+      "infrastructure/terraform/main.tf google_org_policy_policy disable_service_account_key_creation, disable_service_account_key_upload, deny_vm_external_ip, require_shielded_vm",
+      "infrastructure/foundation/main.tf:107 google_org_policy_policy.boolean (folder scope), :126 vm_external_ip",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs organization_policy_disables_service_account_key_creation",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs organization_policy_refuses_external_vm_addresses_and_unshielded_machines"
     ],
-    "gap": "Add the remaining guardrail constraints and apply at folder/org scope so a project owner cannot override them.",
+    "gap": "gcp.resourceLocations is declared at neither scope: it needs an allowed-locations value nobody has decided (the archive bucket is multi-region US while var.region is a single region, so no value derives from existing variables). compute.requireShieldedVm exists only at project scope, where a project owner can remove it; the folder copy is the owner's foundation root. Patch for the location variable is in notes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -78,10 +79,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure organization_policy_disables_service_account_key_creation",
+    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure organization_policy",
     "work_item": "",
     "size": "M",
-    "notes": "Project-scoped policies can be overridden by a project owner; not 'non-bypassable' as written."
+    "notes": "2026-10-18: two constraints added at project scope, test mutation-verified (deleting deny_vm_external_ip and flipping deny_all to FALSE each failed the test). Kept PARTIAL for gcp.resourceLocations. Proposed patch, protected path infrastructure/terraform/variables.tf: variable \"allowed_resource_locations\" { type = list(string); default = []; description = \"Organization Policy gcp.resourceLocations allowed values, e.g. [\\\"in:us-locations\\\"]; empty declares no policy, because a wrong list refuses every new resource at apply.\" } and in main.tf a google_org_policy_policy \"resource_locations\" with count = var.project_key_policies_enabled && length(var.allowed_resource_locations) > 0 ? 1 : 0, spec { rules { values { allowed_values = var.allowed_resource_locations } } }; tfvars value per environment is the owner's to choose."
   },
   {
     "id": "R12-GOV-10005",
@@ -125,13 +126,14 @@
   },
   {
     "id": "R12-SEC-10007",
-    "status": "PARTIAL",
-    "current": "Data-access audit logging is configured for Secret Manager and Cloud KMS and tested; not for Spanner, BigQuery, GCS evidence or Artifact Registry.",
+    "status": "COMPLETE",
+    "current": "google_project_iam_audit_config.secrets_and_keys in modules/secrets/main.tf expands over secretmanager, cloudkms, storage, spanner, bigquery and artifactregistry with ADMIN_READ, DATA_READ and DATA_WRITE, unconditionally in every environment; run, container and compute carry DATA_WRITE in audit-logs.tf. The acceptance test reads the services out of the resource's own for_each, so a service named only in a comment or a service-identity block cannot stand in for one the config dropped.",
     "evidence": [
-      "infrastructure/terraform/modules/secrets/main.tf:318 google_project_iam_audit_config secrets_and_keys",
-      "backend/crates/tests/qip-acceptance/tests/security_controls.rs:48 secret_manager_and_kms_data_reads_are_audit_logged"
+      "infrastructure/terraform/modules/secrets/main.tf:336 google_project_iam_audit_config secrets_and_keys (for_each of six services, three log types)",
+      "infrastructure/terraform/audit-logs.tf:22 google_project_iam_audit_config runtime_changes",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs every_service_holding_secrets_keys_ledger_evidence_or_model_data_has_data_read_audit_logging"
     ],
-    "gap": "Extend audit config to storage, data and registry services.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -139,24 +141,24 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test security_controls",
+    "verification": "cd backend && cargo test -p qip-acceptance --test security_controls every_service_holding_secrets_keys_ledger_evidence_or_model_data_has_data_read_audit_logging",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18: extended from two services to six and re-graded COMPLETE. Mutation: deleting \"spanner.googleapis.com\" from the for_each failed the test naming that service. The config is project IAM policy, written whether or not the store's API is enabled, so a Spanner or BigQuery store a later environment switches on is audited from its first read. Nothing is applied; this is the committed configuration and its test."
   },
   {
     "id": "R12-GCP-10008",
-    "status": "PARTIAL",
-    "current": "modules/network creates reflex, fabric and service VPCs plus data and engineering VPCs, each with a deny-ingress firewall; module network is instantiated unconditionally.",
+    "status": "COMPLETE",
+    "current": "modules/network declares five VPCs (reflex, fabric, service from local.networks; data_vpc and engineering_vpc standalone), each bound to a catch-all INGRESS deny (protocol all, 0.0.0.0/0, priority 65534); the module tftests plan them and the acceptance suite walks the map and both standalone resources and pairs every network with its deny rule.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf:26-31 networks reflex/fabric/service",
-      "infrastructure/terraform/modules/network/main.tf:73 data_vpc",
-      "infrastructure/terraform/modules/network/main.tf:134 engineering_vpc",
+      "infrastructure/terraform/modules/network/main.tf:26-31,33,44 planes and deny_ingress",
+      "infrastructure/terraform/modules/network/main.tf:78,86 data_vpc and its deny",
+      "infrastructure/terraform/modules/network/main.tf:139,147 engineering_vpc and its deny",
       "infrastructure/terraform/modules/network/tests/three-networks.tftest.hcl",
       "infrastructure/terraform/modules/network/tests/data-and-engineering-vpcs.tftest.hcl",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10844 trust_zones_are_not_one_flat_vpc_gcp_024"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13278 the_network_module_declares_five_vpcs_each_with_a_deny_ingress_rule"
     ],
-    "gap": "data_vpc and engineering_vpc (network/main.tf:73,134) are empty and their outputs consumed nowhere; the acceptance test checks only the trust-zone map.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -164,10 +166,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform test in modules/network; cargo test -p qip-acceptance --test infrastructure trust_zones_are_not_one_flat_vpc_gcp_024",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- the_network_module_declares_five_vpcs_each_with_a_deny_ingress_rule; terraform test in infrastructure/terraform/modules/network",
     "work_item": "",
     "size": "S",
-    "notes": "Networks are provisioned in dev; no workload is attached to reflex/fabric VPCs because nothing is deployed there. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: data_vpc and engineering_vpc (network/main.tf:73,134) are empty and their outputs consumed nowhere; the acceptance test checks only the trust-zone map."
+    "notes": "Closed 2026-10-18 (lane L02) on the clause as written: five networks exist, each deny-by-default on ingress, now proven by an acceptance test rather than the trust-zone map alone. Mutation: changed engineering_vpc_deny_ingress to protocol = \"tcp\"; the test failed \"not a catch-all ingress deny\"; restored byte-for-byte. The 2026-10-11 spot-check finding stands as a fact and is not this constraint: data_vpc and engineering_vpc still carry no tenant and their outputs are consumed nowhere (integrated stays false); a tenant belongs to the rows that place a workload on those planes."
   },
   {
     "id": "R12-GCP-10009",
@@ -531,14 +533,16 @@
   },
   {
     "id": "R12-REFLEX-10025",
-    "status": "PARTIAL",
-    "current": "A node that finds a prior session arms awaiting_reconciliation and forms no order until the venue agrees; books rebuild from the feed. No Local SSD is declared.",
+    "status": "COMPLETE",
+    "current": "A node that finds a prior session arms the resume discipline; while it stands, Cell::work refuses under GATE_AWAITING_RECONCILIATION and forms no order, and the node's pass obtains the venue's own account and hands it to the cell before anything is formed, so the journal records venue_reconciled before order_sent; books rebuild from the feed. The check (a restarted node forms no order until venue reconciliation completes; removing the reconciliation arm fails) is met. Books, features and session state are held in process memory; the c4/c4d highcpu allowlist carries no Local SSD and 'RAM/Local SSD' is an alternative the statement permits.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:525-536 prior session arms reconciliation",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs:1793 a_node_that_restarted_reconciles_with_its_venue_before_it_forms_an_order",
-      "backend/crates/edge/qip-edge/src/cell.rs:299 GATE_AWAITING_RECONCILIATION"
+      "backend/crates/apps/qip-edge-node/src/main.rs:525-536 a prior session arms reconciliation",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:291 the venue account is taken while the discipline stands",
+      "backend/crates/edge/qip-edge/src/cell.rs:299 GATE_AWAITING_RECONCILIATION; :4388 the refusal in Cell::work",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs:1818 a_node_that_restarted_reconciles_with_its_venue_before_it_forms_an_order",
+      "backend/crates/edge/qip-edge/tests/failure_isolation.rs:176 a_restarted_cell_forms_no_order_until_every_venue_has_answered_for_what_it_holds_open"
     ],
-    "gap": "No Local SSD scratch; not deployed.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -548,10 +552,10 @@
       "R12-REFLEX-10024"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test pass a_node_that_restarted_reconciles_with_its_venue_before_it_forms_an_order",
+    "verification": "cargo test -p qip-edge-node --test pass a_node_that_restarted_reconciles_with_its_venue_before_it_forms_an_order; cargo test -p qip-edge --test failure_isolation a_restarted_cell_forms_no_order_until_every_venue_has_answered_for_what_it_holds_open",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: the node's reconciliation arm no longer taking the venue account (pass.rs:292 `Some(_) => None`) fails the node test at pass.rs:1850 ('the node did not resume after its venue answered', left 0 orders). Removing only the cell's refusal (cell.rs:4388-4389) left the node test green because the arm still ran first, which is why the cell-side test in failure_isolation.rs is cited beside it. Not deployed, so deployable stays false."
   },
   {
     "id": "R12-FABRIC-10026",
@@ -734,24 +738,25 @@
   },
   {
     "id": "R12-DATA-10034",
-    "status": "PARTIAL",
-    "current": "KnowledgePack is schema-closed (deny_unknown_fields) so a raw body cannot ride inside a pack, with tests; nothing proves ingestion paths never persist raw payloads elsewhere.",
+    "status": "COMPLETE",
+    "current": "KnowledgePack and PackBody are schema-closed (serde deny_unknown_fields), so a raw body cannot ride inside a pack at the top level or inside the body, an unknown kind is refused, and another schema version is refused; the check (an undeclared field is refused at decode) is met.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs:1-10 schema-closed packs",
-      "backend/crates/libs/qip-contracts/tests/knowledge_pack.rs"
+      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs:20 deny_unknown_fields on PackBody",
+      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs:52 deny_unknown_fields on KnowledgePack",
+      "backend/crates/libs/qip-contracts/tests/knowledge_pack.rs:61 a_pack_carrying_a_field_outside_its_schema_is_refused_at_every_level"
     ],
-    "gap": "A guard over every persistence path (buckets, stores) refusing raw payload classes.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test knowledge_pack",
+    "verification": "cargo test -p qip-contracts --test knowledge_pack a_pack_carrying_a_field_outside_its_schema_is_refused_at_every_level",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: removing deny_unknown_fields from KnowledgePack (knowledge_pack.rs:52) fails the test at its 'extra top-level field' assertion (tests/knowledge_pack.rs:80). The former gap (a guard over every persistence path) exceeds this row's check and is the subject of R12-DATA-1029 and R12-DATA-8012/8121."
   },
   {
     "id": "R12-DATA-10035",
@@ -1013,14 +1018,16 @@
   },
   {
     "id": "R12-SEC-10047",
-    "status": "PARTIAL",
-    "current": "deploy.yml scans each image before push/sign/attest (Trivy) and container analysis notes back the attestor; Artifact Analysis on-push scanning is not configured.",
+    "status": "COMPLETE",
+    "current": "deploy.yml runs `trivy image --severity CRITICAL,HIGH --exit-code 1` on every image before it is pushed or signed, asserted by deploy_provenance.rs on every path; containerscanning.googleapis.com is enabled in modules/services/main.tf, which turns on Artifact Analysis on-push and continuous scanning of the registry's images, asserted by security_controls.rs; the container-analysis note backs the attestor. The check (scan before push/sign, fail on CRITICAL, removing the step fails the gate test) is met.",
     "evidence": [
-      ".github/workflows/deploy.yml:462 scan before push",
+      ".github/workflows/deploy.yml:462-495 scan before push and sign",
+      "infrastructure/terraform/modules/services/main.tf:77 containerscanning.googleapis.com",
       "infrastructure/terraform/modules/binaryauthorization/main.tf container_analysis_note",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4361 the_pipeline_gates_on_everything_it_claims_to"
+      "backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs:205 a_high_or_critical_finding_stops_an_image_before_it_is_signed_on_every_path",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs:70 the_container_scanning_api_is_enabled_for_the_registry"
     ],
-    "gap": "Artifact Analysis continuous scanning of stored images.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1028,10 +1035,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure the_pipeline_gates_on_everything_it_claims_to",
+    "verification": "cargo test -p qip-acceptance --test deploy_provenance a_high_or_critical_finding_stops_an_image_before_it_is_signed_on_every_path; cargo test -p qip-acceptance --test security_controls the_container_scanning_api_is_enabled_for_the_registry",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap (Artifact Analysis continuous scanning) closed when the containerscanning API was enabled; the former evidence cited infrastructure.rs::the_pipeline_gates_on_everything_it_claims_to, whose gate list does not name trivy, so deploy_provenance.rs is the proving test. No mutation run by this lane: the workflow is a protected path and the tests read it as text."
   },
   {
     "id": "R12-CICD-10048",
@@ -1349,13 +1356,15 @@
   {
     "id": "R12-AGENCY-10063",
     "status": "PARTIAL",
-    "current": "The edge node has no compile-time dependency on cognitive crates and a node test shows identical orders when the centre stops answering; no managed agent runtime and no backlog queue.",
+    "current": "The edge node has no compile-time dependency on cognitive crates and a node test shows identical orders when the centre stops answering; no managed agent runtime and no backlog queue. On the deepbrain node, the agency door's backlog is Intake::Deferred with bounded retry (a_full_outbox_defers_drafts_and_never_stops_the_node), and an agency refusal in every cycle (drafting tool revoked) is counted, never raised, and leaves the platform's event log identical to a run with no agency attached.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11 reflex_edge_node_has_no_compile_time_dependency_on_cognitive_crates",
       "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342 a_node_works_the_same_..._when_the_centre_stops_answering",
-      "backend/crates/libs/qip-agents/src/runtime.rs agent runtime with BudgetLedger"
+      "backend/crates/libs/qip-agents/src/runtime.rs agent runtime with BudgetLedger",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_revoked_drafting_tool_withholds_every_draft_and_leaves_the_platform_log_identical",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_full_outbox_defers_drafts_and_never_stops_the_node"
     ],
-    "gap": "Backlog semantics for agents on outage.",
+    "gap": "The in-process qip-agents runtime (runtime.rs) has no backlog queue; backlog and refusal-isolation are proven for the agency door on the deepbrain node and for the edge node's reflex loop, not for that runtime.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1363,10 +1372,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test reasoning_outage",
+    "verification": "cargo test -p qip-edge-node --test reasoning_outage; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
     "work_item": "",
     "size": "M",
-    "notes": "arch_001 uses substring contains() on Cargo.toml, the trap the testing rules warn about."
+    "notes": "arch_001 uses substring contains() on Cargo.toml, the trap the testing rules warn about. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). arch_001 is not changed by this lane."
   },
   {
     "id": "R12-MODEL-10064",
@@ -1876,15 +1885,17 @@
   },
   {
     "id": "R12-CICD-10087",
-    "status": "PARTIAL",
-    "current": "Argo CD AppProject/Applications and per-env manifests exist; tests prove apps target env dirs and only dev auto-syncs; Config Sync absent; dev control plane exists only when gitops_enabled.",
+    "status": "COMPLETE",
+    "current": "ADR 0114 decides the control plane runs Config Connector, Argo CD, Kargo and cert-manager and nothing else; Config Connector, not Config Sync, reconciles the baseline. gitops.rs::the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names walks infrastructure/gitops/bootstrap and refuses any component with an overlay that is not one of the five admitted directories, any RootSync/RepoSync/Rollout or configsync.gke.io document, and any qip-* image; no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap proves the two appliers share no object. Non-dev control planes are a provisioning fact (ADR 0036: one per environment, applied when that environment's project exists), not a configuration gap: every controller carries an overlay for all four environments.",
     "evidence": [
-      "infrastructure/gitops/argocd/base/appproject.yaml",
-      "infrastructure/gitops/envs/dev/kustomization.yaml",
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:1571 only_dev_syncs_automatically_and_it_prunes_and_heals",
+      "docs/adr/0114-the-gke-control-plane-stays-controllers-only-and-external-action-surfaces-stay-refused.md",
+      "infrastructure/gitops/bootstrap/README.md",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs only_dev_syncs_automatically_and_it_prunes_and_heals",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs every_argo_cd_application_points_at_this_repository_and_at_one_environment_directory_that_exists"
     ],
-    "gap": "Config Sync for baseline/policy; non-dev environments have no control plane.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1892,10 +1903,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gitops",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08): the 'Config Sync' gap text predated ADR 0114. Mutations fired: a bootstrap/argo-rollouts/overlays/dev directory failed the controllers test naming it; a RootSync document under config-connector/base and a Rollout document appended to kargo's upstream install each failed it; a Namespace argocd added to envs/dev failed the disjointness test."
   },
   {
     "id": "R12-CICD-10088",
@@ -2015,12 +2026,14 @@
   {
     "id": "R12-AMBIENT-10093",
     "status": "PARTIAL",
-    "current": "An InformationRequest type exists in world-model federation and an adversary review exists in the kernel; no VOI-gated trigger from forecast conflict.",
+    "current": "Federation::information_request builds the qip_contracts::control::InformationRequest for an arbitration whose spread is material (MATERIAL_DISAGREEMENT_SPREAD) on a proposition with positive exposure at stake: expected_information_value = spread x exposure, budget a stated share of it, deadline and allowed sources (the disagreeing models declared evidence lineages plus the stakes own); a small conflict or an unheld proposition issues nothing. FederationStage::run issues one per such arbitration using the exposure set through set_stakes and journals them on FederationReview::information_requests.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:252 InformationRequest",
-      "backend/crates/runtime/qip-kernel/src/adversary_review.rs"
+      "backend/crates/services/qip-world-model/src/federation.rs::Federation::information_request and InformationStake",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::set_stakes, run (information_requests), REQUEST_BUDGET_SHARE_BP, REQUEST_DEADLINE",
+      "backend/crates/services/qip-world-model/tests/federation.rs::a_material_disagreement_with_exposure_at_stake_issues_the_contract_information_request_and_a_small_one_does_not",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::tests::a_material_disagreement_on_a_subject_with_exposure_at_stake_issues_an_information_request"
     ],
-    "gap": "Conflict-to-request trigger with VOI.",
+    "gap": "platform.rs::understand_federation does not yet call set_stakes from positions_at_cost before the pass, nor forward review.information_requests into the research intake the deep-brain sweep reads (both call sites are in the L14 lane report for L01), so on the deployed path no request is issued or consumed yet.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2028,10 +2041,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test federation",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test federation a_material_disagreement_with_exposure && cargo +1.94.1 test -p qip-kernel --lib federation_stage",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L14). Mutations: inverting the exposure gate in Federation::information_request failed the world-model test (no request for a million at stake); skipping the stake lookup in FederationStage::run failed the kernel test at 0 requests vs 1."
   },
   {
     "id": "R12-AMBIENT-10094",
@@ -2166,15 +2179,14 @@
   },
   {
     "id": "R12-REFLEX-10100",
-    "status": "PARTIAL",
-    "current": "Feed/sequence handling with gap flags, replay of venue bytes reproducing flags; driven from main through the pass loop under the simulated feed only.",
+    "status": "COMPLETE",
+    "current": "Venue frames are sequence-checked in the node's feed and the cell's sequencer: a dropped frame is never papered over, the hole is journaled and the stale book is rebuilt whole, and a replay of recorded venue bytes carries the abandoned gap out as an integrity flag with the lost-message count. The check (a sequence gap resets/flags the book and replay reproduces the flag) is met on the simulated feed, which is the only feed the node runs (ADR 0003).",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:327 replaying_one_recorded_session_of_venue_bytes_twice...",
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:433 the_replay_carries_the_abandoned_gap_out_as_an_integrity_flag...",
       "backend/crates/apps/qip-edge-node/src/feed.rs",
-      "backend/crates/apps/qip-edge-node/tests/sequence.rs"
+      "backend/crates/apps/qip-edge-node/tests/sequence.rs:200 a_dropped_frame_is_never_papered_over_and_the_book_it_left_stale_is_rebuilt_whole",
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:433 the_replay_carries_the_abandoned_gap_out_as_an_integrity_flag_and_a_lost_message_count"
     ],
-    "gap": "Real feed adapters; deployment.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2182,21 +2194,22 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test tick_replay",
+    "verification": "cargo test -p qip-acceptance --test tick_replay the_replay_carries_the_abandoned_gap_out_as_an_integrity_flag_and_a_lost_message_count; cargo test -p qip-edge-node --test sequence a_dropped_frame_is_never_papered_over_and_the_book_it_left_stale_is_rebuilt_whole",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. 'Real feed adapters; deployment' is not a clause of the statement or its check. No mutation run by this lane."
   },
   {
     "id": "R12-RISK-10101",
-    "status": "PARTIAL",
-    "current": "Cell::work runs deterministic gates (silent_feed, journal_pressure, quote_budget, live_venue, ...) before Cell::send; refusals journaled and counted; simulated gateway only.",
+    "status": "COMPLETE",
+    "current": "Cell::work runs the deterministic gates (silent feed, journal pressure, quote budget, live venue, feasibility, settlement, reconciliation, ...) before Cell::send; every refusal is journaled under a gate constant and counted on qip_edge_refusals_total{gate}; no order reaches the venue adapter that the feasibility gate would have refused. The check (every refusal journaled under a gate constant and no order past a refusal) is met; the simulated gateway is the only adapter by design (ADR 0003).",
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs:106-382 gate constants",
-      "backend/crates/edge/qip-edge/tests/telemetry.rs",
+      "backend/crates/edge/qip-edge/tests/feasibility.rs:317 no_order_reaches_the_venue_adapter_that_the_feasibility_gate_would_have_refused",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs refusal series per gate",
       "backend/crates/apps/qip-edge-node/tests/pass.rs"
     ],
-    "gap": "Not deployed; paper only.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2204,10 +2217,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge",
+    "verification": "cargo test -p qip-edge --test feasibility no_order_reaches_the_venue_adapter_that_the_feasibility_gate_would_have_refused; cargo test -p qip-edge --test telemetry",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. 'Not deployed; paper only' is the platform's standing posture (ADR 0003), not a clause of the statement. No mutation run by this lane."
   },
   {
     "id": "R12-FABRIC-10102",
@@ -2372,14 +2385,16 @@
   },
   {
     "id": "R12-GOV-10109",
-    "status": "PARTIAL",
-    "current": "Cells verify signed envelopes/payloads before applying; edge node has no cognitive-crate dependency (substring test).",
+    "status": "COMPLETE",
+    "current": "Cells apply only payloads verified down the signed path and nothing but the cell's own verification can mint a verified policy, halt or grant; the edge node links no cognitive crate; and a promoted distillate reaches the manifest only when a verified release pack names its artifact, with qip-api admitting an empty pack set (every distillate withheld) when QIP_MODEL_PACKS_PATH is unset. The check is met and model packages travel the same signed path.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/mesh.rs:12-22",
-      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11",
-      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs"
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:113 with_a_peer_epoch_live_on_the_node_a_policy_or_halt_reaches_the_cell_only_down_the_verified_path",
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:127 nothing_the_edge_node_links_directly_or_transitively_is_a_cognitive_crate",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:903 a distillate without a verified release pack is withheld",
+      "backend/crates/runtime/qip-kernel/tests/release_packs.rs:124 a_promoted_distillate_reaches_the_manifest_only_when_a_verified_release_pack_names_its_artifact",
+      "backend/crates/apps/qip-api/src/signing.rs:354-361 admit_model_packs; an unset path admits none"
     ],
-    "gap": "Model packages through the same signed path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2389,10 +2404,10 @@
       "R12-REFLEX-10085"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test downward_signed_path",
+    "verification": "cargo test -p qip-acceptance --test downward_signed_path; cargo test -p qip-kernel --test release_packs; cargo test -p qip-acceptance --test arch_001_independent_reflex",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former text ('substring test') was older than the manifest parser, and the former gap ('model packages through the same signed path') closed with ADR 0110's release packs. No mutation run by this lane."
   },
   {
     "id": "R12-MESH-10110",
@@ -2868,13 +2883,15 @@
   },
   {
     "id": "R12-RES-10130",
-    "status": "PARTIAL",
-    "current": "Edge node independence tests; no research backlog queue.",
+    "status": "COMPLETE",
+    "current": "With the centre silent the node runs the same passes, sends the same orders and refuses the same; on the deep brain, gate_strategic_service takes the strategic service down when the node is unready, every stage still runs, and the lattice's questions wait in its bounded backlog until the service returns. The check (node trades identically with the centre silent) is met and the backlog clause is tested.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342",
-      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11"
+      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:350",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:189 gate_strategic_service, called at node.rs:467",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:882 a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs",
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs:339 with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs"
     ],
-    "gap": "Backlog queue.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2882,10 +2899,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test reasoning_outage",
+    "verification": "cargo test -p qip-edge-node --test reasoning_outage; cargo test -p qip-deepbrain --lib a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs; cargo test -p qip-kernel --test now_lattice with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice."
   },
   {
     "id": "R12-RES-10131",
@@ -2934,12 +2951,16 @@
   },
   {
     "id": "R12-RES-10133",
-    "status": "PARTIAL",
-    "current": "Run services carry cnrm deletion-policy abandon so control-plane loss does not delete them (tested); no codified break-glass with reconciliation.",
+    "status": "COMPLETE",
+    "current": "Run services carry cnrm deletion-policy abandon so control-plane loss does not delete them (tested); docs/ops/runbooks/break-glass.md is the committed break-glass procedure — who may act, the two operations allowed (traffic between admitted revisions, scale to nothing; never --breakglass or a breakglassJustification), what is recorded at the time, and the reconciliation step back into infrastructure/gitops/envs/<env> through a pull request, with the dev selfHeal warning — linked from the incident playbooks; the break_glass acceptance suite refuses the runbook losing any of those parts or the link.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:5550 a_cloud_run_service_with_cnrm_deletion_policy_abandon_survives_gitops_control_plane_loss"
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs a_cloud_run_service_with_cnrm_deletion_policy_abandon_survives_gitops_control_plane_loss",
+      "docs/ops/runbooks/break-glass.md",
+      "docs/ops/runbooks/incidents.md (link under A failed deploy)",
+      "backend/crates/tests/qip-acceptance/tests/break_glass.rs the_break_glass_runbook_names_who_acts_what_is_recorded_and_how_the_change_is_reconciled_to_git",
+      "backend/crates/tests/qip-acceptance/tests/break_glass.rs the_break_glass_runbook_is_linked_from_the_incident_playbooks"
     ],
-    "gap": "Break-glass procedure with Git reconciliation.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2947,10 +2968,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gitops",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test break_glass --test gitops",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L02) on the check (a break-glass runbook path exists, reconciled to Git). Mutations: deleting the Reconciliation section failed the suite (\"has no `## Reconciliation to Git` section\"); softening the --breakglass refusal failed it; unlinking from incidents.md failed the link test; all restored byte-for-byte. The procedure is marked Not run in the runbook: no environment runs a service to exercise it on, and the IAM the acting person holds lives outside this repository."
   },
   {
     "id": "R12-FINOPS-10134",
@@ -3150,15 +3171,16 @@
   },
   {
     "id": "R12-GCP-10143",
-    "status": "PARTIAL",
-    "current": "dev, test, stage, prod exist with their own projects; no integration, replay or paper environment.",
+    "status": "COMPLETE",
+    "current": "The blueprint's environments map onto the six-link Kargo chain: integration is test (its own project, tfvars and control plane), replay and paper are gate stages with no environment that record freight into gates/<stage>/freight.yaml, stage and prod are themselves. infrastructure/gitops/kargo/README.md states the mapping; gitops.rs::every_blueprint_stage_maps_to_an_environment_directory_or_a_documented_environment_less_stage proves every Stage is exactly one of the two kinds, with its tfvars and envs overlay or its freight record and README sentence.",
     "evidence": [
-      "infrastructure/environments/dev/terraform.tfvars",
-      "infrastructure/environments/test/terraform.tfvars",
-      "infrastructure/environments/stage/terraform.tfvars",
-      "infrastructure/environments/prod/terraform.tfvars"
+      "infrastructure/gitops/kargo/README.md",
+      "infrastructure/gitops/kargo/base/stages.yaml",
+      "infrastructure/gitops/gates/replay/freight.yaml",
+      "infrastructure/gitops/gates/paper/freight.yaml",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_blueprint_stage_maps_to_an_environment_directory_or_a_documented_environment_less_stage"
     ],
-    "gap": "Integration/replay/paper environments or a documented mapping.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3166,10 +3188,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "ls infrastructure/environments; acceptance env tests",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- every_blueprint_stage_maps_to_an_environment_directory_or_a_documented_environment_less_stage",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: renaming gates/replay failed the test naming the missing freight record."
   },
   {
     "id": "R12-GCP-10144",
@@ -3993,7 +4015,7 @@
   {
     "id": "R12-LEDGER-10179",
     "status": "PARTIAL",
-    "current": "Fills from cells and all three desks (desk, desk-api, desk-deep) reach ledgerd; the desks ship through qip-desk-ship, which acknowledges only after the fabric answers, re-queues on restart and heals gaps from the log. ledgerd dedupes by (cell, session, sequence) plus digest, event-id idempotency in effect. Property tests over duplication, re-sent runs, rewinds and a cut write-ahead log show single-delivery balances for cell and desk records. LedgerOperations are deduped by id in LedgerStore::record_operation, but only tests call it.",
+    "current": "Fills from cells and all three desks (desk, desk-api, desk-deep) reach ledgerd; the desks ship through qip-desk-ship, which acknowledges only after the fabric answers, re-queues on restart and heals gaps from the log. ledgerd dedupes by (cell, session, sequence) plus digest, event-id idempotency in effect. Property tests over duplication, re-sent runs, rewinds and a cut write-ahead log show single-delivery balances for cell and desk records. LedgerOperations reach ledgerd on ledger.operation_recorded (ADR 0123) from two production producers — every desk's treasury funding at assembly, and every capital grant's funding at issue and its one recall at expiry, revocation or renewal (ADR 0123 Amendment 1) — and are booked once by operation id in LedgerStore::apply_operation, cursor committed in the same batch; a restart replays each record as written and the ledger answers a duplicate, proven against a real ledgerd for both kinds.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/desk_ledger.rs::DeskLedgerFeed",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ledgerd.rs::the_same_record_applied_twice_posts_once",
@@ -4017,9 +4039,14 @@
       "backend/crates/tests/qip-acceptance/tests/desk_ledger_property.rs::for_any_redelivery_and_crash_schedule_three_desks_records_book_single_delivery_balances",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::three_desks_ship_on_their_own_chains_to_one_ledger_without_fencing_or_forking",
       "backend/crates/tests/qip-acceptance/tests/runtime_reachability.rs::every_process_that_books_desk_fills_ships_them_on_its_own_chain",
-      "infrastructure/event-fabric/streams.local.json"
+      "infrastructure/event-fabric/streams.local.json",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::fund_capital_grant",
+      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::apply_operation",
+      "backend/crates/apps/qip-ledgerd/tests/operations_on_the_stream.rs",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::the_desks_treasury_funding_reaches_the_ledger_once_across_restarts",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_funding_reaches_the_ledger_once_across_restarts"
     ],
-    "gap": "Non-fill financial outcomes cannot reach the ledger: treasury, capital-grant funding, custody, collateral, margin, transfer, tax and commitment LedgerOperations have no production producer and no fabric topic; ledgerd's consumer decodes only outcome, span and gap records (anything else is Decoded::Other); record_operation has no non-test caller. Producer-side crash schedules are fixed scenarios, not a property. Not deployed (no broker, no desk token): tracked under deployable.",
+    "gap": "Non-fill financial outcomes other than treasury funding and capital-grant funding and recall cannot reach the ledger: custody, collateral, margin, transfer, tax-lot, tax-charge, commitment, mandate-subscription and inventory LedgerOperations have a topic and a consumer but no production producer, because no production path observes those facts (no custodian, margin or collateral seam exists; the commerce inventory ledger runs only under an uncommitted breadth plan). Producer-side crash schedules are fixed scenarios, not a property. Not deployed (no broker, no desk token): tracked under deployable.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4033,7 +4060,7 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "L",
-    "notes": "Dedup is by (cell, session, seq, digest) chain continuity, not a bare event id; equivalent or stronger. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'Every financial outcome ... eventually committed' is unmet for the desk path: that leg runs only in tests, so 'eventually' is not demonstrated for it. Shipper added 2026-10-17 (84e4e33d, 54b9a01a); independent grader (wrote none of the code, ran nothing) held PARTIAL. The earlier 'no non-test caller' / 'shipper does not exist' text is false for acknowledge_desk_outcomes. 2026-10-17: queuing 300+ records found the shipper wedged for ever (a 256-record batch exceeded the broker's per-second byte quota); batches are now capped at 131,072 payload bytes. Live gap heal added 2026-10-17 (DeskLedgerFeed::fill_gap via Platform::heal_desk_gap). 2026-10-17: qip-api and the deep brain ship on their own chains; property test over desk records added (mutation: store treating a re-sent last position as new parks a clean chain). Status left for an independent grader. Independent grade 2026-10-17 (read-only, after 0aae3a36): PARTIAL on 'every financial outcome' only; idempotency clause met; deployment not an acceptance condition of this row."
+    "notes": "Dedup is by (cell, session, seq, digest) chain continuity, not a bare event id; equivalent or stronger. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'Every financial outcome ... eventually committed' is unmet for the desk path: that leg runs only in tests, so 'eventually' is not demonstrated for it. Shipper added 2026-10-17 (84e4e33d, 54b9a01a); independent grader (wrote none of the code, ran nothing) held PARTIAL. The earlier 'no non-test caller' / 'shipper does not exist' text is false for acknowledge_desk_outcomes. 2026-10-17: queuing 300+ records found the shipper wedged for ever (a 256-record batch exceeded the broker's per-second byte quota); batches are now capped at 131,072 payload bytes. Live gap heal added 2026-10-17 (DeskLedgerFeed::fill_gap via Platform::heal_desk_gap). 2026-10-17: qip-api and the deep brain ship on their own chains; property test over desk records added (mutation: store treating a re-sent last position as new parks a clean chain). Status left for an independent grader. Independent grade 2026-10-17 (read-only, after 0aae3a36): PARTIAL on 'every financial outcome' only; idempotency clause met; deployment not an acceptance condition of this row. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL. The 'no fabric topic / Decoded::Other / no non-test caller' text predated 27aa66df and is removed; two operation kinds now reach the ledger from production and the gap names the kinds that still have no observer. Re-graded 2026-10-18 by the lane that gave grant fundings a recall (ADR 0123 Amendment 1), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; a third operation kind reaches the ledger from production and the gap's list is unchanged."
   },
   {
     "id": "R12-MODEL-10180",
@@ -4339,13 +4366,15 @@
   },
   {
     "id": "R12-ARCH-10193",
-    "status": "PARTIAL",
-    "current": "Compile-time exclusion test and centre-silent node test; not deployed; the exclusion test uses substring matching on Cargo.toml.",
+    "status": "COMPLETE",
+    "current": "The edge node links no cognitive crate directly or transitively: the acceptance test parses every workspace manifest whole (dependency names, ignoring comments and dev tables) and walks the closure from qip-edge-node; a node trades identically with the centre silent. The check is met.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11",
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342"
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:46 parse_manifest; :108 closure",
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:127 nothing_the_edge_node_links_directly_or_transitively_is_a_cognitive_crate",
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:181 the_manifest_parser_reads_dependency_names_whole_and_ignores_comments_and_dev_tables",
+      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:350 a_node_works_the_same_passes_sends_the_same_orders_and_refuses_the_same_when_the_centre_stops_answering"
     ],
-    "gap": "Dependency-closure check via cargo metadata.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4355,10 +4384,10 @@
       "R12-ARCH-10176"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test reasoning_outage",
+    "verification": "cargo test -p qip-acceptance --test arch_001_independent_reflex; cargo test -p qip-edge-node --test reasoning_outage",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: adding `qip-reasoning-engine.workspace = true` to backend/crates/apps/qip-edge-node/Cargo.toml fails the closure test at arch_001_independent_reflex.rs:167 naming both qip-reasoning-engine and, transitively, qip-world-model. The former text ('substring matching') was older than the parser."
   },
   {
     "id": "R12-FABRIC-10194",
@@ -4430,23 +4459,25 @@
   },
   {
     "id": "R12-LEDGER-10197",
-    "status": "PARTIAL",
-    "current": "Only one Spanner database ('positions') is declared, so no sharing exists today; no guard test prevents adding other domains to it.",
+    "status": "COMPLETE",
+    "current": "modules/data declares one Spanner instance (global) holding exactly one database (positions); the acceptance suite refuses a second instance, a second database on the ledger instance, and any database named graph/memory/service/world beside it.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:397"
+      "infrastructure/terraform/modules/data/main.tf:380 google_spanner_instance.global",
+      "infrastructure/terraform/modules/data/main.tf:404 google_spanner_database.positions",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13188 the_ledger_spanner_instance_holds_only_the_positions_database"
     ],
-    "gap": "Guard test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance scan of Spanner databases",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- the_ledger_spanner_instance_holds_only_the_positions_database",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L02). Mutation: appended a google_spanner_database \"graph\" resource to modules/data/main.tf; the test failed naming [\"positions\", \"graph\"]; restored byte-for-byte. The instance is still behind enable_spanner = false everywhere (R12-LEDGER-8132), so the guard is on the committed configuration, not a plan."
   },
   {
     "id": "R12-RISK-10198",
@@ -4493,25 +4524,28 @@
   },
   {
     "id": "R12-REFLEX-10200",
-    "status": "PARTIAL",
-    "current": "No LB/mesh hop (tested) and the node runs with no proxy sidecar; but the execution-node module can place the node's venue egress behind its own Cloud NAT (create_egress_nat) with no benchmark record.",
+    "status": "COMPLETE",
+    "current": "No LB/mesh/proxy hop (tested, unchanged); create_egress_nat defaults to false at all three declarations (root variables.tf execution_nodes type, modules/edge-cells-deployment, modules/execution-node) and every committed node sets it false, so no NAT exists on any venue path; the acceptance suite pins the defaults and refuses a tfvars entry that flips it true, naming the benchmark record that must land in the same diff.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3890",
-      "infrastructure/terraform/modules/execution-node/main.tf:149-180 optional NAT",
+      "infrastructure/terraform/variables.tf:313 create_egress_nat = optional(bool, false)",
+      "infrastructure/terraform/modules/execution-node/variables.tf:703",
+      "infrastructure/terraform/modules/edge-cells-deployment/variables.tf:52",
+      "infrastructure/environments/dev/terraform.tfvars:247 create_egress_nat = false",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13452 no_execution_node_puts_a_cloud_nat_on_its_venue_path_without_a_recorded_benchmark",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else"
     ],
-    "gap": "Benchmark or remove NAT on the venue path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- no_execution_node_puts_a_cloud_nat_on_its_venue_path_without_a_recorded_benchmark",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L02): the clause binds a NAT to a benchmark, and today there is no NAT; the test is what makes the first one carry its record. Mutation: set dev newyork-1 create_egress_nat = true; the test failed naming dev/terraform.tfvars; restored byte-for-byte."
   },
   {
     "id": "R12-SEC-10201",
@@ -4648,13 +4682,14 @@
   },
   {
     "id": "R12-CICD-10207",
-    "status": "PARTIAL",
-    "current": "Argo CD/Kargo own applications; Config Connector (not Config Sync) is installed by bootstrap; no Config Sync.",
+    "status": "COMPLETE",
+    "current": "ADR 0114 names Config Connector as the baseline reconciler and the control plane as controllers-only; Config Sync is refused, not missing. gitops.rs::the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names refuses a RootSync, RepoSync or configsync.gke.io document anywhere under bootstrap/, and no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap proves the bootstrap (controllers, AppProject, Kargo chain) and the Argo CD Application (envs/<env>) render disjoint object sets in every environment, so one owner reconciles each object.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:8070 config_connector_arrives_by_the_bootstrap_as_a_vendored_operator_and_not_as_the_autopilot_addon",
-      "infrastructure/gitops/bootstrap"
+      "docs/adr/0114-the-gke-control-plane-stays-controllers-only-and-external-action-surfaces-stay-refused.md",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap"
     ],
-    "gap": "Config Sync for baseline/policy.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4664,10 +4699,10 @@
       "R12-CICD-10087"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a Namespace argocd added to envs/dev/kustomization.yaml failed the disjointness test naming both appliers; a RootSync under bootstrap failed the controllers test."
   },
   {
     "id": "R12-QUANT-10208",

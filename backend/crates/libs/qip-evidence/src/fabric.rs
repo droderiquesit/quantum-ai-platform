@@ -601,11 +601,11 @@ impl Default for EvidenceFabric {
     }
 }
 
-/// Normalise a statement for origin comparison: lowercase, alphanumerics
-/// only, whitespace collapsed — so punctuation and a changed byline do not
-/// make one press release into two.
-pub fn statement_fingerprint(statement: &str) -> String {
-    let normalised: String = statement
+/// A statement as origin comparison reads it: lowercase, alphanumerics only,
+/// whitespace collapsed — so punctuation and a changed byline do not make one
+/// press release into two.
+pub fn normalised_statement(statement: &str) -> String {
+    statement
         .chars()
         .map(|c| {
             if c.is_alphanumeric() {
@@ -617,8 +617,48 @@ pub fn statement_fingerprint(statement: &str) -> String {
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ");
-    qip_core::sha256_hex(normalised.as_bytes())
+        .join(" ")
+}
+
+/// Normalise a statement for origin comparison and hash it, so two records
+/// that say the same thing in the same words share one fingerprint.
+pub fn statement_fingerprint(statement: &str) -> String {
+    qip_core::sha256_hex(normalised_statement(statement).as_bytes())
+}
+
+/// How many consecutive words make one shingle in [`statement_shingles`].
+/// Three: a bigram matches on any two common words, a four-gram misses a
+/// copy with one word changed every fourth word, which is the shape a
+/// reworded campaign takes.
+pub const SHINGLE_WORDS: usize = 3;
+
+/// The word shingles of a statement (EVID-2039): every run of
+/// [`SHINGLE_WORDS`] consecutive words of its normalised form, as a set. A
+/// statement shorter than one shingle is its own single shingle, so two
+/// short identical statements still compare as identical.
+pub fn statement_shingles(statement: &str) -> BTreeSet<String> {
+    let normalised = normalised_statement(statement);
+    let words: Vec<&str> = normalised.split(' ').filter(|w| !w.is_empty()).collect();
+    if words.is_empty() {
+        return BTreeSet::new();
+    }
+    if words.len() <= SHINGLE_WORDS {
+        return BTreeSet::from([words.join(" ")]);
+    }
+    words.windows(SHINGLE_WORDS).map(|w| w.join(" ")).collect()
+}
+
+/// Jaccard similarity of two shingle sets: shared over combined, in
+/// `[0, 1]`; zero when both are empty, because two statements that say
+/// nothing are not copies of each other.
+pub fn shingle_similarity(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
+    let shared = a.intersection(b).count();
+    let combined = a.len() + b.len() - shared;
+    if combined == 0 {
+        0.0
+    } else {
+        shared as f64 / combined as f64
+    }
 }
 
 impl EvidenceFabric {

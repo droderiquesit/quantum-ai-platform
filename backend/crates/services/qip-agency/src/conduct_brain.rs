@@ -8,7 +8,8 @@
 //! 1. Factual support — claims backed by well-formed evidence citations
 //! 2. Provenance — every cited source is an authorized one
 //! 3. Identity — the sender is an authorized identity
-//! 4. Required disclosures — each required kind present, with text
+//! 4. Required disclosures — each required kind present, with text; a
+//!    policy requiring no kind is refused at construction (R12-AGENCY-1059)
 //! 5. Audience/channel permissions — the channel is configured *and* the
 //!    audience is one that channel may address
 //! 6. Jurisdiction — a permitted jurisdiction
@@ -472,8 +473,9 @@ pub struct ConductGate {
 impl ConductGate {
     /// Create a new conduct gate with the given policies.
     ///
-    /// Refuses no identities, no jurisdictions, a conduct rule outside the
-    /// vocabulary, and a rule set missing any of [`MANDATORY_RULES`].
+    /// Refuses no identities, no jurisdictions, no required disclosure
+    /// kind, a conduct rule outside the vocabulary, and a rule set missing
+    /// any of [`MANDATORY_RULES`].
     pub fn new(
         authorized_sources: Vec<String>,
         authorized_identities: Vec<String>,
@@ -487,6 +489,21 @@ impl ConductGate {
         }
         if permitted_jurisdictions.is_empty() {
             return Err(Error::invalid("permitted_jurisdictions must not be empty"));
+        }
+        // R12-AGENCY-1059 / 1066: a policy requiring no disclosure is a gate
+        // whose fourth check passes every draft, and undisclosed promotion is
+        // exactly a draft with no disclosure. Like identities and
+        // jurisdictions, an empty list is refused rather than read as "none
+        // required": a deployment that truly requires none says which kind
+        // it requires and why in the text the draft carries.
+        if required_disclosures
+            .iter()
+            .all(|kind| kind.trim().is_empty())
+        {
+            return Err(Error::invalid(
+                "required_disclosures must name at least one disclosure kind; a gate that \
+                 requires no disclosure cannot refuse an undisclosed promotion",
+            ));
         }
         let parsed = conduct_rules
             .iter()
@@ -849,7 +866,7 @@ mod tests {
             ConductGate::new(
                 vec![],
                 vec!["a".to_string()],
-                vec![],
+                vec!["conflict_of_interest".to_string()],
                 BTreeMap::new(),
                 vec!["US".to_string()],
                 rules,
@@ -926,6 +943,30 @@ mod tests {
             rules(),
         );
         assert!(result.is_err());
+    }
+
+    /// R12-AGENCY-1059: the disclosure check can be configured inert by an
+    /// empty list, and then undisclosed promotion passes it. Refused at
+    /// construction like the other two empty lists.
+    #[test]
+    fn gate_new_rejects_empty_or_blank_required_disclosures() {
+        let build = |required: Vec<String>| {
+            ConductGate::new(
+                vec![],
+                vec!["analyst".to_string()],
+                required,
+                BTreeMap::new(),
+                vec!["US".to_string()],
+                rules(),
+            )
+        };
+        assert!(
+            build(vec!["conflict_of_interest".to_string()]).is_ok(),
+            "premise: one named kind builds"
+        );
+        let err = build(vec![]).unwrap_err();
+        assert!(err.message().contains("required_disclosures"), "{err}");
+        assert!(build(vec!["   ".to_string()]).is_err());
     }
 
     #[test]

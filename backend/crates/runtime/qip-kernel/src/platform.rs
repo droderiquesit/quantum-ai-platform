@@ -187,6 +187,7 @@ use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
 use qip_simulation_engine::agents::CounterpartyAgent;
+use qip_simulation_engine::conditions::{ConditionSchedule, ConditionWindow, MarketCondition};
 use qip_simulation_engine::costs::CostModel;
 use qip_simulation_engine::execution::SimOrder;
 use qip_simulation_engine::market::{
@@ -207,7 +208,7 @@ use qip_twin::asof::TwinMarket;
 use qip_twin::capture::{Action, Decision, OutcomeCapture, RealisedOutcome};
 use qip_twin::counterfactual::{
     ActualTrade, AlternativeMenu, Counterfactual, CounterfactualEngine, CounterfactualSet,
-    EstimationMethod,
+    EstimationMethod, VenueOption,
 };
 use qip_twin::value::Simulated;
 use qip_world_model::WorldModel;
@@ -516,6 +517,13 @@ pub struct Platform {
     /// them — rather than against a market rebuilt from the float series,
     /// which has no timestamps and would be a fabricated tape.
     bar_history: BTreeMap<String, Vec<Bar>>,
+    /// The publication delay each source has shown (R12-TICK-2087): how long
+    /// after a trade or tick was true at the venue it became knowable here,
+    /// by the source's own name, bounded to [`PUBLICATION_DELAY_SOURCES`].
+    /// Read by [`Self::calibrated_feed_delay`], which the SIMULATE stage
+    /// runs its probe behind, so the simulator sees the feed as late as the
+    /// real one has been rather than as current.
+    publication_delays: BTreeMap<String, PublicationDelay>,
     /// Orders a control refused and the twin has not yet priced, oldest
     /// first, bounded by [`DECLINED_HISTORY`].
     declined: Vec<DeclinedPath>,
@@ -874,10 +882,24 @@ pub struct Platform {
     /// which fills exist.
     desk_ledger: DeskLedgerFeed,
     /// The desk's non-fill ledger operations not yet acknowledged by the
-    /// fabric (ADR 0123): today the treasury funding of its book. Rebuilt at
-    /// every start from the log and re-sent; the ledger books each once by
-    /// operation id, so a resend is a counted duplicate.
+    /// fabric (ADR 0123): the treasury funding of its book, and every
+    /// capital grant's funding and recall. Rebuilt at every start from the
+    /// log and re-sent; the ledger books each once by operation id, so a
+    /// resend is a counted duplicate.
     desk_operations: Vec<qip_contracts::ledger_operation::LedgerOperation>,
+    /// Every capital grant's funding the log holds and no recall has yet
+    /// answered, keyed by the grant's id — the book's deployable capital at
+    /// the ledger, as this process believes it. A funding leaves the map at
+    /// the instant its recall is in the log and not before, so a recall the
+    /// journal refused is attempted again rather than lost, and a restart
+    /// rebuilds the same map from the same records
+    /// ([`Self::requeue_capital_grant_operations`]).
+    capital_grant_fundings: BTreeMap<String, qip_contracts::ledger_operation::LedgerOperation>,
+    /// How many capital-grant operations — fundings and recalls — this log
+    /// holds on the desk's chain: the next one's `sequence` is one more,
+    /// so the chain's counter is monotonic across both kinds and never
+    /// zero, which the treasury funding carries.
+    capital_grant_operations: u64,
     /// Fills declined for want of a ledger record, bounded like the declined
     /// queue and cleared by nobody: the list is the evidence a person works
     /// from.
@@ -2450,6 +2472,42 @@ impl ChainAbsorption {
         )
     }
 }
+
+/// The publication delay one source has shown (R12-TICK-2087).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PublicationDelay {
+    observations: u64,
+    total_nanos: i64,
+    max: Duration,
+}
+
+impl PublicationDelay {
+    /// How many records the estimate rests on.
+    pub const fn observations(&self) -> u64 {
+        self.observations
+    }
+
+    /// The mean delay between a record being true at the venue and being
+    /// knowable here. Zero only when nothing was observed.
+    pub fn mean(&self) -> Duration {
+        if self.observations == 0 {
+            return Duration::ZERO;
+        }
+        // Integer division on nanoseconds: the mean is a statistic, not money.
+        Duration::from_nanos(self.total_nanos / self.observations.cast_signed())
+    }
+
+    /// The longest delay seen.
+    pub const fn max(&self) -> Duration {
+        self.max
+    }
+}
+
+/// How many sources the publication-delay table calibrates. A feed naming a
+/// new venue on every record would otherwise grow it without bound; a source
+/// past the cap is left uncalibrated, which reads as "unknown" rather than
+/// as "current".
+const PUBLICATION_DELAY_SOURCES: usize = 64;
 
 /// What assessing a batch of candidate sources produced.
 #[derive(Clone, Debug, PartialEq)]
@@ -4042,6 +4100,160 @@ pub struct DeskTreasuryFunded {
 /// The producer of [`DeskTreasuryFunded`].
 const DESK_TREASURY_ORIGIN: &str = "kernel/desk-treasury";
 
+/// The journalled record that the central treasury funded the book a
+/// capital grant names (ADR 0123): the whole
+/// [`qip_contracts::ledger_operation::LedgerOperation`] the ledger books,
+/// written in [`Platform::issue_capital`] the moment the plane issued the
+/// envelope and before the operation is queued for the shipper.
+///
+/// The operation itself is journalled, not the facts it was built from,
+/// because a restart cannot rebuild it: the plane's envelope map is
+/// in-process state (`central/plane.rs`, `envelopes`) and is empty after a
+/// restart, and the ledger deduplicates by digest — a funding rebuilt from
+/// the grant entry at the restart's clock would be a second digest under the
+/// same id, which the ledger refuses as a conflict. Replaying the record as
+/// written re-sends the bytes the first process sent.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapitalGrantFunded {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+/// The producer of [`CapitalGrantFunded`]. Distinct from
+/// [`CAPITAL_GRANT_ORIGIN`], whose every record decodes as a
+/// [`CapitalGrantEntry`] and whose readers would otherwise meet a body they
+/// never wrote.
+const CAPITAL_GRANT_FUNDING_ORIGIN: &str = "kernel/capital-grant-funding";
+
+/// The region a capital grant's funding record carries when the centre has
+/// never heard from the cell the grant was sized at, and so holds no region
+/// for it (`CentralPlane::last_heard`). A literal rather than a blank the
+/// contract would refuse, and rather than a region guessed from the cell's
+/// name: the ledger's postings read the cell and the strategy, not the
+/// region, so the funding is booked and the record says what the centre did
+/// not know. The same literal `ingest_cell_report` charts an unnamed venue
+/// under.
+const UNKNOWN_REGION: &str = "unknown";
+
+/// The mandate a capital grant's funding is made under: the desk's own, the
+/// ceiling [`qip_capital::ledger::MandateRegistry`] holds under
+/// [`DESK_USER`] and gives no other name. A literal for the same reason
+/// [`DESK_USER`] is one.
+const DESK_MANDATE: &str = "desk";
+
+impl EventBody for CapitalGrantFunded {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The journalled record that the central treasury recalled the deployable
+/// capital of a grant it had funded (ADR 0123, Amendment 1): the whole
+/// `CapitalGrantRecalled` [`qip_contracts::ledger_operation::LedgerOperation`]
+/// the ledger books, written by [`Platform::recall_capital_grant`] at the
+/// seam where the recall became a fact — the cycle that observed the
+/// grant's window had ended, the report whose concentration the plane
+/// answered with a recall order, or the renewal that funded the same book
+/// under a later grant — and before the operation is queued for the
+/// shipper.
+///
+/// Journalled whole and replayed as written, for the reason
+/// [`CapitalGrantFunded`] is: a restart holds no envelope and no clock that
+/// could reproduce the instant the recall was observed at, and a recall
+/// rebuilt at the restart's clock would be a second digest under the same
+/// id, which the ledger refuses. It is also what makes the recall happen
+/// once: the funding it recalls is held outstanding only until this record
+/// is in the log, and a restart that reads the log rebuilds the same
+/// outstanding set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapitalGrantRecalled {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+/// The producer of [`CapitalGrantRecalled`]. Its own origin, distinct from
+/// [`CAPITAL_GRANT_FUNDING_ORIGIN`], so a reader of either stream of records
+/// decodes one body shape and never meets the other's.
+const CAPITAL_GRANT_RECALL_ORIGIN: &str = "kernel/capital-grant-recall";
+
+impl EventBody for CapitalGrantRecalled {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The §24.9/§27 [`qip_contracts::capital::CapitalGrant`] an issued
+/// [`qip_contracts::CapitalEnvelope`] states, for the funding record
+/// [`Platform::fund_capital_grant`] writes; that method's documentation says
+/// which fields the envelope states and how the three it does not are
+/// written. Refused, never adjusted, wherever the envelope's figures do not
+/// make a grant — a loss limit that is not a whole number of basis points of
+/// the capital, or above it — because a funding record that disagrees with
+/// the envelope it cites is worse than none.
+fn capital_grant_of(
+    envelope: &qip_contracts::CapitalEnvelope,
+    venue: &VenueId,
+    region: String,
+) -> Result<qip_contracts::capital::CapitalGrant> {
+    use qip_contracts::capital::{CapitalGrantFields, CollateralClass, GrantMode};
+    use qip_contracts::validated::{Contract, MAX_BP};
+    let capital = envelope.gross_limit();
+    // The loss limit as a share of the capital, in basis points — exact or
+    // refused. `Decimal::ONE.raw()` is one unit at the decimal's scale.
+    let one = Decimal::ONE.raw();
+    let scaled = envelope
+        .loss_limit()
+        .checked_mul(Decimal::from_int(i64::from(MAX_BP)))
+        .and_then(|scaled| scaled.checked_div(capital))
+        .ok_or_else(|| {
+            Error::numeric(format!(
+                "the loss limit {} over the capital {capital} of {}'s grant does not compute in \
+                 basis points",
+                envelope.loss_limit(),
+                envelope.strategy()
+            ))
+        })?;
+    if scaled.raw() % one != 0 {
+        return Err(Error::invalid(format!(
+            "the loss limit {} is not a whole number of basis points of the capital {capital} \
+             of {}'s grant; the funding record cannot state the drawdown stop exactly",
+            envelope.loss_limit(),
+            envelope.strategy()
+        )));
+    }
+    let max_drawdown_bp = u32::try_from(scaled.raw() / one).map_err(|_| {
+        Error::invalid(format!(
+            "the loss limit {} of {}'s grant is not within its capital {capital}",
+            envelope.loss_limit(),
+            envelope.strategy()
+        ))
+    })?;
+    let max_leverage = envelope
+        .exposure()
+        .map(|exposure| exposure.max_leverage)
+        .unwrap_or(Decimal::ONE);
+    qip_contracts::validated::Validated::new(CapitalGrantFields {
+        schema_version: CapitalGrantFields::SCHEMA_VERSION,
+        grant_id: format!(
+            "{}@{}@{}",
+            envelope.strategy().as_str(),
+            envelope.cell(),
+            envelope.granted_at().as_secs()
+        ),
+        mode: GrantMode::Paper,
+        owner: DESK_USER.to_string(),
+        mandate: DESK_MANDATE.to_string(),
+        strategy: envelope.strategy().clone(),
+        region,
+        venue: venue.clone(),
+        amount: capital,
+        collateral: CollateralClass::Cash,
+        max_leverage,
+        risk_budget: envelope.loss_limit(),
+        max_drawdown_bp,
+        liquidity_reserve: Decimal::ZERO,
+        max_adv_share_bp: MAX_BP,
+        granted_at: envelope.granted_at(),
+        expires_at: envelope.expires_at(),
+    })
+}
+
 /// The treasury that funds every desk's book, as the ledger names it.
 pub const CENTRAL_TREASURY: &str = "central";
 
@@ -4829,11 +5041,8 @@ impl Platform {
         } else {
             Duration::from_mins(5)
         };
-        let counterfactuals = CounterfactualEngine::new(
-            config.seed,
-            AlternativeMenu::standard(delay),
-            delay + CAPITAL_HORIZON,
-        )?;
+        // The menu is widened below, once the desk's broker exists to name
+        // the venue the alternatives must differ from.
 
         let quarter_book = initial_equity
             .checked_div(Decimal::from_int(4))
@@ -4864,6 +5073,41 @@ impl Platform {
             SettlementCalendar::weekday(SettlementConvention::T1)?,
         )?;
         settlement.assign_venue(VenueId::new(broker.name()), CapitalRegion::new(HOME_REGION))?;
+        // R12-CAPITAL-4091: the counterfactual menu names a different venue
+        // and a different hedge structure where the deployment has configured
+        // one, so a scored decision is compared against "somewhere else" and
+        // "hedged differently" and not only against its own size and timing.
+        // `AlternativeMenu::standard` sets both to `None`, and every scored
+        // fill and refusal used to carry neither arm, which read as "no
+        // regret on venue or hedge" when the question had never been asked.
+        // The venue is the first whitelisted arbitrage venue that is not the
+        // desk's own; its proportional taker cost is the whitelist's, the
+        // rest of the model is the desk's, and its quotes are not assumed
+        // firm. The hedge is the first declared policy's instrument and beta
+        // — the structure the hedge review would have proposed.
+        let mut menu = AlternativeMenu::standard(delay);
+        if let Some(policy) = config.hedge_policies.first() {
+            menu = menu.with_hedge(policy.instrument.clone(), policy.beta);
+        }
+        if let Some(arbitrage) = &config.central.arbitrage
+            && let Some((name, venue)) = arbitrage
+                .venues
+                .iter()
+                .find(|(name, _)| name.as_str() != broker.name())
+        {
+            let mut costs = CostModel::liquid_equity();
+            // The whitelist states the cost as a fraction of notional; the
+            // twin's model states it in basis points. Statistics, not money,
+            // crosses here: the fraction becomes an `f64` rate.
+            costs.commission_bps = venue.taker_cost.to_f64() * 10_000.0;
+            menu = menu.with_venue(VenueOption {
+                venue: VenueId::new(name.clone()),
+                costs,
+                firm_quotes: false,
+            });
+        }
+        let counterfactuals =
+            CounterfactualEngine::new(config.seed, menu, delay + CAPITAL_HORIZON)?;
         let pre_positioner = PrePositioningPlanner::new(
             CapitalAllocator::new(
                 AllocationLimits::new(initial_equity, quarter_book, half_book, half_book)?,
@@ -4943,6 +5187,7 @@ impl Platform {
             research: qip_learning_engine::research::ResearchLedger::new(),
             cycle_calibration: None,
             bar_history: BTreeMap::new(),
+            publication_delays: BTreeMap::new(),
             declined: Vec::new(),
             declined_scores: Vec::new(),
             filled: Vec::new(),
@@ -5006,6 +5251,8 @@ impl Platform {
             sensed_unlisted: 0,
             desk_ledger: DeskLedgerFeed::on_chain(&config.desk_chain)?,
             desk_operations: Vec::new(),
+            capital_grant_fundings: BTreeMap::new(),
+            capital_grant_operations: 0,
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
@@ -5165,6 +5412,15 @@ impl Platform {
         // ledger is the authority for (ADR 0123). Journaled once, so every
         // restart re-derives the same operation with the same digest.
         platform.queue_treasury_funding(now)?;
+        // Every capital grant this log funded or recalled, re-queued as
+        // written and in the order written: the plane's envelopes do not
+        // survive a restart but the ledger's debt to the books they funded
+        // does, and the ledger answers a resend with a duplicate rather than
+        // a second funding or a second recall. The same walk rebuilds which
+        // fundings are still outstanding, so a grant that lapsed while the
+        // process was down is recalled on the first cycle that observes it,
+        // and one recalled before the restart is not recalled again.
+        platform.requeue_capital_grant_operations()?;
         // The committed venue registrations, through the same journaled path
         // an operator's runtime approval takes. A record the registry refuses
         // — a source with no declared requirement — stops assembly with the
@@ -6127,6 +6383,26 @@ impl Platform {
             ingestion.halted.is_none(),
             reported_at,
         );
+        // Every grant the plane recalled on this report has its funding
+        // recalled at the ledger (ADR 0123, Amendment 1): the centre has
+        // withdrawn the capital, and the ledger is the authority for where
+        // the capital is. Recorded here, at the seam the recall order was
+        // made, and once per grant — a second report that recalls the same
+        // grant finds no funding outstanding. A journal failure is a
+        // capture problem rather than a refusal of the report: the ingestion
+        // has already happened, the funding stays outstanding and is
+        // attempted again on the next recall order or at the grant's expiry,
+        // which is the backstop the recall model already relies on.
+        for order in &ingestion.recalls {
+            if let Err(error) = self.recall_revoked_capital_grant(order, now) {
+                self.capture_problems.push(format!(
+                    "the recall of {}'s grant at {} was not recorded at the ledger: {}",
+                    order.strategy,
+                    order.cell,
+                    error.message()
+                ));
+            }
+        }
         // Order/fill integrity, one observation per report that carried a
         // fill the settlement could grade: settled, or found to have no sent
         // order behind it. A report with no fills is evidence of nothing
@@ -8161,7 +8437,23 @@ impl Platform {
                     }
                 }
                 self.journal_record(entry.clone(), CAPITAL_GRANT_ORIGIN, now)?;
-                outcome?;
+                let (issued, _) = outcome?;
+                // A renewal: the plane holds one envelope per book, and the
+                // one it just replaced is no longer the grant in force, so
+                // its funding is recalled before the new window is funded
+                // (ADR 0123, Amendment 1). Recall then funding, in that order
+                // in the log, so the book's deployable capital at the ledger
+                // reads as the live grant's at every point and never as the
+                // two summed. A grant whose window had already ended is
+                // recalled as expired, which is what it is.
+                self.recall_superseded_capital_grant(&issued, now)?;
+                // The grant's deployable capital, funded into its book at the
+                // authoritative ledger (ADR 0123). After the entry, so the
+                // log reads decision, envelope, funding in the order the acts
+                // happened; a failure here is returned, not swallowed, because
+                // a grant the ledger never hears of is a book the ledger says
+                // is empty while the cell spends against it.
+                self.fund_capital_grant(&issued, now)?;
                 Ok(entry)
             }
         }
@@ -10012,6 +10304,7 @@ impl Platform {
                     // Use capture_time for known_at to preserve bitemporal distinction:
                     // instant_true (when it happened) vs knowable_at (when we found out).
                     let known_at = trade.capture_time;
+                    self.observe_publication_delay(&trade.venue, trade.at, known_at);
                     self.world.update(|world| {
                         world.features_mut().record(
                             "close",
@@ -10028,6 +10321,7 @@ impl Platform {
                     // Use capture_time for known_at to preserve bitemporal distinction:
                     // instant_true (when it happened) vs knowable_at (when we found out).
                     let known_at = tick.capture_time;
+                    self.observe_publication_delay(&tick.venue, tick.at, known_at);
                     self.world.update(|world| {
                         world.features_mut().record(
                             "close",
@@ -12224,7 +12518,14 @@ impl Platform {
         self.telemetry
             .metrics
             .increment(names::OPPORTUNITIES_DETECTED, labels([]), count as u64);
-        self.queue.extend(found);
+        // The executable scope, before the queue (R12-GOV-6117): an
+        // opportunity on an instrument the universe does not hold is
+        // journaled as shadowed and never queued, so nothing downstream can
+        // make an intent of it. See `crate::executable_scope`.
+        let routing = self.route_detected(found, now);
+        let shadowed = routing.shadowed;
+        let scope_problems = routing.problems;
+        self.queue.extend(routing.executable);
         // The queue is worked newest-highest-value first, and anything that
         // expired while waiting is dropped rather than silently worked late.
         let (live, lapsed): (Vec<Opportunity>, Vec<Opportunity>) = std::mem::take(&mut self.queue)
@@ -12237,10 +12538,14 @@ impl Platform {
             Stage::Discover,
             count,
             format!(
-                "{count} opportunity(ies) found, {} queued, {suppressed} suppressed this run",
+                "{count} opportunity(ies) found, {} queued, {shadowed} shadowed as outside the \
+                 executable scope, {suppressed} suppressed this run",
                 self.queue.len()
             ),
         );
+        for problem in scope_problems {
+            outcome = outcome.with_problem(problem);
+        }
         // Named individually, not counted. The refusal names every leaking
         // input because a feed fixed for one event and left broken for three
         // reads clean afterwards, and the event id is the only part of this an
@@ -14674,6 +14979,12 @@ struct CapacityProbeResult {
     subject: String,
     quantity: Decimal,
     adversity_bps: f64,
+    /// The calibrated feed delay the probe ran behind (R12-TICK-2087).
+    feed_delay: Duration,
+    /// The conditions the simulator reports it applied to the probe's
+    /// arrival, by name — read off the run rather than off the schedule, so
+    /// the detail states what the fill saw and not what was requested.
+    conditions: Vec<String>,
 }
 
 /// Submits exactly one order, at the first step, and nothing after.
@@ -14733,8 +15044,13 @@ impl Platform {
         // cycle, not a failed one.
         if let Some(probe) = self.capacity_probe(now) {
             detail.push_str(&format!(
-                "; capacity probe: {} of {} against agent flow cost {:.1}bps",
-                probe.quantity, probe.subject, probe.adversity_bps
+                "; capacity probe: {} of {} against agent flow cost {:.1}bps behind a {:.0}s \
+                 calibrated feed delay under [{}]",
+                probe.quantity,
+                probe.subject,
+                probe.adversity_bps,
+                probe.feed_delay.as_secs_f64(),
+                probe.conditions.join(", ")
             ));
             self.telemetry.metrics.gauge(
                 names::SIMULATION_CAPACITY_ADVERSITY_BPS,
@@ -14872,7 +15188,11 @@ impl Platform {
         spec.step_drift = drift;
         let quantity = spec.level_size;
         let market = SyntheticMarket::single(now, Duration::from_mins(1), 3, "XSIM", spec);
-        let run = MarketSimulator::synthetic(market, self.config.seed)
+        // The probe runs behind the feed delay the real sources have shown,
+        // because a capacity figure read off a feed assumed current is a
+        // figure for a venue this platform does not actually see.
+        let feed_delay = self.calibrated_feed_delay();
+        let mut run = MarketSimulator::synthetic(market, self.config.seed)
             .ok()?
             .with_agents(vec![
                 CounterpartyAgent::passive("ambient-passive", quantity, 0.3).ok()?,
@@ -14886,6 +15206,13 @@ impl Platform {
                 .ok()?,
             ])
             .ok()?;
+        if feed_delay > Duration::ZERO {
+            run = run
+                .with_conditions(ConditionSchedule::new().with(ConditionWindow::always(
+                    MarketCondition::DelayedFeed { delay: feed_delay },
+                )))
+                .ok()?;
+        }
         let mut strategy = CapacityProbeStrategy {
             object_id: subject.clone(),
             venue: "XSIM".to_string(),
@@ -14893,11 +15220,13 @@ impl Platform {
             submitted: false,
         };
         let outcome = run.run(&mut strategy).ok()?;
-        let adversity_bps = outcome.reports.first()?.adversity_bps();
+        let report = outcome.reports.first()?;
         Some(CapacityProbeResult {
             subject: subject.clone(),
             quantity,
-            adversity_bps,
+            adversity_bps: report.adversity_bps(),
+            feed_delay,
+            conditions: report.conditions.clone(),
         })
     }
 
@@ -15575,6 +15904,24 @@ impl Platform {
         let mut outcome = outcome;
         if let Some(reviewed) = reviewed {
             let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // ADR 0123, Amendment 1: a capital grant whose window has ended is
+        // recalled at the ledger on the cycle that observes it, in the same
+        // stage and for the same reason as the darkness review above — the
+        // expiry is a fact the passage of time makes, no report carries it,
+        // and this stage is the one whose consequence it has: from here the
+        // book's deployable capital at the ledger is the live grants' and
+        // nothing more.
+        let (recalled, problems) = self.recall_lapsed_capital_grants(now);
+        if recalled > 0 {
+            let detail = format!(
+                "{}; {recalled} capital grant(s) recalled at the ledger at expiry",
+                outcome.detail
+            );
             outcome = StageOutcome { detail, ..outcome };
         }
         for problem in problems {
@@ -18611,11 +18958,31 @@ impl Platform {
         }
         let mut catalogued = Vec::new();
         let mut catalogue_problems = Vec::new();
+        // The owner is validated once, as a `NamedOperator`, before any entry
+        // is built (R12-DATA-2020). The configured default is the process's
+        // own name, and a catalogue entry owned by a process names nobody who
+        // can be asked about the source later; such an owner is refused here,
+        // and every registration this pass produced is recorded as a
+        // catalogue problem naming the fix, rather than catalogued under a
+        // placeholder or quietly dropped. The finder's registry still holds
+        // the registration, so the pass is not lost — only the mesh entry is.
+        let operator = qip_data_finder::operator::NamedOperator::new(&self.config.owner);
         for decision in &decisions {
             if !decision.is_registered() {
                 continue;
             }
-            match decision.catalogue_entry(&self.config.owner) {
+            let operator = match &operator {
+                Ok(operator) => operator,
+                Err(error) => {
+                    catalogue_problems.push(format!(
+                        "source.{}: not catalogued: {}",
+                        decision.source_id(),
+                        error.message()
+                    ));
+                    continue;
+                }
+            };
+            match decision.catalogue_entry_attributed(operator) {
                 Ok(registration) => {
                     let dataset = registration.dataset.clone();
                     match self.catalog.register(registration) {
@@ -19018,6 +19385,315 @@ impl Platform {
         Ok(())
     }
 
+    /// Fund the book a freshly issued capital grant names, at the ledger
+    /// (ADR 0123, R12-LEDGER-5016): the grant's deployable capital, Dr the
+    /// grant's `trading:<cell>/<strategy>` account, Cr the central treasury,
+    /// as one `CapitalGrantFunded` operation journalled under
+    /// [`CAPITAL_GRANT_FUNDING_ORIGIN`] and then queued on the desk's
+    /// operation path, so `qip-desk-ship` carries it with the treasury
+    /// funding and the chain records.
+    ///
+    /// The operation's id is `<chain>:capital-grant-funded:<grant id>`, the
+    /// grant id being `<strategy>@<cell>@<granted-at seconds>` — the three
+    /// facts the envelope's signed payload keys a grant on — so a restart
+    /// that replays the journalled record re-sends the same id and the same
+    /// digest, and the ledger answers a duplicate; a renewal of the same book
+    /// an hour later is a different instant and so a second funding. Its
+    /// `sequence` is one more than the fundings this log already holds and
+    /// never zero, which the treasury funding carries on the same origin.
+    ///
+    /// # What is observed and what is stated
+    ///
+    /// The contract this funds a book through is the §24.9/§27
+    /// [`qip_contracts::capital::CapitalGrant`]; the plane issues a
+    /// [`qip_contracts::CapitalEnvelope`]. Every field of the grant is taken
+    /// from the envelope and its allocation where the envelope states it —
+    /// strategy, cell, venue, the capital (the gross limit, which is also
+    /// the equity its exposure bounds are backed by), the leverage bound,
+    /// the loss limit as the risk budget, and the window. Three it does not
+    /// state are written as what the envelope says about them rather than
+    /// guessed: the liquidity reserve is zero (every unit of the gross limit
+    /// may be committed, so nothing is held back and the deployable capital
+    /// is the whole grant), the drawdown stop is the loss limit over the
+    /// capital in basis points (the one loss at which the cell stops this
+    /// strategy on its own authority), and the ADV share is the whole of it
+    /// (the envelope bounds participation in *visible depth* per order and
+    /// states no bound on average daily volume; a bound it does not state is
+    /// not invented here). The owner and mandate are the desk's, the one
+    /// user and mandate the per-user ledger holds; the collateral is cash,
+    /// the unit the book is kept in. The region is the one the cell last
+    /// reported, or [`UNKNOWN_REGION`].
+    fn fund_capital_grant(
+        &mut self,
+        issued: &crate::central::plane::IssuedCapital,
+        now: Timestamp,
+    ) -> Result<()> {
+        use qip_contracts::ledger_operation::{LedgerOperationFields, OperationKind};
+        let envelope = issued.envelope();
+        let cell = issued.allocation().cell.clone();
+        let region = self
+            .central
+            .last_heard()
+            .get(&cell)
+            .map(|heard| heard.region.trim())
+            .filter(|region| !region.is_empty())
+            .unwrap_or(UNKNOWN_REGION)
+            .to_string();
+        let grant = capital_grant_of(envelope, &issued.allocation().venue, region)?;
+        let chain = self.desk_ledger.chain().to_string();
+        let sequence = self.capital_grant_operations + 1;
+        let grant_id = grant.grant_id.clone();
+        let operation = qip_contracts::validated::Validated::new(LedgerOperationFields {
+            schema_version: 1,
+            operation_id: format!("{chain}:capital-grant-funded:{grant_id}"),
+            origin: chain,
+            sequence,
+            recorded_at: now,
+            settlement: qip_contracts::ledger::Settlement::Simulated,
+            kind: OperationKind::CapitalGrantFunded {
+                treasury: CENTRAL_TREASURY.to_string(),
+                cell,
+                unit: crate::desk_ledger::DESK_QUOTE_UNIT.to_string(),
+                grant,
+            },
+        })?;
+        self.journal_record(
+            CapitalGrantFunded {
+                operation: operation.clone(),
+            },
+            CAPITAL_GRANT_FUNDING_ORIGIN,
+            now,
+        )?;
+        self.capital_grant_operations += 1;
+        self.capital_grant_fundings
+            .insert(grant_id, operation.clone());
+        self.desk_operations.push(operation);
+        Ok(())
+    }
+
+    /// Recall, at the ledger, the deployable capital of a grant this log
+    /// funded and has not yet recalled (ADR 0123, Amendment 1): one
+    /// `CapitalGrantRecalled` operation — the funding's accounts swapped, for
+    /// the funding's own grant and so the funding's own amount — journalled
+    /// under [`CAPITAL_GRANT_RECALL_ORIGIN`] and queued on the desk's
+    /// operation path behind everything queued before it.
+    ///
+    /// Its id is `<chain>:capital-grant-recalled:<grant id>`: the grant's
+    /// identity and nothing else, so one grant has one recall whatever
+    /// prompted it, and a restart that replays the record re-sends the id and
+    /// the digest the first send carried. The cause is `inside` while the
+    /// grant is live at `now` and `Expired` otherwise: a recall order or a
+    /// renewal that reaches a grant whose window has already ended is
+    /// recording an expiry, and the contract refuses the other story.
+    ///
+    /// The grant is taken from the funding record, not from the plane's
+    /// envelope, because the ledger must be returned exactly what it was
+    /// given: the funding stated the grant once, and a recall that restated
+    /// it from an envelope could differ by a region learned since.
+    ///
+    /// Returns whether a recall was recorded: `false` where no funding for
+    /// the grant is outstanding, which is the once-only guarantee — a second
+    /// expiry cycle, a second recall order and a restart all find the map
+    /// empty of a grant whose recall is in the log.
+    fn recall_capital_grant(
+        &mut self,
+        grant_id: &str,
+        inside: qip_contracts::ledger_operation::CapitalRecallCause,
+        now: Timestamp,
+    ) -> Result<bool> {
+        use qip_contracts::ledger_operation::{
+            CapitalRecallCause, LedgerOperationFields, OperationKind,
+        };
+        let Some(funding) = self.capital_grant_fundings.get(grant_id) else {
+            return Ok(false);
+        };
+        let OperationKind::CapitalGrantFunded {
+            treasury,
+            cell,
+            unit,
+            grant,
+        } = &funding.kind
+        else {
+            return Err(Error::guard(format!(
+                "the outstanding funding of grant {grant_id} is not a CapitalGrantFunded \
+                 operation: {:?}",
+                funding.kind
+            )));
+        };
+        let cause = if grant.is_live(now) {
+            inside
+        } else {
+            CapitalRecallCause::Expired
+        };
+        let chain = self.desk_ledger.chain().to_string();
+        let operation = qip_contracts::validated::Validated::new(LedgerOperationFields {
+            schema_version: 1,
+            operation_id: format!("{chain}:capital-grant-recalled:{grant_id}"),
+            origin: chain,
+            sequence: self.capital_grant_operations + 1,
+            recorded_at: now,
+            settlement: qip_contracts::ledger::Settlement::Simulated,
+            kind: OperationKind::CapitalGrantRecalled {
+                treasury: treasury.clone(),
+                cell: cell.clone(),
+                unit: unit.clone(),
+                grant: grant.clone(),
+                cause,
+            },
+        })?;
+        self.journal_record(
+            CapitalGrantRecalled {
+                operation: operation.clone(),
+            },
+            CAPITAL_GRANT_RECALL_ORIGIN,
+            now,
+        )?;
+        // Only now, with the record in the log: a funding dropped before
+        // its recall was durable would be a recall that happened once in
+        // this process and never in the record.
+        self.capital_grant_operations += 1;
+        self.capital_grant_fundings.remove(grant_id);
+        self.desk_operations.push(operation);
+        Ok(true)
+    }
+
+    /// The outstanding funding of the grant in force for `strategy`'s book
+    /// at `cell`, if the log holds one, by the identity the funding carries.
+    fn outstanding_capital_grant_for(&self, cell: &str, strategy: &StrategyId) -> Option<String> {
+        use qip_contracts::ledger_operation::OperationKind;
+        self.capital_grant_fundings
+            .iter()
+            .find(|(_, funding)| {
+                matches!(
+                    &funding.kind,
+                    OperationKind::CapitalGrantFunded { cell: funded_cell, grant, .. }
+                        if funded_cell == cell && &grant.strategy == strategy
+                )
+            })
+            .map(|(grant_id, _)| grant_id.clone())
+    }
+
+    /// Recall every outstanding funding whose grant's window has ended at
+    /// `now`: the expiry seam of ADR 0123, Amendment 1. Returns how many
+    /// were recalled and the problems of those that were not, for the stage
+    /// record; a problem leaves its funding outstanding, so the next cycle
+    /// tries again.
+    fn recall_lapsed_capital_grants(&mut self, now: Timestamp) -> (usize, Vec<String>) {
+        use qip_contracts::ledger_operation::{CapitalRecallCause, OperationKind};
+        let lapsed: Vec<String> = self
+            .capital_grant_fundings
+            .iter()
+            .filter(|(_, funding)| {
+                matches!(
+                    &funding.kind,
+                    OperationKind::CapitalGrantFunded { grant, .. } if now >= grant.expires_at
+                )
+            })
+            .map(|(grant_id, _)| grant_id.clone())
+            .collect();
+        let mut recalled = 0;
+        let mut problems = Vec::new();
+        for grant_id in lapsed {
+            match self.recall_capital_grant(&grant_id, CapitalRecallCause::Expired, now) {
+                Ok(true) => recalled += 1,
+                Ok(false) => {}
+                Err(error) => problems.push(format!(
+                    "the expired grant {grant_id} was not recalled at the ledger: {}",
+                    error.message()
+                )),
+            }
+        }
+        (recalled, problems)
+    }
+
+    /// Recall the funding of the grant a plane's recall order withdraws: the
+    /// revocation seam of ADR 0123, Amendment 1. Keyed on the order's book,
+    /// because the plane holds one envelope per book and the order names
+    /// that one; a book with no outstanding funding is nothing to recall.
+    fn recall_revoked_capital_grant(
+        &mut self,
+        order: &qip_capital::recall::RecallOrder,
+        now: Timestamp,
+    ) -> Result<bool> {
+        use qip_contracts::ledger_operation::CapitalRecallCause;
+        match self.outstanding_capital_grant_for(&order.cell, &order.strategy) {
+            Some(grant_id) => {
+                self.recall_capital_grant(&grant_id, CapitalRecallCause::Revoked, now)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Recall the funding of the grant a freshly issued one replaces on the
+    /// same book: the renewal seam of ADR 0123, Amendment 1. The replaced
+    /// grant is the outstanding funding for the issued envelope's cell and
+    /// strategy with a different identity; a funding under the issued
+    /// grant's own identity is not a renewal and is left for
+    /// [`Self::fund_capital_grant`] to re-state.
+    fn recall_superseded_capital_grant(
+        &mut self,
+        issued: &crate::central::plane::IssuedCapital,
+        now: Timestamp,
+    ) -> Result<bool> {
+        use qip_contracts::ledger_operation::CapitalRecallCause;
+        let envelope = issued.envelope();
+        let issued_id = format!(
+            "{}@{}@{}",
+            envelope.strategy().as_str(),
+            envelope.cell(),
+            envelope.granted_at().as_secs()
+        );
+        match self.outstanding_capital_grant_for(&issued.allocation().cell, envelope.strategy()) {
+            Some(grant_id) if grant_id != issued_id => {
+                self.recall_capital_grant(&grant_id, CapitalRecallCause::Superseded, now)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Re-queue every capital-grant funding and recall the log holds, as
+    /// written and in the order written, at assembly, and rebuild from the
+    /// same walk which fundings are still outstanding. See
+    /// [`CapitalGrantFunded`] and [`CapitalGrantRecalled`] for why the
+    /// records and not the grants are what is replayed.
+    fn requeue_capital_grant_operations(&mut self) -> Result<()> {
+        use qip_contracts::ledger_operation::OperationKind;
+        let mut operations = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.topic != CapitalGrantFunded::TOPIC {
+                continue;
+            }
+            let producer = record.event.lineage.producer.as_str();
+            if producer == CAPITAL_GRANT_FUNDING_ORIGIN {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                operations.push(frame.decode::<CapitalGrantFunded>()?.body.operation);
+            } else if producer == CAPITAL_GRANT_RECALL_ORIGIN {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                operations.push(frame.decode::<CapitalGrantRecalled>()?.body.operation);
+            }
+        }
+        for operation in &operations {
+            match &operation.kind {
+                OperationKind::CapitalGrantFunded { grant, .. } => {
+                    self.capital_grant_fundings
+                        .insert(grant.grant_id.clone(), operation.clone());
+                }
+                OperationKind::CapitalGrantRecalled { grant, .. } => {
+                    self.capital_grant_fundings.remove(&grant.grant_id);
+                }
+                other => {
+                    return Err(Error::guard(format!(
+                        "a capital-grant record in the log holds a {other:?} operation, which \
+                         neither origin writes"
+                    )));
+                }
+            }
+        }
+        self.capital_grant_operations = operations.len() as u64;
+        self.desk_operations.extend(operations);
+        Ok(())
+    }
+
     /// Note a problem with shipping the desk's records, to be surfaced beside
     /// every other capture problem in the next cycle's record. The shipper is
     /// outside the kernel and cannot reach the capture list itself.
@@ -19077,9 +19753,82 @@ impl Platform {
         }
     }
 
+    /// Fold one record's publication delay into its source's estimate
+    /// (R12-TICK-2087). A record that arrived before it happened is refused
+    /// at ingestion (`check_capture_order`), so a negative delay here is a
+    /// caller bug and is not folded in rather than clamped to zero.
+    fn observe_publication_delay(
+        &mut self,
+        source: &str,
+        event_time: Timestamp,
+        received_at: Timestamp,
+    ) {
+        let delay = received_at.since(event_time);
+        if delay < Duration::ZERO {
+            return;
+        }
+        if !self.publication_delays.contains_key(source)
+            && self.publication_delays.len() >= PUBLICATION_DELAY_SOURCES
+        {
+            return;
+        }
+        let entry = self
+            .publication_delays
+            .entry(source.to_string())
+            .or_default();
+        entry.observations = entry.observations.saturating_add(1);
+        entry.total_nanos = entry.total_nanos.saturating_add(delay.as_nanos());
+        if delay > entry.max {
+            entry.max = delay;
+        }
+    }
+
+    /// The publication delay each source has shown, by source name.
+    pub fn publication_delays(&self) -> &BTreeMap<String, PublicationDelay> {
+        &self.publication_delays
+    }
+
+    /// The feed delay a simulation runs behind: the slowest source's mean.
+    /// The slowest rather than the average because a decision is only as
+    /// current as the latest-arriving feed it read, and zero when nothing has
+    /// been observed — an uncalibrated delay is reported as none rather than
+    /// invented.
+    pub fn calibrated_feed_delay(&self) -> Duration {
+        self.publication_delays
+            .values()
+            .map(PublicationDelay::mean)
+            .max()
+            .unwrap_or(Duration::ZERO)
+    }
+
     /// The engine that prices the alternatives to a decision.
     pub fn counterfactuals(&self) -> &CounterfactualEngine {
         &self.counterfactuals
+    }
+
+    /// The bars a counterfactual market over `object_id` is built from: the
+    /// instrument's own history, and the menu's hedge instrument's history
+    /// where the menu names one and this platform holds it.
+    ///
+    /// The twin refuses to plan a hedged alternative it cannot size, so a
+    /// market built from the traded instrument alone would make every set
+    /// fail the moment a hedge policy was declared — and the declared hedge
+    /// is exactly the alternative R12-CAPITAL-4091 asks the twin to price.
+    /// A hedge instrument with no held bars still reaches the twin and is
+    /// refused there by name rather than silently priced unhedged.
+    fn counterfactual_bars(&self, object_id: &ObjectId) -> Result<Vec<Bar>> {
+        let mut bars = self
+            .bar_history
+            .get(object_id.as_str())
+            .cloned()
+            .ok_or_else(|| Error::not_found(format!("no bars are held for {object_id}")))?;
+        if let Some((hedge, _)) = &self.counterfactuals.menu().hedge
+            && hedge != object_id
+            && let Some(hedge_bars) = self.bar_history.get(hedge.as_str())
+        {
+            bars.extend(hedge_bars.iter().cloned());
+        }
+        Ok(bars)
     }
 
     /// Price every alternative to one order the platform sent, or to one a
@@ -19258,10 +20007,7 @@ impl Platform {
                 )
             };
             let priced = self
-                .bar_history
-                .get(object_id.as_str())
-                .cloned()
-                .ok_or_else(|| Error::not_found(format!("no bars are held for {object_id}")))
+                .counterfactual_bars(&object_id)
                 .and_then(|bars| {
                     TwinMarket::new(
                         bars,
@@ -19416,10 +20162,7 @@ impl Platform {
                 .fill_calibration
                 .cost_model(&CostModel::liquid_equity(), path.venue.as_str());
             let priced = self
-                .bar_history
-                .get(path.object_id.as_str())
-                .cloned()
-                .ok_or_else(|| Error::not_found(format!("no bars are held for {}", path.object_id)))
+                .counterfactual_bars(&path.object_id)
                 .and_then(|bars| TwinMarket::new(bars, cost_model, COUNTERFACTUAL_IMPACT_WINDOW))
                 .and_then(|mut market| self.evaluate_alternatives(&order_id, &mut market));
             // Priced or refused, the path leaves the queue, as a declined

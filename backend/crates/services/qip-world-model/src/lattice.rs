@@ -195,16 +195,120 @@ pub enum Lane {
     Central,
 }
 
+/// What family of model a member is: how it turns the same [`TargetInput`]
+/// into a distribution. Two members that read the same state and answer
+/// differently: their spread is real disagreement.
+///
+/// The first two are generic and serve every row. The other four are the
+/// §9.7 table's named specialists (WORLD-3085..3088), each admitted at the
+/// one row its signal speaks to and refused anywhere else, because an
+/// order-flow model at the quarters row would be scored on a signal that has
+/// decayed long before the forecast resolves and would earn a reputation on
+/// noise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelFamily {
+    /// The level is a martingale: the median is the level now.
+    Martingale,
+    /// The NOW state's rate of change is projected forward.
+    Drift,
+    /// WORLD-3085, seconds-minutes: order-flow imbalance
+    /// ([`crate::order_flow::FlowObservation::imbalance_ratio`]) shifts the
+    /// median by [`FLOW_SHIFT_PER_SD`] of the horizon's standard deviation
+    /// per unit of imbalance and widens the row by the imbalance's share of
+    /// the horizon's variance. No observed flow: the member states the level.
+    OrderFlow,
+    /// WORLD-3086, hours-days: a pending catalyst widens the row by the
+    /// expected absolute reaction squared, direction unknown. No catalyst:
+    /// the member states the level.
+    EventReaction,
+    /// WORLD-3087, weeks-months: the drift the current regime label has
+    /// shown, not the drift of the last few bars; a regime change moves the
+    /// median. No drift for the regime: the NOW drift, as the drift member.
+    RegimePath,
+    /// WORLD-3088, quarters-years: every live long-horizon causal claim
+    /// bearing on the target adds its transmission squared of the row's own
+    /// variance, because the claim passes on a fraction of a move whose
+    /// direction and size over the horizon are unknown. A retired claim adds
+    /// nothing, so retiring one narrows the row.
+    Structural,
+}
+
+impl ModelFamily {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Martingale => "martingale",
+            Self::Drift => "drift",
+            Self::OrderFlow => "order_flow",
+            Self::EventReaction => "event_reaction",
+            Self::RegimePath => "regime_path",
+            Self::Structural => "structural",
+        }
+    }
+
+    /// The one row a specialist serves, or `None` for a generic family.
+    pub const fn served_row(self) -> Option<LatticeHorizon> {
+        match self {
+            Self::Martingale | Self::Drift => None,
+            Self::OrderFlow => Some(LatticeHorizon::SecondsMinutes),
+            Self::EventReaction => Some(LatticeHorizon::HoursDays),
+            Self::RegimePath => Some(LatticeHorizon::WeeksMonths),
+            Self::Structural => Some(LatticeHorizon::QuartersYears),
+        }
+    }
+}
+
+/// How far a full one-sided order-flow imbalance moves the seconds row's
+/// median, in the horizon's own standard deviations. Half: flow is a lean,
+/// not a forecast of the whole move.
+pub const FLOW_SHIFT_PER_SD: f64 = 0.5;
+
 /// One member of a horizon's model population.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LatticeModel {
     pub id: String,
     pub horizon: LatticeHorizon,
     pub target: PromotionTarget,
-    /// Whether the model projects the NOW state's rate of change forward, or
-    /// treats the level as a martingale. Two members that read the same
-    /// state and answer differently: their spread is real disagreement.
-    pub uses_drift: bool,
+    pub family: ModelFamily,
+}
+
+/// A catalyst the hours-days row is waiting on (WORLD-3086).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CatalystExpectation {
+    /// What is pending: a macro series id, an event id.
+    pub source: String,
+    /// The expected absolute reaction as a fraction of the level, from the
+    /// reaction episodes and macro surprises the platform has seen.
+    pub expected_abs_move: f64,
+}
+
+/// A live long-horizon causal claim bearing on the target (WORLD-3088), as
+/// the structural member reads it: who, through what, how much.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StructuralClaim {
+    pub cause: String,
+    pub mechanism: String,
+    /// The signed fraction of the cause's move passed on to the target
+    /// ([`crate::causal::CausalEdge::signed_transmission`]).
+    pub transmission: f64,
+    pub lag: Duration,
+}
+
+/// What the specialist families read beyond the level and its variance.
+/// Every field is optional or empty by default, so a caller with no signal
+/// gets the generic families' answer from every member rather than a
+/// refusal; a caller with a signal that is not a number is refused.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ForecastContext {
+    /// Order-flow imbalance in `[-1, 1]`, buy-positive, where flow was
+    /// observed.
+    pub flow_imbalance: Option<f64>,
+    pub pending_catalyst: Option<CatalystExpectation>,
+    /// The regime label in force now, as the calibrator scores it.
+    pub regime: Option<String>,
+    /// The drift per day, in target units, each regime label has shown.
+    pub regime_drifts: BTreeMap<String, f64>,
+    pub structural_claims: Vec<StructuralClaim>,
 }
 
 /// The per-horizon model populations (WORLD-3082).
@@ -225,6 +329,17 @@ impl Population {
     pub fn admit(&mut self, model: LatticeModel) -> Result<()> {
         if model.id.trim().is_empty() {
             return Err(Error::invalid("a lattice model needs a non-blank id"));
+        }
+        if let Some(row) = model.family.served_row()
+            && row != model.horizon
+        {
+            return Err(Error::denied(format!(
+                "`{}` is a {} model, which serves only the {} row; it may not be admitted at {}",
+                model.id,
+                model.family.as_str(),
+                row.as_str(),
+                model.horizon.as_str()
+            )));
         }
         let allowed = model.horizon.promotion_target();
         if model.target != allowed {
@@ -255,20 +370,39 @@ impl Population {
             .flat_map(|m| m.values())
     }
 
-    /// Two members per row: a martingale and a drift-following model. The
+    /// Two generic members per row — a martingale and a drift-following
+    /// model — and the row's specialist where §9.7 names one: order flow at
+    /// seconds-minutes, event reaction at hours-days, the regime path at
+    /// weeks-months and the structural claims at quarters-years. The
     /// microsecond row's members are admitted here so the population is
     /// whole, and only the reflex lane may issue from them.
     pub fn standard() -> Result<Self> {
         let mut p = Self::new();
         for horizon in LatticeHorizon::ALL {
-            for (family, uses_drift) in [("martingale", false), ("drift", true)] {
+            for family in [ModelFamily::Martingale, ModelFamily::Drift] {
                 p.admit(LatticeModel {
-                    id: format!("{}/{family}", horizon.as_str()),
+                    id: format!("{}/{}", horizon.as_str(), family.as_str()),
                     horizon,
                     target: horizon.promotion_target(),
-                    uses_drift,
+                    family,
                 })?;
             }
+        }
+        for family in [
+            ModelFamily::OrderFlow,
+            ModelFamily::EventReaction,
+            ModelFamily::RegimePath,
+            ModelFamily::Structural,
+        ] {
+            let Some(horizon) = family.served_row() else {
+                continue;
+            };
+            p.admit(LatticeModel {
+                id: format!("{}/{}", horizon.as_str(), family.as_str()),
+                horizon,
+                target: horizon.promotion_target(),
+                family,
+            })?;
         }
         Ok(p)
     }
@@ -303,13 +437,25 @@ impl Routed {
     }
 }
 
-/// The reputation cache: weight per (horizon, model).
-pub type Reputation = BTreeMap<(LatticeHorizon, String), f64>;
+/// What a reputation is earned in: a domain, a row, a model (WORLD-9022).
+/// Keyed by domain because a member that forecasts closes well is not
+/// thereby a good forecaster of a macro series, and a cache keyed by row
+/// alone handed the one reputation to every question on the row.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ReputationKey {
+    pub domain: String,
+    pub horizon: LatticeHorizon,
+    pub model: String,
+}
+
+/// The reputation cache: weight per (domain, horizon, model).
+pub type Reputation = BTreeMap<ReputationKey, f64>;
 
 /// Route a question to its horizon's population. With a reputation cache
-/// that weighs every member of the row, the cache's weights; otherwise —
-/// the cache unavailable, or the row not yet scored — the default ensemble,
-/// equal weights, marked as a fallback.
+/// that weighs every member of the row in the question's domain, the
+/// cache's weights; otherwise — the cache unavailable, or the row not yet
+/// scored in that domain — the default ensemble, equal weights, marked as a
+/// fallback.
 pub fn route(
     population: &Population,
     question: &Question,
@@ -330,7 +476,11 @@ pub fn route(
             .iter()
             .map(|id| {
                 cache
-                    .get(&(question.horizon, id.clone()))
+                    .get(&ReputationKey {
+                        domain: question.domain.clone(),
+                        horizon: question.horizon,
+                        model: id.clone(),
+                    })
                     .copied()
                     .filter(|w| w.is_finite() && *w >= 0.0)
                     .map(|w| (id.clone(), w))
@@ -373,6 +523,8 @@ pub struct TargetInput {
     pub held_quantity: f64,
     /// At least one.
     pub evidence: Vec<String>,
+    /// What the row's specialist reads, if anything.
+    pub context: ForecastContext,
 }
 
 /// One issued forecast and what scoring it later needs.
@@ -425,8 +577,10 @@ pub fn issue(
             input.target
         )));
     }
+    check_context(&input.context, &input.target)?;
     let span = horizon.representative();
     let days = span.as_days_f64();
+    let base_variance = input.variance_per_day * days;
     let mut model_means = BTreeMap::new();
     for model in population.models(horizon) {
         let Some(&w) = routed.weights.get(&model.id) else {
@@ -435,12 +589,8 @@ pub fn issue(
         if w <= 0.0 {
             continue;
         }
-        let drift = if model.uses_drift {
-            input.drift_per_day.unwrap_or(0.0)
-        } else {
-            0.0
-        };
-        model_means.insert(model.id.clone(), (input.level + drift * days, w));
+        let (mean, extra) = project(model.family, input, days, base_variance);
+        model_means.insert(model.id.clone(), (mean, extra, w));
     }
     if model_means.is_empty() {
         return Err(Error::invalid(format!(
@@ -448,19 +598,28 @@ pub fn issue(
             horizon.as_str()
         )));
     }
-    let total_w: f64 = model_means.values().map(|(_, w)| w).sum();
-    let mean = model_means.values().map(|(m, w)| m * w).sum::<f64>() / total_w;
+    let total_w: f64 = model_means.values().map(|(_, _, w)| w).sum();
+    let mean = model_means.values().map(|(m, _, w)| m * w).sum::<f64>() / total_w;
     let between = model_means
         .values()
-        .map(|(m, w)| w * (m - mean).powi(2))
+        .map(|(m, _, w)| w * (m - mean).powi(2))
         .sum::<f64>()
         / total_w;
     let (lo, hi) = model_means
         .values()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (m, _)| {
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (m, _, _)| {
             (lo.min(*m), hi.max(*m))
         });
-    let aleatoric = input.variance_per_day * days;
+    // The variance the horizon adds, plus what each specialist says its
+    // signal adds, weighted as the members are: a catalyst the event member
+    // carries at full weight widens the row by all of it, and at no weight
+    // by none of it.
+    let aleatoric = base_variance
+        + model_means
+            .values()
+            .map(|(_, extra, w)| extra * w)
+            .sum::<f64>()
+            / total_w;
     let epistemic = input.level_variance + between;
     let sd = (aleatoric + epistemic).sqrt();
     let quantiles = [mean - Z_80 * sd, mean, mean + Z_80 * sd];
@@ -525,11 +684,94 @@ pub fn issue(
     Ok(Issued {
         forecast,
         horizon,
-        model_means: model_means.into_iter().map(|(k, (m, _))| (k, m)).collect(),
+        model_means: model_means
+            .into_iter()
+            .map(|(k, (m, _, _))| (k, m))
+            .collect(),
         p_up,
         reference: input.level,
         quantiles,
     })
+}
+
+/// Refuse a context carrying a signal that is not a number or out of its
+/// range. Refused, not clamped: an imbalance of 1.7 is a caller that
+/// computed it wrong, and a forecast built on it would be scored as if the
+/// flow had been read.
+fn check_context(context: &ForecastContext, target: &str) -> Result<()> {
+    if let Some(i) = context.flow_imbalance
+        && !(i.is_finite() && (-1.0..=1.0).contains(&i))
+    {
+        return Err(Error::numeric(format!(
+            "the order-flow imbalance for {target} ({i}) is not in [-1, 1]; refuse the reading \
+             rather than forecast from it"
+        )));
+    }
+    if let Some(c) = &context.pending_catalyst
+        && !(c.expected_abs_move.is_finite() && c.expected_abs_move >= 0.0)
+    {
+        return Err(Error::numeric(format!(
+            "the expected reaction to {} for {target} ({}) is not a non-negative number",
+            c.source, c.expected_abs_move
+        )));
+    }
+    if let Some((regime, d)) = context.regime_drifts.iter().find(|(_, d)| !d.is_finite()) {
+        return Err(Error::numeric(format!(
+            "the {regime} regime's drift for {target} ({d}) is not a number"
+        )));
+    }
+    if let Some(c) = context
+        .structural_claims
+        .iter()
+        .find(|c| !c.transmission.is_finite())
+    {
+        return Err(Error::numeric(format!(
+            "the claim {} -> {target} through {} transmits {}, which is not a number",
+            c.cause, c.mechanism, c.transmission
+        )));
+    }
+    Ok(())
+}
+
+/// One member's answer: its mean, and the variance its own signal adds to
+/// the row's `base_variance` (zero for the generic families). The
+/// per-family arithmetic is documented on [`ModelFamily`].
+fn project(family: ModelFamily, input: &TargetInput, days: f64, base_variance: f64) -> (f64, f64) {
+    let level = input.level;
+    let now_drift = input.drift_per_day.unwrap_or(0.0);
+    let context = &input.context;
+    match family {
+        ModelFamily::Martingale => (level, 0.0),
+        ModelFamily::Drift => (level + now_drift * days, 0.0),
+        ModelFamily::OrderFlow => match context.flow_imbalance {
+            Some(i) => (
+                level + i * FLOW_SHIFT_PER_SD * base_variance.sqrt(),
+                i.abs() * base_variance,
+            ),
+            None => (level, 0.0),
+        },
+        ModelFamily::EventReaction => match &context.pending_catalyst {
+            Some(c) => (level, (c.expected_abs_move * level).powi(2)),
+            None => (level, 0.0),
+        },
+        ModelFamily::RegimePath => {
+            let drift = context
+                .regime
+                .as_ref()
+                .and_then(|r| context.regime_drifts.get(r))
+                .copied()
+                .unwrap_or(now_drift);
+            (level + drift * days, 0.0)
+        }
+        ModelFamily::Structural => (
+            level,
+            context
+                .structural_claims
+                .iter()
+                .map(|c| c.transmission.powi(2) * base_variance)
+                .sum(),
+        ),
+    }
 }
 
 /// How far a consumer should contract on a forecast's age (WORLD-9024): one
@@ -617,6 +859,8 @@ pub fn constrain(chain: &[&ForecastFields]) -> Vec<Inconsistency> {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Resolution {
     pub forecast_id: String,
+    /// The question's domain, which the reputation earned here is keyed by.
+    pub domain: String,
     pub horizon: LatticeHorizon,
     pub regime: String,
     pub model_means: BTreeMap<String, f64>,
@@ -677,6 +921,9 @@ impl Scorecard {
     }
 }
 
+/// One member's measured error in a row: `(model, resolved, mean error)`.
+type MemberError = (String, u64, f64);
+
 /// What a weight refresh did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -692,7 +939,7 @@ pub struct Calibrator {
     history: VecDeque<ScoreRecord>,
     by_horizon: BTreeMap<LatticeHorizon, Scorecard>,
     by_regime: BTreeMap<(LatticeHorizon, String), Scorecard>,
-    model_errors: BTreeMap<(LatticeHorizon, String), (u64, f64)>,
+    model_errors: BTreeMap<ReputationKey, (u64, f64)>,
     weights: Reputation,
     last_safe: Reputation,
     frozen: bool,
@@ -781,7 +1028,11 @@ impl Calibrator {
         for (model, mean) in &r.model_means {
             let e = self
                 .model_errors
-                .entry((r.horizon, model.clone()))
+                .entry(ReputationKey {
+                    domain: r.domain.clone(),
+                    horizon: r.horizon,
+                    model: model.clone(),
+                })
                 .or_insert((0, 0.0));
             e.0 += 1;
             e.1 += (r.outcome - mean).abs() / r.reference;
@@ -804,13 +1055,13 @@ impl Calibrator {
             return WeightUpdate::Frozen;
         }
         let mut weights = Reputation::new();
-        let mut rows: BTreeMap<LatticeHorizon, Vec<(String, u64, f64)>> = BTreeMap::new();
-        for ((h, model), (n, sum)) in &self.model_errors {
-            rows.entry(*h)
+        let mut rows: BTreeMap<(String, LatticeHorizon), Vec<MemberError>> = BTreeMap::new();
+        for (key, (n, sum)) in &self.model_errors {
+            rows.entry((key.domain.clone(), key.horizon))
                 .or_default()
-                .push((model.clone(), *n, *sum / *n as f64));
+                .push((key.model.clone(), *n, *sum / *n as f64));
         }
-        for (h, members) in rows {
+        for ((domain, h), members) in rows {
             if members.iter().any(|(_, n, _)| *n < MIN_RESOLVED) {
                 continue;
             }
@@ -820,7 +1071,14 @@ impl Calibrator {
                 .collect();
             let total: f64 = inverse.iter().map(|(_, w)| w).sum();
             for (m, w) in inverse {
-                weights.insert((h, m), w / total);
+                weights.insert(
+                    ReputationKey {
+                        domain: domain.clone(),
+                        horizon: h,
+                        model: m,
+                    },
+                    w / total,
+                );
             }
         }
         self.weights = weights.clone();

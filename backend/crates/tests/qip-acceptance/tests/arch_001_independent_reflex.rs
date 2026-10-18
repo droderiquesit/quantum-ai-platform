@@ -224,3 +224,104 @@ fn reflex_and_cognitive_are_separate_deployable_binaries_that_do_not_link_each_o
     assert!(!closure(&graph, "qip-edge-node").contains("qip-deepbrain"));
     assert!(!closure(&graph, "qip-deepbrain").contains("qip-edge-node"));
 }
+
+/// The body of one method of `Cell`, from its `pub fn name(` line to the
+/// closing brace at the method's own indent, line comments removed.
+///
+/// A doc comment on `work` that *explains* why it opens no socket must not
+/// count as opening one.
+fn cell_method_body(cell: &str, name: &str) -> String {
+    let opening = format!("    pub fn {name}(");
+    let start = cell
+        .lines()
+        .position(|line| line.starts_with(&opening))
+        .unwrap_or_else(|| panic!("qip-edge's cell.rs declares no `{opening}`"));
+    cell.lines()
+        .skip(start)
+        .take_while(|line| *line != "    }")
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What a hot-path body may not name: the in-tree transport, any socket type
+/// the standard library offers, and the async runtime. Each is a way for the
+/// local decision to wait on a remote one.
+const TRANSPORT_AND_SOCKETS: [&str; 9] = [
+    "qip_transport",
+    "MeshPublisher",
+    "RemoteSubscriber",
+    "TcpStream",
+    "TcpListener",
+    "UdpSocket",
+    "ToSocketAddrs",
+    "std::net",
+    "tokio",
+];
+
+/// Whether `text` holds `word` as a whole identifier path — `qip_transport`
+/// is not found inside `qip_transports`, and `tokio` is not found in
+/// `tokioless`.
+fn names(text: &str, word: &str) -> bool {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(word).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + word.len()..].chars().next();
+        !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+    })
+}
+
+/// R12-MESH-5051: no remote dependency on a local hot-path decision. The
+/// crate-level walk above cannot see this — `qip-edge` *does* link
+/// `qip-transport`, for the uplink in `mesh.rs` — so the property lives in
+/// two method bodies: `Cell::on_bytes`, which turns venue bytes into book
+/// state, and `Cell::work`, which turns book state into orders. Neither may
+/// name the transport, a socket, or the runtime.
+///
+/// Mutation: insert `let _ = qip_transport::MeshConfig::default();` in the
+/// body of `Cell::work` — the assertion fires naming `work: qip_transport`.
+/// Inserting the same line in `mesh.rs` must not fire, and does not, because
+/// only the two bodies are read.
+#[test]
+fn the_cells_hot_path_bodies_name_no_transport_socket_or_runtime() {
+    let cell = fs::read_to_string(backend().join("crates/edge/qip-edge/src/cell.rs"))
+        .expect("qip-edge's cell.rs is readable");
+    // Premise: the token scan can see the transport where the crate does use
+    // it, so an empty finding below is a property and not a blind scan.
+    let mesh = fs::read_to_string(backend().join("crates/edge/qip-edge/src/mesh.rs"))
+        .expect("qip-edge's mesh.rs is readable");
+    assert!(
+        names(&mesh, "qip_transport"),
+        "premise: qip-edge's mesh.rs no longer names qip_transport; the uplink moved and this \
+         scan's forbidden list may be stale"
+    );
+
+    let on_bytes = cell_method_body(&cell, "on_bytes");
+    let work = cell_method_body(&cell, "work");
+    // Premise: both bodies were extracted whole — each names what it is for.
+    assert!(
+        on_bytes.lines().count() > 10 && names(&on_bytes, "bytes"),
+        "premise: Cell::on_bytes was not extracted: {on_bytes}"
+    );
+    assert!(
+        work.lines().count() > 100 && names(&work, "gateway"),
+        "premise: Cell::work was not extracted or no longer takes the gateway: {} lines",
+        work.lines().count()
+    );
+
+    let mut findings = Vec::new();
+    for (method, body) in [("on_bytes", &on_bytes), ("work", &work)] {
+        for forbidden in TRANSPORT_AND_SOCKETS {
+            if names(body, forbidden) {
+                findings.push(format!("{method}: {forbidden}"));
+            }
+        }
+    }
+    assert!(
+        findings.is_empty(),
+        "the cell's hot path reaches a transport, a socket or the runtime: {findings:?}. A local \
+         decision never waits on the centre or a peer (ADR 0008); what a peer sends arrives \
+         through the port the node polls between passes"
+    );
+}

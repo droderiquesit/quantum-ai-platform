@@ -24,8 +24,18 @@
 //!    GOV-6124's three records, each with its own actor and time;
 //! 4. every tool decision the registry audited during the pass, with what it
 //!    charged, which is what [`resume`] re-applies on the next start;
-//! 5. [`AgencyRecord::PassConcluded`] — the outcome, the stages, the steps,
-//!    the eligibility refusals and the simulated branches.
+//! 5. what the pass learned, when the caller offered an outcome:
+//!    [`AgencyRecord::Learned`] carries the outcome as the memory kept it
+//!    (its [`crate::memory::Observed`] says whether it was measured or the
+//!    pass's own simulation), the attribution, the effect the policy was
+//!    held to, the interval and side effects it was held to, and the
+//!    authority before and after — everything a reader needs to recompute
+//!    the update from the log alone; [`AgencyRecord::LearningWithheld`]
+//!    carries the reason nothing was learned, because an outcome that is
+//!    absent is recorded as absent, not invented;
+//! 6. [`AgencyRecord::PassConcluded`] — the outcome, the stages (through
+//!    `Update` when the pass learned), the steps, the eligibility refusals
+//!    and the simulated branches.
 //!
 //! # Topic
 //!
@@ -38,14 +48,19 @@
 //! schema lock, which are another lane's. If the agency ever publishes on the
 //! fabric, it gets its own topic then.
 
+use crate::attribution::EffectAttribution;
+use crate::autonomy::Authority;
 use crate::causal::SimulationResult;
-use crate::engine::{Outcome, Report};
+use crate::engine::{Learning, LearningOutcome, Outcome, Report};
 use crate::estimate::EstimatorKind;
+use crate::guard::Voice;
+use crate::memory::ActionOutcome;
 use qip_contracts::action::{ExecutionRecord, GoalApproval, Method, PlanApproval, ToolAudit};
 use qip_core::lineage::Lineage;
-use qip_core::{CorrelationId, Error, EventId, Timestamp};
+use qip_core::{CorrelationId, Decimal, Error, EventId, Timestamp};
 use qip_events::{Envelope, EventBody, EventLog, Topic};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The producer every agency record carries.
 pub const AGENCY_ORIGIN: &str = "agency/act-stage";
@@ -112,6 +127,36 @@ pub enum AgencyRecord {
         pass: u64,
         decision: ToolAudit,
     },
+    /// A message the guard admitted and the adapter was handed: what was
+    /// said, by which tool, as whom (R12-AGENCY-1064). Resumed into the
+    /// guard on start so a restart does not forget who said what.
+    VoiceReleased {
+        pass: u64,
+        voice: Voice,
+    },
+    /// The observe-effect, attribute and update stages ran on this outcome.
+    Learned {
+        pass: u64,
+        outcome: Box<ActionOutcome>,
+        attribution: Box<EffectAttribution>,
+        /// `actual_observations - no_action_counterfactual`: what the policy
+        /// was held to.
+        effect: Decimal,
+        /// The interval and side effects the policy predicted, so `after`
+        /// follows from `effect` by the drift rule and nothing else.
+        predicted_uplift_low: Decimal,
+        predicted_uplift_high: Decimal,
+        predicted_side_effects: Vec<String>,
+        authority_before: Authority,
+        authority_after: Authority,
+    },
+    /// Nothing was learned from this pass, and why.
+    LearningWithheld {
+        pass: u64,
+        /// The learn stage that refused, when one was reached.
+        stage_failed: Option<String>,
+        reason: String,
+    },
     PassConcluded {
         pass: u64,
         /// `shadowed`, `executed`, `refused`, `stopped`, `no_action`,
@@ -137,6 +182,9 @@ impl AgencyRecord {
             | Self::PlanApproved { pass, .. }
             | Self::Executed { pass, .. }
             | Self::ToolDecision { pass, .. }
+            | Self::VoiceReleased { pass, .. }
+            | Self::Learned { pass, .. }
+            | Self::LearningWithheld { pass, .. }
             | Self::PassConcluded { pass, .. } => *pass,
         }
     }
@@ -150,6 +198,9 @@ impl AgencyRecord {
             Self::PlanApproved { .. } => "plan-approved",
             Self::Executed { .. } => "executed",
             Self::ToolDecision { .. } => "tool",
+            Self::VoiceReleased { .. } => "voice",
+            Self::Learned { .. } => "learned",
+            Self::LearningWithheld { .. } => "learning-withheld",
             Self::PassConcluded { .. } => "concluded",
         }
     }
@@ -240,6 +291,11 @@ pub struct PassEntry<'a> {
     pub audit_from: usize,
     pub goal_target: &'a str,
     pub acting_identity: &'a str,
+    /// What the pass learned, or why it did not, when the caller runs the
+    /// learn stages. `None` is a caller that offers no outcome at all and
+    /// is journaled as such: no learning record, and the stages stop where
+    /// the pass stopped.
+    pub learning: Option<&'a Learning>,
     /// When the platform recorded the pass.
     pub at: Timestamp,
 }
@@ -254,6 +310,7 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
         audit_from,
         goal_target,
         acting_identity,
+        learning,
         at,
     } = entry;
     let mut w = Writer {
@@ -345,6 +402,49 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
             decision.at,
         )?;
     }
+    for voice in &report.released {
+        w.write(
+            AgencyRecord::VoiceReleased {
+                pass,
+                voice: voice.clone(),
+            },
+            at,
+        )?;
+    }
+    match learning.map(|l| &l.outcome) {
+        Some(LearningOutcome::Learned(learned)) => w.write(
+            AgencyRecord::Learned {
+                pass,
+                outcome: Box::new(learned.outcome.clone()),
+                attribution: Box::new(learned.attribution.clone()),
+                effect: learned.effect,
+                predicted_uplift_low: learned.predicted_uplift.0,
+                predicted_uplift_high: learned.predicted_uplift.1,
+                predicted_side_effects: learned.predicted_side_effects.iter().cloned().collect(),
+                authority_before: learned.before,
+                authority_after: learned.after,
+            },
+            at,
+        )?,
+        Some(LearningOutcome::Withheld(reason)) => w.write(
+            AgencyRecord::LearningWithheld {
+                pass,
+                stage_failed: learning
+                    .and_then(|l| l.failed)
+                    .filter(|stage| report.failed != Some(*stage))
+                    .map(|stage| format!("{stage:?}")),
+                reason: reason.clone(),
+            },
+            at,
+        )?,
+        None => {}
+    }
+    // The stages are the learning's when there was one: it continued the
+    // pass's log, so it holds the pass's stages and whatever came after.
+    let (passed, failed) = match learning {
+        Some(learning) => (&learning.passed, learning.failed),
+        None => (&report.passed, report.failed),
+    };
     let (outcome, detail, steps) = outcome_label(&report.outcome);
     let simulations = report
         .simulations
@@ -365,8 +465,8 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
             pass,
             outcome: outcome.to_string(),
             detail,
-            stages_passed: report.passed.iter().map(|s| format!("{s:?}")).collect(),
-            failed: report.failed.map(|s| format!("{s:?}")),
+            stages_passed: passed.iter().map(|s| format!("{s:?}")).collect(),
+            failed: failed.map(|s| format!("{s:?}")),
             steps,
             eligibility_refusals: report.eligibility.clone(),
             simulations,
@@ -396,6 +496,9 @@ pub fn records(log: &EventLog) -> Result<Vec<AgencyRecord>, Error> {
 pub struct Resumed {
     pub next_pass: u64,
     pub decisions: Vec<ToolAudit>,
+    /// Every voice released, oldest first, for
+    /// [`crate::guard::ActionGuard::resume_voices`].
+    pub voices: Vec<Voice>,
 }
 
 /// Read back what [`record_pass`] wrote. Refuses a log whose chain does not
@@ -411,12 +514,126 @@ pub fn resume(log: &EventLog) -> Result<Resumed, Error> {
     let mut resumed = Resumed {
         next_pass: 1,
         decisions: Vec::new(),
+        voices: Vec::new(),
     };
     for record in records(log)? {
         resumed.next_pass = resumed.next_pass.max(record.pass().saturating_add(1));
-        if let AgencyRecord::ToolDecision { decision, .. } = record {
-            resumed.decisions.push(decision);
+        match record {
+            AgencyRecord::ToolDecision { decision, .. } => resumed.decisions.push(decision),
+            AgencyRecord::VoiceReleased { voice, .. } => resumed.voices.push(voice),
+            _ => {}
         }
     }
     Ok(resumed)
+}
+
+/// One pass's lineage, folded from the log (R12-OBS-7131): the goal the
+/// pass opened on, its approvals, the execution record, what the registry
+/// charged, what was said as whom, what was learned, and how it concluded.
+/// Every field is what the records say; [`PassLineage::verify`] is what
+/// makes them one graph rather than a pile.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct PassLineage {
+    pub pass: u64,
+    pub goal_target: Option<String>,
+    pub acting_identity: Option<String>,
+    pub goal_approval: Option<GoalApproval>,
+    pub plan_approval: Option<PlanApproval>,
+    pub execution: Option<ExecutionRecord>,
+    pub tool_decisions: Vec<ToolAudit>,
+    pub released: Vec<Voice>,
+    pub attribution: Option<EffectAttribution>,
+    /// The concluded outcome label, once the pass concluded.
+    pub outcome: Option<String>,
+}
+
+impl PassLineage {
+    /// Whether the records form one connected chain: opened and concluded,
+    /// a plan approval only over the goal approval it cites, an execution
+    /// only over the plan approval it cites, nothing charged or released
+    /// without an execution record, and nothing learned about a plan nobody
+    /// approved. The first break is the error, naming the link.
+    ///
+    /// The failure prevented is a journal that holds every record and
+    /// answers no question: a plan approval whose goal is missing reads, one
+    /// record at a time, like an approved plan.
+    pub fn verify(&self) -> Result<(), Error> {
+        let pass = self.pass;
+        let broken = |what: &str| {
+            Err(Error::invalid(format!(
+                "pass {pass}'s lineage breaks at {what}; the records do not form one chain"
+            )))
+        };
+        if self.goal_target.is_none() {
+            return broken("the opening: no PassOpened record names the goal");
+        }
+        if self.outcome.is_none() {
+            return broken("the conclusion: no PassConcluded record");
+        }
+        match (&self.goal_approval, &self.plan_approval) {
+            (None, Some(_)) => return broken("the plan approval: it cites no goal approval"),
+            (Some(goal), Some(plan)) if plan.goal != goal.id => {
+                return broken("the plan approval: it cites a goal approval the pass did not make");
+            }
+            _ => {}
+        }
+        match (&self.plan_approval, &self.execution) {
+            (None, Some(_)) => return broken("the execution: it cites no plan approval"),
+            (Some(plan), Some(execution)) if execution.plan != plan.id => {
+                return broken("the execution: it cites a plan approval the pass did not make");
+            }
+            _ => {}
+        }
+        if self.execution.is_none() && !self.tool_decisions.is_empty() {
+            return broken("a tool decision: the registry was charged with no execution record");
+        }
+        if self.execution.is_none() && !self.released.is_empty() {
+            return broken("a released voice: a message went out with no execution record");
+        }
+        if self.attribution.is_some()
+            && (self.goal_approval.is_none() || self.plan_approval.is_none())
+        {
+            return broken("the attribution: an effect is attributed to a plan nobody approved");
+        }
+        Ok(())
+    }
+}
+
+/// Every pass's lineage in the log, by pass number.
+pub fn lineages(log: &EventLog) -> Result<BTreeMap<u64, PassLineage>, Error> {
+    let mut out: BTreeMap<u64, PassLineage> = BTreeMap::new();
+    for record in records(log)? {
+        let pass = record.pass();
+        let entry = out.entry(pass).or_insert_with(|| PassLineage {
+            pass,
+            ..PassLineage::default()
+        });
+        match record {
+            AgencyRecord::PassOpened {
+                goal_target,
+                acting_identity,
+                ..
+            } => {
+                entry.goal_target = Some(goal_target);
+                entry.acting_identity = Some(acting_identity);
+            }
+            AgencyRecord::GoalApproved { approval, .. } => entry.goal_approval = Some(approval),
+            AgencyRecord::PlanApproved { approval, .. } => entry.plan_approval = Some(approval),
+            AgencyRecord::Executed { record, .. } => entry.execution = Some(record),
+            AgencyRecord::ToolDecision { decision, .. } => entry.tool_decisions.push(decision),
+            AgencyRecord::VoiceReleased { voice, .. } => entry.released.push(voice),
+            AgencyRecord::Learned { attribution, .. } => entry.attribution = Some(*attribution),
+            AgencyRecord::PassConcluded { outcome, .. } => entry.outcome = Some(outcome),
+            AgencyRecord::Widened { .. }
+            | AgencyRecord::WideningRefused { .. }
+            | AgencyRecord::LearningWithheld { .. } => {}
+        }
+    }
+    Ok(out)
+}
+
+/// The lineage of one pass, or `None` when the log holds no record of it.
+pub fn lineage_of(log: &EventLog, pass: u64) -> Result<Option<PassLineage>, Error> {
+    Ok(lineages(log)?.remove(&pass))
 }

@@ -27,7 +27,7 @@ fn policy_document() -> Value {
             "conduct": {
                 "authorized_sources": ["venue-feed"],
                 "authorized_identities": ["desk-agent"],
-                "required_disclosures": [],
+                "required_disclosures": ["paper_venue"],
                 "channel_policies": {"paper-venue": ["venue-a participants"]},
                 "permitted_jurisdictions": ["US"],
                 "conduct_rules": [
@@ -127,7 +127,7 @@ fn request(window: u64) -> Value {
                     "source_id": "venue-feed", "evidence_id": "spread-series-1",
                     "confidence_bps": 9000
                 }],
-                "disclosures": [],
+                "disclosures": [{"kind": "paper_venue", "text": "Paper venue: no live order is placed"}],
                 "target_audience": "venue-a participants",
                 "jurisdiction": "US"
             }},
@@ -247,6 +247,14 @@ fn the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal() {
     );
     assert_eq!(code, 0, "premise: stdout {out} stderr {err}");
     assert!(out.contains("outcome: shadowed"), "{out}");
+    // R12-OBS-7131: the pass is read back from the journal as one chain.
+    assert!(
+        out.contains(
+            "lineage: pass 1 reads back as one connected chain (goal approval present, plan \
+             approval present, execution none, 0 tool decision(s), 0 voice(s) released)"
+        ),
+        "{out}"
+    );
 
     let (out, err, code) = qip(&[&journal, &pass], &["--journal", "--request"], &[]);
     assert_eq!(code, 1, "{out}");
@@ -331,9 +339,14 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             AgencyRecord::PlanApproved { .. } => "plan",
             AgencyRecord::Executed { .. } => "executed",
             AgencyRecord::ToolDecision { .. } => "tool",
+            AgencyRecord::VoiceReleased { .. } => "voice",
+            AgencyRecord::Learned { .. } => "learned",
+            AgencyRecord::LearningWithheld { .. } => "learning withheld",
             AgencyRecord::PassConcluded { .. } => "concluded",
         })
         .collect();
+    // The attempt was refused at the adapter, so there is no outcome to learn
+    // from, and the record says so rather than staying silent.
     assert_eq!(
         kinds,
         [
@@ -343,6 +356,10 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             "plan",
             "executed",
             "tool",
+            // R12-AGENCY-1064: what the admitted step said, as whom, so a
+            // restart still knows who said it.
+            "voice",
+            "learning withheld",
             "concluded"
         ]
     );

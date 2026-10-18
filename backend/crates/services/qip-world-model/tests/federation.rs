@@ -12,8 +12,8 @@ use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_world_model::federation::{
     Abstraction, Assessment, Calibration, CalibrationClaim, Decision, Declaration, Event,
-    Federation, MATERIAL_DISAGREEMENT_SPREAD, ModelKind, Scope, Status, WorldModelSpec,
-    lineage_from_journal,
+    Federation, InformationStake, MATERIAL_DISAGREEMENT_SPREAD, ModelKind, Scope, Status,
+    WorldModelSpec, lineage_from_journal,
 };
 
 fn at(secs: i64) -> Timestamp {
@@ -335,6 +335,62 @@ fn arbitration_records_all_four_dimensions_and_ranks_by_evidence_fit_when_only_t
             .collect::<Vec<_>>()[1],
         "premise: performance is identical, so the ranking is evidence fit alone"
     );
+    Ok(())
+}
+
+/// WORLD-1130: the arbitration record carries each view's lineage, so a
+/// reader can tell a fork of one hypothesis from an independent model
+/// without rebuilding the tree from the journal. A root reads as depth
+/// zero with no parents; a branch names its parent and trigger one deeper;
+/// a branch of a branch is two deep; and a merge sits one below its
+/// deepest parent and names both.
+#[test]
+fn arbitration_carries_each_views_lineage_matching_the_node_it_came_from() -> Result<()> {
+    let mut f = Federation::new();
+    register(&mut f, plain("root", 1_000))?;
+    f.branch("root", "hawk", "h-hawkish", "CPI surprise", at(10))?;
+    f.branch("hawk", "hawk-2", "h-hawkish-sticky", "wage print", at(11))?;
+    f.branch("root", "dove", "h-dovish", "claims print", at(11))?;
+    f.merge("hawk-2", "dove", "blend", "both survived", at(12))?;
+    for id in ["root", "hawk", "blend"] {
+        assert_eq!(*f.status(id)?, Status::Live, "premise: {id} is live");
+        f.assess(id, view("q", 0.5, 0.5, 0.3, 20))?;
+    }
+    let a = f.arbitrate("q", at(21))?;
+    assert_eq!(
+        a.disagreement.views.len(),
+        3,
+        "premise: the three live members compared"
+    );
+    let by = |id: &str| {
+        a.disagreement
+            .views
+            .iter()
+            .find(|v| v.model == id)
+            .map(|v| v.lineage.clone())
+            .ok_or_else(|| qip_core::error::Error::invalid(format!("{id} missing")))
+    };
+    let root = by("root")?;
+    assert!(root.parents.is_empty() && root.trigger.is_none() && root.depth == 0);
+    let hawk = by("hawk")?;
+    assert_eq!(hawk.parents, vec!["root".to_string()]);
+    assert_eq!(hawk.trigger.as_deref(), Some("CPI surprise"));
+    assert_eq!(hawk.depth, 1);
+    let blend = by("blend")?;
+    assert_eq!(
+        blend.parents,
+        vec!["hawk-2".to_string(), "dove".to_string()],
+        "a merge names both parents"
+    );
+    assert_eq!(
+        blend.depth, 3,
+        "one below the deepest parent: hawk-2 is two deep, dove one"
+    );
+    for v in &a.disagreement.views {
+        let node = f.lineage(&v.model)?;
+        assert_eq!(v.lineage.parents, node.parents, "{}", v.model);
+        assert_eq!(v.lineage.trigger, node.trigger, "{}", v.model);
+    }
     Ok(())
 }
 
@@ -855,5 +911,91 @@ fn live_specs_exclude_a_member_exactly_at_its_expiry() -> Result<()> {
     assert_eq!(f.live_specs(at(99)).len(), 2);
     let ids: Vec<&str> = f.live_specs(at(100)).iter().map(|s| s.id()).collect();
     assert_eq!(ids, vec!["b"]);
+    Ok(())
+}
+
+/// AMBIENT-10093 and CONTRACT-6111: a material disagreement on a proposition
+/// with exposure at stake is issued to active sensing as the §24.9 contract
+/// — value of information = spread x exposure, budget a stated share of it,
+/// allowed sources the disagreeing models' own evidence lineages — and a
+/// small conflict, or one on nothing held, issues nothing. The emitted
+/// request decodes as the contract and the contract refuses it without a
+/// budget. Mutation: return `Ok(None)` from `Federation::information_request`
+/// whatever the spread — the material case issues nothing.
+#[test]
+fn a_material_disagreement_with_exposure_at_stake_issues_the_contract_information_request_and_a_small_one_does_not()
+-> Result<()> {
+    let mut f = Federation::new();
+    register(&mut f, plain("bull", 1_000))?;
+    register(
+        &mut f,
+        full(
+            "bear",
+            scope(
+                "macro",
+                "global",
+                30,
+                Abstraction::Macro,
+                "base",
+                ModelKind::Observational,
+            ),
+            1_000,
+        ),
+    )?;
+    f.assess("bull", view("q", 0.9, 0.5, 0.3, 5))?;
+    f.assess("bear", view("q", 0.2, 0.5, 0.3, 5))?;
+    let wide = f.arbitrate("q", at(6))?;
+    assert!(
+        wide.disagreement.spread >= MATERIAL_DISAGREEMENT_SPREAD,
+        "premise: the views are far apart: {}",
+        wide.disagreement.spread
+    );
+    let stake = |exposure: i64| InformationStake {
+        exposure: qip_core::Decimal::from_int(exposure),
+        budget_share_bp: 1_000,
+        deadline: at(1_000),
+        extra_sources: vec!["src-bls".into()],
+    };
+    let request = f
+        .information_request(&wide, &stake(1_000_000))?
+        .expect("a material disagreement on a million at stake is worth asking about");
+    // spread 0.7 x 1,000,000 = 700,000; budget a tenth of it.
+    assert_eq!(
+        request.expected_information_value,
+        qip_core::Decimal::from_int(700_000)
+    );
+    assert_eq!(request.budget, qip_core::Decimal::from_int(70_000));
+    assert_eq!(request.deadline, at(1_000));
+    assert_eq!(request.issued_at, wide.at);
+    assert_eq!(
+        request.allowed_sources,
+        vec!["feed:rates".to_string(), "src-bls".to_string()],
+        "the models' declared lineages plus the stake's own"
+    );
+    assert!(request.question.contains("bull") && request.question.contains("bear"));
+    // Nothing held: nothing to learn for.
+    assert!(f.information_request(&wide, &stake(0))?.is_none());
+    // A small conflict on a large stake: not worth asking.
+    f.assess("bull", view("r", 0.55, 0.5, 0.3, 7))?;
+    f.assess("bear", view("r", 0.50, 0.5, 0.3, 7))?;
+    let narrow = f.arbitrate("r", at(8))?;
+    assert!(
+        narrow.disagreement.spread < MATERIAL_DISAGREEMENT_SPREAD,
+        "premise"
+    );
+    assert!(f.information_request(&narrow, &stake(1_000_000))?.is_none());
+    // It is the contract: it round-trips as one and refuses a missing budget.
+    let json = serde_json::to_value(&request)?;
+    let back: qip_contracts::control::InformationRequest = serde_json::from_value(json.clone())?;
+    assert_eq!(back, request);
+    let mut stripped = json;
+    stripped
+        .as_object_mut()
+        .expect("an object")
+        .remove("budget");
+    assert!(
+        serde_json::from_value::<qip_contracts::control::InformationRequest>(stripped).is_err(),
+        "a request with no budget is refused at decode"
+    );
     Ok(())
 }

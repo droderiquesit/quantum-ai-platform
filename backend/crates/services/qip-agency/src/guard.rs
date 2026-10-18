@@ -12,6 +12,12 @@
 //! * the step's public face — the [`CommunicationDraft`] the world would see
 //!   — passes all seven conduct checks, and the drafts together pass the
 //!   coordinated-voices check;
+//! * the step's message, by its words, was not already released under
+//!   another identity in an earlier pass this guard admitted or resumed
+//!   ([`Voice`]; R12-AGENCY-1064). Inside one pass every draft speaks as
+//!   the goal's one identity, so the coordinated-voices check cannot fire
+//!   there; across passes it is the only place manufactured consensus can
+//!   be seen, and until this check nothing looked;
 //! * the draft speaks as the tool's registered identity, which is the goal's
 //!   acting identity: a step sent under any other name is a fabricated
 //!   identity (R12-AGENCY-1063) however it is authorised;
@@ -43,12 +49,37 @@ use crate::goal::GoalSpec;
 use crate::plan::Step;
 use qip_contracts::action::{
     ExecutionRecord, GoalApproval, Ground, PlanApproval, ToolAudit, ToolRegistration, ToolRegistry,
-    check_justification,
+    check_justification, words,
 };
 use qip_core::decimal::SCALE;
 use qip_core::{Decimal, Error, Timestamp};
-use serde::Deserialize;
-use std::collections::BTreeMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, VecDeque};
+
+/// How many released voices a guard remembers across passes. Bounded, like
+/// every working set here; the durable record is the journal, which
+/// [`ActionGuard::resume_voices`] reads back on start.
+pub const VOICE_RETENTION: usize = 1024;
+
+/// One message as it was released: which tool said it, as whom, and the
+/// fingerprint of its words. Kept so a later pass cannot say the same thing
+/// as somebody else (R12-AGENCY-1064).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Voice {
+    pub tool: String,
+    pub identity: String,
+    /// [`voice_fingerprint`] of the draft's content.
+    pub fingerprint: String,
+}
+
+/// The fingerprint of a message: a digest of its words, lower-cased and
+/// stripped of punctuation, so a changed byline or a reflowed line does not
+/// make one message into two. The same normalisation the conduct gate's
+/// coordinated-voices check compares by.
+pub fn voice_fingerprint(content: &str) -> String {
+    qip_core::sha256_hex(words(content).join(" ").as_bytes())
+}
 
 /// Who approved the goal and the plan, and when the act stage runs. Times
 /// come from the caller, never a clock read here, so a pass replays.
@@ -117,6 +148,8 @@ pub(crate) struct Cleared {
     pub(crate) step: Step,
     pub(crate) channel: String,
     pub(crate) cost_units: u64,
+    /// The voice this step would release, remembered once it is admitted.
+    pub(crate) voice: Voice,
 }
 
 /// The built guard. Holds the registry, so a caller that keeps one guard
@@ -133,6 +166,9 @@ pub struct ActionGuard {
     /// window changes, so a pass that named an old window would get a fresh
     /// allowance by going back in time.
     floor: u64,
+    /// Every message admitted through [`Self::authorise`] or resumed from
+    /// the journal, newest last; at most [`VOICE_RETENTION`].
+    voices: VecDeque<Voice>,
 }
 
 impl ActionGuard {
@@ -168,7 +204,36 @@ impl ActionGuard {
             registry,
             pass: None,
             floor: 0,
+            voices: VecDeque::new(),
         })
+    }
+
+    /// Re-apply the voices a previous process released, so a message said
+    /// under one identity before a restart is still a message said under
+    /// it. Refused once a pass has begun, for the same reason as
+    /// [`Self::resume`].
+    pub fn resume_voices(&mut self, voices: Vec<Voice>) -> Result<(), Error> {
+        if self.pass.is_some() {
+            return Err(Error::guard(
+                "resume the guard's voices before the first pass begins, not during one",
+            ));
+        }
+        for voice in voices {
+            self.remember(voice);
+        }
+        Ok(())
+    }
+
+    fn remember(&mut self, voice: Voice) {
+        if self.voices.len() >= VOICE_RETENTION {
+            self.voices.pop_front();
+        }
+        self.voices.push_back(voice);
+    }
+
+    /// Every voice this guard remembers, oldest first.
+    pub fn voices(&self) -> impl Iterator<Item = &Voice> {
+        self.voices.iter()
     }
 
     /// Re-apply the tool decisions a previous process journaled, so the rate
@@ -303,6 +368,11 @@ impl ActionGuard {
                 step: step.clone(),
                 channel: draft.channel.clone(),
                 cost_units: budget_units(&step.tool, *cost)?,
+                voice: Voice {
+                    tool: step.tool.clone(),
+                    identity: draft.sender_identity.clone(),
+                    fingerprint: voice_fingerprint(&draft.content),
+                },
             });
             drafts.insert(step.tool.as_str(), draft);
         }
@@ -324,6 +394,21 @@ impl ActionGuard {
                 "the conduct gate refuses: {}",
                 reasons.join("; ")
             )));
+        }
+        // R12-AGENCY-1064: the same words already out under another name.
+        for c in &cleared {
+            if let Some(prior) = self
+                .voices
+                .iter()
+                .find(|v| v.fingerprint == c.voice.fingerprint && v.identity != c.voice.identity)
+            {
+                return Err(Error::denied(format!(
+                    "fake consensus across passes: step `{}` would release as `{}` the same \
+                     message `{}` already released as `{}` in an earlier pass; one message under \
+                     two identities is one voice posing as several",
+                    c.step.tool, c.voice.identity, prior.tool, prior.identity
+                )));
+            }
         }
         let actions: Vec<(&str, &str, u64)> = cleared
             .iter()
@@ -363,7 +448,9 @@ impl ActionGuard {
             window,
             cleared.cost_units,
             at,
-        )
+        )?;
+        self.remember(cleared.voice.clone());
+        Ok(())
     }
 
     fn approve(&self, goal: &GoalSpec, steps: &[Step]) -> Result<ApprovalChain, Error> {

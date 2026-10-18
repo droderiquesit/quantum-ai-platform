@@ -98,9 +98,10 @@ submits a job; and Confidential VMs, because enabling them alongside a crate
 named `qip-confidential` would let the name and the configuration together
 imply a guarantee neither provides.
 
-The single Pub/Sub topic that does exist carries no platform data. Secret
+The two Pub/Sub topics that do exist carry no platform data. Secret
 Manager will not accept a rotation schedule without somewhere to announce a
-rotation is due.
+rotation is due, and Cloud Asset Inventory publishes each change to the
+project's resources and IAM policies to the second (`audit-logs.tf`).
 
 ## Why the flags are all off
 

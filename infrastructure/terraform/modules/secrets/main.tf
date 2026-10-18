@@ -51,8 +51,9 @@ resource "google_kms_crypto_key" "secrets" {
 # The secrets themselves, created without values.
 # Where Secret Manager announces that a rotation is due.
 #
-# This is the one Pub/Sub topic in the platform, and it is not a contradiction
-# of ADR 0011. That decision replaced Pub/Sub as the *data* bus — the path
+# This is one of the two Pub/Sub topics in the platform — the other is the
+# root's Cloud Asset Inventory feed in `audit-logs.tf` — and it is not a
+# contradiction of ADR 0011. That decision replaced Pub/Sub as the *data* bus — the path
 # carrying state deltas and capital envelopes between cells and the central
 # plane, which is now the in-tree mesh in `qip-transport`. This carries no
 # platform data: it is a control-plane notification from a Google service to
@@ -312,8 +313,8 @@ resource "google_service_account" "landing" {
   description  = "Runs the Cloud Run landing. Reads no secret and no platform; the portal's URL is inlined at build time."
 }
 
-# Data-access audit logs for the two services that hold the platform's secrets
-# and keys (SEC-045, SEC-059).
+# Data-access audit logs for every service that holds the platform's secrets,
+# keys, ledger, evidence or model data (SEC-045, SEC-059, R12-SEC-10007).
 #
 # Admin-activity logs are on by Google's default; DATA_READ is not, and it is
 # the only log that records a read of a secret's value. Without this block a
@@ -321,8 +322,31 @@ resource "google_service_account" "landing" {
 # no queryable record of who, which is the failure an audit trail exists to
 # prevent. ADMIN_READ is included so a listing of secrets or keys, the
 # reconnaissance step before a read, is recorded too.
+#
+# The same gap existed for the stores: until 2026-10-18 only Secret Manager
+# and KMS were here, so a read of the evidence bucket, the positions database,
+# the research dataset or a signed image left no data-access record, and the
+# register (R12-SEC-10007) said data-access evidence covered "every service
+# holding secrets, keys, ledger, evidence or model data" while four of them
+# had none. The project may hold one audit config per service, so the stores
+# live in this resource beside the services that already had DATA_READ,
+# rather than in `audit-logs.tf`'s DATA_WRITE-only set, and the config is
+# written whether or not the store's API is enabled: an IAM audit config is
+# project policy, not a resource under the API, and a Spanner instance a
+# later environment switches on is then audited from its first read.
 resource "google_project_iam_audit_config" "secrets_and_keys" {
-  for_each = toset(["secretmanager.googleapis.com", "cloudkms.googleapis.com"])
+  for_each = toset([
+    "secretmanager.googleapis.com",
+    "cloudkms.googleapis.com",
+    # The evidence bucket, the event archive and the model artifacts.
+    "storage.googleapis.com",
+    # The positions database and ADR 0111's managed log.
+    "spanner.googleapis.com",
+    # The research warehouse.
+    "bigquery.googleapis.com",
+    # Every signed image the platform runs.
+    "artifactregistry.googleapis.com",
+  ])
 
   project = var.project_id
   service = each.key

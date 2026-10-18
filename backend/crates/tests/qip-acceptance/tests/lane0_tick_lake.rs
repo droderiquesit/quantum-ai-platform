@@ -31,7 +31,26 @@ const STORAGE: &str = "qip-storage";
 
 /// Every way `qip_storage::lake::Lake` hands back stored bytes or a stored
 /// manifest's contents. A node module naming one is reading history.
-const LAKE_READS: [&str; 3] = ["read_canonical", "materialize", "Materialized"];
+///
+/// Until 2026-10-18 this held three names and the lake had grown four more
+/// readers — `read_market_history`, `list_market_history` and
+/// `pin_market_history` in `lake_history.rs`, and `Lake::verify`, which
+/// opens a manifest to check it — so a history read spelled with any of
+/// them passed the scan (R12-REFLEX-1189). `verify` is a common method
+/// name, so it is judged by [`LAKE_VERIFY`] in a module that names `Lake`
+/// rather than listed here, where it would fire on a signature check.
+const LAKE_READS: [&str; 6] = [
+    "read_canonical",
+    "materialize",
+    "Materialized",
+    "read_market_history",
+    "list_market_history",
+    "pin_market_history",
+];
+
+/// `Lake::verify` reads a stored manifest, and is a reader only in a module
+/// that names the lake at all.
+const LAKE_VERIFY: &str = "verify";
 
 /// The node modules that may name the lake module at all, and why: the
 /// drain's sink writes segments, and `main.rs` names the namespace and the
@@ -188,6 +207,9 @@ fn no_edge_node_module_reads_the_tick_lake_and_only_the_drain_and_root_name_it()
             if names(text, read) {
                 readers.push(format!("{path}: {read}"));
             }
+        }
+        if names(text, "Lake") && names(text, LAKE_VERIFY) {
+            readers.push(format!("{path}: Lake::{LAKE_VERIFY}"));
         }
         if (text.contains("qip_storage::lake::") || text.contains("lake::{"))
             && !LAKE_WRITERS.contains(&path.as_str())

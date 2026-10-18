@@ -18,7 +18,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use qip_agency::autonomy::Authority;
 use qip_agency::journal::{self, AgencyRecord};
+use qip_agency::memory::Observed;
+use qip_core::Decimal;
 use qip_events::EventLog;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -32,7 +35,7 @@ fn policy_document() -> Value {
             "conduct": {
                 "authorized_sources": ["venue-feed"],
                 "authorized_identities": ["desk-agent"],
-                "required_disclosures": [],
+                "required_disclosures": ["paper_venue"],
                 "channel_policies": {"paper-venue": ["venue-a participants"]},
                 "permitted_jurisdictions": ["US"],
                 "conduct_rules": [
@@ -132,7 +135,7 @@ fn request(window: u64) -> Value {
                     "source_id": "venue-feed", "evidence_id": "spread-series-1",
                     "confidence_bps": 9000
                 }],
-                "disclosures": [],
+                "disclosures": [{"kind": "paper_venue", "text": "Paper venue: no live order is placed"}],
                 "target_audience": "venue-a participants",
                 "jurisdiction": "US"
             }},
@@ -544,4 +547,257 @@ fn an_attribution_missing_its_chain_confounders_rivals_or_horizons_is_refused_on
             "{field}: {out}"
         );
     }
+}
+
+/// A statistic matches the hand computation to well inside a JSON round
+/// trip's precision.
+fn close(actual: f64, expected: f64) -> bool {
+    (actual - expected).abs() < 1e-9
+}
+
+/// The one `Learned` record of a pass, or `None`.
+fn learned(records: &[AgencyRecord]) -> Option<&AgencyRecord> {
+    let mut found = records
+        .iter()
+        .filter(|r| matches!(r, AgencyRecord::Learned { .. }));
+    let first = found.next();
+    assert!(found.next().is_none(), "one pass learns once: {records:?}");
+    first
+}
+
+/// The reasons every `LearningWithheld` record of a pass gives.
+fn withheld(records: &[AgencyRecord]) -> Vec<&str> {
+    records
+        .iter()
+        .filter_map(|r| match r {
+            AgencyRecord::LearningWithheld { reason, .. } => Some(reason.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// R12-AGENCY-1006 / 1152 / 1199 / 6106 / 6107 / 7133: a shadowed pass with a
+/// structural model runs the observe-effect, attribute and update stages on
+/// the outcome it simulated, and the journal carries that outcome labelled
+/// simulated, its attribution, and the lever update — the effect the policy
+/// was held to, the interval it predicted, and its authority before and
+/// after — so the update is recomputable from the log alone.
+///
+/// The figures are computed by hand from the fixture: `spread = 6 - 0.6 *
+/// quote_size`, one quoter step moves `quote_size` by 10. Calm: 6 without
+/// the action, 0 with it. Stressed (+3 exogenous): 9 and 3. The objective is
+/// a decrease, so figures are signed toward the goal: observed -1.5 (the
+/// mean of 0 and 3, negated), counterfactual -7.5 (the mean of 6 and 9,
+/// negated), effect 6 in both branches, standard deviation 0. The market
+/// policy was widened on an experiment and predicts uplift in [1, 5]; a
+/// simulated 6 is outside it, so the widened policy returns to shadow.
+/// Under a policy predicting [1, 10] it keeps its authority.
+///
+/// Mutations: in `agency::Session::learn`, return `Learning::withheld` for
+/// every pass (no `Learned` record: the first assertion fails); in
+/// `simulated::evidence`, write `Effect { mean: 0.0, std_dev: 0.0 }` and the
+/// horizon value as `0.0` (the hand-computed effect assertions fail).
+#[test]
+fn a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update() {
+    let evidence =
+        json!({"randomised_experiment": {"treated": [3.0, 4.0, 5.0], "control": [0.0, 1.0, 2.0]}});
+    let document = with_structural_model(widening(attribution(json!("experiment"), 3.0), evidence));
+    let (out, code, journaled) = pass("learned", &policy_document(), &document);
+    assert_eq!(code, 0, "premise: the pass is shadowed: {out}");
+    assert!(
+        journaled
+            .iter()
+            .any(|r| matches!(r, AgencyRecord::Widened { .. })),
+        "premise: the policy was widened before the pass: {out}"
+    );
+    let Some(AgencyRecord::Learned {
+        outcome,
+        attribution,
+        effect,
+        predicted_uplift_low,
+        predicted_uplift_high,
+        predicted_side_effects,
+        authority_before,
+        authority_after,
+        ..
+    }) = learned(&journaled)
+    else {
+        panic!("the pass learned from its simulated outcome: {out}\n{journaled:?}")
+    };
+    assert!(withheld(&journaled).is_empty(), "{journaled:?}");
+
+    // The outcome, as the memory kept it, says it is simulated and credits
+    // exactly the step that was shadowed.
+    assert_eq!(outcome.observed, Observed::Simulated);
+    assert_eq!(outcome.action_sequence, ["quoter"]);
+    assert_eq!(
+        outcome.environment_state,
+        "simulated: desk/calm, desk/stressed"
+    );
+    assert_eq!(outcome.audience, "simulated: nobody reached");
+    assert_eq!(outcome.delay_secs, 60, "the plan's own time to effect");
+    assert_eq!(outcome.predicted_effect, Decimal::from_int(5));
+    assert_eq!(
+        outcome.actual_observations,
+        Decimal::from_f64(-1.5).unwrap()
+    );
+    assert_eq!(
+        outcome.no_action_counterfactual,
+        Decimal::from_f64(-7.5).unwrap()
+    );
+    assert_eq!(
+        outcome.attribution_confidence,
+        Decimal::from_f64(0.9).unwrap()
+    );
+    assert_eq!(*effect, Decimal::from_int(6));
+
+    // The attribution names the model, not the world, and carries the chain.
+    assert!(
+        close(attribution.effect.mean, 6.0),
+        "{:?}",
+        attribution.effect
+    );
+    assert!(
+        close(attribution.effect.std_dev, 0.0),
+        "{:?}",
+        attribution.effect
+    );
+    assert!(
+        close(attribution.identifiability, 0.9),
+        "{}",
+        attribution.identifiability
+    );
+    assert_eq!(attribution.observations.len(), 1);
+    assert_eq!(attribution.observations[0].horizon_ms, 60_000);
+    assert!(
+        close(attribution.observations[0].value, 6.0),
+        "{:?}",
+        attribution.observations
+    );
+    assert_eq!(attribution.causal_chain, ["quote_size", "spread"]);
+    let strategy = serde_json::to_value(&attribution.identification).unwrap();
+    let strategy = strategy["observational"]["strategy"]
+        .as_str()
+        .expect("an observational label naming the model");
+    assert!(
+        strategy.starts_with("simulated:") && strategy.contains("nothing was observed"),
+        "{strategy}"
+    );
+
+    // The update: 6 lies outside the predicted [1, 5], so the widened policy
+    // is back at shadow, and the record carries what it was judged against.
+    assert_eq!(
+        (*predicted_uplift_low, *predicted_uplift_high),
+        (Decimal::from_int(1), Decimal::from_int(5))
+    );
+    assert!(predicted_side_effects.is_empty());
+    assert_eq!(
+        (*authority_before, *authority_after),
+        (Authority::NarrowReversible, Authority::Shadow)
+    );
+    let (verdict, stages, _, _) = concluded(&journaled);
+    assert_eq!(verdict, "shadowed");
+    for stage in ["ObserveEffect", "Attribute", "Update"] {
+        assert!(stages.iter().any(|s| s == stage), "{stage}: {stages:?}");
+    }
+    assert!(
+        !stages.iter().any(|s| s == "Act"),
+        "a shadowed act is not listed as passed: {stages:?}"
+    );
+    assert!(
+        out.contains("learned from the simulated outcome, not a measured one: effect 6"),
+        "{out}"
+    );
+
+    // Inside its predicted interval the widened policy keeps its authority.
+    let mut wide = policy_document();
+    wide["action_policies"][0]["uplift_high"] = json!("10");
+    let (out, code, journaled) = pass("kept", &wide, &document);
+    assert_eq!(code, 0, "{out}");
+    let Some(AgencyRecord::Learned {
+        authority_before,
+        authority_after,
+        predicted_uplift_high,
+        ..
+    }) = learned(&journaled)
+    else {
+        panic!("{out}\n{journaled:?}")
+    };
+    assert_eq!(*predicted_uplift_high, Decimal::from_int(10));
+    assert_eq!(
+        (*authority_before, *authority_after),
+        (Authority::NarrowReversible, Authority::NarrowReversible)
+    );
+}
+
+/// A pass whose outcome is absent learns nothing and says why, rather than
+/// learning from an outcome somebody made up: no structural model simulated
+/// the plan; no action policy is configured for the plan's class; the pass
+/// was not shadowed at all. Each leaves a `LearningWithheld` record naming
+/// the absence and no `Learned` record, and the stages stop where the pass
+/// stopped.
+///
+/// Mutation: in `agency::Session::learn`, replace the reason passed to
+/// `Learning::withheld` on the evidence refusal with a fixed string — the
+/// reason assertions fail, because a refusal that does not name what is
+/// missing cannot be acted on.
+#[test]
+fn a_pass_with_no_simulated_outcome_journals_a_withheld_learning_naming_what_is_absent() {
+    let (out, code, journaled) = pass(
+        "premise-learns",
+        &policy_document(),
+        &with_structural_model(request(1)),
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        learned(&journaled).is_some(),
+        "premise: with a model and a policy the same pass learns: {out}"
+    );
+
+    // No structural model: nothing was simulated.
+    let (out, code, journaled) = pass("no-model", &policy_document(), &request(1));
+    assert_eq!(code, 0, "the pass itself still clears every gate: {out}");
+    assert!(learned(&journaled).is_none(), "{journaled:?}");
+    let reasons = withheld(&journaled);
+    assert_eq!(reasons.len(), 1, "{journaled:?}");
+    assert!(
+        reasons[0].contains("no structural model simulated"),
+        "{}",
+        reasons[0]
+    );
+    let (verdict, stages, _, _) = concluded(&journaled);
+    assert_eq!(verdict, "shadowed");
+    assert!(
+        !stages.iter().any(|s| s == "ObserveEffect"),
+        "no learn stage ran: {stages:?}"
+    );
+    assert!(
+        out.contains("learning withheld: no structural model simulated"),
+        "{out}"
+    );
+
+    // A model but no policy for the class: nothing to hold to a prediction.
+    let mut unpoliced = policy_document();
+    unpoliced["action_policies"] = json!([]);
+    let (out, code, journaled) = pass("no-policy", &unpoliced, &with_structural_model(request(1)));
+    assert_eq!(code, 0, "{out}");
+    assert!(learned(&journaled).is_none(), "{journaled:?}");
+    let reasons = withheld(&journaled);
+    assert_eq!(reasons.len(), 1, "{journaled:?}");
+    assert!(
+        reasons[0].contains("no action policy is configured for Market"),
+        "{}",
+        reasons[0]
+    );
+
+    // Not shadowed: the plan was refused, so no action was simulated.
+    let mut over = with_structural_model(request(1));
+    over["proposals"][0]["root"]["step"]["exposure"] = json!("51");
+    let (out, code, journaled) = pass("not-shadowed", &policy_document(), &over);
+    assert_eq!(code, 3, "{out}");
+    assert!(learned(&journaled).is_none(), "{journaled:?}");
+    let reasons = withheld(&journaled);
+    assert_eq!(reasons.len(), 1, "{journaled:?}");
+    assert!(reasons[0].contains("not shadowed"), "{}", reasons[0]);
+    assert_eq!(concluded(&journaled).0, "no_action");
 }

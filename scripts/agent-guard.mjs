@@ -138,11 +138,11 @@ export function loadLanes(policy, policyPath, read = (path) => readFileSync(path
     return { problem: `the lane manifest ${relative} cannot be read: ${cause.message}` };
   }
 }
-export const ADR_0123_ADVISORY_CEILING = Object.freeze(["dev"]);
+export const ADR_0124_ADVISORY_CEILING = Object.freeze(["dev"]);
 export function rangeIsAdvisory({ policy, environment }) {
   const listed = policy?.deploy_range_advisory?.environments;
   if (typeof environment !== "string" || !Array.isArray(listed)) return false;
-  return listed.includes(environment) && ADR_0123_ADVISORY_CEILING.includes(environment);
+  return listed.includes(environment) && ADR_0124_ADVISORY_CEILING.includes(environment);
 }
 /**
  * Whether a commit carries a signature GitHub verified against a key a
@@ -193,6 +193,39 @@ export function approvedByAPerson(reviews, headSha, markers, permissions) {
   );
 }
 
+/**
+ * ADR 0124 §1: whether a protected path is one an agent may change without
+ * a person's approval — the ADR index when GitHub reports it *modified*, or
+ * a decision record GitHub reports as *added*. `statuses` maps each path to
+ * the status GitHub returned for it; a path with no status (a caller that
+ * only has bare paths, a range entry gathered before the field existed), a
+ * removed, renamed or copied file, and an edit to an accepted record all
+ * fall through to the rule that needs a person. The block's shape fails
+ * closed too: anything but an object with arrays exempts nothing.
+ */
+export function isSelfReviewable(policy, file, statuses) {
+  const block = policy?.self_reviewable_protected_paths;
+  if (!block || typeof block !== "object" || !(statuses instanceof Map)) return false;
+  const status = statuses.get(file);
+  if (status === "modified" && matchesAny(file, Array.isArray(block.globs) ? block.globs : [])) return true;
+  return status === "added" && matchesAny(file, Array.isArray(block.added_only_globs) ? block.added_only_globs : []);
+}
+
+/**
+ * The paths a GitHub file entry names and the status it carries. A rename
+ * names two paths — the one it took and, in `previous_filename`, the one it
+ * left — and both are judged, so a protected file cannot leave its rule by
+ * being moved somewhere unprotected (a route that was open before ADR 0124
+ * and is closed with it). A bare string is a path with no status.
+ */
+export function pathsOf(entry) {
+  if (typeof entry === "string") return { paths: [entry], status: undefined };
+  if (typeof entry?.filename !== "string") return { paths: [entry], status: undefined };
+  const paths = [entry.filename];
+  if (typeof entry.previous_filename === "string" && entry.previous_filename !== entry.filename) paths.push(entry.previous_filename);
+  return { paths, status: typeof entry.status === "string" ? entry.status : undefined };
+}
+
 /** The `Agent-Role` a commit declares, or undefined. */
 export function roleOf(commit) {
   const inner = commit?.commit ?? commit;
@@ -204,7 +237,7 @@ export function roleOf(commit) {
  * commit objects; `reviews` GitHub review objects.
  * Returns `{ agent, refusals: string[] }`.
  */
-export function judgeChange({ policy, headRef, headSha, files, commits, reviews, permissions, lanes }) {
+export function judgeChange({ policy, headRef, headSha, files, commits, reviews, permissions, lanes, statuses }) {
   const markers = policy.agent_markers;
   const agentCommits = commits.filter((c) => isAgentCommit(c, markers));
   const agent = agentCommits.length > 0 || isAgentBranch(headRef, markers);
@@ -278,11 +311,15 @@ export function judgeChange({ policy, headRef, headSha, files, commits, reviews,
 
   // 2. Protected paths need a person's approval of the head commit. A
   //    signature does not stand in for it here: an agent's commit signed by
-  //    its user's key is still an agent's commit.
-  if (protectedTouched.length > 0) {
+  //    its user's key is still an agent's commit. ADR 0124 §1 exempts the
+  //    record-keeping paths — the ADR index edited, a decision record this
+  //    change adds — and the refusal names only the paths that still need a
+  //    person, so the reviewer reads what is actually theirs.
+  const needsReview = protectedTouched.filter((f) => !isSelfReviewable(policy, f, statuses));
+  if (needsReview.length > 0) {
     if (!approvedByAPerson(reviews, headSha, markers, permissions)) {
       refusals.push(
-        `an agent-authored change touches protected paths and no person has approved commit ${headSha}: ${protectedTouched.join(", ")}`,
+        `an agent-authored change touches protected paths and no person has approved commit ${headSha}: ${needsReview.join(", ")}`,
       );
     }
   }
@@ -322,6 +359,12 @@ export function judgeRange({ policy, entries, lanes }) {
       reviews: pr?.reviews ?? [],
       permissions: pr?.permissions ?? {},
       lanes,
+      // An entry gathered without the field exempts nothing (fail closed).
+      statuses: new Map(
+        Object.entries(entry.statuses && typeof entry.statuses === "object" ? entry.statuses : {}).filter(
+          ([path, status]) => typeof path === "string" && typeof status === "string",
+        ),
+      ),
     });
     agent ||= verdict.agent;
     for (const refusal of verdict.refusals) refusals.push(`${sha.slice(0, 12)}: ${refusal}`);
@@ -417,9 +460,14 @@ export function gatherRange({ api, repository, base, head }) {
   };
   return commits.map((commit) => {
     const pages = api(`repos/${repository}/commits/${commit.sha}`, { paginate: true });
-    const files = pages.flatMap((page) => (page.files ?? []).map((f) => f.filename));
+    const entries = pages.flatMap((page) => page.files ?? []);
+    // Every path an entry names (a rename names the one it left too) and,
+    // for ADR 0124 §1, the status GitHub gave each, so a new decision record
+    // can be told from an edit to an accepted one.
+    const files = entries.flatMap((f) => pathsOf(f).paths);
+    const statuses = Object.fromEntries(entries.filter((f) => typeof f?.filename === "string" && typeof f.status === "string").map((f) => [f.filename, f.status]));
     const merged = api(`repos/${repository}/commits/${commit.sha}/pulls`).find((p) => p?.merged_at);
-    return { ...commit, files, pr: merged ? pullRequest(merged.number) : null };
+    return { ...commit, files, statuses, pr: merged ? pullRequest(merged.number) : null };
   });
 }
 
@@ -581,8 +629,8 @@ export function main(argv, { out = console.log, err = console.error, api = ghApi
     const { refusals } = judgeRange({ policy, entries, lanes: loadLanes(policy, policyPath) });
     const environment = option(argv, "environment");
     if (refusals.length > 0 && rangeIsAdvisory({ policy, environment })) {
-      for (const refusal of refusals) err(`advisory (ADR 0123, ${environment}): ${refusal}`);
-      out(`${refusals.length} refusal(s) are advisory for ${environment} under ADR 0123; the deploy proceeds`);
+      for (const refusal of refusals) err(`advisory (ADR 0124 §3, ${environment}): ${refusal}`);
+      out(`${refusals.length} refusal(s) are advisory for ${environment} under ADR 0124 §3; the deploy proceeds`);
       return 0;
     }
     for (const refusal of refusals) err(refusal);
@@ -597,11 +645,23 @@ export function main(argv, { out = console.log, err = console.error, api = ghApi
     return 64;
   }
   let files;
+  let statuses;
   let commits;
   let reviews;
   let permissions;
   try {
-    files = readJson(paths[0]).map((f) => (typeof f === "string" ? f : f.filename));
+    const listed = readJson(paths[0]);
+    // Every path each entry names — a rename is judged on the path it left
+    // too — and, for ADR 0124 §1, the status GitHub gave each. A list of
+    // bare paths carries no status, so a decision record in it is judged as
+    // an edit and needs a person.
+    files = listed.flatMap((f) => pathsOf(f).paths);
+    statuses = new Map(
+      listed.flatMap((f) => {
+        const { paths: named, status } = pathsOf(f);
+        return status === undefined || typeof named[0] !== "string" ? [] : [[named[0], status]];
+      }),
+    );
     commits = readJson(paths[1]);
     reviews = readJson(paths[2]);
     permissions = readJson(paths[3]);
@@ -618,6 +678,7 @@ export function main(argv, { out = console.log, err = console.error, api = ghApi
     headRef: option(argv, "head-ref"),
     headSha,
     files,
+    statuses,
     commits,
     reviews,
     permissions,
