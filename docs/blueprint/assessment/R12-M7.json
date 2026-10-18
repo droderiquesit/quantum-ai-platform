@@ -4286,13 +4286,15 @@
   {
     "id": "R12-COVERAGE-7193",
     "status": "PARTIAL",
-    "current": "Non-blocking handoff tested; cached signed policy; writer unwired.",
+    "current": "The writer is wired: main.rs opens SpoolWriter (backend/crates/apps/qip-edge-node/src/main.rs:925) beside FabricMirror, PressureGauge and JournalRelay (:994), and the decision loop journals through HandoffSender::offer, a try_send on a bounded sync_channel. The node continues from cached signed policy when cut off (degraded.rs) and with the centre, a peer and the journal store stalled at once (decision_loop.rs). Since 2026-10-18 an acceptance suite pins the composite's shape across the crate boundary: the decision thread's only handoff offers without waiting and neither the loop nor the pass names the spool or its writer.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255 ship returns without waiting when the writer is stalled",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:245 a cell cut off from everything keeps placing paper orders inside its envelope and journals degradation",
-      "backend/crates/apps/qip-edge-node/src/main.rs has no reference to event_fabric::{writer,mirror,pressure} (only lib.rs:30 declares the module)"
+      "backend/crates/apps/qip-edge-node/src/main.rs:925 SpoolWriter::open; :994 JournalRelay::spawn",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs HandoffSender::offer try_send",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_silent_centre_a_silent_peer_and_a_stalled_journal_store_together_hold_no_turn",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_core_path_exclusions.rs::the_reflex_decision_thread_reaches_the_fabric_only_through_a_handoff_it_never_waits_on"
     ],
-    "gap": "Wire writer into binary.",
+    "gap": "The checklist row closes only when every constituent obligation is COMPLETE; R12-RES-7113 (no fabric quorum; release path untested) and R12-FABRIC-10076 (QUIC) remain PARTIAL. Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4300,10 +4302,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_core_path_exclusions; cargo test -p qip-edge-node --test event_fabric_outbox --test decision_loop",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: 'writer unwired' was stale. Acceptance mutations, each restored byte for byte: HandoffSender::offer calling the blocking send failed 'HandoffSender::offer waits on the writer'; a const naming SegmentLog in scheduler.rs failed 'scheduler.rs names SegmentLog'."
   },
   {
     "id": "R12-COVERAGE-7194",
