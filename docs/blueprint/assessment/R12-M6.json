@@ -869,13 +869,17 @@
   {
     "id": "R12-EXPAND-6040",
     "status": "PARTIAL",
-    "current": "Tournament/lattice Scorecards in kernel.",
+    "current": "Tournament/lattice Scorecards in kernel. Hosted-model error rate (lane L20, 2026-10-18): language::assemble wraps the installed hosted adapter in a ReplyTally that counts served, refused (any provider error) and malformed (no structured output for a schema, output the schema or NumericGuard rejects, or a schema/guard error) replies without changing them; main.rs hands the tally to ResearchLoop::with_reply_tally, and sweep_over, once MODEL_REPLIES_MIN (20) replies have accumulated, raises qip_expansion::detectors::model_error_rate: one GapTrigger::Surprise observation wanting a specialist when the refused-or-malformed share exceeds MODEL_ERROR_RATE (0.2), then starts a fresh window.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/expansion.rs:271 GapSignal",
       "backend/crates/runtime/qip-kernel/src/platform.rs:15155",
-      "backend/crates/services/qip-training/src/estimators.rs degraded_models"
+      "backend/crates/services/qip-training/src/estimators.rs degraded_models",
+      "backend/crates/apps/qip-deepbrain/src/language.rs:100 ReplyTally, :148 CountedModel::complete, :361 the installed adapter is wrapped",
+      "backend/crates/services/qip-expansion/src/detectors.rs:242 model_error_rate",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:862 the tally reaches the research loop",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:935 a_model_whose_replies_are_refused_past_the_rate_raises_one_error_rate_gap"
     ],
-    "gap": "No hallucination/error-rate or residual GapSignal metrics.",
+    "gap": "No committed deployment installs the hosted adapter (ADR 0037 preconditions unmet: no pinned provider, attestation or credential anywhere), so language::assemble returns replies: None and no reply is ever counted on a running path. The counting and the GapSignal are implemented and mutation-tested; they run once an operator satisfies ADR 0037.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -883,10 +887,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing Scorecard / GapSignal)",
+    "verification": "cargo test -p qip-deepbrain --test expansion_rows",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: counting and the error-rate gap added. Mutation: an Err reply counted as served in CountedModel::complete; the test raised no signal (0 vs 1); restored by byte compare. Kept PARTIAL because the behaviour depends on a hosted adapter no deployment installs; that is an operator act (ADR 0037), not code."
   },
   {
     "id": "R12-EXPAND-6041",
@@ -1001,14 +1005,18 @@
   },
   {
     "id": "R12-EXPAND-6046",
-    "status": "PARTIAL",
-    "current": "backend/crates/apps/qip-deepbrain/src/research.rs:449 detectors emit Surprise, LowConfidence, Contradiction, MissedOpportunity, UnexplainedPnl, UnsupportedRequest",
+    "status": "COMPLETE",
+    "current": "All seven triggers have a producer on the deep-brain research sweep. Model drift: node::run_with hands ResearchLoop::note_drifted_models the references the learning round found past their own threshold (the same derivation the operations timeline reads, node.rs drifted_references); sweep_over consumes the list through qip_expansion::detectors::model_drift, one GapTrigger::ModelDrift observation wanting a model per distinct reference, so a drift is reported once per learning round. Unsupported request: incompetent_specialists and coverage. Learning runs every 8 cycles and research every cycle by default.",
     "evidence": [
-      "backend/crates/services/qip-expansion/tests/expansion.rs:184 each_of_the_seven_triggers_raises_exactly_one_gap_signal_naming_its_trigger",
-      "backend/crates/services/qip-expansion/src/gap.rs:23 ModelDrift has no producing detector in qip-expansion or the deep brain",
-      "backend/crates/apps/qip-deepbrain/src/node.rs:450 ResearchLoop::maybe_sweep in the deep brain run loop (backend/crates/apps/qip-deepbrain/src/main.rs:662)"
+      "backend/crates/services/qip-expansion/src/detectors.rs:216 model_drift",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:657 ResearchLoop::note_drifted_models",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over observations.extend(model_drift(..))",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:555 node::run_with hands the learning round's drifted list to the sweep",
+      "backend/crates/services/qip-expansion/tests/loop.rs:788 a_drifted_model_raises_one_model_drift_gap_per_reference",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:843 a_drifted_model_raises_exactly_one_model_drift_gap",
+      "backend/crates/services/qip-expansion/tests/expansion.rs:184 each_of_the_seven_triggers_raises_exactly_one_gap_signal_naming_its_trigger"
     ],
-    "gap": "No detector produces ModelDrift; \"a request no brain/tool can satisfy\" is approximated by agent hit rates and asset-class coverage.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1016,10 +1024,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-expansion --test loop && cargo test -p qip-deepbrain --test expansion_rows",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Six of seven triggers now produced in production."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Six of seven triggers now produced in production. Lane L20 2026-10-18: ModelDrift now produced. Mutations: model_drift without the BTreeSet dedup raised 3 for 2 models (loop.rs test failed); deleting the observations.extend(model_drift(..)) line in sweep_over left the noted drift with no signal (expansion_rows test failed, 0 vs 1); both restored by byte compare. The node::run_with handoff itself is one call on the default path, read and not exercised by a node-level test: a node test would need a learning round that measured real drift."
   },
   {
     "id": "R12-EXPAND-6047",
