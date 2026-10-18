@@ -158,13 +158,14 @@
   {
     "id": "R12-MODEL-4008",
     "status": "PARTIAL",
-    "current": "qip-twin prices counterfactual alternatives with the shared cost model; LEARN's score_filled measures twin-vs-venue fill error per fill into qip_venue_fill_error_bps. Nothing refits the twin from that error.",
+    "current": "The twin is recalibrated from the platform fills on the default path: Platform::score_filled (LEARN) feeds FillCalibration::observe one signed fill error per fill, FillCalibration::cost_model moves the twin half-spread by the per-venue bias, and the counterfactual alternatives are priced with the calibrated model. Proven in qip-twin by after_fills_with_a_systematic_error_the_twins_spread_moves_toward_the_observed_fills and through the cycle by qip-kernel tests/learning.rs (the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue, a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue).",
     "evidence": [
-      "backend/crates/services/qip-twin/src/counterfactual.rs:48-71 Alternative",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled",
+      "backend/crates/services/qip-twin/src/calibration.rs FillCalibration::observe, cost_model",
+      "backend/crates/runtime/qip-kernel/src/platform.rs fill_calibration field and the score_filled observe site",
+      "backend/crates/services/qip-twin/tests/futures.rs after_fills_with_a_systematic_error_the_twins_spread_moves_toward_the_observed_fills",
       "backend/crates/runtime/qip-kernel/tests/learning.rs a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue"
     ],
-    "gap": "No calibration loop for queue/slippage/impact/latency/opportunity-decay parameters from telemetry or replay.",
+    "gap": "Same remainder as R12-TICK-2080: only the half-spread moves. Impact needs the fill participation passed from score_filled into FillCalibration (a platform.rs change in a file other lanes own) and a per-venue impact term; latency has no input because the simulated venue does not time acknowledgements; queue position and opportunity decay are not in the twin CostModel. Calibration against historical replay (as opposed to live paper fills) has no caller.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -172,10 +173,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "integration test: twin recalibrated from recorded fills",
+    "verification": "cargo test -p qip-twin --test futures; cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 L22: the row text said nothing refits the twin, which stopped being true when R12-TICK-2080 landed FillCalibration; text corrected, no code changed. A parallel CostModel::recalibrate_from_fills would duplicate FillCalibration, so it was not added."
   },
   {
     "id": "R12-MODEL-4009",
@@ -863,12 +864,13 @@
   {
     "id": "R12-QUANT-4040",
     "status": "PARTIAL",
-    "current": "qip-reasoning-engine's constraint Problem::to_qubo encodes 0/1 problems and is checked against classical minimise; no quantum solver is run on it.",
+    "current": "The constraint encoder Problem::to_qubo and its proven classical minimiser Problem::minimise are benchmarked against a quantum entrant: qip-kernel tests/symbolic_federation.rs runs a constraint QUBO through SolverBenchmark with the in-tree SimulatedProvider (QAOA statevector) beside the exhaustive baseline and checks the quantum answer decodes to the symbolic engine optimum. Foundry::platform records SymbolicCombinatorialSearch NotBuilt with a reason that now says what exists and why nothing routes it.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/constraint.rs:249-312 classical baseline and to_qubo",
-      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs QUBO vs minimise"
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs the_constraint_encoders_qubo_is_solved_by_a_quantum_entrant_and_decodes_to_the_symbolic_optimum",
+      "backend/crates/services/qip-reasoning-engine/src/constraint.rs to_qubo, minimise, decode",
+      "backend/crates/libs/qip-quantum/src/foundry.rs Foundry::platform symbolic reason"
     ],
-    "gap": "No quantum dispatch or benchmark for this family.",
+    "gap": "No problem the cycle poses is QUBO-admissible: symbolic_stage::acting() (the only constraint Problem in the kernel) has Boolean single-value domains and Or-conditions, which to_qubo refuses by name, so the grader closure that solves acting() through a Benchmark cannot be done as written. The family stays NotBuilt on purpose: model_serving promotes a Registered family, so registering one with no production caller would assert a quantum benefit path that nothing runs. Closing needs the symbolic stage to pose a 0/1 linear-equality problem each cycle and route it through ComputeRouter, with the benchmark result journaled.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -876,10 +878,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation the_constraint_encoders_qubo_is_solved_by_a_quantum_entrant_and_decodes_to_the_symbolic_optimum; cargo test -p qip-quantum --test foundry",
     "work_item": "",
     "size": "M",
-    "notes": "Foundry::platform records SymbolicCombinatorialSearch as 'not built: no encoding, baseline or benchmark exists in-tree'; the code contradicts that — an encoding and its classical baseline exist in qip-reasoning-engine."
+    "notes": "2026-10-18 L22: test and reason added; kept PARTIAL. Mutation: remove the equality penalty block from Problem::to_qubo - the quantum answer no longer decodes and the test fails; restored byte for byte."
   },
   {
     "id": "R12-QUANT-4041",
