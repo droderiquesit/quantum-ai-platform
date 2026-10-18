@@ -83,8 +83,16 @@ impl Agent for PoisoningDetector {
                 ),
             )
         } else {
+            // Ambiguous, not negative. A campaign in the fabric is a reason to
+            // distrust a source, and says nothing about which way the
+            // instrument in the brief will move: the reasoning engine reads a
+            // negative finding as evidence against every bullish hypothesis
+            // and for every bearish one, so a poisoning finding filed as
+            // negative would tilt every thesis on the desk the same way
+            // whatever the poisoned sources claimed. Ambiguous is weighed as
+            // context, which is what a warning about the evidence is.
             (
-                Direction::Negative,
+                Direction::Ambiguous,
                 1.0,
                 format!(
                     "{} poisoning finding(s) implicating {} source(s): {}",
@@ -218,7 +226,7 @@ mod tests {
         }
         assert_eq!(world.evidence().len(), 3, "premise: the campaign is held");
         let finding = run(world);
-        assert_eq!(finding.direction, Direction::Negative, "{finding:?}");
+        assert_eq!(finding.direction, Direction::Ambiguous, "{finding:?}");
         assert_eq!(finding.evidence.len(), 1, "{:?}", finding.evidence);
         assert!(
             finding.evidence[0].starts_with("poisoning:coordinated_manipulation:"),

@@ -369,6 +369,15 @@ impl PortfolioProblem {
         Ok(program)
     }
 
+    /// The name a Quantum Foundry declaration must give for this encoder.
+    ///
+    /// [`crate::router::ComputeRouter::with_quantum`] compares a registered
+    /// portfolio family's declared encoding against this, because the
+    /// quantum arm reaches a provider through [`Self::to_qubo`] and nothing
+    /// else: a family declaring another encoder would be admitted on the
+    /// strength of a description of code the router never runs.
+    pub const QUBO_ENCODER: &'static str = "PortfolioProblem::to_qubo";
+
     /// Express as a QUBO for an annealer or QAOA.
     ///
     /// Each asset gets one binary variable meaning "hold at the discretised

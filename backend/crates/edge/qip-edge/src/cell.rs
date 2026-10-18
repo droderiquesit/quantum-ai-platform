@@ -3739,8 +3739,11 @@ impl Cell {
                 ));
             }
         }
-        // The cell measures no acknowledgement latency, so the verdict is the
-        // reject-rate one alone; a zero typical latency charges nothing.
+        // The verdict is the reject-rate one alone; a zero typical latency
+        // charges nothing. The cell does publish each venue's first answer
+        // (`EDGE_VENUE_ACK_LATENCY_MILLIS`, recorded in `confirm`), but only
+        // for orders the venue answered, so a venue that answers nothing
+        // would read as fast here; feeding it in is a separate decision.
         let assessment = self
             .venue_health
             .as_ref()?
@@ -6429,6 +6432,10 @@ impl Cell {
         // time below: see `OpenOrder::release_at` for the tail the equaliser
         // would otherwise chase.
         let release_at = working.order.release_at;
+        // The first report on an order is the venue's acknowledgement as far
+        // as the cell can see one (`EDGE_VENUE_ACK_LATENCY_MILLIS`); every
+        // later report on the same order is an execution, not an answer.
+        let first_answer = working.order.filled.is_zero();
         let was_complete = working.order.filled >= working.order.quantity;
         let order_price = working.order.price;
         working.order.filled += execution.quantity;
@@ -6555,6 +6562,12 @@ impl Cell {
             );
         }
         self.metrics.fill_confirmed(&fill.venue);
+        if first_answer {
+            let taken = fill.at.since(release_at);
+            if taken >= Duration::ZERO {
+                self.metrics.venue_ack_latency(&fill.venue, taken);
+            }
+        }
         // §29.2's denominator. A trade is what the venue says filled and
         // nothing else — an order the cell sent is a message, and counting
         // it as its own trade would make every message-to-trade ratio read

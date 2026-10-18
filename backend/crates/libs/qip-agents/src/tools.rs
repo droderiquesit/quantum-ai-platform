@@ -71,6 +71,53 @@ impl ToolSpec {
     }
 }
 
+/// The tools one gap needs and the registry lacks, proposed together under
+/// the gap that asked for them (EXPAND-008, §23.1).
+///
+/// The failure it prevents: a gap that needs a solver and a venue adapter
+/// proposed as two unrelated specs is two half-builds, either of which can
+/// be finished and promoted while the gap stays exactly as open as before.
+/// Grouped, the pack says which tools only make sense together and which gap
+/// each one answers, so a build nobody can trace to a gap is not one this
+/// type can hold.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityPack {
+    lineage: String,
+    tools: Vec<ToolSpec>,
+}
+
+impl CapabilityPack {
+    /// Group proposed specs under the gap they answer. A blank lineage or an
+    /// empty pack is refused: the first is a build nobody can trace, and the
+    /// second records a need that does not exist.
+    pub fn new(lineage: &str, tools: Vec<ToolSpec>) -> Result<Self> {
+        let lineage = lineage.trim();
+        if lineage.is_empty() {
+            return Err(Error::invalid(
+                "a capability pack names the gap it answers; pass the research question that raised it",
+            ));
+        }
+        if tools.is_empty() {
+            return Err(Error::invalid(
+                "a capability pack holds at least one proposed tool; a gap whose tools are all registered needs no pack",
+            ));
+        }
+        Ok(Self {
+            lineage: lineage.to_string(),
+            tools,
+        })
+    }
+
+    /// The research question of the gap the pack answers.
+    pub fn lineage(&self) -> &str {
+        &self.lineage
+    }
+
+    pub fn tools(&self) -> &[ToolSpec] {
+        &self.tools
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, ToolSpec>,
