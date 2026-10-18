@@ -498,14 +498,15 @@ use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
 use qip_agency::causal::{Direction, Objective, Scenario, StructuralLink, StructuralModelDecl};
 use qip_agency::conduct_brain::{CommunicationDraft, ConductPolicy, Disclosure, EvidenceCitation};
 use qip_agency::engine::{
-    Adapter, Alternative, Decision, EdgeDecl, Execution, Gated, LearningOutcome, LeverEvidence,
-    ORDER, Outcome, ProposalDraft, Request, Stage, StageLog, VariableDecl, decide, execute, learn,
-    learn_shadowed, run, run_with, widen,
+    Adapter, Alternative, Decision, EdgeDecl, Execution, Gated, Governance, LearningOutcome,
+    LeverEvidence, ORDER, Outcome, ProposalDraft, Request, Stage, StageLog, VariableDecl, decide,
+    execute, learn, learn_shadowed, run, run_governed_with, run_with, widen,
 };
 use qip_agency::estimate::{
     Estimate, EstimatorKind, Experiment, bayesian_causal, correlation, matched_control,
     stage_assignment, staged_experiment,
 };
+use qip_agency::generate::ScenarioSource;
 use qip_agency::generate::StructuralDecl;
 use qip_agency::guard::{ActionGuard, ApprovalDecl, GuardDecl};
 use qip_agency::memory::{ActionOutcomeDraft, ActionOutcomeMemory, Observed};
@@ -1981,6 +1982,75 @@ fn a_bayesian_causal_estimate_follows_the_data_under_a_wide_prior_and_the_prior_
         bayesian_causal(&d, &copies, &y, 1.0).is_err(),
         "the treatment as its own covariate"
     );
+}
+
+// ---- R12-AGENCY-6088: scenarios a composition root derives from a twin -----------
+
+#[derive(Debug)]
+struct FakeTwin(Vec<Scenario>);
+
+impl ScenarioSource for FakeTwin {
+    fn scenarios(&self) -> Result<Vec<Scenario>, Error> {
+        Ok(self.0.clone())
+    }
+}
+
+fn twin_scenario(name: &str, spread: f64) -> Scenario {
+    Scenario {
+        name: name.into(),
+        exogenous: BTreeMap::from([("spread".to_string(), spread)]),
+    }
+}
+
+#[test]
+fn a_candidate_is_simulated_once_per_model_and_per_scenario_the_composition_roots_twin_adds() {
+    let governance = || Governance {
+        policy: None,
+        guard: None,
+        eligibility: None,
+    };
+    let mut plain = request();
+    plain.guards = None;
+    let base =
+        run_governed_with(plain.clone(), governance(), None, &mut Counting::default()).unwrap();
+    let models = 1;
+    let declared = 2;
+    assert_eq!(
+        base.simulations[0].results.len(),
+        models * declared,
+        "premise: the request's one model under its two declared scenarios"
+    );
+
+    let twin = FakeTwin(vec![
+        twin_scenario("twin-a", 9.0),
+        twin_scenario("twin-b", -3.0),
+    ]);
+    let with = run_governed_with(
+        plain.clone(),
+        governance(),
+        Some(&twin),
+        &mut Counting::default(),
+    )
+    .unwrap();
+    let results = &with.simulations[0].results;
+    assert_eq!(results.len(), models * (declared + 2), "{results:?}");
+    let scenarios: BTreeSet<&str> = results.iter().map(|r| r.scenario.as_str()).collect();
+    assert_eq!(
+        scenarios,
+        BTreeSet::from(["calm", "stressed", "twin-a", "twin-b"])
+    );
+    let a = results.iter().find(|r| r.scenario == "twin-a").unwrap();
+    let calm = results.iter().find(|r| r.scenario == "calm").unwrap();
+    assert!(
+        (a.no_action - calm.no_action).abs() > 1e-9,
+        "the twin's exogenous value moved the branch: {a:?} vs {calm:?}"
+    );
+
+    // A twin scenario named like a declared one is two branches under one name.
+    let clash = FakeTwin(vec![twin_scenario("calm", 1.0)]);
+    let err =
+        run_governed_with(plain, governance(), Some(&clash), &mut Counting::default()).unwrap_err();
+    assert!(err.to_string().contains("already declares"), "{err}");
 }
 
 // ---- R12-AGENCY-6108: for whom, and with what delay -------------------------

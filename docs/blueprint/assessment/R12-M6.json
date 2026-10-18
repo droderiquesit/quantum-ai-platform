@@ -1952,14 +1952,16 @@
   },
   {
     "id": "R12-AGENCY-6088",
-    "status": "PARTIAL",
-    "current": "causal::simulate produces one result per (structural model, scenario branch) for each candidate, each against its own no-action world; qip-cli journals the branches.",
+    "status": "COMPLETE",
+    "current": "A candidate plan is simulated once per structural model and per scenario, and the scenarios include those a composition root derives from a market digital twin: qip-agency defines generate::ScenarioSource and engine::run_governed_with appends the source's scenarios to the request's declared ones (a name clash is refused). The shadow binary (qip agency shadow) implements the source over a qip-twin FutureTree fitted from the series a pass document supplies, one scenario per live synthetic future, each setting the structural variables the document binds to an instrument to that future's hypothesised move in basis points. The scenarios are journaled with the pass.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/plan.rs:75 simulate",
-      "backend/crates/services/qip-agency/src/engine.rs:419-424",
-      "backend/crates/services/qip-agency/src/causal.rs::simulate"
+      "backend/crates/services/qip-agency/src/generate.rs::ScenarioSource, Structural::build_with",
+      "backend/crates/services/qip-agency/src/engine.rs::run_governed_with",
+      "backend/crates/apps/qip-cli/src/agency.rs::TwinDecl, TwinScenarios, Session::pass",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_candidate_is_simulated_once_per_model_and_per_scenario_the_composition_roots_twin_adds",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_simulates_a_pass_against_the_futures_of_the_twin_the_document_describes"
     ],
-    "gap": "Candidates are simulated only against declared linear SCMs and scenario branches; no market/tick digital twin (qip-twin) is consulted per candidate.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1967,10 +1969,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 (lane L10) for the shadow binary. Mutations that fired: Structural::build_with ignoring the source (the count stays models x declared); Session::pass handing the engine no source (the journal holds only the declared two). The closure named qip-deepbrain as a second implementor; the ambient path there runs no engine::run, so it has no simulate stage to feed (R12-AGENCY-6105 / 7027 stay open for that reason), and the CLI did not depend on qip-twin before this change. The twin is fitted from series the operator's document carries, and the binding of a variable to an instrument is the operator's declaration: nothing rescales basis points into the variable's unit."
   },
   {
     "id": "R12-AGENCY-6089",
