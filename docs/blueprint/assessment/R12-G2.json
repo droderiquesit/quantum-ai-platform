@@ -513,25 +513,26 @@
   },
   {
     "id": "R12-WORLD-9022",
-    "status": "PARTIAL",
-    "current": "lattice::route (lattice.rs:313) weights a horizon's population from a reputation cache keyed (horizon, model) when the cache weighs every member, and otherwise returns the equal-weight default ensemble flagged fallback. The kernel's LatticeStage passes the calibrator's weights as the cache each cycle and counts fallbacks (lattice_stage.rs:330-343).",
+    "status": "COMPLETE",
+    "current": "lattice::route keys the reputation cache by ReputationKey { domain, horizon, model } and reads Question.domain, falling back to the equal-weight default ensemble when the row is not fully weighed in that domain; Calibrator::score records model error under the resolutions domain and refresh_weights normalises weights per (domain, horizon). The kernel LatticeStage asks every question in LATTICE_DOMAIN and carries the domain on each Pending into its Resolution, so the cache it passes each cycle is the per-domain one. The model society is the rows population, which route weighs member by member.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/lattice.rs:313",
-      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs:330",
+      "backend/crates/services/qip-world-model/src/lattice.rs::ReputationKey and route",
+      "backend/crates/services/qip-world-model/src/lattice.rs::Calibrator::score and refresh_weights",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LATTICE_DOMAIN, Pending::domain, LatticeStage::run",
       "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_question_routes_by_reputation_and_falls_back_to_the_default_ensemble"
     ],
-    "gap": "Routing ignores Question.domain: route reads only question.horizon, and the cache key has no domain or context. There is no 'model society' dimension. Reputation is per horizon, not 'best in its context'. There is no forecast-router service separate from the in-cycle stage.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-cost-router",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test forecast_lattice a_question_routes_by_reputation",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Horizon routing and fallback are real; domain and society routing are absent."
+    "notes": "Closed 2026-10-18 (lane L14). Mutation: looking the cache up under a fixed domain in route failed at forecast_lattice.rs:330 (the macro question routed to the markets best). Honest limit: the kernel asks one domain (markets) today, so a second domain earns a reputation only once a non-close target is asked; there is no router service separate from the in-cycle stage, and the clause does not ask for one."
   },
   {
     "id": "R12-WORLD-9023",
