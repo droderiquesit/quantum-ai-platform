@@ -50,6 +50,13 @@ pub struct FamilyDeclaration {
     pub objective: Option<String>,
     /// Margin the quantum path must beat the baseline by. Positive and finite.
     pub promotion_threshold: Option<f64>,
+    /// The function that turns the family's problem into the form a quantum
+    /// path runs, named as the code names it (`PortfolioProblem::to_qubo`).
+    /// A family with a baseline and an objective but no encoding is a claim
+    /// that a quantum path exists with nothing saying how a problem reaches
+    /// it; the router compares this name against the encoder it actually
+    /// calls and refuses a family whose declaration describes another.
+    pub encoding: Option<String>,
 }
 
 /// An admitted family: all three declarations present and valid.
@@ -59,6 +66,7 @@ pub struct WorkloadFamily {
     classical_baseline: String,
     objective: String,
     promotion_threshold: f64,
+    encoding: String,
 }
 
 impl WorkloadFamily {
@@ -74,6 +82,9 @@ impl WorkloadFamily {
     pub fn promotion_threshold(&self) -> f64 {
         self.promotion_threshold
     }
+    pub fn encoding(&self) -> &str {
+        &self.encoding
+    }
 }
 
 /// The registry's account of one family.
@@ -82,6 +93,13 @@ pub enum FamilyStatus {
     Registered(WorkloadFamily),
     NotBuilt { reason: String },
 }
+
+/// The encoder [`Foundry::platform`] declares for portfolio allocation: the
+/// one function in the tree that turns a portfolio problem into a QUBO.
+/// Spelled here as a declaration, and checked against the router's own name
+/// for what it calls, so the registration cannot describe an encoding the
+/// quantum arm does not run.
+pub const PORTFOLIO_ALLOCATION_ENCODING: &str = "PortfolioProblem::to_qubo";
 
 #[derive(Debug, Default)]
 pub struct Foundry {
@@ -110,6 +128,7 @@ impl Foundry {
         }
         let classical_baseline = declared("a classical baseline", &declaration.classical_baseline)?;
         let objective = declared("a shared objective", &declaration.objective)?;
+        let encoding = declared("an encoding", &declaration.encoding)?;
         let promotion_threshold = match declaration.promotion_threshold {
             Some(t) if t.is_finite() && t > 0.0 => t,
             _ => {
@@ -125,6 +144,7 @@ impl Foundry {
                 classical_baseline,
                 objective,
                 promotion_threshold,
+                encoding,
             }),
         );
         Ok(())
@@ -173,6 +193,7 @@ impl Foundry {
                 ),
                 objective: Some("PortfolioProblem::objective_at".into()),
                 promotion_threshold: Some(0.01),
+                encoding: Some(PORTFOLIO_ALLOCATION_ENCODING.into()),
             },
         )?;
         let reason = "research family not built: no encoding, baseline or benchmark exists in-tree, and a variational or kernel model would need an ADR for any dependency it implies";
