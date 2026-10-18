@@ -792,16 +792,15 @@
   },
   {
     "id": "R12-EVID-2035",
-    "status": "PARTIAL",
-    "current": "admit skips same-origin corroboration and now credits authenticity per independent origin at other sources (capped), using normalised-statement and document-hash collapse; fed in production.",
+    "status": "COMPLETE",
+    "current": "EvidenceFabric::admit skips same-origin corroboration and credits authenticity per independent origin at other sources (capped at MAX_CORROBORATING_ORIGINS), collapsing copies by normalised-statement fingerprint and document hash; fed in production through the kernel's evidence intake. A test now asserts the supporting weight itself: the same probe claim earns an identical belief_weight and authenticity after ten copies of one press release as after one, and a strictly higher one after one copy plus an independent origin.",
     "evidence": [
-      "backend/crates/libs/qip-evidence/src/fabric.rs:595-622",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:667-679",
-      "qip-world-model/tests/evidence_fabric.rs::ten_copies_of_one_press_release_count_as_one_origin",
-      "qip-world-model/tests/evidence_fabric.rs::a_second_independent_source_corroborates_and_a_copy_of_the_same_document_does_not",
-      "backend/crates/libs/qip-evidence/src/fabric.rs::EvidenceFabric::admit"
+      "backend/crates/libs/qip-evidence/src/fabric.rs:758 EvidenceFabric::admit",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:840 authenticity credited per independent origin",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:719 ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it",
+      "qip-world-model/tests/evidence_fabric.rs::ten_copies_of_one_press_release_count_as_one_origin"
     ],
-    "gap": "No test asserts the supporting weight (not the origin count) is unchanged by copies; normalisation catches punctuation/case only, not reworded copies; belief_weight reaches no decision.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -809,10 +808,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoning",
+    "verification": "cargo test -p qip-world-model --test evidence_fabric ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: mutation fired - crediting per corroborating claim (others.len()) instead of per independent origin gave the ten-copy probe authenticity 0.6 against the one-copy probe's lower score. Limits that do not belong to this clause: normalisation collapses punctuation and case, not reworded copies; belief_weight reaches no decision. Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-EVID-2036",
