@@ -4118,43 +4118,48 @@
   {
     "id": "R12-DATA-9184",
     "status": "PARTIAL",
-    "current": "autoscaling_config on the Bigtable cluster; row-key module; no app profiles; disabled.",
+    "current": "Both Bigtable clusters autoscale (autoscaling_config); hotspot-safe row keys are tested in qip-storage; per-workload app profiles ingest/serve/batch exist. Gated on enable_bigtable, false everywhere.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:338",
-      "backend/crates/libs/qip-storage/src/rowkey.rs"
+      "infrastructure/terraform/modules/data/main.tf:440 google_bigtable_instance.timeseries",
+      "infrastructure/terraform/modules/data/main.tf:519 google_bigtable_app_profile.timeseries",
+      "backend/crates/libs/qip-storage/src/rowkey.rs",
+      "backend/crates/libs/qip-storage/tests/archive_and_rowkey.rs:20 no_generated_row_key_begins_with_a_time_component_and_keys_sort_by_entity_first",
+      "infrastructure/terraform/modules/data/tests/scaling.tftest.hcl:24"
     ],
-    "gap": "App profiles; enable.",
+    "gap": "enable_bigtable is false in every committed environment, so no committed plan renders the profiles; enabling it is an owner (paid-resource) switch and no Rust adapter reaches Bigtable.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/scaling.tftest.hcl; cargo test -p qip-storage --test archive_and_rowkey",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): app profiles added; terraform test 12 passed, 0 failed. Mutation: ingest profile set to multi-cluster routing failed the run; restored byte-for-byte. Kept PARTIAL on the same precedent as R12-LEDGER-8132 (lane L02): the check is a plan and nothing committed plans the instance."
   },
   {
     "id": "R12-DATA-9185",
     "status": "PARTIAL",
-    "current": "Spanner instance fixed at 100 processing units with no autoscaling; no schema; disabled.",
+    "current": "google_spanner_instance.global autoscales (autoscaling_limits min var.spanner_min_processing_units default 1000, max default 3000; targets 65% high-priority CPU, 90% storage) instead of a fixed 100 processing units; the floor variable refuses anything below one node or not a whole node, and the ceiling below the floor. Gated on enable_spanner, false everywhere; no schema.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:380-392"
+      "infrastructure/terraform/modules/data/main.tf:579 google_spanner_instance.global (autoscaling_limits :603)",
+      "infrastructure/terraform/modules/data/variables.tf:131 spanner_min_processing_units",
+      "infrastructure/terraform/modules/data/tests/scaling.tftest.hcl:84 spanner_autoscales_from_the_floor, :108 refused, :136 admitted"
     ],
-    "gap": "Autoscaling config and schema.",
+    "gap": "No schema or key design exists to eliminate hotspots (the ledger adapter is R12-LEDGER-8132/8137), the floor of one node is a minimum rather than a size measured against the close, and enable_spanner is false in every committed environment (owner switch).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/scaling.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): autoscaling_config replaces processing_units = 100; google_kms_crypto_key.records now also counts on enable_spanner, because enabling Spanner alone indexed an empty tuple and failed the plan. Mutations: restoring processing_units = 100 failed 'must autoscale'; deleting the floor clause failed spanner_floor_below_one_node_is_refused ('Missing expected failure') once the refused value was 0 (with 100 the whole-node clause also refused it and the mutation survived, so the value was changed); restored byte-for-byte."
   },
   {
     "id": "R12-FINOPS-9186",

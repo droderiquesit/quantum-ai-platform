@@ -302,6 +302,47 @@ fn the_terraform_plan_declares_lifecycle_rules_for_all_derived_data_stores() {
              derived data must not be retained forever (FINOPS-014)"
         );
     }
+
+    // R12-DATA-7013 and R12-DATA-8124: the simulation bucket and the regional
+    // segment store each carry a retention policy and a lifecycle rule, and
+    // the simulation bucket names a class for each of its three prefixes. The
+    // training branch above is conditional and the training bucket lives in
+    // modules/ai, so until these were added the test asserted nothing about
+    // this file at all.
+    let bucket = |label: &str| -> String {
+        let header = format!("resource \"google_storage_bucket\" \"{label}\" {{");
+        let body = archive_config
+            .split(header.as_str())
+            .nth(1)
+            .unwrap_or_else(|| panic!("modules/data declares no google_storage_bucket.{label}"));
+        body.split("\nresource ")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    };
+    for label in ["simulation", "segments"] {
+        let body = bucket(label);
+        assert!(
+            body.lines().any(|l| collapsed(l) == "retention_policy {"),
+            "google_storage_bucket.{label} sets no retention_policy (R12-DATA-7013)"
+        );
+        assert!(
+            body.lines().any(|l| collapsed(l) == "lifecycle_rule {"),
+            "google_storage_bucket.{label} has no lifecycle rule; derived data must not be \
+             retained forever (FINOPS-014)"
+        );
+    }
+    let simulation = bucket("simulation");
+    for prefix in ["outputs/", "campaigns/", "manifests/"] {
+        let quoted = format!("\"{prefix}\"");
+        assert!(
+            simulation.lines().any(|l| {
+                let l = collapsed(l);
+                l.starts_with("matches_prefix") && l.contains(quoted.as_str())
+            }),
+            "google_storage_bucket.simulation names no lifecycle class for {prefix} (R12-DATA-7013)"
+        );
+    }
 }
 
 /// Every Cloud Storage bucket this repository declares, and the class of
@@ -309,7 +350,7 @@ fn the_terraform_plan_declares_lifecycle_rules_for_all_derived_data_stores() {
 /// [`no_bucket_or_dataset_lands_external_world_content`] until somebody
 /// states what it holds — which is the review R12-DATA-8012 asks for, made a
 /// step nobody can skip by adding a resource.
-const BUCKET_CLASSES: [(&str, &str); 10] = [
+const BUCKET_CLASSES: [(&str, &str); 12] = [
     (
         "training",
         "model training staging: derived features and weights",
@@ -338,6 +379,14 @@ const BUCKET_CLASSES: [(&str, &str); 10] = [
     ("config_files", "workload configuration files"),
     ("static_shell", "the public edge's static shell"),
     ("evidence", "internal evidence, retention-locked"),
+    (
+        "segments",
+        "regional segment store: sealed tick and internal replay segments",
+    ),
+    (
+        "simulation",
+        "simulation outputs, campaign datasets and their manifests",
+    ),
 ];
 
 /// Tokens that, in a bucket's or dataset's Terraform label or name, would

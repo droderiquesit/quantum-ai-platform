@@ -2757,13 +2757,17 @@
   {
     "id": "R12-DATA-8124",
     "status": "PARTIAL",
-    "current": "infrastructure/terraform/fabric.tf:23 fabricd resources gated on var.event_fabric_broker, null in every environment; no regional landing bucket resource for replay segments/knowledge packs found",
+    "current": "modules/data declares google_storage_bucket.segments: regional (var.region), CMEK, unlocked 7-day retention policy, deleted at 30 days, named for segments rather than 'landing' because that token is refused in a store name (R12-DATA-8012); output segment_bucket. Gated on enable_cloud_storage, false everywhere. fabricd has a GCS archive writer (QIP_EVENT_FABRIC_ARCHIVE_BUCKET) but nothing points it at this bucket, and nothing copies a segment into the dual-region archive.",
     "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:260 google_storage_bucket.segments",
+      "infrastructure/terraform/modules/data/outputs.tf:22 segment_bucket",
+      "infrastructure/terraform/modules/data/tests/retention_classes.tftest.hcl:195 the_segment_store_is_regional_keyed_and_expires_what_it_holds",
+      "backend/crates/apps/qip-fabricd/src/config.rs:46 ARCHIVE_BUCKET",
       "infrastructure/terraform/fabric.tf:23 count = var.event_fabric_broker == null ? 0 : 1"
     ],
-    "gap": "No landing bucket; fabricd has no GCS writer config; gated off everywhere.",
+    "gap": "fabricd is not pointed at the bucket (fabric.tf belongs to lane L22, and event_fabric_broker is null everywhere), and must not be until a Storage Transfer job or compaction copies segments into the archive bucket: object lifecycle cannot move objects between buckets, as the closure assumed, so the 30-day expiry would otherwise delete the archive. Private Google Access on the fabricd subnet is unproven and enable_cloud_storage is an owner switch.",
     "implemented": false,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -2771,10 +2775,10 @@
       "R12-FABRIC-8101"
     ],
     "blocked_by": "",
-    "verification": "terraform plan + fabricd integration",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/retention_classes.tftest.hcl; cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "2026-10-18 (lane L13): regional segment bucket added. Mutation: location set to var.bucket_location failed 'must sit in the deployment's region'; deleting its retention_policy failed the acceptance test 'google_storage_bucket.segments sets no retention_policy'; both restored byte-for-byte. The closure's 'lifecycle rule into the archive bucket' is not something GCS lifecycle can do; the transfer is the missing piece."
   },
   {
     "id": "R12-DATA-8125",
@@ -2800,13 +2804,16 @@
   {
     "id": "R12-DATA-8126",
     "status": "PARTIAL",
-    "current": "One autoscaled cluster declared (gated); no app profile; no sink.",
+    "current": "google_bigtable_instance.timeseries declares two autoscaled clusters in zones -a and -b, with three google_bigtable_app_profile resources chosen by consistency need: ingest (single-cluster to the primary, read-your-writes), serve (multi-cluster routing, survives a zonal outage), batch (single-cluster to the secondary, PRIORITY_LOW). All gated on enable_bigtable, false everywhere; no fabric-sink-bigtable.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:322-347"
+      "infrastructure/terraform/modules/data/main.tf:440 google_bigtable_instance.timeseries (second cluster :469)",
+      "infrastructure/terraform/modules/data/main.tf:489 local.bigtable_app_profiles",
+      "infrastructure/terraform/modules/data/main.tf:519 google_bigtable_app_profile.timeseries",
+      "infrastructure/terraform/modules/data/tests/scaling.tftest.hcl:24 bigtable_has_two_clusters_in_different_zones_and_a_profile_per_workload"
     ],
-    "gap": "Second cluster, app profiles, sink.",
+    "gap": "fabric-sink-bigtable (R12-DATA-10035) does not exist, and enable_bigtable is false in every committed environment, so no committed plan renders the instance; enabling it is an owner switch and the Rust provider still refuses the Bigtable target (no gRPC adapter).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -2814,10 +2821,10 @@
       "R12-FABRIC-8080"
     ],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/scaling.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): second cluster and three app profiles added; terraform 1.9.8 test in modules/data: 12 passed, 0 failed. Mutations: deleting the secondary cluster failed 'must declare at least two clusters'; switching ingest to multi-cluster routing failed 'must route to a single cluster'; both restored byte-for-byte. Kept PARTIAL: the sink half of the clause is R12-DATA-10035 and the plan the check asks for is mocked, not a committed environment's."
   },
   {
     "id": "R12-DATA-8127",
