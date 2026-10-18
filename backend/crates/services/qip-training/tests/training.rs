@@ -1687,3 +1687,95 @@ fn a_job_spec_carries_its_queue_and_capacity_and_a_critical_spot_job_or_a_full_q
     assert_eq!(full.code(), "denied", "{}", full.message());
     Ok(())
 }
+
+/// Two features that move together on every probe row (the second is the
+/// first plus a little noise) and a target that is their small difference.
+/// On the data, the difference stays inside a narrow band; at the edge of
+/// the box the features span, pulled apart, it does not.
+fn collinear_dataset(name: &str, rows_wanted: usize, seed: u64) -> Result<TrainingDataset> {
+    let mut rng = Xoshiro256::seeded(seed);
+    let mut rows = Vec::with_capacity(rows_wanted);
+    let mut targets = Vec::with_capacity(rows_wanted);
+    let mut times = Vec::with_capacity(rows_wanted);
+    for index in 0..rows_wanted {
+        let first = rng.uniform(-10.0, 10.0);
+        let second = first + rng.uniform(-0.1, 0.1);
+        targets.push(first - second);
+        rows.push(vec![first, second]);
+        times.push(day(index as i64));
+    }
+    TrainingDataset::new(name, names(2), rows, targets, times)
+}
+
+/// R12-REFLEX-6075: beside the step budget, a student is held to a
+/// parameter-bytes budget and a failure-mode budget, and refused by name over
+/// either.
+///
+/// Mutation: make `failure_modes` in `distill.rs` return 0 — the
+/// extrapolating student is handed out and the first refusal fails.
+/// Mutation: drop the `parameter_bytes` shortfall in
+/// `FidelityPolicy::shortfalls` — the byte-budget refusal fails.
+#[test]
+fn a_student_over_its_memory_or_failure_mode_budget_is_refused_by_name() -> Result<()> {
+    let relaxed = FidelityPolicy {
+        minimum_agreement_r2: -1.0,
+        minimum_rank_correlation: -1.0,
+        minimum_decision_agreement: 0.0,
+        minimum_probe_samples: 1,
+        ..FidelityPolicy::default()
+    };
+
+    // Premise: an ordinary linear student passes every budget at defaults.
+    let plain = linear_dataset("plain", 200, 0.5, &[1.0, -2.0], 0.05, 3)?;
+    let plain_teacher = fit(ModelFamily::Linear { ridge: 1e-6 }, &plain)?;
+    let plain_probe = linear_dataset("plain-probe", 120, 0.5, &[1.0, -2.0], 0.05, 5)?;
+    let ordinary = distil(
+        &plain_teacher,
+        &plain_probe,
+        StudentForm::Linear { ridge: 1e-9 },
+        0.0,
+    )?;
+    assert_eq!(
+        ordinary.fidelity().failure_modes,
+        0,
+        "{}",
+        ordinary.fidelity().summarise()
+    );
+    assert!(ordinary.fidelity().parameter_bytes > 0);
+    assert!(ordinary.approved_student(&relaxed).is_ok());
+
+    // A student fitted where its inputs always move together extrapolates
+    // off that line at the edge of the box: a failure mode, refused.
+    let together = collinear_dataset("together", 300, 7)?;
+    let teacher = fit(ModelFamily::Linear { ridge: 1e-9 }, &together)?;
+    let probe = collinear_dataset("together-probe", 200, 9)?;
+    let wild = distil(&teacher, &probe, StudentForm::Linear { ridge: 1e-9 }, 0.0)?;
+    assert!(
+        wild.fidelity().failure_modes > 0,
+        "{}",
+        wild.fidelity().summarise()
+    );
+    let refused = wild
+        .approved_student(&relaxed)
+        .expect_err("a student that fails at the edge of its inputs was handed out");
+    assert!(
+        refused.message().contains("bound input(s)"),
+        "{}",
+        refused.message()
+    );
+
+    // The byte budget, on the ordinary student.
+    let tight = FidelityPolicy {
+        maximum_parameter_bytes: 8,
+        ..relaxed
+    };
+    let over = ordinary
+        .approved_student(&tight)
+        .expect_err("a student over its memory budget was handed out");
+    assert!(
+        over.message().contains("parameter byte(s)"),
+        "{}",
+        over.message()
+    );
+    Ok(())
+}
