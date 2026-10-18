@@ -2342,9 +2342,10 @@
     "current": "qip-capital and the kernel issue signed envelopes/grants carried to cells; authoritative capital state in kernel ledger; runs in Cloud Run binaries.",
     "evidence": [
       "backend/crates/services/qip-capital/src",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1138 no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs the_ledger_of_records_durable_write_seam_is_named_by_no_crate_but_qip_ledgerd"
     ],
-    "gap": "Placement on Cloud Run satisfies the requirement (ADR 0114 Amendment 1). Needs the authoritative store per LEDGER-8007 (ADR 0113 §1) and an inspection test that authoritative capital state is written only through qip-ledgerd.",
+    "gap": "Placement on Cloud Run satisfies the requirement (ADR 0114 Amendment 1). Authoritative capital state is not yet written only through qip-ledgerd: qip-ledgerd is not in catalogue.tf and no environment deploys it, and the kernel's TrackedCapital, the cells' UserLedger, the fabric Wallet and the brokers' AccountLedger are separate in-process writers (the ledger_001 test documents them). What is pinned today is narrower: the durable ledger-of-record write seam (LedgerBackend, LedgerBatch) is named by qip-ledgerd alone. The whole requirement waits on LEDGER-8007 and the consolidation of those stores.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2355,7 +2356,7 @@
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Corrected 2026-10-18 (lane L08): added the write-seam guard, kept PARTIAL. Mutation: pub struct LedgerBatch appended to qip-risk-engine's lib.rs failed the test naming qip-risk-engine; restored byte for byte. The closure's authoritative_capital_state_is_written_only_through_qip_ledgerd would be false today, so it was not written."
   },
   {
     "id": "R12-GCP-8106",
