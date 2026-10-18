@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 430 | 28.3% |
+| Blueprint completion (COMPLETE) | 431 | 28.4% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
-| Tested (a named test demonstrates it) | 1222 | 80.5% |
+| Tested (a named test demonstrates it) | 1223 | 80.6% |
 | Integrated (reached from a composition root) | 854 | 56.3% |
 | Deployable (provisionable from committed config) | 207 | 13.6% |
 | End-to-end demonstrated | 19 | 1.3% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 430 |
-| PARTIAL | 941 |
+| COMPLETE | 431 |
+| PARTIAL | 940 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -56,7 +56,7 @@ register (ADR 0099), and there is no second one.
 | [CICD](#cicd) | 60 | 20 | 29 | 3 | 8 | 0 | 44 | 36 | 0 |
 | [GCP](#gcp) | 54 | 8 | 25 | 15 | 6 | 0 | 33 | 24 | 0 |
 | [API](#api) | 8 | 1 | 7 | 0 | 0 | 0 | 8 | 7 | 0 |
-| [RES](#res) | 61 | 15 | 39 | 7 | 0 | 0 | 47 | 40 | 0 |
+| [RES](#res) | 61 | 16 | 38 | 7 | 0 | 0 | 47 | 41 | 0 |
 | [FINOPS](#finops) | 15 | 3 | 8 | 4 | 0 | 0 | 11 | 8 | 0 |
 | [COVERAGE](#coverage) | 57 | 5 | 51 | 1 | 0 | 0 | 55 | 55 | 0 |
 
@@ -1607,7 +1607,7 @@ register (ADR 0099), and there is no second one.
 | R12-RES-9175 | GCS research data per residency; derived stores rehydrated from immutable objects | bucket_location selects the residency location; sealed segments of irreplaceable streams are archived with a manifest index, and the broker hydrates a retained-away offset from the archive (Broker::read_batch). The derived ledger store is rebuilt from those immutable objects: a ledger started on an empty directory after the outcomes stream's sealed segments were archived and retained away books the whole history to exactly the original store's balances. That test also exposed and now holds a fix: a rebuilding ledger committed each replayed batch below the group's checkpoint, the broker refused each rewind and the consumer's circuit opened every time (24 batches in 53 s); PartitionWorker::commit_group now defers group commits after a refusal until the worker is caught up. | COMPLETE |  |  | P1 | cargo test -p qip-ledgerd --test fabric a_ledger_started_on_an_empty_store_rebuilds_the_original_balances_from_archived_segments |  |
 | R12-RES-9176 | GitOps plane loss: workloads keep running; recreate from Git | Cloud Run services run independently of the controllers that created them; the cluster is in Terraform. Not drilled. | PARTIAL | Drill. |  | P1 | game day |  |
 | R12-RES-9177 | Registry region loss: nodes keep local images; secondary repository before prod | Registries are regional with no secondary or replication. | MISSING | Secondary repository and check. |  | P1 | terraform plan |  |
-| R12-RES-9178 | Autonomous dev plane is never an availability dependency | deploy.yml, infra.yml and image.yml are workflow_dispatch-able by a human and no runtime calls an agent service; no test asserts this. | PARTIAL | A test asserting the property. |  | P1 | inspection |  |
+| R12-RES-9178 | Autonomous dev plane is never an availability dependency | deploy.yml, infra.yml and image.yml each declare workflow_dispatch and none is triggered by or calls an agent workflow (cicd_governance.rs::the_human_release_pipeline_never_depends_on_the_autonomous_development_plane), and no source under backend/crates/apps names a model host, so no deployable binary calls an agent service (no_deployable_binary_names_a_model_host_so_no_runtime_component_calls_an_agent_service). | COMPLETE |  |  | P1 | cd backend && cargo test -p qip-acceptance --test cicd_governance |  |
 | R12-RES-10119 | SLO/replay gates trigger rollback on regression | SLO objectives are declared and tested as data; a promotion proving hook verifies convergence; no automated rollback on SLO regression. | PARTIAL | Rollback automation driven by SLO evaluation. | R12-OBS-10057, R12-CICD-10118 | P1 | game-day: promote degraded candidate in stage |  |
 | R12-RES-10124 | Fabric loss: reflex continues, spools boundedly, narrows on pressure | main.rs now builds the spool, pressure gauge and writer unconditionally and arms with_journal_wire; gauge reads Normal/Narrow/Exhausted; wired cell narrows then halts new exposure, withdrawals continue; ship returns without waiting on a stalled writer; stale policy narrows sizing. | COMPLETE | None for the requirement; not deployed. | R12-FABRIC-10076 | P0 | cargo test -p qip-edge-node --test event_fabric_pressure + a main wiring test |  |
 | R12-RES-10125 | Fabric loss: platform alerts immediately and replays segments | No alert policy on Fabric health; fabricd not deployed; replay from archive untested at platform level. | MISSING | Alert + restore runbook automation. | R12-FABRIC-10027, R12-OBS-10057 | P0 | game day |  |
