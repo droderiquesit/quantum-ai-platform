@@ -66,6 +66,15 @@ pub const MINIMUM_SAMPLE: usize = 10;
 /// not a certainty.
 const PSEUDO_COUNTS: f64 = 4.0;
 
+/// How much worse the newer half of a component's window may score, in mean
+/// Brier, than the older half before the component is called drifting.
+///
+/// A chosen tolerance, not a derived one: it is the edge a lucky streak in
+/// one half of a window must not cross, and the tests pin both sides of it.
+/// It only ever lowers a weight, so a tolerance set too high costs a late
+/// discount rather than a raised weight.
+pub const DRIFT_TOLERANCE: f64 = 0.05;
+
 /// The kind of component an estimate is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -246,6 +255,47 @@ pub struct Capability {
     pub mean_brier: f64,
     pub sample_count: usize,
     pub last_updated: Timestamp,
+    /// Set only when the newer half of the window scores worse than the
+    /// older by more than [`DRIFT_TOLERANCE`] (R12-WORLD-3036).
+    #[serde(default)]
+    pub drift: Option<Drift>,
+}
+
+impl Capability {
+    /// The factor evidence from this component is scaled by.
+    ///
+    /// The window accuracy, except for a drifting component, which is
+    /// weighted by what it has done lately: the smaller of the two. The
+    /// window average is the very number drift says is out of date, and
+    /// taking the minimum means the discount can only lower a weight, never
+    /// lift one above the measured accuracy. The recent accuracy is shrunk
+    /// like the window's, so it stays inside `(0, 1)` — a factor of zero
+    /// would be refused by REASON rather than discounting anything.
+    pub fn weight(&self) -> f64 {
+        match &self.drift {
+            Some(drift) => self.accuracy.min(drift.recent_accuracy),
+            None => self.accuracy,
+        }
+    }
+}
+
+/// A component whose recent record is worse than its older one: the model or
+/// the data it reads has moved under it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Drift {
+    /// Mean Brier over the older half of the window.
+    pub earlier_brier: f64,
+    /// Mean Brier over the newer half.
+    pub recent_brier: f64,
+    /// The newer half's hit rate shrunk toward one half like the window's.
+    pub recent_accuracy: f64,
+}
+
+impl Drift {
+    /// How much worse the newer half scored; positive for a drifting one.
+    pub fn worsening(&self) -> f64 {
+        self.recent_brier - self.earlier_brier
+    }
 }
 
 /// A bounded record of one component's graded outcomes.
@@ -335,6 +385,43 @@ impl CapabilityEstimate {
             mean_brier: self.brier_sum() / samples,
             sample_count: n,
             last_updated,
+            drift: self.drift(),
+        })
+    }
+
+    /// The drift in this record, or `None` where the record is too short to
+    /// judge or has not worsened past [`DRIFT_TOLERANCE`].
+    ///
+    /// The window is cut in two at its middle, older outcomes first, and each
+    /// half's mean Brier is compared. Each half must itself hold
+    /// [`MINIMUM_SAMPLE`] outcomes, so a window under twice that is not
+    /// judged at all rather than judged on a half too thin to estimate.
+    /// Improvement is not reported: a component getting better keeps its
+    /// window accuracy until the window itself catches up, the cautious side
+    /// of an asymmetry the weight is built around.
+    pub fn drift(&self) -> Option<Drift> {
+        let window = &self.window;
+        let n = window.len();
+        if n < 2 * MINIMUM_SAMPLE {
+            return None;
+        }
+        let split = n / 2;
+        let older: Vec<&ScoredOutcome> = window.iter().take(split).collect();
+        let newer: Vec<&ScoredOutcome> = window.iter().skip(split).collect();
+        let mean_brier = |half: &[&ScoredOutcome]| {
+            half.iter().map(|o| o.brier()).sum::<f64>() / half.len() as f64
+        };
+        let earlier_brier = mean_brier(&older);
+        let recent_brier = mean_brier(&newer);
+        if recent_brier - earlier_brier <= DRIFT_TOLERANCE {
+            return None;
+        }
+        let recent_hits = newer.iter().filter(|o| o.correct).count();
+        Some(Drift {
+            earlier_brier,
+            recent_brier,
+            recent_accuracy: (recent_hits as f64 + PSEUDO_COUNTS / 2.0)
+                / (newer.len() as f64 + PSEUDO_COUNTS),
         })
     }
 }
@@ -452,7 +539,7 @@ impl SelfModel {
     pub fn factor(&self, key: &ComponentKey) -> Option<f64> {
         self.estimate(key)
             .ok()
-            .map(|capability| capability.accuracy)
+            .map(|capability| capability.weight())
     }
 
     /// Factors keyed by evidence origin, for every detector and analyst with
@@ -474,8 +561,8 @@ impl SelfModel {
             };
             factors
                 .entry(key.id.clone())
-                .and_modify(|held: &mut f64| *held = held.min(capability.accuracy))
-                .or_insert(capability.accuracy);
+                .and_modify(|held: &mut f64| *held = held.min(capability.weight()))
+                .or_insert(capability.weight());
         }
         factors
     }
