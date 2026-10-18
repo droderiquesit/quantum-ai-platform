@@ -23,9 +23,21 @@ which with 538 does not make 1,518); recount with `python3 -I -c` over
 any document.
 
 Status counts are not restated as a drifting table; run the snippet above.
-Recounted **2026-10-18** with `python3 -I` over `docs/blueprint/assessment/*.json`:
-COMPLETE 249, PARTIAL 1122, MISSING 114, BLOCKED 31, INCORRECT 1,
-NEEDS-VALIDATION 1 (= 1518). On 2026-10-17 it was COMPLETE 172, PARTIAL 1154,
+Recounted **2026-10-18, later the same day** with `python3 -I` over
+`docs/blueprint/assessment/*.json`: COMPLETE 251, PARTIAL 1120, MISSING 114,
+BLOCKED 31, INCORRECT 1, NEEDS-VALIDATION 1 (= 1518). Two AGENCY rows
+(1152, 6107) were promoted after `qip agency shadow` began calling
+`engine::learn_shadowed` on every shadowed pass's own simulated outcome —
+observe-effect, attribute and update run on the default path, the outcome is
+kept in the Action Outcome Memory declared `simulated`, and the update is
+journaled beside the pass as `learned` (or `learning-withheld` with the
+reason) — proven by a binary-level test whose five mutations each fired. Ten
+other AGENCY rows (1006, 1025, 1182, 1184, 1199, 6104, 6106, 6108, 7133,
+7148) stay PARTIAL with the gap narrowed to the clause still unmet: a
+*measured* effect, an *executed* act, a world-model update, or orchestration,
+none of which exists while every shipped adapter refuses (ADR 0114). Earlier
+on 2026-10-18 it was COMPLETE 249, PARTIAL 1122, MISSING 114, BLOCKED 31,
+INCORRECT 1, NEEDS-VALIDATION 1 (= 1518). On 2026-10-17 it was COMPLETE 172, PARTIAL 1154,
 MISSING 159: eleven independent graders read 980 rows (ran nothing), 88
 were proposed COMPLETE, eleven were held back (nine TICK rows reachable only
 with `QIP_DEEPBRAIN_TICK_EVERY` set, which needs a licensing decision;
