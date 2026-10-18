@@ -209,7 +209,7 @@
       "backend/crates/services/qip-reasoning-engine/src/constraint.rs constraint reasoner",
       "backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs"
     ],
-    "gap": "Neural-symbolic hybrids and planning reasoners absent.",
+    "gap": "Neural-symbolic hybrids and planning reasoners absent. Registering a planning or hybrid ModelClass would be a card in a test registry: the graph and causal cards in symbolic_reasoner_registration.rs are test fixtures, no binary registers a reasoner card. The real work is a planning search over qip-reasoning-engine's constraint goals and a path by which a registered model's prediction enters the Bayesian network (symbolic_stage.rs composes rules, timeline, network, constraint and lifecycle but takes no model prediction). symbolic_stage is advisory by design (its header), so a hybrid would be recorded, not acted on.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -220,7 +220,7 @@
     "verification": "cargo test -p qip-reasoning-engine; kernel REASON tests",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: not implemented; no running path to attach a registration to."
   },
   {
     "id": "R12-MODEL-4011",
@@ -2028,7 +2028,7 @@
       "backend/crates/services/qip-learning-engine/src/attribution.rs:22-42 Source",
       "backend/crates/runtime/qip-kernel/src/sizing_review.rs"
     ],
-    "gap": "Four-way decomposition record.",
+    "gap": "A four-way split needs three order quantities this platform does not stamp together: the thesis's reference size, the size after sizing, and the size the book finally allocated. AttributionLineage::note_release (runtime/qip-kernel/src/attribution.rs) stamps strategy, capital policy, risk rule, execution path and quoted spread only, and 'allocation' has no counterfactual yet (what weight the book would have held with no allocator). Without those, prediction/sizing/allocation can only be defined by choosing the numbers; the existing per-fill total (signed_qty x (mark - fill) - commission) already splits exactly into the execution term (arrival to fill, plus commission) and the held move (arrival to mark). Next step: stamp the three quantities at release, then split the held move as q_ref x move (prediction), (q_sized - q_ref) x move (sizing), (q_final - q_sized) x move (allocation), and assert the sum equals the fill total.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2039,7 +2039,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: not implemented. Read attribution.rs and the learning engine's Attribution; the four-way record would have defined its own reference quantities rather than reading stamped ones, and the grader's closure names none of the three sources."
   },
   {
     "id": "R12-RISK-4093",
