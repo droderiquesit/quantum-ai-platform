@@ -211,11 +211,12 @@ fn each_attention_record_is_caused_by_the_signal_record_it_answers() {
     let written = ambient
         .record(1, &round, start())
         .unwrap_or_else(|e| panic!("{e}"));
-    // One signal, its activation, and the assumption-health record the
-    // coverage gap's challenge put on the table (R12-AMBIENT-1143).
+    // One signal, its activation, the plan the started item compiled to
+    // (R12-REASON-3061), and the assumption-health record the coverage gap's
+    // challenge put on the table (R12-AMBIENT-1143).
     assert_eq!(
-        written, 3,
-        "one signal, its activation and the assumption health"
+        written, 4,
+        "one signal, its activation, the sweep's plan and the assumption health"
     );
     let events: Vec<_> = ambient.log().events().collect();
     assert!(events.iter().all(|e| e.lineage.producer == AMBIENT_ORIGIN));

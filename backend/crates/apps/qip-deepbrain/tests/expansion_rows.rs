@@ -986,6 +986,116 @@ fn a_drifted_model_opens_a_curriculum_task_and_an_undrifted_one_does_not() {
     );
 }
 
+fn evaluation(question: &str, passing: bool) -> qip_expansion::promotion::EvaluationRecord {
+    use qip_expansion::promotion::{Criterion, EvaluationRecord, Finding};
+    let criteria = [
+        Criterion::Calibration,
+        Criterion::Robustness,
+        Criterion::Leakage,
+        Criterion::RegimeSensitivity,
+        Criterion::Cost,
+        Criterion::Latency,
+        Criterion::Safety,
+        Criterion::LegalEligibility,
+        Criterion::IncrementalValue,
+    ];
+    EvaluationRecord::new(
+        question,
+        criteria
+            .into_iter()
+            .enumerate()
+            .map(|(i, criterion)| {
+                (
+                    criterion,
+                    Finding {
+                        // The first criterion is the one a failing record
+                        // fails, so the other eight pass either way.
+                        passed: passing || i != 0,
+                        evidence: format!("run-{i}"),
+                    },
+                )
+            })
+            .collect(),
+    )
+    .unwrap()
+}
+
+/// R12-EXPAND-6056: the sweep's ontology is extended only on a passing
+/// evaluation that the new version cites. Before this `register` accepted any
+/// higher version, so the schema every detector reads could be rewritten with
+/// nothing on record to say why.
+///
+/// Mutation: drop the `evaluation.passed` refusal in
+/// `OntologyRegistry::extend`; the failing evaluation versions the type.
+#[test]
+fn an_ontology_extension_without_an_evaluation_is_refused_and_a_cited_one_versions_the_type() {
+    use qip_contracts::expansion::OntologyTypeFamily;
+    let mut research = deployed(BTreeMap::new());
+    let before = research
+        .ontology()
+        .get_latest(OntologyTypeFamily::Asset, "asset_class")
+        .unwrap();
+    assert_eq!(before.version, 1, "premise: the seeded type is version 1");
+
+    let failed = research.extend_ontology(
+        OntologyTypeFamily::Asset,
+        "asset_class",
+        "qip-deepbrain/research:asset_class@2",
+        "the asset-class map, with a venue dimension",
+        &evaluation("venue dimension", false),
+    );
+    assert!(failed.is_err(), "a failing evaluation extended the type");
+    assert_eq!(
+        research
+            .ontology()
+            .get_latest(OntologyTypeFamily::Asset, "asset_class")
+            .unwrap()
+            .version,
+        1
+    );
+
+    let version = research
+        .extend_ontology(
+            OntologyTypeFamily::Asset,
+            "asset_class",
+            "qip-deepbrain/research:asset_class@2",
+            "the asset-class map, with a venue dimension",
+            &evaluation("venue dimension", true),
+        )
+        .unwrap();
+    assert_eq!(version, 2);
+    let after = research
+        .ontology()
+        .get_latest(OntologyTypeFamily::Asset, "asset_class")
+        .unwrap();
+    assert_eq!(after.version, 2);
+    assert!(
+        after
+            .description
+            .contains("[evaluation: evaluation:venue dimension]"),
+        "the new version cites its evaluation: {after:?}"
+    );
+    assert!(
+        research
+            .ontology()
+            .get_type(OntologyTypeFamily::Asset, "asset_class", 1)
+            .is_some(),
+        "version 1 is kept beside version 2"
+    );
+    // A type nobody registered is not extended into existence.
+    assert!(
+        research
+            .extend_ontology(
+                OntologyTypeFamily::Asset,
+                "never_registered",
+                "x",
+                "y",
+                &evaluation("other", true),
+            )
+            .is_err()
+    );
+}
+
 /// A stand-in for a hosted model that refuses every second call. No
 /// provider is reached from a test: the tally wraps whatever model it is
 /// given, and this is the model.

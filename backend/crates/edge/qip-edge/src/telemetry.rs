@@ -530,6 +530,10 @@ impl CellMetrics {
              completed: unanswered, whole, short, unviable",
         );
         m.describe(
+            names::EDGE_BOOK_AGE_MS,
+            "milliseconds since the cell last heard each venue's feed, per venue per pass",
+        );
+        m.describe(
             EDGE_FILL_TIME_UNMEASURED,
             "configured venues with too few fills for their fill time to be judged",
         );
@@ -590,6 +594,25 @@ impl CellMetrics {
     pub fn work_pass(&self) {
         self.metrics
             .count(names::EDGE_WORK_PASSES, self.base.clone());
+    }
+
+    /// How long it has been since the cell last heard `venue`'s feed
+    /// (R12-OBS-7123), in milliseconds and recorded every pass.
+    ///
+    /// The `market-data-freshness` critical path is read from this. It is the
+    /// age of the book the pass is about to decide on, not of the policy the
+    /// centre last sent, which `qip_edge_capability_freshness` reports and
+    /// which says nothing about prices. `venue` is bounded by
+    /// `CellConfig::venues`: only a configured venue's heartbeat is kept.
+    pub fn book_age(&self, venue: &VenueId, age: Duration) {
+        // The same reporting-only crossing to `f64` as `fill_time`.
+        #[allow(clippy::cast_precision_loss)]
+        let millis = age.as_nanos() as f64 / 1_000_000.0;
+        self.metrics.observe_latency_ms(
+            names::EDGE_BOOK_AGE_MS,
+            self.with("venue", venue.as_str()),
+            millis,
+        );
     }
 
     /// The halt state, by source.

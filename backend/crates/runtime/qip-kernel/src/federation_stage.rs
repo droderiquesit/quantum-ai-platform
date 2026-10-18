@@ -71,6 +71,9 @@ pub const MOMENTUM: &str = "markets.momentum.global.micro";
 pub const REVERSION: &str = "markets.reversion.global.meso";
 pub const STRESS_SCENARIO: &str = "markets.stress-world.global.macro";
 pub const STANDING_ASIDE: &str = "markets.standing-aside.global.meso";
+/// The global causal model as a member (R12-WORLD-3042): the world model's
+/// graph, propagated into each instrument, scored like the tape members.
+pub const CAUSAL_GLOBAL: &str = "markets.causal-graph.global.macro";
 /// The rare-regime member (WORLD-3051): what an instrument does on the day
 /// after one of its own tail moves, read from the tape's history of them.
 pub const RARE_REGIME: &str = "markets.rare-regime.global.macro";
@@ -107,6 +110,20 @@ pub const REQUEST_DEADLINE: Duration = Duration::from_days(1);
 /// member kept dissenting.
 pub const FEDERATION_MAX_LIVE_BRANCHES: usize = 8;
 
+/// The causal graph's reading of one instrument: the expected move its live
+/// incoming claims transmit from causes that were seen to move.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CausalView {
+    /// Sum over live incoming claims of the cause's latest return times the
+    /// claim's signed transmission: the next return the graph expects, a
+    /// statistic in return units.
+    pub lean: f64,
+    /// Live claims into the instrument.
+    pub claims: usize,
+    /// Mean confidence of those claims, in `[0, 1]`.
+    pub confidence: f64,
+}
+
 /// One instrument as the platform has observed it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InstrumentView {
@@ -117,6 +134,10 @@ pub struct InstrumentView {
     pub last_close: f64,
     /// When the last bar closed; what tells a new observation from none.
     pub observed_through: Timestamp,
+    /// What the causal graph's live claims into this instrument imply for its
+    /// next return (R12-WORLD-3040, -3042); `None` where the graph holds no
+    /// live claim into it.
+    pub causal: Option<CausalView>,
     /// Latest quoted spread over its own median, where one was measured.
     pub spread_ratio: Option<f64>,
 }
@@ -394,6 +415,88 @@ fn feed(
             false
         }
     }
+}
+
+/// How many of the latest returns a member's own residuals are read over.
+const RETRO_STEPS: usize = 20;
+
+/// The seven tape members' readings of one return series, in the order
+/// momentum, reversion, regional microstructure, stress world, rare regime,
+/// alternate future, standing aside, and the intermediates the uncertainty terms need.
+struct TapeReading {
+    p: [f64; 7],
+    z_momentum: f64,
+    z_reversion: f64,
+    base: f64,
+    after_tail: f64,
+    tail_days: usize,
+}
+
+/// The members' probabilities that the next return is positive, from `r`
+/// alone. One function, used both for the live view and for replaying the
+/// members over the series' own past (see [`residual_fit`]), so a member's
+/// fit is measured with the arithmetic that produces its forecast.
+fn tape_reading(r: &[f64]) -> Option<TapeReading> {
+    if r.len() < 2 {
+        return None;
+    }
+    let sd = deviation(r);
+    if !(sd.is_finite() && sd > 0.0) {
+        return None;
+    }
+    let short = &r[r.len().saturating_sub(5)..];
+    let z_momentum = mean(short) / (sd / (short.len() as f64).sqrt());
+    let window = tail(r);
+    let z_reversion = window.iter().sum::<f64>() / (sd * (window.len() as f64).sqrt());
+    let mut sorted = r.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let shock = sorted[(sorted.len() / 20).min(sorted.len() - 1)];
+    let stressed: Vec<f64> = window.iter().map(|x| x + shock).collect();
+    let base = share_positive(r);
+    let (after_tail, tail_days) = after_tail_moves(r);
+    Some(TapeReading {
+        p: [
+            logistic(0.5 * z_momentum),
+            logistic(-0.5 * z_reversion),
+            share_positive(window),
+            share_positive(&stressed),
+            after_tail,
+            1.0 - share_positive(&stressed),
+            base,
+        ],
+        z_momentum,
+        z_reversion,
+        base,
+        after_tail,
+        tail_days,
+    })
+}
+
+/// A member's evidence fit on one instrument (R12-WORLD-3040): how much
+/// history the member has, discounted by how well it forecast the series'
+/// own latest returns when replayed over the history before each of them —
+/// `1 - Brier` over up to [`RETRO_STEPS`] steps. Two members on one tape get
+/// different fits when one of them has been wrong about it. A series too
+/// short to replay at all is half-credited, because no residual is no
+/// evidence of fit in either direction.
+fn residual_fit(r: &[f64], member: usize) -> f64 {
+    let sufficiency = (r.len() as f64 / 100.0).min(1.0);
+    let first = r
+        .len()
+        .saturating_sub(RETRO_STEPS)
+        .max(FEDERATION_MIN_RETURNS / 2);
+    let (mut sum, mut steps) = (0.0, 0usize);
+    for t in first..r.len() {
+        if let Some(reading) = tape_reading(&r[..t]) {
+            let outcome = if r[t] > 0.0 { 1.0 } else { 0.0 };
+            sum += (reading.p[member] - outcome).powi(2);
+            steps += 1;
+        }
+    }
+    if steps == 0 {
+        return sufficiency * 0.5;
+    }
+    sufficiency * (1.0 - sum / steps as f64).clamp(0.0, 1.0)
 }
 
 /// The scope families the population must cover (WORLD-3037, -3050, -3051,
@@ -701,6 +804,17 @@ impl FederationStage {
                 0.25,
             ),
             declare(
+                CAUSAL_GLOBAL.into(),
+                "markets",
+                "global",
+                10,
+                Abstraction::Macro,
+                "causal-graph",
+                ModelKind::Observational,
+                &["world:causal-graph", "sense:bar-closes"],
+                0.3,
+            ),
+            declare(
                 SELF_SYSTEM.into(),
                 "self",
                 "global",
@@ -767,61 +881,74 @@ impl FederationStage {
             let proposition = instrument_proposition(&view.subject, inputs.cycle);
             let r = &view.returns;
             let sd = deviation(r);
-            if !(sd.is_finite() && sd > 0.0 && view.last_close.is_finite()) {
+            let Some(TapeReading {
+                p,
+                z_momentum,
+                z_reversion,
+                base,
+                after_tail,
+                tail_days,
+            }) = tape_reading(r).filter(|_| view.last_close.is_finite())
+            else {
                 // A flat or broken series is not a distribution any member
                 // can reason about. Skipped, and named in the review: an
                 // instrument silently missing from the federation reads
                 // exactly like one every member was content with.
                 unreadable.push(view.subject.clone());
                 continue;
-            }
-            let fit = (r.len() as f64 / 100.0).min(1.0);
-            let short = &r[r.len().saturating_sub(5)..];
-            let z_momentum = mean(short) / (sd / (short.len() as f64).sqrt());
-            let window = tail(r);
-            let z_reversion = window.iter().sum::<f64>() / (sd * (window.len() as f64).sqrt());
-            let mut sorted = r.clone();
-            sorted.sort_by(f64::total_cmp);
-            let shock = sorted[(sorted.len() / 20).min(sorted.len() - 1)];
-            let stressed: Vec<f64> = window.iter().map(|x| x + shock).collect();
-            let base = share_positive(r);
+            };
+            let sufficiency = (r.len() as f64 / 100.0).min(1.0);
+            // Each member's own fit on this tape (R12-WORLD-3040), not one
+            // number for all of them.
+            let fits: [f64; 7] = std::array::from_fn(|member| residual_fit(r, member));
+            // Causal coherence (R12-WORLD-3040): how far a member's reading
+            // is from what the causal graph's live claims into this
+            // instrument imply. With no claim there is nothing to cohere
+            // with, and the member keeps the prior it was declared under.
+            let causal_p = view
+                .causal
+                .filter(|c| c.lean.is_finite())
+                .map(|c| logistic(c.lean / sd));
+            let coherence = |probability: f64, prior: f64| match causal_p {
+                Some(graph) => (1.0 - (probability - graph).abs()).clamp(0.0, 1.0),
+                None => prior,
+            };
             let microstructure_uncertainty = match view.spread_ratio {
                 Some(x) if x.is_finite() => (0.3 + 0.2 * (x - 1.0).max(0.0)).min(1.0),
                 // Microstructure unmeasured: the member says it barely knows.
                 _ => 0.7,
             };
-            let (after_tail, tail_days) = after_tail_moves(r);
             let at = now;
             let views: [(&str, f64, f64, f64, f64); 7] = [
                 (
                     MOMENTUM,
-                    logistic(0.5 * z_momentum),
-                    fit,
-                    0.5,
+                    p[0],
+                    fits[0],
+                    coherence(p[0], 0.5),
                     1.0 / (1.0 + z_momentum.abs()),
                 ),
                 (
                     REVERSION,
-                    logistic(-0.5 * z_reversion),
-                    fit,
-                    0.5,
+                    p[1],
+                    fits[1],
+                    coherence(p[1], 0.5),
                     1.0 / (1.0 + z_reversion.abs()),
                 ),
                 (
                     regional.as_str(),
-                    share_positive(window),
-                    fit,
-                    0.4,
+                    p[2],
+                    fits[2],
+                    coherence(p[2], 0.4),
                     microstructure_uncertainty,
                 ),
-                (STRESS_SCENARIO, share_positive(&stressed), fit, 0.4, 0.6),
+                (STRESS_SCENARIO, p[3], fits[3], coherence(p[3], 0.4), 0.6),
                 // No tail day with a day after it is no rare-regime
                 // evidence at all: the member says it knows nothing.
                 (
                     RARE_REGIME,
-                    after_tail,
-                    fit,
-                    0.4,
+                    p[4],
+                    fits[4],
+                    coherence(p[4], 0.4),
                     if tail_days == 0 {
                         1.0
                     } else {
@@ -829,21 +956,32 @@ impl FederationStage {
                             .clamp(0.1, 1.0)
                     },
                 ),
-                (
-                    ALTERNATE_FUTURE,
-                    1.0 - share_positive(&stressed),
-                    fit,
-                    0.3,
-                    0.6,
-                ),
+                (ALTERNATE_FUTURE, p[5], fits[5], coherence(p[5], 0.3), 0.6),
                 (
                     STANDING_ASIDE,
-                    base,
-                    fit,
-                    0.3,
+                    p[6],
+                    fits[6],
+                    coherence(p[6], 0.3),
                     (2.0 * (base * (1.0 - base) / r.len() as f64).sqrt()).min(1.0),
                 ),
             ];
+            // The global causal model's own view (R12-WORLD-3042): the graph's
+            // live claims into this instrument, each cause's latest move
+            // carried over its signed transmission. Where the graph holds no
+            // claim into it the member says so — an even view it has almost
+            // no evidence for — rather than going silent, so the population
+            // check reports a member that stopped producing state and not
+            // one with nothing to say about this tape.
+            let causal_view = match view.causal.filter(|c| c.lean.is_finite()) {
+                Some(c) => (
+                    CAUSAL_GLOBAL.to_string(),
+                    logistic(c.lean / sd),
+                    sufficiency * (c.claims as f64 / 3.0).min(1.0),
+                    0.6,
+                    (1.0 - c.confidence).clamp(0.1, 1.0),
+                ),
+                None => (CAUSAL_GLOBAL.to_string(), 0.5, 0.05, 0.5, 0.9),
+            };
             // The domain member's view (MODEL-4009): the breadth of the
             // instrument's own asset class, which says nothing about this
             // tape and everything about its neighbours' — a view the tape
@@ -856,7 +994,7 @@ impl FederationStage {
                     (
                         Self::domain_member(&class),
                         share,
-                        fit,
+                        sufficiency,
                         0.4,
                         (2.0 * (share * (1.0 - share) / n as f64).sqrt()).clamp(0.1, 1.0),
                     )
@@ -866,6 +1004,7 @@ impl FederationStage {
                 .into_iter()
                 .map(|(m, p, f, c, u)| (m.to_string(), p, f, c, u))
                 .chain(domain_view)
+                .chain(std::iter::once(causal_view))
             {
                 let model = model.as_str();
                 any |= feed(
@@ -1325,7 +1464,7 @@ pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<FederationRevi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD;
+    use qip_world_model::federation::{MATERIAL_DISAGREEMENT_SPREAD, ScoredView};
 
     fn series(n: usize, drift: f64) -> Vec<f64> {
         (0..n)
@@ -1343,6 +1482,7 @@ mod tests {
                 last_close: close,
                 observed_through: through,
                 spread_ratio: Some(1.2),
+                causal: None,
             }],
             system: SystemView {
                 halted: false,
@@ -1366,7 +1506,7 @@ mod tests {
         let mut stage = FederationStage::new();
         let review = stage.run(&inputs(1, 100.0, day(0), Some(3)), day(0));
         // Premise: the population exists and nothing was refused.
-        assert_eq!(review.population.len(), 9, "{review:?}");
+        assert_eq!(review.population.len(), 10, "{review:?}");
         assert!(review.refused.is_empty(), "{:?}", review.refused);
         let spanned = stage.federation().spanned();
         assert!(spanned.domains.len() >= 3);
@@ -1376,13 +1516,14 @@ mod tests {
         assert_eq!(spanned.kinds.len(), 3);
         assert!(review.uncovered.is_empty(), "{:?}", review.uncovered);
         assert!(review.silent.is_empty(), "{:?}", review.silent);
-        // One instrument proposition with seven views, plus self and chain.
+        // One instrument proposition with eight views (seven tape members and
+        // the causal model), plus self and chain.
         assert_eq!(review.arbitrations.len(), 3);
         let instrument = &review.arbitrations[0];
-        assert_eq!(instrument.disagreement.views.len(), 7);
-        // WORLD-3051: the rare-regime and alternate-future members are in
-        // the population and each produced a view on the instrument.
-        for member in [RARE_REGIME, ALTERNATE_FUTURE] {
+        assert_eq!(instrument.disagreement.views.len(), 8);
+        // WORLD-3051 and -3042: the rare-regime, alternate-future and causal
+        // members are in the population and each produced a view on the instrument.
+        for member in [RARE_REGIME, ALTERNATE_FUTURE, CAUSAL_GLOBAL] {
             assert!(
                 review.population.iter().any(|m| m.id == member),
                 "{member} not in the population"
@@ -1497,6 +1638,7 @@ mod tests {
                 last_close: 50.0,
                 observed_through: day(0),
                 spread_ratio: None,
+                causal: None,
             });
         }
         inputs.instruments[0].returns = series(40, 0.01);
@@ -1574,6 +1716,7 @@ mod tests {
                 last_close: 50.0,
                 observed_through: day(0),
                 spread_ratio: None,
+                causal: None,
             });
         }
         inputs.instruments[0].returns = series(40, 0.01);
@@ -1644,6 +1787,102 @@ mod tests {
             .collect()
     }
 
+    fn view_of<'a>(review: &'a FederationReview, member: &str) -> &'a ScoredView {
+        review.arbitrations[0]
+            .disagreement
+            .views
+            .iter()
+            .find(|v| v.model == member)
+            .unwrap_or_else(|| panic!("{member} produced no view"))
+    }
+
+    fn causal_input(lean: f64, claims: usize) -> FederationInputs {
+        let mut inputs = rising(1, 100.0, day(0));
+        inputs.instruments[0].causal = Some(CausalView {
+            lean,
+            claims,
+            confidence: 0.8,
+        });
+        inputs
+    }
+
+    /// R12-WORLD-3042: the global causal model is a registered member whose
+    /// view is the graph's own reading of the instrument, scored like the
+    /// others. Mutation: drop its declaration — the population premise fails;
+    /// feed it a constant — the two views below are equal.
+    #[test]
+    fn the_global_causal_model_is_a_member_that_reads_the_graphs_claims_into_the_instrument() {
+        let mut stage = FederationStage::new();
+        let up = stage.run(&causal_input(0.02, 3), day(0));
+        // Premise: it is in the population, fed, with a scope of its own.
+        let standing = up
+            .population
+            .iter()
+            .find(|m| m.id == CAUSAL_GLOBAL)
+            .expect("the causal model is a member");
+        assert_eq!(standing.scope.hypothesis, "causal-graph");
+        assert!(
+            !up.silent.contains(&CAUSAL_GLOBAL.to_string()),
+            "{:?}",
+            up.silent
+        );
+        let rising_view = view_of(&up, CAUSAL_GLOBAL).clone();
+
+        let mut stage = FederationStage::new();
+        let down = stage.run(&causal_input(-0.02, 3), day(0));
+        let falling_view = view_of(&down, CAUSAL_GLOBAL);
+        assert!(rising_view.probability > 0.6, "{rising_view:?}");
+        assert!(falling_view.probability < 0.4, "{falling_view:?}");
+
+        // With no live claim into the instrument it says it knows almost
+        // nothing, rather than reading "no claim" as "no move".
+        let mut stage = FederationStage::new();
+        let bare = stage.run(&rising(1, 100.0, day(0)), day(0));
+        let silent_view = view_of(&bare, CAUSAL_GLOBAL);
+        assert!((silent_view.probability - 0.5).abs() < 1e-9);
+        assert!(silent_view.uncertainty > rising_view.uncertainty);
+    }
+
+    /// R12-WORLD-3040: causal coherence is the member's agreement with the
+    /// graph's live claims into the instrument, and evidence fit is the
+    /// member's own residuals — neither a constant per member. Mutation:
+    /// restore the `0.5` constants for momentum and reversion — the ordering
+    /// below does not flip with the sign of the claim.
+    #[test]
+    fn two_members_on_one_tape_differ_in_coherence_when_one_contradicts_a_live_claim_and_in_fit() {
+        let run = |lean: f64| {
+            let mut stage = FederationStage::new();
+            stage.run(&causal_input(lean, 3), day(0))
+        };
+        let agrees_with_rise = run(0.05);
+        let agrees_with_fall = run(-0.05);
+        let (m_up, r_up) = (
+            view_of(&agrees_with_rise, MOMENTUM).causal_coherence,
+            view_of(&agrees_with_rise, REVERSION).causal_coherence,
+        );
+        let (m_down, r_down) = (
+            view_of(&agrees_with_fall, MOMENTUM).causal_coherence,
+            view_of(&agrees_with_fall, REVERSION).causal_coherence,
+        );
+        // On the rising tape momentum reads up and reversion down, so a claim
+        // of a rise agrees with momentum and contradicts reversion, and a
+        // claim of a fall does the opposite.
+        assert!(m_up > r_up, "{m_up} {r_up}");
+        assert!(r_down > m_down, "{r_down} {m_down}");
+        assert!((m_up - m_down).abs() > 1e-6);
+
+        // Fit is per member: they have not all been equally right about this
+        // tape's own past.
+        let fits: std::collections::BTreeSet<u64> = agrees_with_rise.arbitrations[0]
+            .disagreement
+            .views
+            .iter()
+            .filter(|v| v.model != CAUSAL_GLOBAL)
+            .map(|v| v.evidence_fit.to_bits())
+            .collect();
+        assert!(fits.len() > 1, "every member carries one fit: {fits:?}");
+    }
+
     /// WORLD-1181 / WORLD-3041: a `Branch` decision was only labelled, so the
     /// cycle never held a competing hypothesis. Mutation: skip the
     /// `Federation::branch` call in `act_on_decisions` — the population stays
@@ -1652,8 +1891,8 @@ mod tests {
     fn a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage() {
         let mut stage = FederationStage::new();
         let first = stage.run(&rising(1, 100.0, day(0)), day(0));
-        // Premise: nine members, no branch, and nothing scored yet to decide on.
-        assert_eq!(first.population.len(), 9);
+        // Premise: ten members, no branch, and nothing scored yet to decide on.
+        assert_eq!(first.population.len(), 10);
         assert!(branch_ids(&stage, day(0)).is_empty());
         let second = stage.run(&rising(2, 101.0, day(1)), day(1));
         let instrument = &second.arbitrations[0];
@@ -1661,7 +1900,7 @@ mod tests {
         assert_eq!(instrument.decision, Decision::Branch, "{instrument:?}");
         let branches = branch_ids(&stage, day(1));
         assert_eq!(branches.len(), 1, "{branches:?}");
-        assert_eq!(second.population.len(), 10);
+        assert_eq!(second.population.len(), 11);
         let lineage = stage.federation().lineage(&branches[0]).expect("lineage");
         assert_eq!(lineage.parents.len(), 1);
         assert!(branches[0].starts_with(&lineage.parents[0]));
@@ -1764,7 +2003,7 @@ mod tests {
             expired: Vec::new(),
             research: None,
         };
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 11);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 12);
         let (mut fed, mut refused) = (BTreeSet::new(), Vec::new());
         stage.act_on_decisions(
             std::slice::from_ref(&arbitration),
@@ -1773,20 +2012,20 @@ mod tests {
             &mut refused,
         );
         assert!(refused.is_empty(), "{refused:?}");
-        // 11 live, two branches merged away, one result: 10, every root kept.
+        // 12 live, two branches merged away, one result: 11, every root kept.
         let live: Vec<String> = stage
             .federation()
             .live_specs(day(0))
             .iter()
             .map(|s| s.id().to_string())
             .collect();
-        assert_eq!(live.len(), 10, "{live:?}");
+        assert_eq!(live.len(), 11, "{live:?}");
         assert!(roots.iter().all(|r| live.contains(r)));
         assert_eq!(stage.branches.len(), 1);
         // Replaying the same decision has no live pair left to fold.
         stage.act_on_decisions(&[arbitration], day(0), &mut fed, &mut refused);
         assert!(refused.is_empty(), "{refused:?}");
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 10);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 11);
     }
 
     #[test]

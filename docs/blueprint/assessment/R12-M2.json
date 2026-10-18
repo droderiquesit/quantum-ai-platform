@@ -546,7 +546,7 @@
       "backend/crates/services/qip-data-finder/tests/reliability_history.rs:41 a_source_failing_most_of_its_window_scores_low_even_when_its_probe_answers",
       "backend/crates/services/qip-data-finder/src/finder.rs:1307 monitor has no caller outside the crate"
     ],
-    "gap": "No composition root calls monitor/observe_health, so in production history is empty and the score is the one HEAD probe (0.9/0.1).",
+    "gap": "Needs a decision first. Platform has no observe_source_health, and ConnectorArm::poll measures no latency (it holds only the poll's records or error), so a HealthObservation::served cannot be built honestly; the failure half could be. The scorer reads history only when a source is assessed, and connector source ids are admitted by the licence gate and never re-assessed through DataFinder::assess, so feeding history would be read by nothing. Decide whether connector sources enter the finder's registry for periodic re-assessment (and who measures latency) before wiring observe_health.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -557,7 +557,7 @@
     "verification": "cargo test -p qip-data-finder --test source_alpha",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The scorer that runs (finder.rs:1111) is 0.9/0.1 from one HEAD probe minus TLS/schema penalties; SourceHealth::over has no production caller. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Scorer reads history now, but nothing feeds it in production."
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The scorer that runs (finder.rs:1111) is 0.9/0.1 from one HEAD probe minus TLS/schema penalties; SourceHealth::over has no production caller. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Scorer reads history now, but nothing feeds it in production. Gap corrected 2026-10-18 (lane L01) after reading ConnectorArm::poll and DataFinder::observe_health; handover item (3) from the previous session confirmed as a design decision."
   },
   {
     "id": "R12-DATA-2025",
@@ -1684,7 +1684,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:136 drift in the desk",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:884 per-venue fill error"
     ],
-    "gap": "Regime drift and venue-change detection are not measured; residuals of execution models absent (no such models).",
+    "gap": "Venue changes are already routed (research.rs observes a first-seen venue through TickCampaignDetector::observe_venue and opens a NewVenue campaign; the register text calling it library-only was stale). Regime drift is not measured as such: StreamingDrift runs over the five model features only (volatility_10 and momentum_5 are the regime-sensitive ones), not over the features the platform classifies a regime from, and no execution-model residuals exist to drift (no such models).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1697,7 +1697,7 @@
     "verification": "cargo test -p qip-deepbrain learning",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Checked 2026-10-18 against learning.rs stream_drift and research.rs sweep_over. Not changed: volatility_10 already drifts the models that read it, and a second regime column would measure the same series twice."
   },
   {
     "id": "R12-TICK-2072",
@@ -1732,7 +1732,7 @@
       "backend/crates/services/qip-market-ingestion/src/tape.rs:13-30 release by known_at",
       "backend/crates/services/qip-twin/tests/twin.rs:221 planning_an_alternative_against_a_later_market_is_refused_and_names_the_leak"
     ],
-    "gap": "Tick-level evaluation from recorded venue history.",
+    "gap": "The tick desk is off by default (QIP_DEEPBRAIN_TICK_EVERY unset, entitlement grant required), and its round replays nothing of the platform's own: TickDesk::maybe_round calls round(graph, now, Vec::new()), so ReplaySession runs with no decisions and no fill-versus-assumption row is recorded. Building ReplayOrders from the journal's orders needs the order journal handed to the desk by node.rs.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1745,7 +1745,7 @@
     "verification": "cargo test -p qip-twin --test twin",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Checked 2026-10-18 against tick_desk.rs maybe_round/round."
   },
   {
     "id": "R12-TICK-2074",
@@ -1829,7 +1829,7 @@
       "backend/crates/runtime/qip-kernel/tests/learning.rs:422 a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate",
       "backend/crates/services/qip-twin/tests/twin.rs:504 a_missed_opportunity_is_captured_with_its_value_and_is_not_a_trade"
     ],
-    "gap": "Price missed opportunities in LEARN; move to tick-level information sets.",
+    "gap": "No missed-opportunity record exists to price. Nothing in the kernel captures Action::MissedOpportunity: capture_unworked records Action::ExpiredOpportunity for a lapsed opportunity and deliberately does not price it, because no side or size was ever proposed for it (qip-twin capture.rs documents why a zero there would be a number nobody computed). The closure as written (price OutcomeCapture's missed records) therefore has no input. Needs a design decision on what trade a missed opportunity is priced as (the opportunity's own direction at a reference size? REASON's declined hypothesis?) and a capture site for it, before a Platform::score_missed can exist; bar-level information sets remain.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1840,7 +1840,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01) after reading capture_unworked and the qip-twin Action variants: the earlier text said missed opportunities are captured; only expired ones are, unpriced by design."
   },
   {
     "id": "R12-TICK-2078",
@@ -1964,7 +1964,7 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse"
     ],
-    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. The implied belief update is not applied to the platform's beliefs.",
+    "gap": "Two gaps. (1) The tick desk is off by default (QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, and it refuses to start without an entitlement grant), so nothing here runs in a deployed binary. (2) The belief updates are computed and dropped: fusion.rs builds FusedState::beliefs (BeliefUpdate) and TickRound keeps only a mismatch count; qip-kernel has no Platform::absorb_belief_updates and node.rs run_with applies nothing from the round.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1977,7 +1977,7 @@
     "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Checked 2026-10-18: grep for absorb_belief and belief_updates in platform.rs finds nothing; TickDesk::round reads fused.events and fused.mismatches() and discards fused.beliefs."
   },
   {
     "id": "R12-TICK-2084",
@@ -1988,7 +1988,7 @@
       "backend/crates/services/qip-data-finder/src/discovery_targets.rs:86",
       "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse"
     ],
-    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. Mismatch outputs dispatch to nothing in the cycle.",
+    "gap": "Two gaps. (1) The tick desk is off by default (QIP_DEEPBRAIN_TICK_EVERY unset, entitlement grant required), so this never runs in a deployed binary. (2) Mismatches reach nothing: TickRound counts fused.mismatches() and node.rs run_with dispatches none of them; falsification.rs has no mismatch intake and discovery_targets.rs is not called from the cycle.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1999,16 +1999,21 @@
     "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Checked 2026-10-18: grep for mismatch in qip-kernel falsification.rs finds nothing, so routing a mismatch to an open investigation needs a new intake there first."
   },
   {
     "id": "R12-TICK-2085",
     "status": "PARTIAL",
-    "current": "FusedState::posteriors is the stated read surface for foundry and brains; produced by the tick desk.",
+    "current": "FusedState::posteriors is read: TickDesk keeps the last round's posteriors, node.rs hands them to EvolutionEngine::set_priors before each turn, and the engine sizes the subject's foundry round with StrategyFoundry::search_with_prior (count x (0.5 + posterior), refusing a non-probability). The neutral prior reproduces the plain search.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/fusion.rs::FusedState"
+      "backend/crates/runtime/qip-kernel/src/central/foundry.rs search_with_prior, NEUTRAL_PRIOR",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs TickDesk::posteriors",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs set_priors and its use in maybe_turn",
+      "backend/crates/apps/qip-deepbrain/src/node.rs the set_priors hand-off",
+      "backend/crates/runtime/qip-kernel/tests/foundry.rs a_fused_posterior_changes_how_many_candidates_a_round_proposes_and_so_which_are_registered",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs a_fused_posterior_handed_to_the_engine_sizes_the_round_it_runs"
     ],
-    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. No foundry, Asset, Capital or Risk brain reads FusedState.",
+    "gap": "The tick desk is still off by default (QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it), so no deployed binary produces a posterior and every deployed round searches at the neutral size. The node.rs hand-off (TickDesk::posteriors -> set_priors) has no test of its own: deleting it fails nothing. Fusion posteriors are keyed by the watch graph's instrument names, which match the evolution subject only where the graph names instruments as the exchange does. No Asset, Capital or Risk brain type exists to read it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2018,10 +2023,10 @@
       "R12-TICK-2081"
     ],
     "blocked_by": "",
-    "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
+    "verification": "cargo test -p qip-kernel --test foundry && cargo test -p qip-deepbrain --lib evolution::tests::a_fused",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutations fired: search_with_prior ignoring its prior fails the kernel test (the moving and quiet subjects propose the same ten); the engine passing the neutral prior fails the deepbrain test on the high-prior comparison."
   },
   {
     "id": "R12-TICK-2086",

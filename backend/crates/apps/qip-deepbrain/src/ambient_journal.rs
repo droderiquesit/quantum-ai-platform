@@ -71,6 +71,11 @@ pub enum AmbientRecord {
         cycle: u64,
         assumptions: Vec<AssumptionState>,
     },
+    /// The plan the sweep's started items compile to (R12-REASON-3061).
+    SweepPlan {
+        cycle: u64,
+        plan: crate::research_plan::SweepPlanRecord,
+    },
     /// A tick campaign concluded on its re-measured venue
     /// (R12-EXPAND-6042): the microstructure delta, whose id is the
     /// campaign's.
@@ -241,6 +246,18 @@ impl AmbientJournal {
                 AmbientRecord::MicrostructureDelta {
                     cycle,
                     delta: delta.clone(),
+                },
+                at,
+                at,
+            )?;
+            count += 1;
+        }
+        if let Some(plan) = &round.plan {
+            self.append(
+                &lineage,
+                AmbientRecord::SweepPlan {
+                    cycle,
+                    plan: plan.clone(),
                 },
                 at,
                 at,

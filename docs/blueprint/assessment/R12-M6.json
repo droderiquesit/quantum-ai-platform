@@ -1,14 +1,14 @@
 [
   {
     "id": "R12-MODEL-6001",
-    "status": "PARTIAL",
-    "current": "Generation (qip-kernel central/foundry.rs StrategyGenerator, qip-deepbrain evolution/succession) and judging (qip-evolution ChallengerTest/TrialLedger, kernel central/models.rs require_calibrated_baseline) are separate types, but the deepbrain learning desk both fits and scores its baseline and challenger in one round; no structural separation of identities or processes.",
+    "status": "COMPLETE",
+    "current": "The learning desk's class scoreboard is fed by qip_lifecycle::Evaluator, which scores a class's predictions on the holdout tail against the targets itself; its judge() takes two slices of numbers, so no generator score can be passed in, and the fit's own FitDiagnostics::claims_skill no longer reaches the board. An architecture test fails if the evaluator names a trainer type or a fit diagnostic, or if learning.rs calls claims_skill again.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/central/foundry.rs:70-73 foundry uses qip-evolution generator and TrialLedger",
-      "backend/crates/runtime/qip-kernel/src/central/models.rs:65 require_calibrated_baseline gate",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:129-140 same desk fits (LocalTrainer) and scores (Scoreboard)"
+      "backend/crates/services/qip-lifecycle/src/evaluator.rs Evaluator::judge",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs Evaluator::new in the class-choice fit",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs the_evaluator_never_reads_the_generators_score_and_the_class_board_is_fed_by_it"
     ],
-    "gap": "No independent evaluator identity/process; no architecture test that the creator's own score cannot promote.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -16,10 +16,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test architecture (new test: evaluator crate does not depend on generator scoring)",
+    "verification": "cargo test -p qip-acceptance --test architecture -- the_evaluator_never; cargo test -p qip-lifecycle --lib evaluator; cargo test -p qip-deepbrain --lib learning::",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutations: naming a FitDiagnostics alias in evaluator.rs and re-adding a claims_skill call in learning.rs each fail the architecture test. The evaluator judges the same holdout tail the trainer scored; what is independent is the code and the inputs, not the rows, and a holdout the trainer chose is still the trainer's choice. The 23 learning tests pass unchanged on the evaluator's verdicts."
   },
   {
     "id": "R12-MODEL-6002",
@@ -47,16 +47,16 @@
   },
   {
     "id": "R12-MODEL-6003",
-    "status": "PARTIAL",
-    "current": "Platform::attribute marks each fill from its order's arrival price to the instrument's latest close. Slippage is split into the spread quoted at release and impact, and the per-fill sum is reconciled against the book (runtime/qip-kernel/src/platform.rs:16434-16520; attribution.rs:1-50). The result is joined to seven keys stamped at hypothesis formation and order acceptance: strategy, model/forecaster, belief/hypothesis, evidence source, capital policy, risk rule set and execution path (services/qip-learning-engine/src/keyed_attribution.rs). The joined result is journaled under kernel/attribution in LEARN, which every cycle-running binary drives.",
+    "status": "COMPLETE",
+    "current": "Platform::attribute marks each fill from its order's arrival price to the instrument's latest close, splits slippage into quoted spread and impact, and reconciles the per-fill sum against the book (runtime/qip-kernel/src/platform.rs:16434-16520; attribution.rs:1-50). The result is joined to seven keys stamped at hypothesis formation and order acceptance: strategy, model/forecaster, belief/hypothesis, evidence source, capital policy, risk rule set and execution path. observe_hypothesis (REASON) writes the lineage through AttributionLineage::note_hypothesis and note_release stamps each accepted order from it, so an order citing a hypothesis a cycle formed carries the detector that raised it under Dimension::Model and the origin of its evidence under Dimension::EvidenceSource. The joined result is journaled under kernel/attribution in LEARN, which every cycle-running binary drives.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16434",
-      "backend/crates/runtime/qip-kernel/src/attribution.rs:1",
-      "backend/crates/services/qip-learning-engine/src/keyed_attribution.rs:356",
-      "runtime/qip-kernel/tests/model_tournament.rs::a_filled_order_is_attributed_its_marked_pnl_under_all_seven_keys",
-      "services/qip-learning-engine/src/keyed_attribution.rs::tests::every_dimension_groups_the_same_book_and_each_closes"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13719",
+      "backend/crates/runtime/qip-kernel/src/attribution.rs:145",
+      "backend/crates/runtime/qip-kernel/src/attribution.rs:188",
+      "runtime/qip-kernel/tests/model_tournament.rs::an_order_citing_a_hypothesis_a_cycle_formed_is_attributed_its_model_and_evidence_source",
+      "runtime/qip-kernel/tests/model_tournament.rs::a_filled_order_is_attributed_its_marked_pnl_under_all_seven_keys"
     ],
-    "gap": "No test proves model and evidence-source attribution keys are populated from a formed hypothesis; the cited test asserts Model == UNATTRIBUTED.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -64,10 +64,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning (new: attribution carries all seven keys)",
+    "verification": "cd backend && cargo test -p qip-kernel --test model_tournament",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The old note 'realised_pnl/spread/impact are ZERO' is no longer true. The 'risk rule' key is the risk rule set in force, not the specific rule that bounded the order. A fill whose order lineage was evicted is attributed under 'unattributed' and counted. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Five of seven keys are proven populated; model and evidence-source keys are only proven to degrade to 'unattributed'."
+    "notes": "Lane L07, 2026-10-18: closed. The cycle forms a hypothesis, an order citing it fills, and the attribution names a detector: model key and a non-unattributed evidence-source key. Mutation: deleting the note_hypothesis call in observe_hypothesis -> model keys [\"unattributed\"], the new test fails; restored and passing (model_tournament: 9 passed). The risk-rule key is still the rule set in force, not the specific rule that bounded the order; a fill whose lineage was evicted is attributed under unattributed and counted."
   },
   {
     "id": "R12-MODEL-6004",
@@ -302,14 +302,16 @@
   },
   {
     "id": "R12-TICK-6014",
-    "status": "PARTIAL",
-    "current": "score_filled records twin-vs-venue fill error (qip_venue_fill_error_bps) diagnostically; qip-expansion TickCampaignDetector (library only) can raise a campaign on slippage; no retraining dataset is built from these.",
+    "status": "COMPLETE",
+    "current": "score_filled records twin-vs-venue fill error (qip_venue_fill_error_bps) and Platform::fill_scores() keeps each FillScore with trade_error_bps. node::run_with hands those scores to TickDesk::maybe_round_with_fills; each round joins every fill with a twin error to the labelled instant it followed (qip_training::microstructure::join_fill_residuals, as-of the fill, same venue and instrument, never a later instant), carries the rows on TickRound::residual_examples with the unmatched count on the round line, and scores the fill model on the rows that fall in its holdout (TickRound::residual_benchmark). qip-expansion TickCampaignDetector is wired in research.rs.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled charts fill error",
-      "backend/crates/services/qip-expansion/src/campaigns.rs:63 TickCampaignDetector",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:826"
+      "backend/crates/services/qip-training/src/microstructure.rs:join_fill_residuals",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs:round_with_fills",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:maybe_round_with_fills",
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs:a_mispriced_fill_becomes_a_microstructure_training_row",
+      "backend/crates/services/qip-training/tests/microstructure.rs:a_fill_residual_joins_the_last_example_at_or_before_it_on_its_own_venue"
     ],
-    "gap": "Queue-error, missed/expired-opportunity reconciliation and feeding a microstructure retraining set.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -317,10 +319,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cargo test -p qip-deepbrain --test tick_desk a_mispriced_fill_becomes_a_microstructure_training_row; cargo test -p qip-training --test microstructure a_fill_residual",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Mutations: flipping the as-of comparison in join_fill_residuals failed the training test; passing no fills to the join in TickDesk::round_with_fills failed the deepbrain test. The node.rs call that passes platform.fill_scores() is not mutation-covered: no public way seeds a Platform with a scored fill in the run-loop test. The rows are evaluation data and a training-row set on the round; the fill and volatility models are still fitted on replay labels only, and queue-error and missed/expired-opportunity reconciliation produce no rows."
   },
   {
     "id": "R12-WORLD-6015",
@@ -730,7 +732,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:17136 evaluate_alternatives",
       "backend/crates/tests/qip-acceptance/tests/arch_056_simulation_engine.rs:33"
     ],
-    "gap": "Scenario/synthetic-episode generation for rare regimes.",
+    "gap": "Scenario/synthetic-episode generation for rare regimes, with a SyntheticEpisode record (scenario id, seed, dataset digest). Not producible where the grader put it: qip-deepbrain evolution.rs runs the Backtester over recorded bars, so a record made there would label a historical replay as synthetic. Scenarios are generated in research.rs (ConditionalScenario, from an ambient signal) and in the simulation engine (scenario.rs standard_library, montecarlo.rs); the record belongs where a scenario is generated or run on the default path. research.rs is lane L03c's file this session, so the contract (qip-contracts) plus the producing call there is left for that lane or the next.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -741,7 +743,7 @@
     "verification": "cargo test (crate producing ScenarioPack / SyntheticEpisode)",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
   },
   {
     "id": "R12-EXPAND-6034",
@@ -955,7 +957,7 @@
       "backend/crates/services/qip-world-model/src/federation.rs:91 WorldModelSpec",
       "backend/crates/services/qip-world-model/src/spawning.rs:15 WorldModelBranch"
     ],
-    "gap": "Incremental-value benchmark and spawn path.",
+    "gap": "BranchSpawner (WorldModelSpawner) still has no caller. Spawning needs a residual the lattice can state per instrument, a branch lifecycle in lattice_stage scorecards that scores a branch against its parent, and a bound on live branches; federation_stage now opens competing branches of its own (R12-WORLD-3041) but those are federation members, not spawned WorldModelBranch values.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -966,7 +968,7 @@
     "verification": "cargo test (crate producing WorldModelSpec / WorldModelBranch)",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-EXPAND-6044",
@@ -1155,7 +1157,7 @@
     "evidence": [
       "backend/crates/services/qip-training/src/distill.rs:217"
     ],
-    "gap": "Lane promotion record and reflex deployment path.",
+    "gap": "No campaign, lineage or promotion record carries a latency budget, so a lane cannot be chosen from one: ResearchLoop::distil compiles a reflex package from every promoted fill-bias correction whatever its budget. Choosing Research / WarmService / Reflex needs a latency-budget field on the campaign or its desk item (a contract change in qip-contracts expansion and qip-expansion promotion.rs), and Reflex publication needs the ADR 0110 package signer, which no deployment installs (packages are held_unsigned).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1166,7 +1168,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Checked 2026-10-18: grep for latency_budget / LatencyBudget over qip-expansion, qip-contracts expansion and qip-deepbrain finds nothing. Not changed: inventing a default budget would make every promotion either stay research or become a reflex by a constant."
   },
   {
     "id": "R12-EXPAND-6053",
@@ -1237,12 +1239,13 @@
   {
     "id": "R12-EXPAND-6056",
     "status": "PARTIAL",
-    "current": "OntologyRegistry versioned by family; library-only (no caller outside qip-agents tests).",
+    "current": "ResearchLoop::new seeds an OntologyRegistry from SWEEP_ONTOLOGY and refuses to start without every type the sweep reads (check_ontology); each sweep records the registry counts. OntologyRegistry::extend (qip-agents) versions an existing type only on a passing evaluation it cites, reached through ResearchLoop::extend_ontology.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/registries.rs:21",
-      "backend/crates/libs/qip-agents/src/registries.rs:42 register"
+      "backend/crates/libs/qip-agents/src/registries.rs OntologyRegistry::extend",
+      "backend/crates/apps/qip-deepbrain/src/research.rs extend_ontology, sweep_ontology, check_ontology",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs an_ontology_extension_without_an_evaluation_is_refused_and_a_cited_one_versions_the_type"
     ],
-    "gap": "Governed extension path and integration.",
+    "gap": "Nothing in the running binary calls extend_ontology: the only item the desk concludes is a fill-bias campaign, so no Ontology-class item ever finishes with an evaluation to cite. The registry is built inside ResearchLoop::new from the committed SWEEP_ONTOLOGY rather than in main.rs, and the coverage detector reads asset-class keys, not registry types.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1253,7 +1256,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutation: bypassing the passed-evaluation refusal in extend lets a failing evaluation version the type and fails the new test. Closing needs a concluded Ontology-class research item that carries a passing EvaluationRecord into extend_ontology."
   },
   {
     "id": "R12-EXPAND-6057",
@@ -1374,7 +1377,7 @@
       "backend/crates/libs/qip-agents/src/registries.rs:115",
       "backend/crates/libs/qip-contracts/src/expansion.rs:416 CapabilityEntry"
     ],
-    "gap": "Integration and population from real capabilities.",
+    "gap": "CapabilityRegistry (registries.rs) has no caller outside qip-agents tests and none was added: the UnsupportedRequest arm of the sweep is the coverage detector over asset-class and venue keys (detectors.rs coverage), which is not a request for a capability verb, so there is no input there to look up in a registry of the ten verbs. Populating it from the configured venues and the simulated broker's modes is mechanical; what it would be consulted against is the missing piece, and is a design decision for the expansion loop rather than a wiring one.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1385,7 +1388,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Checked 2026-10-18 against the code: coverage() takes (universe map, covered set, floor) and raises per dimension value; no part of the sweep names a CapabilityVerb."
   },
   {
     "id": "R12-EXPAND-6063",
@@ -1524,7 +1527,7 @@
       "backend/crates/services/qip-expansion/src/campaigns.rs:46-61",
       "backend/crates/apps/qip-deepbrain/src/research.rs:800-850"
     ],
-    "gap": "Feed queue error, lead/lag, reaction residuals and paper/replay divergence; make an opened campaign run a tick replay.",
+    "gap": "The four remaining triggers have no source in the running node: LeadLagState (qip-world-model lead_lag.rs) has no production feeder, so there is no lead/lag anomaly to observe; the platform keeps no queue-position prediction against fill outcome, so QueuePredictionError has no residual; no world-event reaction residual is produced outside the tick desk's fusion; and a paper/replay divergence needs a tick replay of an opened campaign, which needs tick entitlements (the tick desk is off by default). Each trigger's observe call is one line once its residual exists.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1535,7 +1538,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: 'Unexplained' slippage is raw slippage vs arrival; nothing subtracts the twin's explained part."
+    "notes": "Checked 2026-10-18: observe_residual accepts all four; the sweep feeds FillPredictionError from fill scores and NewVenue/UnexplainedSlippage from the paper fills. Not wired because a residual with no measurement behind it would be invented."
   },
   {
     "id": "R12-EXPAND-6070",
@@ -1638,7 +1641,7 @@
       "backend/crates/runtime/qip-kernel/tests/models.rs:386",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:2605"
     ],
-    "gap": "Calibration-under-stress gate.",
+    "gap": "require_calibrated_baseline (central/models.rs) still checks one calibration on the baseline's card. The scoreboard slice the closure names is not at learning.rs:2605 any more, and the training datasets carry no regime label, so 'the stressed-regime slice' has no definition to calibrate on; closing it needs that definition (for example the worst-decile targets or the regime_context label), a stress calibration recorded on the card by register_fit, and a decision that a baseline without one is refused - a policy change that would refuse every baseline registered today.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1649,7 +1652,7 @@
     "verification": "cargo test -p qip-kernel --test models",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-REFLEX-6075",
@@ -1821,7 +1824,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:163",
       "backend/crates/services/qip-agency/tests/agency.rs:189"
     ],
-    "gap": "Link to the world-model federation's causal graph.",
+    "gap": "Link to the world-model federation's causal graph. Not closable as the grader proposed: the ambient path in qip-deepbrain builds no AffordanceGraph at all (AmbientIntake drafts through the door without one; the only graph is built per request in qip_agency::engine::stages from an operator document), and a federation spec's Scope (domain, region, horizon, abstraction, hypothesis, kind) names no variable, so \"a variable some live world model observes\" has no mapping to check a tool edge against. A gate keyed on an invented mapping would refuse every draft on a node whose federation lacks a spec for the subject. Needs a decision, in an ADR, on how a graph variable is identified with a federation member (for example the FederationStage asset-class map from instrument to domain), then a gate in ambient_agency.rs that builds the graph per draft.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1832,7 +1835,7 @@
     "verification": "cargo test -p qip-agency --test agency",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed. The mutated test the closure names (refuse an edge on an unobserved variable) can be written once the mapping exists; Federation::live_specs(now) is the read to use."
   },
   {
     "id": "R12-AGENCY-6083",
@@ -1952,14 +1955,16 @@
   },
   {
     "id": "R12-AGENCY-6088",
-    "status": "PARTIAL",
-    "current": "causal::simulate produces one result per (structural model, scenario branch) for each candidate, each against its own no-action world; qip-cli journals the branches.",
+    "status": "COMPLETE",
+    "current": "A candidate plan is simulated once per structural model and per scenario, and the scenarios include those a composition root derives from a market digital twin: qip-agency defines generate::ScenarioSource and engine::run_governed_with appends the source's scenarios to the request's declared ones (a name clash is refused). The shadow binary (qip agency shadow) implements the source over a qip-twin FutureTree fitted from the series a pass document supplies, one scenario per live synthetic future, each setting the structural variables the document binds to an instrument to that future's hypothesised move in basis points. The scenarios are journaled with the pass.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/plan.rs:75 simulate",
-      "backend/crates/services/qip-agency/src/engine.rs:419-424",
-      "backend/crates/services/qip-agency/src/causal.rs::simulate"
+      "backend/crates/services/qip-agency/src/generate.rs::ScenarioSource, Structural::build_with",
+      "backend/crates/services/qip-agency/src/engine.rs::run_governed_with",
+      "backend/crates/apps/qip-cli/src/agency.rs::TwinDecl, TwinScenarios, Session::pass",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_candidate_is_simulated_once_per_model_and_per_scenario_the_composition_roots_twin_adds",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_simulates_a_pass_against_the_futures_of_the_twin_the_document_describes"
     ],
-    "gap": "Candidates are simulated only against declared linear SCMs and scenario branches; no market/tick digital twin (qip-twin) is consulted per candidate.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1967,10 +1972,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 (lane L10) for the shadow binary. Mutations that fired: Structural::build_with ignoring the source (the count stays models x declared); Session::pass handing the engine no source (the journal holds only the declared two). The closure named qip-deepbrain as a second implementor; the ambient path there runs no engine::run, so it has no simulate stage to feed (R12-AGENCY-6105 / 7027 stay open for that reason), and the CLI did not depend on qip-twin before this change. The twin is fitted from series the operator's document carries, and the binding of a variable to an instrument is the operator's declaration: nothing rescales basis points into the variable's unit."
   },
   {
     "id": "R12-AGENCY-6089",
@@ -2344,7 +2349,7 @@
       "backend/crates/services/qip-agency/src/ambient_intake.rs::AmbientIntake",
       "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs::AmbientAgency::route"
     ],
-    "gap": "GoalSpec is one standing goal built at open, not per opportunity; no candidate generation or simulation on this path; it calls the drafting adapter, while the check demands no adapter call.",
+    "gap": "The ambient path journals a guarded draft against a per-opportunity decomposed sub-goal (R12-AGENCY-3002) but runs no engine::run: no levers, candidates, simulation or gate stage, so no shadowed plan is journaled before the drafting adapter. Running it needs a structural model of what a notice to a person changes; the ambient path declares none, and its own learning records the effect as unidentified. A model written per opportunity would restate the declaration (the fault R12-AGENCY-1056's audit named), so it needs an owner decision on what the draft's causal model is before code. The adapter is the outbox, which writes a draft and sends nothing.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2357,7 +2362,7 @@
     "verification": "cargo test (new integration)",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-read 2026-10-18 (lane L10) against qip-agency ambient_intake.rs::attempt and qip-deepbrain ambient_agency.rs: the sub-goal exists and is journaled; the engine stages do not run. Held PARTIAL with the reason above rather than a one-edge SCM invented to satisfy the check."
   },
   {
     "id": "R12-AGENCY-6106",
@@ -2439,14 +2444,15 @@
   },
   {
     "id": "R12-CONTRACT-6109",
-    "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/forecast.rs:309 ForecastState = Validated<ForecastStateFields>, deny_unknown_fields decode and invariant checks",
+    "status": "COMPLETE",
+    "current": "ForecastState (backend/crates/libs/qip-contracts/src/forecast.rs, Forecast::state) is built by LatticeStage::run for every forecast a pass issues and journaled beside the forecast in LatticeReview::states (kernel/lattice record on the world-model topic), which every cycle-running binary writes each cycle. The journaled state decodes strictly: a record with a state's confidence_bp removed is refused with 'missing field'.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/forecast.rs:309 type",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:335 a_forecast_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:342 a_forecast_state_refuses_each_broken_invariant"
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeStage::run (states projection)",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeReview::states",
+      "runtime/qip-kernel/tests/now_lattice.rs::every_issued_forecast_is_journaled_with_its_control_plane_state_and_a_dropped_field_is_refused",
+      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:335 a_forecast_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field"
     ],
-    "gap": "No production seam constructs or consumes ForecastState (grep of ForecastStateFields outside qip-contracts finds nothing).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2454,10 +2460,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cd backend && cargo test -p qip-kernel --test now_lattice",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ForecastState exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Lane L07, 2026-10-18: closed. Mutations: skipping the push into states -> 'a forecast was issued without its control-plane state'; inserting each state at the front -> target mismatch obj-BBB/close vs obj-AAA/close; both restored and passing (now_lattice: 9 passed). The states field is serde(default) so records journaled earlier still decode. No control loop reads the state yet: the seam constructs and journals it, which is what the clause asks."
   },
   {
     "id": "R12-CONTRACT-6110",
@@ -2657,7 +2663,7 @@
       "libs/qip-compliance/tests/eligibility.rs::deployment_and_enablement_are_refused_naming_every_subject_without_a_record",
       "backend/crates/runtime/qip-kernel/src/platform.rs:6230"
     ],
-    "gap": "Call admit_deployment at strategy promotion and admit_enablement wherever a venue or instrument becomes executable, from a composition root, with an integration test proving refusal.",
+    "gap": "EligibilityRegister::admit_deployment and admit_enablement exist and are exercised by qip-compliance tests and loaded only by qip-cli's agency policy. Neither is called from the kernel promotion seams (central/learning.rs promote_strategies_with_evidence, central/factory.rs promote) or CellConfig::with_venue, and no committed eligibility records exist for a composition root to load: a fail-closed gate would refuse every promotion until an operator commits records, which is a regulatory input this lane does not hold. Wiring it optional (no register, no gate) would be a gate that runs nowhere by default.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2670,7 +2676,7 @@
     "verification": "cargo test -p qip-kernel (new)",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The gate is library-only; grep finds no non-test caller of admit_deployment/admit_enablement."
+    "notes": "Round-2 independent audit, 2026-10-11: The gate is library-only; grep finds no non-test caller of admit_deployment/admit_enablement. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-GOV-6119",
@@ -2823,7 +2829,7 @@
       "backend/crates/libs/qip-contracts/src/action.rs:648 unit test: capital intent refused at operational authority",
       "backend/crates/libs/qip-contracts/src/action.rs:668 admitted at capital authority"
     ],
-    "gap": "Bind AuthorityLevel to an approval carrying an Attested presence from an enrolled WebAuthn key (ADR 0121) and integrate.",
+    "gap": "Three parts, none present. (1) qip-api has no Presence::Attested: auth.rs Presence has the single Unattested variant, Principal::presence always answers it and authentication_instant refuses, so nothing can mint an attested presence; ADR 0120 (accepted 2026-10-11) specifies it as an ECDSA P-256 WebAuthn assertion over a request-bound challenge from a POST /operator-challenges route, enrolled public keys baked into the image, none of which is built (ring is admitted by ADR 0110, no verification code uses it). (2) qip_contracts::action::check_authority has no caller outside its own unit tests, so changing it to take an Approval would gate nothing on a running path. (3) A qip-contracts Approval type cannot be minted only by qip-api (a public constructor can be called by anyone); the structural guarantee needs the attestation type to be unconstructible outside the verifier, i.e. defined beside the WebAuthn verifier and passed into the contract as an opaque token. Build order: the verifier and challenge route in qip-api first, then an attestation token in qip-contracts, then a Capital-class caller of check_authority.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2834,7 +2840,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "2026-10-18 L12: no code changed. The triage closure presumed Presence::Attested at auth.rs:130 exists; it does not. Closing this row is an M-size build behind ADR 0120, not the S the triage assumed."
   },
   {
     "id": "R12-GOV-6126",

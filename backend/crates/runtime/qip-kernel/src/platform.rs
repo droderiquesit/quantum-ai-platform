@@ -660,6 +660,12 @@ pub struct Platform {
     /// read twice: a cycle that reaches no construction journals nothing
     /// rather than the last cycle's comparison.
     cycle_solver_routing: Option<SolverRoutingJournal>,
+    /// The latest DECIDE solve, kept for the next UNDERSTAND to state in the
+    /// quantum contract (R12-QUANT-4063).
+    pending_routing: Option<(u64, qip_optimization_engine::RoutingDecision)>,
+    /// Production models whose drift stands past their threshold, as the last
+    /// registry read found them (R12-RES-7101). Bounded by the registry.
+    drifted_models: BTreeSet<String>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -5292,6 +5298,8 @@ impl Platform {
             cycle_family_structure: None,
             cycle_horizon_arming: None,
             cycle_solver_routing: None,
+            pending_routing: None,
+            drifted_models: BTreeSet::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -12182,12 +12190,57 @@ impl Platform {
     /// the detail clause and the problems: each member assessment the
     /// federation refused, and a review the log refused, are findings the
     /// stage carries rather than silences.
+    /// What the causal graph's live claims into each instrument imply for its
+    /// next return (R12-WORLD-3040, -3042): each cause's latest return
+    /// carried over the claim's signed transmission, summed. An instrument no
+    /// live claim reaches is absent, and the federation's causal member says
+    /// it has nothing to go on rather than reading zero as "no move".
+    fn causal_views(
+        &self,
+        now: Timestamp,
+    ) -> BTreeMap<String, crate::federation_stage::CausalView> {
+        let latest: BTreeMap<&String, f64> = self
+            .price_history
+            .iter()
+            .filter_map(|(subject, closes)| Self::returns_of(closes).last().map(|r| (subject, *r)))
+            .collect();
+        let world = self.world.read();
+        self.price_history
+            .keys()
+            .filter_map(|subject| {
+                let claims = world.causal().incoming(subject, now);
+                if claims.is_empty() {
+                    return None;
+                }
+                let lean: f64 = claims
+                    .iter()
+                    .filter_map(|edge| {
+                        latest
+                            .get(&edge.cause)
+                            .map(|moved| edge.signed_transmission() * moved)
+                    })
+                    .sum();
+                let confidence =
+                    claims.iter().map(|edge| edge.confidence).sum::<f64>() / claims.len() as f64;
+                Some((
+                    subject.clone(),
+                    crate::federation_stage::CausalView {
+                        lean,
+                        claims: claims.len(),
+                        confidence,
+                    },
+                ))
+            })
+            .collect()
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
         };
         let mut instruments = Vec::new();
         let mut thin_subjects = 0;
+        let causal_views = self.causal_views(now);
         for (subject, closes) in &self.price_history {
             let returns = Self::returns_of(closes);
             let (Some(last_close), Some(bar)) = (
@@ -12206,6 +12259,7 @@ impl Platform {
                 last_close: *last_close,
                 observed_through: bar.close_time(),
                 spread_ratio: self.spread_ratio(subject),
+                causal: causal_views.get(subject).copied(),
             });
         }
         let level = self.autonomy.level();
@@ -12577,19 +12631,41 @@ impl Platform {
     ///
     /// Returns a vector of routing decisions that were journalled this cycle,
     /// for observability and for the stage outcome detail.
-    fn route_quantum_decisions(&mut self, _now: Timestamp) -> Vec<RoutingDecision> {
-        // M6 A4 Packet 1: infrastructure wire for quantum routing.
-        // This method will be expanded by later packets to:
-        // - Check for active optimization problems in the portfolio or reasoning engine
-        // - For each problem, compute a classical baseline solution
-        // - For each problem, optionally compute a quantum solution
-        // - Create a RoutingDecision comparing the two
-        // - Journal the decision with metadata for auditability
-        //
-        // For now, return empty vector as no problems may be active yet.
-        // As later packets wire in the quantum router integration, this will
-        // populate the vector with actual routing decisions.
-        Vec::new()
+    fn route_quantum_decisions(&mut self, now: Timestamp) -> Vec<RoutingDecision> {
+        // The previous DECIDE's solve, taken so each is journalled once. It
+        // is the previous cycle's because UNDERSTAND runs before DECIDE:
+        // the record carries that cycle's number, not this one's.
+        let Some((cycle, routing)) = self.pending_routing.take() else {
+            return Vec::new();
+        };
+        match crate::quantum_routing::contract_of(cycle, &routing) {
+            Ok(None) => Vec::new(),
+            Ok(Some(recorded)) => {
+                let decision = recorded.decision.clone();
+                match self.journal_record(
+                    recorded,
+                    crate::quantum_routing::QUANTUM_ROUTING_ORIGIN,
+                    now,
+                ) {
+                    Ok(()) => vec![decision],
+                    Err(error) => {
+                        self.capture_problems.push(format!(
+                            "cycle {cycle}'s solve was stated in the quantum contract and not \
+                             journalled: {}",
+                            error.message()
+                        ));
+                        Vec::new()
+                    }
+                }
+            }
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "cycle {cycle}'s solve could not be stated in the quantum contract: {}",
+                    error.message()
+                ));
+                Vec::new()
+            }
+        }
     }
 
     fn stage_discover(&mut self, now: Timestamp) -> StageOutcome {
@@ -14428,7 +14504,8 @@ impl Platform {
     ) -> Result<qip_contracts::degradation::DegradationState> {
         use qip_contracts::degradation::{
             BELIEF_HORIZON, BeliefFreshness, CAUSAL_GRAPH_HORIZON, Capability,
-            CausalGraphFreshness, DegradationState, SELF_MODEL_HORIZON, SelfModelFreshness,
+            CausalGraphFreshness, DegradationState, Freshness, SELF_MODEL_HORIZON,
+            SelfModelFreshness,
         };
         let mut state = DegradationState::fully_available();
         let self_model = SelfModelFreshness::assess(
@@ -14437,7 +14514,18 @@ impl Platform {
             SELF_MODEL_HORIZON,
             now,
         )?;
-        state.observe(Capability::SelfModel, self_model.freshness());
+        // A production model past its drift threshold is a component the
+        // platform has just measured as unreliable, which is what this row
+        // is the estimate of. It reads no better than stale however fresh the
+        // outcomes are (R12-RES-7101): a rollback retires the card and
+        // clears the reading, and a rollback that could not run leaves the
+        // sizing narrowed rather than the drift silent.
+        let self_model_freshness = if self.drifted_models.is_empty() {
+            self_model.freshness()
+        } else {
+            self_model.freshness().max(Freshness::Stale)
+        };
+        state.observe(Capability::SelfModel, self_model_freshness);
         let causal = CausalGraphFreshness::assess(
             self.world.read().causal().last_updated(),
             CAUSAL_GRAPH_HORIZON,
@@ -14448,6 +14536,30 @@ impl Platform {
             BeliefFreshness::assess(self.reasoning.beliefs().last_updated(), BELIEF_HORIZON, now)?;
         state.observe(Capability::BeliefState, belief.freshness());
         Ok(state)
+    }
+
+    /// Read the model registry for production models that have drifted past
+    /// their threshold, and remember which (R12-RES-7101).
+    ///
+    /// The registry belongs to the process that serves models, not to the
+    /// platform, so the platform only learns of drift when that process says
+    /// so; the deep brain's learning round calls this after it has measured
+    /// drift and rolled back what it could. What is kept is the set of
+    /// references and nothing else: [`Self::central_degradation`] reads
+    /// "any" from it and narrows the self-model row, and a later call with a
+    /// registry whose drifted cards were retired empties the set again.
+    pub fn observe_model_drift(&mut self, registry: &qip_ai::registry::ModelRegistry) {
+        self.drifted_models = registry
+            .iter()
+            .filter(|card| card.stage == qip_ai::registry::ModelStage::Production)
+            .filter(|card| card.drift_score > card.drift_threshold)
+            .map(qip_ai::registry::ModelCard::reference)
+            .collect();
+    }
+
+    /// The production models the last registry read found drifted.
+    pub const fn drifted_models(&self) -> &BTreeSet<String> {
+        &self.drifted_models
     }
 
     /// The credit register derived from the universe at assembly: one profile
@@ -14986,6 +15098,7 @@ impl Platform {
         // on exactly the cycles an operator most wants to read.
         let comparison = SolverRoutingJournal::of(&outcome.routing);
         self.cycle_solver_routing = Some(comparison.clone());
+        self.pending_routing = Some((self.cycle, outcome.routing.clone()));
         // QUANT-031's benchmark record, from the same value the cycle entry
         // carries; `SolverBenchmarked` says why that is one comparison under
         // two keys and not two accounts of it. A log that will not take it
@@ -25098,6 +25211,60 @@ mod simulate_tests {
             .expect("an edge naming both ends is admitted");
     }
 
+    /// R12-WORLD-3042: the federation's causal member is fed only from a live
+    /// claim that reaches the instrument, and the figure is the cause's
+    /// latest move carried over the claim's signed transmission. Mutation:
+    /// drop the sign (`transmission()` for `signed_transmission()`) — the
+    /// substitution claim below then reads the wrong way round.
+    #[test]
+    fn the_causal_view_handed_to_the_federation_is_the_causes_move_over_the_claims_signed_transmission()
+     {
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+        feed_history(&mut platform, "MSFT", 80);
+        // Premise: with no claim in the graph no instrument has a causal view.
+        assert!(platform.causal_views(start()).is_empty());
+
+        platform
+            .world
+            .update(|world| {
+                world.claim_causal(
+                    qip_world_model::causal::CausalEdge::new(
+                        "MSFT",
+                        "AAPL",
+                        qip_world_model::causal::Mechanism::CompetitiveSubstitution,
+                        0.5,
+                        Duration::from_days(1),
+                        start(),
+                    )
+                    .expect("a strength in [0, 1] is admitted")
+                    .with_confidence(0.8)
+                    .expect("a confidence in [0, 1] is admitted"),
+                )
+            })
+            .expect("an edge naming both ends is admitted");
+        let views = platform.causal_views(start());
+        assert_eq!(views.len(), 1, "only the claimed effect has a view");
+        let view = views.get("AAPL").expect("AAPL is the claimed effect");
+        let moved = *Platform::returns_of(&platform.price_history["MSFT"])
+            .last()
+            .expect("MSFT has returns");
+        // Competitive substitution inverts the cause, at 0.5 * 0.8.
+        assert!(moved != 0.0, "the premise: the cause moved");
+        assert!(
+            (view.lean - (-0.4 * moved)).abs() < 1e-12,
+            "{view:?} {moved}"
+        );
+        assert_eq!(view.claims, 1);
+        assert!((view.confidence - 0.8).abs() < 1e-12);
+        // A claim not yet knowable is not read.
+        assert!(
+            platform
+                .causal_views(start().saturating_sub(Duration::from_days(1)))
+                .is_empty()
+        );
+    }
+
     #[test]
     fn a_shock_at_a_claimed_driver_reaches_a_position_the_factor_model_cannot_see() {
         // Blueprint §23.7's third row: "a shock at a driver, propagated
@@ -26046,6 +26213,85 @@ mod central_sizing_tests {
         assert!(
             fed_notional > unfed_notional,
             "a fed self-model sized {fed_notional}, not wider than the unfed {unfed_notional}"
+        );
+    }
+
+    #[test]
+    fn a_drifted_production_model_narrows_the_central_multiplier_until_the_registry_stops_naming_it()
+     {
+        // The failure this guards (R12-RES-7101): a production model past its
+        // drift threshold was rolled back or refused a decision, and the
+        // centre went on sizing at the multiplier a healthy panel earned, so
+        // capital was not shrunk by a component the platform had just
+        // measured as unreliable.
+        use qip_ai::registry::{ModelCard, ModelRegistry, ModelStage};
+        use qip_core::ModelId;
+        let mut platform = platform();
+        let resolves_at = start().saturating_add(Duration::from_days(5));
+        feed_self_model(
+            &mut platform,
+            qip_learning_engine::self_model::MINIMUM_SAMPLE,
+            resolves_at,
+        );
+        let at = resolves_at.saturating_add(Duration::from_secs(100));
+        let multiplier = |platform: &Platform| {
+            platform
+                .central_degradation(at)
+                .expect("the table reads")
+                .central_sizing_multiplier()
+        };
+        let healthy = multiplier(&platform);
+        assert_eq!(
+            healthy,
+            dec!("0.375"),
+            "premise: a fed self-model narrows nothing beyond the two unavailable rows"
+        );
+
+        let mut card = ModelCard::new(
+            ModelId::from_string("m-drift"),
+            "drift",
+            "1",
+            "desk",
+            start(),
+        );
+        card.stage = ModelStage::Production;
+        card.drift_threshold = 0.2;
+        card.drift_score = 0.1;
+        let mut registry = ModelRegistry::new();
+        registry.register(card);
+        platform.observe_model_drift(&registry);
+        assert!(platform.drifted_models().is_empty());
+        assert_eq!(
+            multiplier(&platform),
+            healthy,
+            "a model inside its threshold narrowed"
+        );
+
+        registry
+            .record_drift("drift@1", 0.9)
+            .expect("the card is registered");
+        assert!(
+            registry
+                .iter()
+                .any(|card| card.drift_score > card.drift_threshold),
+            "premise: the card has drifted past its threshold"
+        );
+        platform.observe_model_drift(&registry);
+        assert_eq!(platform.drifted_models().len(), 1);
+        assert_eq!(
+            multiplier(&platform),
+            healthy * dec!("0.75"),
+            "a drifted production model did not narrow the self-model row to its stale factor"
+        );
+
+        // Retiring the card — what a rollback does — clears the reading.
+        registry.retire("drift@1", at).expect("the card retires");
+        platform.observe_model_drift(&registry);
+        assert!(platform.drifted_models().is_empty());
+        assert_eq!(
+            multiplier(&platform),
+            healthy,
+            "the narrowing outlived the model"
         );
     }
 

@@ -17,6 +17,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::degradation::{Capability, Freshness as Reading};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
@@ -242,6 +243,67 @@ fn refusals_under<'a>(report: &'a WorkReport, gate: &str) -> Vec<&'a str> {
 
 fn resting() -> Result<PricingPolicy> {
     PricingPolicy::rest_at_mid(Duration::from_secs(600))
+}
+
+/// Mutation: in `Cell::narrowing_of` map `JournalPressure::Exhausted(_)` to
+/// `Freshness::Fresh` — the table then permits new exposure on a spool that
+/// cannot take its record, and the cell's gate and the table disagree.
+#[test]
+fn the_ledger_row_follows_the_journal_wire_and_agrees_with_it_on_halting_new_exposure() -> Result<()>
+{
+    let mut wired = cell(true, PricingPolicy::Marketable)?;
+    // Before any reading the wired cell is exhausted (never applied).
+    assert!(wired.is_halted() || wired.journal_pressure().is_some_and(|p| p.halts()));
+    for (reading, row) in [
+        (JournalPressure::Normal, Reading::Fresh),
+        (JournalPressure::Narrow(Narrowing::half()), Reading::Stale),
+        (
+            JournalPressure::Exhausted(Exhaustion::OverBudget),
+            Reading::Unavailable,
+        ),
+    ] {
+        wired.apply_journal_pressure(reading, t(9))?;
+        let table = wired.narrowing(t(9));
+        assert_eq!(table.observed(Capability::Ledger), Some(row), "{reading:?}");
+        assert_eq!(
+            table.permits_new_exposure(),
+            !reading.halts(),
+            "the degradation table and the journal gate disagree about new exposure at {reading:?}"
+        );
+    }
+
+    // A cell without the wire has no ledger dependency to report: absent, not
+    // fresh and not lost.
+    let unwired = cell(false, PricingPolicy::Marketable)?;
+    assert_eq!(unwired.narrowing(t(9)).observed(Capability::Ledger), None);
+    Ok(())
+}
+
+/// Mutation: in `Cell::narrowing_of` stop observing `Capability::Fabric`, or
+/// compound `dependency_multiplier` into the pass with a fabric multiplier
+/// below one — the first fails the reading, the second the order.
+#[test]
+fn a_cell_holding_no_policy_records_an_unavailable_fabric_and_still_sizes_its_pass() -> Result<()> {
+    let mut cell = cell(false, PricingPolicy::Marketable)?;
+    let table = cell.narrowing(t(9));
+    assert_eq!(
+        table.observed(Capability::Fabric),
+        Some(Reading::Unavailable)
+    );
+    assert!(
+        table.permits_new_exposure(),
+        "a lost fabric stopped new exposure; cells decide alone"
+    );
+    let mut venue = ScriptedVenue::default();
+    let report = cell.work(t(10), &mut venue)?;
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "premise: the cell placed nothing with no fabric: {:?}",
+        report.refusals
+    );
+    assert!(report.orders[0].quantity.is_positive());
+    Ok(())
 }
 
 #[test]

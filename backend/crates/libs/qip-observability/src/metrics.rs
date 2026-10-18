@@ -1363,6 +1363,11 @@ pub mod names {
     /// node's pass meter times it: the series the reflex
     /// `decision-latency-p99` and `-p99.9` objectives are read from.
     pub const EDGE_DECISION_LATENCY_MS: &str = "qip_edge_decision_latency_ms";
+    /// Milliseconds since the cell last heard each venue's feed, per venue
+    /// per pass, as `Cell::work` reads it before the halt check. The series
+    /// the `market-data-freshness` critical path is read from: a book older
+    /// than the objective's threshold is a pass that decided on stale prices.
+    pub const EDGE_BOOK_AGE_MS: &str = "qip_edge_book_age_ms";
 
     // Ledger metrics (ledgerd)
     pub const LEDGER_COMMITS: &str = "qip_ledger_commits_total";
@@ -1439,4 +1444,11 @@ pub mod names {
     /// freshness. Absent, not zero, until a first package is promoted —
     /// a zero would read as a model promoted this instant.
     pub const MODEL_PACKAGE_AGE: &str = "qip_model_package_age_seconds";
+    /// Each iteration's reading of that age against the freshness objective's
+    /// ceiling, by outcome (`fresh`, `stale`): the good/total split the
+    /// age gauge cannot carry (R12-OBS-9164).
+    pub const MODEL_PACKAGE_FRESHNESS_CHECKS: &str = "qip_model_package_freshness_checks_total";
+    /// Each sweep's reading of the research queue's depth against the
+    /// queue-depth objective's ceiling, by outcome (`within`, `over`).
+    pub const RESEARCH_QUEUE_CHECKS: &str = "qip_research_queue_checks_total";
 }

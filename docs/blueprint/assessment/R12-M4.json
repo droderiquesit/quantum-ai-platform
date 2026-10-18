@@ -251,7 +251,7 @@
       "backend/crates/edge/qip-strategy/src/compile.rs strategy IR compiler",
       "backend/crates/services/qip-training/src/distill.rs:311 distil"
     ],
-    "gap": "Symbolic-predicate and representation compilation missing.",
+    "gap": "No predicate-to-strategy-IR compiler exists: the symbolic stage's validated rule packs (qip-reasoning-engine) are advisory data, and qip-strategy/compile.rs compiles the generator's candidates only. The compiler needs a defined mapping from Cond/Op/Value facts to the IR's Type and feature catalogue (which instruments' features a rule fact names) and a bounds contract, which is a design decision rather than a wiring change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -262,7 +262,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-MODEL-4013",
@@ -539,7 +539,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1014 roll_back_degraded",
       "backend/crates/libs/qip-ai/src/registry.rs:336-361 decision_eligibility"
     ],
-    "gap": "Counterfactual performance input to promote/hold/retire.",
+    "gap": "A fill cannot be attributed to a model: FillScore (platform.rs) carries order, venue and instrument and no model reference, and Platform::evaluate_alternatives scores by order id, so there is no counterfactual score keyed by model for roll_back_degraded to read. Holding a degrading model on counterfactual performance needs the order-to-model attribution first (proposal -> model card), a kernel change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -550,7 +550,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Checked 2026-10-18 against FillScore and evaluate_alternatives."
   },
   {
     "id": "R12-QUANT-4026",
@@ -1358,13 +1358,15 @@
   {
     "id": "R12-QUANT-4063",
     "status": "PARTIAL",
-    "current": "Quantum path is now asynchronous via QuantumGateway submit/poll; qip-contracts DecisionRequest/SolverResult are solver-agnostic QUBO contracts with JobClass research classes.",
+    "current": "Quantum path is asynchronous via QuantumGateway submit/poll; qip-contracts DecisionRequest/SolverResult are solver-agnostic QUBO contracts. The kernel now states a discrete solve in them: ComputeRouter keeps the QUBO and each QUBO run's assignment on its RoutingDecision, and Platform::route_quantum_decisions (no longer a stub) converts the previous DECIDE's solve into a DecisionRequest, a recomputed classical SolverResult, the quantum or quantum-inspired result where one ran, and a contract RoutingDecision, journalled on optimization.completed under kernel/quantum-routing.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/quantum.rs:21-310",
-      "backend/crates/libs/qip-quantum/src/foundry.rs:192-235 JobClass",
-      "backend/crates/libs/qip-quantum/src/gateway.rs::QuantumGateway"
+      "backend/crates/runtime/qip-kernel/src/quantum_routing.rs contract_of / QuantumRoutingRecorded",
+      "backend/crates/runtime/qip-kernel/src/platform.rs route_quantum_decisions (grep -n 'fn route_quantum_decisions')",
+      "backend/crates/services/qip-optimization-engine/src/router.rs RoutedQubo, SolverRun.assignment",
+      "backend/crates/runtime/qip-kernel/tests/solver_routing.rs a_discrete_solve_is_stated_in_the_quantum_contract_with_its_classical_baseline_recomputed"
     ],
-    "gap": "ComputeRouter takes PortfolioProblem and returns its own RoutingDecision; nothing in production builds a qip_contracts::quantum::DecisionRequest or SolverResult. The kernel seam meant to journal contract decisions, Platform::route_quantum_decisions in qip-kernel platform.rs, is a stub returning Vec::new(). Closing needs a router-side conversion (the QUBO the arm submits as a DecisionRequest, each run as a SolverResult) and that stub replaced by a call journaling it; the stub is lane L01's file.",
+    "gap": "The default composition never reaches it: PlatformConfig::default's Mandate has maximum_holdings None, so DECIDE solves a continuous quadratic program, which has no QUBO, and route_quantum_decisions journals nothing there (the test pins that). It runs for a mandate that sets maximum_holdings. A quantum-enabled continuous problem still states nothing, because the contract's classical result must be a classical solve of the same QUBO the quantum arm was sent, and the router solves the QP baseline instead; stating it needs the router to also solve that QUBO classically (a design decision on its cost against ADR 0006's baseline). No test drives the quantum result arm end to end.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1374,10 +1376,10 @@
       "R12-QUANT-4029"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test solver_routing",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L19 after reading the code: the earlier gap was right in substance; it now names the stub seam. Not closed: the closure needs platform.rs work beyond a call-site change."
+    "notes": "Gap corrected 2026-10-18 by lane L19 after reading the code: the earlier gap was right in substance; it now names the stub seam. Not closed: the closure needs platform.rs work beyond a call-site change. Advanced 2026-10-18 (lane L01), kept PARTIAL. Mutation: making route_quantum_decisions discard the pending solve failed the test at 'one solve, one contract record'; restored byte-for-byte, it passes. Found on the way: weights cannot stand in for the assignment (an encoding whose per-holding weight is zero loses the selection), so SolverRun now carries it."
   },
   {
     "id": "R12-QUANT-4064",
@@ -1633,7 +1635,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital",
       "backend/crates/services/qip-capital/src/treasury.rs:52 CapitalBook (unintegrated)"
     ],
-    "gap": "Integrate the uncommitted-reserve floor.",
+    "gap": "The uncommitted-reserve floor is already carried by the survival kernel: SurvivalGovernor builds the waterfall (emergency reserve as a fraction of equity, margin, collateral, settlement, funding maturity, stressed-liquidity reserve) and installs what is left as the gross ceiling the risk state carries (RiskState.survival_gross_ceiling, seeded by seed_survival_ceiling), so building qip_capital::treasury::CapitalBook in deployable_capital would state the same floor a second time and two claims about one fact will disagree. Needs a design decision: either CapitalBook becomes the journal of commitments against the survival floor (floor read from the governor, never configured separately), or it is retired in favour of the governor's budget. No code was changed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1644,7 +1646,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01) after reading survival.rs and deployable_capital."
   },
   {
     "id": "R12-CAPITAL-4076",
@@ -1699,7 +1701,7 @@
     "evidence": [
       "backend/crates/services/qip-capital/src/bank.rs:449 route_idle_cash"
     ],
-    "gap": "Integration as a paper record; real routing BLOCKED (ADR 0003/0021).",
+    "gap": "route_idle_cash needs a shelf of YieldInstrument (custodian offerings with class, realisation and capacity) and nothing in the kernel, its config or any feed supplies one, so a call from DECIDE would route nothing. Also needs the uncommitted floor (see R12-CAPITAL-4075: one floor, not two). Needs a decision on where the shelf comes from (config, a custodian statement, a data source with a licence) before the paper routing record can be journalled.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1710,7 +1712,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the missing shelf, not the missing call."
   },
   {
     "id": "R12-CAPITAL-4079",
@@ -1720,7 +1722,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:143,797 LiquidityLadder",
       "backend/crates/services/qip-capital/src/dated_ladder.rs:76 DatedLadder (unintegrated)"
     ],
-    "gap": "Dated treasury ladder and withdrawal/reserve forecast in the cycle.",
+    "gap": "DatedLadder needs dated inflows and outflows, and the kernel dates only unfunded commitments (CommitmentBook) and the survival governor's CapitalObligations; no withdrawal or redemption event was found in the kernel (grep of platform.rs for withdraw/redemption finds only data-source and venue withdrawals), so a withdrawal/reserve forecast cannot be built from facts the platform holds. Needs a design decision on the withdrawal signal (mandate terms? an operator declaration?) before the ladder can be fed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1731,7 +1733,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01)."
   },
   {
     "id": "R12-CAPITAL-4080",
@@ -1826,14 +1828,14 @@
   {
     "id": "R12-CAPITAL-4084",
     "status": "PARTIAL",
-    "current": "Corridor holds six caps with a signed, delayed lifecycle; gate.rs checks a TransferIntent (seven checks) against it; the kernel reads corridor funding standing but no kernel path builds or gates a TransferIntent, and no transfer executes.",
+    "current": "A transfer reaches the fabric only as a FabricCommand::Gate carrying a TransferIntent, and Platform::decide_fabric (runtime/qip-kernel/src/platform.rs:8785) re-derives the corridor ruling the command states, runs the seven deterministic checks and journals the verdict. qip-api's FabricFeed applies an operator-declared command file through it; backend/crates/apps/qip-api/tests/fabric.rs proves from that composition-root seam that a transfer off the signed corridor set is vetoed under CorridorAuthority, that a generated transfer over any cap is vetoed whole and one under all caps is admitted at the amount asked (for_generated_declared_transfers_every_one_over_a_cap_is_vetoed_whole_...), and that a stated ruling the layer did not derive is refused. A veto is itself a record on the chain by design (a refusal is a decision), and no money moves: paper only. The capital engine's pre-positioning plan deliberately never becomes a TransferIntent (pre_positioning.rs module doc, ADR 0021).",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/corridor.rs:357 Corridor",
       "backend/crates/services/qip-capital-fabric/src/gate.rs:113,697 TransferIntent / checks_passed",
       "backend/crates/runtime/qip-kernel/src/platform.rs:8399 corridor_funding",
       "backend/crates/services/qip-capital-fabric/tests/corridor_and_gate.rs"
     ],
-    "gap": "Route every paper transfer decision through the gate in the kernel; actual movement BLOCKED by ADR 0003/0021.",
+    "gap": "No committed deployment declares a fabric command file (QIP_CAPITAL_FABRIC_PATH is wired through var.capital_fabric_file in catalogue.tf but that variable is null in every environment tfvars; dev carries it commented out at terraform.tfvars:426), so on every running root no TransferIntent is ever built and the gate is exercised only by the serving-desk tests. The grader's closure (build an intent per planned pre-positioning move in pre_position) was not implemented: a GateCommand carries three enforcement-point attestations that a human establishes out of band, and a machine minting them from its own plan would attest to itself. Closing needs an operator declaration mounted in a deployment (infrastructure/environments/** is a protected path) or an ADR changing ADR 0021's permitted half.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1844,7 +1846,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed."
   },
   {
     "id": "R12-CAPITAL-4085",
@@ -2074,7 +2076,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:15898 shared_cause::observe",
       "backend/crates/libs/qip-risk/tests/shared_cause.rs"
     ],
-    "gap": "Learned/AI risk discovery.",
+    "gap": "Not reached in this session. The closure asks for one test asserting CentralPlane.crowded and shared_cause findings in a single cycle's report; tests/central.rs has crowded tests (lines 642, 6565) and none over shared_cause, so the combined fixture still has to be built.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2085,7 +2087,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4095",
@@ -2479,7 +2481,7 @@
       "runtime/qip-kernel/src/confidence.rs::tests::a_split_panel_shrinks_the_size_of_the_thesis_it_split_on",
       "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
     ],
-    "gap": "A kernel test driving dissent through the cycle into the sizing budget and the next grant, mutation-verified; ADR 0121 so a grant is issuable in a deployed binary.",
+    "gap": "Not reached in this session; the gap stands as graded: split-panel dissent driven through REASON into SurvivalGovernor::size and Platform::issue_capital is covered by unit tests only.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2490,7 +2492,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4113",
@@ -2551,7 +2553,7 @@
       "runtime/qip-kernel/src/confidence.rs::tests::a_regime_never_graded_in_shrinks_the_size",
       "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
     ],
-    "gap": "A kernel test driving a regime mismatch into the sizing budget and the next grant; ADR 0121 so a grant is issuable in a deployed binary.",
+    "gap": "Not reached in this session; the gap stands as graded: the regime-mismatch narrowing of size and the next grant is covered by unit tests only.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2562,7 +2564,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4116",
