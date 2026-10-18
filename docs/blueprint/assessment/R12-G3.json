@@ -3959,16 +3959,16 @@
   },
   {
     "id": "R12-ARCH-10176",
-    "status": "PARTIAL",
-    "current": "DecisionLoop with MeshWorker thread and outbox relay decouples mesh/journal from the pass; tests show stalled journal store and unreachable peer do not hold the decision thread.",
+    "status": "COMPLETE",
+    "current": "DecisionLoop runs the pass on the decision thread and reaches every remote only through a bounded non-blocking seam: the centre through MeshWorker on its own qip-mesh-link thread (backend/crates/apps/qip-edge-node/src/main.rs:1236, take_inbound try_recv at src/mesh.rs:681), other regions through qip_peer_link's ReflexPort, and the journal's store through the JournalRelay thread. No warm service, Spanner, Bigtable, Redis, BigQuery or model call exists on the node's turn. With a centre and a peer that accept and never answer and the journal store stalled, all at once, forty turns run passes that place local orders in bounded time.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:919-947 flush and mesh exchange_with_installers run before run_pass on the same thread",
-      "backend/crates/apps/qip-edge-node/src/main.rs:955-965 run_pass",
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_contracting.rs:92 fabric_003 (tautological)",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_stalled_journal_store_never_holds_the_decision_thread"
+      "backend/crates/apps/qip-edge-node/src/main.rs:1236 with_mesh(MeshWorker::spawn)",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:681 take_inbound try_recv",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_silent_centre_a_silent_peer_and_a_stalled_journal_store_together_hold_no_turn",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_stalled_journal_store_never_holds_the_decision_thread",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal"
     ],
-    "gap": "No test stalling the central exchange (hanging centre) or all remote dependencies at once with bounded pass latency.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3976,10 +3976,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "a qip-edge-node test with a stalled mesh peer measuring pass latency",
+    "verification": "cargo test -p qip-edge-node --test decision_loop a_silent_centre_a_silent_peer_and_a_stalled_journal_store_together_hold_no_turn",
     "work_item": "",
     "size": "M",
-    "notes": "Doc comments elsewhere say the scrape/flush is 'not the order path'; in main.rs the pass shares that loop. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L09; the evidence citing main.rs:919-947 as an inline exchange was stale. The test's longest turn is held under 250 ms against a 15 s transport read timeout, and it asserts the passes placed orders: the file's rig grant had no exposure bounds, so every turn in decision_loop.rs was refused at envelope_unbounded until the grant was bounded as tests/pass.rs bounds it (R12-CAPITAL-4088); all eleven decision_loop tests pass with it. Mutation: MeshWorker::take_inbound try_recv -> blocking recv made the test abort on the drive watchdog (SIGABRT); restored byte for byte."
   },
   {
     "id": "R12-FABRIC-10177",
@@ -4642,14 +4642,15 @@
   },
   {
     "id": "R12-OBS-10204",
-    "status": "PARTIAL",
-    "current": "PassLog bounds per-event stderr to 5 per 10 s and metrics are in-memory; but the edge node renders scrapes on the same single thread that runs the pass, so a slow scrape client delays the next pass.",
+    "status": "COMPLETE",
+    "current": "Per-event stderr is sampled by PassLog (5 lines per 10 s) and written through a non-blocking DetachedSink; metrics are an in-memory registry. The register's 'scrapes render on the pass thread' was stale: main.rs runs the first turn, then health::spawn (backend/crates/apps/qip-edge-node/src/health.rs:69) serves probes and scrapes on its own qip-health thread (main.rs:1251) while DecisionLoop::turn runs on the main thread, sharing only the Metrics registry and a try_lock HealthSnapshot.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:874",
-      "backend/crates/apps/qip-edge-node/src/main.rs:878-1000 single-threaded loop serving probes and passes",
-      "backend/crates/libs/qip-observability/src/metrics.rs"
+      "backend/crates/apps/qip-edge-node/src/health.rs:69 spawn on HEALTH_THREAD",
+      "backend/crates/apps/qip-edge-node/src/main.rs:1251 health::spawn after the first turn",
+      "backend/crates/apps/qip-edge-node/src/pass.rs PassLog, DetachedSink",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::a_scrape_client_that_connects_and_never_speaks_holds_the_health_thread_and_not_the_passes"
     ],
-    "gap": "Move pass off the health-serving thread.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4659,10 +4660,10 @@
       "R12-ARCH-10176"
     ],
     "blocked_by": "",
-    "verification": "test with a slow scrape client measuring pass cadence",
+    "verification": "cargo test -p qip-edge-node --test pass a_scrape_client_that_connects_and_never_speaks",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: the earlier gap was stale. The test holds a scrape connection silent for the 3 s request timeout and runs twenty passes into the scraped registry meanwhile, asserting every pass ran inside the stall, none took a quarter of the timeout, and the scrape after it carries the twenty. Mutation: serving the listener inline in health::spawn before spawning the thread made the test abort on its watchdog (SIGABRT); restored byte for byte."
   },
   {
     "id": "R12-REFLEX-10205",

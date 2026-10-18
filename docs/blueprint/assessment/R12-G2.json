@@ -3211,14 +3211,16 @@
   },
   {
     "id": "R12-OBS-9142",
-    "status": "PARTIAL",
-    "current": "The pass uses a LineSampler; exposition renders on the journal-flush thread. No test injects a slow sink and measures the pass.",
+    "status": "COMPLETE",
+    "current": "The pass log is sampled (PassLog over a LineSampler, backend/crates/apps/qip-edge-node/src/pass.rs) and since 2026-10-18 writes through DetachedSink (pass.rs:199): each whole line goes to a writer thread over a bounded channel with try_send (pass.rs:248), a full channel drops and counts the line, and the calling thread never waits. DecisionLoop::new builds the sink over stderr (backend/crates/apps/qip-edge-node/src/scheduler.rs:347) and DecisionLoop::turn writes the pass log only through it (scheduler.rs:511). Before this the turn wrote to std::io::stderr() directly, so a stalled collector filling the pipe blocked the decision thread between the pass and the journal flush.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/pass.rs:47,130,138",
-      "backend/crates/libs/qip-observability/src/sampling.rs",
-      "backend/crates/libs/qip-observability/tests/sampling.rs"
+      "backend/crates/apps/qip-edge-node/src/pass.rs:199 DetachedSink; :248 try_send",
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs:347 DetachedSink::spawn(std::io::stderr(), ..); :511 pass_log.write through log_sink",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::a_log_reader_that_takes_a_quarter_second_per_line_adds_nothing_like_it_to_the_passes",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::a_log_reader_that_has_stopped_costs_dropped_lines_and_never_a_wait",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::the_node_binary_writes_its_per_pass_lines_only_through_the_sampled_pass_log"
     ],
-    "gap": "Slow-sink test.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3226,10 +3228,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new qip-edge-node test",
+    "verification": "cargo test -p qip-edge-node --test pass -- log_reader sampled_pass_log",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09. The triage closure proposed only a slow-sink test, but the turn wrote to blocking stderr, so such a test would have shown the delay; the detached sink was added first. Mutations, each restored byte for byte: try_send->send hung the stopped-reader test into its 5 s timeout; dropping the writer thread's write_all made the slow-reader test report 'received 0 of 5 lines'; restoring &mut std::io::stderr() in the turn failed the source scan."
   },
   {
     "id": "R12-OBS-9143",
