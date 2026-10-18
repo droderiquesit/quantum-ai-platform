@@ -340,6 +340,10 @@ pub struct EvolutionEngine {
     universe: Universe,
     history: BTreeMap<String, Vec<Bar>>,
     foundries: BTreeMap<String, StrategyFoundry>,
+    /// Fused posterior per instrument, as the tick desk last stated it
+    /// ([`Self::set_priors`]); a subject absent from it searches at the
+    /// neutral size.
+    priors: BTreeMap<String, f64>,
     desk: SuccessionDesk,
     learning: LearningDesk,
     stats: EvolutionStats,
@@ -404,6 +408,7 @@ impl EvolutionEngine {
             universe,
             history: BTreeMap::new(),
             foundries: BTreeMap::new(),
+            priors: BTreeMap::new(),
             desk,
             learning: LearningDesk::new(config_learning, seed),
             stats: EvolutionStats::default(),
@@ -815,6 +820,12 @@ impl EvolutionEngine {
     /// history. `None` means "not this cycle", which is normal, or "no
     /// subject is ready", which the caller's cycle line makes visible by the
     /// absence of an evolution line.
+    /// Hand the engine the fusion engine's posteriors (R12-TICK-2085): the
+    /// search sizes each subject's round from its own.
+    pub fn set_priors(&mut self, priors: BTreeMap<String, f64>) {
+        self.priors = priors;
+    }
+
     pub fn maybe_turn(
         &mut self,
         platform: &mut Platform,
@@ -902,7 +913,12 @@ impl EvolutionEngine {
             }
         };
 
-        let round = foundry.search(self.config.candidates)?;
+        let prior = self
+            .priors
+            .get(subject)
+            .copied()
+            .unwrap_or(qip_kernel::central::foundry::NEUTRAL_PRIOR);
+        let round = foundry.search_with_prior(self.config.candidates, prior)?;
         let mut summary = RoundSummary {
             subject: subject.to_string(),
             proposed: round.requested,
@@ -2288,6 +2304,36 @@ mod tests {
             order < typical * 0.20,
             "a full-weight order of {order} is above 20% of a typical bar's {typical}"
         );
+        Ok(())
+    }
+
+    /// R12-TICK-2085: what the fusion engine believes about the subject sizes
+    /// the round the engine runs on it. Mutation: ignore the prior in
+    /// `maybe_turn` (always the neutral one) — the high and low rounds propose
+    /// the same count and the first comparison fails.
+    #[test]
+    fn a_fused_posterior_handed_to_the_engine_sizes_the_round_it_runs() -> Result<()> {
+        let proposed_under = |prior: Option<f64>| -> Result<usize> {
+            let mut platform = platform()?;
+            let mut engine = engine(1);
+            let mut now = start();
+            for _ in 0..(engine.config.minimum_bars as i64 + 30) * 2 {
+                now = now.saturating_add(Duration::from_mins(1));
+                engine.sense(&mut platform, now)?;
+            }
+            if let Some(prior) = prior {
+                let all = engine.history.keys().map(|s| (s.clone(), prior)).collect();
+                engine.set_priors(all);
+            }
+            let summary = engine
+                .maybe_turn(&mut platform, 1, now)?
+                .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+            Ok(summary.proposed)
+        };
+        let neutral = proposed_under(None)?;
+        assert!(neutral >= 2, "the premise: a round proposes something");
+        assert!(proposed_under(Some(1.0))? > neutral);
+        assert!(proposed_under(Some(0.0))? < neutral);
         Ok(())
     }
 

@@ -108,6 +108,7 @@ fn state() -> RiskState {
         // 30% of equity is left once held capital and unfunded commitments
         // are taken out.
         margin_utilisation: Some(0.6),
+        margin_basis: None,
         funding_buffer: Some(0.30),
     }
 }
@@ -740,6 +741,98 @@ fn a_venue_observed_with_maintenance_due_and_no_cover_is_vetoed_whatever_the_bou
         ..state()
     };
     assert!(check(generous, &uncovered).is_blocked());
+}
+
+/// Mutation that makes it fail: in `MarginBasis::worst_utilisation` replace
+/// the per-venue loop with one ratio over the summed cover.
+#[test]
+fn a_call_at_one_isolated_venue_breaches_the_margin_rule_whatever_other_venues_hold() {
+    use qip_risk::limits::{COUNTERPARTY_AXIS, MarginBasis, VenueMargin};
+    let rule = LimitKind::MaxMarginUtilisation { limit: 1.0 };
+    let book = |covers: [i64; 2]| RiskState {
+        axis_exposures: BTreeMap::from([(
+            COUNTERPARTY_AXIS.to_string(),
+            BTreeMap::from([("desk".to_string(), Decimal::from_int(200_000))]),
+        )]),
+        margin_basis: Some(MarginBasis {
+            maintenance_rate: dec!("0.25"),
+            venues: BTreeMap::from([
+                (
+                    "desk".to_string(),
+                    VenueMargin {
+                        cover: Decimal::from_int(covers[0]),
+                        debit: Decimal::ZERO,
+                    },
+                ),
+                (
+                    "prime".to_string(),
+                    VenueMargin {
+                        cover: Decimal::from_int(covers[1]),
+                        debit: Decimal::ZERO,
+                    },
+                ),
+            ]),
+        }),
+        ..state()
+    };
+    assert!(
+        !check(rule.clone(), &book([60_000, 0])).is_blocked(),
+        "premise: 50k maintenance against 60k of cover passes"
+    );
+    let breach = vetoes(
+        rule,
+        LimitKind::MaxMarginUtilisation { limit: 1_000_000.0 },
+        &book([1, 1_000_000]),
+    );
+    assert!(
+        breach.observed > 1.0,
+        "the desk's own call read as {}",
+        breach.observed
+    );
+}
+
+/// Mutation that makes it fail: in the limit's arm pass `None` instead of
+/// `state.axis_exposures.get(COUNTERPARTY_AXIS)`, which charges nothing.
+#[test]
+fn the_margin_rule_charges_the_projected_gross_of_the_order_under_check() {
+    use qip_risk::limits::{COUNTERPARTY_AXIS, MarginBasis, VenueMargin};
+    let rule = LimitKind::MaxMarginUtilisation { limit: 1.0 };
+    let at = |gross: i64, before: i64| RiskState {
+        gross_exposure: Decimal::from_int(gross),
+        gross_before_order: Some(Decimal::from_int(before)),
+        axis_exposures: BTreeMap::from([(
+            COUNTERPARTY_AXIS.to_string(),
+            BTreeMap::from([("desk".to_string(), Decimal::from_int(gross))]),
+        )]),
+        margin_basis: Some(MarginBasis {
+            maintenance_rate: dec!("0.25"),
+            venues: BTreeMap::from([(
+                "desk".to_string(),
+                VenueMargin {
+                    cover: Decimal::from_int(60_000),
+                    debit: Decimal::ZERO,
+                },
+            )]),
+        }),
+        // The kernel's pre-order figure: 50k over 60k.
+        margin_utilisation: Some(0.833),
+        ..state()
+    };
+    assert!(
+        !check(rule.clone(), &at(200_000, 100_000)).is_blocked(),
+        "premise: the order that leaves 200k of gross at 50k maintenance passes"
+    );
+    // The projected gross doubles; the stale figure still reads 0.833.
+    let breach = vetoes(
+        rule,
+        LimitKind::MaxMarginUtilisation { limit: 2.0 },
+        &at(400_000, 200_000),
+    );
+    assert!(
+        breach.observed > 1.6,
+        "projected utilisation read as {}",
+        breach.observed
+    );
 }
 
 #[test]

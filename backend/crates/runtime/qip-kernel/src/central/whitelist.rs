@@ -339,7 +339,7 @@
 
 use qip_contracts::CapitalEnvelope;
 use qip_contracts::message::BookSide;
-use qip_contracts::policy::{CycleWhitelist, WhitelistedConversion};
+use qip_contracts::policy::{CycleWhitelist, WhitelistedConversion, WhitelistedCosts};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{VenueClass, VenueId};
 use qip_core::Decimal;
@@ -381,6 +381,15 @@ pub struct WhitelistedMarket {
     pub base: String,
     /// The instrument the book is priced against.
     pub quote: String,
+    /// What a conversion at this book costs beyond the venue's taker fee:
+    /// duty, logistics, settlement risk, fill probability and a stated
+    /// borrow rate (R12-MESH-5055, R12-MESH-5056). Shipped on both of the
+    /// book's conversions. `None` is "none stated", which the cell prices as
+    /// free — what every conversion was before this field existed — so an
+    /// operator who knows a duty on a leg states it here rather than leaving
+    /// the net edge flattered by its absence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub costs: Option<WhitelistedCosts>,
 }
 
 /// The operator's statement of what the arbitrage desk may price.
@@ -411,6 +420,45 @@ pub struct ArbitragePolicy {
 }
 
 impl ArbitragePolicy {
+    /// The cell refuses a conversion whose costs leave their ranges
+    /// (`EdgeCosts::validate`), and a whole whitelist with it; refuse where
+    /// the policy is written instead, naming the market.
+    fn validate_costs(
+        position: usize,
+        market: &WhitelistedMarket,
+        costs: &WhitelistedCosts,
+    ) -> Result<()> {
+        for (fraction, what) in [
+            (costs.tax_duty_fraction, "tax and duty"),
+            (costs.logistics_fraction, "logistics"),
+            (costs.settlement_risk_fraction, "settlement risk"),
+        ] {
+            if fraction.is_negative() || fraction >= Decimal::ONE {
+                return Err(Error::invalid(format!(
+                    "CentralConfig::arbitrage market {position} ({} at {}) states a {what} \
+                     fraction of {fraction}, outside [0, 1); a cost is a share of notional",
+                    market.market, market.venue
+                )));
+            }
+        }
+        if !costs.fill_probability.is_positive() || costs.fill_probability > Decimal::ONE {
+            return Err(Error::invalid(format!(
+                "CentralConfig::arbitrage market {position} ({} at {}) states a fill \
+                 probability of {}, outside (0, 1]; a book that can never fill is left out of \
+                 the policy",
+                market.market, market.venue, costs.fill_probability
+            )));
+        }
+        if costs.borrow_rate_annual.is_negative() {
+            return Err(Error::invalid(format!(
+                "CentralConfig::arbitrage market {position} ({} at {}) states a borrow rate of \
+                 {}; a rate earned is gross edge, not a negative cost",
+                market.market, market.venue, costs.borrow_rate_annual
+            )));
+        }
+        Ok(())
+    }
+
     /// Refuse a policy the cell would refuse, or one that says less than it
     /// appears to.
     pub fn validate(&self) -> Result<()> {
@@ -486,6 +534,9 @@ impl ArbitragePolicy {
                      and a second listing would be a second claim about the same book",
                     market.market, market.venue
                 )));
+            }
+            if let Some(costs) = &market.costs {
+                Self::validate_costs(position, market, costs)?;
             }
             venues_used.insert(market.venue.clone());
             instruments.insert(market.base.clone());
@@ -603,7 +654,7 @@ impl ArbitragePolicy {
                 to: market.base.clone(),
                 side: BookSide::Ask,
                 cost_fraction: terms.taker_cost,
-                costs: None,
+                costs: market.costs.clone(),
             });
             conversions.push(WhitelistedConversion {
                 venue: market.venue.clone(),
@@ -613,7 +664,7 @@ impl ArbitragePolicy {
                 to: market.quote.clone(),
                 side: BookSide::Bid,
                 cost_fraction: terms.taker_cost,
-                costs: None,
+                costs: market.costs.clone(),
             });
         }
         let mut start_sizes = self.start_sizes.clone();
@@ -761,12 +812,14 @@ mod tests {
                     market: "AAA-USD@XNYS".to_string(),
                     base: "AAA".to_string(),
                     quote: "USD".to_string(),
+                    costs: None,
                 },
                 WhitelistedMarket {
                     venue: "XLON".to_string(),
                     market: "AAA-USD@XLON".to_string(),
                     base: "AAA".to_string(),
                     quote: "USD".to_string(),
+                    costs: None,
                 },
             ],
             start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
@@ -788,6 +841,70 @@ mod tests {
             "sig-arb",
         )
         .expect("a well-formed grant")
+    }
+
+    /// R12-MESH-5055 / R12-MESH-5056: a duty, a toll and a stated borrow rate
+    /// on a book reach both of its shipped conversions and no other, and a
+    /// figure the cell would refuse is refused where the policy is written.
+    /// Mutation: ship `costs: None` from `whitelist_for` — the carried-costs
+    /// assertion fails.
+    #[test]
+    fn a_markets_stated_costs_ship_on_both_of_its_conversions_and_an_impossible_one_is_refused() {
+        let costs = WhitelistedCosts {
+            tax_duty_fraction: dec!("0.002"),
+            logistics_fraction: dec!("0.0015"),
+            settlement_risk_fraction: dec!("0.0001"),
+            fill_probability: dec!("0.95"),
+            borrow_rate_annual: dec!("0.04"),
+        };
+        let mut stated = policy();
+        stated.markets[0].costs = Some(costs.clone());
+        stated.validate().expect("in-range costs are admitted");
+        let whitelist = stated
+            .whitelist_for(&grant(&["XNYS", "XLON"], dec!("25000")))
+            .expect("two permitted venues emit");
+        // Premise: four conversions, two per book, so the split below is real.
+        assert_eq!(whitelist.conversions.len(), 4);
+        for conversion in &whitelist.conversions {
+            let expected = (conversion.market == stated.markets[0].market).then(|| costs.clone());
+            assert_eq!(conversion.costs, expected, "{}", conversion.market);
+        }
+        assert_eq!(
+            whitelist
+                .conversions
+                .iter()
+                .filter(|c| c.costs.is_some())
+                .count(),
+            2
+        );
+        // The policy that states none ships none: absence is "none stated".
+        let bare = policy()
+            .whitelist_for(&grant(&["XNYS", "XLON"], dec!("25000")))
+            .expect("emits");
+        assert!(bare.conversions.iter().all(|c| c.costs.is_none()));
+
+        for (name, break_it) in [
+            (
+                "duty",
+                (|c: &mut WhitelistedCosts| c.tax_duty_fraction = dec!("1")) as fn(&mut _),
+            ),
+            ("fill", |c: &mut WhitelistedCosts| {
+                c.fill_probability = Decimal::ZERO
+            }),
+            ("borrow", |c: &mut WhitelistedCosts| {
+                c.borrow_rate_annual = dec!("-0.01")
+            }),
+        ] {
+            let mut broken = policy();
+            let mut c = costs.clone();
+            break_it(&mut c);
+            broken.markets[0].costs = Some(c);
+            let refusal = broken.validate().expect_err(name);
+            assert!(
+                refusal.message().contains("AAA-USD@XNYS"),
+                "{name}: {refusal}"
+            );
+        }
     }
 
     #[test]
