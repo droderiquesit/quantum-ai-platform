@@ -3968,3 +3968,31 @@ fn the_ledger_of_records_durable_write_seam_is_named_by_no_crate_but_qip_ledgerd
         "a crate links qip-ledgerd: {dependents:?}"
     );
 }
+
+#[test]
+fn nothing_that_holds_evidence_belief_or_authenticity_can_reach_a_quantum_solver() {
+    // R12-EVID-2040. A quantum result is an advisory candidate; it must not
+    // become evidence authenticity or a belief on its own. The structural
+    // reason is that the crates which hold evidence, the world model and the
+    // reasoning engine do not link the solvers at all, transitively, so there
+    // is no path along which a result type could be handed to them. The
+    // direct-name scan in `quantum_evidence.rs` is the other half.
+    let graph = dependency_graph();
+    for holder in ["qip-evidence", "qip-world-model", "qip-reasoning-engine"] {
+        assert!(
+            graph.contains_key(holder),
+            "{holder} is not a crate in this workspace; this test constrains nothing"
+        );
+        let reachable = reachable_from(&graph, holder);
+        assert!(
+            reachable.contains("qip-contracts"),
+            "{holder} reaches nothing it is known to depend on, so the absence proves nothing"
+        );
+        for solver in ["qip-quantum", "qip-optimization-engine"] {
+            assert!(
+                !reachable.contains(solver),
+                "{holder} can reach {solver}: {reachable:?}"
+            );
+        }
+    }
+}

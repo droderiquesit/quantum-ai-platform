@@ -938,10 +938,14 @@
   },
   {
     "id": "R12-EVID-2040",
-    "status": "PARTIAL",
-    "current": "quantum_evidence.rs asserts SolverKind advisory typing.",
-    "evidence": [],
-    "gap": "No compile-fail/structural guard proving no path to authenticity/belief fields.",
+    "status": "COMPLETE",
+    "current": "No path exists from a quantum result type to an authenticity or belief field: qip-evidence, qip-world-model and qip-reasoning-engine reach neither qip-quantum nor qip-optimization-engine through any chain of dependencies (architecture.rs::nothing_that_holds_evidence_belief_or_authenticity_can_reach_a_quantum_solver), and none of their sources or manifests names SolverResult, SolverKind, DecisionRequest, RoutingDecision, ChosenPath or qip_quantum (quantum_evidence.rs::evidence_the_world_model_and_the_reasoning_engine_do_not_name_a_quantum_result_type).",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs nothing_that_holds_evidence_belief_or_authenticity_can_reach_a_quantum_solver",
+      "backend/crates/tests/qip-acceptance/tests/quantum_evidence.rs evidence_the_world_model_and_the_reasoning_engine_do_not_name_a_quantum_result_type",
+      "backend/crates/tests/qip-acceptance/tests/quantum_evidence.rs quantum_results_are_typed_as_advisory_candidates"
+    ],
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -951,10 +955,10 @@
       "R12-EVID-2033"
     ],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cd backend && cargo test -p qip-acceptance --test architecture --test quantum_evidence",
     "work_item": "",
     "size": "S",
-    "notes": "Vacuously satisfied today; recorded MISSING because no guard exists. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: qip-quantum added to qip-world-model's manifest failed the graph test naming the reachable solver; a function taking qip_contracts::quantum::SolverResult appended to qip-reasoning-engine/src/lib.rs failed the name scan naming the file; manifest, lockfile and source restored byte for byte. A crate outside the three that converted a result into evidence is not covered; the three are the ones that hold authenticity and belief fields."
   },
   {
     "id": "R12-TICK-2041",
