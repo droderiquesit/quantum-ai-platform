@@ -743,14 +743,15 @@
   {
     "id": "R12-REASON-9032",
     "status": "PARTIAL",
-    "current": "RedTeam deterministically attacks every hypothesis in the kernel's REASON stage, with severity aggregation and contradiction detection; it targets hypotheses rather than forecasts and there are no ChallengeRequest/VerificationResult contracts.",
+    "current": "The §27 pair exists: qip_contracts::challenge ChallengeRequest and VerificationResult (strict decode; a verdict is cross-checked against the reports it summarises - survived over a refutation, refuted naming a critic that did not refute, or a miscounted examined total is refused - and a result is checked against the request it answers). qip-learning-engine's VerifierSociety builds the request (request_for_prediction), answers one (challenge_prediction, only the named critics attack, an unheld critic is refused) and Verification::as_result states any attack as the contract. The kernel's TournamentStage records an exchange (request plus result) on the journaled TournamentReview for every important prediction the society attacks. Critics already attacked predictions, not only hypotheses, before this.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/redteam.rs",
-      "backend/crates/services/qip-reasoning-engine/src/contradiction.rs",
-      "backend/crates/services/qip-reasoning-engine/src/engine.rs:131",
-      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs"
+      "backend/crates/libs/qip-contracts/src/challenge.rs",
+      "backend/crates/libs/qip-contracts/tests/challenge.rs a_verdict_that_contradicts_its_own_reports_is_refused",
+      "backend/crates/services/qip-learning-engine/src/verifier.rs VerifierSociety::challenge_prediction, Verification::as_result",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs challenge_exchange and TournamentReview.challenges",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs tests::a_fatal_attack_is_recorded_as_a_refuted_result_that_answers_its_request"
     ],
-    "gap": "Apply to forecasts; typed challenge contracts.",
+    "gap": "Two limits. The call site that pushes the exchange (TournamentStage::observe_reasoning) is not driven by a test: no fixture cycle forms an important prediction (the first-cycle fixture forms a hypothesis at confidence 0.42, below IMPORTANCE_CONFIDENCE and unapproved), so only the extracted challenge_exchange helper is mutation-proven. And nothing outside the journal reads the pair: challenge_prediction, the receiving-brain entry point, has no caller outside tests.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -758,10 +759,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-contracts --test challenge && cargo test -p qip-learning-engine --lib verifier && cargo test -p qip-kernel --lib model_tournament",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - the survived-over-refutation arm removed from VerificationResultFields::check ('survived was accepted over a refuting finding'); SocietyVerdict::Refuted mapped to ChallengeVerdict::Survived in Verification::as_result (the learning-engine fatal-challenge test and the kernel exchange test both failed on the contract's refusal); the unheld-critic check removed in challenge_prediction ('a critic nobody holds was answered for'). Kept PARTIAL for the two limits."
   },
   {
     "id": "R12-AMBIENT-9033",
