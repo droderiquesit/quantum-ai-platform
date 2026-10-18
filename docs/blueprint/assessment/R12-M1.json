@@ -1625,14 +1625,18 @@
   {
     "id": "R12-EXEC-1068",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/action.rs:53 Spoofing as a whole-word conduct phrase class",
+    "current": "Spoofing is a whole-word conduct phrase class (qip-contracts action.rs); and the edge cell now refuses a place-and-cancel pattern before the next order of its shape exists: GATE_CONDUCT_SPOOFING in place_net, on the cell's own record of placements and unfilled time-to-live withdrawals per venue, instrument and side.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/conduct.rs:42 ConductPolicy (default: 4 unfilled withdrawals in 60 s, above 0.75 of placements) and :151 ConductWatch::refusal, keyed by venue, instrument and side, bounded by the window and MAX_EVENTS_PER_KEY",
+      "backend/crates/edge/qip-edge/src/cell.rs:215 GATE_CONDUCT_SPOOFING; :5278 place_net refuses through Cell::refuse before pricing builds the order; :5536 Cell::send records each accepted placement; :6261 withdraw_all records an order withdrawn at its time to live with nothing filled, after the last reports",
+      "backend/crates/edge/qip-edge/tests/pricing.rs:659 a_cell_that_withdraws_every_resting_order_before_any_fill_is_refused_a_further_one_until_the_window_clears",
+      "backend/crates/libs/qip-contracts/src/action.rs:53 Spoofing as a whole-word conduct phrase class",
       "backend/crates/libs/qip-contracts/src/action.rs:93 whole-word matcher"
     ],
-    "gap": "No behavioural spoofing control (order-to-cancel / intent patterns) in qip-edge quoting.",
+    "gap": "The behavioural control covers the cell's own place-then-withdraw-unfilled pattern only. Requotes sent beneath the placer seam (qip-edge-node reprice.rs, Cell::spend_requote) are deliberately not counted, so layering by repeated repricing away from the touch is not judged; cross-venue and momentum-ignition patterns have no control; and the desk's order path in qip-execution-engine has none.",
     "implemented": false,
     "tested": false,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1640,7 +1644,7 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Lane L11, 2026-10-18: PARTIAL kept. The clause says any order pattern constituting spoofing; one pattern is now refused (see R12-AGENCY-6100, closed by the same change, mutation-verified). A requote keeps an order's intent to trade and counting it would convict ordinary market making, so judging requote layering needs its own bound, not this one."
   },
   {
     "id": "R12-AGENCY-1069",

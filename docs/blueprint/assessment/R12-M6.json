@@ -2185,14 +2185,17 @@
   },
   {
     "id": "R12-AGENCY-6100",
-    "status": "PARTIAL",
-    "current": "Method enumerates the deceptive classes and is_deceptive is fail-closed for new variants; the edge cell refuses a net opposite its own resting order as a self-trade. Detection depends on a tool honestly declaring its method; no spoofing (place-and-cancel pattern) control found in the order path.",
+    "status": "COMPLETE",
+    "current": "Method enumerates the deceptive classes and is_deceptive is fail-closed for new variants; the edge cell refuses a net opposite its own resting order as a self-trade; and the cell refuses a further order on one side of one book under GATE_CONDUCT_SPOOFING once its own cancel-before-fill ratio there over the conduct window exceeds the committed ConductPolicy bound, journaled and counted on qip_edge_refusals_total{gate=\"conduct_spoofing\"}.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/conduct.rs:42 ConductPolicy (default: 4 unfilled withdrawals in 60 s, above 0.75 of placements) and :151 ConductWatch::refusal, keyed by venue, instrument and side, bounded by the window and MAX_EVENTS_PER_KEY",
+      "backend/crates/edge/qip-edge/src/cell.rs:215 GATE_CONDUCT_SPOOFING; :5278 place_net refuses through Cell::refuse before pricing builds the order; :5536 Cell::send records each accepted placement; :6261 withdraw_all records an order withdrawn at its time to live with nothing filled, after the last reports",
+      "backend/crates/edge/qip-edge/tests/pricing.rs:659 a_cell_that_withdraws_every_resting_order_before_any_fill_is_refused_a_further_one_until_the_window_clears",
       "backend/crates/services/qip-agency/src/affordance.rs:28-63",
-      "backend/crates/edge/qip-edge/src/cell.rs:5517 would_self_trade",
+      "backend/crates/edge/qip-edge/src/cell.rs would_self_trade",
       "backend/crates/edge/qip-edge/tests/pricing.rs:557"
     ],
-    "gap": "Spoofing/layering pattern control on the order path; method declaration verified rather than trusted.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2203,7 +2206,7 @@
     "verification": "cargo test -p qip-edge --test pricing && cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. The pattern control runs in Cell::work's place_net on every cell (ConductPolicy is a CellConfig default, not opt-in), so qip-edge-node's simulated passes carry it. Method declaration stays operator policy, as the triage closure states; the row's unmet clause was the order-path pattern control. Mutations: a ratio check that never exceeds the bound, and never recording an unfilled withdrawal, each fail the pricing test at the refused-order assertion."
   },
   {
     "id": "R12-AGENCY-6101",
