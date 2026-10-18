@@ -192,9 +192,22 @@ pub struct SolverRun {
     /// If the run solved a relaxation or a coarsened problem rather than the
     /// real one, what was dropped.
     pub relaxations: Vec<String>,
+    /// The binary assignment the run found, for a run over the QUBO and `None`
+    /// for a continuous one (R12-QUANT-4063). Carried explicitly because the
+    /// weights cannot stand in for it: an encoding whose per-holding weight
+    /// rounds to zero turns a selected asset into a zero weight, and the
+    /// selection would be unrecoverable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<Vec<bool>>,
 }
 
 impl SolverRun {
+    /// This run with the binary assignment it was decoded from.
+    fn with_assignment(mut self, bits: &[u8]) -> Self {
+        self.assignment = Some(bits.iter().map(|bit| *bit == 1).collect());
+        self
+    }
+
     /// Whether this run's answer may be used at all.
     pub fn is_usable(&self) -> bool {
         self.feasible && self.weights.iter().all(|w| w.is_finite())
@@ -238,6 +251,17 @@ pub struct QuantumDispatch {
     pub notes: Vec<String>,
 }
 
+/// The binary problem a discrete solve ran on, kept so a reader of the
+/// decision can recompute any run's energy without re-deriving the encoding
+/// (R12-QUANT-4063). Entries are the `i <= j` upper-triangle form
+/// [`Qubo`] holds; the diagonal is the linear terms.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RoutedQubo {
+    pub variables: usize,
+    pub entries: Vec<(usize, usize, f64)>,
+    pub offset: f64,
+}
+
 /// Why the router chose what it chose.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RoutingDecision {
@@ -262,6 +286,11 @@ pub struct RoutingDecision {
     /// on a record written before the compiler existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute: Option<ComputeDecision>,
+    /// The QUBO the discrete runs above were solved on, or `None` for a
+    /// continuous problem, which has none. Each run over it carries its own
+    /// `assignment`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qubo: Option<RoutedQubo>,
 }
 
 impl RoutingDecision {
@@ -1077,6 +1106,23 @@ impl ComputeRouter {
         let classical_usable = classical.is_usable();
         runs.push(classical);
 
+        // The binary problem the discrete runs share, kept on the decision.
+        // A continuous problem has none, and a QUBO that cannot be built is
+        // not an error here: the solve above already built it or did not need
+        // to, and a decision without the record is the honest answer.
+        let routed_qubo = if problem.is_discrete() {
+            problem
+                .to_qubo(&self.encoding_for(problem))
+                .ok()
+                .map(|qubo| RoutedQubo {
+                    variables: qubo.n,
+                    entries: qubo.entries.clone(),
+                    offset: qubo.offset,
+                })
+        } else {
+            None
+        };
+
         let task = self.compile(problem, classical_solver)?;
         let (attempt_quantum, quantum_note) = self.quantum_assessment(problem);
         let mut dispatch = QuantumDispatch::default();
@@ -1474,6 +1520,7 @@ impl ComputeRouter {
             quantum_note,
             quantum_dispatch: dispatch,
             compute: Some(compute),
+            qubo: routed_qubo,
         })
     }
 
@@ -1530,19 +1577,21 @@ impl ComputeRouter {
             }
         };
         let weights = encoding.to_weights(validated.assignment());
-        let run = self.score(
-            problem,
-            Solver::QuantumInspired,
-            weights,
-            candidate.evaluations,
-            true,
-            vec![
+        let run = self
+            .score(
+                problem,
+                Solver::QuantumInspired,
+                weights,
+                candidate.evaluations,
+                true,
+                vec![
                 encoding.describe(),
                 "quantum-inspired path-integral annealing over the QUBO: a classical algorithm \
                  on this CPU, and not evidence of quantum advantage"
                     .to_string(),
             ],
-        );
+            )
+            .with_assignment(validated.assignment());
         let (beat, gain) = self.adopts(&run, classical_objective)?;
         measurement.outcome = MeasurementOutcome::Answered;
         measurement.verified = run.is_usable();
@@ -1758,14 +1807,16 @@ impl ComputeRouter {
                     .to_string(),
             );
         }
-        Ok(self.score(
-            problem,
-            Solver::Quantum,
-            weights,
-            result.evaluations,
-            true,
-            relaxations,
-        ))
+        Ok(self
+            .score(
+                problem,
+                Solver::Quantum,
+                weights,
+                result.evaluations,
+                true,
+                relaxations,
+            )
+            .with_assignment(&result.assignment))
     }
 
     /// The compiled task for a portfolio problem (§11.2 steps 1–3).
@@ -1958,28 +2009,32 @@ impl ComputeRouter {
                 && let Some(exact) = solve_exact(&qubo)
             {
                 let weights = encoding.to_weights(&exact.assignment);
-                return Ok(self.score(
-                    problem,
-                    Solver::ExactEnumeration,
-                    weights,
-                    1usize << problem.dimension(),
-                    true,
-                    vec![encoding.describe()],
-                ));
+                return Ok(self
+                    .score(
+                        problem,
+                        Solver::ExactEnumeration,
+                        weights,
+                        1usize << problem.dimension(),
+                        true,
+                        vec![encoding.describe()],
+                    )
+                    .with_assignment(&exact.assignment));
             }
 
             let mut rng = Xoshiro256::seeded(self.seed).fork("anneal");
             let settings = AnnealSettings::default();
             let result = anneal(&qubo, &settings, &mut rng);
             let weights = encoding.to_weights(&result.assignment);
-            return Ok(self.score(
-                problem,
-                Solver::SimulatedAnnealing,
-                weights,
-                result.sweeps_run,
-                true,
-                vec![encoding.describe()],
-            ));
+            return Ok(self
+                .score(
+                    problem,
+                    Solver::SimulatedAnnealing,
+                    weights,
+                    result.sweeps_run,
+                    true,
+                    vec![encoding.describe()],
+                )
+                .with_assignment(&result.assignment));
         }
 
         let program = problem.to_quadratic_program()?;
@@ -2071,6 +2126,7 @@ impl ComputeRouter {
             work,
             converged,
             relaxations,
+            assignment: None,
         }
     }
 }

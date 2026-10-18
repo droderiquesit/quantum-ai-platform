@@ -15,6 +15,15 @@ use qip_contracts::expansion::{
 use qip_core::error::{Error, Result};
 use std::collections::BTreeMap;
 
+/// The evaluation an ontology extension cites: its id and whether it passed.
+/// Plain fields rather than the expansion crate's record, which this crate
+/// sits beneath.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitedEvaluation {
+    pub id: String,
+    pub passed: bool,
+}
+
 /// Ontology Registry: versioned definitions of entity, event, relationship,
 /// market, asset, product, causal-driver, and lifecycle types.
 #[derive(Debug, Clone)]
@@ -65,6 +74,57 @@ impl OntologyRegistry {
         self.latest_version_per_name.insert(name_key, spec.version);
         self.types.insert(key, spec);
         Ok(())
+    }
+
+    /// Version an existing type: register `schema` as the next version of
+    /// `family`/`name`, on the strength of a passing evaluation that is cited
+    /// in the new definition (R12-EXPAND-6056).
+    ///
+    /// The failure it prevents: [`Self::register`] accepts any higher version,
+    /// so the schema every detector reads could be rewritten by whoever held
+    /// the registry, with nothing on record to say why. An extension is the
+    /// governed route: the type must already exist (a brand-new type is
+    /// `register`'s, at version 1), the evaluation must have passed and be
+    /// named, and the new description carries the citation so the version
+    /// answers "on what evidence" from the registry alone. Returns the new
+    /// version.
+    pub fn extend(
+        &mut self,
+        family: OntologyTypeFamily,
+        name: &str,
+        schema: &str,
+        description: &str,
+        evaluation: &CitedEvaluation,
+    ) -> Result<u32> {
+        if evaluation.id.trim().is_empty() {
+            return Err(Error::invalid(
+                "an ontology extension must cite its evaluation by id; none was named",
+            ));
+        }
+        if !evaluation.passed {
+            return Err(Error::denied(format!(
+                "evaluation `{}` did not pass; a type is extended on a passing evaluation, so \
+                 keep the current version or evaluate again",
+                evaluation.id
+            )));
+        }
+        let Some(latest) = self
+            .latest_version_per_name
+            .get(&(family, name.to_string()))
+        else {
+            return Err(Error::not_found(format!(
+                "{family:?}.{name} is not registered; register version 1 before extending it"
+            )));
+        };
+        let next = latest.saturating_add(1);
+        self.register(OntologyTypeSpec {
+            family,
+            name: name.to_string(),
+            version: next,
+            schema: schema.to_string(),
+            description: format!("{description} [evaluation: {}]", evaluation.id),
+        })?;
+        Ok(next)
     }
 
     /// Retrieve a type by family, name, and version. Returns None if not found.

@@ -47,6 +47,7 @@ fn compliant_draft() -> CommunicationDraft {
         evidence_citations: vec![EvidenceCitation {
             source_id: "financial_data".to_string(),
             evidence_id: "q4-earnings-001".to_string(),
+            claim: None,
             confidence_bps: 9000,
         }],
         disclosures: vec![

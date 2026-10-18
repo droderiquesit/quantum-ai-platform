@@ -471,3 +471,61 @@ fn a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing() {
         "a key without a regime is refused"
     );
 }
+
+/// R12-REASON-3061: a sweep's started items are compiled into a plan the
+/// agency proves inside the goal's budget, deterministic across runs and
+/// citing the evidence that raised each item, and the ambient journal writes
+/// it beside the signals. Before this a sweep left counters: which items
+/// started was visible, why this set inside this budget was not.
+///
+/// Mutation: delete the `round.plan = plan` assignment in
+/// `ResearchLoop::plan_sweep` (or the `SweepPlan` append in the journal);
+/// the round carries no plan and the journal no record.
+#[test]
+fn a_sweep_compiles_its_started_items_into_a_deterministic_cited_journaled_plan() {
+    let run = || {
+        let mut platform = platform();
+        platform.absorb_evidence((0..3).map(checked).collect(), t0());
+        let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).unwrap();
+        let round = research
+            .sweep(&platform, t0(), &set(&[]), &set(&["US"]))
+            .unwrap();
+        (round, research)
+    };
+    let (round, _) = run();
+    assert!(
+        !round.desk.started.is_empty(),
+        "premise: the sweep started an item: {round:?}"
+    );
+    assert!(round.plan_refused.is_none(), "{round:?}");
+    let plan = round
+        .plan
+        .clone()
+        .unwrap_or_else(|| panic!("a sweep that started work compiled no plan: {round:?}"));
+    assert_eq!(plan.steps.len(), round.desk.started.len(), "{plan:?}");
+    assert!(plan.total_cost <= plan.budget, "{plan:?}");
+    assert!(
+        plan.cites.iter().any(|c| c.starts_with("poisoning:")),
+        "the plan cites the evidence that raised its item: {plan:?}"
+    );
+
+    // Deterministic: the same inputs, a fresh platform and loop, the same plan.
+    let (again, _) = run();
+    assert_eq!(again.plan, round.plan);
+
+    // Journaled: one SweepPlan record, decodable, equal to the round's.
+    let mut journal = qip_deepbrain::ambient_journal::AmbientJournal::open(
+        &qip_deepbrain::ambient_journal::JournalDestination::InMemory,
+    )
+    .unwrap();
+    journal.record(1, &round, t0()).unwrap();
+    let plans: Vec<_> = qip_deepbrain::ambient_journal::records(journal.log())
+        .unwrap()
+        .into_iter()
+        .filter_map(|r| match r {
+            qip_deepbrain::ambient_journal::AmbientRecord::SweepPlan { plan, .. } => Some(plan),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(plans, vec![plan]);
+}

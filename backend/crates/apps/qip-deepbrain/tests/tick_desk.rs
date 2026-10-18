@@ -15,6 +15,7 @@ use qip_contracts::market_event::MarketEvent;
 use qip_contracts::message::{MarketMessage, MessageBody, TradeCondition};
 use qip_contracts::venue::{Origin, VenueId};
 use qip_core::error::Result;
+use qip_core::ids::OrderId;
 use qip_core::{Clock, Context, Decimal, Duration, ManualClock, ObjectId, Timestamp};
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::node::{self, Loops};
@@ -24,6 +25,7 @@ use qip_deepbrain::tick_desk::{
     TickDeskConfig, skill_gate,
 };
 use qip_financial::universe::Universe;
+use qip_kernel::platform::FillScore;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
@@ -410,6 +412,7 @@ fn the_run_loop_runs_the_tick_desk_on_its_cadence() -> Result<()> {
             permissions: None,
             ambient: None,
             agency: None,
+            warehouse: None,
         },
         |outcome| {
             assert!(
@@ -584,4 +587,80 @@ fn a_fill_model_that_does_not_beat_its_baseline_issues_no_card() {
     let skilled = model(0.20);
     assert!(skilled.beats_baseline(), "premise: 0.20 beats 0.24");
     skill_gate(&skilled).expect("a skilled model passes the gate");
+}
+
+fn fill(venue: &str, ms: i64, error: Option<f64>) -> FillScore {
+    FillScore {
+        order_id: OrderId::from_string(format!("ord-{venue}-{ms}")),
+        object_id: ObjectId::from_string("obj-ACME".to_string()),
+        venue: venue.to_string(),
+        filled_at: at(ms),
+        scored_at: at(ms + 1),
+        smaller_favoured: false,
+        larger_favoured: false,
+        trade_error_bps: error,
+        unfilled: Decimal::ZERO,
+    }
+}
+
+/// R12-TICK-6014: a venue fill whose simulated entry was off becomes a
+/// training row, joined to the labelled instant it followed.
+///
+/// The failure this prevents: `qip_venue_fill_error_bps` charted how wrong
+/// the twin was about every fill and no microstructure model was ever fitted
+/// or judged on those fills, so the number a desk looked at never reached
+/// the data that could correct it. Mutation: passing `&[]` for the fills in
+/// `round_with_fills`'s join, or dropping the join, empties the rows and the
+/// first assertion after the premise fails.
+#[test]
+fn a_mispriced_fill_becomes_a_microstructure_training_row() -> Result<()> {
+    let lake = Arc::new(MemoryBlobStore::new());
+    seal_session(&lake, "vendor-depth")?;
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::new(MemoryBlobStore::new()),
+    );
+    let now = at(400_000);
+    let fills = vec![
+        // Inside the replayed history, on a venue it covers: a row.
+        fill("XLON", 250_000, Some(7.5)),
+        // On a venue the history does not cover: counted, never matched.
+        fill("XNYS", 250_000, Some(3.0)),
+        // Before the first replayed instant: no example to follow.
+        fill("XLON", -5_000, Some(1.0)),
+        // The twin never filled, so there is no error to learn from.
+        fill("XLON", 260_000, None),
+    ];
+    let round = desk.round_with_fills(&graph()?, now, Vec::new(), &fills)?;
+
+    assert!(
+        round.examples > 100,
+        "premise: the history was labelled: {}",
+        round.examples
+    );
+    assert_eq!(round.residuals_offered, 3, "a fill with no error is no row");
+    let [row] = round.residual_examples.as_slice() else {
+        panic!("expected one residual row: {:?}", round.residual_examples);
+    };
+    assert_eq!(round.residuals_unmatched, 2);
+    assert_eq!(row.example.venue, "XLON");
+    assert_eq!(row.example.instrument, "obj-ACME");
+    assert!((row.error_bps - 7.5).abs() < 1e-12);
+    assert!(
+        row.example.at <= at(250_000),
+        "the row was drawn after the fill it is joined to: {:?}",
+        row.example.at
+    );
+    assert!(
+        row.example.at > at(240_000),
+        "the row is not the nearest instant before the fill: {:?}",
+        row.example.at
+    );
+    assert!(
+        round.describe().contains("1 of 3 venue fill(s) joined"),
+        "{}",
+        round.describe()
+    );
+    Ok(())
 }

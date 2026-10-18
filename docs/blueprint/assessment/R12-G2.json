@@ -1254,13 +1254,14 @@
   {
     "id": "R12-DATA-9054",
     "status": "PARTIAL",
-    "current": "qip_mesh::bigquery::BigQueryWarehouse streams rows and runs queries; enable_bigquery=false in dev; resolved-outcome writes not wired.",
+    "current": "qip_mesh::bigquery::BigQueryWarehouse streams rows and runs queries. qip-deepbrain now constructs it: warehouse::OutcomeSink::from_lookup (called from main.rs) resolves QIP_BIGQUERY_PROJECT/DATASET plus QIP_GCP_ENDPOINT and one credential, refuses a half-named or unreachable target, and node::run_with ships every graded thesis in Platform::evaluations() to the resolved_outcomes table each cycle, keyed by hypothesis id, holding rejected rows for the next cycle. With no project or dataset named (every environment: enable_bigquery=false in dev/test/stage/prod, no QIP_BIGQUERY_* in catalogue.tf) the sink is None and the banner says off.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/gcp/mod.rs:3-12",
-      "backend/crates/services/qip-mesh/src/bigquery.rs",
-      "infrastructure/terraform/modules/data/main.tf:85"
+      "backend/crates/apps/qip-deepbrain/src/warehouse.rs:OutcomeSink",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:loops.warehouse",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:OutcomeSink::from_lookup",
+      "backend/crates/apps/qip-deepbrain/tests/warehouse.rs:the_run_loop_ships_a_graded_thesis_to_the_warehouse"
     ],
-    "gap": "Wire outcome/tournament writes; enable dataset.",
+    "gap": "Deployment, not code: set enable_bigquery=true in an environment tfvars (infrastructure/environments/**, protected), create the resolved_outcomes table with the columns warehouse::row writes, and give qip-deepbrain QIP_BIGQUERY_PROJECT, QIP_BIGQUERY_DATASET, QIP_GCP_ENDPOINT (the egress proxy) and one credential in infrastructure/terraform/catalogue.tf. Tournament (evolution trial) outcomes are not streamed; only graded theses.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1268,10 +1269,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "cargo test -p qip-deepbrain --test warehouse",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutations: skipping the insert in OutcomeSink::ship failed the streaming and retry tests; marking rejected rows shipped failed the retry test; making the node.rs warehouse arm unreachable failed the_run_loop_ships_a_graded_thesis_to_the_warehouse. The tests run against a loopback socket standing in for the TLS-terminating proxy; nothing has reached BigQuery."
   },
   {
     "id": "R12-DATA-9055",
@@ -1677,7 +1678,7 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/cicd_gates.rs:23 code_reviewer_and_security_engineer_have_distinct_models"
     ],
-    "gap": "Enforcement at PR time.",
+    "gap": "Enforcement at PR time. The independence rule is written and tested as a patch to scripts/agent-guard.mjs and agent-guard.test.mjs (docs/blueprint/lanes/L23-patch-CICD-9072.patch: a change carrying both a coder and a reviewer role commit must name different models in Agent-Model trailers, and a commit of either kind with no trailer is refused in such a change); both files are protected paths, so it is not applied. Even applied, no commit today carries an Agent-Model trailer, so it binds only changes that adopt the convention.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1688,7 +1689,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: patch developed in a scratch worktree, 38 agent-guard tests pass; mutations fired - the shared-model refusal and the unnamed-model refusal each removed (the new test failed)."
   },
   {
     "id": "R12-CICD-9073",
@@ -1723,7 +1724,7 @@
       "backend/crates/apps/qip-deepbrain/src/operations.rs::CapabilitySwitch",
       "backend/crates/apps/qip-deepbrain/src/operations.rs::runbooks"
     ],
-    "gap": "Runbooks are committed code, not signed; no signature verification of runbooks.",
+    "gap": "Runbooks are committed code and are not signed. The deep brain installs no artefact signer: QIP_ARTEFACT_SIGNER is read only by qip-api (signing.rs), and the deep brain's package signer is unset (reflex packages are held_unsigned). Signing the set needs a signer in the deep brain's process (a KMS key grant, a protected-path Terraform change) and a verifier in Operations::new that refuses an unsigned or tampered set.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1734,7 +1735,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Checked 2026-10-18. The refuse-and-audit half is already structural: a runbook set is fixed at construction, Remediator::new refuses an action outside PERMITTED_ACTIONS, and a target the effector does not hold is audited as failed (aiops_remediation.rs)."
   },
   {
     "id": "R12-GOV-9075",
@@ -1899,15 +1900,15 @@
   {
     "id": "R12-CICD-9082",
     "status": "PARTIAL",
-    "current": "scripts/agent-lanes.mjs validates a lane manifest (acceptance commands required; budget.minutes and budget.usd bounded by policy, :96-103), checks a lane's diff stays inside what it owns, and runs acceptance commands killed at the minutes budget (:157-190). agent-sandbox.yml runs it on workflow_dispatch with timeout-minutes from the budget.",
+    "current": "scripts/agent-lanes.mjs validates a lane manifest (acceptance commands required; budget.minutes, budget.usd and budget.tokens bounded by policy), checks a lane's diff stays inside what it owns, runs acceptance killed at the minutes budget, and meters model spend: judgeSpend reads the model gateway's JSONL ledger against the lane's tokens and usd budget and refuses an unreadable line as over (agent-lanes.test.mjs, 17 tests pass). A manifest is committed (scripts/lanes/round-3.json) and ci.yml's scripts job validates it on every pull request.",
     "evidence": [
-      "scripts/agent-lanes.mjs:1-40",
-      "scripts/agent-lanes.mjs:96-103",
-      "scripts/agent-lanes.mjs:157-190",
-      ".github/workflows/agent-sandbox.yml",
-      "scripts/agent-lanes.test.mjs:77-126"
+      "scripts/agent-lanes.mjs judgeSpend and the spend command",
+      "scripts/agent-lanes.test.mjs a lane that spent past its token or its USD budget is refused, each for its own reason",
+      "scripts/lanes/round-3.json",
+      "scripts/agent-policy.json lane_limits",
+      ".github/workflows/ci.yml:666 agent-lanes.mjs validate"
     ],
-    "gap": "The minutes budget bounds only the acceptance run, not the agent's work; budget.usd is range-checked and never metered; tool/model usage is not budgeted per lane. The sandbox is dispatch-only and not required for merge, and no lane manifest is committed (no docs/lanes/), so nothing has ever run under it.",
+    "gap": "No workflow runs `agent-lanes.mjs spend`, so no lane is ever metered: the ledger is written by model-gateway.mjs on the machine the agent works on, and nothing carries it to a runner or to the pull request. The sandbox (agent-sandbox.yml) is dispatch-only and not required for merge (an owner setting), and the minutes budget still bounds only the acceptance run. Metering needs a protected-path step that fetches the ledger and fails the lane.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1918,18 +1919,20 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. agent-guard.mjs admits it cannot see an agent committing without an Agent-Role trailer (agent-guard.mjs:30-32)."
+    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (budget.usd never metered, no manifest committed) was stale. Nothing implemented; no protected path touched."
   },
   {
     "id": "R12-CICD-9083",
     "status": "PARTIAL",
-    "current": "agent-lanes.mjs validate refuses two lanes whose ownership globs overlap unless one depends on the other (transitively), refuses dependency cycles, and prints the waves the DAG implies; check-diff finds a lane editing outside its ownership (scripts/agent-lanes.mjs:20-40, 47-60).",
+    "current": "agent-lanes.mjs validate refuses two lanes whose ownership globs overlap unless one depends on the other (transitively), and refuses cycles. A round manifest is committed (scripts/lanes/round-3.json) and validated on every pull request by ci.yml's scripts job; agent-guard.mjs holds a commit carrying Agent-Lane: <id> to that lane's owns on the pull request (agent-boundary.yml) and at the deploy gate, and refuses a trailer naming no lane.",
     "evidence": [
-      "scripts/agent-lanes.mjs:20-60",
-      "scripts/agent-lanes.test.mjs:44-75",
-      ".github/workflows/agent-sandbox.yml:94"
+      "scripts/agent-lanes.mjs:149-170 ownership overlap must be ordered",
+      "scripts/agent-guard.mjs judgeChange step 1b lane territory",
+      "scripts/lanes/round-3.json",
+      ".github/workflows/ci.yml:666",
+      ".github/workflows/agent-boundary.yml"
     ],
-    "gap": "It is a validator for a hand-written manifest, run only when agent-sandbox is dispatched; no orchestrator maintains the DAG or schedules lanes, nothing requires a manifest before parallel work starts, and none is committed. The ADR-number collision class (shared index files) is not prevented unless the manifest author declares ownership of the index.",
+    "gap": "An agent commit with no Agent-Lane trailer is held to no lane, so a second agent that does not declare one edits the same boundary unchecked; requiring a lane would refuse every session that does not carry the trailer (this lane's included). No orchestrator maintains the DAG or schedules lanes, and the ADR-number collision class is prevented only where the manifest orders the index file (round-3 does for docs/adr/README.md).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1940,7 +1943,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL."
+    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (run only on dispatch, none committed) was stale. Nothing implemented; no protected path touched."
   },
   {
     "id": "R12-SEC-9084",
@@ -3706,25 +3709,27 @@
   },
   {
     "id": "R12-OBS-9164",
-    "status": "PARTIAL",
-    "current": "belief-calibration-within-tolerance declared; agent failures counted; SolverBenchmarked journals quantum/classical comparison; no package-freshness or training-queue SLO.",
+    "status": "COMPLETE",
+    "current": "Two objectives are declared in slo.rs (model-package-freshness: a promoted package at most a week old; research-queue-depth: at most 768 items) and bound in critical_paths.rs to counters of checks recorded where the age gauge (Operations::observe) and the queue-depth gauge (ResearchLoop::sweep_over) are written, so both read unmeasured until a round runs and measured after.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:371",
-      "backend/crates/libs/qip-observability/src/metrics.rs:682",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:2797"
+      "backend/crates/libs/qip-observability/src/slo.rs model_package_freshness, research_queue_depth",
+      "backend/crates/libs/qip-observability/src/critical_paths.rs critical_path_slos",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs MODEL_PACKAGE_FRESHNESS_CHECKS",
+      "backend/crates/apps/qip-deepbrain/src/research.rs RESEARCH_QUEUE_CHECKS",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_round_moves_the_model_freshness_and_research_queue_objectives_from_unmeasured_to_measured"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-deepbrain --test research -- a_round_moves; cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutation: pointing either counter site at the gauge name leaves its objective at zero observations and fails the test. Both objectives are evaluated by the deep brain's existing evaluate_where over its own registry; no alert policy is added, so nothing pages on them until workload_metrics_exist is flipped."
   },
   {
     "id": "R12-OBS-9165",

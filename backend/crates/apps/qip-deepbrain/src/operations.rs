@@ -502,6 +502,19 @@ impl Operations {
                 labels([]),
                 at.since(promoted).as_secs_f64(),
             );
+            // The age read against the objective's ceiling, so the gauge's
+            // staleness is a good/total split an objective can be evaluated
+            // on (R12-OBS-9164).
+            let ceiling = qip_observability::slo::MODEL_PACKAGE_MAX_AGE_SECONDS;
+            let outcome = if at.since(promoted).as_secs_f64() <= ceiling {
+                "fresh"
+            } else {
+                "stale"
+            };
+            metrics.count(
+                names::MODEL_PACKAGE_FRESHNESS_CHECKS,
+                labels([("outcome", outcome)]),
+            );
         }
 
         if self.iterations.len() == SERIES_RETAINED {

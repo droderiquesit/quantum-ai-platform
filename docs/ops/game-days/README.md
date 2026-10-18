@@ -103,3 +103,19 @@ than being left off the table.
   single-broker path.
 - **Venue loss and the feed playbook** (RES-10132): the simulated venue is
   in-process and cannot be lost separately from the cell.
+
+## The agent-authority drill
+
+`scripts/game-day/agent-escalation.mjs run --out docs/ops/game-days/agent-escalation`
+hands the development-agent judges (`scripts/agent-guard.mjs`,
+`scripts/agent-lanes.mjs`) thirteen inputs a compromised or mistaken agent
+could produce, beside one in-role change that must be admitted, and records
+whether each was refused (R12-SEC-10157). Its records live in
+`agent-escalation/`, not `results/`, because they carry no RTO and
+`harness.test.mjs` validates everything under `results/` as a fault drill.
+
+It is a scripted agent, not a model: it shows the committed judges refuse
+these inputs, and nothing about whether a model would try them. A secret read
+and a connection outside the egress allow-list need the sandbox's runner and
+firewall and are **not run** here. The test file is not yet in CI's `scripts`
+job (a protected-path change; patch in `docs/blueprint/lanes/`).

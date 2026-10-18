@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, VecDeque};
 /// record compares exactly and a replay cannot drift on rounding.
 pub const MAX_SEVERITY_BP: u32 = 10_000;
 
-/// The four kinds of deviation the Attention Router combines.
+/// The kinds of deviation the Attention Router combines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalClass {
@@ -30,14 +30,20 @@ pub enum SignalClass {
     Opportunity,
     Risk,
     Assumption,
+    /// Capital that will be needed somewhere the platform does not hold it
+    /// (R12-AMBIENT-3065). Its own class because the pathway is chosen by
+    /// class: with only four classes `Pathway::CapitalPreparation` had no
+    /// route and was a label nothing could reach.
+    Capital,
 }
 
 impl SignalClass {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Surprise,
         Self::Opportunity,
         Self::Risk,
         Self::Assumption,
+        Self::Capital,
     ];
 }
 
@@ -79,6 +85,24 @@ pub struct AmbientSignal {
     wake_targets: Vec<Pathway>,
     evidence_ids: Vec<String>,
     expiry: Timestamp,
+    /// What acting on the signal is worth, in basis points of the scale. Not
+    /// stated (the full scale) unless a producer states it with
+    /// [`AmbientSignal::with_economic_value_bp`]; omitted from the encoding
+    /// when not stated, so a signal recorded before the field existed
+    /// decodes, and re-encodes, unchanged.
+    #[serde(
+        default = "unstated_economic_value_bp",
+        skip_serializing_if = "is_unstated_economic_value_bp"
+    )]
+    economic_value_bp: u32,
+}
+
+fn unstated_economic_value_bp() -> u32 {
+    MAX_SEVERITY_BP
+}
+
+fn is_unstated_economic_value_bp(bp: &u32) -> bool {
+    *bp == MAX_SEVERITY_BP
 }
 
 /// The CONTRACT-025 fields a detector states about what it saw, beyond the
@@ -208,7 +232,37 @@ impl AmbientSignal {
             wake_targets,
             evidence_ids,
             expiry,
+            economic_value_bp: MAX_SEVERITY_BP,
         })
+    }
+
+    /// State what acting on this signal is worth, in basis points of the
+    /// scale. Refused above the scale rather than clamped, like severity.
+    ///
+    /// [`AttentionRouter`] admits held signals by `severity × economic value`,
+    /// so a signal whose producer knows nothing of its worth ranks on
+    /// severity alone (the unstated value is the full scale) instead of
+    /// ranking last on a zero nobody computed.
+    pub fn with_economic_value_bp(mut self, economic_value_bp: u32) -> Result<Self> {
+        if economic_value_bp > MAX_SEVERITY_BP {
+            return Err(Error::invalid(format!(
+                "economic value {economic_value_bp} bp exceeds {MAX_SEVERITY_BP}; scale it, it is not clamped"
+            )));
+        }
+        self.economic_value_bp = economic_value_bp;
+        Ok(self)
+    }
+
+    /// What acting on the signal is worth, in basis points; the full scale
+    /// when the producer stated nothing.
+    pub fn economic_value_bp(&self) -> u32 {
+        self.economic_value_bp
+    }
+
+    /// The figure [`AttentionRouter`] admits held signals by:
+    /// `severity × economic value`, exact in `u64`.
+    pub fn attention_value(&self) -> u64 {
+        u64::from(self.severity_bp) * u64::from(self.economic_value_bp)
     }
     pub fn id(&self) -> &str {
         &self.id
@@ -364,7 +418,7 @@ impl RoutingPolicy {
     ) -> Result<Self> {
         if let Some(missing) = SignalClass::ALL.iter().find(|c| !routes.contains_key(c)) {
             return Err(Error::invalid(format!(
-                "routing policy names no pathway for {missing:?}; route all four classes"
+                "routing policy names no pathway for {missing:?}; route every class"
             )));
         }
         if materiality_bp > MAX_SEVERITY_BP {
@@ -387,7 +441,8 @@ impl RoutingPolicy {
     }
 
     /// The default routing: surprise to a specialist, opportunity to research,
-    /// risk to a risk review, assumption to a reflex-model update.
+    /// risk to a risk review, assumption to a reflex-model update, capital to
+    /// capital preparation.
     pub fn standard(
         materiality_bp: u32,
         budget_per_window: u32,
@@ -399,6 +454,7 @@ impl RoutingPolicy {
             (SignalClass::Opportunity, Pathway::ResearchTask),
             (SignalClass::Risk, Pathway::RiskReview),
             (SignalClass::Assumption, Pathway::ReflexModelUpdate),
+            (SignalClass::Capital, Pathway::CapitalPreparation),
         ]);
         Self::new(
             materiality_bp,
@@ -442,7 +498,9 @@ impl AttentionRouter {
 
     /// Route one signal at `now`. Returns every event this call produced: the
     /// activations of signals deferred earlier (a new window drains the hold
-    /// queue first, oldest first, so a storm cannot starve what it displaced)
+    /// queue first, highest `severity × economic value` first and the oldest
+    /// among equals, so a storm cannot starve what it displaced and the
+    /// window goes to what is worth most)
     /// and then this signal's own. A signal below materiality produces none —
     /// below the bar is not an activation and not a loss.
     ///
@@ -464,7 +522,25 @@ impl AttentionRouter {
                 self.window_start = Some(now);
                 self.used = 0;
                 while self.used < self.policy.budget_per_window {
-                    let Some(held) = self.deferred.pop_front() else {
+                    // The most valuable held signal first, the oldest among
+                    // equals. First-in-first-out spent a scarce window on
+                    // whatever arrived earliest, so a minor signal held since
+                    // the storm began went ahead of a material one that
+                    // arrived last.
+                    let Some(best) = self
+                        .deferred
+                        .iter()
+                        .enumerate()
+                        .max_by(|(ai, a), (bi, b)| {
+                            a.attention_value()
+                                .cmp(&b.attention_value())
+                                .then_with(|| bi.cmp(ai))
+                        })
+                        .map(|(index, _)| index)
+                    else {
+                        break;
+                    };
+                    let Some(held) = self.deferred.remove(best) else {
                         break;
                     };
                     // A held signal that went stale while it waited wakes
@@ -819,6 +895,24 @@ impl InfoRequest {
             .ok_or_else(|| {
                 Error::numeric("info request: cumulative cost overflowed; reduce budget")
             })?;
+        // The value left to buy shrinks as it is bought. `criteria` was the
+        // request's value at creation, so leaving it alone made
+        // [`Self::should_halt`] compare the *initial* net value however much
+        // had been spent: a request viable at creation stayed viable for ever
+        // and the "stop when marginal value falls below cost" rule of §9.10
+        // could never fire after the first purchase. Cost is stated in basis
+        // points of the decision value, so an acquisition of `c` leaves
+        // `1 - c` of the remaining uncertainty reduction still worth
+        // reaching for; floored, so a replay shrinks identically, and zero
+        // once an acquisition costs the whole decision value. The shrinkage
+        // is a proxy by cost — the information actually obtained is not fed
+        // back here — and it is the conservative direction: it can only make
+        // a request halt sooner.
+        let kept = u64::from(MAX_SEVERITY_BP.saturating_sub(acquisition_cost_bp));
+        self.criteria.uncertainty_reduction_bp = u32::try_from(
+            u64::from(self.criteria.uncertainty_reduction_bp) * kept / u64::from(MAX_SEVERITY_BP),
+        )
+        .unwrap_or(0);
         self.status = AcquisitionStatus::InProgress;
         Ok(())
     }
@@ -848,7 +942,8 @@ impl InfoRequest {
     }
 
     /// Checks whether acquisition should halt: true if marginal value (next acquisition's
-    /// net value) is below the minimum viable threshold, or if the deadline has been reached.
+    /// net value, over the uncertainty reduction [`Self::record_acquisition`] has left)
+    /// is below the minimum viable threshold, or if the deadline has been reached.
     pub fn should_halt(&self, now: Timestamp, min_viable_value_bp: u32) -> bool {
         if now >= self.deadline {
             return true;

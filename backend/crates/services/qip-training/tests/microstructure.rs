@@ -6,8 +6,8 @@
 use qip_core::error::Result;
 use qip_core::{Duration, Timestamp};
 use qip_training::microstructure::{
-    BookObservation, LabelPlan, MicroExample, TradeObservation, benchmark_fill_model,
-    build_examples, split_in_time, train_fill_model,
+    BookObservation, FillResidualObservation, LabelPlan, MicroExample, TradeObservation,
+    benchmark_fill_model, build_examples, join_fill_residuals, split_in_time, train_fill_model,
 };
 use std::collections::BTreeSet;
 
@@ -254,4 +254,79 @@ fn an_observation_with_no_entitlement_or_venue_is_refused_rather_than_labelled()
     nameless[3].venue = String::new();
     assert!(build_examples(&nameless, &trades, &plan).is_err());
     Ok(())
+}
+
+fn example(venue: &str, instrument: &str, ms: i64, horizon_s: i64) -> MicroExample {
+    MicroExample {
+        venue: venue.to_string(),
+        sequence: 1,
+        entitlement: "vendor-depth".to_string(),
+        instrument: instrument.to_string(),
+        at: at(ms),
+        horizon: Duration::from_secs(horizon_s),
+        regime: "calm".to_string(),
+        features: vec![0.0],
+        fill: 0.0,
+        future_return: 0.0,
+        realized_volatility: 0.0,
+        adverse_selection: 0.0,
+        market_impact: 0.0,
+    }
+}
+
+fn residual(venue: &str, ms: i64, error_bps: f64) -> FillResidualObservation {
+    FillResidualObservation {
+        venue: venue.to_string(),
+        instrument: "ACME".to_string(),
+        filled_at: at(ms),
+        error_bps,
+    }
+}
+
+/// R12-TICK-6014: a residual joins the example drawn at the last instant at
+/// or before its fill, on its own venue, and never one drawn after it.
+///
+/// Mutation: change `e.at <= residual.filled_at` to `e.at >= residual.filled_at`
+/// in `join_fill_residuals` and the row's instant moves past the fill.
+#[test]
+fn a_fill_residual_joins_the_last_example_at_or_before_it_on_its_own_venue() -> Result<()> {
+    let examples = vec![
+        example("XLON", "ACME", 1_000, 1),
+        example("XLON", "ACME", 1_000, 10),
+        example("XLON", "ACME", 2_000, 1),
+        example("XLON", "ACME", 3_000, 1),
+        example("XNYS", "ACME", 2_500, 1),
+    ];
+    let joined = join_fill_residuals(
+        &examples,
+        &[
+            residual("XLON", 2_400, 4.0),
+            residual("XLON", 500, 2.0),
+            residual("XNYS", 2_400, 9.0),
+        ],
+    )?;
+    // Premise: the examples span the fill, so "at or before" has something
+    // after it to wrongly choose.
+    assert!(examples.iter().any(|e| e.at > at(2_400)));
+    assert_eq!(joined.rows.len(), 1, "{joined:?}");
+    assert_eq!(joined.unmatched, 2);
+    assert_eq!(joined.rows[0].example.at, at(2_000));
+    assert_eq!(joined.rows[0].example.venue, "XLON");
+    assert_eq!(joined.rows[0].error_bps, 4.0);
+    // Two horizons at one instant still make one row, the shortest.
+    let tie = join_fill_residuals(&examples, &[residual("XLON", 1_200, 1.5)])?;
+    assert_eq!(tie.rows.len(), 1);
+    assert_eq!(tie.rows[0].example.horizon, Duration::from_secs(1));
+    Ok(())
+}
+
+#[test]
+fn a_fill_residual_that_is_not_a_number_is_refused_not_dropped() {
+    let examples = vec![example("XLON", "ACME", 1_000, 1)];
+    assert!(join_fill_residuals(&examples, &[residual("XLON", 1_100, 1.0)]).is_ok());
+    for bad in [f64::NAN, f64::INFINITY] {
+        let refused = join_fill_residuals(&examples, &[residual("XLON", 1_100, bad)])
+            .expect_err("a non-finite residual was joined");
+        assert!(refused.message().contains("not a finite number"));
+    }
 }

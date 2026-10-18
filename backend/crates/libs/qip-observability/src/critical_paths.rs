@@ -121,8 +121,8 @@ pub const LEDGER_LAG_CEILING_RECORDS: f64 = 1000.0;
 pub const LEDGER_MISMATCH_AGE_CEILING_SECONDS: f64 = 300.0;
 
 /// Market-data freshness, decision latency, order/fill integrity, ledger
-/// commit, reconciliation, model serving, data provenance and quantum job
-/// success.
+/// commit, reconciliation, model serving, data provenance, quantum job
+/// success, model package freshness and the research queue's depth.
 pub fn critical_path_slos() -> Vec<CriticalPath> {
     let p = |slo, source_series, rule| CriticalPath {
         slo,
@@ -130,16 +130,22 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
         rule,
     };
     vec![
+        // Market-data freshness (R12-OBS-7123): the age of the feed the cell
+        // traded on, per venue per pass, recorded by `Cell::work`. This read
+        // `EDGE_CAPABILITY_FRESHNESS` under `NotCountable` until 2026-10-18 -
+        // a policy-feed gauge that says nothing about market data, and no
+        // rule that could turn it into good and total counts - so the path
+        // evaluated unmeasured in every process.
         p(
             Slo::latency(
                 "market-data-freshness",
-                "market-ingestion",
+                EDGE_NODE_SERVICE,
                 0.999,
                 1000.0,
                 SloWindow::Day,
             ),
-            names::EDGE_CAPABILITY_FRESHNESS,
-            SourceRule::NotCountable,
+            names::EDGE_BOOK_AGE_MS,
+            SourceRule::LatencyUnder,
         ),
         // Decision latency: a pass from reading the feed to its decisions
         // acted on, timed by the node's pass meter around every pass that
@@ -200,6 +206,20 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
             Slo::availability("quantum-job-success", "deepbrain", 0.95, SloWindow::Week),
             names::QUANTUM_JOBS,
             SourceRule::CounterOutcome { good: "succeeded" },
+        ),
+        // Model package freshness and the training/evaluation backlog
+        // (R12-OBS-9164): each is read from a counter of checks, recorded
+        // where the age gauge and the queue-depth gauge are written, because
+        // a gauge carries no good/total split.
+        p(
+            crate::slo::model_package_freshness(),
+            names::MODEL_PACKAGE_FRESHNESS_CHECKS,
+            SourceRule::CounterOutcome { good: "fresh" },
+        ),
+        p(
+            crate::slo::research_queue_depth(),
+            names::RESEARCH_QUEUE_CHECKS,
+            SourceRule::CounterOutcome { good: "within" },
         ),
     ]
 }
