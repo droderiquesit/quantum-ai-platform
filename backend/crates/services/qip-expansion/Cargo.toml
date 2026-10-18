@@ -18,6 +18,9 @@ qip-core.workspace = true
 qip-contracts.workspace = true
 # The Tool Registry and Research Registry a candidate is admitted against.
 qip-agents.workspace = true
+# The universe the coverage detector reads its dimensions from: each
+# instrument's asset class, primary venue and geography (R12-EXPAND-6065).
+qip-financial.workspace = true
 
 [lints]
 workspace = true

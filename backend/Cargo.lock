@@ -121,6 +121,7 @@ dependencies = [
  "qip-entity-resolution",
  "qip-events",
  "qip-execution-engine",
+ "qip-expansion",
  "qip-fastbrain",
  "qip-feature-dag",
  "qip-financial",
@@ -555,6 +556,7 @@ dependencies = [
  "qip-agents",
  "qip-contracts",
  "qip-core",
+ "qip-financial",
  "serde",
  "serde_json",
 ]

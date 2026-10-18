@@ -262,21 +262,26 @@ export function configure(env = process.env, readFile = (path) => readFileSync(p
   const maxTokens = Number(env.ALGORIK_WORKER_MAX_TOKENS ?? 4000);
 
   // FINOPS-017: Daily and monthly budgets, plus build and tool ceilings.
+  // R12-FINOPS-10140: the daily, monthly, build and tool budgets are
+  // mandatory, like the call ceiling above. They were optional, and an unset one read as zero and
+  // zero read as "no limit", so a gateway started without them spent without
+  // a calendar bound while its configuration looked complete. An unset
+  // budget is now the same refusal as a zero or a negative one.
   const dailyCallBudget = Number(env.ALGORIK_WORKER_DAILY_CALLS ?? 0);
-  if (dailyCallBudget && (!Number.isFinite(dailyCallBudget) || dailyCallBudget <= 0)) {
-    problems.push("ALGORIK_WORKER_DAILY_CALLS must be a positive number or unset");
+  if (!Number.isFinite(dailyCallBudget) || dailyCallBudget <= 0) {
+    problems.push("ALGORIK_WORKER_DAILY_CALLS must be a positive number — an unset daily budget is unlimited, not a budget");
   }
   const monthlyCallBudget = Number(env.ALGORIK_WORKER_MONTHLY_CALLS ?? 0);
-  if (monthlyCallBudget && (!Number.isFinite(monthlyCallBudget) || monthlyCallBudget <= 0)) {
-    problems.push("ALGORIK_WORKER_MONTHLY_CALLS must be a positive number or unset");
+  if (!Number.isFinite(monthlyCallBudget) || monthlyCallBudget <= 0) {
+    problems.push("ALGORIK_WORKER_MONTHLY_CALLS must be a positive number — an unset monthly budget is unlimited, not a budget");
   }
   const buildBudget = Number(env.ALGORIK_WORKER_BUILD_CALLS ?? 0);
-  if (buildBudget && (!Number.isFinite(buildBudget) || buildBudget <= 0)) {
-    problems.push("ALGORIK_WORKER_BUILD_CALLS must be a positive number or unset");
+  if (!Number.isFinite(buildBudget) || buildBudget <= 0) {
+    problems.push("ALGORIK_WORKER_BUILD_CALLS must be a positive number — an unset build budget is unlimited, not a budget");
   }
   const toolBudget = Number(env.ALGORIK_WORKER_TOOL_CALLS ?? 0);
-  if (toolBudget && (!Number.isFinite(toolBudget) || toolBudget <= 0)) {
-    problems.push("ALGORIK_WORKER_TOOL_CALLS must be a positive number or unset");
+  if (!Number.isFinite(toolBudget) || toolBudget <= 0) {
+    problems.push("ALGORIK_WORKER_TOOL_CALLS must be a positive number — an unset tool budget is unlimited, not a budget");
   }
 
   // Provider-specific request fields, merged into the body as given. The

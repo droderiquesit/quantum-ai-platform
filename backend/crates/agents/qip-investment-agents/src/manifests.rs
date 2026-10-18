@@ -121,15 +121,24 @@ pub fn chief(reviewed_at: Timestamp) -> AgentManifest {
 /// model, where the evidence fabric lives; proposes nothing and holds no
 /// veto, because a poisoning finding is a reason to distrust a source, not
 /// a trading decision.
+///
+/// An adversary, not an analyst: it challenges and publishes nothing. It was
+/// written with the research grants, which include `publish_hypothesis`, and
+/// under the review team — and an agent that publishes theses under the same
+/// owner as the reviewer who must challenge them is the capture the roster's
+/// independence rule exists to refuse. That stayed invisible only because the
+/// manifest was never rostered.
 pub fn poisoning_detector(reviewed_at: Timestamp) -> AgentManifest {
-    research(
+    AgentManifest::research(
         ids::POISONING,
         "Source Poisoning Detector",
         "scans the evidence fabric for coordinated campaigns, repeatedly contradicted sources, spoofed identities, fabricated timelines and floods",
-        owners::REVIEW,
         reviewed_at,
-        &[],
     )
+    .with_role(AgentRole::Adversarial)
+    .with_capabilities(analyst_reads().with(Capability::ChallengeHypothesis))
+    .with_owner(owners::REVIEW)
+    .escalating_to(ids::CHIEF)
     .with_competencies(vec![
         "identical text from independent fetches inside a short spread".into(),
         "sources that keep losing the contests they enter".into(),
@@ -572,6 +581,7 @@ pub fn roster(reviewed_at: Timestamp) -> Roster {
         execution_trader(reviewed_at),
         learning_attribution(reviewed_at),
         compliance_control(reviewed_at),
+        poisoning_detector(reviewed_at),
     ])
 }
 

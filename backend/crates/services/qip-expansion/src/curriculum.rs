@@ -9,7 +9,7 @@
 
 use crate::gap::RaisedGap;
 use qip_agents::research::{ResearchRegistry, Screening};
-use qip_agents::tools::{ToolKind, ToolPermission, ToolRegistry, ToolSpec};
+use qip_agents::tools::{CapabilityPack, ToolKind, ToolPermission, ToolRegistry, ToolSpec};
 use qip_contracts::expansion::CurriculumItem;
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -296,6 +296,7 @@ pub struct Round {
 pub struct ResearchQueue {
     entries: Vec<Entry>,
     proposals: Vec<ToolSpec>,
+    packs: Vec<CapabilityPack>,
 }
 
 impl ResearchQueue {
@@ -381,6 +382,14 @@ impl ResearchQueue {
             return Ok(State::Queued);
         }
 
+        // The pack records every tool this item lacks under the item that
+        // lacks them, including one another item already proposed: the
+        // proposal is deduplicated below, the lineage is not.
+        self.packs.push(CapabilityPack::new(
+            &item.research_question,
+            missing.clone(),
+        )?);
+
         // The build inherits the blocked task's score and budget: a missing
         // tool is worth the work it unblocks, and nobody has costed the build.
         for tool in &missing {
@@ -442,6 +451,11 @@ impl ResearchQueue {
     /// Tool specs proposed for tools a task was blocked on. None is registered.
     pub fn proposals(&self) -> &[ToolSpec] {
         &self.proposals
+    }
+
+    /// One pack per blocked item, naming the item and every tool it lacks.
+    pub fn packs(&self) -> &[CapabilityPack] {
+        &self.packs
     }
 
     /// Start the highest-ranked eligible items the budget covers and defer the
@@ -520,7 +534,7 @@ impl ResearchQueue {
                 "`{question}` was never started; only a started item has a result to close on"
             )));
         }
-        Ok(self.entries.remove(at))
+        Ok(self.remove_at(at))
     }
 
     /// Remove an item that was never started — queued, deferred or blocked —
@@ -541,7 +555,16 @@ impl ResearchQueue {
                 "`{question}` was started; close it on its result rather than withdrawing it"
             )));
         }
-        Ok(self.entries.remove(at))
+        Ok(self.remove_at(at))
+    }
+
+    /// Remove an entry and the pack it was blocked under, so the packs stay
+    /// bounded by [`MAX_QUEUE`] rather than outliving the items they explain.
+    fn remove_at(&mut self, at: usize) -> Entry {
+        let entry = self.entries.remove(at);
+        let question = entry.item.research_question.trim();
+        self.packs.retain(|p| p.lineage() != question);
+        entry
     }
 
     /// How many items the queue holds, in any state.

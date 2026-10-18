@@ -13,12 +13,14 @@ use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_feature_dag::definition::{FeatureContext, FeatureDefinition, ValueKind};
 use qip_feature_dag::features::{
-    BookPressure, ExponentialMovingAverage, MicropriceDeviation, Mid, OrderFlowImbalance,
-    RealisedVolatility, RollingCorrelation, Spread, SpreadPercentile, TimeSinceLastTrade,
+    BookPressure, CrossVenueSpread, ExponentialMovingAverage, FlowToxicity, LeadLagCorrelation,
+    MicropriceDeviation, Mid, OrderFlowImbalance, QueueSide, RealisedVolatility,
+    RollingCorrelation, Spread, SpreadPercentile, SweepCost, TimeSinceLastTrade, TouchQueueDepth,
     TradeSignAutocorrelation, standard_suite,
 };
 use qip_feature_dag::state::MarketReads;
 use qip_feature_dag::{FeatureEngine, MarketState};
+use qip_market::book::Side;
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -916,4 +918,214 @@ fn a_message_that_does_not_move_the_touch_does_not_duplicate_the_spread_series()
         2,
         "a genuine touch change must still be recorded"
     );
+}
+
+// --- the named microstructure families (R12-TICK-2063) ----------------------
+//
+// Each family the blueprint names has a feature here with a value worked by
+// hand from the messages the test sends, so a definition that computes the
+// wrong thing fails on the number and not merely on whether one came back.
+
+fn signed_trade(
+    subject: &ObjectId,
+    quantity: i64,
+    aggressor: BookSide,
+    at: Timestamp,
+    sequence: u64,
+) -> MarketMessage {
+    let body = MessageBody::Trade {
+        price: Decimal::parse("100.01").unwrap_or(Decimal::ZERO),
+        quantity: Decimal::from_int(quantity),
+        condition: TradeCondition::Regular,
+        aggressor: Some(aggressor),
+    };
+    message(subject, body, at, sequence)
+}
+
+fn close(actual: FeatureValue, expected: f64, what: &str) {
+    match actual {
+        FeatureValue::Statistic(value) => assert!(
+            (value - expected).abs() < 1e-9,
+            "{what}: {value} against a hand-computed {expected}"
+        ),
+        other => panic!("{what}: {other:?} where a statistic of {expected} was due"),
+    }
+}
+
+#[test]
+fn queue_toxicity_and_liquidity_match_their_hand_computed_values() {
+    let subject = object("FAM");
+    let mut engine = engine_for(std::slice::from_ref(&subject)).unwrap();
+    engine
+        .register(Box::new(FlowToxicity::new(subject.clone(), 4)))
+        .unwrap();
+    engine
+        .register(Box::new(SweepCost::new(
+            subject.clone(),
+            Side::Buy,
+            Decimal::from_int(12),
+        )))
+        .unwrap();
+    let at = Timestamp::from_secs(1_700_000_000);
+    // Bid 100.00 for 10, ask 100.02 for 11: mid 100.01.
+    engine
+        .ingest(&quote(&subject, "100.00", "100.02", 10, at, 1))
+        .unwrap();
+    // Three buyer-initiated prints of 10 and one seller-initiated of 10.
+    for (index, aggressor) in [BookSide::Bid, BookSide::Bid, BookSide::Ask, BookSide::Bid]
+        .into_iter()
+        .enumerate()
+    {
+        engine
+            .ingest(&signed_trade(&subject, 10, aggressor, at, 2 + index as u64))
+            .unwrap();
+    }
+    let vector = engine.evaluate(at).unwrap();
+
+    // Queue: what rests at each touch.
+    assert_eq!(
+        vector
+            .get(&TouchQueueDepth::key(&subject, QueueSide::Bid))
+            .unwrap(),
+        FeatureValue::Exact(Decimal::from_int(10))
+    );
+    assert_eq!(
+        vector
+            .get(&TouchQueueDepth::key(&subject, QueueSide::Ask))
+            .unwrap(),
+        FeatureValue::Exact(Decimal::from_int(11))
+    );
+    // Toxicity: |30 - 10| / 40.
+    close(
+        vector.get(&FlowToxicity::key(&subject, 4)).unwrap(),
+        0.5,
+        "flow toxicity",
+    );
+    // Liquidity: one lot bought at 100.02 against a 100.01 mid is
+    // 0.01 / 100.01 of the mid, in basis points; sold at 100.00, the same.
+    let one_lot_bps = 0.01 / 100.01 * 10_000.0;
+    close(
+        vector
+            .get(&SweepCost::key(&subject, Side::Buy, Decimal::ONE))
+            .unwrap(),
+        one_lot_bps,
+        "buy sweep cost",
+    );
+    close(
+        vector
+            .get(&SweepCost::key(&subject, Side::Sell, Decimal::ONE))
+            .unwrap(),
+        one_lot_bps,
+        "sell sweep cost",
+    );
+    // Twelve lots against an eleven-lot ask cannot be filled: a limit, not
+    // an extrapolated cost.
+    assert_eq!(
+        vector
+            .get(&SweepCost::key(&subject, Side::Buy, Decimal::from_int(12)))
+            .unwrap(),
+        FeatureValue::Undefined
+    );
+}
+
+#[test]
+fn a_follower_one_sample_behind_its_leader_has_a_lead_lag_correlation_of_one_and_a_cross_venue_spread_in_basis_points()
+ {
+    let follower = object("FOLLOW");
+    let leader = object("LEAD");
+    let mut engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(30));
+    engine
+        .register(Box::new(LeadLagCorrelation::new(
+            follower.clone(),
+            leader.clone(),
+            5,
+            1,
+        )))
+        .unwrap();
+    engine
+        .register(Box::new(CrossVenueSpread::new(
+            follower.clone(),
+            leader.clone(),
+        )))
+        .unwrap();
+    // The leader's bids, one per 100 ms sampling bucket; the follower quotes
+    // the leader's previous bid, so its every return is the leader's return
+    // one step earlier.
+    let bids = [
+        "100.00", "101.00", "99.00", "102.00", "100.00", "103.00", "98.00", "101.00", "104.00",
+        "100.50",
+    ];
+    let start = Timestamp::from_secs(1_700_000_000);
+    let mut sequence = 0;
+    for (step, bid) in bids.iter().enumerate() {
+        let at = start.saturating_add(Duration::from_millis(100 * step as i64));
+        let previous = if step == 0 { bid } else { &bids[step - 1] };
+        let ask_of = |bid: &str| {
+            (Decimal::parse(bid).unwrap_or(Decimal::ZERO)
+                + Decimal::parse("0.02").unwrap_or(Decimal::ZERO))
+            .to_string()
+        };
+        sequence += 1;
+        engine
+            .ingest(&quote(&leader, bid, &ask_of(bid), 10, at, sequence))
+            .unwrap();
+        sequence += 1;
+        engine
+            .ingest(&quote(
+                &follower,
+                previous,
+                &ask_of(previous),
+                10,
+                at,
+                sequence,
+            ))
+            .unwrap();
+    }
+    let last = start.saturating_add(Duration::from_millis(100 * (bids.len() as i64 - 1)));
+    let vector = engine.evaluate(last).unwrap();
+
+    close(
+        vector
+            .get(&LeadLagCorrelation::key(&follower, &leader, 5, 1))
+            .unwrap(),
+        1.0,
+        "lead/lag correlation",
+    );
+    // Cross-venue: at the last step the follower quotes the leader's previous
+    // bid, 104.00 (mid 104.01), and the leader bids 100.50 (mid 100.51), so
+    // the leader sits (100.51 - 104.01) / 104.01 of the follower's mid away.
+    close(
+        vector
+            .get(&CrossVenueSpread::key(&follower, &leader))
+            .unwrap(),
+        (100.51 - 104.01) / 104.01 * 10_000.0,
+        "cross-venue spread",
+    );
+}
+
+/// Fails if a named family loses its feature from the standard suite the
+/// edge node registers for every strategy subject. The two-subject families
+/// (lead/lag, cross-venue) are definitions a strategy registers for a pair,
+/// like the rolling correlation, and are proven by the test above.
+#[test]
+fn the_standard_suite_carries_the_queue_toxicity_and_liquidity_families() {
+    let subject = object("SUITE");
+    let names: Vec<String> = standard_suite(&subject)
+        .iter()
+        .map(|definition| definition.key().name)
+        .collect();
+    for family in [
+        TouchQueueDepth::NAME,
+        FlowToxicity::NAME,
+        SweepCost::NAME,
+        Spread::NAME,
+        BookPressure::NAME,
+        OrderFlowImbalance::NAME,
+        RealisedVolatility::NAME,
+    ] {
+        assert!(
+            names.iter().any(|name| name == family),
+            "the standard suite has no {family} feature: {names:?}"
+        );
+    }
 }
