@@ -1747,14 +1747,15 @@
   {
     "id": "R12-CAPITAL-4080",
     "status": "PARTIAL",
-    "current": "CollateralGraph refuses over-pledge and re-pledge cycles; kernel cross_margin::review builds it each cycle and reports findings; acceptance cross_margin suite. Encumbrance via PostingBook is not integrated and findings do not constrain sizing.",
+    "current": "CollateralGraph refuses over-pledge and re-pledge cycles; kernel cross_margin::review builds it each cycle and reports findings. The review also acts on capital: Platform::survival_figures reads its maintenance_required (every venue carrying exposure, observed or not, plus observed debits) through CapitalObligations/CombinedObligations into the survival waterfall, so a filled book with no statement lowers the ceiling the Risk Gate reads by exactly that maintenance, and the margin-utilisation figure feeds the margin limits. Collateral pledged on the ledger of record is withheld in the same waterfall once Platform::observe_ledger_obligations has been handed a LedgerObligations (tested in survival_gate.rs).",
     "evidence": [
-      "backend/crates/services/qip-capital/src/collateral.rs:395-422 CollateralGraph::build",
-      "backend/crates/runtime/qip-kernel/src/cross_margin.rs:228 review",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15764 called each cycle",
-      "backend/crates/tests/qip-acceptance/tests/cross_margin.rs:135,192"
+      "backend/crates/runtime/qip-kernel/src/survival.rs (impl CapitalObligations for CrossMarginReview; CombinedObligations)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::survival_figures",
+      "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::a_filled_book_with_no_statement_is_charged_its_maintenance_in_the_ceiling",
+      "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases",
+      "backend/crates/tests/qip-acceptance/tests/cross_margin.rs"
     ],
-    "gap": "Encumbrance integration; findings acting on capital.",
+    "gap": "qip_capital::bank::PostingBook (collateral encumbered from the instant of posting, CAPITAL-011) has no feed into the kernel: nothing constructs one outside qip-capital's tests, and the kernel's encumbrance comes from the ledger instead. Platform::observe_ledger_obligations, which carries the ledger's collateral and margin into the waterfall, has no caller in any binary (only tests and a comment in qip-ledgerd's store), so the ledger half of the encumbrance acts on sizing in tests and not in a running process. The review itself reports zero collateral_encumbered by design, since every pledge it can attest is into a margin domain.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1762,10 +1763,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test survival_gate",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Test added: a_filled_book_with_no_statement_is_charged_its_maintenance_in_the_ceiling; mutation that fired: CapitalObligations::margin_required for CrossMarginReview returning zero -> the ceiling is 10700245.9658 against the expected 10400270. The triage closure (fold PostingBook into cross_margin::review) was not taken: PostingBook has no kernel-side producer and inventing one would be a second claim about what is pledged beside the ledger."
   },
   {
     "id": "R12-CAPITAL-4081",
