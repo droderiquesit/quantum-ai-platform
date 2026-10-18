@@ -2448,13 +2448,14 @@
   },
   {
     "id": "R12-MESH-10111",
-    "status": "PARTIAL",
-    "current": "Peer protocol is separate from Fabric streams; the acceptance test for this (fabric_005) asserts its own fixtures.",
+    "status": "COMPLETE",
+    "current": "No Reflex Mesh frame type is a Fabric stream, as a code-level guard: event_fabric_foundations.rs::no_mesh_frame_kind_is_a_fabric_stream_and_no_peer_source_names_one reads every PeerMessage kind and MeshFunction from qip-peer and the stream catalogue (infrastructure/event-fabric/streams.local.json), requires their names to be disjoint (full name and stem), and requires that no source in qip-peer or qip-peer-link holds a stream's name. fabric_005 separately proves the cell's mesh files name no fabric client.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_foundations.rs:20 fabric_005 (fixture-only: asserts its own topology struct)"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_foundations.rs no_mesh_frame_kind_is_a_fabric_stream_and_no_peer_source_names_one",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_foundations.rs fabric_005_reflex_mesh_coordination_stays_off_the_fabric",
+      "infrastructure/event-fabric/streams.local.json"
     ],
-    "gap": "Peer transport; a code-level guard.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2464,10 +2465,10 @@
       "R12-MESH-10075"
     ],
     "blocked_by": "",
-    "verification": "acceptance scan of stream catalogue vs peer frames",
+    "verification": "cd backend && cargo test -p qip-acceptance --test event_fabric_foundations -- no_mesh_frame_kind_is_a_fabric_stream_and_no_peer_source_names_one",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: pub const LEAK = \"telemetry.local\" appended to qip-peer/src/lib.rs failed the test naming the file and the stream; a MeshFunction called Control, applied to a copy of the source inside the test, is reported as colliding with the control.local stem (a real variant would also fail the exhaustive match in PeerMessage::function, so the copy is the only way to exercise the check). lib.rs restored byte for byte. The catalogue read is the committed local one; no other stream list exists."
   },
   {
     "id": "R12-MESH-10112",

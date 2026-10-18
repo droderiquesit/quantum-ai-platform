@@ -192,3 +192,152 @@ fn fabric_020_regional_fabric_operation_needs_no_cloud_database() {
     // Since no external DB is used, replication is unaffected
     assert!(broker_can_replicate);
 }
+
+/// `CamelCase` as the `snake_case` serde writes on the wire.
+fn snake_case(name: &str) -> String {
+    let mut out = String::new();
+    for (index, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if index > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The variant names of `pub enum <name>` in `source`: lines at four-space
+/// indent opening with an uppercase letter, up to the enum's closing brace.
+fn enum_variants(source: &str, name: &str) -> Vec<String> {
+    let marker = format!("pub enum {name} {{");
+    let Some(start) = source.find(&marker) else {
+        return Vec::new();
+    };
+    source[start + marker.len()..]
+        .lines()
+        .skip(1)
+        .take_while(|line| *line != "}")
+        .filter(|line| line.starts_with("    ") && !line.starts_with("     "))
+        .filter_map(|line| {
+            let word: String = line
+                .trim()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            word.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase())
+                .then_some(word)
+        })
+        .collect()
+}
+
+/// Wire names of every `PeerMessage` kind and `MeshFunction` in the source.
+fn peer_kinds(peer: &str) -> Vec<String> {
+    let mut kinds: Vec<String> = enum_variants(peer, "PeerMessage")
+        .iter()
+        .chain(enum_variants(peer, "MeshFunction").iter())
+        .map(|variant| snake_case(variant))
+        .collect();
+    kinds.sort();
+    kinds
+}
+
+/// Kinds whose name equals a stream's full name or its stem before the first
+/// dot: every stream is `<stem>.local`, so a kind called `control` is the
+/// collision, and normalising to lowercase alphanumerics is how either
+/// spelling would show.
+fn colliding_kinds(peer: &str, streams: &[String]) -> Vec<String> {
+    let normal = |text: &str| -> String {
+        text.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    let stream_names: std::collections::BTreeSet<String> = streams
+        .iter()
+        .flat_map(|s| [normal(s), normal(s.split('.').next().unwrap_or(s))])
+        .collect();
+    peer_kinds(peer)
+        .into_iter()
+        .filter(|kind| stream_names.contains(&normal(kind)))
+        .collect()
+}
+
+#[test]
+fn no_mesh_frame_kind_is_a_fabric_stream_and_no_peer_source_names_one() {
+    // R12-MESH-10111. FABRIC-005 above proves the cell's uplink names no
+    // fabric client; this is the code-level guard on the vocabulary itself.
+    // A Reflex Mesh frame that carried a fabric stream's name would be a frame
+    // a broker consumer could be pointed at, and a stream named in the peer
+    // crates would be a route from a leg's latency onto the durable path.
+    // Two checks: the sets of names are disjoint, and no peer source holds a
+    // stream's name as text.
+    let catalogue: serde_json::Value = serde_json::from_str(&qip_acceptance::read(
+        "infrastructure/event-fabric/streams.local.json",
+    ))
+    .expect("the stream catalogue is JSON");
+    let streams: Vec<String> = catalogue["streams"]
+        .as_array()
+        .expect("the catalogue lists streams")
+        .iter()
+        .map(|stream| {
+            stream["name"]
+                .as_str()
+                .expect("a stream has a name")
+                .to_string()
+        })
+        .collect();
+    assert!(streams.len() >= 4, "the catalogue lists {streams:?}");
+
+    let peer = qip_acceptance::read("backend/crates/libs/qip-peer/src/lib.rs");
+    let kinds = peer_kinds(&peer);
+    assert!(
+        kinds.len() >= 12 && kinds.contains(&"fire".to_string()),
+        "the peer vocabulary was not read: {kinds:?}"
+    );
+    assert_eq!(
+        colliding_kinds(&peer, &streams),
+        Vec::<String>::new(),
+        "a mesh frame kind or function shares a name with a fabric stream"
+    );
+    // Adding a function called `control` to a copy of the enum is found.
+    let mutated = peer.replacen(
+        "    HedgeUnwindCommand,\n}",
+        "    HedgeUnwindCommand,\n    Control,\n}",
+        1,
+    );
+    assert_ne!(mutated, peer, "the mutation did not apply");
+    assert_eq!(
+        colliding_kinds(&mutated, &streams),
+        vec!["control".to_string()]
+    );
+
+    let mut sources =
+        qip_acceptance::files_with_extension("backend/crates/libs/qip-peer/src", "rs");
+    sources.extend(qip_acceptance::files_with_extension(
+        "backend/crates/edge/qip-peer-link/src",
+        "rs",
+    ));
+    assert!(sources.len() >= 2, "{sources:?}");
+    let mut naming = Vec::new();
+    for file in &sources {
+        let text = std::fs::read_to_string(file).expect("a peer source is readable");
+        for stream in &streams {
+            if text.contains(stream.as_str()) {
+                naming.push((file.display().to_string(), stream.clone()));
+            }
+        }
+    }
+    assert_eq!(
+        naming,
+        Vec::<(String, String)>::new(),
+        "a peer source names a fabric stream"
+    );
+
+    // The helpers read what they claim to.
+    assert_eq!(snake_case("PeerReflexMessage"), "peer_reflex_message");
+}
