@@ -1405,3 +1405,51 @@ fn the_decision_loop_publishes_the_peer_round_trip_it_reads_from_the_port() -> R
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
+
+#[test]
+fn a_halt_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn() -> Result<()> {
+    // FABRIC-10076: control acknowledgments reach the regional Fabric, and a
+    // halt is the control whose acknowledgment matters most — the centre
+    // must be able to read that the cell stopped, not infer it from
+    // silence. The policy half is the test above; this is the halt half,
+    // through the same journal relay and spool writer the node runs.
+    use qip_contracts::reflex::Decision as Recorded;
+    use qip_edge::cell::PolledHalt;
+    use qip_events::event_fabric::bindings::REFLEX_JOURNAL_RECORDED;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let mut rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let acknowledged = |spool: &SegmentLog| -> Result<bool> {
+        Ok(writer::records(spool)?
+            .into_iter()
+            .filter(|record| record.event.topic == REFLEX_JOURNAL_RECORDED.topic)
+            .any(|record| {
+                writer::journal_entry(&record.event).is_ok_and(|entry| {
+                    matches!(entry.decision, Recorded::HaltChanged { halted: true, .. })
+                })
+            }))
+    };
+    // Premise: a running cell whose spool holds no halt yet.
+    drive(&mut rig.decisions, 10, 2);
+    assert!(!rig.decisions.cell().is_halted(), "premise: a running cell");
+    assert!(!acknowledged(&rig.spool)?, "premise: no halt on the spool");
+
+    rig.decisions.cell_mut().apply_polled_halt(
+        PolledHalt::Unreadable("the operator's halt flag".to_string()),
+        t(20),
+    );
+    assert!(rig.decisions.cell().is_halted(), "premise: the halt held");
+
+    let _watchdog = Watchdog::arm("the halt acknowledgement reaching the spool");
+    let waited = std::time::Instant::now();
+    let mut second = 21;
+    while !acknowledged(&rig.spool)? {
+        rig.decisions.turn(t(second))?;
+        second += 1;
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "the halt acknowledgement never reached the fabric spool"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Ok(())
+}

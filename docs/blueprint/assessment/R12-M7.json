@@ -2469,24 +2469,29 @@
   },
   {
     "id": "R12-RES-7111",
-    "status": "PARTIAL",
-    "current": "ActionPolicy::observe narrows authority on side effects; stage admission refuses after a failure; no rollback actions or failure episode.",
+    "status": "COMPLETE",
+    "current": "A drift now creates a failure episode with a plan-specific stop and roll-back, not only a narrowed policy. engine::learn_outcome (engine.rs:496) computes ActionPolicy::drift (autonomy.rs:158: effect below or above the predicted interval, each unpredicted side effect, as Drift values), narrows through observe exactly when drift is non-empty, and files FailureEpisode::of (memory.rs:146; engine.rs:557) into ActionOutcomeMemory (keep_failure, memory.rs:242, bounded by the memory's capacity): the class, the action sequence, the regime, measured or simulated, the effect, every departure, the authority before and after, and the mitigations — a Halt naming the plan's tools and, after an executed (measured) act, a Reverse per step newest first; a shadowed act sent nothing and gets no reversal. The episode rides Learned to the journal (AgencyRecord::Learned.failure, journal.rs:451). Production callers: qip-deepbrain's ambient door calls engine::learn on every follow-up (ambient_agency.rs:698) with the memory it holds, and qip-cli agency learns every shadowed pass through learn_shadowed.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/autonomy.rs:87-123 ActionPolicy::widen refuses unidentified attribution; observe() narrows on side effects",
-      "backend/crates/services/qip-agency/tests/agency.rs:857"
+      "backend/crates/services/qip-agency/src/autonomy.rs:158",
+      "backend/crates/services/qip-agency/src/engine.rs:557",
+      "backend/crates/services/qip-agency/src/memory.rs:146",
+      "backend/crates/services/qip-agency/src/memory.rs:242",
+      "backend/crates/services/qip-agency/src/journal.rs:451",
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs:698",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_side_effect_the_policy_did_not_predict_files_a_failure_episode_with_its_stop_and_roll_back"
     ],
-    "gap": "Rollback/mitigation and failure episode.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency a_side_effect_the_policy_did_not_predict",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L10). Mutation fired: dropping memory.keep_failure in learn_outcome fails the test at `one failure, one episode`. The Halt is in force the moment the episode is filed, because the policy is back at shadow and the engine sends nothing for its class; the Reverse mitigations are recorded and not executed, because under ADR 0114 no shipped adapter acts, so there is nothing to reverse in any deployment today."
   },
   {
     "id": "R12-RES-7112",
