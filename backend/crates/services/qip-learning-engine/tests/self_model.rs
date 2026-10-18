@@ -386,3 +386,94 @@ fn a_world_model_forecast_is_charged_by_the_side_it_took_and_never_freshens_the_
     assert_eq!(model.sample_facts().count(), 0);
     Ok(())
 }
+
+/// A confident outcome: stated at `confidence`, right or wrong.
+fn graded(n: usize, confidence: f64, correct: bool) -> ScoredOutcome {
+    ScoredOutcome::new(format!("hyp-{n}"), confidence, correct, at(n)).expect("a probability")
+}
+
+/// A component right for its older twenty outcomes and wrong for its newer
+/// twenty, all stated at 0.8: the window average still reads it as a coin
+/// flip's worth of accuracy, and nothing in that number says the detector or
+/// the data behind it has moved. Mutation: make `Capability::weight` return
+/// `accuracy` unconditionally — the factor stays at the window's 0.5 and the
+/// last assertion fails.
+#[test]
+fn a_component_that_has_started_missing_is_weighted_by_its_recent_record_not_its_window_average()
+-> Result<()> {
+    let key = ComponentKey::detector("vol-spike")?;
+    let mut model = SelfModel::new();
+    for n in 0..20 {
+        model.record(key.clone(), graded(n, 0.8, true));
+    }
+    let steady = model.estimate(&key)?;
+    assert!(
+        steady.drift.is_none(),
+        "premise: twenty straight hits is not drift: {:?}",
+        steady.drift
+    );
+    for n in 20..40 {
+        model.record(key.clone(), graded(n, 0.8, false));
+    }
+
+    let capability = model.estimate(&key)?;
+    let drift = capability.drift.as_ref().expect("the record has worsened");
+    assert!(drift.worsening() > 0.5, "{drift:?}");
+    // 20 of 40 over the window, shrunk: (20 + 2) / (40 + 4) = 0.5.
+    assert!(approx_eq(capability.accuracy, 0.5, 1e-9), "{capability:?}");
+    // 0 of 20 lately, shrunk: (0 + 2) / (20 + 4).
+    assert!(
+        approx_eq(drift.recent_accuracy, 2.0 / 24.0, 1e-9),
+        "{drift:?}"
+    );
+    let factor = model.factor(&key).expect("measured");
+    assert!(
+        approx_eq(factor, 2.0 / 24.0, 1e-9),
+        "a drifting component kept its window weight {factor}"
+    );
+    assert!(
+        approx_eq(model.origin_factors()["vol-spike"], factor, 1e-12),
+        "REASON is handed a different factor from the one the model reports"
+    );
+    Ok(())
+}
+
+/// The other side of the tolerance, and of the direction: a component that
+/// has improved, and one whose halves differ by less than the tolerance,
+/// keep their window accuracy. A drift test that fired on a lucky streak, or
+/// on getting better, would discount the platform's best components.
+/// Mutation: drop the `<= DRIFT_TOLERANCE` return (always report drift) —
+/// the steady component reports drift and the first assertion fails.
+#[test]
+fn a_component_that_improved_or_wobbled_inside_the_tolerance_is_not_called_drifting() -> Result<()>
+{
+    let mut steady = CapabilityEstimate::new();
+    for n in 0..40 {
+        steady.record(graded(n, 0.7, n % 2 == 0));
+    }
+    assert!(steady.is_estimable(), "premise: the record is long enough");
+    assert!(steady.drift().is_none(), "{:?}", steady.drift());
+
+    let mut improving = CapabilityEstimate::new();
+    for n in 0..20 {
+        improving.record(graded(n, 0.8, false));
+    }
+    for n in 20..40 {
+        improving.record(graded(n, 0.8, true));
+    }
+    assert!(improving.drift().is_none(), "{:?}", improving.drift());
+
+    let mut short = CapabilityEstimate::new();
+    for n in 0..MINIMUM_SAMPLE {
+        short.record(graded(n, 0.8, true));
+    }
+    for n in MINIMUM_SAMPLE..2 * MINIMUM_SAMPLE - 1 {
+        short.record(graded(n, 0.8, false));
+    }
+    assert!(
+        short.drift().is_none(),
+        "a window under twice the minimum sample was judged: {:?}",
+        short.drift()
+    );
+    Ok(())
+}
