@@ -300,3 +300,159 @@ fn dev_environment_declares_mock_venue_adapter_explicitly() {
         "venue_adapter_type must not be commented out in dev tfvars"
     );
 }
+
+/// The resource blocks a Terraform text declares of the given kinds, each as
+/// `(kind, body)`. A block ends at the first line that is a lone `}` in column
+/// zero, which is how `terraform fmt` leaves every top-level block.
+fn resource_blocks(text: &str, kinds: &[&str]) -> Vec<(String, String)> {
+    let mut blocks = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    for line in text.lines() {
+        if let Some((_, body)) = current.as_mut() {
+            if line == "}" {
+                blocks.push(current.take().expect("a block is open"));
+            } else {
+                body.push_str(line);
+                body.push('\n');
+            }
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("resource \"") else {
+            continue;
+        };
+        let kind = rest.split('"').next().unwrap_or_default();
+        if kinds.contains(&kind) {
+            current = Some((kind.to_string(), line.to_string() + "\n"));
+        }
+    }
+    blocks
+}
+
+/// What a scheduler job or workflow must not be pointed at: the event fabric
+/// and anything that places or routes an order.
+const FABRIC_OR_TRADING_MARKERS: [&str; 6] = [
+    "fabric",
+    "/v1/events",
+    "order",
+    "execution",
+    "ledger",
+    "broker",
+];
+
+fn fabric_or_trading_targets(text: &str) -> Vec<String> {
+    resource_blocks(
+        text,
+        &["google_cloud_scheduler_job", "google_workflows_workflow"],
+    )
+    .into_iter()
+    .filter(|(_, body)| {
+        let lowered = body.to_ascii_lowercase();
+        FABRIC_OR_TRADING_MARKERS
+            .iter()
+            .any(|marker| lowered.contains(marker))
+    })
+    .map(|(kind, body)| format!("{kind}: {}", body.lines().next().unwrap_or_default()))
+    .collect()
+}
+
+#[test]
+fn no_scheduler_or_workflow_resource_targets_a_fabric_or_trading_endpoint() {
+    // R12-FABRIC-10069. Cloud Scheduler and Workflows are timers and glue; the
+    // event backbone is the Rust Fabric, and a scheduled job that posts to a
+    // fabric or order endpoint would make a Google timer the thing that
+    // decides when a trading event happens, outside the hash-chained log.
+    // None exists today, which is a fact about the tree that one added
+    // resource would undo with every other test still green.
+    let mut scanned = 0;
+    let mut offenders = Vec::new();
+    for file in qip_acceptance::files_with_extension("infrastructure/terraform", "tf") {
+        scanned += 1;
+        let text = std::fs::read_to_string(&file).expect("terraform is readable");
+        offenders.extend(fabric_or_trading_targets(&text));
+    }
+    assert!(scanned > 20, "only {scanned} terraform files were scanned");
+    assert_eq!(
+        offenders,
+        Vec::<String>::new(),
+        "a scheduler job or workflow names the fabric or a trading endpoint"
+    );
+
+    // The detector sees what it claims to: a scheduler job aimed at the
+    // fabric is found, a workflow aimed at an order route is found, and a
+    // job with an unrelated target is not, so an empty result above is a
+    // finding and not a blind scanner.
+    let fabric_job = "resource \"google_cloud_scheduler_job\" \"tick\" {\n  http_target {\n    uri = \"https://qip-fabricd.example/v1/events\"\n  }\n}\n";
+    let order_flow = "resource \"google_workflows_workflow\" \"rebalance\" {\n  source_contents = \"POST /orders\"\n}\n";
+    let harmless = "resource \"google_cloud_scheduler_job\" \"report\" {\n  http_target {\n    uri = \"https://reports.example/daily\"\n  }\n}\n";
+    assert_eq!(fabric_or_trading_targets(fabric_job).len(), 1);
+    assert_eq!(fabric_or_trading_targets(order_flow).len(), 1);
+    assert!(fabric_or_trading_targets(harmless).is_empty());
+}
+
+/// The tfvars keys that give an environment data to ingest: a live market
+/// connector, the deep brain's polled sources, its discovery cadence, and the
+/// candidate list the discovery desk reads. Uncommented assignments only.
+const DATA_SOURCE_KEYS: [&str; 4] = [
+    "market_data_connector",
+    "deepbrain_connector",
+    "deepbrain_discover_every",
+    "source_candidates_file",
+];
+
+fn declared_data_sources(tfvars: &str) -> Vec<String> {
+    tfvars
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.trim(), value.trim()))
+        .filter(|(key, value)| DATA_SOURCE_KEYS.contains(key) && *value != "null")
+        .map(|(key, _)| key.to_string())
+        .collect()
+}
+
+#[test]
+fn dev_declares_no_more_data_sources_than_any_later_environment() {
+    // R12-GCP-10144. The blueprint has dev run on reduced data. The knobs that
+    // give a deployment data to ingest are the four tfvars keys above, and no
+    // environment sets one today: the fast brain runs the synthetic exchange,
+    // the deep brain polls no vendor and runs no discovery pass. So "reduced"
+    // is met by dev holding the minimum, and what this pins is that dev never
+    // holds more than a later environment: a vendor connector wired into dev
+    // first is how a research-only licence reaches the catalogue.
+    let root = qip_acceptance::repository_root();
+    let read = |environment: &str| {
+        std::fs::read_to_string(root.join(format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        )))
+        .expect("the environment's tfvars is readable")
+    };
+    let dev = read("dev");
+    assert!(
+        dev.lines()
+            .any(|line| line.trim_start().starts_with("environment")),
+        "the dev tfvars no longer names its environment, so the file read is not dev's"
+    );
+    let dev_sources = declared_data_sources(&dev);
+    for later in ["test", "stage", "prod"] {
+        let sources = declared_data_sources(&read(later));
+        assert!(
+            dev_sources.len() <= sources.len(),
+            "dev declares {dev_sources:?} but {later} declares {sources:?}"
+        );
+    }
+    assert_eq!(
+        dev_sources,
+        Vec::<String>::new(),
+        "dev declares a data source"
+    );
+
+    // The scanner sees an assignment and ignores a comment, so the empty
+    // result above is a finding.
+    let mutated = format!("{dev}\ndeepbrain_discover_every = \"4\"\n");
+    assert_eq!(
+        declared_data_sources(&mutated),
+        vec!["deepbrain_discover_every".to_string()]
+    );
+    let commented = format!("{dev}\n# deepbrain_discover_every = \"4\"\n");
+    assert!(declared_data_sources(&commented).is_empty());
+}

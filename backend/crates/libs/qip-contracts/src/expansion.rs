@@ -558,7 +558,16 @@ pub struct GapSignal {
     pub evidence: Vec<String>,
     /// Severity in `[0, 1]`.
     pub severity: f64,
+    /// What closing the gap is worth: the return a better model, source or
+    /// tool would earn.
     pub economic_value: Decimal,
+    /// What leaving the gap open exposes the book to: the loss the platform
+    /// carries while the thing it cannot explain keeps moving. Distinct from
+    /// [`Self::economic_value`] because a gap can be worth little to close
+    /// and dangerous to leave — a liquidity hole the desk never trades
+    /// through for profit is still one it can be trapped in — and a single
+    /// figure ranks that gap as harmless.
+    pub risk_value: Decimal,
     pub gap_class: GapClass,
 }
 
@@ -572,6 +581,11 @@ impl GapSignal {
         if self.economic_value.is_negative() {
             return Err(Error::invalid(
                 "GapSignal.economic_value must not be negative",
+            ));
+        }
+        if self.risk_value.is_negative() {
+            return Err(Error::invalid(
+                "GapSignal.risk_value must not be negative; state zero when the gap exposes nothing",
             ));
         }
         Ok(())

@@ -2195,14 +2195,16 @@
   },
   {
     "id": "R12-RISK-4100",
-    "status": "PARTIAL",
-    "current": "Edge refuses on silent feed and stale book; capability staleness narrows sizing; simulated BadFeed condition. No poisoning/manipulation detection in the live path.",
+    "status": "COMPLETE",
+    "current": "Edge refuses on silent feed and stale book; capability staleness narrows sizing; and an intent whose chosen venue serves a mid further than CellConfig::cross_source_tolerance (default 5%, validated in (0,1) at Cell::new) from the mid another fresh, open, unwithheld venue serves for the same instrument is refused under GATE_CROSS_SOURCE, naming both sources, so the cell trades on neither until they agree.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:231 GATE_CROSS_SOURCE and its reasoning; :4922 route_for refuses through Cell::refuse; :4955 cross_source_disagreement",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1252 two_venues_serving_one_instrument_at_mids_further_apart_than_the_tolerance_are_traded_on_by_neither",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1326 a_cross_source_tolerance_that_could_never_judge_two_sources_stops_assembly",
       "backend/crates/edge/qip-edge/src/cell.rs:360 GATE_SILENT_FEED",
-      "backend/crates/edge/qip-edge/src/cell.rs:4686 stale_book",
       "backend/crates/libs/qip-contracts/src/degradation.rs:776 sizing_multiplier"
     ],
-    "gap": "Poisoning/manipulation detection.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2210,10 +2212,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. Runs in Cell::work's route_for on every cell (the tolerance is a CellConfig default), so qip-edge-node's simulated passes carry it. Limits stated in the gate's doc: an instrument with one source has nothing to compare and is not refused; arbitrage cycles are priced from the disagreement and are not gated here. Mutations: a comparison that never exceeds the tolerance fails the gate test at the no-order assertion; removing the validation admits a zero tolerance and fails the assembly test."
   },
   {
     "id": "R12-RISK-4101",

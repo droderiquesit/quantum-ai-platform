@@ -51,12 +51,13 @@
 //!   only through an installed `PackageSigner` (ADR 0110); without one it is
 //!   held unsigned and nothing is written.
 
+use qip_agents::registries::OntologyRegistry;
 use qip_contracts::ambient::{
     AcquisitionCriteria, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
     AuthorityBoundary, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
     Pathway, RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
 };
-use qip_contracts::expansion::{CapabilityEntry, GapClass};
+use qip_contracts::expansion::{CapabilityEntry, GapClass, OntologyTypeFamily, OntologyTypeSpec};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_expansion::campaigns::{self, TickCampaign, TickCampaignDetector, TickCampaignTrigger};
@@ -67,7 +68,7 @@ use qip_expansion::desk::{
 use qip_expansion::detectors::{
     Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters, contradictions,
     coverage, incompetent_specialists, low_confidence, model_drift, model_error_rate,
-    refusal_clusters, repeated_vetoes, split_by_wanting, unexplained_residuals,
+    refusal_clusters, repeated_vetoes_priced, split_by_wanting, unexplained_residuals,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -583,6 +584,88 @@ pub struct ResearchRound {
     /// assumption last challenged three sweeps ago reads as holding for
     /// three sweeps rather than as nothing.
     pub assumptions: Vec<AssumptionState>,
+    /// Every information request this sweep launched, in the Curiosity
+    /// Engine's rank order, as the scout job the node hands the discovery
+    /// desk (R12-AMBIENT-9033): a launch that only recorded its cost reached
+    /// no scout, so the platform paid for evidence nothing went to find.
+    pub scouted: Vec<ScoutRequest>,
+    /// The registries the sweep consulted and what each held
+    /// (R12-EXPAND-1115): a sweep record that cannot say which sources,
+    /// types, tools and brains it ran against cannot be replayed against the
+    /// same ones.
+    pub registries: RegistryCounts,
+}
+
+/// What each registry a sweep consulted held when it ran.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryCounts {
+    /// Licensed sources the discovery desk handed this sweep.
+    pub sources: usize,
+    /// Ontology types registered — every type the sweep's detectors read.
+    pub ontology_types: usize,
+    pub tools: usize,
+    /// Brain Registry entries of the specialists a surprise can wake.
+    pub brains: usize,
+}
+
+/// The ontology types the research sweep's detectors read, by family and
+/// name, with what each is (R12-EXPAND-1115). Checked present at
+/// construction: a detector reading a type nobody registered is reading a
+/// shape nobody agreed.
+pub const SWEEP_ONTOLOGY: [(OntologyTypeFamily, &str, &str); 5] = [
+    (
+        OntologyTypeFamily::Market,
+        "price_series",
+        "the closes per subject the anomaly detectors and the NOW estimator read",
+    ),
+    (
+        OntologyTypeFamily::Asset,
+        "asset_class",
+        "the asset-class coverage map the coverage detector reads",
+    ),
+    (
+        OntologyTypeFamily::Event,
+        "anomaly",
+        "a detector's anomaly, as the signal mapper turns it into a gap",
+    ),
+    (
+        OntologyTypeFamily::Entity,
+        "evidence_claim",
+        "a claim in the world fabric the poisoning scan reads",
+    ),
+    (
+        OntologyTypeFamily::Lifecycle,
+        "research_item",
+        "a curriculum item's lifecycle on the expansion desk",
+    ),
+];
+
+/// The ontology registry the research loop runs against: every type in
+/// [`SWEEP_ONTOLOGY`], at version 1.
+pub fn sweep_ontology() -> Result<OntologyRegistry> {
+    let mut registry = OntologyRegistry::new();
+    for (family, name, description) in SWEEP_ONTOLOGY {
+        registry.register(OntologyTypeSpec {
+            family,
+            name: name.to_string(),
+            version: 1,
+            schema: format!("qip-deepbrain/research:{name}"),
+            description: description.to_string(),
+        })?;
+    }
+    Ok(registry)
+}
+
+/// A launched information request as a scout job: what to find evidence
+/// about, and the rank it was launched at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScoutRequest {
+    pub request_id: String,
+    pub question: String,
+    /// `AcquisitionCriteria::net_value_bp` at launch.
+    pub rank_bp: u32,
+    /// The entities the gap named — what a discovery query is built for.
+    pub entities: Vec<String>,
 }
 
 /// A stress scenario conditioned on one signal.
@@ -703,6 +786,9 @@ pub struct ResearchLoop {
     /// This sweep's information-request candidates and the observation
     /// each would launch with, ranked together before any launches.
     candidates: Vec<(InfoRequest, &'static str)>,
+    /// The entities each candidate's gap named, by request id, for the
+    /// scout job a launch becomes. Emptied by every launch pass.
+    candidate_entities: BTreeMap<String, Vec<String>>,
     meta: MetaIntelligence,
     compiler: CognitiveCompiler,
     signer: Option<Box<dyn PackageSigner + Send>>,
@@ -743,6 +829,10 @@ pub struct ResearchLoop {
     /// Assumption health by assumption, bounded by [`RETAINED`]: the entry
     /// longest unchallenged leaves first when a new one arrives at the cap.
     assumptions: BTreeMap<String, AssumptionState>,
+    /// The ontology the sweep's detectors read (R12-EXPAND-1115).
+    ontology: OntologyRegistry,
+    /// How many tools the node registered, read once at construction.
+    tool_count: usize,
 }
 
 impl std::fmt::Debug for ResearchLoop {
@@ -763,6 +853,14 @@ impl std::fmt::Debug for ResearchLoop {
 /// resolves them by. Each is a desk in this binary: the discovery desk, the
 /// learning desk's fit, the platform's stress tester. Anything else a gap
 /// asks for is a tool to build, and is queued as one.
+/// How many tools a registry holds, across every kind.
+pub fn tool_count(tools: &qip_agents::tools::ToolRegistry) -> usize {
+    qip_agents::tools::ToolKind::ALL
+        .iter()
+        .map(|kind| tools.by_kind(*kind).len())
+        .sum()
+}
+
 pub fn registered_tools() -> Result<qip_agents::tools::ToolRegistry> {
     use qip_agents::tools::ToolKind;
     let mut tools = qip_agents::tools::ToolRegistry::new();
@@ -797,6 +895,9 @@ impl ResearchLoop {
         // that would be woken to do work it cannot do.
         let brains = crate::now::specialist_registry()?;
         let tools = registered_tools()?;
+        let ontology = sweep_ontology()?;
+        Self::check_ontology(&ontology)?;
+        let tool_count = tool_count(&tools);
         for specialist in qip_kernel::now_stage::Specialist::ALL {
             let spec = brains.get(specialist.as_str()).ok_or_else(|| {
                 Error::invalid(format!(
@@ -829,6 +930,7 @@ impl ResearchLoop {
             advisories: VecDeque::new(),
             info_requests: VecDeque::new(),
             candidates: Vec::new(),
+            candidate_entities: BTreeMap::new(),
             meta: MetaIntelligence::new(MetaPolicy::default())?,
             compiler: CognitiveCompiler::new(CompilerBounds::default())?,
             signer: None,
@@ -848,8 +950,28 @@ impl ResearchLoop {
             drifted_models: Vec::new(),
             replies: None,
             assumptions: BTreeMap::new(),
+            ontology,
+            tool_count,
             config,
         })
+    }
+
+    /// Refuse an ontology missing a type the sweep's detectors read.
+    fn check_ontology(ontology: &OntologyRegistry) -> Result<()> {
+        for (family, name, _) in SWEEP_ONTOLOGY {
+            if ontology.get_latest(family, name).is_none() {
+                return Err(Error::invalid(format!(
+                    "the research sweep reads {family:?}.{name}, which the ontology registry \
+                     does not hold; register the type before the sweep runs"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The ontology registry the sweep runs against.
+    pub const fn ontology(&self) -> &OntologyRegistry {
+        &self.ontology
     }
 
     /// Sign every reflex package the compiler emits with `signer`, and only
@@ -979,6 +1101,16 @@ impl ResearchLoop {
     ) -> Result<ResearchRound> {
         let metrics = platform.telemetry().metrics.clone();
         let mut round = ResearchRound::default();
+        // The registries this sweep runs against, consulted before any
+        // detector reads: an ontology that lost a type stops the sweep by
+        // name rather than letting a detector read an unregistered shape.
+        Self::check_ontology(&self.ontology)?;
+        round.registries = RegistryCounts {
+            sources: licensed_sources.len(),
+            ontology_types: self.ontology.type_count(),
+            tools: self.tool_count,
+            brains: self.brains.len(),
+        };
         let mut observations: Vec<Observation> = Vec::new();
 
         // --- the anomaly path: the deep brain's own sweep over prices -----
@@ -1030,15 +1162,12 @@ impl ResearchLoop {
                 HIT_RATE_FLOOR,
             )?);
         }
-        let declines: Vec<Decline> = platform
+        let declines: Vec<(&str, bool, qip_twin::value::Simulated<Decimal>)> = platform
             .declined_scores()
             .iter()
-            .map(|d| Decline {
-                gate: d.gate.clone(),
-                regret: d.regret,
-            })
+            .map(|d| (d.gate.as_str(), d.regret, d.would_have_earned))
             .collect();
-        observations.extend(repeated_vetoes(&declines, MIN_REGRETS)?);
+        observations.extend(veto_observations(&declines)?);
         let refusals: Vec<Refusal> = platform
             .feasibility_refusals()
             .iter()
@@ -1184,6 +1313,13 @@ impl ResearchLoop {
                     // The residual as a share of the book it is applied to,
                     // on the anomaly mapper's [0, 100] scale.
                     economic_value: Decimal::from_f64(proposal.residual * 100.0)
+                        .unwrap_or(Decimal::ZERO),
+                    // The same residual is also what the book carries while
+                    // the class goes unmodelled: an error the desk sizes
+                    // against. Equal to the economic figure here because one
+                    // measurement states both; the anomaly mapper is where
+                    // the two part.
+                    risk_value: Decimal::from_f64(proposal.residual * 100.0)
                         .unwrap_or(Decimal::ZERO),
                 });
             }
@@ -1570,6 +1706,7 @@ impl ResearchLoop {
             .is_some_and(|e| e.starts_with("detector:"));
         let severity = basis_points(gap.signal.severity)?;
         let economic = gap.signal.economic_value;
+        let entities = gap.signal.affected_domains.clone();
         let admission = self
             .desk
             .offer(gap, licensed_sources, eligible_jurisdictions);
@@ -1643,6 +1780,8 @@ impl ResearchLoop {
         } else {
             // Not launched here: every candidate this sweep raises is ranked
             // against the others first (`launch_ranked`).
+            self.candidate_entities
+                .insert(request.id().to_string(), entities);
             self.candidates.push((request, source));
         }
         Ok(())
@@ -1688,6 +1827,17 @@ impl ResearchLoop {
             // A surprise states a deviation, not money; a stated zero launches
             // no acquisition, and the specialist's tools are what answer it.
             economic_value: Decimal::ZERO,
+            // A deviation is, however, exposure: the surprise's own size on
+            // the anomaly mapper's [0, 100] scale, so a large unexplained
+            // surprise ranks as dangerous to leave open even though nothing
+            // prices what closing it would earn. f64 to Decimal here, from
+            // the basis-point severity the signal carries.
+            risk_value: Decimal::from_f64(
+                f64::from(signal.severity_bp())
+                    / f64::from(qip_contracts::ambient::MAX_SEVERITY_BP)
+                    * 100.0,
+            )
+            .unwrap_or(Decimal::ZERO),
         };
         let raised = raise(observation)?;
         let question = qip_expansion::desk::question_for(&raised);
@@ -1843,6 +1993,7 @@ impl ResearchLoop {
     /// to be raised in decided what the budget bought.
     fn launch_ranked(&mut self, metrics: &Metrics, round: &mut ResearchRound) -> Result<()> {
         let candidates = std::mem::take(&mut self.candidates);
+        let mut entities = std::mem::take(&mut self.candidate_entities);
         let sources: BTreeMap<String, &'static str> = candidates
             .iter()
             .map(|(r, source)| (r.id().to_string(), *source))
@@ -1866,6 +2017,12 @@ impl ResearchLoop {
                 remaining -= cost;
                 request.record_acquisition(cost)?;
                 round.info_launched += 1;
+                round.scouted.push(ScoutRequest {
+                    request_id: id.clone(),
+                    question: request.decision_id().to_string(),
+                    rank_bp: request.criteria().net_value_bp(),
+                    entities: entities.remove(id).unwrap_or_default(),
+                });
                 let source = sources.get(id).copied().unwrap_or("acquisition");
                 metrics.count(
                     names::INFO_REQUESTS,
@@ -2452,6 +2609,42 @@ pub fn slippage_of(platform: &Platform) -> Vec<SlippageObservation> {
         .collect()
 }
 
+/// The repeated-veto gaps of a sweep's declined scores — `(gate, regret,
+/// would have earned)` — each priced at what its gate forwent
+/// (R12-EXPAND-6048): the summed positive counterfactual earnings of the
+/// gate's regretted declines, so a gate that vetoed a hundred profitable
+/// orders outranks one that vetoed a hundred worthless ones. Until
+/// 2026-10-18 the sweep called the unpriced detector and every veto gap
+/// stated an economic value of zero.
+///
+/// The earnings are the twin's counterfactual, crossed from `Decimal` to
+/// `f64` through `as_f64_for_statistics` and back for ranking only; a
+/// figure with no decimal form is refused rather than read as zero.
+pub fn veto_observations(
+    declines: &[(&str, bool, qip_twin::value::Simulated<Decimal>)],
+) -> Result<Vec<Observation>> {
+    let priced: Vec<(Decline, Decimal)> = declines
+        .iter()
+        .map(|(gate, regret, earned)| {
+            let value = earned.as_f64_for_statistics();
+            let value = Decimal::from_f64(value).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the decline at gate `{gate}` states earnings {value} with no decimal form; \
+                     correct the counterfactual before it is ranked"
+                ))
+            })?;
+            Ok((
+                Decline {
+                    gate: (*gate).to_string(),
+                    regret: *regret,
+                },
+                value,
+            ))
+        })
+        .collect::<Result<_>>()?;
+    repeated_vetoes_priced(&priced, MIN_REGRETS)
+}
+
 /// The risk-review signals a limit check raises before any limit fires
 /// (R12-AMBIENT-3070): one per limit inside its bound but past its warning
 /// threshold, severity the share of the limit in use. A breach is not
@@ -2538,6 +2731,9 @@ fn poisoning_observation(finding: &PoisoningFinding) -> Observation {
         severity: poisoning_severity(finding.class),
         // The detector measures a pattern, not money; stated zero.
         economic_value: Decimal::ZERO,
+        // Nor a position's exposure: a poisoned source is held out of the
+        // evidence fabric before it can move a book.
+        risk_value: Decimal::ZERO,
     }
 }
 
@@ -2699,6 +2895,86 @@ mod tests {
         };
         assert_eq!(status("info-b"), Some(AcquisitionStatus::InProgress));
         assert_eq!(status("info-a"), Some(AcquisitionStatus::Halted));
+    }
+
+    /// A repeated-veto gap carries what its gate forwent (R12-EXPAND-6048):
+    /// three regretted declines that would have earned 100, 50 and a loss
+    /// price the gap at 150, and a gate with as many regrets that forwent
+    /// nothing prices at zero. Mutation: call the unpriced
+    /// `repeated_vetoes` in `veto_observations` — the first gap prices at
+    /// zero and the assertion fails.
+    #[test]
+    fn a_repeated_veto_gap_carries_the_earnings_its_gate_forwent() {
+        use qip_twin::value::Simulated;
+        let d = |v: i64| Simulated::of(Decimal::from_int(v));
+        let declines = [
+            ("tight-gate", true, d(100)),
+            ("tight-gate", true, d(50)),
+            ("tight-gate", true, d(-20)),
+            ("idle-gate", true, d(0)),
+            ("idle-gate", true, d(0)),
+            ("idle-gate", true, d(0)),
+        ];
+        let raised = veto_observations(&declines).expect("prices");
+        let value_of = |gate: &str| {
+            raised
+                .iter()
+                .find(|o| {
+                    o.evidence
+                        .iter()
+                        .any(|e| e.ends_with(&format!("gate:{gate}")))
+                })
+                .map(|o| o.economic_value)
+        };
+        assert_eq!(raised.len(), 2, "premise: both gates repeat: {raised:?}");
+        assert_eq!(value_of("tight-gate"), Some(Decimal::from_int(150)));
+        assert_eq!(value_of("idle-gate"), Some(Decimal::ZERO));
+    }
+
+    /// Every launched request becomes a scout job on the round, in rank
+    /// order, carrying the entities its gap named (R12-AMBIENT-9033); an
+    /// outranked one becomes none. Mutation: push the scout job before the
+    /// budget check — the outranked `info-a` is scouted and the assertion
+    /// fails.
+    #[test]
+    fn a_launched_request_becomes_a_scout_job_in_rank_order_and_an_outranked_one_none() {
+        let config = ResearchConfig {
+            acquisition_budget_bp: 2_000,
+            ..ResearchConfig::default()
+        };
+        let mut research = ResearchLoop::new(config, BTreeMap::new()).expect("assembles");
+        let at = Timestamp::from_secs(1_800_000_000);
+        for (id, significance) in [("info-a", 5_000), ("info-b", 9_000), ("info-c", 7_000)] {
+            let request = InfoRequest::new(
+                id,
+                format!("question {id}"),
+                AcquisitionCriteria::new(significance, significance, 10_000, 900)
+                    .expect("criteria"),
+                at.saturating_add(Duration::from_hours(1)),
+                at,
+            )
+            .expect("request");
+            research
+                .candidate_entities
+                .insert(id.to_string(), vec![format!("entity-{id}")]);
+            research.candidates.push((request, "acquisition"));
+        }
+        let mut round = ResearchRound::default();
+        research
+            .launch_ranked(&Metrics::new("test"), &mut round)
+            .expect("launches");
+        let scouted: Vec<(&str, &str)> = round
+            .scouted
+            .iter()
+            .map(|s| (s.request_id.as_str(), s.entities[0].as_str()))
+            .collect();
+        assert_eq!(
+            scouted,
+            [("info-b", "entity-info-b"), ("info-c", "entity-info-c")],
+            "{round:?}"
+        );
+        assert!(round.scouted[0].rank_bp > round.scouted[1].rank_bp);
+        assert!(research.candidate_entities.is_empty());
     }
 
     /// Realised value is the uncertainty a window was observed to remove
