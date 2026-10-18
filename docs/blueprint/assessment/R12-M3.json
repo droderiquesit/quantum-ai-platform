@@ -600,7 +600,7 @@
       "backend/crates/apps/qip-deepbrain/src/brains.rs ambient_specs, AMBIENT_ATTENTION",
       "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry"
     ],
-    "gap": "Not an agent of the production Organisation (qip-investment-agents standard_agents): it emits attention events, not Organisation findings, so coverage::covered_scopes, which reads findings, cannot count it; removing it drops its scope from the Brain Registry only.",
+    "gap": "Not an agent of the production Organisation (qip-investment-agents standard_agents): the router emits attention events, not Organisation findings, so coverage::covered_scopes, which reads findings, cannot count it; removing it drops its scope from the Brain Registry only. Closing needs a decision, not a registration: either the router becomes an Organisation agent (it has no Desk input; it reads a research sweep) or coverage::Scope gains an ambient scope evidenced by findings qip-deepbrain composes from the sweep. The second changes the organisation test that asserts every Scope is covered by the standard organisation on a populated desk, so it needs an ADR. The grader's proposal to register a BrainSpec in now.rs::specialist_registry is already done (brains.rs holds ambient/attention).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -611,7 +611,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Narrowed 2026-10-18 by lane L04: registry entry and the scope-drop test added (mutation: giving a NOW specialist the attention-routing domain keeps the scope after removal and the test fails). Kept PARTIAL: rostering it as an Organisation agent needs an Agent impl producing Findings."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
   },
   {
     "id": "R12-AGENCY-3028",
@@ -622,7 +622,7 @@
       "backend/crates/apps/qip-deepbrain/src/brains.rs ambient_specs, CAUSAL_AGENCY",
       "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry"
     ],
-    "gap": "Not an agent of the production Organisation emitting Findings; removing it drops its scope from the Brain Registry only, and coverage::covered_scopes cannot count it.",
+    "gap": "Not an agent of the production Organisation emitting Findings; removing it drops its scope from the Brain Registry only, and coverage::covered_scopes cannot count it. Same decision as R12-AMBIENT-3027: an Organisation agent has a Desk to read and the ambient agency reads a research sweep, so either the agency is wrapped as an agent whose finding is composed from AgencyRound (goal, candidates, gate verdicts) or coverage::Scope gains an ambient scope; the second changes the every-Scope-is-covered organisation test and needs an ADR. The BrainSpec registration the grader proposed already exists (brains.rs, ambient/causal-agency).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -633,7 +633,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Narrowed 2026-10-18 by lane L04 (registry entry and scope-drop test). Kept PARTIAL for the same reason as R12-AMBIENT-3027."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
   },
   {
     "id": "R12-GOV-3029",

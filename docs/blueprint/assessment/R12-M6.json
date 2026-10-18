@@ -732,7 +732,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:17136 evaluate_alternatives",
       "backend/crates/tests/qip-acceptance/tests/arch_056_simulation_engine.rs:33"
     ],
-    "gap": "Scenario/synthetic-episode generation for rare regimes.",
+    "gap": "Scenario/synthetic-episode generation for rare regimes, with a SyntheticEpisode record (scenario id, seed, dataset digest). Not producible where the grader put it: qip-deepbrain evolution.rs runs the Backtester over recorded bars, so a record made there would label a historical replay as synthetic. Scenarios are generated in research.rs (ConditionalScenario, from an ambient signal) and in the simulation engine (scenario.rs standard_library, montecarlo.rs); the record belongs where a scenario is generated or run on the default path. research.rs is lane L03c's file this session, so the contract (qip-contracts) plus the producing call there is left for that lane or the next.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -743,7 +743,7 @@
     "verification": "cargo test (crate producing ScenarioPack / SyntheticEpisode)",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
   },
   {
     "id": "R12-EXPAND-6034",
@@ -1824,7 +1824,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:163",
       "backend/crates/services/qip-agency/tests/agency.rs:189"
     ],
-    "gap": "Link to the world-model federation's causal graph.",
+    "gap": "Link to the world-model federation's causal graph. Not closable as the grader proposed: the ambient path in qip-deepbrain builds no AffordanceGraph at all (AmbientIntake drafts through the door without one; the only graph is built per request in qip_agency::engine::stages from an operator document), and a federation spec's Scope (domain, region, horizon, abstraction, hypothesis, kind) names no variable, so \"a variable some live world model observes\" has no mapping to check a tool edge against. A gate keyed on an invented mapping would refuse every draft on a node whose federation lacks a spec for the subject. Needs a decision, in an ADR, on how a graph variable is identified with a federation member (for example the FederationStage asset-class map from instrument to domain), then a gate in ambient_agency.rs that builds the graph per draft.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1835,7 +1835,7 @@
     "verification": "cargo test -p qip-agency --test agency",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed. The mutated test the closure names (refuse an edge on an unobserved variable) can be written once the mapping exists; Federation::live_specs(now) is the read to use."
   },
   {
     "id": "R12-AGENCY-6083",
