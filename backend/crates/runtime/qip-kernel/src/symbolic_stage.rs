@@ -146,6 +146,19 @@ pub struct LinkClaim {
     pub admitted: Step<()>,
 }
 
+/// The instants the timeline was built from, kept on the record so a replay
+/// rebuilds the timeline rather than trusting the order it reports
+/// (R12-REASON-1133).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TemporalInputs {
+    pub detector: String,
+    pub detected_at: Timestamp,
+    pub formed_at: Timestamp,
+    pub horizon: Duration,
+    /// The linked catalyst's id and the instant it became knowable.
+    pub catalyst: Option<(String, Timestamp)>,
+}
+
 /// The temporal part.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TemporalDerivation {
@@ -155,6 +168,12 @@ pub struct TemporalDerivation {
     /// When the claim should have resolved.
     pub deadline: Timestamp,
     pub deadline_passed: bool,
+    /// What the timeline was built from. Absent only on a record written
+    /// before the field existed, which decodes and replays its rule verdict
+    /// but whose timeline cannot be rebuilt — there is nothing to rebuild it
+    /// from, and inventing the instants would make the check pass vacuously.
+    #[serde(default)]
+    pub inputs: Option<TemporalInputs>,
 }
 
 /// What an intervention on the subject reaches.
@@ -212,6 +231,20 @@ pub struct SymbolicDerivation {
     pub lifecycle: Step<Admissibility>,
     pub abduction: Step<Abduction>,
     pub intervention: Step<InterventionSummary>,
+    /// What the derivation found does not hold (R12-REASON-3062): the rule
+    /// pack's refusal, each timeline link refused, and each constraint in the
+    /// conflict that blocks acting, as `rules: …`, `link a -> b: …` and
+    /// `constraint: <id>`. Empty when every part held. Computed from the
+    /// parts above by [`violated_assumptions`], so a replay recomputes it
+    /// rather than trusting it.
+    #[serde(default)]
+    pub violated_assumptions: Vec<String>,
+    /// How undecided the posterior leaves the claim: the Shannon entropy of
+    /// `P(claim_holds)` divided by its maximum, so 0 is certain and 1 is a
+    /// coin flip. `None` when the posterior was refused — no spread was
+    /// computed, and a number here would be one nobody computed.
+    #[serde(default)]
+    pub uncertainty: Option<f64>,
 }
 
 impl EventBody for SymbolicDerivation {
@@ -442,9 +475,26 @@ fn rules(input: &SymbolicInput) -> RuleDerivation {
 }
 
 fn temporal(input: &SymbolicInput, now: Timestamp) -> TemporalDerivation {
-    let anomaly = format!("anomaly:{}", input.anomaly.detector);
-    let hypothesis = format!("hypothesis:{}", input.hypothesis_id);
-    let deadline_id = format!("deadline:{}", input.hypothesis_id);
+    timeline_of(
+        &input.hypothesis_id,
+        TemporalInputs {
+            detector: input.anomaly.detector.clone(),
+            detected_at: input.anomaly.detected_at,
+            formed_at: input.formed_at,
+            horizon: input.horizon,
+            catalyst: input.catalyst.clone(),
+        },
+        now,
+    )
+}
+
+/// The timeline over recorded instants alone, so [`derive`] and [`verify`]
+/// run the same construction and a replay cannot agree with a record by
+/// building something else.
+fn timeline_of(hypothesis_id: &str, input: TemporalInputs, now: Timestamp) -> TemporalDerivation {
+    let anomaly = format!("anomaly:{}", input.detector);
+    let hypothesis = format!("hypothesis:{hypothesis_id}");
+    let deadline_id = format!("deadline:{hypothesis_id}");
     let deadline = input.formed_at.saturating_add(input.horizon);
     let mut timeline = Timeline::new();
     let mut links = Vec::new();
@@ -459,8 +509,8 @@ fn temporal(input: &SymbolicInput, now: Timestamp) -> TemporalDerivation {
         record(
             &mut timeline,
             &anomaly,
-            input.anomaly.detected_at,
-            input.anomaly.detected_at,
+            input.detected_at,
+            input.detected_at,
         ),
         record(&mut timeline, &hypothesis, input.formed_at, input.formed_at),
         // A deadline is known the instant the claim is made.
@@ -497,6 +547,7 @@ fn temporal(input: &SymbolicInput, now: Timestamp) -> TemporalDerivation {
         anomaly_to_hypothesis: timeline.order(&anomaly, &hypothesis, now),
         deadline,
         deadline_passed: now >= deadline,
+        inputs: Some(input),
     }
 }
 
@@ -515,6 +566,60 @@ fn network_nodes(anomaly_confidence: f64) -> Vec<Node> {
         Node::uncertain_rule("panel_supports", "anomaly_real", 0.8, 0.3),
         Node::uncertain_rule("claim_holds", "anomaly_real", 0.65, 0.2),
     ]
+}
+
+/// The refusals the derivation's parts recorded, in a fixed order: the rule
+/// pack, then the timeline's links, then the acting conflict.
+pub fn violated_assumptions(
+    rules: &RuleDerivation,
+    temporal: &TemporalDerivation,
+    acting: &Step<Answer>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Step::Refused(why) = &rules.verdict {
+        out.push(format!("rules: {why}"));
+    }
+    for link in &temporal.links {
+        if let Step::Refused(why) = &link.admitted {
+            out.push(format!("link {} -> {}: {why}", link.cause, link.effect));
+        }
+    }
+    match acting {
+        Step::Derived(Answer::Unsatisfiable { conflict }) => {
+            out.extend(conflict.iter().map(|id| format!("constraint: {id}")));
+        }
+        Step::Refused(why) => out.push(format!("acting: {why}")),
+        Step::Derived(Answer::Satisfied(_)) => {}
+    }
+    out
+}
+
+/// Normalised entropy of a posterior distribution: 0 when one state holds
+/// all the mass, 1 when it is spread evenly. `None` for a refused posterior,
+/// or one with fewer than two states, over which spread is undefined.
+pub fn uncertainty_of(posterior: &Step<BTreeMap<String, f64>>) -> Option<f64> {
+    let distribution = posterior.derived()?;
+    if distribution.len() < 2 {
+        return None;
+    }
+    let entropy: f64 = distribution
+        .values()
+        .filter(|p| **p > 0.0)
+        .map(|p| -p * p.log2())
+        .sum();
+    Some(entropy / (distribution.len() as f64).log2())
+}
+
+/// `P(claim_holds | panel_supports = !contested)` over `nodes`, the one
+/// computation [`derive`] records and [`verify`] repeats.
+fn posterior_of(nodes: &[Node], contested: bool) -> Step<BTreeMap<String, f64>> {
+    Step::of(Network::new(nodes.to_vec()).and_then(|network| {
+        let evidence = BTreeMap::from([(
+            "panel_supports".to_string(),
+            if contested { "false" } else { "true" }.to_string(),
+        )]);
+        network.posterior("claim_holds", &evidence)
+    }))
 }
 
 fn acting(eligible: bool, halted: bool) -> Result<Answer> {
@@ -577,13 +682,7 @@ pub fn derive(input: SymbolicInput, causal: &CausalGraph, now: Timestamp) -> Sym
     let (eligible, halted) = (fact("eligible"), fact("halted") || input.kill_switch);
     let temporal = temporal(&input, now);
     let nodes = network_nodes(input.anomaly.confidence);
-    let posterior = Step::of(Network::new(nodes.clone()).and_then(|network| {
-        let evidence = BTreeMap::from([(
-            "panel_supports".to_string(),
-            if input.contested { "false" } else { "true" }.to_string(),
-        )]);
-        network.posterior("claim_holds", &evidence)
-    }));
+    let posterior = posterior_of(&nodes, input.contested);
     let lifecycle = Step::of(hypothesis_lifecycle().judge(&["draft", input.status.as_str()]));
     let abduction = Step::of(causal.abduce(
         &Surprise {
@@ -641,6 +740,9 @@ pub fn derive(input: SymbolicInput, causal: &CausalGraph, now: Timestamp) -> Sym
                     counterfactuals,
                 }),
         );
+    let acting = Step::of(acting(eligible, halted));
+    let violated_assumptions = violated_assumptions(&rules, &temporal, &acting);
+    let uncertainty = uncertainty_of(&posterior);
     SymbolicDerivation {
         cycle: input.cycle,
         hypothesis_id: input.hypothesis_id,
@@ -650,22 +752,24 @@ pub fn derive(input: SymbolicInput, causal: &CausalGraph, now: Timestamp) -> Sym
         temporal,
         network_nodes: nodes,
         posterior,
-        acting: Step::of(acting(eligible, halted)),
+        acting,
         lifecycle,
         abduction,
         intervention,
+        violated_assumptions,
+        uncertainty,
     }
 }
 
-/// Every derivation the log holds, oldest first, each re-derived where it can
-/// be: the rule pack is re-evaluated on the recorded inputs and a verdict
-/// that does not reproduce is refused, because the trace is only a proof if
-/// re-running the pack it cites yields it.
+/// Every derivation the log holds, oldest first, each re-derived by
+/// [`verify`] against the platform's causal graph: a derivation that does
+/// not reproduce is refused, because the trace is only a proof if re-running
+/// the reasoners it cites yields it.
 pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<SymbolicDerivation>> {
     let envelopes = platform.replay_journal(
         &qip_events::EventFilter::new().topic(<SymbolicDerivation as EventBody>::TOPIC),
     )?;
-    let pack = rule_pack();
+    let world = platform.world();
     let mut out = Vec::new();
     for envelope in envelopes {
         // The envelope's key is `<topic name>:<body key>`; read the body's
@@ -679,19 +783,144 @@ pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<SymbolicDeriva
             continue;
         }
         let derivation = envelope.decode::<SymbolicDerivation>()?.body;
-        if let Step::Derived(verdict) = &derivation.rules.verdict {
-            if verdict.pack != pack.name || verdict.version != pack.version {
-                return Err(Error::invalid(format!(
-                    "derivation for {} cites rule pack {} v{}, which this build does not carry; \
-                     replay it with the build that wrote it",
-                    derivation.hypothesis_id, verdict.pack, verdict.version
-                )));
-            }
-            pack.verify(&derivation.rules.inputs, verdict)?;
-        }
+        verify(&derivation, world.causal())?;
         out.push(derivation);
     }
     Ok(out)
+}
+
+/// The independent check (R12-REASON-9005): re-run each reasoner a
+/// derivation cites on what the record itself holds, and refuse the record
+/// at the first part that does not reproduce.
+///
+/// Before this only the rule verdict was re-checked, so a journaled
+/// timeline, posterior, constraint answer or intervention could be edited —
+/// or written by a build whose reasoner had drifted — and still replay as a
+/// proof. Each part is checked on its own recorded inputs:
+///
+/// - the rule verdict, by [`RulePack::verify`] on the recorded facts;
+/// - the timeline, rebuilt by the same construction from
+///   [`TemporalInputs`] at the record's instant (R12-REASON-1133);
+/// - the posterior, recomputed over the recorded network with the panel
+///   evidence the recorded `contested` fact implies (R12-REASON-1134);
+/// - the acting problem, re-solved from the verdict's `eligible`/`halted`
+///   and the recorded `kill_switch` (R12-REASON-1136);
+/// - the intervention, re-run on `causal` at the record's instant
+///   (R12-REASON-1132). The graph answers point-in-time — an edge recorded
+///   after the instant or retired by it is not walked — so a later claim
+///   cannot change what the replay reaches. What is compared is the paths'
+///   identity (edge index, cause, effect, mechanism) and, for evidence,
+///   that what the record cites is a prefix of what the edge holds now:
+///   re-estimation appends evidence to a live edge and never removes it.
+///
+/// - the violated assumptions and the uncertainty, recomputed from the
+///   parts above (R12-REASON-3062).
+///
+/// The posterior and acting checks need the rule facts; a record whose rule
+/// inputs were refused (a confidence outside `[0, 1]`) carries none, and its
+/// posterior and acting are left unchecked rather than checked against an
+/// invented `contested` or `kill_switch`.
+pub fn verify(derivation: &SymbolicDerivation, causal: &CausalGraph) -> Result<()> {
+    let id = &derivation.hypothesis_id;
+    let pack = rule_pack();
+    if let Step::Derived(verdict) = &derivation.rules.verdict {
+        if verdict.pack != pack.name || verdict.version != pack.version {
+            return Err(Error::invalid(format!(
+                "derivation for {id} cites rule pack {} v{}, which this build does not carry; \
+                 replay it with the build that wrote it",
+                verdict.pack, verdict.version
+            )));
+        }
+        pack.verify(&derivation.rules.inputs, verdict)?;
+    }
+    if let Some(inputs) = &derivation.temporal.inputs {
+        let again = timeline_of(id, inputs.clone(), derivation.at);
+        if again != derivation.temporal {
+            return Err(Error::invalid(format!(
+                "derivation for {id}: the timeline rebuilt from its recorded instants does not \
+                 match the journaled one; the temporal derivation is not reproducible"
+            )));
+        }
+    }
+    let fact = |name: &str| {
+        derivation
+            .rules
+            .inputs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v == &Value::Bool(true))
+    };
+    if let (Some(contested), Some(kill_switch)) = (fact("contested"), fact("kill_switch")) {
+        if posterior_of(&derivation.network_nodes, contested) != derivation.posterior {
+            return Err(Error::invalid(format!(
+                "derivation for {id}: the posterior recomputed over its recorded network does \
+                 not match the journaled one; the posterior is not reproducible"
+            )));
+        }
+        let verdict_fact = |name: &str| {
+            derivation
+                .rules
+                .verdict
+                .derived()
+                .is_some_and(|v| v.facts.get(name) == Some(&Value::Bool(true)))
+        };
+        let (eligible, halted) = (
+            verdict_fact("eligible"),
+            verdict_fact("halted") || kill_switch,
+        );
+        if Step::of(acting(eligible, halted)) != derivation.acting {
+            return Err(Error::invalid(format!(
+                "derivation for {id}: re-solving the acting problem from its recorded verdict \
+                 does not give the journaled answer; the constraint derivation is not \
+                 reproducible"
+            )));
+        }
+    }
+    // After the parts they are computed from, so a refusal here means the
+    // summary was edited, not that a part beneath it was.
+    if violated_assumptions(&derivation.rules, &derivation.temporal, &derivation.acting)
+        != derivation.violated_assumptions
+    {
+        return Err(Error::invalid(format!(
+            "derivation for {id}: the refusals its parts record do not match its journaled \
+             violated assumptions; the violated-assumptions list is not reproducible"
+        )));
+    }
+    if uncertainty_of(&derivation.posterior) != derivation.uncertainty {
+        return Err(Error::invalid(format!(
+            "derivation for {id}: the spread of its recorded posterior does not match its \
+             journaled uncertainty; the uncertainty is not reproducible"
+        )));
+    }
+    let again = causal.intervene(&derivation.subject, derivation.at);
+    let reproduces = match (&derivation.intervention, &again) {
+        (Step::Derived(recorded), Ok(rerun)) => {
+            recorded.affected == rerun.affected
+                && recorded.paths == rerun.paths.len()
+                && recorded.kept.len() == rerun.paths.len().min(INTERVENTION_PATHS_KEPT)
+                && recorded.kept.iter().zip(&rerun.paths).all(|(kept, path)| {
+                    kept.target == path.target
+                        && kept.edges.len() == path.edges.len()
+                        && kept.edges.iter().zip(&path.edges).all(|(a, b)| {
+                            a.index == b.index
+                                && a.cause == b.cause
+                                && a.effect == b.effect
+                                && a.mechanism == b.mechanism
+                                && b.evidence.starts_with(&a.evidence)
+                        })
+                })
+        }
+        (Step::Refused(_), Err(_)) => true,
+        _ => false,
+    };
+    if !reproduces {
+        return Err(Error::invalid(format!(
+            "derivation for {id}: re-running the intervention on {} at the record's instant does \
+             not reach what the journal says it reached; the intervention is not reproducible",
+            derivation.subject
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

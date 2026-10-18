@@ -228,6 +228,19 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
     }
 }
 
+/// The model references a learning round found past their own drift
+/// threshold. One derivation for both readers — the research sweep, which
+/// raises a gap per model, and the operations timeline — so the two cannot
+/// disagree about which models drifted.
+fn drifted_references(learning: Option<&crate::learning::LearningRound>) -> Vec<String> {
+    learning
+        .iter()
+        .flat_map(|round| round.drift.iter())
+        .filter(|d| d.above_threshold)
+        .map(|d| d.reference.clone())
+        .collect()
+}
+
 /// A monotonic elapsed time as the platform's own [`Duration`].
 ///
 /// Saturating rather than wrapping: a measurement that overflowed would report
@@ -539,6 +552,7 @@ pub fn run_with(
         if let Some(research) = loops.research.as_deref_mut()
             && !shed
         {
+            research.note_drifted_models(drifted_references(outcome.learning.as_ref()));
             let (licensed, eligible) = evolution
                 .as_deref()
                 .and_then(|engine| engine.discovery_desk())
@@ -554,6 +568,22 @@ pub fn run_with(
                 Err(error) => outcome
                     .side_failures
                     .push(format!("research: {}", error.message())),
+            }
+            // The evolution round that preceded this sweep in the same gap
+            // rides on the sweep record (R12-EXPAND-1117), so a reader of the
+            // research round sees the challengers minted and the champion
+            // crowned that its research followed, without opening the
+            // desk's own log.
+            if let (Some(round), Some(evolution)) =
+                (outcome.research.as_mut(), outcome.evolution.as_ref())
+            {
+                round.evolution = Some(crate::research::EvolutionTrace {
+                    subject: evolution.subject.clone(),
+                    proposed: evolution.proposed,
+                    registered: evolution.registered,
+                    challengers_minted: evolution.challenge.as_ref().map_or(0, |c| c.minted),
+                    crowned: evolution.challenge.as_ref().and_then(|c| c.crowned.clone()),
+                });
             }
             if let (Some(round), Some(journal)) =
                 (outcome.research.as_ref(), loops.ambient.as_deref_mut())
@@ -588,13 +618,7 @@ pub fn run_with(
             }
         }
         if let Some(operations) = loops.operations.as_deref_mut() {
-            let drifted: Vec<String> = outcome
-                .learning
-                .iter()
-                .flat_map(|round| round.drift.iter())
-                .filter(|d| d.above_threshold)
-                .map(|d| d.reference.clone())
-                .collect();
+            let drifted = drifted_references(outcome.learning.as_ref());
             let facts = crate::operations::IterationFacts {
                 at: now,
                 cycle: outcome.report.cycle,

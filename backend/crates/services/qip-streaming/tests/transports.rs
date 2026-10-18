@@ -1,5 +1,4 @@
-//! The transports: the durable log that works, and the Pub/Sub port that does
-//! not pretend to.
+//! The transports: the durable log that works, and the local queue beside it.
 
 #![allow(clippy::panic_in_result_fn)]
 
@@ -11,8 +10,7 @@ use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_events::EventFilter;
 use qip_streaming::{
-    DurableLogTransport, LocalQueue, PubSubBinding, PubSubTransport, Publisher, StreamEnvelope,
-    Subscriber, TransportPath,
+    DurableLogTransport, LocalQueue, Publisher, StreamEnvelope, Subscriber, TransportPath,
 };
 
 /// A directory this test run owns, under the system temporary directory.
@@ -189,66 +187,6 @@ fn seeking_backwards_lets_a_crashed_consumer_re_read() -> Result<()> {
         2,
         "a durable transport whose cursor could only move forward would make recovery impossible"
     );
-    Ok(())
-}
-
-#[test]
-fn the_pubsub_transport_reports_unavailable_and_names_everything_it_needs() -> Result<()> {
-    let mut transport = PubSubTransport::declared(PubSubBinding::new(
-        "projects/PROJECT/topics/qip-sense",
-        "projects/PROJECT/subscriptions/qip-sense-worldmodel",
-    ));
-
-    let attempts: Vec<Error> = vec![
-        transport
-            .publish(warm_note("A", at(0), at(10))?, at(10))
-            .expect_err("publish must not appear to succeed"),
-        transport
-            .publish_batch(vec![warm_note("B", at(0), at(10))?], at(10))
-            .expect_err("a batch publish must not appear to succeed"),
-        transport
-            .poll(at(10))
-            .expect_err("a pull must not appear to succeed"),
-    ];
-
-    for error in &attempts {
-        // `Unavailable` specifically: a caller distinguishing "not configured
-        // here" from "broken" needs the code, not the prose.
-        assert!(
-            matches!(error, Error::Unavailable(_)),
-            "expected unavailable, got {error:?}"
-        );
-        let message = error.message();
-        for required in [
-            "GCP project",
-            "qip-sense",
-            "qip-sense-worldmodel",
-            "gRPC",
-            "TLS",
-            "workload-identity",
-            "roles/pubsub.publisher",
-            "roles/pubsub.subscriber",
-        ] {
-            assert!(
-                message.contains(required),
-                "the error does not name {required}: {message}"
-            );
-        }
-        assert!(
-            message.contains("will not fall back"),
-            "the error must say it is not silently serving something else: {message}"
-        );
-    }
-
-    let descriptor = Publisher::descriptor(&transport);
-    assert!(!descriptor.available);
-    assert!(descriptor.production_requirement.is_some());
-    assert_eq!(
-        Subscriber::watermark(&transport),
-        None,
-        "a zero watermark would claim the subscription had been read to position zero"
-    );
-    assert!(!Subscriber::has_pending(&transport, at(10)));
     Ok(())
 }
 

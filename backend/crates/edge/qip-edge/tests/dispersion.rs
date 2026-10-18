@@ -36,7 +36,9 @@ use qip_edge::dispersion::DispersionPolicy;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::policy::VerifiedPolicy;
 use qip_edge::quoting::RateLimits;
-use qip_edge::telemetry::{EDGE_FILL_TIME_MILLIS, EDGE_FILL_TIME_UNMEASURED};
+use qip_edge::telemetry::{
+    EDGE_FILL_TIME_MILLIS, EDGE_FILL_TIME_UNMEASURED, EDGE_VENUE_ACK_LATENCY_MILLIS,
+};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::{Metrics, labels, names};
@@ -583,5 +585,107 @@ fn a_cycle_is_refused_whole_once_the_message_budget_at_its_venues_is_spent() -> 
         1,
         "the budget refusal did not reach the refusal series"
     );
+    Ok(())
+}
+
+/// A venue that answers every order in two reports: half of it at
+/// `answer_millis` after the release, the rest at `complete_millis`.
+#[derive(Debug, Default)]
+struct AnsweringGateway {
+    pending: Vec<ExecutionReport>,
+    timing: BTreeMap<String, (i64, i64)>,
+}
+
+impl Placer for AnsweringGateway {
+    fn is_simulated(&self) -> bool {
+        true
+    }
+
+    fn place(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        venue: &VenueId,
+        _side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        at: Timestamp,
+    ) -> Result<()> {
+        let (answer, complete) = self.timing.get(venue.as_str()).copied().unwrap_or_default();
+        let half = quantity
+            .checked_mul(dec!("0.5"))
+            .ok_or_else(|| qip_core::error::Error::numeric("half of the order overflowed"))?;
+        for (share, millis) in [(half, answer), (quantity - half, complete)] {
+            self.pending.push(ExecutionReport {
+                order_id: order_id.to_string(),
+                venue: venue.clone(),
+                quantity: share,
+                price,
+                at: at.saturating_add(Duration::from_millis(millis)),
+            });
+        }
+        Ok(())
+    }
+
+    fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+#[test]
+fn the_venues_first_answer_on_an_order_is_published_as_its_ack_latency_apart_from_the_fill_time()
+-> Result<()> {
+    // The failure this prevents: the cell timed only an order's *last*
+    // share, so a venue that acknowledged at once and filled slowly read
+    // the same as one that sat on the order before answering at all, and
+    // the health check's latency input was a hard-coded zero because there
+    // was no measurement to give it. Each venue here answers early and
+    // completes late, with different numbers, so a recorder that timed the
+    // completion, or the wrong venue, reads differently from one that timed
+    // the first answer.
+    let (mut cell, metrics) = cell_with(judged_on_one_fill(50)?)?;
+    let mut gateway = AnsweringGateway {
+        timing: [(NEAR, (1, 7)), (FAR, (3, 9))]
+            .into_iter()
+            .map(|(venue, timing)| (venue.to_string(), timing))
+            .collect(),
+        ..AnsweringGateway::default()
+    };
+
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        report.orders.len(),
+        2,
+        "the premise failed: the cycle did not go out: {:?}",
+        report.refusals
+    );
+
+    let snapshot = metrics.snapshot();
+    for (venue, answered, completed) in [(NEAR, 1.0, 7.0), (FAR, 3.0, 9.0)] {
+        let at = labels([("cell", CELL), ("region", REGION), ("venue", venue)]);
+        // Premise: the order completed, and the fill time says so, so the
+        // ack series below is being compared against a measured order.
+        let fill = snapshot
+            .histogram(EDGE_FILL_TIME_MILLIS, &at)
+            .unwrap_or_else(|| panic!("the premise failed: {venue} recorded no fill time"));
+        assert!(
+            (fill.max - completed).abs() < f64::EPSILON,
+            "the premise failed: {venue}'s fill time was {} ms rather than {completed}",
+            fill.max
+        );
+        let ack = snapshot
+            .histogram(EDGE_VENUE_ACK_LATENCY_MILLIS, &at)
+            .unwrap_or_else(|| panic!("{venue} recorded no acknowledgement latency at all"));
+        assert_eq!(
+            ack.count, 1,
+            "{venue} answered one order in two reports and recorded {} acknowledgements",
+            ack.count
+        );
+        assert!(
+            (ack.max - answered).abs() < f64::EPSILON,
+            "{venue}'s acknowledgement was recorded as {} ms rather than {answered}",
+            ack.max
+        );
+    }
     Ok(())
 }

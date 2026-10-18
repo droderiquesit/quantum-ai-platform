@@ -204,5 +204,6 @@ variable "platform_apis" {
     "binaryauthorization.googleapis.com",
     "containeranalysis.googleapis.com",
     "containerscanning.googleapis.com",
+    "cloudasset.googleapis.com",
   ]
 }
