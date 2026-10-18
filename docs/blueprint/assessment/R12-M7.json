@@ -2761,7 +2761,7 @@
       "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos",
       "backend/crates/tests/qip-acceptance/tests/slo.rs; backend/crates/runtime/qip-kernel/tests/blueprint_objectives.rs"
     ],
-    "gap": "Not evaluated from a deployed process.",
+    "gap": "market-data-freshness (critical_paths.rs) reads EDGE_CAPABILITY_FRESHNESS under SourceRule::NotCountable, so it evaluates unmeasured in every process. No series records the age of the book a pass decides on: the cell keeps feed_heard per venue (silence detection) but exposes no book age, and the node's simulated feed publishes at the pass instant, so the age after publication is zero by construction while the silence before it is the pass interval (1 s), which sits on the objective's 1000 ms threshold. A countable rule needs a defined measurement first: the age of the newest venue data the pass's decisions used, recorded per pass beside EDGE_DECISION_LATENCY_MS.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2772,7 +2772,7 @@
     "verification": "cargo test -p qip-acceptance --test slo",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading critical_paths.rs, qip-edge-node pass.rs/feed.rs and Cell::feed_heartbeat; no code changed. The decision-latency half of the same evaluator now runs on the node (R12-OBS-7124), so a book-age histogram recorded in pass.rs and bound with SourceRule::LatencyUnder would be evaluated by the same scrape-time evaluation without further wiring."
   },
   {
     "id": "R12-OBS-7124",
