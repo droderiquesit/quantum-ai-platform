@@ -91,6 +91,10 @@ qip-execution-engine.workspace = true
 # kernel type and never names a fabric command, which `api_boundary.rs`
 # proves on the shipped graph.
 qip-capital-fabric.workspace = true
+# The agents route's test counts the roster it lists from the roster itself,
+# so adding a specialist does not leave a stale literal behind. Dev-only: the
+# serving binary reads the organisation through the kernel.
+qip-investment-agents.workspace = true
 
 [lints]
 workspace = true

@@ -439,13 +439,15 @@
   {
     "id": "R12-DATA-2020",
     "status": "COMPLETE",
-    "current": "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources validates config.owner as qip_data_finder::operator::NamedOperator once per pass and builds every mesh entry through RegistrationDecision::catalogue_entry_attributed; the shipped default owner qip-platform is refused at that seam and each registration is recorded as a catalogue problem naming the fix",
+    "current": "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources validates config.owner as qip_data_finder::operator::NamedOperator once per pass and builds every mesh entry through RegistrationDecision::catalogue_entry_attributed; the shipped default owner is research-desk, the role infrastructure/foundation/terraform.tfvars declares as every project's owner label, so a default composition catalogues under a named desk, and a configured process name or placeholder (qip-platform included) is refused with one catalogue problem per registration naming the fix",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:18850 NamedOperator::new(&self.config.owner) and catalogue_entry_attributed in assess_sources",
-      "backend/crates/runtime/qip-kernel/src/config.rs:490 default_owner doc states the default is refused at the catalogue seam",
+      "backend/crates/runtime/qip-kernel/src/platform.rs NamedOperator::new(&self.config.owner) and catalogue_entry_attributed in assess_sources (grep -n NamedOperator::new)",
+      "backend/crates/runtime/qip-kernel/src/config.rs:503 default_owner returns research-desk",
       "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused",
-      "backend/crates/services/qip-data-finder/tests/lifecycle.rs:289 a_catalogue_entry_is_attributed_to_a_named_operator_and_a_process_name_is_refused",
-      "backend/crates/apps/qip-deepbrain/src/discovery.rs:347 production caller of assess_sources"
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs the_shipped_default_owner_is_one_the_catalogue_accepts",
+      "backend/crates/tests/qip-acceptance/tests/e2e.rs the_platform_walks_from_a_discovered_source_to_a_learned_lesson asserts no catalogue problem on the default composition",
+      "backend/crates/services/qip-data-finder/tests/lifecycle.rs a_catalogue_entry_is_attributed_to_a_named_operator_and_a_process_name_is_refused",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs production caller of assess_sources"
     ],
     "gap": "",
     "implemented": true,
@@ -457,10 +459,10 @@
       "R12-DATA-2017"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test source_lifecycle a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test source_lifecycle && cargo +1.94.1 test -p qip-acceptance --test e2e --no-fail-fast",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Catalogue entries from assess_sources (platform.rs:16875) carry owner config.owner = 'qip-platform' (config.rs:463), not a named operator; the operator record is a separate path (platform.rs:7356). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Named-operator type exists; production path unchanged (commit says so). Closed 2026-10-18 (lane L01): assess_sources now goes through catalogue_entry_attributed; mutation reverting the seam to catalogue_entry(&self.config.owner) made the test fail at its catalogued.is_empty() assertion, restored byte-for-byte and it passes. Deployments still ship the default owner; they now catalogue nothing and say why, rather than cataloguing under a process name."
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Catalogue entries from assess_sources (platform.rs:16875) carry owner config.owner = 'qip-platform' (config.rs:463), not a named operator; the operator record is a separate path (platform.rs:7356). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Named-operator type exists; production path unchanged (commit says so). Closed 2026-10-18 (lane L01): assess_sources now goes through catalogue_entry_attributed; mutation reverting the seam to catalogue_entry(&self.config.owner) made the test fail at its catalogued.is_empty() assertion, restored byte-for-byte and it passes. Deployments still ship the default owner; they now catalogue nothing and say why, rather than cataloguing under a process name. Corrected 2026-10-18 (lane L01, 2bbb89e2): the closing commit 46ef4c11 left the default at qip-platform, so every default composition refused its own registrations and qip-acceptance e2e failed, blocking the dev deploy; the default is now research-desk and the_shipped_default_owner_is_one_the_catalogue_accepts pins it (mutation: default back to qip-platform failed it and e2e with the original message; restored, both pass)."
   },
   {
     "id": "R12-DATA-2021",
@@ -1452,14 +1454,21 @@
   },
   {
     "id": "R12-TICK-2063",
-    "status": "PARTIAL",
-    "current": "qip-feature-dag implements mid, spread, microprice, book pressure, realised volatility, EMA, order-flow imbalance, trade-sign autocorrelation and rolling correlation, evaluated inside the edge cell.",
+    "status": "COMPLETE",
+    "current": "qip-feature-dag implements every named family: spread (Spread), depth and imbalance (BookPressure), queue (TouchQueueDepth, bid and ask), flow (OrderFlowImbalance), toxicity (FlowToxicity, one-bucket VPIN over signed prints), volatility (RealisedVolatility), liquidity (SweepCost, basis points to take a quantity, undefined when the book cannot fill it), lead/lag (LeadLagCorrelation, lagged correlation of grid-aligned returns) and cross-venue (CrossVenueSpread, mid dislocation in basis points). Queue, toxicity and liquidity are in standard_suite, which qip-edge-node registers for every strategy subject; lead/lag and cross-venue are two-subject definitions registered per pair, like RollingCorrelation.",
     "evidence": [
-      "backend/crates/edge/qip-feature-dag/src/features.rs:77,214,265,391,450,517",
-      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs",
-      "backend/crates/edge/qip-edge/src/cell.rs:51-52 FeatureEngine in cell"
+      "backend/crates/edge/qip-feature-dag/src/features.rs:770 TouchQueueDepth",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:824 FlowToxicity",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:889 SweepCost",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:625 LeadLagCorrelation",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:699 CrossVenueSpread",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:1059 standard_suite carries queue, toxicity, liquidity",
+      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:956 queue_toxicity_and_liquidity_match_their_hand_computed_values",
+      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:1032 a_follower_one_sample_behind_its_leader_has_a_lead_lag_correlation_of_one_and_a_cross_venue_spread_in_basis_points",
+      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:1111 the_standard_suite_carries_the_queue_toxicity_and_liquidity_families",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:505 registers standard_suite per strategy subject"
     ],
-    "gap": "No queue, toxicity, liquidity or explicit lead/lag / cross-venue features.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1470,7 +1479,7 @@
     "verification": "cargo test -p qip-feature-dag --test feature_dag",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: five families added with hand-computed values. Mutations, each failing its assertion: toxicity numerator as buys only; bid queue reading the ask; sweep cost forced to zero; lead/lag ignoring the lag; cross-venue sign flipped; FlowToxicity removed from standard_suite. All restored, 26 passed; qip-edge and qip-edge-node suites (80 test binaries) still pass with the larger suite."
   },
   {
     "id": "R12-TICK-2064",

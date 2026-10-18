@@ -927,7 +927,7 @@
     "evidence": [
       "backend/crates/services/qip-data-finder/tests/acquisition_manifest.rs:226 a_watcher_classifies_new_unchanged_and_changed_extents_and_survives_a_restart"
     ],
-    "gap": "SourceWatcher has no caller outside tests; no binary runs a watcher loop.",
+    "gap": "SourceWatcher has no caller outside tests. The seam the triage proposed for it, the deep brain's re-fetch pass (EvolutionEngine::maybe_refetch), is itself off by default: connectors::refetch_every returns 0 when QIP_DEEPBRAIN_REFETCH_EVERY is unset (connectors.rs:212-214), no committed deployment sets it, and the pass also needs a catalogued connector. Wiring the watcher there would not make it run on a default path; it needs an owner to set the re-fetch cadence and a connector in a committed deployment (owner switch), or a watcher seam that runs by default.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -940,7 +940,7 @@
     "verification": "new watcher test in qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Watcher built and tested; no production caller. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Watcher built and tested; no production caller. Unchanged. Lane L20 2026-10-18: gap corrected, no code changed; the triage closure itself made the row an owner switch if the re-fetch default was zero, and it is (connectors.rs:212 refetch_every, None => Ok(0))."
   },
   {
     "id": "R12-DATA-1041",
@@ -2669,24 +2669,26 @@
   },
   {
     "id": "R12-EXPAND-1115",
-    "status": "PARTIAL",
-    "current": "OntologyRegistry/CapabilityRegistry in qip-agents; source catalogue in data-finder.",
+    "status": "COMPLETE",
+    "current": "ResearchLoop holds an OntologyRegistry of every type its detectors read (SWEEP_ONTOLOGY: Market.price_series, Asset.asset_class, Event.anomaly, Entity.evidence_claim, Lifecycle.research_item), refused at construction and again at each sweep if a type is missing, beside the ToolRegistry and the BrainSpec map; every sweep record carries RegistryCounts naming the licensed sources the discovery desk handed it, the ontology types, the tools and the brains it ran against.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/registries.rs:21",
-      "backend/crates/libs/qip-agents/src/registries.rs:115"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:595-650 RegistryCounts, SWEEP_ONTOLOGY, sweep_ontology",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:947-958 check_ontology",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1076-1086 the sweep consults and records the registries",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:861 a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted (mutation: drop the round.registries assignment; every count reads zero and the test fails)"
     ],
-    "gap": "Integrate source/ontology/tool/brain registries in deepbrain with a named test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion -p qip-evolution; cargo test -p qip-deepbrain",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test expansion_rows a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L03: closed. The source registry the sweep consults is the discovery desk's licensed catalogue (qip-data-finder), handed to every sweep by node::run_with; with discovery off it is empty and the record says zero."
   },
   {
     "id": "R12-EXPAND-1116",

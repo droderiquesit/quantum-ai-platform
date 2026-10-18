@@ -180,7 +180,7 @@
       "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
       "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for tax lots or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "No production producer opens a lot. Tried 2026-10-18 by lane L15 and dropped: opening a lot per strategy share inside LedgerStore::apply's paper-buy arm, through plan_operation in the fill's own commit, works, but (1) every ledgerd and acceptance oracle that compares balances() or events() with a fill-only refold (qip-ledgerd tests store.rs, fabric.rs, history.rs; qip-acceptance vertical_slice_ledgerd, vertical_slice_cell_ledger, vertical_slice_ship, desk_record_parity, desk_ledger_property) must first fold lot postings through one shared pure function, or each breaks; (2) a sell fill relieves no lot, so open quantity and basis would overstate after any sale until FIFO (or another declared) relief posts Phase::Unwind of the relieved quantity and proportional basis; (3) a lot id must avoid ':' and '/', which Account's text form refuses (order@session-sequence works). Closing needs all three in one change.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -191,7 +191,7 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Gap corrected 2026-10-18 by lane L15 after an attempted closure; nothing in the code changed."
   },
   {
     "id": "R12-LEDGER-5009",
