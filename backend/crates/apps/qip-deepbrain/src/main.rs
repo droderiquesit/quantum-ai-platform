@@ -229,6 +229,11 @@ fn run() -> Result<()> {
     // The coverage detector's view of the universe, taken before the
     // universe moves into the platform, which does not hand it back.
     let research_coverage = qip_deepbrain::research::coverage_map(&catalogue.universe);
+    // The Hedge Brain searches the catalogue this node sizes against; an
+    // empty list planned no hedge in any binary (R12-RISK-4106).
+    let platform_config = platform_config.with_hedge_candidates(
+        qip_kernel::config::paper_hedge_candidates(&catalogue.universe),
+    );
     // The language model the organisation narrates through (ADR 0037): the
     // hosted adapter first when the configuration names one *and* the
     // preconditions in `language.rs` are met — a provider pinned, its terms

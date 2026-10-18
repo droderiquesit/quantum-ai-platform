@@ -2310,38 +2310,42 @@
   },
   {
     "id": "R12-RISK-4106",
-    "status": "PARTIAL",
-    "current": "qip_risk::hedge_search searches singles and pairs for the least-cost plan keeping every world above the survival floor within the hedge capacity (backend/crates/libs/qip-risk/src/hedge_search.rs; test at :951). The kernel calls it each DECIDE with self.config.hedge_candidates (platform.rs:16620), which defaults to empty (backend/crates/runtime/qip-kernel/src/config.rs:565) and no composition root sets (no with_hedge_candidates call in apps/*), so in every binary the search runs over no candidates.",
+    "status": "COMPLETE",
+    "current": "qip_risk::hedge_search searches singles and pairs for the least-cost plan keeping every world above the survival floor within the hedge capacity. Every central composition root now declares candidates from the catalogue it loaded: qip-api, qip-fastbrain and qip-deepbrain call PlatformConfig::with_hedge_candidates(qip_kernel::config::paper_hedge_candidates(&catalogue.universe)), one linear CorrelatedAsset per catalogue common stock with the record's venue, spread and daily volume and a declared one-for-one equity loading. The search also prices the adversarial world from its own shocks (hedge.rs::plan), without which every candidate was DoesNotProtect there and no book whose adversarial sequence breached could be planned a hedge. A cycle over data/datasets/universe.json with the shipped survival policy plans and journals a hedge from that catalogue.",
     "evidence": [
-      "libs/qip-risk/src/hedge_search.rs::tests::of_several_instruments_that_protect_the_crash_the_search_returns_the_cheapest",
-      "libs/qip-risk/src/hedge_search.rs::tests::a_plan_never_consumes_more_than_the_hedge_capacity_withheld",
-      "backend/crates/runtime/qip-kernel/src/config.rs:565",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16620"
+      "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
+      "backend/crates/apps/qip-api/src/main.rs (with_hedge_candidates in the PlatformConfig assembly)",
+      "backend/crates/apps/qip-fastbrain/src/main.rs (with_hedge_candidates before Platform::new)",
+      "backend/crates/apps/qip-deepbrain/src/main.rs (with_hedge_candidates after load_universe)",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::plan (adversarial shocks folded into the library)",
+      "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::a_book_failing_a_library_world_is_planned_a_hedge_from_the_committed_catalogue",
+      "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::every_common_stock_in_the_committed_catalogue_is_a_declared_hedge_candidate"
     ],
-    "gap": "A composition root that declares hedge candidates (catalogue instruments with Greeks, carry, depth) so the search has something to choose among.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test catalogue_hedge_candidates",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. Lane L07, 2026-10-18: PARTIAL->COMPLETE. Mutations: EQUITY_FACTOR misspelt 'equities' -> no plan ('no hedge was planned'); adversarial fold disabled -> no plan; both restored and passing. Every candidate is a single listed equity because the committed catalogue holds only common stock (R12-RISK-4107 keeps the per-class gap); HLCX and RSRC state a daily volume of 0 and are refused by the search as Invalid each cycle, which is the catalogue's statement and not defaulted."
   },
   {
     "id": "R12-RISK-4107",
     "status": "PARTIAL",
-    "current": "InstrumentClass covers Option, Future, Fx, Rate, Commodity, Volatility, CorrelatedAsset, EventContract and CashCollateral (backend/crates/libs/qip-risk/src/hedge_search.rs:59-71); an option is sized through its multiplier and delta and a linear class with convexity is refused (tests at :1057, :1078); multiplier/lot come from the catalogue (hedge.rs:105-120). No binary declares any candidate (config.rs:565).",
+    "current": "InstrumentClass covers Option, Future, Fx, Rate, Commodity, Volatility, CorrelatedAsset, EventContract and CashCollateral (backend/crates/libs/qip-risk/src/hedge_search.rs:59-71); an option is sized through its multiplier and delta and a linear class with convexity is refused; multiplier/lot come from the catalogue. Since 2026-10-18 every central root declares candidates (config.rs::paper_hedge_candidates), but only CorrelatedAsset ones: data/datasets/universe.json lists six common stocks and no option, future, FX, rate, commodity, volatility, event-contract or cash record.",
     "evidence": [
       "backend/crates/libs/qip-risk/src/hedge_search.rs:59-71",
       "libs/qip-risk/src/hedge_search.rs::tests::every_class_can_be_named_and_a_linear_class_with_convexity_is_refused",
       "libs/qip-risk/src/hedge_search.rs::tests::an_option_is_sized_through_its_multiplier_and_delta",
-      "backend/crates/runtime/qip-kernel/src/config.rs:565"
+      "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
+      "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::every_common_stock_in_the_committed_catalogue_is_a_declared_hedge_candidate"
     ],
-    "gap": "Candidates of each class declared in a composition root against catalogue instruments.",
+    "gap": "Only CorrelatedAsset is declared in a running root, because the committed catalogue holds only common stock. Closing needs catalogue records (with a printed price on the simulated exchange) for the other eight classes and stated Greeks/loadings for each; declaring a common stock as an option or future would be a guessed sensitivity, which paper_hedge_candidates refuses to do.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2352,7 +2356,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap corrected (the triage's closure, one candidate per class against the present catalogue, would mislabel equities)."
   },
   {
     "id": "R12-RISK-4108",
@@ -2378,26 +2382,25 @@
   },
   {
     "id": "R12-RISK-4109",
-    "status": "PARTIAL",
-    "current": "Every plan records cost, edge given up, basis risk, convexity, liquidity decay, counterparty risk and unwind feasibility (backend/crates/libs/qip-risk/src/hedge_search.rs:403-411) and a candidate that cannot unwind inside MAX_UNWIND_DAYS is refused rather than shrunk (test at :982; hedge.rs:66-70). Reached each DECIDE, but over an empty candidate list in every binary (config.rs:565).",
+    "status": "COMPLETE",
+    "current": "Every plan records cost, edge given up, basis risk, convexity, liquidity decay, counterparty risk and unwind feasibility (qip-risk hedge_search.rs HedgeMeasures), and the chosen plan's measures are now journaled on kernel/hedge-brain's HedgePlanned record (hedge.rs HedgePlanned::measures), because the §24.9 HedgePlan contract carries only cost and liquidity. With candidates declared in every central root (R12-RISK-4106) the measures are computed on a real plan in a cycle over the committed catalogue.",
     "evidence": [
-      "backend/crates/libs/qip-risk/src/hedge_search.rs:403-411",
-      "libs/qip-risk/src/hedge_search.rs::tests::a_hedge_that_cannot_be_unwound_inside_the_horizon_is_refused_not_shrunk",
-      "runtime/qip-kernel/src/hedge.rs::tests::a_book_failing_a_library_world_is_planned_a_validated_hedge_sized_by_that_world",
-      "backend/crates/runtime/qip-kernel/src/config.rs:565"
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::HedgePlanned::measures",
+      "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
+      "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::a_book_failing_a_library_world_is_planned_a_hedge_from_the_committed_catalogue"
     ],
-    "gap": "Declared candidates in a composition root so the measures are computed on a real plan.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test catalogue_hedge_candidates",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. Lane L07, 2026-10-18: PARTIAL->COMPLETE. The test asserts all six on the journaled record (cost positive, basis risk positive, convexity measured at 0 for linear legs, liquidity decay positive, counterparty 0 for exchange-cleared legs, unwind feasible). Mutation: HedgePlanned::of journals measures as None -> 'a chosen plan journals its measures' fails; restored and passing."
   },
   {
     "id": "R12-RISK-4110",
