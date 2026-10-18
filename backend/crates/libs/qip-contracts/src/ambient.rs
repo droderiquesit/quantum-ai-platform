@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, VecDeque};
 /// record compares exactly and a replay cannot drift on rounding.
 pub const MAX_SEVERITY_BP: u32 = 10_000;
 
-/// The four kinds of deviation the Attention Router combines.
+/// The kinds of deviation the Attention Router combines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalClass {
@@ -30,14 +30,20 @@ pub enum SignalClass {
     Opportunity,
     Risk,
     Assumption,
+    /// Capital that will be needed somewhere the platform does not hold it
+    /// (R12-AMBIENT-3065). Its own class because the pathway is chosen by
+    /// class: with only four classes `Pathway::CapitalPreparation` had no
+    /// route and was a label nothing could reach.
+    Capital,
 }
 
 impl SignalClass {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Surprise,
         Self::Opportunity,
         Self::Risk,
         Self::Assumption,
+        Self::Capital,
     ];
 }
 
@@ -364,7 +370,7 @@ impl RoutingPolicy {
     ) -> Result<Self> {
         if let Some(missing) = SignalClass::ALL.iter().find(|c| !routes.contains_key(c)) {
             return Err(Error::invalid(format!(
-                "routing policy names no pathway for {missing:?}; route all four classes"
+                "routing policy names no pathway for {missing:?}; route every class"
             )));
         }
         if materiality_bp > MAX_SEVERITY_BP {
@@ -387,7 +393,8 @@ impl RoutingPolicy {
     }
 
     /// The default routing: surprise to a specialist, opportunity to research,
-    /// risk to a risk review, assumption to a reflex-model update.
+    /// risk to a risk review, assumption to a reflex-model update, capital to
+    /// capital preparation.
     pub fn standard(
         materiality_bp: u32,
         budget_per_window: u32,
@@ -399,6 +406,7 @@ impl RoutingPolicy {
             (SignalClass::Opportunity, Pathway::ResearchTask),
             (SignalClass::Risk, Pathway::RiskReview),
             (SignalClass::Assumption, Pathway::ReflexModelUpdate),
+            (SignalClass::Capital, Pathway::CapitalPreparation),
         ]);
         Self::new(
             materiality_bp,

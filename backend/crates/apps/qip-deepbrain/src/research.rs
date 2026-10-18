@@ -351,6 +351,15 @@ pub struct ResearchConfig {
     /// across every resource (R12-AMBIENT-9034). Empty by default: an agent
     /// the map does not name is bounded by the resource budgets alone.
     pub agent_budgets: BTreeMap<ReputationKey, Decimal>,
+    /// Whether the sweep reads the DECIDE stage's pre-positioning plan and
+    /// raises a capital-preparation signal per recommended movement
+    /// (R12-AMBIENT-3072). On by default; a sweep with it off raises none.
+    pub capital_sentinel: bool,
+    /// How far ahead the sentinel asks the planner to look. A day by
+    /// default, the horizon DECIDE plans over, so the two read one plan: a
+    /// horizon shorter than a venue's settlement refuses every lane as
+    /// settling too late, and the sentinel then reports nothing to move.
+    pub capital_horizon: Duration,
 }
 
 /// The variable naming per-agent compute budgets:
@@ -400,6 +409,8 @@ impl Default for ResearchConfig {
             acquisition_budget_bp: ACQUISITION_BUDGET_BP,
             qpu_per_sweep: Decimal::ZERO,
             agent_budgets: BTreeMap::new(),
+            capital_sentinel: true,
+            capital_horizon: CAPITAL_HORIZON,
         }
     }
 }
@@ -616,6 +627,10 @@ pub struct ResearchRound {
     /// warning threshold — each raised this sweep as a risk-review signal
     /// before the limit fires (R12-AMBIENT-3070), by limit name.
     pub limit_warnings: BTreeMap<String, f64>,
+    /// Pre-positioning movements the sweep recommended and the router
+    /// activated for capital preparation (R12-AMBIENT-3065/3072): advice for
+    /// the treasury, never a transfer.
+    pub capital_advice: Vec<CapitalAdvice>,
     /// The evolution round that ran in this cycle's gap before the sweep,
     /// where one ran (R12-EXPAND-1117), so the sweep record shows the model
     /// evolution its research followed.
@@ -640,6 +655,13 @@ pub struct ResearchRound {
     /// types, tools and brains it ran against cannot be replayed against the
     /// same ones.
     pub registries: RegistryCounts,
+    /// The sweep's started items compiled into a proven `qip_agency` plan
+    /// (R12-REASON-3061): what the sweep chose, inside which goal, at what
+    /// cost, citing which evidence. `None` where nothing started.
+    pub plan: Option<crate::research_plan::SweepPlanRecord>,
+    /// Why the plan could not be proven, where it could not: a sweep whose
+    /// started items cost more than its budget is recorded, not trimmed.
+    pub plan_refused: Option<String>,
     /// Every tick campaign concluded this sweep on its re-measured venue
     /// (R12-EXPAND-6042): the microstructure delta a learner reads, the
     /// delta's id being the campaign's.
@@ -650,6 +672,27 @@ pub struct ResearchRound {
 /// before it is concluded on them. Fewer is a re-measurement too thin to
 /// tell a residual from noise; the campaign stays open until it has them.
 pub const MIN_REMEASURED: usize = 5;
+
+/// One recommended pre-positioning movement, as the capital-preparation
+/// pathway receives it (R12-AMBIENT-3065). An advisory and nothing more: the
+/// pathway's authority is `AdvisoryOnly`, so this names where capital should
+/// be and when, and moves none.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapitalAdvice {
+    pub signal_id: String,
+    pub from: String,
+    pub to: String,
+    /// The kind of demand the movement is for, as `DemandKind` renders.
+    pub kind: String,
+    /// The movement in the base currency, the figure that faces the limits.
+    pub amount_base: Decimal,
+    pub instruct_at: Timestamp,
+    pub needed_by: Timestamp,
+}
+
+/// The default look-ahead of the capital sentinel: a day, the horizon the
+/// kernel's DECIDE stage plans over, so the two read one plan.
+pub const CAPITAL_HORIZON: Duration = Duration::from_days(1);
 
 /// What each registry a sweep consulted held when it ran.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -831,6 +874,9 @@ pub struct ResearchLoop {
     /// NOW surprise signals routed but not yet activated, by signal id, with
     /// the specialist each would wake. Bounded like `pending`.
     pending_wakes: BTreeMap<String, qip_kernel::now_stage::Specialist>,
+    /// Capital-preparation signals routed but not yet activated, by signal
+    /// id, with the movement each recommends. Bounded like `pending`.
+    pending_capital: BTreeMap<String, CapitalAdvice>,
     /// The kernel NOW queue's sequence number this loop has read through.
     surprises_seen: u64,
     issued: u64,
@@ -1050,6 +1096,7 @@ impl ResearchLoop {
             coverage,
             pending: BTreeMap::new(),
             pending_wakes: BTreeMap::new(),
+            pending_capital: BTreeMap::new(),
             surprises_seen: 0,
             issued: 0,
             fills_read: 0,
@@ -1098,6 +1145,30 @@ impl ResearchLoop {
     }
 
     /// The ontology registry the sweep runs against.
+    /// Extend a type of the sweep's ontology on a passing evaluation
+    /// (R12-EXPAND-6056): the new version cites the evaluation, and an
+    /// evaluation that failed, or none, leaves the registry at the version
+    /// it held.
+    pub fn extend_ontology(
+        &mut self,
+        family: OntologyTypeFamily,
+        name: &str,
+        schema: &str,
+        description: &str,
+        evaluation: &qip_expansion::promotion::EvaluationRecord,
+    ) -> Result<u32> {
+        self.ontology.extend(
+            family,
+            name,
+            schema,
+            description,
+            &qip_agents::registries::CitedEvaluation {
+                id: format!("evaluation:{}", evaluation.question()),
+                passed: evaluation.passed(),
+            },
+        )
+    }
+
     pub const fn ontology(&self) -> &OntologyRegistry {
         &self.ontology
     }
@@ -1558,6 +1629,41 @@ impl ResearchLoop {
                 .insert(signal.subject().to_string(), utilisation);
             routable.push((None, signal));
         }
+        // The capital sentinel (R12-AMBIENT-3072): the DECIDE stage's
+        // pre-positioning plan, one capital-preparation signal per
+        // recommended movement. A plan that cannot be built is counted, not
+        // raised past: the sweep's other work does not wait on the treasury.
+        if self.config.capital_sentinel {
+            match platform.pre_position(now, self.config.capital_horizon) {
+                Ok(plan) => {
+                    for planned in &plan.moves {
+                        let movement = CapitalMovement {
+                            from: planned.from.to_string(),
+                            to: planned.to.to_string(),
+                            kind: format!("{:?}", planned.kind),
+                            amount_base: planned.amount_base,
+                            net_value: planned.net_value,
+                            benefit_lower_bound: planned.benefit_lower_bound,
+                            instruct_at: planned.instruct_at,
+                            needed_by: planned.needed_by,
+                        };
+                        let (signal, advice) = capital_signal(
+                            &movement,
+                            plan.base_currency().to_string(),
+                            now,
+                            self.config.signal_ttl,
+                            &mut self.issued,
+                        )?;
+                        self.pending_capital.insert(signal.id().to_string(), advice);
+                        routable.push((None, signal));
+                    }
+                }
+                Err(_) => metrics.count(
+                    names::RESEARCH_UNCLASSIFIED,
+                    labels([("trigger", "capital_plan")]),
+                ),
+            }
+        }
         // What each question's gap measured this sweep: the market's
         // information value for a bid, read before the gaps move into the
         // desk.
@@ -1590,6 +1696,7 @@ impl ResearchLoop {
                 // Below materiality: not an activation and not a loss.
                 self.pending.remove(signal.id());
                 self.pending_wakes.remove(signal.id());
+                self.pending_capital.remove(signal.id());
             }
             for event in events {
                 let pathway = pathway_str(event.pathway);
@@ -1604,6 +1711,7 @@ impl ResearchLoop {
                     Disposition::Shed | Disposition::Expired => {
                         self.pending.remove(&event.signal_id);
                         self.pending_wakes.remove(&event.signal_id);
+                        self.pending_capital.remove(&event.signal_id);
                     }
                     Disposition::Activated => {
                         if let Some(specialist) = self.pending_wakes.remove(&event.signal_id) {
@@ -1644,6 +1752,27 @@ impl ResearchLoop {
                                 eligible_jurisdictions,
                             )? {
                                 round.wake_items.insert(specialist.as_str(), question);
+                            }
+                            continue;
+                        }
+                        // Dispatch by pathway (R12-AMBIENT-3065): a capital
+                        // signal is advice for the treasury, not a research
+                        // gap, so it is filed as an advisory and recorded on
+                        // the round rather than offered to the desk.
+                        if event.pathway == Pathway::CapitalPreparation {
+                            if let Some(advice) = self.pending_capital.remove(&event.signal_id) {
+                                self.file_advisory(
+                                    format!(
+                                        "{:?}: move {} {} to {} by {}",
+                                        event.pathway,
+                                        advice.amount_base,
+                                        advice.kind,
+                                        advice.to,
+                                        advice.instruct_at.to_date_string(),
+                                    ),
+                                    &event.feedback_link,
+                                );
+                                round.capital_advice.push(advice);
                             }
                             continue;
                         }
@@ -1714,6 +1843,7 @@ impl ResearchLoop {
             self.started_at.insert(question.clone(), now);
             self.evaluated.insert(question.clone(), 0);
         }
+        self.plan_sweep(&report.started, &mut round);
         // A grant is charged to an item only once the item runs on it: a
         // grant the desk could not start (capital, or a close this sweep)
         // bought nothing, and charging it would fail a campaign's cost
@@ -1756,6 +1886,19 @@ impl ResearchLoop {
             names::RESEARCH_QUEUE_ITEMS,
             labels([]),
             report.queued as f64,
+        );
+        // The depth read against the queue objective's ceiling
+        // (R12-OBS-9164): a gauge alone carries no good/total split.
+        metrics.count(
+            names::RESEARCH_QUEUE_CHECKS,
+            labels([(
+                "outcome",
+                if report.queued as f64 <= qip_observability::slo::RESEARCH_QUEUE_CEILING {
+                    "within"
+                } else {
+                    "over"
+                },
+            )]),
         );
         metrics.increment(
             names::RESEARCH_ITEMS_STARTED,
@@ -1800,6 +1943,7 @@ impl ResearchLoop {
             SignalClass::Opportunity => Pathway::ResearchTask,
             SignalClass::Risk => Pathway::RiskReview,
             SignalClass::Assumption => Pathway::ReflexModelUpdate,
+            SignalClass::Capital => Pathway::CapitalPreparation,
         };
         AmbientSignal::new(
             format!("ambient-{}", self.issued),
@@ -1869,13 +2013,7 @@ impl ResearchLoop {
         };
         self.horizons
             .insert(question.clone(), horizon_bucket(remaining));
-        if self.advisories.len() == RETAINED {
-            self.advisories.pop_front();
-        }
-        self.advisories.push_back(Advisory::new(
-            format!("{pathway:?}: {question}"),
-            feedback_link,
-        ));
+        self.file_advisory(format!("{pathway:?}: {question}"), feedback_link);
 
         // Value of information (AMBIENT-3104): what reducing this gap's
         // uncertainty is worth, against the cheapest observation that could
@@ -1926,6 +2064,48 @@ impl ResearchLoop {
             self.candidates.push((request, source));
         }
         Ok(())
+    }
+
+    /// Compile the started items into the sweep's plan (R12-REASON-3061). A
+    /// refusal is kept on the round: the desk already bounds compute, so a
+    /// plan that exceeds the goal's budget is the two disagreeing, which a
+    /// reader of the round should see rather than a sweep that fails.
+    fn plan_sweep(&self, started: &[String], round: &mut ResearchRound) {
+        let items: Vec<crate::research_plan::StartedItem> = started
+            .iter()
+            .filter_map(|question| {
+                let entry = self.desk.queue().entry(question)?;
+                Some(crate::research_plan::StartedItem {
+                    question: question.clone(),
+                    tool: tool_for(entry.kind()),
+                    cost: qip_expansion::desk::declared_cost(entry.kind()),
+                    cites: entry
+                        .origin()
+                        .map(|origin| origin.signal.evidence.clone())
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
+        match crate::research_plan::compile(
+            &items,
+            self.config.compute_per_sweep,
+            &self.config.jurisdiction,
+            u64::try_from(self.config.signal_ttl.as_nanos() / 1_000_000_000)
+                .unwrap_or(1)
+                .max(1),
+        ) {
+            Ok(plan) => round.plan = plan,
+            Err(error) => round.plan_refused = Some(error.message().to_string()),
+        }
+    }
+
+    /// Keep an advisory, the oldest leaving first at the cap.
+    fn file_advisory(&mut self, text: String, feedback_link: &str) {
+        if self.advisories.len() == RETAINED {
+            self.advisories.pop_front();
+        }
+        self.advisories
+            .push_back(Advisory::new(text, feedback_link));
     }
 
     /// The work a woken specialist is given (R12-AMBIENT-3079): the surprise
@@ -2787,6 +2967,16 @@ impl ResearchLoop {
 /// The desk's `max_started_sweeps`, as `ResearchLoop::new` configures it.
 const DESK_MAX_STARTED_SWEEPS: i64 = 24;
 
+/// The registered tool a task of this kind runs on, by the names
+/// [`registered_tools`] registers them under.
+const fn tool_for(kind: TaskKind) -> &'static str {
+    match kind {
+        TaskKind::DataAcquisition => "source-discovery",
+        TaskKind::Simulation | TaskKind::Campaign => "stress-simulator",
+        TaskKind::Experiment | TaskKind::Label | TaskKind::ToolBuild => "model-fit",
+    }
+}
+
 /// What a research item's compute is spent on.
 const fn work_kind(kind: TaskKind) -> WorkKind {
     match kind {
@@ -2930,6 +3120,89 @@ pub fn limit_approach_signals(
         out.push((signal, utilisation));
     }
     Ok(out)
+}
+
+/// The figures of one planned movement the sweep reads, copied out of the
+/// capital fabric's plan so this file names none of that crate's types.
+#[derive(Debug, Clone)]
+struct CapitalMovement {
+    from: String,
+    to: String,
+    kind: String,
+    amount_base: Decimal,
+    net_value: Decimal,
+    benefit_lower_bound: Decimal,
+    instruct_at: Timestamp,
+    needed_by: Timestamp,
+}
+
+/// The capital-preparation signal one recommended movement is, and the
+/// advice it carries to the pathway (R12-AMBIENT-3072).
+///
+/// Severity is the share of the movement's gross benefit that survives its
+/// costs — net value over the benefit at its lower bound, both in the
+/// destination currency — so a movement that nets almost nothing is a faint
+/// signal and one that keeps most of its benefit is a loud one. A movement
+/// whose benefit is not positive carries no such share and is refused as a
+/// detector bug, not scored at zero.
+fn capital_signal(
+    movement: &CapitalMovement,
+    base: String,
+    now: Timestamp,
+    ttl: Duration,
+    issued: &mut u64,
+) -> Result<(AmbientSignal, CapitalAdvice)> {
+    let share = movement
+        .net_value
+        .checked_div(movement.benefit_lower_bound)
+        .filter(|_| movement.benefit_lower_bound.is_positive())
+        .map(Decimal::to_f64)
+        .ok_or_else(|| {
+            Error::numeric("a pre-positioning movement has no positive benefit to take a share of")
+        })?;
+    // Statistic to integer: a share is a fraction of a benefit, and a net
+    // value above the benefit would be the planner's bug, refused by
+    // `basis_points` rather than clamped.
+    let severity = basis_points(share)?;
+    *issued += 1;
+    let id = format!("ambient-{issued}");
+    let (from, to, kind) = (
+        movement.from.clone(),
+        movement.to.clone(),
+        movement.kind.clone(),
+    );
+    let signal = AmbientSignal::new(
+        id.clone(),
+        SignalClass::Capital,
+        format!("capital:{to}:{kind}"),
+        severity,
+        Trigger::Event("pre_positioning".to_string()),
+        now,
+        Detection {
+            observed_deviation: movement.amount_base,
+            expected_baseline: Decimal::ZERO,
+            horizon: movement.needed_by.since(now),
+            novelty_bp: severity,
+            affected_entities: vec![to.clone(), from.clone()],
+            urgency_bp: severity,
+            wake_targets: vec![Pathway::CapitalPreparation],
+            evidence_ids: vec![
+                format!("plan:{}", movement.instruct_at.as_nanos()),
+                format!("base:{base}"),
+            ],
+            expiry: now.saturating_add(ttl),
+        },
+    )?;
+    let advice = CapitalAdvice {
+        signal_id: id,
+        from,
+        to,
+        kind,
+        amount_base: movement.amount_base,
+        instruct_at: movement.instruct_at,
+        needed_by: movement.needed_by,
+    };
+    Ok((signal, advice))
 }
 
 /// A poisoning finding as a gap: the platform needs a source it can trust

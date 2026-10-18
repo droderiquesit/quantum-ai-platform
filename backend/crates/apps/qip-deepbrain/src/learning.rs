@@ -129,6 +129,7 @@ use qip_core::{ObjectId, Timestamp};
 use qip_evolution::scoring::{Outcome, Scoreboard};
 use qip_kernel::Platform;
 use qip_kernel::central::models::{ModelRegistration, register_fit, require_calibrated_baseline};
+use qip_lifecycle::{Evaluator, EvaluatorPolicy};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
 use qip_training::campaign::{CampaignDraft, TrainingCampaign};
@@ -1507,14 +1508,26 @@ impl LearningDesk {
             lineage.record_on(card);
         }
         let challenger = trainer.fit(&spec_for(CHALLENGER_CLASS), &dataset, now);
-        let baseline_skilled = baseline
-            .fit()
-            .is_some_and(|fit| fit.claims_skill(&self.policy));
-        let challenger_skilled = challenger.as_ref().ok().map(|teacher| {
-            teacher
-                .fit()
-                .is_some_and(|fit| fit.claims_skill(&self.policy))
+        // Skill is judged by the evaluator from the predictions each class
+        // made on the holdout tail, never read from the fit's own
+        // diagnostics (R12-MODEL-6001): the trainer that produced a model is
+        // not the party that says it learned something.
+        let (_, holdout) = dataset.split_at_fraction(spec.holdout_fraction)?;
+        let evaluator = Evaluator::new(EvaluatorPolicy {
+            minimum_observations: self.policy.minimum_holdout_observations,
+            minimum_r2: self.policy.minimum_holdout_r2,
         });
+        let judged = |teacher: &TrainedTeacher| -> Result<bool> {
+            Ok(evaluator
+                .judge(&teacher.predict_all(&holdout)?, holdout.targets())?
+                .skilled)
+        };
+        let baseline_skilled = judged(&baseline)?;
+        let challenger_skilled = challenger
+            .as_ref()
+            .ok()
+            .map(|teacher| judged(teacher))
+            .transpose()?;
         self.classes.observe(Outcome::binary(
             BASELINE_CLASS.as_str(),
             regime,

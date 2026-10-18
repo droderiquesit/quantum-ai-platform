@@ -539,7 +539,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1014 roll_back_degraded",
       "backend/crates/libs/qip-ai/src/registry.rs:336-361 decision_eligibility"
     ],
-    "gap": "Counterfactual performance input to promote/hold/retire.",
+    "gap": "A fill cannot be attributed to a model: FillScore (platform.rs) carries order, venue and instrument and no model reference, and Platform::evaluate_alternatives scores by order id, so there is no counterfactual score keyed by model for roll_back_degraded to read. Holding a degrading model on counterfactual performance needs the order-to-model attribution first (proposal -> model card), a kernel change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -550,7 +550,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Checked 2026-10-18 against FillScore and evaluate_alternatives."
   },
   {
     "id": "R12-QUANT-4026",

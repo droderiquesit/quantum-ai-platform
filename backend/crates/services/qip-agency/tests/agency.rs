@@ -496,7 +496,10 @@ fn an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused() {
 
 use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
 use qip_agency::causal::{Direction, Objective, Scenario, StructuralLink, StructuralModelDecl};
-use qip_agency::conduct_brain::{CommunicationDraft, ConductPolicy, Disclosure, EvidenceCitation};
+use qip_agency::conduct_brain::{
+    CommunicationDraft, ConductPolicy, Disclosure, EvidenceCitation, EvidenceDecl,
+    EvidenceManifest, HoldingsList, POSITION_DISCLOSURE,
+};
 use qip_agency::engine::{
     Adapter, Alternative, Decision, EdgeDecl, Execution, Gated, Governance, LearningOutcome,
     LeverEvidence, ORDER, Outcome, ProposalDraft, Request, Stage, StageLog, VariableDecl, decide,
@@ -516,6 +519,7 @@ use qip_contracts::action::Ground;
 use qip_contracts::expansion::EffectAttribution;
 use qip_core::Error;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A deterministic generator: the workspace permits no property-test crate.
 fn lcg(mut seed: u64) -> impl FnMut(u64) -> u64 {
@@ -956,6 +960,7 @@ fn quote_draft() -> CommunicationDraft {
         evidence_citations: vec![EvidenceCitation {
             source_id: "venue-feed".into(),
             evidence_id: "spread-series-1".into(),
+            claim: None,
             confidence_bps: 9000,
         }],
         disclosures: vec![Disclosure {
@@ -2051,6 +2056,200 @@ fn a_candidate_is_simulated_once_per_model_and_per_scenario_the_composition_root
     let err =
         run_governed_with(plain, governance(), Some(&clash), &mut Counting::default()).unwrap_err();
     assert!(err.to_string().contains("already declares"), "{err}");
+}
+
+// ---- R12-AGENCY-1056 / 1057: citations resolved against the platform's record -----
+
+const SPREAD_STATEMENT: &str = "quoted spreads on venue-a are wider than the desk target";
+
+fn spread_manifest(source: &str) -> Arc<EvidenceManifest> {
+    Arc::new(
+        EvidenceManifest::new(vec![EvidenceDecl {
+            id: "spread-series-1".into(),
+            source_id: source.into(),
+            statement: SPREAD_STATEMENT.into(),
+        }])
+        .unwrap(),
+    )
+}
+
+/// The `quoter` decl with its citation stating the claim it supports.
+fn cited_decl() -> GuardDecl {
+    let mut decl = guard_decl();
+    decl.communications
+        .get_mut("quoter")
+        .unwrap()
+        .evidence_citations[0]
+        .claim = Some(SPREAD_STATEMENT.into());
+    decl
+}
+
+#[test]
+fn a_citation_that_resolves_to_no_record_the_wrong_source_or_another_statement_withholds_the_plan_before_any_adapter_call()
+ {
+    type Mutate = fn(&mut GuardDecl);
+    let policy = narrow();
+    let attempt = |decl: GuardDecl, manifest: Arc<EvidenceManifest>| {
+        let mut guard = ActionGuard::from_decl(decl)
+            .unwrap()
+            .with_evidence(manifest);
+        let mut plain = request();
+        plain.guards = None;
+        let mut adapter = Counting::default();
+        let report = run_with(plain, Some(&policy), Some(&mut guard), &mut adapter).unwrap();
+        (report.outcome, adapter.calls.len())
+    };
+
+    let (outcome, calls) = attempt(cited_decl(), spread_manifest("venue-feed"));
+    assert!(
+        matches!(outcome, Outcome::Executed(_)),
+        "premise: a citation that resolves and says what the record says is sent: {outcome:?}"
+    );
+    assert_eq!(calls, 1, "premise");
+
+    let cases: Vec<(&str, &str, Mutate)> = vec![
+        // Both checks refuse an unresolved id; this needle is factual support's.
+        (
+            "is not support until it names a record",
+            "venue-feed",
+            |d| {
+                d.communications
+                    .get_mut("quoter")
+                    .unwrap()
+                    .evidence_citations[0]
+                    .evidence_id = "spread-series-9".into();
+            },
+        ),
+        ("is not the statement the record holds", "venue-feed", |d| {
+            d.communications
+                .get_mut("quoter")
+                .unwrap()
+                .evidence_citations[0]
+                .claim = Some("quoted spreads on venue-a are tight".into());
+        }),
+        ("states no claim", "venue-feed", |d| {
+            d.communications
+                .get_mut("quoter")
+                .unwrap()
+                .evidence_citations[0]
+                .claim = None;
+        }),
+        // The citation declares the authorized source; the record says the
+        // evidence came from somewhere else.
+        ("the record names 'blog'", "blog", |_| {}),
+    ];
+    for (needle, recorded_source, mutate) in cases {
+        let mut decl = cited_decl();
+        mutate(&mut decl);
+        let (outcome, calls) = attempt(decl, spread_manifest(recorded_source));
+        match outcome {
+            Outcome::Stopped(why) => assert!(why.contains(needle), "{needle}: {why}"),
+            other => panic!("{needle}: the plan was not withheld: {other:?}"),
+        }
+        assert_eq!(calls, 0, "{needle}: an adapter was called");
+    }
+}
+
+#[test]
+fn an_evidence_manifest_refuses_a_blank_or_repeated_record() {
+    let record = |id: &str, source: &str, statement: &str| EvidenceDecl {
+        id: id.into(),
+        source_id: source.into(),
+        statement: statement.into(),
+    };
+    assert!(
+        EvidenceManifest::new(vec![record("a", "s", "x")]).is_ok(),
+        "premise"
+    );
+    assert!(EvidenceManifest::new(vec![record(" ", "s", "x")]).is_err());
+    assert!(EvidenceManifest::new(vec![record("a", "", "x")]).is_err());
+    assert!(EvidenceManifest::new(vec![record("a", "s", "  ")]).is_err());
+    assert!(
+        EvidenceManifest::new(vec![record("a", "s", "x"), record("a", "t", "y")]).is_err(),
+        "two records under one id"
+    );
+}
+
+// ---- R12-AGENCY-1066: undisclosed promotion of what the platform holds ------------
+
+#[test]
+fn a_draft_naming_an_instrument_the_platform_holds_needs_a_position_disclosure_or_is_withheld() {
+    let policy = narrow();
+    let holdings = || Arc::new(HoldingsList::new(vec!["venue-a bonds".to_string()]).unwrap());
+    let attempt = |decl: GuardDecl, held: Arc<HoldingsList>| {
+        let mut guard = ActionGuard::from_decl(decl).unwrap().with_holdings(held);
+        let mut plain = request();
+        plain.guards = None;
+        let mut adapter = Counting::default();
+        let report = run_with(plain, Some(&policy), Some(&mut guard), &mut adapter).unwrap();
+        (report.outcome, adapter.calls.len())
+    };
+    let promotional = |decl: &mut GuardDecl| {
+        decl.communications.get_mut("quoter").unwrap().content =
+            "Quote 20 lots: venue-a bonds are the better risk on this tape".into();
+    };
+
+    // Premise: the same words, with the platform holding nothing of the kind,
+    // pass; so the refusal below is the holding and not the wording.
+    let mut elsewhere = guard_decl();
+    promotional(&mut elsewhere);
+    let (outcome, calls) = attempt(
+        elsewhere,
+        Arc::new(HoldingsList::new(vec!["venue-b notes".to_string()]).unwrap()),
+    );
+    assert!(
+        matches!(outcome, Outcome::Executed(_)),
+        "premise: {outcome:?}"
+    );
+    assert_eq!(calls, 1, "premise");
+
+    let mut undisclosed = guard_decl();
+    promotional(&mut undisclosed);
+    let (outcome, calls) = attempt(undisclosed, holdings());
+    match outcome {
+        Outcome::Stopped(why) => {
+            assert!(why.contains("undisclosed promotion"), "{why}");
+            assert!(why.contains("venue-a bonds"), "{why}");
+        }
+        other => panic!("the promotion was not withheld: {other:?}"),
+    }
+    assert_eq!(calls, 0, "an adapter was called");
+
+    // A blank position disclosure discloses nothing.
+    let mut blank = guard_decl();
+    promotional(&mut blank);
+    blank
+        .communications
+        .get_mut("quoter")
+        .unwrap()
+        .disclosures
+        .push(Disclosure {
+            kind: POSITION_DISCLOSURE.into(),
+            text: "  ".into(),
+        });
+    let (outcome, calls) = attempt(blank, holdings());
+    assert!(matches!(outcome, Outcome::Stopped(_)), "{outcome:?}");
+    assert_eq!(calls, 0);
+
+    let mut disclosed = guard_decl();
+    promotional(&mut disclosed);
+    disclosed
+        .communications
+        .get_mut("quoter")
+        .unwrap()
+        .disclosures
+        .push(Disclosure {
+            kind: POSITION_DISCLOSURE.into(),
+            text: "The desk holds venue-a bonds".into(),
+        });
+    let (outcome, calls) = attempt(disclosed, holdings());
+    assert!(matches!(outcome, Outcome::Executed(_)), "{outcome:?}");
+    assert_eq!(calls, 1);
+
+    assert!(
+        HoldingsList::new(vec!["  ".into()]).is_err(),
+        "a blank holding names nothing"
+    );
 }
 
 // ---- R12-AGENCY-6108: for whom, and with what delay -------------------------

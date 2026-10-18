@@ -589,7 +589,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:298,572,741,997,1093 no-action baseline, deceptive step infeasible, weakly identified plan never executed, adapter only after simulation+gate, default authority shadow",
       "backend/crates/libs/qip-contracts/src/action.rs:250-340 ToolRegistration/ToolRegistry with revoke at :328"
     ],
-    "gap": "Deepbrain path has no causal simulation access; no separate policy/identity service.",
+    "gap": "The deepbrain ambient path has no causal simulation access: it runs no engine::run simulate stage (see R12-AGENCY-6105 for why a per-opportunity model is a design question, not a missing call). The shadow binary does simulate, against declared models and, since R12-AGENCY-6088, a market twin's futures. The in-process ActionGuard/ToolRegistry is the policy and identity component; there is no separate service.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -600,7 +600,7 @@
     "verification": "cargo test -p qip-agency",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-read 2026-10-18 (lane L10). Held PARTIAL; the simulation half is on the shadow binary only."
   },
   {
     "id": "R12-AGENCY-7028",
@@ -4261,7 +4261,7 @@
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::the_run_loop_routes_activated_ambient_signals_through_the_guard_into_the_outbox",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs"
     ],
-    "gap": "The verification clause wants every constituent obligation COMPLETE, but the register still has many PARTIAL, MISSING or BLOCKED rows, e.g. AGENCY-6105 MISSING, AGENCY-1056/1057/1059/1060/1063-1069 conduct checks PARTIAL, AGENCY-6091, AMBIENT-3027, 3064, 3065. No qip-acceptance suite proves the composite.",
+    "gap": "The verification clause wants every constituent obligation COMPLETE and a composite acceptance suite. The coordinated-voices check is reachable through ActionGuard::preflight (a test where only that check refuses is tests/agency.rs near 'coordinated_voices'; the cross-pass fingerprint scan is in preflight), so that part of the old gap is closed. Still PARTIAL constituents on the conduct road: R12-AGENCY-1065 and R12-AGENCY-1069 (sentence-level binding of content to citations), R12-AGENCY-6105 and R12-AGENCY-7027 (the deepbrain ambient path runs no engine::run and no simulation). No qip-acceptance suite proves the composite.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4272,7 +4272,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Claim that agency gates sit between ambient detection and execution is unreached; only an order-path text grep backs it. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The statement's core (ambient proposes only, gates sit between) now holds as in 7029. The row is an aggregate whose acceptance bar is constituents COMPLETE plus a composite acceptance suite, and neither is met. The conduct gates between detection and execution are themselves partial (the coordinated-voices check is unreachable through preflight)."
+    "notes": "Re-read 2026-10-18 (lane L10): 1056, 1057, 1059, 1060, 1064, 1066 and 6099 are now COMPLETE; the aggregate stays PARTIAL on the rows named in the gap and on the missing composite suite."
   },
   {
     "id": "R12-COVERAGE-7191",
