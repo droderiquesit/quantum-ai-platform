@@ -2158,3 +2158,89 @@ fn a_sources_publication_delay_is_calibrated_from_its_ticks_and_the_capacity_pro
     );
     Ok(())
 }
+
+// --- R12-RES-7104: a persistently wrong twin narrows the venue's capital ---
+
+/// A platform whose only limit is the shipped misfit-venue cap, on a book
+/// small enough that three 70,000 fills sit under it (21%) and a fourth
+/// would not (28%), whatever else the shipped set says.
+fn platform_under_the_misfit_cap() -> Result<Platform> {
+    let shipped = LimitSet::conservative_default()
+        .limits
+        .into_iter()
+        .find(|limit| limit.name == "twin-misfit-venue-gross")
+        .expect("the shipped set carries the misfit-venue cap");
+    let config = PlatformConfig::default().with_initial_equity(dec!("1000000"));
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe(),
+        LimitSet::new("misfit-only").with(shipped),
+    )
+}
+
+const MISFIT_VENUE: &str = "simulated-venue";
+
+fn teach_the_twin_it_is_wrong(platform: &mut Platform, observations: usize) {
+    for _ in 0..observations {
+        platform
+            .fill_calibration_mut()
+            .observe(MISFIT_VENUE, -300.0)
+            .expect("a finite error is observed");
+    }
+}
+
+fn fourth_buy(platform: &mut Platform) -> Result<()> {
+    for n in 0..3 {
+        fill_one(platform, &format!("prop-misfit-{n}"), start())?;
+    }
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("700"),
+        dec!("100"),
+        "prop-misfit-3",
+        vec!["hyp-prop-misfit-3".to_string()],
+        start(),
+    );
+    platform.submit_order(order, start()).map(|_| ())
+}
+
+/// Mutation: make `twin_misfit` always false, delete the axis insertion in
+/// the submit path, or delete `with_twin_misfit` from `risk_state_from`.
+#[test]
+fn a_venue_whose_twin_is_persistently_wrong_is_narrowed_to_a_quarter_of_equity() -> Result<()> {
+    let mut platform = platform_under_the_misfit_cap()?;
+    teach_the_twin_it_is_wrong(&mut platform, 10);
+    assert!(
+        platform.twin_misfit(MISFIT_VENUE),
+        "premise: the twin is wrong"
+    );
+    let error = fourth_buy(&mut platform)
+        .expect_err("a fourth fill took a misfit venue past a quarter of equity");
+    assert!(
+        error.message().contains("twin-misfit-venue-gross"),
+        "refused for another reason: {}",
+        error.message()
+    );
+    // Narrowing is not withdrawal: the venue stays in service.
+    assert!(platform.withdrawn_venues().is_empty());
+    Ok(())
+}
+
+#[test]
+fn the_same_book_at_a_venue_the_twin_has_not_mispriced_is_admitted() -> Result<()> {
+    let mut platform = platform_under_the_misfit_cap()?;
+    assert!(
+        !platform.twin_misfit(MISFIT_VENUE),
+        "premise: no error observed"
+    );
+    fourth_buy(&mut platform)?;
+    // And too few observations are not a trend, however large the error.
+    teach_the_twin_it_is_wrong(&mut platform, 7);
+    assert!(!platform.twin_misfit(MISFIT_VENUE));
+    fill_one(&mut platform, "prop-misfit-5", start())?;
+    Ok(())
+}

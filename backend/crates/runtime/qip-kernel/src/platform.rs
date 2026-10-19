@@ -1771,6 +1771,21 @@ const CUSTODY_FIGURE: &str = "custody";
 /// a delay; it is a committed constant, never read from configuration.
 pub const LEDGER_LAG_THRESHOLD: usize = 16;
 
+/// The fewest fill-error observations at a venue before its twin can be
+/// called persistently wrong (R12-RES-7104). The calibration is an
+/// exponentially weighted average, so a single large error moves it; eight
+/// observations are enough for it to have forgotten its starting point
+/// (0.8^8 is about 17% of the first) and too few for one outlier to pass
+/// for a trend.
+pub const TWIN_MISFIT_MIN_OBSERVATIONS: u64 = 8;
+
+/// The absolute calibrated fill error, in basis points, at which a venue's
+/// twin counts as wrong (R12-RES-7104). Fifty basis points is several times
+/// the half-spread the liquid-equity cost model charges, so a bias of this
+/// size is the twin missing the cost of trading there by more than the cost
+/// itself. A bias that is not a finite number counts as wrong.
+pub const TWIN_MISFIT_BIAS_BPS: f64 = 50.0;
+
 /// The exposure buckets one instrument record vouches for.
 ///
 /// Axis names are the ones the default limit set looks up — `sector` and
@@ -18576,6 +18591,7 @@ impl Platform {
         let state = crate::shared_cause::observe(&self.world, &self.price_history, state);
         let state = self.with_margin_and_funding(state, figures);
         let state = self.with_custody_exposure(state);
+        let state = self.with_twin_misfit(state);
         // Both maps or neither. The fractions are a sum over the same ladder
         // the day counts come from, so filling one from a ladder whose totals
         // could not be computed would leave the two halves of one liquidity
@@ -18591,6 +18607,43 @@ impl Platform {
             },
             Err(error) => state.with_unevaluated(LIQUIDITY_FIGURE, error.message()),
         }
+    }
+
+    /// Whether the twin's fills at `venue` have been persistently wrong
+    /// (R12-RES-7104): at least [`TWIN_MISFIT_MIN_OBSERVATIONS`] observed and
+    /// a calibrated bias of [`TWIN_MISFIT_BIAS_BPS`] or more either way. A
+    /// venue the twin has not been scored at yet is not called wrong: the
+    /// absence of evidence is not evidence, and narrowing every new venue
+    /// would narrow every cold start.
+    pub fn twin_misfit(&self, venue: &str) -> bool {
+        self.fill_calibration
+            .venue(venue)
+            .is_some_and(|calibration| {
+                calibration.observations >= TWIN_MISFIT_MIN_OBSERVATIONS
+                    && !(calibration.bias_bps.abs() < TWIN_MISFIT_BIAS_BPS)
+            })
+    }
+
+    /// The gross carried at each venue whose twin is misfit, on
+    /// [`qip_risk::limits::VENUE_TWIN_MISFIT_AXIS`] (R12-RES-7104). The
+    /// buckets are the counterparty axis's own running gross, so the cap
+    /// reads what the book carries there and not a second count.
+    fn with_twin_misfit(&self, state: RiskState) -> RiskState {
+        let mut state = state;
+        let misfit: BTreeMap<String, Decimal> = state
+            .axis_exposures
+            .get(qip_risk::limits::COUNTERPARTY_AXIS)
+            .into_iter()
+            .flatten()
+            .filter(|(venue, _)| self.twin_misfit(venue))
+            .map(|(venue, gross)| (venue.clone(), *gross))
+            .collect();
+        if !misfit.is_empty() {
+            state
+                .axis_exposures
+                .insert(qip_risk::limits::VENUE_TWIN_MISFIT_AXIS.to_string(), misfit);
+        }
+        state
     }
 
     /// Capital held at each custodian, for `custodian-concentration`
@@ -18953,7 +19006,15 @@ impl Platform {
         // an order that would take a bucket over its limit was admitted and
         // the breach was discovered — if the aggregate had carried a bucket
         // at all — only by the monitor, one cycle late.
-        let axes = self.exposure_axes_for(object_id.as_str());
+        let mut axes = self.exposure_axes_for(object_id.as_str());
+        // An order to a venue whose twin is misfit is charged to the misfit
+        // axis too, so the cap sees it before the order exists.
+        if self.twin_misfit(self.broker.name()) {
+            axes.insert(
+                qip_risk::limits::VENUE_TWIN_MISFIT_AXIS.to_string(),
+                self.broker.name().to_string(),
+            );
+        }
         // The counterparty is the venue that will hold the other side, and the
         // platform knows it here because it is about to hand the order to it.
         // Until this was named, `None` went in and
