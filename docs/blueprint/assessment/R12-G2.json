@@ -1273,16 +1273,18 @@
   },
   {
     "id": "R12-DATA-9055",
-    "status": "PARTIAL",
-    "current": "CloudStorageBlobStore, fabricd archiver of sealed segments, deterministic archive names, deepbrain model-artifact writes; enable_cloud_storage=false in dev; no guard refusing raw-corpus writes.",
+    "status": "COMPLETE",
+    "current": "A committed list of storage classes in qip-storage (qip_storage::classes::DECLARED: fabric archive, tick lake, model artifacts, reflex packages, knowledge packs, tick desk output, preflight probe) is checked where a store is made. StorageProvider::blobs refuses a namespace the list does not declare before consulting the target, an empty list refuses everything, fabricd's archive is built only for the declared Immutable archive role (qip_storage::classes::archive_class in open_archive), and the apps' *_NAMESPACE constants point at the list (a sweep refuses an app that types a namespace of its own). No raw-corpus class is declared. Each class names the data module's bucket that backs it, and a test holds the list and the module's google_storage_bucket resources to each other in both directions. CloudStorageBlobStore, the fabricd archiver of sealed segments, deterministic archive names and the deepbrain model-artifact writes are as before; enable_cloud_storage=false in dev.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/gcp/storage.rs",
-      "backend/crates/apps/qip-fabricd/src/archiver.rs",
-      "backend/crates/libs/qip-storage/src/archive_names.rs",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:47",
+      "backend/crates/libs/qip-storage/src/classes.rs DECLARED, blob_class, archive_class",
+      "backend/crates/libs/qip-storage/src/provider.rs StorageProvider::blobs",
+      "backend/crates/apps/qip-fabricd/src/lib.rs open_archive",
+      "backend/crates/apps/qip-deepbrain/src/artifacts.rs MODEL_ARTIFACTS_NAMESPACE",
+      "backend/crates/libs/qip-storage/tests/storage_classes.rs a_blob_store_for_an_undeclared_namespace_is_refused_at_construction_and_every_namespace_the_apps_use_is_declared",
+      "backend/crates/libs/qip-storage/tests/storage_classes.rs every_bucket_the_data_module_declares_has_a_class_and_every_bucket_backed_class_names_one",
       "infrastructure/terraform/modules/data/main.tf:117,219"
     ],
-    "gap": "Class guard on writes; enable buckets (the enable_cloud_storage switch is the owner's). The guard is not a one-line refusal in CloudStorageBlobStore::validate_key: the store is reached two ways with different key shapes. qip-fabricd opens it with a configurable archive prefix (QIP_EVENT_FABRIC_ARCHIVE_PREFIX) and writes segments/sha256/<hash>, manifests/<stream>/<partition>/<offset> and fabricd/startup-probe under it; StorageProvider::blob (provider.rs, StorageTarget::CloudStorage) makes the namespace the prefix and writes arbitrary keys under it, and deepbrain's namespaces include model-artifacts, knowledge-packs, lake, tick-desk, reflex-packages, now-surprise/ and preflight. A guard needs a declared class per store (the namespace or the archive role) checked against a committed list, refusing construction for an undeclared namespace; a fixed prefix list in validate_key would refuse real writes.",
+    "gap": "Enabling the buckets (enable_cloud_storage, a protected tfvars file) is the owner's switch and the buckets bill; this record does not enable them (ADR 0156 3.5). Adding a class is a reviewed diff to the list with a test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1290,10 +1292,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-fabricd",
+    "verification": "cargo test -p qip-storage --test storage_classes",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: kept PARTIAL after reading both construction paths; not implemented because the closure's fixed-prefix refusal would have refused fabricd's prefixed archive and every provider namespace outside the four it named."
+    "notes": "2026-10-18 lane L23: kept PARTIAL after reading both construction paths; not implemented because the closure's fixed-prefix refusal would have refused fabricd's prefixed archive and every provider namespace outside the four it named. Lane W8-156, 2026-10-19 (ADR 0156) §3. Mutations fired and restored: StorageProvider::blobs ignoring the class check (the undeclared namespaces construct and the empty list constructs); blob_class admitting a class from an empty list; the archive class made Overwrite; the simulation class pointed at a bucket the module does not declare; tick_desk::OUTPUT_NAMESPACE given its own literal (the app sweep fails). Changed expectations: three qip-storage tests named \"archive\", \"anything\" and \"artifacts\" to prove other refusals (an unconfigured bucket, a BigQuery blob request, a local adapter) and now name a declared namespace, so those refusals still come from the target and not from the list."
   },
   {
     "id": "R12-AMBIENT-9056",
@@ -2759,12 +2761,17 @@
   },
   {
     "id": "R12-CONTRACT-9121",
-    "status": "PARTIAL",
-    "current": "A committed schema lock and compatibility gate run against the PR base lock: losing a field fails, gaining passes (tested). No dual-read/write tooling or consumer inventory.",
+    "status": "COMPLETE",
+    "current": "A committed schema lock and compatibility gate run against the PR base lock: losing a field fails, gaining passes (tested). A reviewed per-(topic, version) consumer inventory, qip-events/consumers.lock.json (embedded in the binary), is read by `qip event-fabric schema-gate` (`--consumers` overrides it): a version the head drops from the lock is judged by ConsumerInventory::retire, so an unsurveyed version, or one a non-migrated consumer still decodes, is a finding; a bump that keeps the old row is admitted. The lock suite may hold a superseded row only while the inventory lists such a decoder. An acceptance sweep proves every crate whose source names a bound body is inventoried for its topic and every inventoried row's source names its type. Dual-read already exists (the envelope refuses a newer version and decodes older ones); dual-write is the lock carrying both versions during the window.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs:616 a_bound_body_that_loses_a_field_fails_the_compatibility_gate_and_one_that_gains_a_field_passes, :675"
+      "backend/crates/libs/qip-events/consumers.lock.json",
+      "backend/crates/libs/qip-events/src/retirement.rs ConsumerInventory::from_rows, parse_inventory, EMBEDDED_CONSUMERS",
+      "backend/crates/apps/qip-cli/src/event_fabric/schema_gate.rs judge, run",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs a_version_bump_that_drops_the_old_version_while_an_inventoried_consumer_still_reads_it_fails_the_gate",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs the_consumer_inventory_names_every_crate_that_names_a_bound_body_and_every_row_names_its_type",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs:616 a_bound_body_that_loses_a_field_fails_the_compatibility_gate_and_one_that_gains_a_field_passes"
     ],
-    "gap": "The schema gate (qip-cli schema_gate.rs) judges two locks and admits a version bump as the producer's deliberate break without asking who still reads the old version; qip_events::retirement::ConsumerInventory (survey, depend, migrate_off, retire refusing an unsurveyed or consumed version) is tested but nothing populates it from the tree and the lock rows carry no consumer list. Needs a committed per-topic consumer inventory the gate reads and a rule for what it admits, plus dual-read/write migration tooling.",
+    "gap": "None for the stated check. Stated limits, not gaps: the inventory is a reviewed file, not a computation; the acceptance sweep proves a lower bound (a crate that reaches a body by an alias or a re-export is invisible to it); no dual-read/write migration tooling is built, by decision (ADR 0156 1.8) because a tool that rewrites records between versions would be a second writer of history.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2772,10 +2779,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test event_fabric_schema_lock",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_schema_lock; cargo test -p qip-cli --test event_fabric_schema_gate",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'consumers computed from the dependency graph' is a heuristic (which crates decode a type is not recorded in Cargo metadata); a committed, reviewed inventory is the form retirement.rs already assumes. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'consumers computed from the dependency graph' is a heuristic (which crates decode a type is not recorded in Cargo metadata); a committed, reviewed inventory is the form retirement.rs already assumes. Kept PARTIAL. Lane W8-156, 2026-10-19 (ADR 0156) §1.6-1.8. Mutations fired and restored: ConsumerInventory::from_rows ignoring every consumer (the unmigrated-consumer case exits 0 and the gate test fails); deleting qip-ledgerd's reflex.chain_span row (the sweep names ledgerd). Changed expectation: qip-cli's event_fabric_schema_gate version-bump test now keeps version 1's row beside version 2's, because dropping it is exactly what the inventory gates; the property it pins (a bump is the producer's deliberate break) still holds, and the dropped-row case is the new acceptance test. The lock suite's exact-row-count assertions now subtract retained superseded rows, each of which must be justified by a non-migrated decoder in the inventory."
   },
   {
     "id": "R12-SEC-9122",
@@ -3175,24 +3182,28 @@
   {
     "id": "R12-OBS-9140",
     "status": "PARTIAL",
-    "current": "qip-api, qip-fastbrain and qip-deepbrain drain OTLP/JSON to OpenObserve in-tree; qip-edge-node, qip-fabricd and qip-ledgerd serve scrape endpoints but do not export OTLP. Nothing has been shown to ingest.",
+    "current": "The OTLP exporter has one home, the new services crate qip-telemetry-drain (OpenObserveConfig::read over a lookup, export_once, record, spawn); the three ~780-line copies in qip-api, qip-fastbrain and qip-deepbrain are deleted, and each app's openobserve.rs is a thin module that re-exports it and keeps the one thing a service may not do, reading the process environment, through a lookup answering only the drain's four variables. qip-fabricd adopts it too (main spawns it when configured). An acceptance check replaces the byte-identical pin: the exporter's entry point is defined in exactly one file in the workspace, and no manifest sets QIP_OPENOBSERVE_URL. Nothing has been shown to ingest.",
     "evidence": [
-      "backend/crates/apps/qip-api/src/openobserve.rs:1-8",
-      "backend/crates/apps/qip-api/src/main.rs:366-368",
-      "backend/crates/apps/qip-edge-node/src/telemetry.rs"
+      "backend/crates/services/qip-telemetry-drain/src/lib.rs export_once",
+      "backend/crates/services/qip-telemetry-drain/tests/credential.rs the_credential_can_be_read_from_a_file_and_reaches_the_collector_as_written",
+      "backend/crates/apps/qip-api/src/openobserve.rs",
+      "backend/crates/apps/qip-fastbrain/src/openobserve.rs",
+      "backend/crates/apps/qip-deepbrain/src/openobserve.rs",
+      "backend/crates/apps/qip-fabricd/src/openobserve.rs",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs the_otlp_exporter_is_defined_in_exactly_one_file_and_no_manifest_sets_a_collector_url"
     ],
-    "gap": "A fourth and fifth copy of the drain is the wrong first step and the closure's last clause is refused by a standing test: qip-api, qip-fastbrain and qip-deepbrain each carry a ~780-line copy of openobserve.rs (deepbrain's module doc argues three copies of a credential parser are already a liability and pins the copies byte-identical in tests/openobserve.rs), so the drain should first move to a shared home (it needs qip-transport's HttpClient and qip-observability's Snapshot::to_otlp_metrics, and no app may depend on an app) before qip-fabricd and qip-ledgerd adopt it. Setting QIP_OPENOBSERVE_URL on the three that already drain contradicts manifest_wiring.rs's argued-unset entries and infrastructure/terraform/modules/openobserve/main.tf: no collector is vendored or attested and infrastructure/egress/envoy.yaml has no OpenObserve listener, so nothing may point at one yet. Ingestion is unproven for the same reason.",
+    "gap": "qip-ledgerd builds no telemetry surface at all, and qip-edge-node has metrics but no tracer and is the reflex closure (a drain in its closure puts a thread that performs network I/O beside the decision loop, and would move the drain into Lane 0 in the lane register); both still serve scrape endpoints only (ADR 0156 5.5 has them adopt the drain 'once the home exists', which is a further slice each). Nothing points a process at a collector, so no export has been shown to be ingested; that is deployment work and billed. (Corrected 2026-10-19.)",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
-    "verification": "cargo test -p qip-api",
+    "blocked_by": "a billed, attested collector (ADR 0156 5.4)",
+    "verification": "cargo test -p qip-telemetry-drain; cargo test -p qip-api --test openobserve; cargo test -p qip-acceptance --test manifest_wiring the_otlp_exporter",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L17 from the three existing openobserve.rs copies, manifest_wiring.rs and the egress bootstrap; nothing in the code changed."
+    "notes": "Gap corrected 2026-10-18 by lane L17 from the three existing openobserve.rs copies, manifest_wiring.rs and the egress bootstrap; nothing in the code changed. Lane W8-156, 2026-10-19 (ADR 0156) §5.1-5.4. Mutation: a second pub fn export_once restored in one app fails the single-definition scan (fired and restored). Changed expectations: the byte-identical copy pins in qip-fastbrain and qip-deepbrain tests/openobserve.rs are removed, as ADR 0156 5.3 directs, replaced by the structural single-definition check; two acceptance tests that read the apps' openobserve.rs for the trace-export premise and the endpoint set now read the shared crate's file (the same properties, one home), and each app's thin module is held to build on it. The unit test that wrote a credential file moved to the crate's tests/ directory (library sources may not name std::env) and now reads the Authorization header off a real socket."
   },
   {
     "id": "R12-OBS-9141",
@@ -4079,27 +4090,26 @@
   },
   {
     "id": "R12-MESH-9181",
-    "status": "PARTIAL",
-    "current": "qip-mesh PeerLimits and qip-peer-link's node_limits bound peer frame size (MAX_FRAME 64 KiB) and fan-out (MAX_EDGE_PEERS), refused not truncated. Since 2026-10-18 the deployed centre link states its own bound: every half of MeshLink is built with centre_limits() (backend/crates/apps/qip-edge-node/src/mesh.rs), pinning max_body to MAX_CENTRE_RESPONSE_BYTES (4 MiB), so an answer declaring more is refused before it is read or allocated; a poll carries at most max_poll_batch = 512 frames (backend/crates/libs/qip-transport/src/mesh.rs), and the centre link addresses exactly one peer by construction (MeshSettings.peer). No raw tick stream crosses the mesh: the uplink carries CellStateDelta.",
+    "status": "COMPLETE",
+    "current": "qip-mesh PeerLimits and qip-peer-link's node_limits bound peer frame size (MAX_FRAME 64 KiB) and fan-out (MAX_EDGE_PEERS), refused not truncated. Since 2026-10-18 the deployed centre link states its own bound: every half of MeshLink is built with centre_limits() (backend/crates/apps/qip-edge-node/src/mesh.rs), pinning max_body to MAX_CENTRE_RESPONSE_BYTES (4 MiB), so an answer declaring more is refused before it is read or allocated; a poll carries at most max_poll_batch = 512 frames, and the centre link addresses exactly one peer by construction. No raw tick stream crosses the mesh: the uplink carries CellStateDelta in the compact touch encoding. Compression is decided, not missing (ADR 0156 4e): no codec is admitted on the mesh or any transport, because a codec on that hop adds an inflate-amplification surface at the receiver, on a channel adjacent to the decision loop, to save bytes the bounds already cap. zstd stays admitted for tick-lake segments in qip-storage only (ADR 0113), and an acceptance scan pins that only qip-storage depends on a compression crate.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/mesh.rs MAX_CENTRE_RESPONSE_BYTES, centre_limits",
-      "backend/crates/libs/qip-transport/src/mesh.rs max_poll_batch: 512",
-      "backend/crates/edge/qip-peer-link/src/wire.rs:845 limits_with",
-      "backend/crates/services/qip-mesh/tests/peer_rules.rs",
-      "backend/crates/apps/qip-edge-node/tests/mesh.rs::a_centre_answer_larger_than_the_bound_is_refused_before_it_is_read_and_the_cell_keeps_running"
+      "backend/crates/libs/qip-transport/src/mesh.rs",
+      "backend/crates/tests/qip-acceptance/tests/dependency_scope.rs only_qip_storage_depends_on_a_compression_crate",
+      "backend/crates/libs/qip-storage/Cargo.toml zstd"
     ],
-    "gap": "Compression: frames travel as JSON with the compact touch encoding; a compressing codec would be a new persisted-codec dependency and needs its own ADR (ADR 0109). Not deployed.",
+    "gap": "None for the stated check. Extending a codec to any other crate needs a committed measurement and an allow-list line (scripts/dependency-allowlist.txt, a protected edit). Not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer_rules; cargo test -p qip-edge-node --test mesh a_centre_answer_larger_than_the_bound",
+    "verification": "cargo test -p qip-acceptance --test dependency_scope; cargo test -p qip-mesh --test peer_rules; cargo test -p qip-edge-node --test mesh a_centre_answer_larger_than_the_bound",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L09: bounds now explicit and tested on the deployed link. Mutation: doubling max_body in centre_limits made the client wait for the declared body and fail with 'the peer closed the connection while sending the body', so the test reported 'the over-size answer was not refused for its size'; restored byte for byte. Kept PARTIAL on compression."
+    "notes": "Re-graded 2026-10-18 by lane L09: bounds now explicit and tested on the deployed link. Mutation: doubling max_body in centre_limits made the client wait for the declared body and fail with 'the peer closed the connection while sending the body', so the test reported 'the over-size answer was not refused for its size'; restored byte for byte. Kept PARTIAL on compression. Lane W8-156, 2026-10-19 (ADR 0156) §4e. Mutation fired and restored: zstd added to qip-transport's manifest (the scan reports a second dependent). The earlier lane L09 mutation (doubling max_body in centre_limits) stands. The row's integrated flag is set because the bounds run on the node's composed centre link; the node itself is not deployed."
   },
   {
     "id": "R12-FABRIC-9182",
@@ -4211,13 +4221,14 @@
   {
     "id": "R12-DATA-9187",
     "status": "PARTIAL",
-    "current": "archive_names derives deterministic partitioned names; compaction module and segment sealing exist; no test that compaction runs asynchronously on GCS.",
+    "current": "archive_names derives deterministic partitioned names; the segment archive writes content-addressed immutable objects (segments/sha256/<hash>) named by manifest rows that ArchiveReader::hydrate fetches by exact key and verifies. Compactor::compact now refuses, before reading or writing, any listing that holds an archive key (a sealed segment or a manifest row, at a path-segment boundary, so a configured prefix or an empty prefix cannot reach it), honours min_object_size (stored and never read before) and reports as merged only the objects it merged. Archive objects are never merged: that breaks per-key hydrate and the seal chain's hashes of segments; fewer, larger archive objects come from roll_after_bytes where the segment is cut (ADR 0156 2.1-2.3).",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/archive_names.rs",
-      "backend/crates/libs/qip-storage/src/compaction.rs",
-      "backend/crates/libs/qip-storage/src/segment/archive.rs:138"
+      "backend/crates/libs/qip-storage/src/compaction.rs Compactor::compact",
+      "backend/crates/libs/qip-storage/src/segment/archive.rs is_archive_key, ARCHIVE_SEGMENT_PREFIX, ARCHIVE_MANIFEST_PREFIX",
+      "backend/crates/libs/qip-storage/tests/compaction.rs compacting_the_archive_prefix_is_refused_and_leaves_every_object_and_manifest_untouched",
+      "backend/crates/libs/qip-storage/tests/compaction.rs objects_below_the_minimum_are_left_alone_and_only_merged_objects_are_reported"
     ],
-    "gap": "The closure as graded cannot be taken: qip_storage::compaction::Compactor concatenates every object under a prefix into a content-addressed blob (segments/compacted/<sha256>) and returns the originals as deletable without deleting them, and the archive's objects (segments/sha256/<hash>, one per sealed segment) are each named by an archive-manifest row that ArchiveReader::hydrate fetches by that exact key and verifies against the manifest's content hash. Compacting the archive prefix would either leave the originals (storage grows by a merged copy per pass, since the compactor re-reads its own output) or, if they were deleted, break hydration of every archived segment. Closing needs a compactor that rewrites the manifest's blob key and replay-index offsets atomically with the merge (an ADR 0100 archive-format decision) and honours min_object_size, which Compactor never reads; then a housekeeping-tick caller and a broker test.",
+    "gap": "Compactor has no production caller: nothing compacts the lake's small objects asynchronously yet, so the requirement's 'tiny objects are compacted asynchronously' half is a guarded tool and not a running job; it is wired when the lake produces tiny objects worth a pass. No test runs compaction against Cloud Storage. Note for whoever wires it: min_object_size is honoured as documented (objects smaller than it are left alone), which makes its 64 KiB default skip genuinely tiny objects; set it for the lake's actual object sizes. (Corrected 2026-10-19.)",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4228,7 +4239,7 @@
     "verification": "cargo test -p qip-storage",
     "work_item": "",
     "size": "S",
-    "notes": "Gap corrected 2026-10-18 by lane L17 from the code (archive.rs blob_key/hydrate, compaction.rs compact/merge_objects); nothing in the code changed."
+    "notes": "Gap corrected 2026-10-18 by lane L17 from the code (archive.rs blob_key/hydrate, compaction.rs compact/merge_objects); nothing in the code changed. Lane W8-156, 2026-10-19 (ADR 0156) §2.1-2.3. Mutations fired and restored: the archive-key refusal disabled (the archive objects merge and the untouched assertion fails); the min_object_size condition dropped (the 8-byte object is merged and reported)."
   },
   {
     "id": "R12-FINOPS-9188",
