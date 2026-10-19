@@ -1299,3 +1299,295 @@ fn the_node_registers_every_tool_kind_it_actually_runs() {
         round.registries
     );
 }
+
+// --- regret reaches the sweep (R12-AMBIENT-3071) ---------------------------
+
+/// A platform that knows `AAA`, so a refused order and the twin's pricing of
+/// it have an instrument to be about.
+fn platform_knowing_aaa() -> Platform {
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::costs::LiquidityProfile;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    let mut universe = Universe::new();
+    universe
+        .insert(
+            FinancialObject::builder(
+                ObjectId::from_string("obj-AAA".to_string()),
+                "AAA",
+                InstrumentType::CommonStock,
+                LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+            )
+            .venue("XNYS")
+            .sector(Sector::InformationTechnology)
+            .price(Decimal::from_int(100))
+            .provenance(Provenance::synthetic("test", start()))
+            .build(start())
+            .unwrap_or_else(|e| panic!("a valid object: {e}")),
+        )
+        .unwrap_or_else(|e| panic!("insertable: {e}"));
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        LimitSet::conservative_default(),
+    )
+    .unwrap_or_else(|e| panic!("the platform assembles: {e}"))
+}
+
+/// A flat tape: `count` quiet daily bars ending at `start`, then a flat
+/// `level` for `days` after it. The twin marks a declined path at the open of
+/// a bar. `Platform::capture_submission` books a buy against the ask, so the
+/// twin's gross for a declined buy is `(entry - exit) * quantity` (see
+/// `qip-kernel/tests/learning.rs`, where a *rise* scores the decline
+/// unfavourable): a level far below the ~100 entry is what makes each
+/// declined buy score as a regret. The premise below asserts the score
+/// rather than trusting this reading.
+fn tape_stepping_to(level: f64, count: i64, days: i64) -> Vec<SensedRecord> {
+    let mut records = Vec::new();
+    for i in 0..count {
+        let wiggle = if i % 2 == 0 { 0.3 } else { -0.3 };
+        records.push(bar(
+            "obj-AAA",
+            start().saturating_sub(Duration::from_days(count - i)),
+            100.0 + wiggle,
+        ));
+    }
+    for day in 1..=days {
+        records.push(bar(
+            "obj-AAA",
+            start().saturating_add(Duration::from_days(day)),
+            level,
+        ));
+    }
+    records
+}
+
+/// R12-AMBIENT-3071: counterfactual regret reaches the deep brain's sweep.
+/// Three declines the twin prices as regrets at one gate (`MIN_REGRETS`) are
+/// read by `ResearchLoop::sweep` straight off `Platform::declined_scores`,
+/// priced, and routed as an Opportunity-class signal to the research-task
+/// pathway naming that gate.
+///
+/// The failure this prevents: LEARN prices every veto and nothing reads the
+/// result, so a gate that keeps refusing what would have earned is a number
+/// on a counter and never a learning objective. The pure observation is
+/// covered by `a_repeated_veto_gap_carries_the_earnings_its_gate_forwent`;
+/// this proves the platform-to-sweep read and the routing, which that test
+/// does not touch.
+///
+/// Mutation: delete `observations.extend(veto_observations(&declines)?)` in
+/// `ResearchLoop::sweep_over` — no Opportunity-class signal is raised and the
+/// last block fails.
+#[test]
+fn three_regretted_declines_at_one_gate_reach_the_sweep_as_an_opportunity_class_research_signal() {
+    use qip_contracts::ambient::{Pathway, SignalClass};
+    use qip_deepbrain::research::MIN_REGRETS;
+    use qip_execution_engine::order::Side;
+
+    let mut platform = platform_knowing_aaa();
+    platform.observe(tape_stepping_to(30.0, 90, 5));
+    for n in 0..MIN_REGRETS {
+        let order = platform.order_from(
+            ObjectId::from_string("obj-AAA".to_string()),
+            Side::Buy,
+            Decimal::from_int(1000),
+            Decimal::from_int(100),
+            &format!("prop-refused-{n}"),
+            Vec::new(),
+            start(),
+        );
+        assert!(
+            platform.submit_order(order, start()).is_err(),
+            "premise: an untraceable order is refused"
+        );
+    }
+    assert_eq!(platform.declined_awaiting_score(), MIN_REGRETS);
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+    // Premise: LEARN priced all three and every one is a regret at one gate,
+    // so the sweep has exactly the evidence the detector asks for.
+    let scores = platform.declined_scores();
+    assert_eq!(scores.len(), MIN_REGRETS, "{scores:?}");
+    assert!(scores.iter().all(|s| s.regret), "{scores:?}");
+    let gate = scores[0].gate.clone();
+    assert!(scores.iter().all(|s| s.gate == gate), "{scores:?}");
+
+    let mut loop_ = research(coverage(&[]));
+    let round = loop_
+        .sweep(
+            &platform,
+            start().saturating_add(Duration::from_days(3)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    let evidence = format!("declined_scores:gate:{gate}");
+    let signal = round
+        .signals
+        .iter()
+        .find(|s| s.class() == SignalClass::Opportunity && s.evidence_ids().contains(&evidence))
+        .unwrap_or_else(|| {
+            panic!(
+                "no Opportunity-class signal names `{evidence}`: {:?}",
+                round.signals
+            )
+        });
+    let event = round
+        .attention_events
+        .iter()
+        .find(|e| e.signal_id == signal.id())
+        .unwrap_or_else(|| panic!("the signal was never routed: {:?}", round.attention_events));
+    assert_eq!(
+        event.pathway,
+        Pathway::ResearchTask,
+        "the regret gap is routed to the research-task pathway: {event:?}"
+    );
+}
+
+// --- residual gaps are priced, and ranked by their deadline (R12-EXPAND-6048) ---
+
+/// Fill one buy of `quantity` at 100 on a platform that knows `AAA`, and
+/// hand the platform back with its venue's name and the notional it traded.
+fn platform_with_a_fill_of(quantity: i64) -> (Platform, String, Decimal) {
+    use qip_execution_engine::order::Side;
+    let mut platform = platform_knowing_aaa();
+    platform.observe(tape_stepping_to(100.0, 90, 5));
+    let order = platform.order_from(
+        ObjectId::from_string("obj-AAA".to_string()),
+        Side::Buy,
+        Decimal::from_int(quantity),
+        Decimal::from_int(100),
+        "prop-filled",
+        vec!["hyp-prop-filled".to_string()],
+        start(),
+    );
+    platform
+        .submit_order(order, start())
+        .unwrap_or_else(|e| panic!("the order is accepted: {e}"));
+    let notionals = qip_deepbrain::research::fill_notionals(&platform)
+        .unwrap_or_else(|e| panic!("notionals: {e}"));
+    let (venue, notional) = notionals
+        .iter()
+        .next()
+        .map(|(v, n)| (v.clone(), *n))
+        .unwrap_or_else(|| panic!("premise: the fill is on the outcome record"));
+    (platform, venue, notional)
+}
+
+/// The sweep's residual gap for `venue`, from fills that each missed the twin
+/// by `bps`, and its economic value on the router's basis-point scale.
+fn residual_gap_value_bp(platform: &Platform, venue: &str, bps: f64) -> u32 {
+    use qip_contracts::ambient::SignalClass;
+    use qip_deepbrain::research::FillObservation;
+    let fills: Vec<FillObservation> = (0..4)
+        .map(|i| FillObservation {
+            venue: venue.to_string(),
+            object_id: "obj-AAA".to_string(),
+            filled_at: start().saturating_add(Duration::from_mins(i)),
+            trade_error_bps: Some(bps),
+        })
+        .collect();
+    let mut loop_ = research(coverage(&[]));
+    let round = loop_
+        .sweep_over(
+            platform,
+            &fills,
+            &[],
+            start().saturating_add(Duration::from_days(1)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    let evidence = format!("fill_scores:{venue}");
+    round
+        .signals
+        .iter()
+        .find(|s| s.class() == SignalClass::Risk && s.evidence_ids().contains(&evidence))
+        .unwrap_or_else(|| panic!("no residual signal for `{venue}`: {:?}", round.signals))
+        .economic_value_bp()
+}
+
+/// R12-EXPAND-6048: the notional the platform filled at a venue prices that
+/// venue's residual gap. Two platforms miss the twin by the same 40 bps; the
+/// one that filled three times the size states three times the economic value
+/// to the router, and the figure is the mean miss times the notional traded.
+///
+/// The failure prevented: residual gaps carried no size, so slippage cost was
+/// unmeasurable from the fill record and a venue missing on a rounding error's
+/// worth ranked level with one missing on the book.
+///
+/// Mutation: in `sweep_over`, call `unexplained_residuals` (the unpriced
+/// detector) instead of `unexplained_residuals_priced`; both gaps state zero
+/// and the first assertion on the smaller fill's figure fails.
+#[test]
+fn a_residual_gap_is_priced_from_the_notional_the_platform_filled() {
+    let (small, venue_small, notional_small) = platform_with_a_fill_of(50);
+    let (large, venue_large, notional_large) = platform_with_a_fill_of(150);
+    assert_eq!(venue_small, venue_large, "premise: one simulated venue");
+    assert!(
+        notional_large > notional_small && notional_small.is_positive(),
+        "premise: {notional_large} against {notional_small}"
+    );
+
+    // 40 bps of the notional, in units, then in the scale's hundredths.
+    let expected =
+        |notional: Decimal| (40.0 * notional.to_f64() / 10_000.0 / 100.0 * 10_000.0).round() as u32;
+    let small_bp = residual_gap_value_bp(&small, &venue_small, 40.0);
+    let large_bp = residual_gap_value_bp(&large, &venue_large, 40.0);
+    assert!(small_bp > 0, "the smaller fills' gap states no value");
+    assert_eq!(small_bp, expected(notional_small));
+    assert_eq!(large_bp, expected(notional_large));
+    assert!(large_bp > small_bp);
+}
+
+/// R12-EXPAND-6048: the deadline the research loop holds at admission reaches
+/// the desk's ranking. A gap admitted with its whole window ahead is queued at
+/// the urgency floor, not at the zero the desk used to state for every gap.
+///
+/// Mutation: pass `0.0` for the urgency to `offer_by_deadline` in
+/// `ResearchLoop::admit`; the queued item's urgency is zero and this fails.
+#[test]
+fn a_gap_admitted_by_the_research_loop_is_queued_at_the_urgency_its_deadline_gives_it() {
+    use qip_deepbrain::research::URGENCY_FLOOR_BP;
+    let (platform, venue, _) = platform_with_a_fill_of(50);
+    let fills: Vec<qip_deepbrain::research::FillObservation> = (0..4)
+        .map(|i| qip_deepbrain::research::FillObservation {
+            venue: venue.clone(),
+            object_id: "obj-AAA".to_string(),
+            filled_at: start().saturating_add(Duration::from_mins(i)),
+            trade_error_bps: Some(40.0),
+        })
+        .collect();
+    let mut loop_ = research(coverage(&[]));
+    let round = loop_
+        .sweep_over(
+            &platform,
+            &fills,
+            &[],
+            start().saturating_add(Duration::from_days(1)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        round.admissions.get("queued").copied().unwrap_or(0),
+        1,
+        "premise: the residual gap was queued: {:?}",
+        round.admissions
+    );
+    let queued = loop_.desk().queue().ranked();
+    let urgency = queued
+        .iter()
+        .map(|e| e.score().urgency)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let floor = f64::from(URGENCY_FLOOR_BP) / 10_000.0;
+    assert!(
+        (urgency - floor).abs() < 1e-9,
+        "queued at urgency {urgency}, not the floor {floor}"
+    );
+}

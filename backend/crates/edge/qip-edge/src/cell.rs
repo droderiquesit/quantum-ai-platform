@@ -4341,6 +4341,27 @@ impl Cell {
         venue: Option<&VenueId>,
         now: Timestamp,
     ) -> Result<()> {
+        // What the sequencer released and what it gave up on, counted before
+        // the batch is applied so a failing apply cannot hide a loss. A lost
+        // range is `missing_to - missing_from + 1` sequences; saturating
+        // because a range read off a wire that authenticates nobody is not
+        // trusted to be well formed.
+        let lost: u64 = batch
+            .events
+            .iter()
+            .map(|event| match event {
+                SequenceEvent::GapAbandoned {
+                    missing_from,
+                    missing_to,
+                    ..
+                } => missing_to.saturating_sub(*missing_from).saturating_add(1),
+                _ => 0,
+            })
+            .fold(0, u64::saturating_add);
+        self.metrics.feed_messages(
+            u64::try_from(batch.released.len()).unwrap_or(u64::MAX),
+            lost,
+        );
         self.apply_batch(batch.released, now)?;
         let mut duplicates: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         for event in &batch.events {
@@ -6184,6 +6205,10 @@ impl Cell {
                     price: Some(order.price),
                 }
             });
+        // Timed on the monotonic clock around the check alone: the figure is
+        // read by the reflex risk-gate objective and by nothing that decides,
+        // so it cannot reach the order's fate or a replay.
+        let began = std::time::Instant::now();
         let checked = gate.check(
             &self.config.cell_id,
             held.chain(resting),
@@ -6194,7 +6219,9 @@ impl Cell {
             quantity,
             price,
             now,
-        )?;
+        );
+        self.metrics.risk_gate_latency(began.elapsed());
+        let checked = checked?;
         if checked.is_approved() {
             return Ok(());
         }

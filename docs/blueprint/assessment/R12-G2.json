@@ -1258,10 +1258,10 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs:OutcomeSink::from_lookup",
       "backend/crates/apps/qip-deepbrain/tests/warehouse.rs:the_run_loop_ships_a_graded_thesis_to_the_warehouse"
     ],
-    "gap": "Deployment, not code: set enable_bigquery=true in an environment tfvars (infrastructure/environments/**, protected), create the resolved_outcomes table with the columns warehouse::row writes, and give qip-deepbrain QIP_BIGQUERY_PROJECT, QIP_BIGQUERY_DATASET, QIP_GCP_ENDPOINT (the egress proxy) and one credential in infrastructure/terraform/catalogue.tf. Tournament (evolution trial) outcomes are not streamed; only graded theses.",
+    "gap": "Code path wired and tested; awaiting the owner's enable_bigquery switch. Nothing in the tree turns it on: enable_bigquery=false in every environment tfvars (protected), no QIP_BIGQUERY_PROJECT/DATASET/QIP_GCP_ENDPOINT or credential in infrastructure/terraform/catalogue.tf, and the resolved_outcomes table is not created, so the sink is None and nothing has reached BigQuery. Tournament (evolution trial) outcomes are not streamed; only graded theses (Platform::evaluations()).",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1269,7 +1269,7 @@
     "verification": "cargo test -p qip-deepbrain --test warehouse",
     "work_item": "",
     "size": "M",
-    "notes": "Mutations: skipping the insert in OutcomeSink::ship failed the streaming and retry tests; marking rejected rows shipped failed the retry test; making the node.rs warehouse arm unreachable failed the_run_loop_ships_a_graded_thesis_to_the_warehouse. The tests run against a loopback socket standing in for the TLS-terminating proxy; nothing has reached BigQuery."
+    "notes": "Re-verified 2026-10-18: cargo test -p qip-deepbrain --test warehouse (4 passed); mutation replacing the rows in OutcomeSink::ship with an empty insert failed the streaming, retry and run-loop tests. Earlier mutations: marking rejected rows shipped failed the retry test; making the node.rs warehouse arm unreachable failed the_run_loop_ships_a_graded_thesis_to_the_warehouse. The tests run against a loopback socket standing in for the TLS-terminating proxy. No billed resource was enabled by this lane."
   },
   {
     "id": "R12-DATA-9055",
@@ -3600,15 +3600,19 @@
   {
     "id": "R12-OBS-9159",
     "status": "PARTIAL",
-    "current": "All five declared as reflex SLOs with targets (tested); none measured on a deployment.",
+    "current": "The six reflex objectives slo::default_slos declares (decision-latency p99 and p99.9, venue-round-trip-time-p99, stale-book-age-max, risk-gate-latency-p99, dropped-feed-messages-zero) are bound by critical_paths::reflex_objectives to series the node records, with the declaration's own thresholds and targets and service edge-node, and evaluated at every /metrics scrape with the node's other paths. Recorded: EDGE_DECISION_LATENCY_MS (PassMeter::measure), EDGE_VENUE_ACK_LATENCY_MS (Cell, first report on an order), EDGE_BOOK_AGE_MS (Cell::work), and two new series - EDGE_RISK_GATE_LATENCY_MS (Cell::risk_admit, around the gate's check, whatever it decides) and EDGE_FEED_MESSAGES{outcome=delivered|dropped} (Cell::absorb_sequenced; dropped is the sequences an abandoned gap established lost). Every label is a pub const or source literal. After three metered passes each objective reads more than zero observations.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:258-295",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs:326 reflex_component_slos_are_declared_with_correct_targets"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs reflex_objectives",
+      "backend/crates/edge/qip-edge/src/telemetry.rs risk_gate_latency, feed_messages",
+      "backend/crates/edge/qip-edge/src/cell.rs risk_admit, absorb_sequenced",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs the_decision_latency_reflex_objectives_are_measured_by_a_metered_pass, the_venue_round_trip_reflex_objective_is_measured_when_a_venue_answers_an_order, the_stale_book_reflex_objective_is_measured_from_the_age_of_the_book, the_risk_gate_reflex_objective_is_measured_when_the_gate_decides_an_order, the_dropped_feed_reflex_objective_is_measured_from_the_messages_the_sequencer_released",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs an_abandoned_sequence_gap_counts_the_messages_it_lost_as_dropped",
+      "backend/crates/libs/qip-observability/tests/critical_paths.rs every_declared_reflex_objective_is_bound_to_a_series_the_node_records"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "Measured is not informative, and nothing is deployed (2026-10-18). qip-edge-node runs passes only under QIP_VENUE_FEED=simulated and no execution node exists in any environment, so no process records these series. Against the simulated feed stale-book age is zero on every pass (the heartbeat is stamped at the pass instant) and no sequence gap can open, so stale-book-age-max and dropped-feed-messages-zero can only be met; venue round trip is timed against the simulated gateway. Evaluation is at scrape time on the health thread, not inside the decision loop's turn, because an evaluation walks the whole registry. Ingestion is unproven: workload_metrics_exist stays false and no alert policy was added.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -3616,7 +3620,7 @@
     "verification": "cargo test -p qip-acceptance --test slo",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutations (2026-10-18), each deleting one recording site: the PassMeter observe_latency_ms, Cell's venue_ack_latency call, the book_age call, the risk_gate_latency call and the feed_messages call each failed the matching 'still unmeasured after three metered passes' assertion for that objective alone; changing the lost-range arithmetic to missing_to - missing_from failed the dropped-count test (1 against 2) and removing the feed_messages call failed its delivered premise; renaming the risk-gate binding failed the declaration test. critical_paths.rs recording_writes_observations... now expects the reflex objectives in its count (statuses.len() adds reflex_objectives().len()), because evaluate_where evaluates them."
   },
   {
     "id": "R12-OBS-9160",

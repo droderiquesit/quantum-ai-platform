@@ -18401,6 +18401,8 @@ impl Platform {
             }
         };
 
+        self.record_obligation_demand(&review, now);
+
         let mut problems = Vec::new();
         // **Only a margin call is a problem. An unread account is a
         // sentence.** The distinction is the one the `reconcile_wallet` call
@@ -19353,6 +19355,25 @@ impl Platform {
                 fill.at,
                 fill.notional().abs(),
             );
+            // A fill in an instrument the desk declared as a hedge is hedge
+            // demand as well as cash: the fill itself does not say it was a
+            // hedge, but the declarations name every instrument a hedge may
+            // be struck in, and that is the only statement of intent the
+            // platform holds. Read from the same declarations the DECIDE
+            // survey proposes from, so a hedge cannot be proposed in an
+            // instrument whose fill would not be recognised.
+            if self.is_declared_hedge_instrument(object_id) {
+                self.record_capital_demand(
+                    CapitalLocation::new(
+                        CapitalRegion::new(HOME_REGION),
+                        Currency::USD,
+                        venue.clone(),
+                    ),
+                    DemandKind::Hedge,
+                    fill.at,
+                    fill.notional().abs(),
+                );
+            }
 
             // And it is capital that moved. This is the edge that makes the
             // risk state real: the same fills the outcome capture records are
@@ -22511,6 +22532,72 @@ impl Platform {
             .entry((location, kind))
             .or_default()
             .push(DemandObservation::new(at, amount));
+    }
+
+    /// Whether `instrument` is one the desk declared it may hedge with: a
+    /// hedge policy's instrument or a hedge candidate's.
+    fn is_declared_hedge_instrument(&self, instrument: &ObjectId) -> bool {
+        self.config
+            .hedge_policies
+            .iter()
+            .any(|policy| &policy.instrument == instrument)
+            || self
+                .config
+                .hedge_candidates
+                .iter()
+                .any(|candidate| &candidate.instrument == instrument)
+    }
+
+    /// Record the collateral and inventory demand a cross-margin read
+    /// observed: per venue, the maintenance its exposure requires (whether or
+    /// not a statement covers it) as [`DemandKind::Collateral`], and the gross
+    /// the book carries there as [`DemandKind::Inventory`].
+    ///
+    /// Before this, only [`DemandKind::Cash`] was ever fed, so the forecaster
+    /// had three kinds nobody could ask about and the pre-positioning plan
+    /// could only ever anticipate cash. Both figures are what the book
+    /// stands in at this cycle, observed rather than projected; a venue
+    /// requiring or carrying nothing records nothing, since a zero is not an
+    /// observation of need.
+    fn record_obligation_demand(
+        &mut self,
+        review: &crate::cross_margin::CrossMarginReview,
+        at: Timestamp,
+    ) {
+        let lane = |venue: &VenueId| {
+            CapitalLocation::new(
+                CapitalRegion::new(HOME_REGION),
+                Currency::USD,
+                venue.clone(),
+            )
+        };
+        let maintenance: Vec<(VenueId, Decimal)> = review
+            .coverage
+            .iter()
+            .map(|line| (line.venue.clone(), line.maintenance))
+            .chain(
+                review
+                    .unobserved
+                    .iter()
+                    .map(|gap| (gap.venue.clone(), gap.maintenance)),
+            )
+            .filter(|(_, amount)| amount.is_positive())
+            .collect();
+        for (venue, amount) in maintenance {
+            self.record_capital_demand(lane(&venue), DemandKind::Collateral, at, amount);
+        }
+        let carried: Vec<(VenueId, Decimal)> = self
+            .aggregates
+            .axis_exposures()
+            .get(qip_risk::limits::COUNTERPARTY_AXIS)
+            .into_iter()
+            .flatten()
+            .filter(|(_, gross)| gross.is_positive())
+            .map(|(counterparty, gross)| (VenueId::new(counterparty.clone()), *gross))
+            .collect();
+        for (venue, gross) in carried {
+            self.record_capital_demand(lane(&venue), DemandKind::Inventory, at, gross);
+        }
     }
 
     /// The settlement calendars the pre-positioning planner quotes on, per

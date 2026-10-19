@@ -68,7 +68,7 @@ use qip_expansion::desk::{
 use qip_expansion::detectors::{
     Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters, contradictions,
     coverage, incompetent_specialists, low_confidence, model_drift, model_error_rate,
-    refusal_clusters, repeated_vetoes_priced, split_by_wanting, unexplained_residuals,
+    refusal_clusters, repeated_vetoes_priced, split_by_wanting, unexplained_residuals_priced,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -573,6 +573,26 @@ fn basis_points(fraction: f64) -> Result<u32> {
     Ok((fraction * 10_000.0).round() as u32)
 }
 
+/// A gap's economic value on the basis-point scale a request is ranked on
+/// (a hundredth of a unit per basis point, so the scale ends at 100 units).
+///
+/// A priced gap states a currency figure that the scale cannot bound: the
+/// summed earnings a gate forwent, or a venue's notional-weighted miss, is
+/// routinely thousands of units. Reading that as an error failed the whole
+/// sweep, and with it every other gap the sweep had raised, on exactly the
+/// gaps that matter most. A figure past the end of the scale is read as the
+/// scale's end, the same full scale [`ResearchLoop::emit`] gives the signal
+/// for it; a negative or non-finite figure is still refused. This is not a
+/// clamp of a malformed input: the value is real, it is merely larger than
+/// the ranking range can distinguish.
+fn economic_scale_bp(value: f64) -> Result<u32> {
+    let scaled = value / 100.0;
+    if scaled.is_finite() && scaled > 1.0 {
+        return Ok(qip_contracts::ambient::MAX_SEVERITY_BP);
+    }
+    basis_points(scaled)
+}
+
 /// What one sweep did, for the cycle line.
 #[derive(Debug, Clone, Default)]
 pub struct ResearchRound {
@@ -749,6 +769,56 @@ pub fn sweep_ontology() -> Result<OntologyRegistry> {
             version: 1,
             schema: format!("qip-deepbrain/research:{name}"),
             description: description.to_string(),
+        })?;
+    }
+    Ok(registry)
+}
+
+/// The asset class a coverage key names, if it names one: a key with no
+/// colon is an asset class (the shape the detector's map had before it had
+/// dimensions) and `asset_class:<value>` is one; `venue:` and `geography:`
+/// keys are other dimensions.
+fn coverage_asset_class(key: &str) -> Option<&str> {
+    match key.split_once(':') {
+        None => Some(key),
+        Some(("asset_class", value)) => Some(value),
+        Some(_) => None,
+    }
+}
+
+/// The event type the coverage detector's observations are filed under: a
+/// universe class with too little history to trade.
+pub const COVERAGE_GAP_EVENT: &str = "coverage_gap";
+
+/// [`sweep_ontology`] plus what the coverage detector reads of `coverage`:
+/// one `Asset` type per asset class the universe holds, and the `Event` type
+/// its observations are. The composition root builds this from the universe
+/// it is about to hand the platform, so an asset class cannot be swept for
+/// coverage that the ontology never named.
+pub fn sweep_ontology_over(
+    coverage: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<OntologyRegistry> {
+    let mut registry = sweep_ontology()?;
+    registry.register(OntologyTypeSpec {
+        family: OntologyTypeFamily::Event,
+        name: COVERAGE_GAP_EVENT.to_string(),
+        version: 1,
+        schema: format!("qip-deepbrain/research:{COVERAGE_GAP_EVENT}"),
+        description: "an asset class whose covered share fell below the coverage floor".to_string(),
+    })?;
+    for class in coverage.keys().filter_map(|key| coverage_asset_class(key)) {
+        if registry
+            .get_latest(OntologyTypeFamily::Asset, class)
+            .is_some()
+        {
+            continue;
+        }
+        registry.register(OntologyTypeSpec {
+            family: OntologyTypeFamily::Asset,
+            name: class.to_string(),
+            version: 1,
+            schema: format!("qip-deepbrain/research:asset_class:{class}"),
+            description: format!("the {class} asset class the coverage detector measures"),
         })?;
     }
     Ok(registry)
@@ -1068,7 +1138,7 @@ impl ResearchLoop {
         // that would be woken to do work it cannot do.
         let brains = crate::now::specialist_registry()?;
         let tools = registered_tools_holding(extra_tools)?;
-        let ontology = sweep_ontology()?;
+        let ontology = sweep_ontology_over(&coverage)?;
         Self::check_ontology(&ontology)?;
         let tool_count = tool_count(&tools);
         for specialist in qip_kernel::now_stage::Specialist::ALL {
@@ -1138,6 +1208,41 @@ impl ResearchLoop {
                 return Err(Error::invalid(format!(
                     "the research sweep reads {family:?}.{name}, which the ontology registry \
                      does not hold; register the type before the sweep runs"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Run against `ontology` instead of the one [`sweep_ontology_over`]
+    /// seeded at construction. The composition root builds the registry and
+    /// hands it in, so what the sweep consults is what the process holds;
+    /// refused when it lacks a type the sweep's detectors read. Whether it
+    /// names every asset class in the coverage map is checked at each sweep,
+    /// by [`Self::check_coverage_registered`].
+    pub fn with_ontology(mut self, ontology: OntologyRegistry) -> Result<Self> {
+        Self::check_ontology(&ontology)?;
+        self.ontology = ontology;
+        Ok(self)
+    }
+
+    /// Refuse a coverage map naming an asset class the ontology does not
+    /// hold: the detector would raise a gap about a class nobody registered.
+    fn check_coverage_registered(&self) -> Result<()> {
+        for class in self
+            .coverage
+            .keys()
+            .filter_map(|key| coverage_asset_class(key))
+        {
+            if self
+                .ontology
+                .get_latest(OntologyTypeFamily::Asset, class)
+                .is_none()
+            {
+                return Err(Error::invalid(format!(
+                    "the coverage detector reads the asset class `{class}`, which the ontology \
+                     registry does not hold; register an Asset type of that name before the \
+                     sweep runs"
                 )));
             }
         }
@@ -1304,6 +1409,7 @@ impl ResearchLoop {
         // detector reads: an ontology that lost a type stops the sweep by
         // name rather than letting a detector read an unregistered shape.
         Self::check_ontology(&self.ontology)?;
+        self.check_coverage_registered()?;
         round.registries = RegistryCounts {
             sources: licensed_sources.len(),
             ontology_types: self.ontology.type_count(),
@@ -1385,7 +1491,11 @@ impl ResearchLoop {
                 })
             })
             .collect();
-        observations.extend(unexplained_residuals(&residuals, RESIDUAL_BPS)?);
+        observations.extend(unexplained_residuals_priced(
+            &residuals,
+            &fill_notionals(platform)?,
+            RESIDUAL_BPS,
+        )?);
         observations.extend(model_drift(&std::mem::take(&mut self.drifted_models)));
         if let Some((model, tally)) = &self.replies
             && let Some(counts) = tally.take_at_least(MODEL_REPLIES_MIN)
@@ -2004,9 +2114,18 @@ impl ResearchLoop {
         let severity = basis_points(gap.signal.severity)?;
         let economic = gap.signal.economic_value;
         let entities = gap.signal.affected_domains.clone();
-        let admission = self
-            .desk
-            .offer(gap, licensed_sources, eligible_jurisdictions);
+        // Urgency is the gap's own deadline (R12-AMBIENT-3106): the signal's
+        // expiry, read against its window, so a gap the router deferred for
+        // a sweep ranks ahead of the same gap raised this instant. The same
+        // figure ranks the desk's queue (R12-EXPAND-6048) and the request
+        // below; the desk reads it as a fraction of the scale.
+        let urgency = urgency_bp(now, deadline, self.config.signal_ttl);
+        let admission = self.desk.offer_by_deadline(
+            gap,
+            f64::from(urgency) / f64::from(qip_contracts::ambient::MAX_SEVERITY_BP),
+            licensed_sources,
+            eligible_jurisdictions,
+        );
         let outcome = admission.as_str();
         *round.admissions.entry(outcome).or_default() += 1;
         metrics.count(
@@ -2032,7 +2151,7 @@ impl ResearchLoop {
         // discriminate. Economic significance is the gap's economic value in
         // basis points — the anomaly mapper states it on [0, 100], so ×100
         // is its basis-point form, and a detector's stated zero stays zero.
-        let economic_bp = basis_points(economic.to_f64() / 100.0)?;
+        let economic_bp = economic_scale_bp(economic.to_f64())?;
         // Options in cost order: re-reading the next sweep is possible only
         // for a gap the price sweep raised; the acquisition the class asks
         // for is always an option, at its declared cost in thousands of
@@ -2042,10 +2161,6 @@ impl ResearchLoop {
                 .unwrap_or(u32::MAX)
                 .saturating_mul(1_000)
                 .min(qip_contracts::ambient::MAX_SEVERITY_BP);
-        // Urgency is the gap's own deadline (R12-AMBIENT-3106): the signal's
-        // expiry, read against its window, so a gap the router deferred for
-        // a sweep ranks ahead of the same gap raised this instant.
-        let urgency = urgency_bp(now, deadline, self.config.signal_ttl);
         let chosen = cheapest_viable(
             economic_bp,
             severity,
@@ -3011,6 +3126,42 @@ fn fill_residuals(fills: &[FillObservation]) -> Vec<FillResidual> {
             })
         })
         .collect()
+}
+
+/// The notional each venue's paper fills traded, from the outcome record:
+/// every `Action::Filled`'s quantity times its price, summed by venue
+/// (R12-EXPAND-6048). It is what prices a residual gap: the mean miss in basis
+/// points means little until it is applied to the size it was paid on. Money,
+/// so `Decimal`, and an overflow is refused rather than saturated.
+///
+/// Keyed by venue because a [`FillObservation`] names its venue and not its
+/// order. The mean miss is read over the fills the twin scored and the
+/// notional over every fill the venue holds, so the figure is the miss applied
+/// to everything traded there, which is what a venue's slippage costs.
+pub fn fill_notionals(platform: &Platform) -> Result<BTreeMap<String, Decimal>> {
+    let mut by_venue: BTreeMap<String, Decimal> = BTreeMap::new();
+    for entry in platform.outcomes().entries() {
+        if let qip_twin::capture::Action::Filled {
+            venue,
+            quantity,
+            price,
+            ..
+        } = &entry.decision.action
+        {
+            let notional = quantity.checked_mul(*price).ok_or_else(|| {
+                Error::numeric(format!(
+                    "a fill at `{venue}` has a notional that overflows a decimal"
+                ))
+            })?;
+            let slot = by_venue.entry(venue.to_string()).or_insert(Decimal::ZERO);
+            *slot = slot.checked_add(notional.abs()).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the notional traded at `{venue}` overflows a decimal"
+                ))
+            })?;
+        }
+    }
+    Ok(by_venue)
 }
 
 /// Every paper fill's slippage against its arrival, from the outcome record.

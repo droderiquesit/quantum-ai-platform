@@ -1585,14 +1585,15 @@
   },
   {
     "id": "R12-AMBIENT-3071",
-    "status": "PARTIAL",
-    "current": "LEARN prices declined and filled paths under one per-cycle cap (COUNTERFACTUALS_PER_CYCLE); a due path past the cap stays queued, is counted under qip_counterfactuals_deferred_total and is priced on a later cycle, so the cap delays scoring and drops nothing. A path is dropped only when the twin refuses to price it (counted unscored{reason=refused}) or when the bounded queue is full at capture (counted unscored{reason=*_capacity}). The resulting DeclinedScore and FillScore records feed the regret findings and the size-cap review inside the kernel; no router or opportunity sweep reads them.",
+    "status": "COMPLETE",
+    "current": "LEARN prices declined and filled paths under one per-cycle cap (COUNTERFACTUALS_PER_CYCLE); a due path past the cap stays queued, is counted under qip_counterfactuals_deferred_total and is priced on a later cycle, so the cap delays scoring and drops nothing. A path is dropped only when the twin refuses to price it (counted unscored{reason=refused}) or when the bounded queue is full at capture (counted unscored{reason=*_capacity}). The resulting DeclinedScore records feed the regret findings and the size-cap review inside the kernel, and the deep brain's sweep reads them: ResearchLoop::sweep_over hands each DeclinedScore's (gate, regret, would_have_earned) to veto_observations, and a gate holding MIN_REGRETS (3) regretted declines raises a GapTrigger::MissedOpportunity gap, which signal_class maps to SignalClass::Opportunity and the attention router sends to Pathway::ResearchTask, naming the gate in its evidence (declined_scores:gate:<gate>).",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs fn score_declined: deferred due paths are counted and left in self.declined",
-      "backend/crates/runtime/qip-kernel/src/platform.rs fn score_filled: same rule under the remaining budget",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over (platform.declined_scores() into veto_observations)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::three_regretted_declines_at_one_gate_reach_the_sweep_as_an_opportunity_class_research_signal (real Platform, three refused orders priced by a LEARN cycle; mutation: delete the veto_observations extend in sweep_over, no Opportunity-class signal; second mutation: read the economic value with basis_points instead of economic_scale_bp, the sweep errors)"
     ],
-    "gap": "Output reaches no router: counterfactual regret is not raised as an opportunity-class signal the deep brain sweep (or any router) consumes. The carry-over the triage closure asked for already exists and is tested.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1600,20 +1601,24 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test learning declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle",
+    "verification": "cd backend && cargo test -p qip-deepbrain --test research three_regretted_declines_at_one_gate_reach_the_sweep_as_an_opportunity_class_research_signal",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 (lane L01): the clause said the per-cycle cap drops some declines; it defers them and a test pins that. Kept PARTIAL on the missing router. Read, not run, by this lane."
+    "notes": "Corrected 2026-10-18 (lane L01): the clause said the per-cycle cap drops some declines; it defers them and a test pins that. Kept PARTIAL on the missing router. Read, not run, by this lane. Closed 2026-10-18 (lane RT-C). The sweep-level test found a defect the pure veto test could not: ResearchLoop::admit read a priced gap's economic value with basis_points(value / 100) and `?`, so a gate whose regretted declines forwent more than 100 units failed the whole sweep (the fixture's three declines priced at 2089.6). admit now reads an off-scale figure as the scale's end (economic_scale_bp), the same full scale emit gives the signal, and still refuses a negative or non-finite one. Fixture direction: the twin scores a declined buy against the ask, so a falling tape is what scores as regret (learning.rs documents it); the test asserts the regret bit as its premise rather than the reading."
   },
   {
     "id": "R12-AMBIENT-3072",
-    "status": "PARTIAL",
-    "current": "ResearchLoop::sweep_over reads Platform::pre_position each sweep and raises one SignalClass::Capital signal (Pathway::CapitalPreparation) per recommended movement, activated into ResearchRound::capital_advice and an advisory; ResearchConfig::capital_sentinel=false raises none.",
+    "status": "COMPLETE",
+    "current": "ResearchLoop::sweep_over reads Platform::pre_position each sweep and raises one SignalClass::Capital signal (Pathway::CapitalPreparation) per recommended movement, activated into ResearchRound::capital_advice and an advisory; ResearchConfig::capital_sentinel=false raises none, and it defaults to true. The demand history the plan forecasts from is fed beyond cash on the default cycle: a fill in an instrument the desk declared as a hedge (hedge_policies or hedge_candidates, the declarations the DECIDE survey proposes from) records DemandKind::Hedge beside Cash at the fill site, and the cross-margin read LEARN runs every cycle (review_cross_margin) records DemandKind::Collateral (per-venue maintenance, observed or not) and DemandKind::Inventory (per-venue gross carried) through record_obligation_demand. A venue requiring or carrying nothing records nothing.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/research.rs capital_signal",
-      "backend/crates/apps/qip-deepbrain/tests/research.rs a_recommended_movement_is_a_capital_preparation_signal_dispatched_as_advice_and_absent_when_the_sentinel_is_off"
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_recommended_movement_is_a_capital_preparation_signal_dispatched_as_advice_and_absent_when_the_sentinel_is_off",
+      "backend/crates/runtime/qip-kernel/src/platform.rs is_declared_hedge_instrument, record_obligation_demand",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs a_hedge_fill_records_hedge_demand_and_an_ordinary_fill_does_not",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs the_cross_margin_read_records_collateral_and_inventory_demand_at_the_venue_it_read",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs a_book_that_traded_nowhere_records_no_collateral_or_inventory_demand"
     ],
-    "gap": "Only DemandKind::Cash is recorded where demand history is fed (platform.rs record_capital_demand at the fill site); collateral, inventory and hedge demand are never observed, and no kernel test shows a hedge fill records Hedge demand. Recording Hedge needs the fill to say it is a hedge, which the fill path does not carry.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1621,10 +1626,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel",
+    "verification": "cargo test -p qip-kernel --test collateral && cargo test -p qip-deepbrain --test research",
     "work_item": "",
     "size": "M",
-    "notes": "The router half is closed (see R12-AMBIENT-3065); the kernel half is not, and is why this stays PARTIAL."
+    "notes": "Mutations that fired (2026-10-18): capital sentinel forced off or on in sweep (the CapitalPreparation test fails at both); the record_obligation_demand call deleted, its maintenance filter inverted, is_declared_hedge_instrument forced false or true, and a fixed observation recorded unconditionally (each fails the matching collateral.rs test). Collateral and Inventory are observations of what the book stands in each cycle, not a forecast of need; Hedge is inferred from the instrument because the fill carries no purpose of its own."
   },
   {
     "id": "R12-AMBIENT-3073",
