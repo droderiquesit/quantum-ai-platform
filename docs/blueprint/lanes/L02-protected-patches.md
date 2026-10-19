@@ -1,4 +1,78 @@
-# L02 patches that need a protected path (2026-10-18)
+# L02 patches that need a protected path (2026-10-18, patch 2026-10-19)
+
+**Status 2026-10-19.** Five of the seven rows are now a ready patch,
+`docs/blueprint/lanes/L02-owner-patch-2026-10-19.patch`, built in a scratch
+worktree on `ccr-d1bc1e54-kf6mr0` @ `ebf08fa` and checked to apply at
+`f8df035`. Two rows are left out (below). Nothing protected is modified on the
+branch: the owner applies the patch. Not validated by a workflow run:
+`.github/**` cannot be exercised from a lane.
+
+## Apply (owner)
+
+```
+git fetch origin ccr-d1bc1e54-kf6mr0 && git checkout ccr-d1bc1e54-kf6mr0 && git pull --no-rebase
+git apply --check docs/blueprint/lanes/L02-owner-patch-2026-10-19.patch
+git apply docs/blueprint/lanes/L02-owner-patch-2026-10-19.patch
+git commit -am "Apply L02 owner patch (R12-ARCH-9071, CICD-7116/7120/9085, FINOPS-10134)"
+```
+
+The patch holds the protected edits and their paired test edits together:
+neither may land without the other.
+
+## Per row
+
+| Row | Result |
+|---|---|
+| R12-ARCH-9071 | In patch. Four guard suites get their own CODEOWNERS lines; `architecture.rs::the_guard_suites_are_owned_by_name_in_codeowners`. |
+| R12-CICD-7116, R12-CICD-7120 | In patch. `deploy.yml` gains `simulation-gate` and `paper-gate` (each `needs: gate`, checkout of `DEPLOY_SHA`); `images` now `needs: [gate, simulation-gate, paper-gate]`. `prod_guard.rs` asserts the list and each gate's own `needs: gate`. Limit kept: the gates run source tests, not the built image; Kargo's `paper` stage stays the manual gate. |
+| R12-CICD-9085 | In patch. `ci.yml` `test` job, `acceptance` partition only: runs `tick_replay` and `performance` into `replay-bench.txt` (`shell: bash` so `tee` cannot hide a failure) and uploads artifact `replay-bench`, 90 days, `if: !cancelled()`. `pipeline_scripts.rs` asserts it. Gap kept: a log, not a delta; no committed baseline exists. |
+| R12-FINOPS-10134 | In patch, reduced. `variable "owner"` (validated lowercase label, **no default** so a forgotten tfvars line fails the plan rather than guessing), `owner = "platform"` in all four tfvars, `owner` and `region` added to `local.labels`, `owner = "platform"` added to the 13 `*.tftest.hcl` top-level `variables` blocks (a required variable would otherwise fail them). `terraform_contract.rs` asserts it. **Left out:** the per-module-call `merge(local.labels, {plane, workload})`; 17 call sites whose plane and workload values nobody has chosen. Applying changes labels in place on existing resources (an update, not a replace). |
+| R12-CICD-9108 | **Left out.** The spec itself says `gcloud artifacts sbom load` acceptance of this repository's CycloneDX output is unconfirmed, and it needs a new `actions: read` grant on `images`. An unverified step that can fail every deployment is a risk to add blind. Open for the owner: confirm the format, then re-spec. |
+| R12-GCP-9120 | **Left out.** The write of `infrastructure/change-windows.json` and the gate script was refused by the auto-mode classifier ("Instruction Poisoning"); per the lane rules the row stopped and was not retried another way. The choice made, for the owner to apply or edit: network, project and database changes only Mon-Thu 14:00-20:00 UTC, no window Fri-Sun, `up` action only (teardown deliberately ungated). Nothing for this row is in the patch. |
+
+## Choices made
+
+- Change windows (not in patch, see above): Mon-Thu 14:00-20:00 UTC; none Fri-Sun.
+- `owner` label value `var.owner`, validated `^[a-z][a-z0-9_-]{0,62}$`; each environment states `owner = "platform"` as a placeholder the owner fills in. No personal identifier.
+- Gates only add: no check, job, need, refusal or prod guard was removed or relaxed. `prod_guard.rs` replaced `deploy.contains("    needs: gate\n")` with a stricter assertion on the `images` list plus each new gate's own `needs: gate`.
+
+## Tests run in the scratch worktree (all `cargo test -p qip-acceptance --no-fail-fast --test ...`)
+
+```
+architecture       test result: ok. 56 passed; 0 failed
+cicd_governance    test result: ok. 5 passed; 0 failed
+gitops             test result: ok. 47 passed; 0 failed
+infrastructure     test result: ok. 153 passed; 0 failed
+pipeline_scripts   test result: ok. 9 passed; 0 failed
+prod_guard         test result: ok. 3 passed; 0 failed
+terraform_contract test result: ok. 12 passed; 0 failed
+terraform fmt -check -recursive terraform environments   exit 0
+terraform init -backend=false; terraform validate        Success! The configuration is valid.
+terraform test (infrastructure/terraform)                Success! 103 passed, 0 failed.
+```
+
+Terraform 1.9.8 (the repository pin), SHA-256 checked against HashiCorp's sums.
+No script changed, so `node --test` did not apply.
+
+Mutations, each failed for the right reason and was restored byte-identical:
+delete the `lane_placement.rs` CODEOWNERS line (architecture.rs:4141); drop
+`paper-gate` from `images`' needs (prod_guard.rs:285); change `paper-gate`'s
+`needs: gate` (prod_guard.rs:307); rename the `replay-bench` artifact
+(pipeline_scripts.rs:586); delete `owner = var.owner` from `local.labels`
+(terraform_contract.rs:1137); delete `owner` from the stage tfvars
+(terraform_contract.rs:1154).
+
+## Files the agent-boundary check will list
+
+Protected: `.github/CODEOWNERS`, `.github/workflows/ci.yml`,
+`.github/workflows/deploy.yml`, `infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars`,
+`infrastructure/terraform/variables.tf`.
+Not protected, same patch: `infrastructure/terraform/main.tf`, 13
+`infrastructure/terraform/tests/*.tftest.hcl`, and
+`architecture.rs`, `prod_guard.rs`, `pipeline_scripts.rs`, `terraform_contract.rs`
+under `backend/crates/tests/qip-acceptance/tests/`.
+
+# Original specs (2026-10-18), kept for the two rows left out and for reference
 
 None of these is applied. Each row below stays PARTIAL until the owner applies
 its patch together with the paired test edit, because a test asserting the
