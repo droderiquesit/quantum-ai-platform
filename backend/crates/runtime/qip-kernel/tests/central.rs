@@ -68,6 +68,7 @@ use qip_lifecycle::evidence::{
     LeakageAudit, PaperEvidence, PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence,
     StrategyEvidence,
 };
+use qip_lifecycle::ledger::MAX_LIVE_STRATEGIES;
 use qip_lifecycle::trials::StrategyFamily;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
@@ -8249,5 +8250,152 @@ fn a_cycle_reports_both_the_crowded_name_three_cells_hold_and_the_shared_cause_t
             .any(|breach| breach.limit_name == "factor-concentration"),
         "a book loading on the market at about six times did not block under the shipped factor cap: {factor:?}"
     );
+    Ok(())
+}
+
+/// ADR 0149 decision 15: the live set is bounded, the bound is a refusal, and
+/// retiring makes room without letting the retired id back in.
+///
+/// The failure this prevents: a factory that registered without limit held
+/// every candidate ever proposed, and a bound that evicted to make room would
+/// have dropped the record of a strategy that may hold capital. Mutation:
+/// deleting the live-count refusal in `StrategyFactory::register` admits the
+/// 4,097th candidate and the refusal assertion fails.
+#[test]
+fn a_full_desk_refuses_a_new_candidate_until_one_retires_and_a_retired_id_stays_refused()
+-> Result<()> {
+    let mut plane = plane()?;
+    let ids: Vec<StrategyId> = (0..MAX_LIVE_STRATEGIES)
+        .map(|index| StrategyId::new(format!("live-{index:05}")))
+        .collect();
+    for id in &ids {
+        register(&mut plane, id, "cell-a")?;
+    }
+    // Premise: the desk is exactly full and nothing has been retired.
+    assert_eq!(plane.factory().candidates().count(), MAX_LIVE_STRATEGIES);
+
+    let extra = StrategyId::new("one-too-many");
+    let error = register(&mut plane, &extra, "cell-a").expect_err("a full desk refuses");
+    assert!(error.message().contains("retire one"), "{error:?}");
+    assert!(plane.factory().candidate(&extra).is_none());
+
+    // Retiring makes room: the retired strategy stops counting.
+    plane
+        .factory_mut()
+        .retire(&ids[0], "desk", "the edge is gone", start())?;
+    register(&mut plane, &extra, "cell-a")?;
+
+    // And nothing live was evicted to make it: every other candidate is held.
+    assert!(
+        ids[1..]
+            .iter()
+            .all(|id| plane.factory().candidate(id).is_some())
+    );
+    // The retired id is refused from the record, not re-admitted into the
+    // room it left.
+    let error = register(&mut plane, &ids[0], "cell-a").expect_err("a retired id is refused");
+    assert!(
+        error.message().contains("already registered") || error.message().contains("retire one"),
+        "{error:?}"
+    );
+    assert_eq!(plane.factory().stage_of(&ids[0]), GateStage::Retired);
+    Ok(())
+}
+
+#[test]
+fn the_live_strategy_bound_is_sized_to_the_tournament_registry() {
+    assert_eq!(
+        MAX_LIVE_STRATEGIES,
+        qip_learning_engine::tournament::MAX_FORECASTERS
+    );
+}
+
+/// ADR 0149 decision 16: a revision is a new candidate with a recorded
+/// ancestor, and the ancestor buys it nothing.
+///
+/// The failure this prevents: a lineage field that a gate or a copy path reads
+/// would turn "succeeds" into "inherits", and a retired strategy's evidence
+/// would walk back onto the ladder under a new name without being re-earned.
+/// Mutation: copying the ancestor's evidence into the successor in `register`
+/// makes the successor's holdout evidence present and the no-evidence
+/// assertion fails.
+#[test]
+fn a_successor_candidate_records_its_ancestor_inherits_no_evidence_and_still_needs_every_gate_and_the_dual_approval()
+-> Result<()> {
+    let mut plane = plane()?;
+    let ancestor = StrategyId::new("momentum-v1");
+    register(&mut plane, &ancestor, "cell-a")?;
+    walk_to(&mut plane, &ancestor, GateStage::Scaled)?;
+    plane
+        .factory_mut()
+        .retire(&ancestor, "desk", "the edge is gone", scaled_at())?;
+    // Premise: the ancestor held full evidence and is retired.
+    assert!(
+        plane
+            .factory()
+            .candidate(&ancestor)
+            .is_some_and(|c| c.evidence().holdout.is_some())
+    );
+    assert_eq!(plane.factory().stage_of(&ancestor), GateStage::Retired);
+
+    let successor = StrategyId::new("momentum-v2");
+    let (compiled, program) = compile(successor.as_str())?;
+    let candidate = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("central-tests")?,
+        "cell-a",
+        venue(),
+        start(),
+    )?
+    .with_succeeds(ancestor.clone());
+    plane.factory_mut().register(candidate)?;
+
+    let registered = plane
+        .factory()
+        .candidate(&successor)
+        .ok_or_else(|| qip_core::Error::not_found("the successor was not registered"))?;
+    assert_eq!(registered.succeeds(), Some(&ancestor));
+    // Nothing was inherited: no evidence, and the walk starts at candidate.
+    assert!(registered.evidence().holdout.is_none());
+    assert_eq!(plane.factory().stage_of(&successor), GateStage::Candidate);
+    assert_eq!(plane.factory().path(&successor), vec![GateStage::Candidate]);
+    let error = plane
+        .factory_mut()
+        .promote(&successor, None, "it used to be good", start())
+        .expect_err("a successor must earn the holdout gate itself");
+    assert!(!error.message().is_empty());
+    assert_eq!(plane.factory().stage_of(&successor), GateStage::Candidate);
+
+    // With its own evidence it climbs, and the capital-holding rung still
+    // wants two people.
+    plane
+        .factory_mut()
+        .submit_evidence(&successor, full_evidence(&successor, "cell-a")?)?;
+    for rung in [GateStage::Holdout, GateStage::Paper, GateStage::Shadow] {
+        plane
+            .factory_mut()
+            .promote(&successor, None, "the gate passed", start())?;
+        assert_eq!(plane.factory().stage_of(&successor), rung);
+    }
+    let error = plane
+        .factory_mut()
+        .promote(&successor, None, "no approver", start())
+        .expect_err("a capital-holding rung needs its dual approval");
+    assert!(!error.message().is_empty());
+    assert_eq!(plane.factory().stage_of(&successor), GateStage::Shadow);
+
+    // A lineage must name something real and something else.
+    let (compiled, program) = compile("orphan")?;
+    let orphan = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("central-tests")?,
+        "cell-a",
+        venue(),
+        start(),
+    )?
+    .with_succeeds(StrategyId::new("never-registered"));
+    assert!(plane.factory_mut().register(orphan).is_err());
     Ok(())
 }

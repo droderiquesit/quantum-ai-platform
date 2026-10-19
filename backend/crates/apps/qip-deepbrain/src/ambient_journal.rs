@@ -63,6 +63,10 @@ pub enum AmbientRecord {
         cycle: u64,
         signal_id: String,
         scenario: qip_simulation_engine::scenario::Scenario,
+        /// That the scenario was generated and from what inputs
+        /// (R12-EXPAND-6033). Absent on records written before it existed.
+        #[serde(default)]
+        episode: Option<qip_contracts::expansion::SyntheticEpisode>,
     },
     /// Every assumption the loop holds and how it stands after the sweep
     /// (R12-AMBIENT-1143). Written every sweep the table is non-empty, so
@@ -234,6 +238,7 @@ impl AmbientJournal {
                     cycle,
                     signal_id: generated.signal_id.clone(),
                     scenario: generated.scenario.clone(),
+                    episode: Some(generated.episode.clone()),
                 },
                 at,
                 at,

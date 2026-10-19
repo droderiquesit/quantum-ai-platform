@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The blob namespace a composition root opens the lake under.
-pub const LAKE_NAMESPACE: &str = "lake";
+pub const LAKE_NAMESPACE: &str = crate::classes::LAKE_NAMESPACE;
 
 /// The entitlement the platform's own records are held under. Nobody licensed
 /// them to the platform, so there is no vendor to name; the partition still

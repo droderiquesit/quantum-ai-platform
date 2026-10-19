@@ -225,11 +225,12 @@ struct CurrentSchema {
 struct StreamSchemas {
     registered: BTreeSet<(u32, u32)>,
     current: BTreeMap<u32, CurrentSchema>,
-    /// The event topics the stream admits in a record's body, when the
-    /// catalogue declared them (R12-FABRIC-8090). `None` is a stream declared
-    /// without a topic list, which admits any; `Some` refuses a record of any
-    /// other topic before it is appended.
-    body_topics: Option<BTreeSet<String>>,
+    /// The event topics the stream admits in a record's body, each with the
+    /// schema versions the committed lock holds for it (R12-FABRIC-8090,
+    /// ADR 0156 §1.3). `None` is a stream declared without a topic list,
+    /// which admits any; `Some` refuses a record of any other topic, or of a
+    /// version the lock does not hold for its topic, before it is appended.
+    body_schemas: Option<BTreeMap<String, BTreeSet<u32>>>,
 }
 
 /// A stream's fixed shape: how many partitions it has, and the segment log
@@ -782,24 +783,42 @@ impl Broker {
         Ok(())
     }
 
-    /// Declare the event topics `stream` admits in a record's body. A
-    /// produce carrying a record of any other topic is refused with
+    /// Declare the event topics `stream` admits in a record's body, and for
+    /// each the schema versions it admits. A produce carrying a record of any
+    /// other topic, or of a version outside that topic's set, is refused with
     /// [`Refusal::SchemaRefused`] before anything is appended: the batch
     /// schema registered by [`Self::register_schema`] says the batch is well
     /// formed, and this says what is in it belongs on this stream.
     ///
+    /// Admission is by `(topic, version)` and not by the shape of the body
+    /// read at produce time: a shape read off a runtime value hides a retyped
+    /// field behind `null` and an empty array, so a check on it could pass a
+    /// body the lock would refuse (ADR 0156 §1.3). Shape is held at build
+    /// time by the lock suite.
+    ///
     /// Replaces the set for `stream` rather than adding to it, so a catalogue
-    /// that narrows a stream narrows what it accepts. Refuses an empty set:
-    /// a stream admitting nothing is a catalogue mistake, not a closed stream.
-    pub fn register_body_topics(&self, stream: &str, topics: BTreeSet<String>) -> Result<()> {
+    /// that narrows a stream narrows what it accepts. Refuses an empty set,
+    /// and a topic with no version: a stream admitting nothing is a catalogue
+    /// mistake, not a closed stream.
+    pub fn register_body_schemas(
+        &self,
+        stream: &str,
+        topics: BTreeMap<String, BTreeSet<u32>>,
+    ) -> Result<()> {
         if topics.is_empty() {
             return Err(Error::invalid(format!(
                 "stream '{stream}' was given no body topics; a stream that admits no event \
                  is a catalogue mistake, so declare the topics it carries"
             )));
         }
+        if let Some((topic, _)) = topics.iter().find(|(_, versions)| versions.is_empty()) {
+            return Err(Error::invalid(format!(
+                "stream '{stream}' admits topic '{topic}' at no schema version; a topic the \
+                 schema lock holds no row for cannot be streamed"
+            )));
+        }
         let mut schemas = self.schemas.lock().unwrap_or_else(|e| e.into_inner());
-        schemas.entry(stream.to_string()).or_default().body_topics = Some(topics);
+        schemas.entry(stream.to_string()).or_default().body_schemas = Some(topics);
         Ok(())
     }
 
@@ -2229,7 +2248,7 @@ impl Broker {
     /// declared topics admits any.
     fn require_admitted_topics(&self, stream: &str, batch: &Batch) -> Result<()> {
         let schemas = self.schemas.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(admitted) = schemas.get(stream).and_then(|s| s.body_topics.as_ref()) else {
+        let Some(admitted) = schemas.get(stream).and_then(|s| s.body_schemas.as_ref()) else {
             return Ok(());
         };
         for record in &batch.records {
@@ -2241,13 +2260,27 @@ impl Broker {
                     error.message()
                 ))
             })?;
-            if !admitted.contains(event.topic.name()) {
+            let Some(versions) = admitted.get(event.topic.name()) else {
                 return Err(Error::denied(format!(
                     "record {} carries topic '{}', which stream '{stream}' does not admit \
                      (it admits {}); refusing to append it (FABRIC-024)",
                     record.event_id,
                     event.topic.name(),
-                    admitted.iter().cloned().collect::<Vec<_>>().join(", ")
+                    admitted.keys().cloned().collect::<Vec<_>>().join(", ")
+                )));
+            };
+            if !versions.contains(&event.schema_version) {
+                return Err(Error::denied(format!(
+                    "record {} carries topic '{}' at schema version {}, which the schema lock \
+                     does not hold for it (it holds {}); refusing to append it (FABRIC-024)",
+                    record.event_id,
+                    event.topic.name(),
+                    event.schema_version,
+                    versions
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )));
             }
         }

@@ -17,6 +17,7 @@ use common::{DIGEST_A, each_refused, refuses_missing_unknown_and_foreign_version
 use qip_contracts::episode::{
     Counterfactual, DecisionKind, Episode, EpisodeDecision, EpisodeFields, HorizonOutcome,
 };
+use qip_contracts::expansion::{SyntheticEpisode, SyntheticGenerator};
 use qip_contracts::policy::{BeliefState, ModelPack, UncertaintyType};
 use qip_contracts::risk_envelope::{
     DriverLimit, EmergencyMode, HardLimit, HealthRequirement, HealthSubject, RiskEnvelope,
@@ -304,4 +305,63 @@ fn a_model_pack_missing_any_of_its_nine_fields_is_refused_on_decode() -> Result<
     };
     pack.validate()?;
     every_field_is_required(&pack)
+}
+
+/// ADR 0149 decision 18. Mutation: accept a seed on the deterministic
+/// generator, or default a missing Monte Carlo seed to zero, in
+/// `SyntheticEpisode::try_from` — the matching refusal below is then admitted
+/// and its assertion fails, which is right because either invents a seed
+/// nobody drew.
+#[test]
+fn a_synthetic_episode_for_the_conditional_scenario_has_an_input_digest_and_no_seed_and_a_monte_carlo_one_without_a_seed_is_refused()
+-> Result<()> {
+    let digest = qip_core::hash::sha256_hex(b"signal-1|obj-A|100.0|130.0");
+    let conditional = SyntheticEpisode::new(
+        "conditional:signal-1",
+        SyntheticGenerator::Conditional,
+        digest.clone(),
+        None,
+    )?;
+    assert_eq!(conditional.seed(), None);
+    assert_eq!(conditional.input_digest(), digest);
+
+    // A stochastic generator without a seed cannot be replayed.
+    assert!(
+        SyntheticEpisode::new("mc", SyntheticGenerator::MonteCarlo, digest.clone(), None).is_err()
+    );
+    // A seeded stochastic generator is the one admitted form of a seed.
+    let seeded = SyntheticEpisode::new(
+        "mc",
+        SyntheticGenerator::MonteCarlo,
+        digest.clone(),
+        Some(7),
+    )?;
+    assert_eq!(seeded.seed(), Some(7));
+    // A seed on a deterministic generator is a number nobody used.
+    for generator in [SyntheticGenerator::Conditional, SyntheticGenerator::Library] {
+        assert!(
+            SyntheticEpisode::new("det", generator, digest.clone(), Some(0)).is_err(),
+            "{generator:?} drew nothing and takes no seed"
+        );
+    }
+    // The digest is a SHA-256, not any string.
+    assert!(
+        SyntheticEpisode::new("c", SyntheticGenerator::Conditional, "not-a-digest", None).is_err()
+    );
+    assert!(SyntheticEpisode::new(" ", SyntheticGenerator::Conditional, digest, None).is_err());
+
+    // Decode applies the same refusals, so a record cannot arrive unchecked.
+    let round_trip: SyntheticEpisode = serde_json::from_str(&serde_json::to_string(&conditional)?)?;
+    assert_eq!(round_trip, conditional);
+    let forged = serde_json::json!({
+        "scenario": "mc", "generator": "monte_carlo",
+        "input_digest": conditional.input_digest(), "seed": null
+    });
+    assert!(serde_json::from_value::<SyntheticEpisode>(forged).is_err());
+    let unknown = serde_json::json!({
+        "scenario": "c", "generator": "conditional",
+        "input_digest": conditional.input_digest(), "seed": null, "extra": 1
+    });
+    assert!(serde_json::from_value::<SyntheticEpisode>(unknown).is_err());
+    Ok(())
 }

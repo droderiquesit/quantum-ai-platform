@@ -6210,7 +6210,7 @@ impl Platform {
     /// The priors are the open drafts REASON has formed and LEARN has not yet
     /// resolved — `pending_episodes`, keyed by the instrument each claim is
     /// about — gated on the reasoning engine's own
-    /// `BeliefState::last_updated`, which is the same fact
+    /// `BeliefClock::last_updated`, which is the same fact
     /// [`Self::central_degradation`] reads for the centre's §6.2 row 4. The
     /// two must agree: a centre reading row 4 unavailable while shipping a
     /// cell a row 4 that is fresh would be two claims about one capability,
@@ -6230,7 +6230,7 @@ impl Platform {
     pub fn issue_belief_priors(&mut self, now: Timestamp) -> Result<BeliefIssue> {
         let issue = BeliefIssue::derive(
             self.pending_episodes.iter(),
-            self.reasoning.beliefs().last_updated(),
+            self.reasoning.belief_clock().last_updated(),
             now,
         )?;
         let correlation_id = self
@@ -14573,7 +14573,7 @@ impl Platform {
     /// `CausalGraph::last_updated` against [`CAUSAL_GRAPH_HORIZON`]: a graph
     /// that has never absorbed a claim reads unavailable and one whose
     /// newest claim is older than a quarter reads stale. Row 4, the belief
-    /// state, from the reasoning engine's `BeliefState::last_updated`
+    /// state, from the reasoning engine's `BeliefClock::last_updated`
     /// against [`BELIEF_HORIZON`]: before the first belief is formed in a
     /// process it reads unavailable, and one formed more than a session ago
     /// reads stale. Each narrows by its own multiplier, and every reading
@@ -14624,8 +14624,11 @@ impl Platform {
             now,
         )?;
         state.observe(Capability::CausalGraph, causal.freshness());
-        let belief =
-            BeliefFreshness::assess(self.reasoning.beliefs().last_updated(), BELIEF_HORIZON, now)?;
+        let belief = BeliefFreshness::assess(
+            self.reasoning.belief_clock().last_updated(),
+            BELIEF_HORIZON,
+            now,
+        )?;
         state.observe(Capability::BeliefState, belief.freshness());
         Ok(state)
     }
