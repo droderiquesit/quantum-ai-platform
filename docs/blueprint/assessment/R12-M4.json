@@ -2080,13 +2080,14 @@
   {
     "id": "R12-RISK-4094",
     "status": "PARTIAL",
-    "current": "AggregateExposure::crowded names instruments several cells accumulated; shared_cause projects causal-driver/factor/family exposure into the risk state; SIMULATE walks causal shocks. No AI model.",
+    "current": "AggregateExposure::crowded names instruments several cells accumulated (CellIngestion.crowded, returned by Platform::ingest_cell_report); shared_cause::observe projects causal-driver and factor exposure into the risk state every cycle (Platform::risk_state_from), where the shipped limit set reads it; SIMULATE walks causal shocks. One kernel test now holds both surfaces on one platform in one pass. No AI model.",
     "evidence": [
       "backend/crates/services/qip-capital/src/exposure.rs:201 crowded",
       "backend/crates/runtime/qip-kernel/src/platform.rs:15898 shared_cause::observe",
-      "backend/crates/libs/qip-risk/tests/shared_cause.rs"
+      "backend/crates/libs/qip-risk/tests/shared_cause.rs",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_cycle_reports_both_the_crowded_name_three_cells_hold_and_the_shared_cause_the_book_leans_on"
     ],
-    "gap": "Not reached in this session. The closure asks for one test asserting CentralPlane.crowded and shared_cause findings in a single cycle's report; tests/central.rs has crowded tests (lines 642, 6565) and none over shared_cause, so the combined fixture still has to be built.",
+    "gap": "2026-10-18: the check's two reports are met and proven together: three cells holding one name give a non-empty CellIngestion.crowded (asserted first), and the same platform's cycle writes the causal-driver bucket (empty before the cycle, charged to the driver after) and a factor bucket that the shipped conservative_default set blocks on (factor-concentration). Mutation: shared_cause::observe returning the state unchanged fails the test. Kept PARTIAL on the statement, not the check: (1) CycleReport carries neither surface, so 'reported each cycle' is met via CellIngestion.crowded (per ingested report) and the risk state's axis_exposures (every cycle), not via the cycle's own report; (2) the statement says the Risk Brain uses AI, causal and scenario models to discover hidden and emerging risk, and there is no AI model in the path; (3) the causal-driver bucket is populated but is not driven past its 0.50 cap here - temporal-precedence edges carry a confidence capped at 0.5, so the blocking half is shown on the factor level.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2097,7 +2098,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": " Re-examined 2026-10-18 by lane RT-B; the combined test is built and mutation-verified; kept PARTIAL per the gap."
   },
   {
     "id": "R12-RISK-4095",
@@ -2303,15 +2304,16 @@
   },
   {
     "id": "R12-RISK-4104",
-    "status": "PARTIAL",
-    "current": "hedge.rs/hedge_search.rs/confidence.rs import no alpha crate (source scan, mutation noted); hedge plan reads risk state, policy, catalogue, prices.",
+    "status": "COMPLETE",
+    "current": "hedge.rs/hedge_search.rs/confidence.rs import no alpha crate (source scan, mutation noted); the hedge review reads only risk state, catalogue, policy and prices, and a behavioural test shows the hedge the platform logs is unchanged when alpha-side inputs change: two identical platforms and books differ only in a jumpy bar series on a name the book does not hold (the busy one opens a tournament question, the quiet one none, positions equal), and the journalled HedgeSurveyed outcomes are equal.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/hedge_review.rs:1-60,300 review",
       "backend/crates/runtime/qip-kernel/src/platform.rs:15662",
       "backend/crates/runtime/qip-kernel/tests/hedge.rs:183",
-      "backend/crates/tests/qip-acceptance/tests/survival_independence.rs::the_hedge_brain_and_the_grant_governor_import_no_alpha_component"
+      "backend/crates/tests/qip-acceptance/tests/survival_independence.rs::the_hedge_brain_and_the_grant_governor_import_no_alpha_component",
+      "backend/crates/runtime/qip-kernel/tests/hedge.rs::a_hedge_proposal_is_unchanged_when_the_alpha_signals_around_the_book_change"
     ],
-    "gap": "Check demands a behavioural test showing a hedge unchanged when alpha signals change; only import/closure scans exist.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2319,10 +2321,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-kernel --test hedge",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Closed 2026-10-18 by lane RT-B. Mutation: scaling each proposed hedge quantity by the platform's open tournament-question count inside Platform::review_hedges changed the quiet platform's 540 units to 1080 on the busy one and the test failed on the outcome comparison; restored byte for byte. The alpha signal varied is bars on an unheld name, not a thesis confidence set directly."
   },
   {
     "id": "R12-RISK-4105",

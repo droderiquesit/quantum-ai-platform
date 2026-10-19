@@ -1548,8 +1548,8 @@ fn forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_doe
     // seam — a hypothesis forming in `reason` — and only there.
     let mut engine = ReasoningEngine::new(ReviewPolicy::default());
     // Premise: a fresh engine has formed nothing and says so.
-    assert_eq!(engine.beliefs().last_updated(), None);
-    assert_eq!(engine.beliefs().hypotheses_formed(), 0);
+    assert_eq!(engine.belief_clock().last_updated(), None);
+    assert_eq!(engine.belief_clock().hypotheses_formed(), 0);
 
     // The self-model's factors weight the next belief; they are not
     // evidence, and handing them over must not call the belief state
@@ -1559,7 +1559,7 @@ fn forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_doe
         0.9,
     )]));
     assert_eq!(
-        engine.beliefs().last_updated(),
+        engine.belief_clock().last_updated(),
         None,
         "handing over origin factors moved the belief state's last update"
     );
@@ -1576,7 +1576,7 @@ fn forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_doe
         "the premise failed: not refused"
     );
     assert_eq!(
-        engine.beliefs().last_updated(),
+        engine.belief_clock().last_updated(),
         None,
         "a refused hypothesis moved the belief state's last update"
     );
@@ -1588,16 +1588,16 @@ fn forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_doe
     ))?;
     assert_eq!(outcome.hypothesis.formed_at, formed_at);
     assert_eq!(
-        engine.beliefs().last_updated(),
+        engine.belief_clock().last_updated(),
         Some(formed_at),
         "forming a hypothesis did not record its instant"
     );
-    assert_eq!(engine.beliefs().hypotheses_formed(), 1);
+    assert_eq!(engine.belief_clock().hypotheses_formed(), 1);
 
     // Reading the outcome against the action bar is not evidence either.
     let _ = engine.clears_action_bar(&outcome);
-    assert_eq!(engine.beliefs().last_updated(), Some(formed_at));
-    assert_eq!(engine.beliefs().hypotheses_formed(), 1);
+    assert_eq!(engine.belief_clock().last_updated(), Some(formed_at));
+    assert_eq!(engine.belief_clock().hypotheses_formed(), 1);
 
     // A later belief moves it forward; an earlier one — a replay — counts
     // but does not rewind it.
@@ -1609,16 +1609,16 @@ fn forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_doe
     later.now = later.as_of;
     engine.reason(later)?;
     assert_eq!(
-        engine.beliefs().last_updated(),
+        engine.belief_clock().last_updated(),
         Some(formed_at.saturating_add(Duration::from_hours(1)))
     );
     engine.reason(synthesis(
         vec![finding("credit", Direction::Negative, 0.8, 3)],
         Some(0.2),
     ))?;
-    assert_eq!(engine.beliefs().hypotheses_formed(), 3);
+    assert_eq!(engine.belief_clock().hypotheses_formed(), 3);
     assert_eq!(
-        engine.beliefs().last_updated(),
+        engine.belief_clock().last_updated(),
         Some(formed_at.saturating_add(Duration::from_hours(1))),
         "a replayed hypothesis rewound the belief state's last update"
     );

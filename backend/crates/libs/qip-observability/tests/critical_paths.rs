@@ -128,6 +128,26 @@ fn an_entity_graph_with_retention_keeps_the_newest_signals_and_refuses_zero() {
     assert!(EntityGraph::with_retention(0).is_err());
 }
 
+#[test]
+fn the_catalogue_holds_a_model_serving_objective_on_the_serving_series_at_the_package_target() {
+    // R12-OBS-7128: "removing it fails the check". Both targets are asserted
+    // because the objective beside it is the package-written one, and the two
+    // must not collapse into one name or drift to different targets.
+    let slos = critical_path_slos();
+    let serving = slos
+        .iter()
+        .find(|path| path.slo.name == "model-serving")
+        .expect("the catalogue has a model-serving objective");
+    let package = slos
+        .iter()
+        .find(|path| path.slo.name == "model-serving-package")
+        .expect("the catalogue keeps the package objective");
+    assert_eq!(serving.source_series, names::MODEL_SERVES);
+    assert_ne!(serving.source_series, package.source_series);
+    assert!((serving.slo.target - package.slo.target).abs() < 1e-12);
+    assert!((serving.slo.target - 0.99).abs() < 1e-12);
+}
+
 /// R12-OBS-9159: every objective `default_slos` declares for the reflex is
 /// bound to a series, evaluated where the node records it, and carries the
 /// declaration's own threshold and target rather than a restated one.

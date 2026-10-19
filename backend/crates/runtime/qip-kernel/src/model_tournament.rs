@@ -588,8 +588,11 @@ impl TournamentStage {
             issued_at: now,
             probabilities_bp: Some(binary(up_bp(detector_up))),
             quantiles: move_quantiles(detector_up, observation.expected_move_bps, &rets),
-            cost: 0.0,
-            latency: Duration::from_nanos(0),
+            // Unmetered, not free: the hypothesis is formed at the pass
+            // instant, so a measured latency is zero by construction and a
+            // wall-clock reading would not replay (ADR 0149 decision 13).
+            cost: None,
+            latency: None,
         });
         for finding in &observation.report.findings {
             if !matches!(
@@ -622,14 +625,17 @@ impl TournamentStage {
                 issued_at: now,
                 probabilities_bp: Some(binary(up_bp(p_up))),
                 quantiles: move_quantiles(p_up, observation.expected_move_bps, &rets),
-                cost: run.map_or(0.0, |run| run.spend.cost_micros as f64),
-                latency: run.map_or(Duration::from_nanos(0), |run| run.duration()),
+                cost: run.map(|run| run.spend.cost_micros as f64),
+                latency: run.map(|run| run.duration()),
             });
         }
         let mut forecasts = BTreeMap::new();
         for entry in entries {
             let id = entry.forecaster.clone();
-            let cost = entry.cost;
+            // The vote contract carries a `Decimal` compute cost with no
+            // absent form, so an unmetered entrant votes at zero there; the
+            // tournament's own influence arithmetic reads the `None`.
+            let cost = entry.cost.unwrap_or(0.0);
             let up = entry
                 .probabilities_bp
                 .as_ref()

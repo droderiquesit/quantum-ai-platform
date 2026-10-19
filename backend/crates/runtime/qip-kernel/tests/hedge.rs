@@ -18,20 +18,21 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::Result;
-use qip_core::time::Timestamp;
+use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
 use qip_events::Topic;
 use qip_execution_engine::order::Side;
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::costs::LiquidityProfile;
 use qip_financial::object::FinancialObject;
-use qip_financial::quality::Provenance;
+use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::risk_profile::{FactorExposures, RiskCharacteristics};
 use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
 use qip_kernel::hedge_review::{HedgePolicyDeclaration, HedgeSurveyed};
 use qip_kernel::platform::Platform;
+use qip_market::bar::{Bar, Interval};
 use qip_market::quote::{Trade, TradeCondition};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
@@ -664,5 +665,107 @@ fn a_refusal_the_engine_produced_is_charted_under_its_own_reason_and_not_the_sur
         "one policy's refusal was charted as a book nobody could describe"
     );
     assert_eq!(snapshot.counter_total(names::HEDGE_REFUSALS), 1);
+    Ok(())
+}
+
+/// A name outside the hedged sector and never held: the alpha side's subject.
+const ALPHA: &str = "obj-ALP";
+
+fn alpha_bar(at: Timestamp, open: f64, close: f64) -> SensedRecord {
+    let price = |value: f64| Decimal::from_f64(value).expect("a representable price");
+    SensedRecord::Bar(Box::new(Bar {
+        object_id: ObjectId::from_string(ALPHA),
+        venue: "XNYS".to_string(),
+        interval: Interval::Day,
+        open_time: at,
+        open: price(open),
+        high: price(open.max(close) * 1.002),
+        low: price(open.min(close) * 0.998),
+        close: price(close),
+        volume: dec!("1000000"),
+        trade_count: 5_000,
+        vwap: Decimal::from_f64((open + close) / 2.0),
+        quality: DataQuality::default(),
+    }))
+}
+
+/// A series with a jump in it, so the detectors find something and REASON
+/// forms a hypothesis the tournament then opens a question on.
+fn alpha_bars(count: usize) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
+            let jump = if i == count * 2 / 3 { 0.09 } else { 0.0 };
+            let open = price;
+            price *= 1.0 + noise + jump;
+            alpha_bar(
+                start().saturating_sub(Duration::from_days((count - i) as i64)),
+                open,
+                price,
+            )
+        })
+        .collect()
+}
+
+/// One platform whose catalogue also holds an unheld alpha name, long the
+/// hedged sector and with the hedge price printed.
+fn platform_with_alpha_name() -> Result<Platform> {
+    let mut universe = universe();
+    universe
+        .insert(listed(ALPHA, "ALP", Sector::HealthCare))
+        .expect("insertable");
+    let mut platform = platform_over(universe, vec![sector_policy()])?;
+    go_long(&mut platform, dec!("900"))?;
+    print_hedge_price(&mut platform, dec!("100"));
+    Ok(platform)
+}
+
+#[test]
+fn a_hedge_proposal_is_unchanged_when_the_alpha_signals_around_the_book_change() -> Result<()> {
+    // R12-RISK-4104: "a test shows a hedge unchanged by alpha signals". The
+    // source scan in `survival_independence` proves the hedge brain imports no
+    // alpha crate; it cannot see a platform-level path (a thesis confidence
+    // read inside the survey) that no import names. Two platforms identical
+    // down to the book differ only in bars on a name the book does not hold.
+    let mut quiet = platform_with_alpha_name()?;
+    let mut busy = platform_with_alpha_name()?;
+    assert!(
+        busy.observe(alpha_bars(120)) > 0,
+        "the alpha bars must reach the snapshot"
+    );
+
+    quiet.run_cycle(start());
+    busy.run_cycle(start());
+
+    // Premise 1: the alpha side really moved on the busy platform and not on
+    // the quiet one; otherwise equality below compares two untouched runs.
+    assert_eq!(quiet.model_tournament().open_questions().count(), 0);
+    assert!(
+        busy.model_tournament().open_questions().count() > 0,
+        "the alpha bars formed no hypothesis, so the alpha side did not change"
+    );
+    // Premise 2: the book is the same, so any difference in the survey could
+    // only have come from the alpha side.
+    assert_eq!(
+        quiet.risk_figures().position_notionals(),
+        busy.risk_figures().position_notionals(),
+        "the alpha signals changed the book, which is not what this test varies"
+    );
+
+    let quiet_survey = logged_survey(&quiet)?;
+    let busy_survey = logged_survey(&busy)?;
+    assert_eq!(
+        quiet_survey.proposed, 1,
+        "premise: the survey proposes a hedge"
+    );
+    assert_eq!(
+        quiet_survey.outcomes, busy_survey.outcomes,
+        "alpha signals on an unheld name changed the hedge the platform proposed"
+    );
+    assert_eq!(
+        quiet_survey.exposures_refused,
+        busy_survey.exposures_refused
+    );
     Ok(())
 }
