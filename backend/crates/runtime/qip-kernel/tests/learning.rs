@@ -2244,3 +2244,79 @@ fn the_same_book_at_a_venue_the_twin_has_not_mispriced_is_admitted() -> Result<(
     fill_one(&mut platform, "prop-misfit-5", start())?;
     Ok(())
 }
+
+// --- R12-RISK-4096: a short with no known borrow is refused ----------------
+
+fn sell(platform: &mut Platform, quantity: Decimal, tag: &str, at: Timestamp) -> Result<()> {
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Sell,
+        quantity,
+        dec!("100"),
+        tag,
+        vec![format!("hyp-{tag}")],
+        at,
+    );
+    platform.submit_order(order, at).map(|_| ())
+}
+
+/// Mutation: make `short_without_borrow` return `None` when no reading
+/// exists, or compare `available` with `>` instead of `<`.
+#[test]
+fn a_short_nobody_has_said_is_borrowable_is_refused_and_a_covered_one_is_admitted() -> Result<()> {
+    let mut platform = platform()?;
+    // Premise: selling what the book holds is not a short and needs no
+    // borrow, so the refusals below are the borrow rule's.
+    fill_one(&mut platform, "prop-borrow-long", start())?;
+    sell(&mut platform, dec!("100"), "prop-borrow-close", start())?;
+
+    let error = sell(&mut platform, dec!("2000"), "prop-borrow-none", start())
+        .expect_err("a short with no borrow reading was admitted");
+    assert!(
+        error.message().contains("no borrow availability"),
+        "{}",
+        error.message()
+    );
+
+    // A reading smaller than the shorted quantity is not enough.
+    platform.observe_borrow("obj-AAA", dec!("99"), start(), start())?;
+    let error = sell(&mut platform, dec!("2000"), "prop-borrow-small", start())
+        .expect_err("a short beyond the available borrow was admitted");
+    assert!(error.message().contains("only 99"), "{}", error.message());
+
+    // A stale reading is no reading.
+    let later = start().saturating_add(Duration::from_days(3));
+    let error = sell(&mut platform, dec!("2000"), "prop-borrow-stale", later)
+        .expect_err("a short against a stale reading was admitted");
+    assert!(
+        error.message().contains("older than"),
+        "{}",
+        error.message()
+    );
+
+    // A fresh reading that covers it admits.
+    platform.observe_borrow("obj-AAA", dec!("10000"), later, later)?;
+    sell(&mut platform, dec!("2000"), "prop-borrow-covered", later)?;
+    Ok(())
+}
+
+#[test]
+fn borrow_availability_that_is_negative_or_from_the_future_is_refused() -> Result<()> {
+    let mut platform = platform()?;
+    assert!(
+        platform
+            .observe_borrow("obj-AAA", dec!("-1"), start(), start())
+            .is_err()
+    );
+    assert!(
+        platform
+            .observe_borrow(
+                "obj-AAA",
+                dec!("1"),
+                start().saturating_add(Duration::from_days(1)),
+                start()
+            )
+            .is_err()
+    );
+    Ok(())
+}

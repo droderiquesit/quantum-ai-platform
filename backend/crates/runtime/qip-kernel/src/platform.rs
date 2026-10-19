@@ -319,6 +319,12 @@ pub struct Platform {
     /// empty no wallet is assembled — a wallet showing zero holdings would
     /// read as an empty account rather than an unobserved one.
     holdings_observed: BTreeMap<VenueAsset, HoldingObservation>,
+    /// The shares of each instrument a lender has said can be borrowed to
+    /// sell short, latest per instrument (R12-RISK-4096). Empty until a
+    /// licensed source is wired to [`Platform::observe_borrow`], and while
+    /// empty every short is refused: an instrument nobody has said is
+    /// borrowable is not borrowable.
+    borrow_availability: BTreeMap<String, BorrowReading>,
     /// §38.3's tolerance formula per observed **venue-asset**: the class, the
     /// dust floor the statement stated, and one interval's rate. The wallet
     /// refuses to reconcile a venue-asset it has no basis for rather than
@@ -1242,6 +1248,26 @@ const DECLINED_HISTORY: usize = 256;
 /// under, and the `gate` its rejection record carries (R12-ASSET-4074). A
 /// source literal, so the label has exactly one value for this refusal.
 const WALLET_HALT_CONTROL: &str = "wallet-halt";
+
+/// The control name a short refused for want of a borrow is journaled under.
+const BORROW_CONTROL: &str = "borrow-availability";
+
+/// How old a borrow reading may be when a short is judged against it.
+/// Locate availability moves intraday; a day-old reading is the oldest one
+/// that is not a guess, so an older one is treated as no reading at all.
+const BORROW_FRESHNESS: Duration = Duration::from_days(1);
+
+/// The most instruments whose borrow availability is held at once, so the
+/// map is bounded by the deployment and not by a feed.
+const MAX_BORROW_READINGS: usize = 4096;
+
+/// One lender statement: how much of an instrument could be borrowed, and
+/// when the lender said so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BorrowReading {
+    available: Decimal,
+    observed_at: Timestamp,
+}
 
 /// Why no proposal is signed while the desk's feed to the ledger cannot take
 /// another record (R12-RES-7098). One sentence for the cycle report; the
@@ -5422,6 +5448,7 @@ impl Platform {
             pending_capital_grants: BTreeMap::new(),
             fabric,
             holdings_observed: BTreeMap::new(),
+            borrow_availability: BTreeMap::new(),
             wallet_tolerances: ToleranceSchedule::new(),
             policy_rates: PolicyRateTable::new(),
             wallet_tolerance_reasons: BTreeMap::new(),
@@ -18609,6 +18636,95 @@ impl Platform {
         }
     }
 
+    /// Record a lender's statement of how much of `instrument` can be
+    /// borrowed (R12-RISK-4096). Refuses a negative quantity, a reading from
+    /// the future, and a new instrument past the bound. **No caller feeds
+    /// this in the tree**: a borrow source is a data source, and
+    /// `qip-data-finder` evaluates its licensing posture before one is
+    /// used, so until one is admitted every short is refused.
+    pub fn observe_borrow(
+        &mut self,
+        instrument: &str,
+        available: Decimal,
+        observed_at: Timestamp,
+        now: Timestamp,
+    ) -> Result<()> {
+        if available.is_negative() {
+            return Err(Error::invalid(format!(
+                "borrow availability for {instrument} is {available}; a quantity cannot be \
+                 negative — state zero if nothing can be borrowed"
+            )));
+        }
+        if observed_at > now {
+            return Err(Error::invalid(format!(
+                "borrow availability for {instrument} is dated {observed_at} but now is {now}; \
+                 a reading from the future is a clock fault, not evidence"
+            )));
+        }
+        if !self.borrow_availability.contains_key(instrument)
+            && self.borrow_availability.len() >= MAX_BORROW_READINGS
+        {
+            return Err(Error::denied(format!(
+                "borrow availability is held for {MAX_BORROW_READINGS} instruments already; \
+                 {instrument} would be the next"
+            )));
+        }
+        self.borrow_availability.insert(
+            instrument.to_string(),
+            BorrowReading {
+                available,
+                observed_at,
+            },
+        );
+        Ok(())
+    }
+
+    /// Why a sell would short without a borrow that is known, or `None` for
+    /// an order that does not take the book below flat or whose shorted part
+    /// is covered by a fresh reading. **Unknown is refused**: no reading, a
+    /// stale one, or one smaller than the shorted quantity all refuse, and
+    /// nothing defaults to borrowable.
+    pub fn short_without_borrow(&self, order: &Order, now: Timestamp) -> Option<String> {
+        if !matches!(order.side, Side::Sell) {
+            return None;
+        }
+        let instrument = order.object_id.as_str();
+        let held = self
+            .capital
+            .positions
+            .get(instrument)
+            .map_or(Decimal::ZERO, |lot| lot.quantity);
+        let long = if held.is_positive() {
+            held
+        } else {
+            Decimal::ZERO
+        };
+        let shorted = order.quantity - long;
+        if !shorted.is_positive() {
+            return None;
+        }
+        match self.borrow_availability.get(instrument) {
+            None => Some(format!(
+                "selling {} of {instrument} takes the book {shorted} short and no borrow \
+                 availability has been observed for it; an instrument nobody has said is \
+                 borrowable is not borrowable",
+                order.quantity
+            )),
+            Some(reading) if now.since(reading.observed_at) > BORROW_FRESHNESS => Some(format!(
+                "selling {} of {instrument} takes the book {shorted} short and the borrow \
+                 reading for it is older than {BORROW_FRESHNESS:?}; re-read it rather than \
+                 shorting against a stale one",
+                order.quantity
+            )),
+            Some(reading) if reading.available < shorted => Some(format!(
+                "selling {} of {instrument} takes the book {shorted} short and only {} can be \
+                 borrowed",
+                order.quantity, reading.available
+            )),
+            Some(_) => None,
+        }
+    }
+
     /// Whether the twin's fills at `venue` have been persistently wrong
     /// (R12-RES-7104): at least [`TWIN_MISFIT_MIN_OBSERVATIONS`] observed and
     /// a calibrated bias of [`TWIN_MISFIT_BIAS_BPS`] or more either way. A
@@ -18978,6 +19094,9 @@ impl Platform {
         if let Some(reason) = self.wallet_halt_for(order.object_id.as_str(), order.side) {
             return self.refuse_for_wallet_halt(&order, reason, now);
         }
+        if let Some(reason) = self.short_without_borrow(&order, now) {
+            return self.refuse_for_borrow(&order, reason, now);
+        }
         // R12-RISK-3022: the pre-trade check is routed through the cost router
         // as a decision that must be deterministic, and the order does not go
         // further without that routing. `Router::determine` returns a type that
@@ -19109,6 +19228,27 @@ impl Platform {
                     )
                 })
             })
+    }
+
+    /// Put a short the borrow rule stopped on the record and refuse it.
+    fn refuse_for_borrow(&mut self, order: &Order, reason: String, now: Timestamp) -> Result<()> {
+        let correlation = self.correlation_for(now);
+        self.telemetry
+            .metrics
+            .count(names::ORDERS_REFUSED, labels([("control", BORROW_CONTROL)]));
+        let _ = self.capture(
+            now,
+            &correlation,
+            order.object_id.clone(),
+            Action::Rejected {
+                order_id: order.order_id.clone(),
+                gate: BORROW_CONTROL.to_string(),
+                reason: reason.clone(),
+            },
+            RealisedOutcome::nothing_happened(now),
+            reason.clone(),
+        );
+        Err(Error::denied(reason))
     }
 
     /// Put an order the wallet halt stopped on the record and refuse it.
