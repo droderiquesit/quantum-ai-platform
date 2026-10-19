@@ -1,0 +1,596 @@
+diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
+index a8151c4..d1a7d24 100644
+--- a/.github/CODEOWNERS
++++ b/.github/CODEOWNERS
+@@ -24,6 +24,12 @@ backend/crates/apps/qip-deepbrain/src/main.rs @droderiquesit
+ # The type system's paper-only Cell
+ backend/crates/edge/qip-edge/src/cell.rs @droderiquesit
+ 
++# The guard suites themselves: the wildcard alone lets one reviewer weaken them
++backend/crates/tests/qip-acceptance/tests/architecture.rs @droderiquesit
++backend/crates/tests/qip-acceptance/tests/paper_boundary.rs @droderiquesit
++backend/crates/tests/qip-acceptance/tests/lane_placement.rs @droderiquesit
++backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs @droderiquesit
++
+ # The event log hash chain (ADR 0007)
+ backend/crates/libs/qip-events/src/ @droderiquesit
+ 
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index d0781ed..905b58a 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -220,6 +220,23 @@ jobs:
+           cargo run --quiet -p qip-cli --bin qip -- event-fabric schema-gate \
+             --base "$RUNNER_TEMP/base.lock.json" \
+             --head crates/libs/qip-events/schemas.lock.json
++      # The tick replay and the performance suites' output, kept for 90 days
++      # beside the `sbom` artifact (R12-CICD-9085). It is a log, not a delta:
++      # a delta needs a committed baseline file, and none exists, so a
++      # regression is read by comparing two runs' logs by eye. One partition
++      # only, the one that holds `qip-acceptance`, so the artifact name is
++      # unique within the run. `shell: bash` for pipefail: without it the
++      # `tee` would hide a failing suite behind its own exit status.
++      - name: replay and benchmark output
++        if: matrix.partition == 'acceptance'
++        shell: bash
++        run: cargo test -p qip-acceptance --test tick_replay --test performance -- --nocapture 2>&1 | tee replay-bench.txt
++      - uses: actions/upload-artifact@v4
++        if: ${{ !cancelled() && matrix.partition == 'acceptance' }}
++        with:
++          name: replay-bench
++          path: backend/replay-bench.txt
++          retention-days: 90
+ 
+   # nextest does not run doctests; `cargo test --doc` does, and only those.
+   # Its own job rather than a step after the suite: it compiles every
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index 1d09eb5..bfbf59c 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -380,6 +380,60 @@ jobs:
+             --policy .agent-guard/scripts/agent-policy.json --range "$work/range.json" \
+             --environment "$TARGET_ENVIRONMENT"
+ 
++  # Named gates for the two claims a deployment most needs to be able to
++  # point at (R12-CICD-7116, R12-CICD-7120). The workspace suite in `ci` is
++  # one number; these are the simulation engine and the paper-trading
++  # boundary, each a job a reviewer can find in the run and a branch rule can
++  # require by name. They run on the commit being deployed, so a green `ci`
++  # for some other tree proves nothing about them.
++  #
++  # Honest limit: these run the paper tests against the source, not against
++  # the built image. Kargo's `paper` stage stays the manual gate for the
++  # image itself, as the register already records.
++  simulation-gate:
++    name: simulation engine and twin acceptance
++    needs: gate
++    runs-on: ubuntu-latest
++    permissions:
++      contents: read
++    defaults:
++      run:
++        working-directory: backend
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          ref: ${{ env.DEPLOY_SHA }}
++      - name: install the pinned toolchain
++        run: rustup show active-toolchain || rustup toolchain install
++      - uses: Swatinem/rust-cache@v2
++        with:
++          workspaces: backend
++          cache-on-failure: true
++      - name: simulation engine and twin suites
++        run: cargo test -p qip-acceptance --no-fail-fast --test arch_056_simulation_engine --test arch_042_twin_simulation
++
++  paper-gate:
++    name: paper-trading boundary acceptance
++    needs: gate
++    runs-on: ubuntu-latest
++    permissions:
++      contents: read
++    defaults:
++      run:
++        working-directory: backend
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          ref: ${{ env.DEPLOY_SHA }}
++      - name: install the pinned toolchain
++        run: rustup show active-toolchain || rustup toolchain install
++      - uses: Swatinem/rust-cache@v2
++        with:
++          workspaces: backend
++          cache-on-failure: true
++      - name: paper boundary and prod guard suites
++        run: cargo test -p qip-acceptance --no-fail-fast --test paper_boundary --test arch_007_paper_boundary --test prod_guard
++
+   # One image per deployed artefact. Four of the five are workspace binaries
+   # built from the one Dockerfile, so those four cannot drift apart.
+   #
+@@ -417,7 +471,7 @@ jobs:
+   # `main.rs` fails rather than quietly shipping a library nobody serves.
+   images:
+     name: build and push ${{ matrix.binary }}
+-    needs: gate
++    needs: [gate, simulation-gate, paper-gate]
+     runs-on: ubuntu-latest
+     permissions:
+       contents: read
+diff --git a/backend/crates/tests/qip-acceptance/tests/architecture.rs b/backend/crates/tests/qip-acceptance/tests/architecture.rs
+index 031be54..6bb993e 100644
+--- a/backend/crates/tests/qip-acceptance/tests/architecture.rs
++++ b/backend/crates/tests/qip-acceptance/tests/architecture.rs
+@@ -4107,3 +4107,40 @@ fn the_evaluator_never_reads_the_generators_score_and_the_class_board_is_fed_by_
+         "the learning desk feeds the class scoreboard from the fit's own claim again"
+     );
+ }
++
++/// The suites that hold the boundaries must themselves be owned by name.
++///
++/// R12-ARCH-9071: with only the `*` pattern covering them, one reviewer could
++/// weaken `architecture.rs` or `paper_boundary.rs` in the same change that
++/// breaks the boundary they guard, and the guard would approve itself. A
++/// path is owned by name only when a non-`*` pattern equal to the path exists.
++#[test]
++fn the_guard_suites_are_owned_by_name_in_codeowners() {
++    let codeowners = std::fs::read_to_string(repository_root().join(".github/CODEOWNERS"))
++        .expect("CODEOWNERS is readable");
++    let patterns: Vec<&str> = codeowners
++        .lines()
++        .map(|line| line.split('#').next().unwrap_or("").trim())
++        .filter(|line| !line.is_empty())
++        .filter_map(|line| line.split_whitespace().next())
++        .collect();
++    assert!(
++        patterns.contains(&"*"),
++        "premise: CODEOWNERS parsed, and its wildcard default is present"
++    );
++    for guard in [
++        "backend/crates/tests/qip-acceptance/tests/architecture.rs",
++        "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs",
++        "backend/crates/tests/qip-acceptance/tests/lane_placement.rs",
++        "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs",
++    ] {
++        assert!(
++            repository_root().join(guard).is_file(),
++            "premise: the guard suite `{guard}` exists"
++        );
++        assert!(
++            patterns.contains(&guard),
++            "`{guard}` has no CODEOWNERS line of its own, so the `*` default is the only owner"
++        );
++    }
++}
+diff --git a/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs b/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs
+index fb17f19..9e07afa 100644
+--- a/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs
++++ b/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs
+@@ -563,3 +563,35 @@ fn every_test_file_under_scripts_is_run_by_the_pipelines_scripts_job() {
+         );
+     }
+ }
++
++/// The replay and benchmark output is kept as a run artifact.
++///
++/// R12-CICD-9085: the tick replay and performance suites print the numbers a
++/// regression would show in, and a run that discards its log leaves nothing
++/// to compare the next run with. The step must be a step of the `test` job
++/// and not a mention in a comment, and it must run the two suites it names.
++///
++/// Mutation: delete the `name: replay-bench` line from ci.yml's `test` job.
++#[test]
++fn the_test_job_uploads_the_replay_and_benchmark_output_as_an_artifact() {
++    let lines = ci_job("test");
++    assert!(
++        !lines.is_empty(),
++        "premise: ci.yml has a `test` job to read"
++    );
++    assert!(
++        lines.iter().any(|line| line == "- uses: actions/upload-artifact@v4"),
++        "premise: the `test` job uploads an artifact at all"
++    );
++    assert!(
++        lines.iter().any(|line| line == "name: replay-bench"),
++        "ci.yml's `test` job no longer uploads an artifact named `replay-bench`"
++    );
++    assert!(
++        lines.iter().any(|line| {
++            line.starts_with("run: cargo test -p qip-acceptance --test tick_replay --test performance")
++                && line.contains("tee replay-bench.txt")
++        }),
++        "ci.yml's `test` job no longer runs tick_replay and performance into replay-bench.txt"
++    );
++}
+diff --git a/backend/crates/tests/qip-acceptance/tests/prod_guard.rs b/backend/crates/tests/qip-acceptance/tests/prod_guard.rs
+index 0498b89..9ac299d 100644
+--- a/backend/crates/tests/qip-acceptance/tests/prod_guard.rs
++++ b/backend/crates/tests/qip-acceptance/tests/prod_guard.rs
+@@ -268,16 +268,47 @@ fn prod_is_refused_on_every_trigger_by_deploy_and_infra() {
+     let gate_job = deploy
+         .split("\n  gate:\n")
+         .nth(1)
+-        .and_then(|rest| rest.split("\n  images:\n").next())
+-        .expect("deploy.yml has a `gate` job followed by an `images` job");
++        .and_then(|rest| rest.split("\n  simulation-gate:\n").next())
++        .expect("deploy.yml has a `gate` job followed by a `simulation-gate` job");
+     assert!(
+         gate_job.contains("refuse a production deployment on every trigger"),
+         "the prod refusal is not inside the `gate` job"
+     );
++    // R12-CICD-7116/7120: `images` waits on the named simulation and paper
++    // gates as well, each of which itself needs `gate`. Dropping any of the
++    // three from the list lets an image build past the claim it names.
++    let images_job = deploy
++        .split("\n  images:\n")
++        .nth(1)
++        .and_then(|rest| rest.split("\n  deploy:\n").next())
++        .expect("deploy.yml has an `images` job followed by a `deploy` job");
+     assert!(
+-        deploy.contains("    needs: gate\n"),
+-        "`images` no longer needs `gate`"
++        images_job.contains("    needs: [gate, simulation-gate, paper-gate]\n"),
++        "`images` no longer needs `gate`, `simulation-gate` and `paper-gate`"
+     );
++    for named in ["simulation-gate", "paper-gate"] {
++        let rest = deploy
++            .split(&format!("\n  {named}:\n"))
++            .nth(1)
++            .unwrap_or_else(|| panic!("deploy.yml has no `{named}` job"));
++        // Ends at the next line indented exactly two spaces (a sibling job or
++        // a comment above one), so a neighbour's `needs:` is not read as this
++        // job's own.
++        let end = rest
++            .match_indices("\n  ")
++            .find(|(at, _)| {
++                rest[at + 3..]
++                    .chars()
++                    .next()
++                    .is_some_and(|c| c != ' ')
++            })
++            .map_or(rest.len(), |(at, _)| at);
++        let job = &rest[..end];
++        assert!(
++            job.contains("    needs: gate\n"),
++            "`{named}` no longer needs `gate`, so it can run on a commit the gate refused"
++        );
++    }
+     assert!(
+         deploy.contains("    needs: images\n"),
+         "`deploy` no longer needs `images`"
+diff --git a/backend/crates/tests/qip-acceptance/tests/terraform_contract.rs b/backend/crates/tests/qip-acceptance/tests/terraform_contract.rs
+index 39182b9..c3074a2 100644
+--- a/backend/crates/tests/qip-acceptance/tests/terraform_contract.rs
++++ b/backend/crates/tests/qip-acceptance/tests/terraform_contract.rs
+@@ -1092,3 +1092,75 @@ fn every_file_variable_refuses_a_path_traversal_segment_explicitly() {
+         "not every listed variable was found in variables.tf"
+     );
+ }
++
++/// R12-FINOPS-10134: every resource carries an `owner` and a `region` label,
++/// and the owner is a validated input each environment states.
++///
++/// The failure this prevents: a bill or an orphaned resource that nobody can
++/// trace to a team. `owner` has no default because a default is a guess that
++/// labels an environment whose tfvars forgot the line as owned by whoever
++/// wrote the default. The value is a team label; an `@` or an uppercase
++/// letter would mean a personal identifier or an invalid label value.
++///
++/// Mutation: delete `owner = var.owner` from `local.labels` in main.tf, or the
++/// `owner` line from one environment's tfvars.
++#[test]
++fn every_resource_label_set_names_an_owner_and_region_each_environment_states() {
++    let root = terraform_root();
++    let variables = std::fs::read_to_string(root.join("variables.tf")).expect("readable");
++    let owner = variable_block(&variables, "owner");
++    assert!(
++        owner.contains("validation {") && owner.contains("regex(\"^[a-z]"),
++        "the `owner` variable no longer validates itself as a lowercase label"
++    );
++    assert!(
++        !owner.lines().any(|l| {
++            let l = l.trim_start();
++            l.starts_with("default ") || l.starts_with("default=")
++        }),
++        "the `owner` variable has a default; an environment that forgot to state it would be \
++         labelled with a guess"
++    );
++    let main = without_comments(&std::fs::read_to_string(root.join("main.tf")).expect("readable"));
++    let labels = main
++        .split("labels = {")
++        .nth(1)
++        .and_then(|rest| rest.split("\n  }").next())
++        .expect("main.tf declares local.labels");
++    let compact = |line: &str| line.split_whitespace().collect::<Vec<_>>().join("");
++    let lines: Vec<String> = labels.lines().map(compact).collect();
++    assert!(
++        lines.iter().any(|l| l == "platform=\"qip\""),
++        "premise: the label block read is local.labels"
++    );
++    for wanted in ["owner=var.owner", "region=var.region"] {
++        assert!(
++            lines.iter().any(|l| l == wanted),
++            "local.labels no longer carries `{wanted}`"
++        );
++    }
++    let mut seen = 0usize;
++    for environment in ["dev", "test", "stage", "prod"] {
++        let path = repository_root()
++            .join("infrastructure/environments")
++            .join(environment)
++            .join("terraform.tfvars");
++        let tfvars = without_comments(&std::fs::read_to_string(&path).expect("tfvars readable"));
++        let value = tfvars
++            .lines()
++            .filter_map(|l| l.split_once('='))
++            .find(|(key, _)| key.trim() == "owner")
++            .map(|(_, v)| v.trim().trim_matches('"').to_string())
++            .unwrap_or_else(|| panic!("{environment}'s terraform.tfvars states no `owner`"));
++        assert!(
++            !value.is_empty()
++                && value.starts_with(|c: char| c.is_ascii_lowercase())
++                && value
++                    .chars()
++                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'),
++            "{environment}'s owner `{value}` is not a lowercase label value"
++        );
++        seen += 1;
++    }
++    assert_eq!(seen, 4, "not every environment was checked");
++}
+diff --git a/infrastructure/environments/dev/terraform.tfvars b/infrastructure/environments/dev/terraform.tfvars
+index fbd9af7..9026bc1 100644
+--- a/infrastructure/environments/dev/terraform.tfvars
++++ b/infrastructure/environments/dev/terraform.tfvars
+@@ -69,6 +69,8 @@ project_number = 101249892564
+ environment      = "dev"
+ region           = "us-east4"
+ autonomy_ceiling = "paper_trading"
++# Placeholder the owner fills in: a team label, never a personal identifier.
++owner = "platform"
+ 
+ venue_adapter_type = "simulated"
+ 
+diff --git a/infrastructure/environments/prod/terraform.tfvars b/infrastructure/environments/prod/terraform.tfvars
+index 602205c..10e8920 100644
+--- a/infrastructure/environments/prod/terraform.tfvars
++++ b/infrastructure/environments/prod/terraform.tfvars
+@@ -19,6 +19,8 @@ project_number = 0
+ environment      = "prod"
+ region           = "europe-west2"
+ autonomy_ceiling = "paper_trading"
++# Placeholder the owner fills in: a team label, never a personal identifier.
++owner = "platform"
+ 
+ # --- The trust zones (blueprint §46.1) ---------------------------------------
+ #
+diff --git a/infrastructure/environments/stage/terraform.tfvars b/infrastructure/environments/stage/terraform.tfvars
+index 8db8d7b..ea9800e 100644
+--- a/infrastructure/environments/stage/terraform.tfvars
++++ b/infrastructure/environments/stage/terraform.tfvars
+@@ -17,6 +17,8 @@ project_number = 0
+ environment      = "stage"
+ region           = "europe-west2"
+ autonomy_ceiling = "paper_trading"
++# Placeholder the owner fills in: a team label, never a personal identifier.
++owner = "platform"
+ 
+ # --- The trust zones (blueprint §46.1) ---------------------------------------
+ #
+diff --git a/infrastructure/environments/test/terraform.tfvars b/infrastructure/environments/test/terraform.tfvars
+index 11c9978..41e5cfa 100644
+--- a/infrastructure/environments/test/terraform.tfvars
++++ b/infrastructure/environments/test/terraform.tfvars
+@@ -17,6 +17,8 @@ project_number = 0
+ environment      = "test"
+ region           = "europe-west2"
+ autonomy_ceiling = "paper_trading"
++# Placeholder the owner fills in: a team label, never a personal identifier.
++owner = "platform"
+ 
+ # --- The trust zones (blueprint §46.1) ---------------------------------------
+ #
+diff --git a/infrastructure/terraform/main.tf b/infrastructure/terraform/main.tf
+index acc622f..a3b11ca 100644
+--- a/infrastructure/terraform/main.tf
++++ b/infrastructure/terraform/main.tf
+@@ -107,6 +107,10 @@ locals {
+     platform    = "qip"
+     environment = var.environment
+     managed_by  = "terraform"
++    # Who answers for it and where it runs (R12-FINOPS-10134): the two keys a
++    # cost query most often groups by and no other label carried.
++    owner  = var.owner
++    region = var.region
+     # Whether this environment is permitted to reach a real venue. Labelled so
+     # a query can answer "which of our deployments can trade" without reading
+     # application configuration.
+diff --git a/infrastructure/terraform/tests/artefact-signing.tftest.hcl b/infrastructure/terraform/tests/artefact-signing.tftest.hcl
+index c150500..51092a6 100644
+--- a/infrastructure/terraform/tests/artefact-signing.tftest.hcl
++++ b/infrastructure/terraform/tests/artefact-signing.tftest.hcl
+@@ -52,6 +52,7 @@ variables {
+   project_id        = "artefact-plan-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   region            = "us-east4"
+   github_repository = "example/example"
+ 
+diff --git a/infrastructure/terraform/tests/build-pool.tftest.hcl b/infrastructure/terraform/tests/build-pool.tftest.hcl
+index 7e1c0c2..79bb455 100644
+--- a/infrastructure/terraform/tests/build-pool.tftest.hcl
++++ b/infrastructure/terraform/tests/build-pool.tftest.hcl
+@@ -40,6 +40,7 @@ variables {
+   project_id        = "pool-root-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   region            = "us-east4"
+   github_repository = "example/example"
+ 
+diff --git a/infrastructure/terraform/tests/deploy-identity.tftest.hcl b/infrastructure/terraform/tests/deploy-identity.tftest.hcl
+index e4f3ae4..13a5fdc 100644
+--- a/infrastructure/terraform/tests/deploy-identity.tftest.hcl
++++ b/infrastructure/terraform/tests/deploy-identity.tftest.hcl
+@@ -90,6 +90,7 @@ variables {
+   project_id     = "deploy-identity-harness"
+   project_number = 123456789012
+   environment    = "dev"
++  owner          = "platform"
+ 
+   # The four zones dev declares. The catalogue refuses a workload whose zone
+   # this environment did not declare, so a harness with no zones would fail on
+diff --git a/infrastructure/terraform/tests/dns-zone.tftest.hcl b/infrastructure/terraform/tests/dns-zone.tftest.hcl
+index c66780d..b05f1f4 100644
+--- a/infrastructure/terraform/tests/dns-zone.tftest.hcl
++++ b/infrastructure/terraform/tests/dns-zone.tftest.hcl
+@@ -28,6 +28,7 @@ variables {
+   project_id        = "dns-zone-root-plan-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   github_repository = "example/example"
+ 
+   trust_zones = {
+diff --git a/infrastructure/terraform/tests/execution-node-enable.tftest.hcl b/infrastructure/terraform/tests/execution-node-enable.tftest.hcl
+index fffb040..d5f1afb 100644
+--- a/infrastructure/terraform/tests/execution-node-enable.tftest.hcl
++++ b/infrastructure/terraform/tests/execution-node-enable.tftest.hcl
+@@ -47,6 +47,7 @@ variables {
+   project_id        = "node-plan-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   region            = "us-east4"
+   github_repository = "example/example"
+ 
+diff --git a/infrastructure/terraform/tests/fabric.tftest.hcl b/infrastructure/terraform/tests/fabric.tftest.hcl
+index ee8f41e..400d005 100644
+--- a/infrastructure/terraform/tests/fabric.tftest.hcl
++++ b/infrastructure/terraform/tests/fabric.tftest.hcl
+@@ -42,6 +42,7 @@ variables {
+   project_id        = "fabric-plan-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   github_repository = "example/example"
+ 
+   trust_zones = {
+diff --git a/infrastructure/terraform/tests/kms-protection.tftest.hcl b/infrastructure/terraform/tests/kms-protection.tftest.hcl
+index a1fd7fe..0c37aaf 100644
+--- a/infrastructure/terraform/tests/kms-protection.tftest.hcl
++++ b/infrastructure/terraform/tests/kms-protection.tftest.hcl
+@@ -46,6 +46,7 @@ variables {
+   project_id        = "kms-protection-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   github_repository = "example/example"
+ 
+   # The four zones dev declares. The catalogue refuses a workload whose zone
+diff --git a/infrastructure/terraform/tests/paper-boundary.tftest.hcl b/infrastructure/terraform/tests/paper-boundary.tftest.hcl
+index 8f35d76..4878d2b 100644
+--- a/infrastructure/terraform/tests/paper-boundary.tftest.hcl
++++ b/infrastructure/terraform/tests/paper-boundary.tftest.hcl
+@@ -35,6 +35,7 @@ variables {
+   project_id        = "ceiling-plan-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   github_repository = "example/example"
+ 
+   # The four zones dev declares. The catalogue refuses a workload whose zone
+diff --git a/infrastructure/terraform/tests/portal-front-door.tftest.hcl b/infrastructure/terraform/tests/portal-front-door.tftest.hcl
+index aa5ca25..9a56a8d 100644
+--- a/infrastructure/terraform/tests/portal-front-door.tftest.hcl
++++ b/infrastructure/terraform/tests/portal-front-door.tftest.hcl
+@@ -31,6 +31,7 @@ variables {
+   project_id        = "portal-door-plan-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   github_repository = "example/example"
+ 
+   trust_zones = {
+diff --git a/infrastructure/terraform/tests/region-dark-window.tftest.hcl b/infrastructure/terraform/tests/region-dark-window.tftest.hcl
+index 8e79a50..5702d1c 100644
+--- a/infrastructure/terraform/tests/region-dark-window.tftest.hcl
++++ b/infrastructure/terraform/tests/region-dark-window.tftest.hcl
+@@ -28,6 +28,7 @@ variables {
+   project_id        = "dark-window-plan-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   github_repository = "example/example"
+ 
+   trust_zones = {
+diff --git a/infrastructure/terraform/tests/security.tftest.hcl b/infrastructure/terraform/tests/security.tftest.hcl
+index 973fb37..f7b2c78 100644
+--- a/infrastructure/terraform/tests/security.tftest.hcl
++++ b/infrastructure/terraform/tests/security.tftest.hcl
+@@ -41,6 +41,7 @@ variables {
+   project_id        = "security-plan-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   github_repository = "example/example"
+ 
+   trust_zones = {
+diff --git a/infrastructure/terraform/tests/storage-targets.tftest.hcl b/infrastructure/terraform/tests/storage-targets.tftest.hcl
+index e033802..01c44d7 100644
+--- a/infrastructure/terraform/tests/storage-targets.tftest.hcl
++++ b/infrastructure/terraform/tests/storage-targets.tftest.hcl
+@@ -11,6 +11,7 @@ variables {
+   project_id        = "storage-plan-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   github_repository = "example/example"
+ 
+   regions               = ["us-east4"]
+diff --git a/infrastructure/terraform/tests/zone-identities.tftest.hcl b/infrastructure/terraform/tests/zone-identities.tftest.hcl
+index 3c6707b..4ccfb8a 100644
+--- a/infrastructure/terraform/tests/zone-identities.tftest.hcl
++++ b/infrastructure/terraform/tests/zone-identities.tftest.hcl
+@@ -58,6 +58,7 @@ variables {
+   project_id        = "zone-identities-harness"
+   project_number    = 123456789012
+   environment       = "dev"
++  owner             = "platform"
+   github_repository = "example/example"
+ 
+   # The zones below are in us-east4, and the management zone's GitHub egress
+diff --git a/infrastructure/terraform/variables.tf b/infrastructure/terraform/variables.tf
+index 28a586c..f330ae7 100644
+--- a/infrastructure/terraform/variables.tf
++++ b/infrastructure/terraform/variables.tf
+@@ -75,6 +75,28 @@ variable "environment" {
+   }
+ }
+ 
++variable "owner" {
++  description = <<-EOT
++    Who answers for this environment, carried on every resource as the
++    `owner` label (R12-FINOPS-10134) so a bill or an orphan can be traced to
++    a team without asking around. A team or function name, never a personal
++    identifier: a label is readable by anything that can list the resource.
++
++    No default, on purpose. A default would label every environment whose
++    tfvars forgot the line as owned by whoever wrote the default, which is
++    the guess the label exists to remove.
++  EOT
++  type        = string
++
++  validation {
++    # Google label values: lowercase letters, digits, `_` and `-`, at most 63
++    # characters, and here also non-empty and starting with a letter so the
++    # value reads as a name.
++    condition     = can(regex("^[a-z][a-z0-9_-]{0,62}$", var.owner))
++    error_message = "The owner must be a lowercase label value: a letter, then letters, digits, '_' or '-', at most 63 characters."
++  }
++}
++
+ variable "autonomy_ceiling" {
+   description = <<-EOT
+     The highest autonomy level this environment's platform may reach.
