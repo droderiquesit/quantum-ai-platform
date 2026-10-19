@@ -69,6 +69,8 @@ project_number = 101249892564
 environment      = "dev"
 region           = "us-east4"
 autonomy_ceiling = "paper_trading"
+# Placeholder the owner fills in: a team label, never a personal identifier.
+owner = "platform"
 
 venue_adapter_type = "simulated"
 

@@ -52,6 +52,7 @@ variables {
   project_id        = "artefact-plan-harness"
   project_number    = 123456789012
   environment       = "dev"
+  owner             = "platform"
   region            = "us-east4"
   github_repository = "example/example"
 

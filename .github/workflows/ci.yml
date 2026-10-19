@@ -220,6 +220,23 @@ jobs:
           cargo run --quiet -p qip-cli --bin qip -- event-fabric schema-gate \
             --base "$RUNNER_TEMP/base.lock.json" \
             --head crates/libs/qip-events/schemas.lock.json
+      # The tick replay and the performance suites' output, kept for 90 days
+      # beside the `sbom` artifact (R12-CICD-9085). It is a log, not a delta:
+      # a delta needs a committed baseline file, and none exists, so a
+      # regression is read by comparing two runs' logs by eye. One partition
+      # only, the one that holds `qip-acceptance`, so the artifact name is
+      # unique within the run. `shell: bash` for pipefail: without it the
+      # `tee` would hide a failing suite behind its own exit status.
+      - name: replay and benchmark output
+        if: matrix.partition == 'acceptance'
+        shell: bash
+        run: cargo test -p qip-acceptance --test tick_replay --test performance -- --nocapture 2>&1 | tee replay-bench.txt
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && matrix.partition == 'acceptance' }}
+        with:
+          name: replay-bench
+          path: backend/replay-bench.txt
+          retention-days: 90
 
   # nextest does not run doctests; `cargo test --doc` does, and only those.
   # Its own job rather than a step after the suite: it compiles every
