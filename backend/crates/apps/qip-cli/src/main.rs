@@ -129,6 +129,17 @@ fn print_help() {
     println!("                    sign the labelled slice fixture's grant and policy with");
     println!("                    the fixture key and publish them to a loopback broker's");
     println!("                    control stream. A fixture, not how grants are issued");
+    println!(
+        "  event-fabric health --peer <loopback-address:port> --stream <name> --partition <n>"
+    );
+    println!("                    print a partition's leader epoch, high watermark, archived");
+    println!("                    offset and isolation as the broker computed them; refuses an");
+    println!("                    answer that omits isolation, exits 3 if the partition is parked");
+    println!(
+        "  event-fabric replay --peer <loopback-address:port> --stream <name> --partition <n> [--from <offset>]"
+    );
+    println!("                    fetch a partition and verify its batch chain: AGREES (0) or");
+    println!("                    DIFFERS (3). Reads the fabric; re-drives nothing");
     println!("  event-fabric schema-gate --base <lock> --head <lock>");
     println!("                    judge the head's schemas.lock.json against the base's:");
     println!("                    exit 3 if a field was removed, renamed or retyped");
