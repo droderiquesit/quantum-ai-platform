@@ -380,7 +380,7 @@ fn run() -> Result<()> {
     // deployment that got the configuration wrong exits 78 rather than
     // starting and draining nowhere; and see `openobserve`'s module doc for
     // why nothing this process can reach answers on the other end today.
-    let openobserve_config = qip_deepbrain::openobserve::OpenObserveConfig::from_env()?;
+    let openobserve_config = qip_deepbrain::openobserve::from_env()?;
     // Bound rather than discarded: `DrainHandle::drop` stops the loop, so a
     // `_` pattern here would start the thread and stop it on the same line.
     // This binding must outlive `node::run` below.

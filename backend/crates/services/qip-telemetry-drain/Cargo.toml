@@ -1,0 +1,20 @@
+[package]
+name = "qip-telemetry-drain"
+description = "The one OTLP/JSON exporter that drains a process's metrics and spans to OpenObserve."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+qip-core.workspace = true
+# The metrics registry and tracer the drain snapshots, and the OTLP encoding
+# of a snapshot: a service depending on a library, the permitted direction.
+qip-observability.workspace = true
+# The bounded HTTP client every call that leaves the process goes through.
+qip-transport.workspace = true
+
+[lints]
+workspace = true

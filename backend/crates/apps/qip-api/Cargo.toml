@@ -33,6 +33,7 @@ qip-web.workspace = true
 qip-contracts.workspace = true
 qip-mesh.workspace = true
 qip-transport.workspace = true
+qip-telemetry-drain.workspace = true
 # The API's SENSE stage. `POST /cycle` used to run a platform nothing
 # observed into, so every stage after SENSE reasoned over an empty tape and
 # every research route answered honestly that nothing had been seen. The

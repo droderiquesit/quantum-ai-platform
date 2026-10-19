@@ -488,7 +488,7 @@ fn run() -> Result<()> {
     // thread starts that POSTs this process's metrics and spans on an
     // interval, and the handle must outlive `serve()` below — dropping it
     // would stop the thread while the process still runs.
-    let openobserve_config = qip_api::openobserve::OpenObserveConfig::from_env()?;
+    let openobserve_config = qip_api::openobserve::from_env()?;
     let _openobserve_drain = match &openobserve_config {
         Some(config) => Some(qip_api::openobserve::spawn(
             telemetry_for_export,

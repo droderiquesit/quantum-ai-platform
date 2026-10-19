@@ -4218,11 +4218,19 @@ fn every_deployed_process_echoes_its_structured_log_to_stderr_and_no_drain_ships
     // too, and which store is authoritative for logs is undecided. A drain
     // that began posting logs would decide it by accident, so the day one
     // does, this fails and the decision is made in a record first.
-    for drain in [
-        "backend/crates/apps/qip-api/src/openobserve.rs",
-        "backend/crates/apps/qip-fastbrain/src/openobserve.rs",
-        "backend/crates/apps/qip-deepbrain/src/openobserve.rs",
-    ] {
+    //
+    // One drain since ADR 0156 §5: the roots' `openobserve.rs` are thin modules
+    // over `qip-telemetry-drain`, so the endpoint set is read from its single
+    // definition, and each root is held to define no endpoint of its own.
+    for root in ["qip-api", "qip-fastbrain", "qip-deepbrain", "qip-fabricd"] {
+        let thin = read(&format!("backend/crates/apps/{root}/src/openobserve.rs"));
+        assert!(
+            thin.contains("qip_telemetry_drain") && !thin.contains("with_path("),
+            "{root}'s openobserve.rs defines endpoints of its own or no longer builds on the \
+             shared drain"
+        );
+    }
+    for drain in ["backend/crates/services/qip-telemetry-drain/src/lib.rs"] {
         let text = read(drain);
         // Every endpoint the drain builds, by the one form it builds them in.
         // The whole set is compared, so the premise — that the scan finds the
@@ -4395,5 +4403,92 @@ fn no_cloud_run_workload_is_qip_edge_node() {
             "qip-edge-node is in the Cloud Run catalogue, but API-010 forbids venue execution \
              on Cloud Run; qip-edge-node runs only on the execution-node Compute Engine module"
         );
+    }
+}
+
+/// R12-OBS-9140 (ADR 0156 §5). The OTLP exporter is defined in exactly one file
+/// in the workspace, and no deployment manifest points any process at a
+/// collector.
+///
+/// This replaces a test that pinned three ~780-line copies of the drain
+/// byte-identical. The property that test held, that the exporters could not
+/// drift, is now structural: there is one definition, in `qip-telemetry-drain`,
+/// and a second one anywhere — an app growing its own copy again, a test
+/// defining a stand-in — fails here by name. The credential refusals that a
+/// drifted copy would have skipped (an empty value, an embedded line break)
+/// live in that one place.
+///
+/// The second half holds ADR 0156 §5.4: `QIP_OPENOBSERVE_URL` is set by no
+/// catalogue entry, no Config Connector manifest and no node startup script,
+/// because no collector is vendored or attested, the egress bootstrap has no
+/// listener for one and ingestion is unproven. The premise is that the
+/// walk reached manifests, so an empty walk cannot pass.
+///
+/// Mutation: restore a `pub fn export_once(` in one app (the old copy). The
+/// single-definition scan names both files and fails.
+#[test]
+fn the_otlp_exporter_is_defined_in_exactly_one_file_and_no_manifest_sets_a_collector_url() {
+    let definitions: Vec<String> = files_with_extension("backend/crates", "rs")
+        .iter()
+        .filter_map(|path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            text.lines()
+                .any(|line| {
+                    let line = line.trim_start();
+                    !line.starts_with("//")
+                        && (line.starts_with("pub fn export_once(")
+                            || line.starts_with("fn export_once("))
+                })
+                .then(|| {
+                    path.strip_prefix(repository_root())
+                        .unwrap_or(path)
+                        .to_string_lossy()
+                        .to_string()
+                })
+        })
+        .collect();
+    assert_eq!(
+        definitions,
+        vec!["backend/crates/services/qip-telemetry-drain/src/lib.rs".to_string()],
+        "the OTLP exporter must be defined once, in qip-telemetry-drain; found {definitions:?}"
+    );
+
+    // Every manifest the deployment is built from.
+    let mut manifests: Vec<(String, String)> = Vec::new();
+    for (relative, extension) in [
+        ("infrastructure/gitops", "yaml"),
+        ("infrastructure/terraform", "tf"),
+        ("infrastructure/terraform", "tftpl"),
+    ] {
+        for path in files_with_extension(relative, extension) {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                manifests.push((path.to_string_lossy().to_string(), text));
+            }
+        }
+    }
+    assert!(
+        manifests.len() >= 20 && manifests.iter().any(|(p, _)| p.ends_with("catalogue.tf")),
+        "only {} manifests were read; the walk is not reaching the deployment",
+        manifests.len()
+    );
+    for (path, text) in &manifests {
+        for (number, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with('#') {
+                continue;
+            }
+            let assigns = trimmed.starts_with("QIP_OPENOBSERVE_URL =")
+                || trimmed.starts_with("QIP_OPENOBSERVE_URL=")
+                || trimmed == "name: QIP_OPENOBSERVE_URL"
+                || trimmed.starts_with("- name: QIP_OPENOBSERVE_URL")
+                || trimmed.starts_with("\"QIP_OPENOBSERVE_URL\"");
+            assert!(
+                !assigns,
+                "{path}:{} points a process at a collector (`{trimmed}`). No collector is \
+                 vendored or attested and the egress bootstrap has no listener for one \
+                 (ADR 0156 5.4); the variable stays unset until a record says otherwise",
+                number + 1
+            );
+        }
     }
 }

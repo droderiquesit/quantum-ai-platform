@@ -1321,6 +1321,7 @@ const NO_MONEY_AUTHORITY: &[&str] = &[
     "qip-reasoning-engine",
     "qip-simulation-engine",
     "qip-streaming",
+    "qip-telemetry-drain",
     "qip-training",
     "qip-twin",
     "qip-world-model",
@@ -3661,16 +3662,27 @@ fn no_reflex_crate_and_no_part_of_its_node_can_start_export_or_drain_a_trace() {
     // The premise, first: the scan recognises the machinery where it exists.
     // Each central root's drain both names the endpoint and drains the
     // tracer, so a scan that finds nothing there is not looking.
-    for central in ["qip-api", "qip-fastbrain", "qip-deepbrain"] {
-        let drain =
+    //
+    // The drain has one home since ADR 0156 §5 (`qip-telemetry-drain`), and
+    // each central root's `openobserve.rs` is a thin module over it, so the
+    // premise is read there; and each root is held to naming that crate, so a
+    // root that grew a drain of its own would have to leave the scan's sight
+    // first.
+    let drain = qip_acceptance::read("backend/crates/services/qip-telemetry-drain/src/lib.rs");
+    for needle in ["tracer.export(", "traces_url"] {
+        assert!(
+            drain.contains(needle),
+            "the shared drain no longer contains `{needle}`; the scan below would pass on a \
+             workspace where trace export was spelled another way"
+        );
+    }
+    for central in ["qip-api", "qip-fastbrain", "qip-deepbrain", "qip-fabricd"] {
+        let root =
             qip_acceptance::read(&format!("backend/crates/apps/{central}/src/openobserve.rs"));
-        for needle in ["tracer.export(", "traces_url"] {
-            assert!(
-                drain.contains(needle),
-                "{central}'s drain no longer contains `{needle}`; the scan below would pass on \
-                 a workspace where trace export was spelled another way"
-            );
-        }
+        assert!(
+            root.contains("qip_telemetry_drain"),
+            "{central}'s openobserve.rs no longer builds on the shared drain"
+        );
     }
 
     let mut reflex = sources("backend/crates/edge");
