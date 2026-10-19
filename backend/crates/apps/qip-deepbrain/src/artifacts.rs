@@ -15,7 +15,7 @@ use qip_core::error::{Error, Result};
 use qip_storage::BlobStore;
 
 /// The blob namespace a promoted model's artifact is written under.
-pub const MODEL_ARTIFACTS_NAMESPACE: &str = "model-artifacts";
+pub const MODEL_ARTIFACTS_NAMESPACE: &str = qip_storage::classes::MODEL_ARTIFACTS_NAMESPACE;
 
 /// Write a promoted artifact under its digest-named key, as the JSON the
 /// registry rendered it in.

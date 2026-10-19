@@ -170,6 +170,18 @@ impl SchemaRegistry {
             .collect()
     }
 
+    /// Every descriptor of `rows`, admitted in ascending version order so a
+    /// topic that carries two versions ends at its highest, as
+    /// [`Self::admit`] decides.
+    pub fn admit_all(&mut self, rows: impl IntoIterator<Item = SchemaDescriptor>) -> Result<()> {
+        let mut rows: Vec<SchemaDescriptor> = rows.into_iter().collect();
+        rows.sort_by_key(|d| (d.topic, d.version));
+        for row in rows {
+            self.admit(row)?;
+        }
+        Ok(())
+    }
+
     /// A stable fingerprint over the whole contract surface. A change here
     /// without a corresponding version bump is what the contract test catches.
     pub fn fingerprint(&self) -> String {
@@ -180,4 +192,83 @@ impl SchemaRegistry {
             .collect();
         qip_core::hash::sha256_hex(material.join(";").as_bytes())
     }
+}
+
+/// The committed lock, embedded at build time (ADR 0156 §1.2). A deployed
+/// broker therefore admits against the lock its image was built with and
+/// cannot be pointed at another one at run time; nothing reads a file.
+pub const EMBEDDED_LOCK: &str = include_str!("../schemas.lock.json");
+
+/// One row of the lock as committed. Private: the lock's shape is this
+/// module's concern and callers receive [`SchemaDescriptor`]s.
+#[derive(Deserialize)]
+struct LockRow {
+    topic: String,
+    version: u32,
+    type_name: String,
+    schema_id: String,
+    shape: Shape,
+}
+
+/// The descriptors of the lock embedded in this build, one per row.
+pub fn locked_descriptors() -> Result<Vec<SchemaDescriptor>> {
+    descriptors_from_lock(EMBEDDED_LOCK)
+}
+
+/// Read descriptors from lock text.
+///
+/// Pure: the caller supplies the text. Refuses, naming the row, a topic this
+/// build does not know, a row whose `schema_id` is not the hash of its own
+/// topic, version and shape (a lock edited by hand, or a shape that moved
+/// without the id), and a `(topic, version)` appearing twice, because
+/// whichever row a reader met first would decide what the version meant.
+pub fn descriptors_from_lock(lock: &str) -> Result<Vec<SchemaDescriptor>> {
+    let rows: Vec<LockRow> = serde_json::from_str(lock)
+        .map_err(|e| Error::schema(format!("the schema lock does not parse: {e}")))?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let topic = Topic::from_name(&row.topic).ok_or_else(|| {
+            Error::schema(format!(
+                "the schema lock names topic '{}', which this build does not define",
+                row.topic
+            ))
+        })?;
+        if !seen.insert((topic, row.version)) {
+            return Err(Error::schema(format!(
+                "the schema lock holds topic {} version {} more than once",
+                row.topic, row.version
+            )));
+        }
+        let computed = SchemaId::new(&row.topic, row.version, &row.shape);
+        if computed.as_str() != row.schema_id {
+            return Err(Error::schema(format!(
+                "the schema lock row for topic {} version {} carries schema id {} but its \
+                 shape hashes to {}; regenerate the lock rather than editing it",
+                row.topic,
+                row.version,
+                row.schema_id,
+                computed.as_str()
+            )));
+        }
+        let fields = match &row.shape {
+            Shape::Object(map) => map.keys().cloned().collect(),
+            _ => Vec::new(),
+        };
+        let material = format!("{}|{}|{}", row.topic, row.version, fields_joined(&fields));
+        out.push(SchemaDescriptor {
+            topic,
+            version: row.version,
+            type_name: row.type_name,
+            fingerprint: qip_core::hash::sha256_hex(material.as_bytes()),
+            fields,
+            schema_id: computed,
+            shape: row.shape,
+        });
+    }
+    Ok(out)
+}
+
+fn fields_joined(fields: &[String]) -> String {
+    fields.join(",")
 }

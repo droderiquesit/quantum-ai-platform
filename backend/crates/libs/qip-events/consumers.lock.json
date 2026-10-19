@@ -1,0 +1,230 @@
+[
+  {
+    "topic": "ledger.operation_recorded",
+    "version": 1,
+    "consumers": [
+      {
+        "name": "qip-ledgerd",
+        "kind": "binary",
+        "type": "LedgerOperation",
+        "role": "decodes",
+        "migrated": false
+      },
+      {
+        "name": "qip-kernel",
+        "kind": "crate",
+        "type": "LedgerOperationFields",
+        "role": "names",
+        "migrated": false
+      }
+    ]
+  },
+  {
+    "topic": "policy.distributed",
+    "version": 1,
+    "consumers": [
+      {
+        "name": "qip-edge",
+        "kind": "crate",
+        "type": "PolicyPayload",
+        "role": "decodes",
+        "migrated": false
+      },
+      {
+        "name": "qip-cli",
+        "kind": "binary",
+        "type": "PolicyFrame",
+        "role": "produces",
+        "migrated": false
+      }
+    ]
+  },
+  {
+    "topic": "reflex.chain_span",
+    "version": 1,
+    "consumers": [
+      {
+        "name": "qip-ledgerd",
+        "kind": "binary",
+        "type": "ChainSpan",
+        "role": "decodes",
+        "migrated": false
+      },
+      {
+        "name": "qip-edge-node",
+        "kind": "binary",
+        "type": "ChainSpan",
+        "role": "decodes",
+        "migrated": false
+      }
+    ]
+  },
+  {
+    "topic": "reflex.fabric_gap",
+    "version": 1,
+    "consumers": [
+      {
+        "name": "qip-edge-node",
+        "kind": "binary",
+        "type": "Gap",
+        "role": "decodes",
+        "migrated": false
+      },
+      {
+        "name": "qip-ledgerd",
+        "kind": "binary",
+        "type": "Gap",
+        "role": "names",
+        "migrated": false
+      }
+    ]
+  },
+  {
+    "topic": "reflex.journal_recorded",
+    "version": 1,
+    "consumers": [
+      {
+        "name": "qip-edge-node",
+        "kind": "binary",
+        "type": "JournalEntry",
+        "role": "decodes",
+        "migrated": false
+      },
+      {
+        "name": "qip-edge",
+        "kind": "crate",
+        "type": "JournalEntry",
+        "role": "names",
+        "migrated": false
+      },
+      {
+        "name": "qip-kernel",
+        "kind": "crate",
+        "type": "JournalEntry",
+        "role": "names",
+        "migrated": false
+      },
+      {
+        "name": "qip-portfolio",
+        "kind": "crate",
+        "type": "JournalEntry",
+        "role": "names",
+        "migrated": false
+      }
+    ]
+  },
+  {
+    "topic": "reflex.market_event_applied",
+    "version": 1,
+    "consumers": [
+      {
+        "name": "qip-edge-node",
+        "kind": "binary",
+        "type": "MarketEvent",
+        "role": "decodes",
+        "migrated": false
+      },
+      {
+        "name": "qip-storage",
+        "kind": "crate",
+        "type": "MarketEvent",
+        "role": "decodes",
+        "migrated": false
+      },
+      {
+        "name": "qip-sequencing",
+        "kind": "crate",
+        "type": "MarketEvent",
+        "role": "names",
+        "migrated": false
+      }
+    ]
+  },
+  {
+    "topic": "reflex.outcome_recorded",
+    "version": 1,
+    "consumers": [
+      {
+        "name": "qip-ledgerd",
+        "kind": "binary",
+        "type": "OutcomeRecord",
+        "role": "decodes",
+        "migrated": false
+      },
+      {
+        "name": "qip-edge-node",
+        "kind": "binary",
+        "type": "OutcomeRecord",
+        "role": "decodes",
+        "migrated": false
+      },
+      {
+        "name": "qip-desk-ship",
+        "kind": "crate",
+        "type": "OutcomeRecord",
+        "role": "names",
+        "migrated": false
+      },
+      {
+        "name": "qip-kernel",
+        "kind": "crate",
+        "type": "OutcomeRecord",
+        "role": "names",
+        "migrated": false
+      },
+      {
+        "name": "qip-portfolio",
+        "kind": "crate",
+        "type": "OutcomeRecord",
+        "role": "names",
+        "migrated": false
+      }
+    ]
+  },
+  {
+    "topic": "reflex.pass_marked",
+    "version": 1,
+    "consumers": [
+      {
+        "name": "qip-edge-node",
+        "kind": "binary",
+        "type": "PassMarker",
+        "role": "decodes",
+        "migrated": false
+      }
+    ]
+  },
+  {
+    "topic": "risk.approved",
+    "version": 1,
+    "consumers": [
+      {
+        "name": "qip-edge",
+        "kind": "crate",
+        "type": "CapitalEnvelope",
+        "role": "decodes",
+        "migrated": false
+      },
+      {
+        "name": "qip-cli",
+        "kind": "binary",
+        "type": "CapitalGrantFrame",
+        "role": "produces",
+        "migrated": false
+      }
+    ]
+  },
+  {
+    "topic": "system.kill_switch_engaged",
+    "version": 1,
+    "consumers": [
+      {
+        "name": "qip-edge",
+        "kind": "crate",
+        "type": "HaltCommand",
+        "role": "decodes",
+        "migrated": false
+      }
+    ]
+  }
+]

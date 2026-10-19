@@ -174,7 +174,7 @@ pub const RETAINED: usize = 64;
 /// otherwise: two acquisitions at the full decision's value.
 pub const ACQUISITION_BUDGET_BP: u32 = 20_000;
 /// The blob namespace signed reflex packages are published under.
-pub const REFLEX_PACKAGES_NAMESPACE: &str = "reflex-packages";
+pub const REFLEX_PACKAGES_NAMESPACE: &str = qip_storage::classes::REFLEX_PACKAGES_NAMESPACE;
 
 /// Research acquisitions carried out, by `action` (the nine
 /// `AcquisitionAction` names) and `outcome` (`gathered`, `not_executable`).
