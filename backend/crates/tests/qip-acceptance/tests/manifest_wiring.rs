@@ -4230,7 +4230,8 @@ fn every_deployed_process_echoes_its_structured_log_to_stderr_and_no_drain_ships
              shared drain"
         );
     }
-    for drain in ["backend/crates/services/qip-telemetry-drain/src/lib.rs"] {
+    {
+        let drain = "backend/crates/services/qip-telemetry-drain/src/lib.rs";
         let text = read(drain);
         // Every endpoint the drain builds, by the one form it builds them in.
         // The whole set is compared, so the premise — that the scan finds the
