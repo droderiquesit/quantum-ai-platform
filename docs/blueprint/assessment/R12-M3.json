@@ -2681,27 +2681,33 @@
   },
   {
     "id": "R12-CONTRACT-3117",
-    "status": "PARTIAL",
-    "current": "Forecast = Validated<ForecastFields> with deny_unknown_fields; constructed in production by qip-world-model lattice.rs and federation.rs and read by the kernel's lattice stage.",
+    "status": "COMPLETE",
+    "current": "Forecast = Validated<ForecastFields> with deny_unknown_fields, constructed in production by qip-world-model lattice.rs and federation.rs, read by the kernel's lattice stage, and now also produced from a DemandForecast: DemandForecast measures its prediction variance split (aleatoric = the residual component; epistemic = the fit and leverage components plus whatever the dispersion floor added beyond the sample's own band, so the pair sums to (half-width / z)^2, the variance the interval encodes), states the interval's own tail at (1 - coverage) / 2 below its lower bound, one model with zero disagreement, and DemandForecast::to_forecast refuses a lane it cannot state (one reading, a band somebody else produced, an interval truncated at zero). The contract gains Stated<T> for exactly regime_confidence_bp and expected_impact: a measured value encodes as the bare figure, an unmeasurable one as {\"unmeasurable\": \"<reason>\"} with the reason required, at schema version 2; version 1 records still decode (Contract::reads) and cannot claim the arm. Forecast::state refuses an unmeasurable regime, naming the field. DECIDE reports how many of the cycle's forecast lanes the contract takes. CashflowForecast stays a schedule of dated, probability-weighted flows and is not made a Forecast (ADR 0159 G).",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/forecast.rs:217 type",
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:103 a_forecast_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:169 a_forecast_refuses_each_broken_invariant",
       "backend/crates/services/qip-world-model/src/lattice.rs",
-      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs"
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs",
+      "backend/crates/libs/qip-contracts/src/forecast.rs Stated, ForecastFields, Forecast::state",
+      "backend/crates/libs/qip-contracts/src/validated.rs Contract::reads",
+      "backend/crates/services/qip-capital-fabric/src/forecast.rs VarianceSplit, DemandForecast::to_forecast",
+      "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs a_demand_forecast_states_a_measured_uncertainty_split_that_sums_to_its_prediction_variance_and_marks_regime_and_impact_unmeasurable",
+      "backend/crates/libs/qip-contracts/tests/control_contracts.rs a_forecast_states_regime_and_impact_unmeasurable_with_a_reason_and_a_version_one_record_still_decodes",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs the_decide_stage_counts_the_forecast_lanes_the_contract_will_take_and_a_single_reading_is_not_one"
     ],
-    "gap": "The two named producers cannot construct the contract without inventing figures: qip_capital_fabric::forecast::DemandForecast carries location, kind, as_of, horizon, an interval and an observation count, and qip_financial's valuation forecasts are cashflow series (CashflowForecast); neither computes the contract's epistemic/aleatoric split, tail mass, regime confidence, model disagreement or expected impact, and Forecast refuses a record that cannot state them. A TryFrom would have to fill those with constants, which is a number nobody computed. Needs each producer to measure (or explicitly declare unmeasurable) the split first.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo test -p qip-contracts --test control_contracts; cargo test -p qip-capital-fabric --test capital_fabric; cargo test -p qip-kernel --test platform_outcomes",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure's TryFrom conversions were not written because every field they would have to default is one the contract exists to refuse an unstated value for. Kept PARTIAL. Prior notes retained: the typed contract is produced by qip-world-model lattice.rs and federation.rs and read by the kernel's lattice stage."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's TryFrom conversions were not written because every field they would have to default is one the contract exists to refuse an unstated value for. Kept PARTIAL. Prior notes retained: the typed contract is produced by qip-world-model lattice.rs and federation.rs and read by the kernel's lattice stage. Lane W8-159 2026-10-19 (ADR 0159). Re-graded from PARTIAL. Mutations that fired, each restored byte for byte: Contract::reads without version 1; the version-1 refusal of the arm removed; the expected_impact reason unchecked; Forecast::state substituting 0 for an unmeasurable regime; epistemic zeroed (the split no longer sums to the interval's variance); regime stated as 0; the floor excess dropped (a tidy history's epistemic part vanishes); the truncation refusal removed; DECIDE counting lanes by interval width instead of by conversion; a lane with no split accepted. Limits stated plainly: the converted Forecast is counted in DECIDE and not read by another stage, so no consumer sizes anything off it; the federation producer still states expected_impact as a measured zero (Stated::Value(0)), unchanged by this lane and a follow-up for its owner since a zero there is also a claim; the existing control_contracts and now_lattice expectations changed only in type, not in assertion."
   },
   {
     "id": "R12-OBS-3118",

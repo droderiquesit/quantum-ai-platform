@@ -2228,7 +2228,7 @@
       "backend/crates/services/qip-capital-fabric/src/gate.rs:273",
       "backend/crates/services/qip-capital-fabric/src/corridor.rs:615"
     ],
-    "gap": "No custody-availability signal exists to feed sizing: qip-capital-fabric's custody table (custody.rs) records who may move capital and under which agreement, not whether a custodian is reachable, and nothing in the tree marks custody down. Platform::survival_figures already withholds unsettled sale proceeds from sizing (unsettled_sale_proceeds), so settled-only sizing holds for the one settlement the platform models; a custody-down mode needs a source for the outage (an operator-asserted state through an authenticated route, or a custodian health read) and a decision on who may assert it before a gate input can be added.",
+    "gap": "2026-10-19: nobody asserts custody unavailable, by decision (ADR 0159 E): on a paper platform the venue is the custodian (ADR 0130 decision 4), so there is no third party to be down, and the only honest source is the freshness of the position statement the simulated venue publishes, read by the node (which hosts the gateway) and handed to the cell as a Capability::Custody observation that narrows only. ADR 0130's statement slice does not exist, so Custody stays unobserved and contributes one to dependency_multiplier. TransferGate::assess takes no custody input and none is added: an argument with no producer is a gate that always passes. Platform::survival_figures already withholds unsettled sale proceeds. Needs the venue position-statement record and a freshness threshold (RISK).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2239,7 +2239,7 @@
     "verification": "capital-fabric integration test",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: TransferGate::assess is veto-only and takes every input from its caller; adding a CustodyAvailability argument with no producer would be a gate input that is always 'available', the always-passing shape this repository refuses. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: TransferGate::assess is veto-only and takes every input from its caller; adding a CustodyAvailability argument with no producer would be a gate input that is always 'available', the always-passing shape this repository refuses. Kept PARTIAL. Lane W8-159 2026-10-19 (ADR 0159). Gap restated; no grade change."
   },
   {
     "id": "R12-RES-7100",
@@ -3794,15 +3794,16 @@
   {
     "id": "R12-COVERAGE-7168",
     "status": "PARTIAL",
-    "current": "qip-contracts degradation.rs now has Ledger, Custody, Clock and Fabric Capability variants (Capability::dependencies) with multipliers from the v12 failure table: ledger unavailable sizes to nothing (new exposure halts, cancels continue), ledger stale 0.5, custody 0.75/0.5, clock 0.75/0.5, fabric 1 (cells decide alone; the loss narrows through the TTL-governed policy rows). DegradationState::dependency_multiplier compounds only observed dependency rows and permits_new_exposure reads it. Cell::narrowing records Ledger from the journal wire (Normal/Narrow/Exhausted = Fresh/Stale/Unavailable) and Fabric from the held policy; the pass keeps sizing by the journal wire own multiplier so the ledger fact is charged once.",
+    "current": "qip-contracts degradation.rs has Ledger, Custody, Clock, Feed, VenueSession and Fabric Capability variants with multipliers from the v12 failure table: ledger unavailable sizes to nothing (new exposure halts, cancels continue), ledger stale 0.5, custody 0.75/0.5, clock 0.75/0.5, fabric 1 (cells decide alone; the loss narrows through the TTL-governed policy rows). DegradationState::dependency_multiplier compounds only observed dependency rows and permits_new_exposure reads it. Cell::narrowing records Ledger from the journal wire (Normal/Narrow/Exhausted = Fresh/Stale/Unavailable), Fabric from the held policy, and Clock, Feed and VenueSession from what the cell measures itself (the lead each venue's last batch showed over the cell's clock, venues gone silent past max_staleness, venues the health record has quarantined); the pass compounds the Clock row's multiplier into its size and the arbitrage desk pauses on it, while the ledger fact is charged once by the journal wire's own multiplier.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/degradation.rs Capability::dependencies / dependency_multiplier / permits_new_exposure",
       "backend/crates/edge/qip-edge/src/cell.rs Cell::narrowing (Ledger, Fabric rows)",
       "backend/crates/libs/qip-contracts/tests/degradation_dependencies.rs an_unavailable_fabric_still_permits_a_sized_pass_while_an_unavailable_ledger_halts_new_exposure",
       "backend/crates/edge/qip-edge/tests/journal_pressure.rs the_ledger_row_follows_the_journal_wire_and_agrees_with_it_on_halting_new_exposure",
-      "backend/crates/edge/qip-edge/tests/journal_pressure.rs a_cell_holding_no_policy_records_an_unavailable_fabric_and_still_sizes_its_pass"
+      "backend/crates/edge/qip-edge/tests/journal_pressure.rs a_cell_holding_no_policy_records_an_unavailable_fabric_and_still_sizes_its_pass",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::narrowing (Clock, Feed, VenueSession rows) and the Clock compounding in the pass's sizing multiplier"
     ],
-    "gap": "Custody and Clock have a multiplier but no reading anywhere: no cell or centre path observes either row, so they never narrow a pass. The cell compounds no dependency_multiplier into its size (Ledger is carried by the journal wire own multiplier, Fabric by design is 1), the dependency rows are not in the chain narrowed list (it is hashed and the ledger row moves with the wire) and have no telemetry series. Needs a custody/treasury balance-freshness reading and a clock-sync reading from the node, and an edge series for the new rows.",
+    "gap": "2026-10-19 (the earlier text said Clock had no reading; that is stale): only Custody is unobserved. A cell has no reading of custody and nobody asserts one (R12-RES-7099, ADR 0159 E); it will be read from the freshness of the venue's position statement once ADR 0130's statement slice exists, by the node, narrowing only, and until then it contributes one to dependency_multiplier by design. The dependency rows are not in the chain narrowed list (it is hashed and the ledger row moves with the wire) and have no edge telemetry series (EDGE_CAPABILITY_FRESHNESS publishes three capabilities); the series for the new rows wait on the protected observability rule document under .claude/**, which this lane does not edit.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3813,7 +3814,7 @@
     "verification": "cargo test -p qip-contracts --test degradation_dependencies; cargo test -p qip-edge --test journal_pressure",
     "work_item": "",
     "size": "XL",
-    "notes": "2026-10-18 L12: mutations that fired: swapping the ledger-unavailable and fabric multipliers failed the contracts test; mapping Exhausted to Fresh failed the ledger-row test; dropping observe(Fabric) failed the fabric test. Unobserved dependency rows read unavailable from freshness() but contribute one to dependency_multiplier: scaling every unwired plane by a number nobody measured is the failure the module refuses elsewhere."
+    "notes": "2026-10-18 L12: mutations that fired: swapping the ledger-unavailable and fabric multipliers failed the contracts test; mapping Exhausted to Fresh failed the ledger-row test; dropping observe(Fabric) failed the fabric test. Unobserved dependency rows read unavailable from freshness() but contribute one to dependency_multiplier: scaling every unwired plane by a number nobody measured is the failure the module refuses elsewhere. Lane W8-159 2026-10-19 (ADR 0159). Clock text corrected against Cell::narrowing; no grade change."
   },
   {
     "id": "R12-COVERAGE-7169",
