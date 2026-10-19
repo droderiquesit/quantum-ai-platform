@@ -1081,3 +1081,83 @@ fn a_cell_funded_by_the_centres_share_is_still_assembled_paper_only() -> Result<
     );
     Ok(())
 }
+
+// --- R12-RES-10127: no share is granted while the ledger trails the cells ---
+
+fn sent_orders(count: usize) -> Vec<qip_mesh::delta::DeltaOrder> {
+    (0..count)
+        .map(|n| qip_mesh::delta::DeltaOrder {
+            order_id: format!("lag-{n}"),
+            strategy: StrategyId::new(FIRST_STRATEGY),
+            object_id: object(),
+            venue: venue(),
+            side: BookSide::Bid,
+            quantity: dec!("1"),
+            price: dec!("100"),
+            simulated: true,
+            contributors: vec![qip_contracts::intent::Contributor {
+                strategy: StrategyId::new(FIRST_STRATEGY),
+                signed_size: dec!("1"),
+                inputs: vec![("lag-feature".to_string(), 1)],
+            }],
+        })
+        .collect()
+}
+
+fn shipped(platform: &mut Platform, membership: &RegionMembership) -> (bool, String) {
+    let decided = platform.issue_region_shares([FIRST_CELL, SECOND_CELL], membership, at(10));
+    match decided.for_cell(FIRST_CELL) {
+        Some(ManifestDecision::Ship(_)) => (true, String::new()),
+        Some(ManifestDecision::Withhold(reason)) => (false, reason.clone()),
+        None => (false, "undecided".to_string()),
+    }
+}
+
+/// R12-RES-10127. Mutation: make `ledger_lagging` always false, or compare
+/// with `>=` against the threshold.
+#[test]
+fn a_ledger_trailing_the_cells_past_the_threshold_withholds_every_share_and_one_inside_it_ships()
+-> Result<()> {
+    let mut centre = centre_that_issued_both_grants()?;
+    let plan = centre.platform.central().allocate(0.0, start())?;
+    let grant = plan.for_cell(FIRST_CELL) + plan.for_cell(SECOND_CELL);
+    let membership = both_cells_under(grant)?;
+
+    // Premise: with nothing outstanding the share ships, so a withheld one
+    // below is the backlog's doing.
+    assert!(!centre.platform.ledger_lagging());
+    assert!(shipped(&mut centre.platform, &membership).0);
+
+    // Exactly the threshold outstanding is inside it: still shipped.
+    let at_threshold = qip_kernel::platform::LEDGER_LAG_THRESHOLD;
+    centre.platform.ingest_cell_report(
+        qip_kernel::central::CellReport::new(FIRST_CELL, at(5))
+            .with_orders(sent_orders(at_threshold)),
+        at(5),
+    )?;
+    assert_eq!(centre.platform.central().outcome_backlog(), at_threshold);
+    assert!(shipped(&mut centre.platform, &membership).0);
+
+    // One more unbooked order and nothing ships to either cell.
+    let mut one_more = sent_orders(at_threshold + 1);
+    let extra = one_more.pop().expect("one extra order");
+    centre.platform.ingest_cell_report(
+        qip_kernel::central::CellReport::new(FIRST_CELL, at(6)).with_orders(vec![extra]),
+        at(6),
+    )?;
+    assert!(centre.platform.ledger_lagging());
+    for cell in [FIRST_CELL, SECOND_CELL] {
+        let decided =
+            centre
+                .platform
+                .issue_region_shares([FIRST_CELL, SECOND_CELL], &membership, at(10));
+        match decided.for_cell(cell) {
+            Some(ManifestDecision::Withhold(reason)) => assert!(
+                reason.contains("trails the cells"),
+                "{cell} was withheld for another reason: {reason}"
+            ),
+            other => panic!("{cell} was not withheld while the ledger lags: {other:?}"),
+        }
+    }
+    Ok(())
+}

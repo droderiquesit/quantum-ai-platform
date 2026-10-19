@@ -2158,3 +2158,165 @@ fn a_sources_publication_delay_is_calibrated_from_its_ticks_and_the_capacity_pro
     );
     Ok(())
 }
+
+// --- R12-RES-7104: a persistently wrong twin narrows the venue's capital ---
+
+/// A platform whose only limit is the shipped misfit-venue cap, on a book
+/// small enough that three 70,000 fills sit under it (21%) and a fourth
+/// would not (28%), whatever else the shipped set says.
+fn platform_under_the_misfit_cap() -> Result<Platform> {
+    let shipped = LimitSet::conservative_default()
+        .limits
+        .into_iter()
+        .find(|limit| limit.name == "twin-misfit-venue-gross")
+        .expect("the shipped set carries the misfit-venue cap");
+    let config = PlatformConfig::default().with_initial_equity(dec!("1000000"));
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe(),
+        LimitSet::new("misfit-only").with(shipped),
+    )
+}
+
+const MISFIT_VENUE: &str = "simulated-venue";
+
+fn teach_the_twin_it_is_wrong(platform: &mut Platform, observations: usize) {
+    for _ in 0..observations {
+        platform
+            .fill_calibration_mut()
+            .observe(MISFIT_VENUE, -300.0)
+            .expect("a finite error is observed");
+    }
+}
+
+fn fourth_buy(platform: &mut Platform) -> Result<()> {
+    for n in 0..3 {
+        fill_one(platform, &format!("prop-misfit-{n}"), start())?;
+    }
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("700"),
+        dec!("100"),
+        "prop-misfit-3",
+        vec!["hyp-prop-misfit-3".to_string()],
+        start(),
+    );
+    platform.submit_order(order, start()).map(|_| ())
+}
+
+/// Mutation: make `twin_misfit` always false, delete the axis insertion in
+/// the submit path, or delete `with_twin_misfit` from `risk_state_from`.
+#[test]
+fn a_venue_whose_twin_is_persistently_wrong_is_narrowed_to_a_quarter_of_equity() -> Result<()> {
+    let mut platform = platform_under_the_misfit_cap()?;
+    teach_the_twin_it_is_wrong(&mut platform, 10);
+    assert!(
+        platform.twin_misfit(MISFIT_VENUE),
+        "premise: the twin is wrong"
+    );
+    let error = fourth_buy(&mut platform)
+        .expect_err("a fourth fill took a misfit venue past a quarter of equity");
+    assert!(
+        error.message().contains("twin-misfit-venue-gross"),
+        "refused for another reason: {}",
+        error.message()
+    );
+    // Narrowing is not withdrawal: the venue stays in service.
+    assert!(platform.withdrawn_venues().is_empty());
+    Ok(())
+}
+
+#[test]
+fn the_same_book_at_a_venue_the_twin_has_not_mispriced_is_admitted() -> Result<()> {
+    let mut platform = platform_under_the_misfit_cap()?;
+    assert!(
+        !platform.twin_misfit(MISFIT_VENUE),
+        "premise: no error observed"
+    );
+    fourth_buy(&mut platform)?;
+    // And too few observations are not a trend, however large the error.
+    teach_the_twin_it_is_wrong(&mut platform, 7);
+    assert!(!platform.twin_misfit(MISFIT_VENUE));
+    fill_one(&mut platform, "prop-misfit-5", start())?;
+    Ok(())
+}
+
+// --- R12-RISK-4096: a short with no known borrow is refused ----------------
+
+fn sell(platform: &mut Platform, quantity: Decimal, tag: &str, at: Timestamp) -> Result<()> {
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Sell,
+        quantity,
+        dec!("100"),
+        tag,
+        vec![format!("hyp-{tag}")],
+        at,
+    );
+    platform.submit_order(order, at).map(|_| ())
+}
+
+/// Mutation: make `short_without_borrow` return `None` when no reading
+/// exists, or compare `available` with `>` instead of `<`.
+#[test]
+fn a_short_nobody_has_said_is_borrowable_is_refused_and_a_covered_one_is_admitted() -> Result<()> {
+    let mut platform = platform()?;
+    // Premise: selling what the book holds is not a short and needs no
+    // borrow, so the refusals below are the borrow rule's.
+    fill_one(&mut platform, "prop-borrow-long", start())?;
+    sell(&mut platform, dec!("100"), "prop-borrow-close", start())?;
+
+    let error = sell(&mut platform, dec!("2000"), "prop-borrow-none", start())
+        .expect_err("a short with no borrow reading was admitted");
+    assert!(
+        error.message().contains("no borrow availability"),
+        "{}",
+        error.message()
+    );
+
+    // A reading smaller than the shorted quantity is not enough.
+    platform.observe_borrow("obj-AAA", dec!("99"), start(), start())?;
+    let error = sell(&mut platform, dec!("2000"), "prop-borrow-small", start())
+        .expect_err("a short beyond the available borrow was admitted");
+    assert!(error.message().contains("only 99"), "{}", error.message());
+
+    // A stale reading is no reading.
+    let later = start().saturating_add(Duration::from_days(3));
+    let error = sell(&mut platform, dec!("2000"), "prop-borrow-stale", later)
+        .expect_err("a short against a stale reading was admitted");
+    assert!(
+        error.message().contains("older than"),
+        "{}",
+        error.message()
+    );
+
+    // A fresh reading that covers it admits.
+    platform.observe_borrow("obj-AAA", dec!("10000"), later, later)?;
+    sell(&mut platform, dec!("2000"), "prop-borrow-covered", later)?;
+    Ok(())
+}
+
+#[test]
+fn borrow_availability_that_is_negative_or_from_the_future_is_refused() -> Result<()> {
+    let mut platform = platform()?;
+    assert!(
+        platform
+            .observe_borrow("obj-AAA", dec!("-1"), start(), start())
+            .is_err()
+    );
+    assert!(
+        platform
+            .observe_borrow(
+                "obj-AAA",
+                dec!("1"),
+                start().saturating_add(Duration::from_days(1)),
+                start()
+            )
+            .is_err()
+    );
+    Ok(())
+}

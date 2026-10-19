@@ -215,6 +215,28 @@ pub const DATA_POISONING: &str = "data-poisoning";
 /// Every market the book touches is shocked at once, longs and shorts both.
 pub const MULTI_MARKET_SHOCK: &str = "multi-market-shock";
 
+/// The volatility regime flips: every position's own volatility doubles and
+/// the offsets the book counted on stop netting (R12-RISK-4116).
+pub const REGIME_FLIP: &str = "regime-flip";
+
+/// One position's stress cascades along measured correlations into the rest
+/// of the book (R12-RISK-4102).
+pub const CONTAGION_CASCADE: &str = "contagion-cascade";
+
+/// How many times a position's measured daily volatility the regime-flip
+/// world charges: the top of [`SYNTHETIC_AMPLIFICATION`], so the flipped
+/// regime is at least as severe as the harshest world already generated from
+/// the book's own history. It is a multiple of a measured figure, never a
+/// replacement for one, so the world cannot read milder than the calm
+/// regime for any position.
+pub const REGIME_FLIP_VOL_MULTIPLE: f64 = 2.0;
+
+/// The fewest shared returns a pair needs before its correlation is
+/// believed. Below it the pair is charged as perfectly correlated
+/// (`1.0`) in the contagion world: an unmeasurable link is the strictest
+/// one, never the absent one.
+pub const CONTAGION_MIN_SHARED_RETURNS: usize = 3;
+
 /// The generated worlds' names. Fixed literals, so the `scenario` label stays
 /// bounded however many cycles generate them.
 pub const SYNTHETIC_WORLDS: [&str; 2] = ["synthetic-1", "synthetic-2"];
@@ -512,6 +534,38 @@ pub fn survival_worlds(book: &TailBook<'_>, at: Timestamp) -> Vec<TailWorld> {
         ),
     ));
 
+    // Regime flip: volatility doubles and nothing nets. Joint, because every
+    // position bears its flipped-regime move at once, whichever side it is on.
+    let flipped: f64 = held
+        .iter()
+        .zip(&vols)
+        .map(|(position, vol)| {
+            let move_ =
+                TAIL_QUANTILE * (REGIME_FLIP_VOL_MULTIPLE * vol) * CORRELATION_HORIZON_DAYS.sqrt();
+            // A long cannot lose more than it holds; a short can.
+            let move_ = if position.notional > 0.0 {
+                move_.min(1.0)
+            } else {
+                move_
+            };
+            position.notional.abs() * move_
+        })
+        .sum();
+    out.push(world(
+        REGIME_FLIP,
+        at,
+        flipped,
+        equity,
+        unmeasured_vol.clone(),
+        format!(
+            "the volatility regime flips: every position's volatility is {REGIME_FLIP_VOL_MULTIPLE}x \
+             its measured figure, and its {TAIL_QUANTILE} sigma move over \
+             {CORRELATION_HORIZON_DAYS} days is charged against it with no netting"
+        ),
+    ));
+
+    out.push(contagion_cascade(book, &held, at));
+
     // Generated worlds: each position's worst retained excursion, amplified
     // past anything its history holds, by a draw this cycle's seed fixes.
     let mut state = book.seed ^ 0x9E37_79B9_7F4A_7C15;
@@ -640,6 +694,121 @@ fn correlation_inversion(book: &TailBook<'_>, held: &[&TailPosition], at: Timest
             "every correlation between the book's positions changes sign over a shared window \
              of {window} returns; the book bears a {TAIL_QUANTILE} sigma move of the worse of \
              its calm and inverted variance over {CORRELATION_HORIZON_DAYS} days"
+        ),
+    )
+}
+
+/// Correlation of two return series over their shared trailing window, or
+/// `None` when the window is shorter than [`CONTAGION_MIN_SHARED_RETURNS`] or
+/// either series is flat over it.
+fn trailing_correlation(a: &[f64], b: &[f64]) -> Option<f64> {
+    let window = a.len().min(b.len());
+    if window < CONTAGION_MIN_SHARED_RETURNS {
+        return None;
+    }
+    let (a, b) = (&a[a.len() - window..], &b[b.len() - window..]);
+    let n = window as f64;
+    let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+    let (mut cov, mut va, mut vb) = (0.0, 0.0, 0.0);
+    for (x, y) in a.iter().zip(b) {
+        cov += (x - ma) * (y - mb);
+        va += (x - ma).powi(2);
+        vb += (y - mb).powi(2);
+    }
+    let rho = cov / (va * vb).sqrt();
+    rho.is_finite().then_some(rho.clamp(-1.0, 1.0))
+}
+
+/// The contagion world: the book's own correlation graph, rather than the
+/// driver-only aggregation `qip_risk::shared_cause` offers, carries one
+/// position's worst retained excursion to its neighbours.
+///
+/// Every held position is tried as the origin. It takes its own worst
+/// excursion (or [`UNMEASURED_EXCURSION`] with no history); each neighbour
+/// takes that move scaled by the absolute correlation of the pair, and a
+/// second hop carries the larger of the two readings one step further. The
+/// transmission is charged **against** every position whichever side it is
+/// on — contagion is the world where hedges stop hedging — and a pair whose
+/// correlation cannot be measured is charged as `1.0`, the strictest link.
+/// The world's loss is the worst origin's. It is a statistic, so `f64`.
+fn contagion_cascade(book: &TailBook<'_>, held: &[&TailPosition], at: Timestamp) -> TailWorld {
+    let rets: Vec<Vec<f64>> = held
+        .iter()
+        .map(|position| {
+            book.price_history
+                .get(&position.object)
+                .map(|prices| returns(prices))
+                .unwrap_or_default()
+        })
+        .collect();
+    let mut unmeasured: BTreeSet<String> = BTreeSet::new();
+    let n = held.len();
+    let mut link = vec![vec![1.0_f64; n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            match trailing_correlation(&rets[i], &rets[j]) {
+                Some(rho) => link[i][j] = rho.abs(),
+                None => {
+                    unmeasured.insert(held[i].object.clone());
+                    unmeasured.insert(held[j].object.clone());
+                }
+            }
+        }
+    }
+    let mut worst = 0.0_f64;
+    let mut worst_origin = String::new();
+    for (origin, position) in held.iter().enumerate() {
+        let seed = book
+            .price_history
+            .get(&position.object)
+            .and_then(|prices| adverse_excursion(prices, position.notional > 0.0))
+            .unwrap_or(UNMEASURED_EXCURSION);
+        let mut shock = vec![0.0_f64; n];
+        shock[origin] = seed;
+        // Two relaxation passes: the origin reaches its neighbours, and they
+        // reach theirs. Each position keeps the larger of what it holds and
+        // what a neighbour transmits, so a second hop never reduces a first.
+        for _ in 0..2 {
+            let carried = shock.clone();
+            for (j, hit) in carried.iter().enumerate() {
+                for k in 0..n {
+                    if k != j {
+                        shock[k] = shock[k].max(hit * link[j][k]);
+                    }
+                }
+            }
+        }
+        let loss: f64 = held
+            .iter()
+            .zip(&shock)
+            .map(|(held, move_)| {
+                let move_ = if held.notional > 0.0 {
+                    move_.min(1.0)
+                } else {
+                    *move_
+                };
+                held.notional.abs() * move_
+            })
+            .sum();
+        if loss > worst {
+            worst = loss;
+            worst_origin = position.object.clone();
+        }
+    }
+    world(
+        CONTAGION_CASCADE,
+        at,
+        worst,
+        book.equity,
+        unmeasured.into_iter().collect(),
+        format!(
+            "{worst_origin} takes its worst retained excursion and carries it, scaled by \
+             absolute return correlation, two hops through the book against every position; a \
+             pair with fewer than {CONTAGION_MIN_SHARED_RETURNS} shared returns is charged as \
+             perfectly correlated"
         ),
     )
 }
@@ -873,6 +1042,114 @@ mod tests {
             freeze.unmeasured,
             vec!["obj-NEW".to_string()],
             "unmarked named"
+        );
+    }
+
+    fn series(start: f64, moves: &[f64]) -> Vec<f64> {
+        let mut prices = vec![start];
+        for move_ in moves {
+            let last = *prices.last().expect("seeded");
+            prices.push(last * (1.0 + move_));
+        }
+        prices
+    }
+
+    fn held(object: &str, notional: f64) -> TailPosition {
+        TailPosition {
+            object: object.to_string(),
+            notional,
+            days_to_liquidate: Some(1.0),
+        }
+    }
+
+    /// R12-RISK-4116. The regime-flip world fires on a book that survives
+    /// every calm reading and is admitted on a quiet one. Mutation: change
+    /// `REGIME_FLIP_VOL_MULTIPLE * vol` to `vol` and the closed form fails;
+    /// delete the push and the lookup panics.
+    #[test]
+    fn the_regime_flip_world_breaches_a_book_of_unwatched_names_and_spares_a_quiet_one() {
+        // Premise: an unmeasured position is charged the unmeasured 5% daily
+        // volatility, so 400,000 of 1,000,000 flips to a closed-form loss.
+        let worlds = book_of(&[unmeasured("obj-NEW", 400_000.0)], &BTreeMap::new(), 1);
+        let flipped = world(&worlds, REGIME_FLIP);
+        let expected = 400_000.0
+            * TAIL_QUANTILE
+            * (REGIME_FLIP_VOL_MULTIPLE * UNMEASURED_DAILY_VOLATILITY)
+            * CORRELATION_HORIZON_DAYS.sqrt();
+        assert!((flipped.loss - expected).abs() < 1e-6, "{}", flipped.loss);
+        assert!(flipped.breaches(0.20), "{}", flipped.loss_fraction);
+        assert_eq!(flipped.unmeasured, vec!["obj-NEW".to_string()]);
+        // Never milder than the calm regime's own outage reading.
+        assert!(flipped.loss >= world(&worlds, VENUE_OUTAGE).loss);
+
+        // A measured, quiet name at a small size is not breached.
+        let quiet = series(100.0, &[0.001, -0.001, 0.001, -0.001, 0.001, -0.001]);
+        let history = BTreeMap::from([("obj-Q".to_string(), quiet)]);
+        let worlds = book_of(&[held("obj-Q", 50_000.0)], &history, 1);
+        let flipped = world(&worlds, REGIME_FLIP);
+        assert!(flipped.unmeasured.is_empty());
+        assert!(!flipped.breaches(0.20), "{}", flipped.loss_fraction);
+    }
+
+    /// R12-RISK-4102. Contagion follows the measured correlation graph.
+    /// Mutation: replace `link[origin][j]` with `0.0` and the correlated
+    /// pair reads as only its origin's loss.
+    #[test]
+    fn the_contagion_world_carries_a_shock_along_correlation_and_not_across_independence() {
+        let moves = [0.10, -0.10, 0.10, -0.10, 0.10, -0.10];
+        let a = series(100.0, &moves);
+        let b: Vec<f64> = a.iter().map(|p| p * 0.5).collect();
+        // Returns alternating in pairs: exactly uncorrelated with `moves`.
+        let c = series(100.0, &[0.10, 0.10, -0.10, -0.10, 0.10, 0.10]);
+        let excursion = adverse_excursion(&a, true).expect("measurable");
+        assert!(excursion > 0.0, "premise: the origin has an excursion");
+        let rho = trailing_correlation(&returns(&a), &returns(&c)).expect("measurable");
+        assert!(rho.abs() < 1e-9, "premise: independent returns, got {rho}");
+
+        let both = BTreeMap::from([("obj-A".to_string(), a.clone()), ("obj-B".to_string(), b)]);
+        let correlated = book_of(
+            &[held("obj-A", 300_000.0), held("obj-B", 300_000.0)],
+            &both,
+            1,
+        );
+        let loss = world(&correlated, CONTAGION_CASCADE).loss;
+        assert!((loss - 600_000.0 * excursion).abs() < 1e-6, "{loss}");
+
+        let apart = BTreeMap::from([("obj-A".to_string(), a), ("obj-C".to_string(), c)]);
+        let independent = book_of(
+            &[held("obj-A", 300_000.0), held("obj-C", 300_000.0)],
+            &apart,
+            1,
+        );
+        let alone = world(&independent, CONTAGION_CASCADE).loss;
+        assert!(
+            alone < loss,
+            "independence carried contagion: {alone} vs {loss}"
+        );
+    }
+
+    /// R12-RISK-4102. A pair that cannot be measured is the strictest link,
+    /// never the absent one. Mutation: initialise `link` to `0.0`.
+    #[test]
+    fn an_unmeasurable_pair_is_charged_as_perfectly_correlated() {
+        let a = series(100.0, &[0.10, -0.10, 0.10, -0.10]);
+        let history = BTreeMap::from([("obj-A".to_string(), a)]);
+        let worlds = book_of(
+            &[held("obj-A", 200_000.0), unmeasured("obj-NEW", 200_000.0)],
+            &history,
+            1,
+        );
+        let cascade = world(&worlds, CONTAGION_CASCADE);
+        // obj-NEW has no history: its seed is the unmeasured excursion and
+        // it reaches obj-A at full strength.
+        assert!(
+            (cascade.loss - 400_000.0 * UNMEASURED_EXCURSION).abs() < 1e-6,
+            "{}",
+            cascade.loss
+        );
+        assert_eq!(
+            cascade.unmeasured,
+            vec!["obj-A".to_string(), "obj-NEW".to_string()]
         );
     }
 
