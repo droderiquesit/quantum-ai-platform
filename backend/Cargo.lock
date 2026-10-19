@@ -224,6 +224,7 @@ dependencies = [
  "qip-simulation-engine",
  "qip-storage",
  "qip-strategy",
+ "qip-telemetry-drain",
  "qip-training",
  "qip-transport",
  "qip-web",
@@ -430,6 +431,7 @@ dependencies = [
  "qip-storage",
  "qip-strategy",
  "qip-streaming",
+ "qip-telemetry-drain",
  "qip-training",
  "qip-transport",
  "qip-twin",
@@ -579,6 +581,7 @@ dependencies = [
  "qip-observability",
  "qip-storage",
  "qip-streaming",
+ "qip-telemetry-drain",
  "qip-transport",
  "serde",
  "serde_json",
@@ -605,6 +608,7 @@ dependencies = [
  "qip-risk",
  "qip-risk-engine",
  "qip-storage",
+ "qip-telemetry-drain",
  "qip-transport",
  "serde",
  "serde_json",
@@ -1032,6 +1036,16 @@ dependencies = [
  "qip-storage",
  "qip-transport",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "qip-telemetry-drain"
+version = "0.1.0"
+dependencies = [
+ "qip-core",
+ "qip-observability",
+ "qip-transport",
  "serde_json",
 ]
 

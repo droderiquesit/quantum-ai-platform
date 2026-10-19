@@ -15,6 +15,7 @@ qip-events.workspace = true
 qip-storage.workspace = true
 qip-streaming.workspace = true
 qip-transport.workspace = true
+qip-telemetry-drain.workspace = true
 qip-observability.workspace = true
 
 # FABRIC-7043: `cargo bench -p qip-fabricd` prints produce and fetch latency

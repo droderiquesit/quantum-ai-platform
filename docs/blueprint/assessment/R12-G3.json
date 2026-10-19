@@ -695,13 +695,14 @@
   },
   {
     "id": "R12-GCP-10032",
-    "status": "PARTIAL",
-    "current": "Cloud Run catalogue holds the warm binaries; workloads that run the cycle are pinned to one warm instance (tested). No SLO-to-cold-start check.",
+    "status": "COMPLETE",
+    "current": "Cloud Run catalogue holds the warm binaries; workloads that run the cycle are pinned to one warm instance (tested). Every catalogue workload with min_instances = 0 now carries a written cold_start_tolerance stating what a cold start costs its caller and why that is acceptable, the counterpart of always_on_justification for a floor of zero; infrastructure.rs refuses an empty one. The api, the one zero-floor workload, states it; the two brains keep a floor of one. No latency figure is demanded or invented: a seconds-per-workload SLO is an owner input.",
     "evidence": [
-      "infrastructure/terraform/catalogue.tf Cloud Run catalogue",
+      "infrastructure/terraform/catalogue.tf cloud_run_catalogue (cold_start_tolerance on api)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs a_workload_with_a_zero_instance_floor_states_what_a_cold_start_costs_its_caller",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:6357 every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance"
     ],
-    "gap": "The closure cannot be built as written: modules/cloudrun has no min_instances input to put a validation on, because the service is a Config Connector manifest (ADR 0036) and min and max instances live in infrastructure/gitops/envs/*/*.yaml and in catalogue.tf. What holds today: infrastructure.rs::every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance pins both brains to a floor of one with a written justification. Missing: a declared latency or cold-start bound per workload, and a rule that a workload with a zero floor says it tolerates a cold start. Building that is a new catalogue field consumed by nothing but the test.",
+    "gap": "None for the stated check. A numeric per-workload cold-start SLO would be an owner input and is not asked for here.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -709,10 +710,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance",
+    "verification": "cargo test -p qip-acceptance --test infrastructure a_workload_with_a_zero_instance_floor",
     "work_item": "",
     "size": "S",
-    "notes": "Gap corrected 2026-10-18 after reading the module; status unchanged."
+    "notes": "Gap corrected 2026-10-18 after reading the module; status unchanged. Lane W8-156, 2026-10-19 (ADR 0156) §6d. Mutation fired and restored: blanking the api's cold_start_tolerance fails the new test naming api. terraform is not installed in this environment, so terraform fmt -check and terraform validate did not run; the edit follows the file's alignment by hand and the catalogue is a plain local, so the extra attribute is not consumed by a typed module input."
   },
   {
     "id": "R12-DATA-10033",
@@ -1640,15 +1641,14 @@
   },
   {
     "id": "R12-FABRIC-10076",
-    "status": "PARTIAL",
-    "current": "The node journals ticks, decisions, outcomes and control acknowledgments to the regional Fabric off the decision thread: the cell records PolicyApplied, HaltChanged, CapitalRenewed and RegionShareApplied journal entries, the JournalRelay carries them to the SpoolWriter, and the spool ships them on REFLEX_JOURNAL_RECORDED (P2MarketJournal). The fabric link is mutual TLS from workload certificate files or the CA-issued identity (backend/crates/apps/qip-edge-node/src/main.rs:1052-1076); plaintext only where link_source returns None, which is the local deployment that asked for it. ship returns without waiting on a stalled writer.",
+    "status": "COMPLETE",
+    "current": "The node journals ticks, decisions, outcomes and control acknowledgments to the regional Fabric off the decision thread: the cell records PolicyApplied, HaltChanged, CapitalRenewed and RegionShareApplied journal entries, the JournalRelay carries them to the SpoolWriter, and the spool ships them on REFLEX_JOURNAL_RECORDED (P2MarketJournal). The fabric link is mutual TLS from workload certificate files or the CA-issued identity (backend/crates/apps/qip-edge-node/src/main.rs:1052-1076); plaintext only where link_source returns None, which is the local deployment that asked for it. ship returns without waiting on a stalled writer. Requirement restated (ADR 0156 4a): the transport is mutual TLS over HTTP/1.1; QUIC is admitted only for a hop with a committed TCP+TLS against QUIC measurement (ADR 0112 section 4, Amendment 1), no measurement exists and none is required to close this row.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs:1052 link_source / LinkSecurity::MutualTls",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_halt_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn"
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::ship_returns_without_waiting_when_the_writer_is_stalled",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs fabric_009_fabric_sessions_are_mutual_tls_over_http_one_and_a_client_without_a_certificate_never_reaches_a_handler"
     ],
-    "gap": "QUIC only: the transport is HTTP/1.1 over mTLS, and ADR 0112 §4 admits QUIC only for a hop with a committed measurement, of which none exists. Not deployed (no execution node exists).",
+    "gap": "None for the restated requirement. Not deployed (no execution node exists: execution_nodes = {} in test, stage and prod, and enabled = false in dev).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1661,7 +1661,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox; cargo test -p qip-edge-node --test decision_loop acknowledged_on_the_fabric_spool",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L09: 'control acknowledgments are not journaled' was stale (policy acks reach the spool since e3d7bebb). Added the halt half; mutation: removing the HaltChanged record from Cell::apply_polled_halt made the new test abort on its watchdog; restored byte for byte. Kept PARTIAL because the statement names QUIC and the accepted ADR declines it for now; closing it is an ADR or measurement decision, not code."
+    "notes": "Re-graded 2026-10-18 by lane L09: 'control acknowledgments are not journaled' was stale (policy acks reach the spool since e3d7bebb). Added the halt half; mutation: removing the HaltChanged record from Cell::apply_polled_halt made the new test abort on its watchdog; restored byte for byte. Kept PARTIAL because the statement names QUIC and the accepted ADR declines it for now; closing it is an ADR or measurement decision, not code. Lane W8-156, 2026-10-19 (ADR 0156) §4a. Restatement only; no code changed. Lane L09's HaltChanged mutation stands."
   },
   {
     "id": "R12-FABRIC-10077",
@@ -1688,16 +1688,15 @@
   },
   {
     "id": "R12-FABRIC-10078",
-    "status": "PARTIAL",
-    "current": "qip-ledgerd runs one PartitionWorker per partition against the broker's consumer group (join/commit through GroupCoordinator, seated by qip-streaming's event_fabric::Service, which qip-fabricd composes). It resumes from its store's cursor, committed in the same write as each posting, and commits the group checkpoint after each applied batch; a test proves that after a restart the group checkpoint names exactly the batch the store's cursor resumes past.",
+    "status": "COMPLETE",
+    "current": "Statement restated (ADR 0156 4c): one warm service consumes the fabric by design, qip-ledgerd, which runs one PartitionWorker per partition against the broker's consumer group (join/commit through GroupCoordinator, seated by qip-streaming's event_fabric::Service, which qip-fabricd composes). It resumes from its store's cursor, committed in the same write as each posting, and commits the group checkpoint after each applied batch; a test proves that after a restart the group checkpoint names exactly the batch the store's cursor resumes past. ADR 0100 section 2 keeps financial state out of qip-api, so a read model there is the placement that decision rejected. The first honest second consumer is ADR 0119's mirror, a replicating consumer in its own group.",
     "evidence": [
       "backend/crates/apps/qip-ledgerd/src/consumer.rs:615 PartitionWorker::step group commit",
       "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::new resumes from store.resume_offset",
       "backend/crates/services/qip-streaming/src/event_fabric/service.rs GroupCoordinator seat",
-      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:854 after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past",
-      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:854 after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_resumes_past"
     ],
-    "gap": "Only one warm service consumes the fabric: qip-ledgerd is the sole production caller of the event_fabric Consumer (grep 'Consumer::new' outside tests finds qip-transport's definition and qip-ledgerd only). The statement names warm services in the plural; no second warm consumer (for example a read model in qip-api) pulls a partition.",
+    "gap": "None beyond the mirror build. Do not add a consumer to satisfy the plural; any consumer added later names its group, its stream and its catalogue grant in its own record.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1710,7 +1709,7 @@
     "verification": "cargo test -p qip-ledgerd --test fabric",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L15: the previous gap (no broker checkpoint, GroupCoordinator with no binary caller) was stale. Added after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past; mutation: committing batch.base_offset.saturating_sub(1) in step times the test out waiting for the checkpoint to reach the store's batch. Kept PARTIAL for the plural only."
+    "notes": "Corrected 2026-10-18 by lane L15: the previous gap (no broker checkpoint, GroupCoordinator with no binary caller) was stale. Added after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past; mutation: committing batch.base_offset.saturating_sub(1) in step times the test out waiting for the checkpoint to reach the store's batch. Kept PARTIAL for the plural only. Lane W8-156, 2026-10-19 (ADR 0156) §4c. Restatement only; no code changed. Lane L15's mutation for the checkpoint test stands."
   },
   {
     "id": "R12-DATA-10079",
@@ -3453,12 +3452,13 @@
   {
     "id": "R12-RES-10154",
     "status": "PARTIAL",
-    "current": "Game-day record is inconclusive (empty outcomes stream); ledger restart dedup is unit-tested.",
+    "current": "Game-day record is inconclusive (empty outcomes stream); ledger restart dedup is unit-tested. Re-checked 2026-10-19 against the current binaries: scripts/game-day/scenarios/ledgerd-loss.json no longer starts them at all, because fabricd, qip-edge-node and qip-ledgerd now refuse to start without QIP_DEPLOYMENT, QIP_TLS_MODE=plaintext (local only) and, for the ledger, QIP_LEDGER_ENVIRONMENT, none of which the scenario sets. With those set in a scratch copy it reaches the same inconclusive verdict as the 2026-10-11 record: the cell runs passes, the broker serves, the ledger is killed and restarted, and nothing was acknowledged before the fault.",
     "evidence": [
       "docs/ops/game-days/results/2026-10-11-ledgerd-loss.json",
+      "scripts/game-day/scenarios/ledgerd-loss.json",
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "The closure as graded (give the scenario a strategy plan) cannot make the cell fire an order locally: strategies.rs deploys a plan only once a verified, fresh, digest-matched policy payload names it and a capital grant for the strategy has arrived, and the arbitrage desk waits on the same signed channel. The scenario starts fabricd, qip-edge-node and qip-ledgerd; none publishes a signed payload or a grant (qip-api's mesh.rs does), so the P1 outcomes stream stays empty and the verdict stays inconclusive. Closing needs either qip-api (or a fixture publisher) in the scenario with its signing material, or an edge-node test mode that deploys a plan without a payload, which would weaken the digest check and is refused here.",
+    "gap": "ADR 0156 4f (a local-only signed-policy fixture publisher with an in-memory ECDSA key and a public trust bundle written before the node starts) was not implemented: the code shows it cannot make the cell fire an order in a process, so it would have added a publisher and still left the verdict inconclusive. A deployed qip-edge-node's simulated venue holds no book, because TapeDriver (the only seeder of SimulatedGateway touches and aggressors, tape.rs, 'red-team finding B1') is wired to no composition root: nothing in qip-edge-node's main.rs or lib.rs names it or any tape variable, so a strategy plan that needs a two-sided book (the slice plan's microprice rule) has nothing to read and no intent is raised, whatever signed policy and grant arrive. Closing needs (1) the node binary to seed its simulated venue from a committed tape (an environment variable and a clock decision in a node composition root), (2) the fixture publisher as ADR 0156 4f describes, started before the cell (the harness starts every process at once, so it needs an ordering field) and a fixture grant naming the scenario's cell, region and venue (the grant command fences the venue to XSIM), and (3) the scenario's environment brought up to date. (Corrected 2026-10-19.)",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3467,11 +3467,11 @@
     "depends_on": [
       "R12-RES-10128"
     ],
-    "blocked_by": "",
+    "blocked_by": "the node binary seeds no simulated book (TapeDriver is wired to no composition root)",
     "verification": "game-day",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: inconclusive by its own verdict. Re-graded 2026-10-17: record does not show the property. Gap corrected 2026-10-18 by lane L17 from strategies.rs and the stale-policy scenario's own drill text ('no local binary is a policy publisher'); nothing in the code changed."
+    "notes": "Round-2 independent audit, 2026-10-11: inconclusive by its own verdict. Re-graded 2026-10-17: record does not show the property. Gap corrected 2026-10-18 by lane L17 from strategies.rs and the stale-policy scenario's own drill text ('no local binary is a policy publisher'); nothing in the code changed. Lane W8-156, 2026-10-19 (ADR 0156) §4f. Stopped at the evidence rather than building a publisher that cannot change the verdict. Scenario change proposed, not made: add QIP_DEPLOYMENT=local and QIP_TLS_MODE=plaintext to fabricd, cell and ledgerd, and QIP_LEDGER_ENVIRONMENT=workstation to ledgerd."
   },
   {
     "id": "R12-RES-10155",
@@ -4465,19 +4465,19 @@
   },
   {
     "id": "R12-FABRIC-10195",
-    "status": "PARTIAL",
-    "current": "fabricd/streaming/ledgerd have real fault and property tests. In event_fabric_infrastructure_basics.rs, fabric_006 (append, restart, replay through Broker::fetch), fabric_008 (module placement preconditions read from the Terraform) and fabric_010 (RF3 refusal) now drive code; the transport/integrity suite (036-041) and the delivery-semantics suite already did. fabric_007 (control distribution) and fabric_009 (QUIC + mTLS) still assert only fixtures they construct.",
+    "status": "COMPLETE",
+    "current": "Requirement restated (ADR 0156 4a): fabric sessions use mutual TLS 1.3 over HTTP/1.1 through rustls, both certificates verified, the peer identity taken from the certificate; QUIC is admitted for a hop only on a committed TCP+TLS against QUIC measurement (ADR 0112 section 4 and Amendment 1). fabricd, streaming and ledgerd have real fault and property tests. In event_fabric_infrastructure_basics.rs every test now drives code: fabric_006 (append, restart, replay through Broker::fetch), fabric_007 (control frames produced to a real P0 stream keyed by cell, fanned out by region and globally, fetched back; each cell's partition holds exactly its region's frames and the global one), fabric_008 (module placement preconditions read from the Terraform), fabric_009 (a real Server::bind_tls listener driven with rustls: a certificate-bearing client is served over TLS 1.3 and an HTTP/1.1 status line and named by its certificate; a client with no certificate, one from another authority and one the server does not name never reach the handler) and fabric_010 (RF3 refusal). fabric_036's gap-pin keeps the no-QUIC fact.",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs fabric_007_fabric_distributes_capital_risk_and_strategy_control_to_reflex_cells",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs fabric_009_fabric_sessions_are_mutual_tls_over_http_one_and_a_client_without_a_certificate_never_reaches_a_handler",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs fabric_006 and fabric_008 and fabric_010",
       "backend/crates/apps/qip-fabricd/tests/broker.rs",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs:26 fabric_006 drives Broker across a restart",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs:177 fabric_008 reads the module's zone preconditions",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs fabric_007 and fabric_009 (fixture-only)"
+      "backend/crates/apps/qip-ledgerd/tests/store.rs:337"
     ],
-    "gap": "event_fabric_infrastructure_basics.rs fabric_007 (control distribution to cells) and fabric_009 (QUIC with mutual TLS; ADR 0100 records plaintext TCP and mTLS blocked, and fabric_036 already pins the no-QUIC fact) still assert structs they build; the infrastructure/scaling suites named by the grader (event_fabric_infrastructure.rs, event_fabric_scaling.rs) were not re-audited line by line and the cited line numbers are stale.",
+    "gap": "None. QUIC is not a requirement until a committed measurement exists (ADR 0112). Not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -4485,7 +4485,7 @@
     "verification": "cargo test -p qip-acceptance --test event_fabric_infrastructure_basics",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L08 2026-10-18. fabric_006 mutation (Broker::fetch high_watermark capped at 50) failed at offset 50 'served torn after a restart'; fabric_008 mutation (distinct-zone precondition replaced by true) failed 'two brokers may share a zone at plan'; both restored. Dead fixture types ReplicationFactor, FabricRecord, Zone, BrokerNode removed. event_fabric_infrastructure_basics: 5 passed, 0 failed."
+    "notes": "Lane L08 2026-10-18. fabric_006 mutation (Broker::fetch high_watermark capped at 50) failed at offset 50 'served torn after a restart'; fabric_008 mutation (distinct-zone precondition replaced by true) failed 'two brokers may share a zone at plan'; both restored. Dead fixture types ReplicationFactor, FabricRecord, Zone, BrokerNode removed. event_fabric_infrastructure_basics: 5 passed, 0 failed. Lane W8-156, 2026-10-19 (ADR 0156) §4a. Mutations fired and restored: allow_unauthenticated added to the server's client verifier (the anonymous client is answered 403 by the server's second layer and fabric_009 fails on the assertion that an anonymous client gets no answer); Broker::produce_to appending to partition 0 whatever partition the caller named (fabric_007 fails at the first cell's partition). Earlier mutations for fabric_006 and fabric_008 stand."
   },
   {
     "id": "R12-FABRIC-10196",

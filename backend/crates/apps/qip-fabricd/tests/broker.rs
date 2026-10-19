@@ -1302,6 +1302,75 @@ fn an_isolate_request_over_mutual_tls_is_attributed_to_the_certificate_name_and_
     let _ = std::fs::remove_dir_all(&pki);
 }
 
+/// R12-OBS-8082 (ADR 0156 §5.5). An acknowledged produce leaves exactly one
+/// span, recorded at the request handler, whose attributes are `stream`,
+/// `class` and `outcome` and nothing else: never the partition key, the
+/// producer id, or an event id. A span attribute is read by whatever the
+/// collector builds on it, so an unbounded one is a cardinality bomb in
+/// someone else's database.
+///
+/// The span's existence is asserted first, and the serialised span is searched
+/// for the key, the producer and the event's tag, so "never a key" is checked
+/// against values that were really on the request.
+///
+/// Mutation: add the partition key as a span attribute in
+/// `DataPlane::finish_span` (`span.set_attribute("key", ..)`). The attribute
+/// set is no longer exactly stream, class and outcome and the equality fails.
+#[test]
+fn an_acknowledged_produce_leaves_one_span_naming_stream_and_class_and_never_a_key_or_producer() {
+    use qip_events::topic::Topic;
+    let catalogue = catalogue_json(&base_grants(), "archived");
+    let fabric = Fabric::start_with("produce-span", &catalogue).unwrap();
+    let partition = own_partition(CELL_A);
+    let mut producer = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    producer.init().unwrap();
+    producer
+        .send(batch_of_records(
+            QosClass::P2MarketJournal,
+            vec![event_record(Topic::ReflexJournalRecorded, "span-tag-9c1")],
+        ))
+        .expect("the produce is acknowledged");
+
+    let tracer = fabric.running().observability().tracer.clone();
+    let spans: Vec<_> = tracer
+        .spans()
+        .into_iter()
+        .filter(|span| span.name == "fabricd.produce")
+        .collect();
+    assert_eq!(
+        spans.len(),
+        1,
+        "one acknowledged produce, one span: {spans:?}"
+    );
+    let span = &spans[0];
+    let mut attributes = span.attributes.clone();
+    // The tracer stamps every span with the service it belongs to.
+    attributes.remove("service.name");
+    assert_eq!(
+        attributes,
+        BTreeMap::from([
+            ("class".to_string(), "p2_market_journal".to_string()),
+            ("outcome".to_string(), "success".to_string()),
+            ("stream".to_string(), JOURNAL.to_string()),
+        ]),
+        "a produce span carries stream, class and outcome only"
+    );
+    let serialised = serde_json::to_string(span).unwrap();
+    for unbounded in [CELL_A, "cell-a", "span-tag-9c1"] {
+        assert!(
+            !serialised.contains(unbounded),
+            "the span carries {unbounded:?}, which is a key, a producer or an event id: \
+             {serialised}"
+        );
+    }
+    // Routes that are not a produce leave none: the init above is a request
+    // the handler served and recorded no span for.
+    assert!(
+        tracer.spans().iter().all(|s| s.name == "fabricd.produce"),
+        "only produces are spanned"
+    );
+}
+
 // --- FABRIC-028 -----------------------------------------------------------------
 
 /// An operator isolates one partition: produce to it is refused naming the

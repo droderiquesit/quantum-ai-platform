@@ -40,6 +40,27 @@ fn main() {
     };
     match start(&config) {
         Ok(running) => {
+            // The OpenObserve drain (ADR 0028, ADR 0156 §5.5): unset means this
+            // broker's metrics and its produce spans stay local, as they
+            // always have. Set means a thread exports them on an interval;
+            // the handle must outlive `wait()` below, because dropping it
+            // stops the thread. A configuration that does not parse stops
+            // the process rather than draining nowhere.
+            let _drain = match qip_fabricd::openobserve::from_env() {
+                Ok(Some(drain)) => {
+                    eprintln!("qip-fabricd: telemetry draining to {}", drain.describe());
+                    match qip_fabricd::openobserve::spawn(
+                        running.observability().clone(),
+                        drain,
+                        Arc::new(SystemClock),
+                    ) {
+                        Ok(handle) => Some(handle),
+                        Err(error) => refuse(&error),
+                    }
+                }
+                Ok(None) => None,
+                Err(error) => refuse(&error),
+            };
             // Printed from the configuration, never from `running`: the
             // broker holds the workload certificate's key, and no value read
             // out of a key-holding value reaches a log line.

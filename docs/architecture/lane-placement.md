@@ -77,6 +77,7 @@ past `qip_peer_link::boundary`; and when the port declares a method beyond
 | qip-peer | 1 | the peer coordination protocol, pure: frames in, state and refusals out; depends on qip-core, serde and serde_json alone, so no warehouse client is reachable from it (DATA-058) |
 | qip-peer-link | 1 | the peer wire (mutual TLS 1.3 through `qip-tls`, not `qip-transport`, so the fabric's wire is unreachable from it) and session on threads of their own, with explicit connect, write and handshake timeouts; runs the peer cycle on the session thread; reached from the reflex node only through a port that offers with `try_send` and reports from atomics |
 | qip-streaming | 1 | stream transports with explicit bounds; a refusing port rather than a silent fallback |
+| qip-telemetry-drain | 1 | the one OTLP/JSON exporter: a thread of its own with explicit connect, read and write timeouts, backing off on a dead collector and never awaited by anything; takes its configuration as a lookup so it reads no environment (ADR 0156 §5) |
 | qip-chain | 1 | signed chain records over qip-transport; bounded round trips |
 | qip-fabricd | 1 | the in-tree fabric daemon; journal appends acknowledged locally |
 | qip-capital | 2 | capital placement and per-user ledger; limits checked before an order exists |
