@@ -626,3 +626,374 @@ fn a_canary_in_a_fetched_body_is_found_in_no_durable_store_after_a_poll_through_
         }
     }
 }
+
+/// A loopback HTTP/1.1 server that answers every request with one body, so an
+/// adapter under test fetches over a real socket. Local to this suite because
+/// the adapters' own test server is private to their crate's tests.
+struct BodyServer {
+    base: String,
+    served: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    address: std::net::SocketAddr,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl BodyServer {
+    // A helper, not a `#[test]`, so the test-code allowance for `expect` does
+    // not reach it; a panic here is still the failure report.
+    #[allow(clippy::expect_used)]
+    fn serving(body: String) -> Self {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let address = listener.local_addr().expect("a bound address");
+        let served = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (thread_served, thread_stop) = (served.clone(), stop.clone());
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if thread_stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                let Ok(mut stream) = stream else { continue };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let mut reader = BufReader::new(stream.try_clone().expect("a cloned stream"));
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut discarded = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut discarded);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                thread_served.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        Self {
+            base: format!("http://{address}"),
+            served,
+            stop,
+            address,
+            handle: Some(handle),
+        }
+    }
+
+    fn served(&self) -> usize {
+        self.served.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Drop for BodyServer {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Wake the accept loop so the thread sees the flag and returns.
+        let _ = std::net::TcpStream::connect(self.address);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// R12-DATA-7021, extended past the connector arm to the three other
+/// ingestion paths: the REST market-data adapter (the one `qip-fastbrain`'s
+/// feed builds), the narrative adapter and the alternative-data adapter. Each
+/// fetches from its own loopback socket a body carrying a canary in a field no
+/// decoder reads; the records are then taken the way a composition root takes
+/// them — `IngestionService::poll_batch`, published to an event log, and
+/// absorbed by `Platform::observe` — and a cycle runs, so the platform's own
+/// hash-chained log is written.
+///
+/// **Which stores.** The connector test above also searches a key-value
+/// journal, a knowledge-pack store and a tick-lake store, because
+/// `ConnectorArm` is the only code that writes them. These three adapters hold
+/// no handle on any of the three (`grep -n 'KeyValueStore\|BlobStore'` over
+/// `rest.rs`, `narrative.rs`, `alternative.rs` and `service.rs` finds nothing),
+/// so the durable stores they can reach are the two event logs searched here:
+/// the platform's and the one the ingestion service publishes to. An empty
+/// store added for show would pass for any adapter.
+///
+/// The premises are the other half of the denial: every server served, every
+/// served body held its canary, every adapter's records reached both logs.
+///
+/// Mutated by building the REST trade's `trade_id` from the whole wire body in
+/// `RestMarketDataAdapter`'s trade decoder: the published trade then carries
+/// the canary and the ingestion-log assertion fails; restored byte for byte.
+#[test]
+fn a_canary_in_a_rest_narrative_or_alternative_body_is_found_in_no_durable_store_after_a_poll_through_the_platform()
+ {
+    use qip_core::{Context, Duration, ObjectId, Timestamp};
+    use qip_events::{EventBus, EventLog, Topic};
+    use qip_financial::quality::LicensingClass;
+    use qip_financial::universe::Universe;
+    use qip_kernel::config::PlatformConfig;
+    use qip_kernel::platform::Platform;
+    use qip_market_ingestion::IngestionService;
+    use qip_market_ingestion::adapter::SensedRecord;
+    use qip_market_ingestion::alternative::{
+        AlternativeFeedAdapter, AlternativeFeedConfig, AlternativeSubject,
+    };
+    use qip_market_ingestion::narrative::{
+        NarrativeAdapter, NarrativeFeedConfig, NarrativeSubject,
+    };
+    use qip_market_ingestion::rest::{RestFeedConfig, RestInstrument, RestMarketDataAdapter};
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+    use qip_transport::ClientLimits;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration as StdDuration;
+
+    const REST_CANARY: &str = "CANARY-a3c40f19-not-for-retention";
+    const NARRATIVE_CANARY: &str = "CANARY-5d1e88a2-not-for-retention";
+    const ALTERNATIVE_CANARY: &str = "CANARY-77e0b4d5-not-for-retention";
+    const REST_BODY: &str = r#"{
+  "bars": [{"symbol": "NWSC", "interval": "1m", "open_time": "2026-08-24T14:58:00Z",
+    "open": "101.20", "high": "101.90", "low": "101.05", "close": "101.75",
+    "volume": "18400", "vwap": "101.53", "trade_count": 212}],
+  "quotes": [{"symbol": "NWSC", "at": "2026-08-24T14:59:30Z", "bid": "101.74",
+    "ask": "101.76", "bid_size": "400", "ask_size": "300"}],
+  "trades": [{"symbol": "NWSC", "at": "2026-08-24T14:59:45Z", "price": "101.75",
+    "size": "100", "aggressor": "buy", "condition": "regular", "trade_id": "print-91"}]
+}"#;
+    const NARRATIVE_BODY: &str = r#"{
+  "news": [{
+    "document_id": "wire-2026-08-24-4471",
+    "headline": "Northwind Semiconductor warns on fourth-quarter volumes",
+    "body": "The company said output at its northern fabrication site would be reduced.",
+    "source": "newswire",
+    "published_at": "2026-08-24T14:45:00Z",
+    "entities": [{"text": "Northwind Semiconductor Corporation", "issuer": "NWSC",
+      "confidence": 0.94, "is_primary": true}],
+    "sentiment": {"polarity": -0.42, "confidence": 0.81, "novelty": 0.66},
+    "topics": ["guidance", "supply_chain"],
+    "licensing": "restricted",
+    "revision": {"status": "original"}
+  }],
+  "macro": [{
+    "document_id": "stat-cpi-2026-07", "series_id": "US.CPI.YOY", "region": "US",
+    "value": 2.9, "unit": "percent", "reference_date": "2026-07-31T00:00:00Z",
+    "released_at": "2026-08-24T12:30:00Z", "consensus": 3.1, "previous": 3.0,
+    "licensing": "public", "revision": {"status": "original"}
+  }]
+}"#;
+    const ALTERNATIVE_BODY: &str = r#"{"readings": [{
+  "observation_id": "obs-8801",
+  "dataset": "satellite.parking_lot_counts",
+  "subject": "NWSC-US",
+  "metric": "vehicles",
+  "value": 1842.0,
+  "unit": "vehicles",
+  "captured_at": "2026-08-03T10:14:00Z",
+  "processed_at": "2026-08-09T02:30:00Z",
+  "published_at": "2026-08-12T06:00:00Z",
+  "lead_days": 21.0,
+  "proxy_correlation": 0.62,
+  "proxies_for": "revenue",
+  "licensing": "restricted",
+  "quality": {"completeness": 0.94, "confidence": 0.88, "basis": "observed"}
+}]}"#;
+
+    // The canary rides beside the data, in a field nobody decodes.
+    let rest_body = REST_BODY.replacen('{', &format!("{{\"note\": \"{REST_CANARY}\","), 1);
+    let narrative_body = NARRATIVE_BODY.replace(
+        "would be reduced.",
+        &format!("would be reduced. {NARRATIVE_CANARY}"),
+    );
+    let alternative_body =
+        ALTERNATIVE_BODY.replacen('{', &format!("{{\"note\": \"{ALTERNATIVE_CANARY}\", "), 1);
+    assert!(rest_body.contains(REST_CANARY) && !REST_BODY.contains(REST_CANARY));
+    assert!(
+        narrative_body.contains(NARRATIVE_CANARY) && !NARRATIVE_BODY.contains(NARRATIVE_CANARY)
+    );
+    assert!(
+        alternative_body.contains(ALTERNATIVE_CANARY)
+            && !ALTERNATIVE_BODY.contains(ALTERNATIVE_CANARY)
+    );
+
+    let rest_server = BodyServer::serving(rest_body);
+    let narrative_server = BodyServer::serving(narrative_body);
+    let alternative_server = BodyServer::serving(alternative_body);
+
+    let limits = ClientLimits {
+        max_body: 64 * 1024,
+        connect_timeout: StdDuration::from_millis(500),
+        read_timeout: StdDuration::from_millis(500),
+        write_timeout: StdDuration::from_millis(500),
+        ..ClientLimits::default()
+    };
+    let rest = RestMarketDataAdapter::new(
+        RestFeedConfig {
+            name: "vendor-rest".into(),
+            provider: "a REST market-data vendor".into(),
+            base_url: Some(rest_server.base.clone()),
+            path: "/v1/market-data".into(),
+            api_key: Some("vendor-key-7f3a".into()),
+            api_key_header: "x-api-key".into(),
+            licensing: LicensingClass::Licensed,
+            publication_delay: Duration::ZERO,
+            window: Duration::from_mins(5),
+            max_records: 100,
+            http: limits,
+        },
+        vec![RestInstrument::new(
+            ObjectId::from_string("OBJ00000000000000000NWSC"),
+            "NWSC",
+            "XNYS",
+        )],
+    )
+    .expect("the REST configuration builds");
+    let narrative = NarrativeAdapter::new(
+        NarrativeFeedConfig {
+            name: "vendor-documents".into(),
+            provider: "a document and macro-release vendor".into(),
+            base_url: Some(narrative_server.base.clone()),
+            path: "/v1/narrative".into(),
+            api_key: Some("document-key-91c4".into()),
+            api_key_header: "x-api-key".into(),
+            licensing: None,
+            publication_delay: Duration::ZERO,
+            window: Duration::from_mins(30),
+            max_records: 100,
+            max_document_bytes: 512,
+            http: limits,
+        },
+        vec![NarrativeSubject::new("ent-northwind", "NWSC")],
+        vec!["US.CPI.YOY".to_string()],
+    )
+    .expect("the narrative configuration builds");
+    let alternative = AlternativeFeedAdapter::new(
+        AlternativeFeedConfig {
+            name: "test-alt".into(),
+            provider: "a loopback alternative-data vendor".into(),
+            base_url: Some(alternative_server.base.clone()),
+            api_key: Some("alt-key-4d19".into()),
+            licensing: None,
+            publication_delay: Duration::ZERO,
+            http: limits,
+            ..AlternativeFeedConfig::default()
+        },
+        vec![
+            "satellite.parking_lot_counts".into(),
+            "mobility.footfall".into(),
+        ],
+        vec![AlternativeSubject::new("ent-northwind", "NWSC-US")],
+    )
+    .expect("the alternative-data configuration builds");
+
+    let now = Timestamp::parse_rfc3339("2026-08-24T15:00:00Z").expect("a valid instant");
+    let (ingest_context, _clock) = Context::deterministic(now, 1);
+    let ingestion_log = Rc::new(RefCell::new(EventLog::in_memory()));
+    let mut bus = EventBus::new().with_log(ingestion_log.clone());
+    let mut service = IngestionService::new(Telemetry::silent());
+    service.register(Box::new(rest));
+    service.register(Box::new(narrative));
+    service.register(Box::new(alternative));
+    service.start(now).expect("the adapters start");
+
+    let batch = service.poll_batch(now, now).expect("the poll succeeds");
+
+    // Premises, asserted before any denial. Each path really crossed a socket,
+    // and each really produced the records the denial is about.
+    assert_eq!(
+        rest_server.served(),
+        1,
+        "the REST body did not cross a socket"
+    );
+    assert_eq!(
+        narrative_server.served(),
+        1,
+        "the narrative body did not cross a socket"
+    );
+    assert_eq!(
+        alternative_server.served(),
+        1,
+        "the alternative-data body did not cross a socket"
+    );
+    assert!(
+        batch.refused_sources.is_empty(),
+        "{:?}",
+        batch.refused_sources
+    );
+    assert!(batch.failures.is_empty(), "{:?}", batch.failures);
+    let has = |pick: fn(&SensedRecord) -> bool| batch.accepted.iter().any(pick);
+    assert!(
+        has(|r| matches!(r, SensedRecord::Trade(_))),
+        "no REST trade"
+    );
+    assert!(
+        has(|r| matches!(r, SensedRecord::News(_))),
+        "no narrative news"
+    );
+    assert!(
+        has(|r| matches!(r, SensedRecord::Macro(_))),
+        "no narrative macro"
+    );
+    assert!(
+        has(|r| matches!(r, SensedRecord::AlternativeData(_))),
+        "no alternative-data point"
+    );
+
+    service
+        .publish_records(
+            &ingest_context,
+            &mut bus,
+            "the three feeds",
+            &batch.accepted,
+        )
+        .expect("the records publish");
+    bus.drain(&ingest_context).expect("the bus drains");
+
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(now, config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )
+    .expect("the platform builds");
+    let before = platform.event_log().records().len();
+    let absorbed = platform.observe(batch.accepted.clone());
+    assert!(absorbed > 0, "premise: the platform took the records in");
+    platform.run_cycle(now);
+    assert!(
+        platform.event_log().records().len() > before,
+        "premise: the platform's own log was written by the cycle"
+    );
+
+    let ingestion_log = ingestion_log.borrow();
+    assert!(
+        ingestion_log.by_topic(Topic::MarketTrade).len() == 1
+            && !ingestion_log.by_topic(Topic::MarketQuote).is_empty(),
+        "premise: the REST records reached the ingestion log"
+    );
+    let platform_log = format!("{:?}", platform.event_log().records());
+    let published = format!("{:?}", ingestion_log.records());
+    for (path, canary) in [
+        ("REST", REST_CANARY),
+        ("narrative", NARRATIVE_CANARY),
+        ("alternative-data", ALTERNATIVE_CANARY),
+    ] {
+        assert!(
+            !published.contains(canary),
+            "the ingestion event log retained the {path} body"
+        );
+        assert!(
+            !platform_log.contains(canary),
+            "the platform's event log retained the {path} body"
+        );
+    }
+}

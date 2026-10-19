@@ -196,6 +196,17 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
             names::MODEL_PACKAGES,
             SourceRule::CounterOutcome { good: "written" },
         ),
+        // Model serving proper (R12-OBS-7128): out of every request to serve
+        // an artifact, the share the provider served. Recorded by
+        // `Platform::serve_model`, which the deep brain's incumbent
+        // comparison and promotion scoring go through. Beside the package
+        // objective rather than replacing it: one asks whether the write
+        // happened, this one whether the artifact can be served at all.
+        p(
+            Slo::availability("model-serving", "deepbrain", 0.99, SloWindow::Week),
+            names::MODEL_SERVES,
+            SourceRule::CounterOutcome { good: "served" },
+        ),
         p(
             Slo::ratio_at_least(
                 "data-provenance-lineage-completeness",

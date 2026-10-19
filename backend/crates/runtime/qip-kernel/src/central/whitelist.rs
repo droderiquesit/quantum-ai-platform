@@ -131,14 +131,14 @@
 //! is kept with its refutation appended rather than struck, because the way
 //! it was wrong is the useful part:
 //!
-//! * **Belief priors.** `BeliefState` holds when a belief was last formed
+//! * **Belief priors.** `BeliefClock` holds when a belief was last formed
 //!   and how many have been — deliberately not the hypotheses themselves,
 //!   which travel to the event log — so there is no per-subject confidence
 //!   to ship. A map assembled from the cycle's own precedents would be keyed
 //!   by hypothesis id, which names nothing a cell can read, and it would
 //!   double every cell's sizing multiplier. What would have to exist: a
 //!   belief the centre holds *per subject a cell trades*, retained past the
-//!   cycle that formed it. Re-verified 2026-09-07: `BeliefState` still holds
+//!   cycle that formed it. Re-verified 2026-09-07: `BeliefClock` still holds
 //!   exactly `last_updated` and `hypotheses_formed`, and the investment
 //!   records under `kernel/investment` are subscription and redemption
 //!   requests against the fund, not convictions about a subject.
@@ -146,7 +146,7 @@
 //!   **Amended 2026-09-15: every clause above is still true and the
 //!   conclusion is not.** The thing this bullet said would have to exist was
 //!   already in `platform.rs` and neither the bullet nor its two re-checks
-//!   looked for it under any name but `BeliefState`. `Platform::pending_episodes`
+//!   looked for it under any name but `BeliefClock` (then `BeliefState`). `Platform::pending_episodes`
 //!   holds one `Episode` per hypothesis REASON has formed and LEARN has not
 //!   yet resolved, keyed by `instrument` — the subject, not the hypothesis id
 //!   — carrying `claim.confidence`, the effective confidence after review,
@@ -158,7 +158,7 @@
 //!   expects to confirm is not a re-check. [`super::belief`] is the producer,
 //!   and the doubling this bullet warns of is real and is what that module's
 //!   four refusals exist to bound — chiefly that it ships nothing unless
-//!   `BeliefState::last_updated` says a belief was formed in this process,
+//!   `BeliefClock::last_updated` says a belief was formed in this process,
 //!   and that it stamps the slot with the *oldest* belief inside slot 3's own
 //!   five-minute window rather than with the issue instant, so a centre that
 //!   stops reasoning returns every cell to the halved multiplier inside five

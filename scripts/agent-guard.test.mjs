@@ -708,3 +708,32 @@ test("a commit naming a lane the manifest lacks, or with no readable manifest, i
   assert.match(judge(unreadable, "r3-capital-code")[0], /cannot be read/);
   assert.ok(loadLanes({ lane_manifest: { path: "../etc/passwd" } }, "scripts/agent-policy.json").problem);
 });
+
+// CICD-9072. A change carrying both a coder's and a reviewer's commit must name
+// two models. Mutation: delete the `shared.length > 0` refusal in judgeChange
+// (the same-model change is admitted), or the `unnamed` refusal (a missing
+// trailer is admitted).
+test("a reviewer role commit must name a different model from the coder role commit it reviews", () => {
+  const commit = (role, model) => ({
+    commit: {
+      author: { name: "Claude", email: "noreply@anthropic.com" },
+      message: `Do a thing\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nAgent-Role: ${role}${model ? `\nAgent-Model: ${model}` : ""}\n`,
+    },
+  });
+  const judge = (commits) =>
+    judgeChange({
+      policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
+      files: [], commits, reviews: [approval("dana")],
+    }).refusals;
+  // Premise: the independent pair, and a lone coder, are both admitted.
+  assert.deepEqual(judge([commit("backend-engineer", "model-a"), commit("code-reviewer", "model-b")]), []);
+  assert.deepEqual(judge([commit("backend-engineer")]), []);
+
+  const same = judge([commit("backend-engineer", "Model-A"), commit("code-reviewer", "model-a")]);
+  assert.equal(same.length, 1);
+  assert.match(same[0], /reviewer-role commit names the same model as a coder-role commit \(model-a\)/);
+
+  const unnamed = judge([commit("backend-engineer", "model-a"), commit("code-reviewer")]);
+  assert.equal(unnamed.length, 1);
+  assert.match(unnamed[0], /carry no Agent-Model trailer/);
+});

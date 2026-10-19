@@ -58,6 +58,7 @@ variables {
   project_id        = "zone-identities-harness"
   project_number    = 123456789012
   environment       = "dev"
+  owner             = "platform"
   github_repository = "example/example"
 
   # The zones below are in us-east4, and the management zone's GitHub egress

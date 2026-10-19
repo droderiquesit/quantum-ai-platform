@@ -20,10 +20,15 @@
 //!
 //! # Why the peer must be loopback
 //!
-//! The fabric speaks plaintext TCP (ADR 0100 §7; mutual TLS is BLOCKED(C2)),
-//! so an operator token sent across a network is a token anything on the
-//! path can read and replay, and this token parks partitions. The command
-//! therefore reaches a broker on its own host only. Run it there.
+//! This command presents a bearer token over plaintext and has no workload
+//! certificate source, so an operator token sent across a network is a token
+//! anything on the path can read and replay, and this token parks partitions.
+//! The command therefore reaches a broker on its own host only. Run it there.
+//! A deployed broker's listener is mutual TLS (ADR 0112); on it the broker
+//! attributes an admin request to the verified certificate name, not to this
+//! token (ADR 0156 §4d), and the operator-certificate template that would let
+//! this command reach one from elsewhere is infrastructure that does not exist
+//! yet.
 //!
 //! This does not place, amend or cancel an order and changes no autonomy
 //! level. It stops records being written to a log.

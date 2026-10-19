@@ -68,6 +68,7 @@ use qip_lifecycle::evidence::{
     LeakageAudit, PaperEvidence, PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence,
     StrategyEvidence,
 };
+use qip_lifecycle::ledger::MAX_LIVE_STRATEGIES;
 use qip_lifecycle::trials::StrategyFamily;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
@@ -8006,5 +8007,395 @@ fn decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant() 
         shrunk < full && narrowed < full,
         "a contraction widened a grant"
     );
+    Ok(())
+}
+
+// --- R12-RISK-4094: crowding across cells and a shared cause, in one cycle ---
+
+/// Names the book holds, each driven by one common return, and the larger set
+/// of names it does not hold, which move on their own noise. Five held against
+/// twenty-five unheld makes the market factor a sixth of the held names'
+/// return, so each held name loads on it at about six; the simulated venue
+/// fills part of each clip, and the sum comes to about 1.6 of equity in factor
+/// exposure against a shipped cap of 1.20 — while the country cap of 0.60 and
+/// the leverage cap are comfortably met.
+const LEANING: usize = 5;
+const BALLAST: usize = 25;
+const SHARED_CAUSE_BARS: usize = 120;
+
+/// The unheld name whose lagged return the held names also follow. Sorts ahead
+/// of every other name so the temporal-precedence pass, which stops after a
+/// bounded number of pairs, reaches it as a cause before it stops.
+const DRIVER: &str = "AAA-DRV";
+
+fn leaning_symbol(index: usize) -> String {
+    format!("LEAN{index:02}")
+}
+
+fn ballast_symbol(index: usize) -> String {
+    format!("BALL{index:02}")
+}
+
+/// A platform under the shipped limit set, over a catalogue spreading the
+/// held names across sectors so the sector cap does not veto the fixture's
+/// orders before the shared-cause cap is ever read.
+fn shared_cause_platform() -> Result<Platform> {
+    let sectors = [
+        Sector::Energy,
+        Sector::Materials,
+        Sector::Industrials,
+        Sector::ConsumerDiscretionary,
+        Sector::HealthCare,
+    ];
+    let mut universe = Universe::new();
+    let names = (0..LEANING)
+        .map(|i| (leaning_symbol(i), sectors[i % sectors.len()]))
+        .chain((0..BALLAST).map(|i| (ballast_symbol(i), Sector::RealEstate)))
+        .chain(std::iter::once((DRIVER.to_string(), Sector::Utilities)));
+    for (symbol, sector) in names {
+        let object = FinancialObject::builder(
+            ObjectId::from_string(format!("obj-{symbol}")),
+            symbol.as_str(),
+            InstrumentType::CommonStock,
+            fixture_liquidity(),
+        )
+        .venue(VENUE)
+        .sector(sector)
+        .price(dec!("100"))
+        .provenance(DataProvenance::synthetic("test", start()))
+        .build(start())?;
+        universe.insert(object)?;
+    }
+    let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(10_000_000));
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        LimitSet::conservative_default(),
+    )
+}
+
+/// A bounded deterministic sequence in `[-scale, scale]`.
+fn shared_cause_noise(seed: u64, count: usize, scale: f64) -> Vec<f64> {
+    let mut state = seed;
+    (0..count)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let unit = (state % 1_000_000) as f64 / 1_000_000.0;
+            (unit - 0.5) * 2.0 * scale
+        })
+        .collect()
+}
+
+fn closes_from_returns(symbol: &str, returns: &[f64]) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    let count = returns.len();
+    returns
+        .iter()
+        .enumerate()
+        .map(|(i, step)| {
+            let open = price;
+            price *= step.exp();
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            SensedRecord::Bar(Box::new(Bar {
+                object_id: ObjectId::from_string(format!("obj-{symbol}")),
+                venue: VENUE.to_string(),
+                interval: Interval::Day,
+                open_time: at,
+                open: Decimal::from_f64(open).unwrap_or_default(),
+                high: Decimal::from_f64(open.max(price) * 1.002).unwrap_or_default(),
+                low: Decimal::from_f64(open.min(price) * 0.998).unwrap_or_default(),
+                close: Decimal::from_f64(price).unwrap_or_default(),
+                volume: dec!("1000000"),
+                trade_count: 5_000,
+                vwap: Decimal::from_f64((open + price) / 2.0),
+                quality: DataQuality::default(),
+            }))
+        })
+        .collect()
+}
+
+#[test]
+fn a_cycle_reports_both_the_crowded_name_three_cells_hold_and_the_shared_cause_the_book_leans_on()
+-> Result<()> {
+    // R12-RISK-4094: "Crowded positions across cells and shared causal
+    // drivers are reported each cycle." `CycleReport` carries neither; the two
+    // surfaces are `Platform::ingest_cell_report`'s `CellIngestion::crowded`
+    // (the cross-cell view) and the risk state the cycle's pre-trade veto and
+    // monitor both read, whose `axis_exposures` hold the shared-cause levels
+    // `shared_cause::observe` writes. Each was tested alone; nothing held that
+    // a single platform, in a single pass, reports both.
+    let mut platform = shared_cause_platform()?;
+
+    // The book leans on the market: five held names, just under a tenth of equity each,
+    // placed through the full pre-trade path while no tape exists, so no
+    // shared-cause figure can yet veto the order that builds the lean.
+    // Four clips of 225,000 per name: the shipped set caps one order's
+    // notional at 250,000, and the simulated venue fills only part of each.
+    for index in 0..LEANING {
+        for clip in 0..4 {
+            let order = platform.order_from(
+                ObjectId::from_string(format!("obj-{}", leaning_symbol(index))),
+                qip_execution_engine::order::Side::Buy,
+                dec!("2250"),
+                dec!("100"),
+                &format!("prop-lean-{index}-{clip}"),
+                vec!["hyp-lean".to_string()],
+                start(),
+            );
+            platform.submit_order(order, start())?;
+        }
+    }
+
+    // Three cells hold one name.
+    let cells = ["cell-lon-1", "cell-nyc-1", "cell-sin-1"];
+    let id = strategy();
+    let mut last = None;
+    for cell in cells {
+        let report = CellReport::new(cell, start()).with_positions(vec![position(
+            cell,
+            &id,
+            INSTRUMENT,
+            dec!("1000"),
+        )]);
+        last = Some(platform.ingest_cell_report(report, start())?);
+    }
+    let ingestion = last.ok_or_else(|| qip_core::Error::not_found("three reports ingested"))?;
+    // Premise, asserted first: the crowding is really there. An empty list
+    // would let the shared-cause half carry a test about both.
+    assert!(
+        !ingestion.crowded.is_empty(),
+        "three cells holding {INSTRUMENT} produced no crowded name"
+    );
+    assert_eq!(ingestion.crowded[0].instrument, INSTRUMENT);
+    assert_eq!(ingestion.crowded[0].cells.len(), 3);
+
+    // The tape: held names carry five times a common return, so against the
+    // market factor (the mean of all thirty-one) each loads at about six;
+    // they also follow the driver's return of the bar before, which is what
+    // the temporal-precedence pass reads as a causal driver. The others carry
+    // only their own noise.
+    let common = shared_cause_noise(7, SHARED_CAUSE_BARS, 0.01);
+    let driver = shared_cause_noise(3, SHARED_CAUSE_BARS, 0.01);
+    platform.observe(closes_from_returns(DRIVER, &driver));
+    for index in 0..LEANING {
+        let idio = shared_cause_noise(100 + index as u64, SHARED_CAUSE_BARS, 0.002);
+        let returns: Vec<f64> = (0..SHARED_CAUSE_BARS)
+            .map(|t| {
+                let lagged = if t == 0 { 0.0 } else { driver[t - 1] };
+                5.0 * common[t] + 4.0 * lagged + idio[t]
+            })
+            .collect();
+        platform.observe(closes_from_returns(&leaning_symbol(index), &returns));
+    }
+    for index in 0..BALLAST {
+        let own = shared_cause_noise(200 + index as u64, SHARED_CAUSE_BARS, 0.005);
+        platform.observe(closes_from_returns(&ballast_symbol(index), &own));
+    }
+
+    // Premise: the graph holds no claim before the cycle, so a causal driver
+    // reported below was found by this cycle and not carried in.
+    assert_eq!(
+        platform.world().causal().len(),
+        0,
+        "an edge before the cycle"
+    );
+    let before = platform.risk_state_from(platform.risk_figures());
+    assert!(
+        before
+            .axis_exposures
+            .get(qip_risk::shared_cause::CAUSAL_DRIVER_AXIS)
+            .is_some_and(|buckets| buckets.is_empty()),
+        "the causal-driver level should read measured and empty before the cycle"
+    );
+
+    platform.run_cycle(start());
+
+    // The same pass, the second surface: the state the cycle's veto reads
+    // carries the factor level, populated, and the shipped set blocks on it.
+    let state = platform.risk_state_from(platform.risk_figures());
+    let factor = state
+        .axis_exposures
+        .get(qip_risk::shared_cause::FACTOR_AXIS)
+        .ok_or_else(|| {
+            qip_core::Error::not_found(
+                "the factor level is absent from the risk state: no producer ran",
+            )
+        })?;
+    assert!(
+        !factor.is_empty(),
+        "the factor level ran and charged no held name to the market"
+    );
+    let drivers = state
+        .axis_exposures
+        .get(qip_risk::shared_cause::CAUSAL_DRIVER_AXIS)
+        .ok_or_else(|| {
+            qip_core::Error::not_found(
+                "the causal-driver level is absent from the risk state: no producer ran",
+            )
+        })?;
+    assert!(
+        drivers.contains_key(&format!("obj-{DRIVER}")),
+        "the cycle charged no held name to the driver they follow: {drivers:?}"
+    );
+    let blocking = LimitSet::conservative_default().check(&state);
+    assert!(
+        blocking
+            .blocking()
+            .iter()
+            .any(|breach| breach.limit_name == "factor-concentration"),
+        "a book loading on the market at about six times did not block under the shipped factor cap: {factor:?}"
+    );
+    Ok(())
+}
+
+/// ADR 0149 decision 15: the live set is bounded, the bound is a refusal, and
+/// retiring makes room without letting the retired id back in.
+///
+/// The failure this prevents: a factory that registered without limit held
+/// every candidate ever proposed, and a bound that evicted to make room would
+/// have dropped the record of a strategy that may hold capital. Mutation:
+/// deleting the live-count refusal in `StrategyFactory::register` admits the
+/// 4,097th candidate and the refusal assertion fails.
+#[test]
+fn a_full_desk_refuses_a_new_candidate_until_one_retires_and_a_retired_id_stays_refused()
+-> Result<()> {
+    let mut plane = plane()?;
+    let ids: Vec<StrategyId> = (0..MAX_LIVE_STRATEGIES)
+        .map(|index| StrategyId::new(format!("live-{index:05}")))
+        .collect();
+    for id in &ids {
+        register(&mut plane, id, "cell-a")?;
+    }
+    // Premise: the desk is exactly full and nothing has been retired.
+    assert_eq!(plane.factory().candidates().count(), MAX_LIVE_STRATEGIES);
+
+    let extra = StrategyId::new("one-too-many");
+    let error = register(&mut plane, &extra, "cell-a").expect_err("a full desk refuses");
+    assert!(error.message().contains("retire one"), "{error:?}");
+    assert!(plane.factory().candidate(&extra).is_none());
+
+    // Retiring makes room: the retired strategy stops counting.
+    plane
+        .factory_mut()
+        .retire(&ids[0], "desk", "the edge is gone", start())?;
+    register(&mut plane, &extra, "cell-a")?;
+
+    // And nothing live was evicted to make it: every other candidate is held.
+    assert!(
+        ids[1..]
+            .iter()
+            .all(|id| plane.factory().candidate(id).is_some())
+    );
+    // The retired id is refused from the record, not re-admitted into the
+    // room it left.
+    let error = register(&mut plane, &ids[0], "cell-a").expect_err("a retired id is refused");
+    assert!(
+        error.message().contains("already registered") || error.message().contains("retire one"),
+        "{error:?}"
+    );
+    assert_eq!(plane.factory().stage_of(&ids[0]), GateStage::Retired);
+    Ok(())
+}
+
+#[test]
+fn the_live_strategy_bound_is_sized_to_the_tournament_registry() {
+    assert_eq!(
+        MAX_LIVE_STRATEGIES,
+        qip_learning_engine::tournament::MAX_FORECASTERS
+    );
+}
+
+/// ADR 0149 decision 16: a revision is a new candidate with a recorded
+/// ancestor, and the ancestor buys it nothing.
+///
+/// The failure this prevents: a lineage field that a gate or a copy path reads
+/// would turn "succeeds" into "inherits", and a retired strategy's evidence
+/// would walk back onto the ladder under a new name without being re-earned.
+/// Mutation: copying the ancestor's evidence into the successor in `register`
+/// makes the successor's holdout evidence present and the no-evidence
+/// assertion fails.
+#[test]
+fn a_successor_candidate_records_its_ancestor_inherits_no_evidence_and_still_needs_every_gate_and_the_dual_approval()
+-> Result<()> {
+    let mut plane = plane()?;
+    let ancestor = StrategyId::new("momentum-v1");
+    register(&mut plane, &ancestor, "cell-a")?;
+    walk_to(&mut plane, &ancestor, GateStage::Scaled)?;
+    plane
+        .factory_mut()
+        .retire(&ancestor, "desk", "the edge is gone", scaled_at())?;
+    // Premise: the ancestor held full evidence and is retired.
+    assert!(
+        plane
+            .factory()
+            .candidate(&ancestor)
+            .is_some_and(|c| c.evidence().holdout.is_some())
+    );
+    assert_eq!(plane.factory().stage_of(&ancestor), GateStage::Retired);
+
+    let successor = StrategyId::new("momentum-v2");
+    let (compiled, program) = compile(successor.as_str())?;
+    let candidate = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("central-tests")?,
+        "cell-a",
+        venue(),
+        start(),
+    )?
+    .with_succeeds(ancestor.clone());
+    plane.factory_mut().register(candidate)?;
+
+    let registered = plane
+        .factory()
+        .candidate(&successor)
+        .ok_or_else(|| qip_core::Error::not_found("the successor was not registered"))?;
+    assert_eq!(registered.succeeds(), Some(&ancestor));
+    // Nothing was inherited: no evidence, and the walk starts at candidate.
+    assert!(registered.evidence().holdout.is_none());
+    assert_eq!(plane.factory().stage_of(&successor), GateStage::Candidate);
+    assert_eq!(plane.factory().path(&successor), vec![GateStage::Candidate]);
+    let error = plane
+        .factory_mut()
+        .promote(&successor, None, "it used to be good", start())
+        .expect_err("a successor must earn the holdout gate itself");
+    assert!(!error.message().is_empty());
+    assert_eq!(plane.factory().stage_of(&successor), GateStage::Candidate);
+
+    // With its own evidence it climbs, and the capital-holding rung still
+    // wants two people.
+    plane
+        .factory_mut()
+        .submit_evidence(&successor, full_evidence(&successor, "cell-a")?)?;
+    for rung in [GateStage::Holdout, GateStage::Paper, GateStage::Shadow] {
+        plane
+            .factory_mut()
+            .promote(&successor, None, "the gate passed", start())?;
+        assert_eq!(plane.factory().stage_of(&successor), rung);
+    }
+    let error = plane
+        .factory_mut()
+        .promote(&successor, None, "no approver", start())
+        .expect_err("a capital-holding rung needs its dual approval");
+    assert!(!error.message().is_empty());
+    assert_eq!(plane.factory().stage_of(&successor), GateStage::Shadow);
+
+    // A lineage must name something real and something else.
+    let (compiled, program) = compile("orphan")?;
+    let orphan = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("central-tests")?,
+        "cell-a",
+        venue(),
+        start(),
+    )?
+    .with_succeeds(StrategyId::new("never-registered"));
+    assert!(plane.factory_mut().register(orphan).is_err());
     Ok(())
 }

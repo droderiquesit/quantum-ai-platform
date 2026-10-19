@@ -165,7 +165,7 @@ impl TickLakeSettings {
 pub const KNOWLEDGE_PACKS_VARIABLE: &str = "QIP_DEEPBRAIN_KNOWLEDGE_PACKS";
 
 /// The blob namespace knowledge packs are kept under.
-pub const KNOWLEDGE_PACK_NAMESPACE: &str = "knowledge-packs";
+pub const KNOWLEDGE_PACK_NAMESPACE: &str = qip_storage::classes::KNOWLEDGE_PACK_NAMESPACE;
 
 /// Whether this node keeps knowledge packs. `false` when unset.
 pub fn knowledge_packs_enabled(lookup: &dyn Fn(&str) -> Option<String>) -> Result<bool> {

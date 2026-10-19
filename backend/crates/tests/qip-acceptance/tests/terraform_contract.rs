@@ -1092,3 +1092,75 @@ fn every_file_variable_refuses_a_path_traversal_segment_explicitly() {
         "not every listed variable was found in variables.tf"
     );
 }
+
+/// R12-FINOPS-10134: every resource carries an `owner` and a `region` label,
+/// and the owner is a validated input each environment states.
+///
+/// The failure this prevents: a bill or an orphaned resource that nobody can
+/// trace to a team. `owner` has no default because a default is a guess that
+/// labels an environment whose tfvars forgot the line as owned by whoever
+/// wrote the default. The value is a team label; an `@` or an uppercase
+/// letter would mean a personal identifier or an invalid label value.
+///
+/// Mutation: delete `owner = var.owner` from `local.labels` in main.tf, or the
+/// `owner` line from one environment's tfvars.
+#[test]
+fn every_resource_label_set_names_an_owner_and_region_each_environment_states() {
+    let root = terraform_root();
+    let variables = std::fs::read_to_string(root.join("variables.tf")).expect("readable");
+    let owner = variable_block(&variables, "owner");
+    assert!(
+        owner.contains("validation {") && owner.contains("regex(\"^[a-z]"),
+        "the `owner` variable no longer validates itself as a lowercase label"
+    );
+    assert!(
+        !owner.lines().any(|l| {
+            let l = l.trim_start();
+            l.starts_with("default ") || l.starts_with("default=")
+        }),
+        "the `owner` variable has a default; an environment that forgot to state it would be \
+         labelled with a guess"
+    );
+    let main = without_comments(&std::fs::read_to_string(root.join("main.tf")).expect("readable"));
+    let labels = main
+        .split("labels = {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  }").next())
+        .expect("main.tf declares local.labels");
+    let compact = |line: &str| line.split_whitespace().collect::<Vec<_>>().join("");
+    let lines: Vec<String> = labels.lines().map(compact).collect();
+    assert!(
+        lines.iter().any(|l| l == "platform=\"qip\""),
+        "premise: the label block read is local.labels"
+    );
+    for wanted in ["owner=var.owner", "region=var.region"] {
+        assert!(
+            lines.iter().any(|l| l == wanted),
+            "local.labels no longer carries `{wanted}`"
+        );
+    }
+    let mut seen = 0usize;
+    for environment in ["dev", "test", "stage", "prod"] {
+        let path = repository_root()
+            .join("infrastructure/environments")
+            .join(environment)
+            .join("terraform.tfvars");
+        let tfvars = without_comments(&std::fs::read_to_string(&path).expect("tfvars readable"));
+        let value = tfvars
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .find(|(key, _)| key.trim() == "owner")
+            .map(|(_, v)| v.trim().trim_matches('"').to_string())
+            .unwrap_or_else(|| panic!("{environment}'s terraform.tfvars states no `owner`"));
+        assert!(
+            !value.is_empty()
+                && value.starts_with(|c: char| c.is_ascii_lowercase())
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'),
+            "{environment}'s owner `{value}` is not a lowercase label value"
+        );
+        seen += 1;
+    }
+    assert_eq!(seen, 4, "not every environment was checked");
+}

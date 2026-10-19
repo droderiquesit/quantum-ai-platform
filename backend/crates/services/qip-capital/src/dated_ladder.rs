@@ -59,6 +59,107 @@ impl LadderEntry {
     }
 }
 
+/// The id prefix a [`RedemptionNotice`] is filed under on the ladder.
+pub const NOTICE_ENTRY_PREFIX: &str = "notice:";
+
+/// An operator's declaration that a claim on the book is expected to fall due.
+///
+/// The platform never processes a withdrawal (ADR 0021: `WithdrawalEntitlement`
+/// has one variant), so there is no event to observe and no forecast to build
+/// from facts it holds. A notice is the record of an expected claim, an intent
+/// and not a payment, and it moves nothing. Its single effect is on the ladder
+/// as an [`EntryKind::Outflow`], where the idle-cash router reads it
+/// (ADR 0159 decisions 9 and 10).
+///
+/// Who declared it and when are part of the record because the declaration is
+/// the only evidence the claim exists: a notice nobody can attribute is a
+/// number nobody checked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedemptionNotice {
+    /// Stable identity. A later declaration under the same id supersedes an
+    /// earlier one; nothing is inferred or aged out silently.
+    pub id: String,
+    /// The amount expected to fall due. Always positive.
+    pub amount: Decimal,
+    /// When it falls due.
+    pub effective: Timestamp,
+    /// The authenticated operator who declared it.
+    pub declarer: String,
+    /// When it was declared.
+    pub declared_at: Timestamp,
+}
+
+impl RedemptionNotice {
+    /// Build a notice, refusing one that could not mean anything: an empty id
+    /// or declarer, a non-positive amount, or an effective instant before the
+    /// declaration (a claim that fell due before anyone said so is a
+    /// back-dated record, and the ladder is built as of an instant).
+    pub fn new(
+        id: impl Into<String>,
+        amount: Decimal,
+        effective: Timestamp,
+        declarer: impl Into<String>,
+        declared_at: Timestamp,
+    ) -> Result<Self> {
+        Self {
+            id: id.into(),
+            amount,
+            effective,
+            declarer: declarer.into(),
+            declared_at,
+        }
+        .validated()
+    }
+
+    /// The same checks as [`Self::new`] on a record that arrived by decoding,
+    /// which bypasses the constructor.
+    pub fn validated(self) -> Result<Self> {
+        if self.id.trim().is_empty() || self.id.contains(char::is_whitespace) {
+            return Err(Error::invalid(
+                "a redemption notice needs an id with no whitespace, or a later declaration \
+                 cannot supersede it",
+            ));
+        }
+        if self.declarer.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "redemption notice {} names no declarer; it is evidence only if someone \
+                 authenticated stands behind it",
+                self.id
+            )));
+        }
+        if !self.amount.is_positive() {
+            return Err(Error::invalid(format!(
+                "redemption notice {} is for {}; a notice records an amount expected to fall \
+                 due, which is positive or it is nothing",
+                self.id, self.amount
+            )));
+        }
+        if self.effective < self.declared_at {
+            return Err(Error::invalid(format!(
+                "redemption notice {} falls due at {} but was declared at {}; a claim cannot \
+                 fall due before it was declared, so declare the date it is expected",
+                self.id, self.effective, self.declared_at
+            )));
+        }
+        Ok(self)
+    }
+
+    /// The id this notice is filed under on a ladder.
+    pub fn entry_id(&self) -> String {
+        format!("{NOTICE_ENTRY_PREFIX}{}", self.id)
+    }
+
+    /// The notice as the outflow it puts on the ladder.
+    pub fn as_outflow(&self) -> LadderEntry {
+        LadderEntry {
+            id: self.entry_id(),
+            kind: EntryKind::Outflow,
+            amount: self.amount,
+            at: self.effective,
+        }
+    }
+}
+
 /// One rung: everything that becomes available or falls due before it closes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bucket {
@@ -124,6 +225,39 @@ impl DatedLadder {
 
     /// Place an entry, returning the rung it landed in.
     pub fn place(&mut self, entry: LadderEntry) -> Result<usize> {
+        self.check(&entry)?;
+        Ok(self.insert(entry))
+    }
+
+    /// File a validated entry and say which rung it landed in. Private so the
+    /// checks in [`Self::place`] cannot be skipped by a second front door.
+    fn insert(&mut self, entry: LadderEntry) -> usize {
+        let rung = self.bucket_of(entry.at);
+        self.entries.insert(entry.id.clone(), entry);
+        rung
+    }
+
+    /// Open a ladder as of `as_of` and file every entry in `entries`, in the
+    /// order given. This is how the ladder is a view (ADR 0159 decision 6): it
+    /// is rebuilt from the facts that date it each time it is read and is
+    /// never stored, so a replay builds the same ladder from the same facts.
+    ///
+    /// Refused whole when any entry would be refused by [`Self::place`], which
+    /// is the same checks run once more.
+    pub fn rebuilt(
+        as_of: Timestamp,
+        horizons: &[Duration],
+        entries: impl IntoIterator<Item = LadderEntry>,
+    ) -> Result<Self> {
+        let mut ladder = Self::new(as_of, horizons)?;
+        for entry in entries {
+            ladder.check(&entry)?;
+            ladder.insert(entry);
+        }
+        Ok(ladder)
+    }
+
+    fn check(&self, entry: &LadderEntry) -> Result<()> {
         if !entry.amount.is_positive() {
             return Err(Error::invalid(format!(
                 "ladder entry {} must carry a positive amount, got {}; an outflow is an \
@@ -138,9 +272,7 @@ impl DatedLadder {
                 entry.id
             )));
         }
-        let rung = self.bucket_of(entry.at);
-        self.entries.insert(entry.id.clone(), entry);
-        Ok(rung)
+        Ok(())
     }
 
     /// Take an entry off the ladder.
@@ -153,6 +285,19 @@ impl DatedLadder {
     /// One entry, if it is on the ladder.
     pub fn entry(&self, id: &str) -> Option<&LadderEntry> {
         self.entries.get(id)
+    }
+
+    /// The outflow that falls due first, ties broken by id so the answer does
+    /// not depend on insertion order. `None` when nothing is owed.
+    ///
+    /// This is the one question the idle-cash router asks of the ladder
+    /// (ADR 0159 decision 10): cash may be parked only where it can be had
+    /// back before it is owed.
+    pub fn earliest_outflow(&self) -> Option<&LadderEntry> {
+        self.entries
+            .values()
+            .filter(|entry| entry.kind == EntryKind::Outflow)
+            .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
     }
 
     /// Net liquidity across every entry.

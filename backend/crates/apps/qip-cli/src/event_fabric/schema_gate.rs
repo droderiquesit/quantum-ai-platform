@@ -12,6 +12,17 @@
 //! same version does not, and a version bump is the producer's deliberate
 //! break (ADR 0100 §5).
 //!
+//! A version bump is not by itself the producer's own business, though
+//! (CONTRACT-9121, ADR 0156 §1.6). When the head no longer holds a row the
+//! base held, the gate asks the head's consumer inventory
+//! (`qip-events/consumers.lock.json`, a reviewed file) the question
+//! [`ConsumerInventory::retire`] asks: was that version surveyed, and has
+//! every consumer that decodes it migrated? A version that is dropped while
+//! a consumer still reads it is a finding, so the producer cannot take away a
+//! decoder someone depends on by bumping the version past it. Without
+//! `--consumers` the gate uses the inventory embedded in this build, which
+//! on the pipeline is the head's.
+//!
 //! It reads two files and decides. It fetches nothing and runs no `git`:
 //! which commit is the base is the pipeline's fact, and `ci.yml` hands the
 //! base lock in as a file.
@@ -22,6 +33,8 @@
 
 use qip_core::error::{Error, Result};
 use qip_events::event_fabric::schema_id::{SchemaId, Shape, check_compatible};
+use qip_events::retirement::{ConsumerInventory, EMBEDDED_CONSUMERS, parse_inventory};
+use qip_events::topic::Topic;
 
 use super::{Environment, Outcome};
 
@@ -121,7 +134,8 @@ pub struct Verdict {
 ///
 /// Only base topics are judged: a topic the head adds has no consumer at the
 /// base to break.
-pub fn judge(base: &[LockRow], head: &[LockRow]) -> Verdict {
+pub fn judge(base: &[LockRow], head: &[LockRow], inventory: &ConsumerInventory) -> Verdict {
+    let mut inventory = inventory.clone();
     let mut verdict = Verdict {
         findings: Vec::new(),
         admitted: Vec::new(),
@@ -150,10 +164,38 @@ pub fn judge(base: &[LockRow], head: &[LockRow]) -> Verdict {
                 old.version, new.version, old.version
             ));
         } else if new.version > old.version {
-            verdict.admitted.push(format!(
-                "{topic}: version {} -> {}, the producer's deliberate break (ADR 0100 §5)",
-                old.version, new.version
-            ));
+            let kept = head
+                .iter()
+                .any(|row| &row.topic == topic && row.version == old.version);
+            if kept {
+                verdict.admitted.push(format!(
+                    "{topic}: version {} -> {}, the producer's deliberate break (ADR 0100 §5); \
+                     version {} stays locked for its consumers",
+                    old.version, new.version, old.version
+                ));
+            } else {
+                // The head took version `old.version` out of the lock. That is
+                // only allowed when nobody still decodes it.
+                let retired = Topic::from_name(topic)
+                    .ok_or_else(|| {
+                        Error::denied(format!("{topic} is not a topic this build defines"))
+                    })
+                    .and_then(|known| inventory.retire(known, old.version));
+                match retired {
+                    Ok(()) => verdict.admitted.push(format!(
+                        "{topic}: version {} -> {}, and version {} is retired: its inventory \
+                         lists no consumer that has not migrated",
+                        old.version, new.version, old.version
+                    )),
+                    Err(error) => verdict.findings.push(format!(
+                        "{topic}: version {} was dropped from the lock but cannot be retired: \
+                         {}. Keep its row until every consumer has migrated (mark them \
+                         `migrated` in consumers.lock.json)",
+                        old.version,
+                        error.message()
+                    )),
+                }
+            }
         } else if new.schema_id != old.schema_id {
             match (&old.shape, &new.shape) {
                 (Some(before), Some(after)) => {
@@ -183,7 +225,7 @@ pub fn judge(base: &[LockRow], head: &[LockRow]) -> Verdict {
 
 /// `qip event-fabric schema-gate --base <lock> --head <lock>`.
 pub fn run(arguments: &[String], _environment: &Environment) -> Result<Outcome> {
-    let (base_path, head_path) = parse_arguments(arguments)?;
+    let (base_path, head_path, consumers_path) = parse_arguments(arguments)?;
     let read = |path: &str| {
         std::fs::read_to_string(path).map_err(|e| {
             Error::invalid(format!(
@@ -194,7 +236,12 @@ pub fn run(arguments: &[String], _environment: &Environment) -> Result<Outcome> 
     };
     let base = parse(&base_path, &read(&base_path)?)?;
     let head = parse(&head_path, &read(&head_path)?)?;
-    let verdict = judge(&base, &head);
+    let inventory_text = match &consumers_path {
+        Some(path) => read(path)?,
+        None => EMBEDDED_CONSUMERS.to_string(),
+    };
+    let inventory = ConsumerInventory::from_rows(&parse_inventory(&inventory_text)?)?;
+    let verdict = judge(&base, &head, &inventory);
 
     let mut lines = verdict.admitted.clone();
     lines.extend(verdict.findings.iter().cloned());
@@ -217,16 +264,18 @@ pub fn run(arguments: &[String], _environment: &Environment) -> Result<Outcome> 
     Ok(Outcome { lines, code })
 }
 
-fn parse_arguments(arguments: &[String]) -> Result<(String, String)> {
+fn parse_arguments(arguments: &[String]) -> Result<(String, String, Option<String>)> {
     let usage = "usage: qip event-fabric schema-gate --base <schemas.lock.json> --head \
-                 <schemas.lock.json>";
+                 <schemas.lock.json> [--consumers <consumers.lock.json>]";
     let mut base = None;
     let mut head = None;
+    let mut consumers = None;
     let mut rest = arguments.iter();
     while let Some(flag) = rest.next() {
         let slot = match flag.as_str() {
             "--base" => &mut base,
             "--head" => &mut head,
+            "--consumers" => &mut consumers,
             other => {
                 return Err(Error::invalid(format!(
                     "unknown argument {other:?}; {usage}"
@@ -241,7 +290,7 @@ fn parse_arguments(arguments: &[String]) -> Result<(String, String)> {
         }
     }
     match (base, head) {
-        (Some(base), Some(head)) => Ok((base, head)),
+        (Some(base), Some(head)) => Ok((base, head, consumers)),
         _ => Err(Error::invalid(format!("both locks are required; {usage}"))),
     }
 }

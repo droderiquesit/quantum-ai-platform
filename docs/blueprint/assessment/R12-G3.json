@@ -2130,7 +2130,7 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/forecast.rs::ForecastState"
     ],
-    "gap": "No capital/risk/hedge consumer.",
+    "gap": "2026-10-19: no capital, risk or hedge consumer, by decision (ADR 0159 F). No mapping from panel beliefs to a distribution over stress worlds is built: a belief is a point-confidence claim about an instrument, a StressReport world is a scenario with a shock and no probability, and relating them would be assigning confidence (ADR 0005). A forecast may influence capital only if Calibration::Measured over at least a stated number of resolved forecasts (the number has no default and is RISK's; unset means no forecast influences anything, which is today's behaviour) and only through a committed world-to-forecast binding table. Three direction rules bind any consumer and each is a test with a mutation that slice must add: the set of worlds a hedge must survive is never reduced by a weight; a calibrated forecast may only add a forecast-derived world to the stress report, so worst_world can only worsen, and never reweights the worst-world rule or lowers the stressed-liquidity reserve; weights may reorder plans that each already protect every world and change nothing else. Nothing is built now.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2143,7 +2143,7 @@
     "verification": "unit tests",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane W8-159 2026-10-19 (ADR 0159). Gap restated; no grade change."
   },
   {
     "id": "R12-CAPITAL-10098",
@@ -3861,13 +3861,15 @@
   },
   {
     "id": "R12-MODEL-10171",
-    "status": "PARTIAL",
-    "current": "Tournament, synthetic-credit forecast market and eight-critic verifier society run in the kernel cycle; no named phase-12 exit test.",
+    "status": "COMPLETE",
+    "current": "Tournament, synthetic-credit forecast market and the verifier society run in the kernel cycle; qip-acceptance phase12_exit.rs is the phase's exit test: one Platform::run_cycle opens a tournament question (forecasters are detector:<class> and analyst:<agent>, formed per hypothesis in production REASON), a later cycle's LEARN settles it through the forecast market, and twelve misfilled fills make adversary_review journal a venue posture.",
     "evidence": [
       "backend/crates/services/qip-prediction/src/scoring.rs",
-      "backend/crates/runtime/qip-kernel/src/adversary_review.rs"
+      "backend/crates/runtime/qip-kernel/src/adversary_review.rs",
+      "backend/crates/tests/qip-acceptance/tests/phase12_exit.rs::a_cycle_opens_a_tournament_question_and_a_later_learn_settles_it_through_the_market",
+      "backend/crates/tests/qip-acceptance/tests/phase12_exit.rs::twelve_fills_the_twin_misprices_make_the_adversary_review_journal_a_posture"
     ],
-    "gap": "A phase exit test; production forecaster population.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3877,10 +3879,10 @@
       "R12-MODEL-10092"
     ],
     "blocked_by": "",
-    "verification": "per-deliverable checks above",
+    "verification": "cd backend && cargo test -p qip-acceptance --test phase12_exit",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Regraded 2026-10-18 by lane RT-B after running phase12_exit: test result: ok. 2 passed; 0 failed. Both tests drive Platform::run_cycle. The exit test's mutations (delete tournament.learn; delete adversary_review::review) are documented in its header and were not re-run here."
   },
   {
     "id": "R12-TICK-10172",

@@ -80,7 +80,7 @@ pub const IMPACT_BPS_VARIABLE: &str = "QIP_DEEPBRAIN_TICK_IMPACT_BPS";
 pub const MEASURE_CODEC_VARIABLE: &str = "QIP_DEEPBRAIN_TICK_MEASURE_CODEC";
 
 /// The blob namespace the desk writes its model cards and maps under.
-pub const OUTPUT_NAMESPACE: &str = "tick-desk";
+pub const OUTPUT_NAMESPACE: &str = qip_storage::classes::TICK_DESK_NAMESPACE;
 
 /// Bounds on what one round holds. A history beyond either is refused, not
 /// cut — a replay over a prefix of a session is a different session.

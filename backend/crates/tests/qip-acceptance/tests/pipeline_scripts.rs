@@ -563,3 +563,38 @@ fn every_test_file_under_scripts_is_run_by_the_pipelines_scripts_job() {
         );
     }
 }
+
+/// The replay and benchmark output is kept as a run artifact.
+///
+/// R12-CICD-9085: the tick replay and performance suites print the numbers a
+/// regression would show in, and a run that discards its log leaves nothing
+/// to compare the next run with. The step must be a step of the `test` job
+/// and not a mention in a comment, and it must run the two suites it names.
+///
+/// Mutation: delete the `name: replay-bench` line from ci.yml's `test` job.
+#[test]
+fn the_test_job_uploads_the_replay_and_benchmark_output_as_an_artifact() {
+    let lines = ci_job("test");
+    assert!(
+        !lines.is_empty(),
+        "premise: ci.yml has a `test` job to read"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "- uses: actions/upload-artifact@v4"),
+        "premise: the `test` job uploads an artifact at all"
+    );
+    assert!(
+        lines.iter().any(|line| line == "name: replay-bench"),
+        "ci.yml's `test` job no longer uploads an artifact named `replay-bench`"
+    );
+    assert!(
+        lines.iter().any(|line| {
+            line.starts_with(
+                "run: cargo test -p qip-acceptance --test tick_replay --test performance",
+            ) && line.contains("tee replay-bench.txt")
+        }),
+        "ci.yml's `test` job no longer runs tick_replay and performance into replay-bench.txt"
+    );
+}

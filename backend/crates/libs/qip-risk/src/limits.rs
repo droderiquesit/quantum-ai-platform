@@ -57,6 +57,22 @@ pub const MANAGER_AXIS: &str = "manager";
 /// bet on that year's entry prices, which is what vintage risk is.
 pub const VINTAGE_AXIS: &str = "vintage";
 
+/// The exposure axis capital held at a custodian is charged to — the
+/// "custody" half of R12-RISK-4097's "custody, bridge exposure has no
+/// measurement or limit".
+///
+/// Exported for the reason [`COUNTERPARTY_AXIS`] is: `qip-kernel` files each
+/// observed statement's balance under the venue or custodian that holds it
+/// and the shipped `custodian-concentration` cap looks the axis up by this
+/// name. It is a different fact from the counterparty axis: that one is the
+/// gross the book has *traded* at a venue, this is the capital *sitting*
+/// there. A desk can trade at one venue while its cash is held at another,
+/// and neither axis sees the other's exposure. The axis is absent until a
+/// statement is handed in, and [`LimitKind::MaxAxisWeight`] records nothing
+/// on an absent axis, so an absent statement is the desk's gap to close and
+/// is reported by the reconciliation stage, not refused here.
+pub const CUSTODIAN_AXIS: &str = "custodian";
+
 /// The name [`RiskState::with_tail_risk`] files its value-at-risk refusal
 /// under, when the return series it was handed cannot be measured.
 ///
@@ -2114,6 +2130,24 @@ impl LimitSet {
                     .with_rationale(
                         "cash over equity cannot see a drawdown notice due next week: equity                          left after held capital and unfunded commitments needs headroom too",
                     ),
+            )
+            // Added by R12-RISK-4097. Strictly an addition: no limit above
+            // moved. 0.60 is the loosest weight any axis cap in this set
+            // already admits (`country-concentration`), so a custodian is
+            // never allowed more of the book than a jurisdiction is.
+            .with(
+                Limit::new(
+                    "custodian-concentration",
+                    LimitKind::MaxAxisWeight {
+                        axis: CUSTODIAN_AXIS.into(),
+                        limit: 0.60,
+                    },
+                )
+                .with_rationale(
+                    "capital held at one custodian is one failure away from being capital \
+                     held nowhere: no custodian may hold more than this share of equity, \
+                     however sound its statement reads today",
+                ),
             )
         // No venue limit ships here. `venue-exposure-simulated` did, and
         // nothing in production writes `RiskState::venue_exposures`, so it

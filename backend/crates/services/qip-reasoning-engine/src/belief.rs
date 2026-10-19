@@ -7,7 +7,7 @@
 //! wrote at the moment evidence became a belief — not a scan of hypotheses
 //! somebody else holds, and not a guess made at sizing time.
 //!
-//! [`BeliefState`] is that fact and nothing more. It deliberately does not
+//! [`BeliefClock`] is that fact and nothing more. It deliberately does not
 //! hold the hypotheses themselves; they travel on the
 //! [`crate::engine::ReasoningOutcome`] to the kernel, which records them in
 //! the event log. Holding a second copy here would be a second source of
@@ -24,12 +24,12 @@ use serde::{Deserialize, Serialize};
 /// that has never reasoned has no confidence to size on, and treating its
 /// silence as a current belief is the failure the row exists to prevent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BeliefState {
+pub struct BeliefClock {
     last_updated: Option<Timestamp>,
     hypotheses_formed: u64,
 }
 
-impl BeliefState {
+impl BeliefClock {
     /// No belief formed yet.
     pub const fn new() -> Self {
         Self {

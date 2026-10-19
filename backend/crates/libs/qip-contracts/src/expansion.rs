@@ -940,3 +940,127 @@ impl MemoryEntry {
         Ok(v)
     }
 }
+
+// --- SyntheticEpisode (ADR 0149 decision 18) --------------------------------
+
+/// How a synthetic episode was produced, which decides whether it has a seed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyntheticGenerator {
+    /// A deterministic function of an ambient signal and the recorded prices
+    /// of the subjects it names. No stream is drawn.
+    Conditional,
+    /// A named scenario from the library. No stream is drawn.
+    Library,
+    /// A Monte Carlo path, drawn from a seeded stream.
+    MonteCarlo,
+}
+
+impl SyntheticGenerator {
+    /// Whether the generator draws random numbers, and so owes a seed.
+    pub const fn is_stochastic(self) -> bool {
+        matches!(self, Self::MonteCarlo)
+    }
+}
+
+/// The wire form of [`SyntheticEpisode`], checked by `TryFrom`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyntheticEpisodeFields {
+    pub scenario: String,
+    pub generator: SyntheticGenerator,
+    pub input_digest: String,
+    pub seed: Option<u64>,
+}
+
+/// A record that a scenario was generated rather than observed: what it was
+/// called, how it was made, the digest of the inputs it was made from, and the
+/// seed only where something random was drawn.
+///
+/// A seed on a deterministic generator would be a number nobody used, and a
+/// stochastic generator without one cannot be replayed; both are refused at
+/// construction and on decode. Written where a scenario is generated or run,
+/// never by a backtester, which replays recorded bars and would label a
+/// historical replay synthetic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "SyntheticEpisodeFields")]
+pub struct SyntheticEpisode {
+    scenario: String,
+    generator: SyntheticGenerator,
+    input_digest: String,
+    seed: Option<u64>,
+}
+
+impl SyntheticEpisode {
+    pub fn new(
+        scenario: impl Into<String>,
+        generator: SyntheticGenerator,
+        input_digest: impl Into<String>,
+        seed: Option<u64>,
+    ) -> Result<Self> {
+        Self::try_from(SyntheticEpisodeFields {
+            scenario: scenario.into(),
+            generator,
+            input_digest: input_digest.into(),
+            seed,
+        })
+    }
+
+    pub fn scenario(&self) -> &str {
+        &self.scenario
+    }
+
+    pub const fn generator(&self) -> SyntheticGenerator {
+        self.generator
+    }
+
+    /// The SHA-256 of the canonical inputs, lower-case hex.
+    pub fn input_digest(&self) -> &str {
+        &self.input_digest
+    }
+
+    pub const fn seed(&self) -> Option<u64> {
+        self.seed
+    }
+}
+
+impl TryFrom<SyntheticEpisodeFields> for SyntheticEpisode {
+    type Error = Error;
+
+    fn try_from(fields: SyntheticEpisodeFields) -> Result<Self> {
+        text("SyntheticEpisode", "scenario", &fields.scenario)?;
+        let digest = &fields.input_digest;
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(Error::invalid(
+                "SyntheticEpisode.input_digest must be a 64-character lower-case SHA-256 hex digest",
+            ));
+        }
+        match (fields.generator.is_stochastic(), fields.seed) {
+            (true, None) => {
+                return Err(Error::invalid(format!(
+                    "SyntheticEpisode {} names a stochastic generator and no seed; without one \
+                     it cannot be replayed, and a default would be a seed nobody drew",
+                    fields.scenario
+                )));
+            }
+            (false, Some(_)) => {
+                return Err(Error::invalid(format!(
+                    "SyntheticEpisode {} names a deterministic generator and a seed; nothing \
+                     was drawn, so the seed would be a number nobody used",
+                    fields.scenario
+                )));
+            }
+            _ => {}
+        }
+        Ok(Self {
+            scenario: fields.scenario,
+            generator: fields.generator,
+            input_digest: fields.input_digest,
+            seed: fields.seed,
+        })
+    }
+}

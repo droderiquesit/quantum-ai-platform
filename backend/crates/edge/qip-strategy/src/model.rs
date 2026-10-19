@@ -49,11 +49,43 @@ pub enum ModelForm {
     Tree { arity: usize, nodes: Vec<TreeNode> },
 }
 
+/// An affine map applied to a model's raw score: `scale * raw + offset`.
+///
+/// The same two numbers `qip_training::local::Calibration` fits. They are
+/// restated here because the cell's crates may not depend on the training
+/// service, and a calibration is only worth carrying if the cell applies it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelCalibration {
+    pub scale: f64,
+    pub offset: f64,
+}
+
+impl ModelCalibration {
+    /// Refuses a non-finite scale or offset: a NaN calibration turns every
+    /// score into NaN, which compares false against every threshold and so
+    /// reads as a quiet decision not to trade.
+    pub fn new(scale: f64, offset: f64) -> Result<Self> {
+        if !scale.is_finite() || !offset.is_finite() {
+            return Err(Error::invalid("a model calibration must be finite"));
+        }
+        Ok(Self { scale, offset })
+    }
+
+    fn apply(self, raw: f64) -> f64 {
+        self.scale * raw + self.offset
+    }
+}
+
 /// A bounded model with its coefficients inside it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DistilledModel {
     name: String,
     form: ModelForm,
+    /// Absent on every model made before ADR 0149 decision 17, and absent
+    /// from its serialised form when `None`, so an old plan decodes to
+    /// "uncalibrated" and re-serialises to the bytes it was read from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    calibration: Option<ModelCalibration>,
 }
 
 impl DistilledModel {
@@ -67,6 +99,7 @@ impl DistilledModel {
                 intercept,
                 coefficients,
             },
+            calibration: None,
         };
         model.validate()?;
         Ok(model)
@@ -81,6 +114,7 @@ impl DistilledModel {
         let model = Self {
             name: name.into(),
             form: ModelForm::Tree { arity, nodes },
+            calibration: None,
         };
         model.validate()?;
         Ok(model)
@@ -95,6 +129,9 @@ impl DistilledModel {
     /// on every model it lowers, so the bound holds for the value, however it
     /// was built.
     pub fn validate(&self) -> Result<()> {
+        if let Some(calibration) = self.calibration {
+            ModelCalibration::new(calibration.scale, calibration.offset)?;
+        }
         match &self.form {
             ModelForm::Linear {
                 intercept,
@@ -155,6 +192,21 @@ impl DistilledModel {
         Ok(())
     }
 
+    /// This model with `calibration` applied after its raw score.
+    ///
+    /// A differently-digested model: the cell's manifest check compares
+    /// digests, so a calibrated and an uncalibrated form of one tree are two
+    /// named things and a manifest naming one never admits the other.
+    pub fn with_calibration(mut self, calibration: ModelCalibration) -> Result<Self> {
+        ModelCalibration::new(calibration.scale, calibration.offset)?;
+        self.calibration = Some(calibration);
+        Ok(self)
+    }
+
+    pub const fn calibration(&self) -> Option<ModelCalibration> {
+        self.calibration
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -211,6 +263,14 @@ impl DistilledModel {
                 }
             }
         }
+        // Appended only when present, under a version tag: every digest made
+        // before the field existed is byte-identical, so no manifest or pack
+        // pinned earlier stops verifying (ADR 0149 decision 17).
+        if let Some(calibration) = self.calibration {
+            parts.push("calibration/v1".into());
+            parts.push(calibration.scale.to_bits().to_string());
+            parts.push(calibration.offset.to_bits().to_string());
+        }
         parts.join("|")
     }
 
@@ -222,6 +282,26 @@ impl DistilledModel {
     /// As [`Self::evaluate`], also reporting the steps taken, so a test can
     /// hold the steps to [`Self::cost`] — the figure the budget charged.
     pub fn evaluate_counted(&self, inputs: &[f64]) -> Result<(f64, usize)> {
+        let (raw, steps) = self.evaluate_raw(inputs)?;
+        // After the raw score and before any threshold the caller compares
+        // against (ADR 0149 decision 17). The affine map adds no step: it is
+        // two arithmetic operations, and `cost` charges evaluation steps.
+        match self.calibration {
+            Some(calibration) => {
+                let calibrated = calibration.apply(raw);
+                if !calibrated.is_finite() {
+                    return Err(Error::numeric(format!(
+                        "model {} calibrated a score to a non-finite value",
+                        self.name
+                    )));
+                }
+                Ok((calibrated, steps))
+            }
+            None => Ok((raw, steps)),
+        }
+    }
+
+    fn evaluate_raw(&self, inputs: &[f64]) -> Result<(f64, usize)> {
         if inputs.len() != self.arity() {
             return Err(Error::invalid(format!(
                 "model {} takes {} inputs, given {}",

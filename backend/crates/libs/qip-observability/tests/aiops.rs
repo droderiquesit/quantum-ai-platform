@@ -225,9 +225,11 @@ fn an_exhausted_budget_refuses_a_promotion_to_its_plane_and_remaining_budget_let
 #[test]
 fn the_catalogue_holds_one_objective_per_critical_path_and_an_unfed_one_reads_unmeasured() {
     let c = critical_path_slos();
-    assert_eq!(c.len(), 10);
+    // Eleven since `model-serving` joined `model-serving-package`
+    // (R12-OBS-7128); the names stay unique, which is the second assertion.
+    assert_eq!(c.len(), 11);
     let names: BTreeSet<_> = c.iter().map(|p| p.slo.name.clone()).collect();
-    assert_eq!(names.len(), 10);
+    assert_eq!(names.len(), 11);
     for p in &c {
         assert!(!p.source_series.is_empty());
         assert!(p.slo.target > 0.0 && p.slo.target <= 1.0);

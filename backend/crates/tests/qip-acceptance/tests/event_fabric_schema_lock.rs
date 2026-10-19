@@ -493,6 +493,63 @@ fn committed_rows() -> Vec<LockRow> {
     })
 }
 
+/// The inventory `qip-events` commits beside the lock (CONTRACT-9121).
+fn inventory_rows() -> Vec<qip_events::retirement::InventoryRow> {
+    qip_events::retirement::parse_inventory(qip_events::retirement::EMBEDDED_CONSUMERS)
+        .expect("the committed consumer inventory parses")
+}
+
+/// Committed rows that are not a computed body: a version the lock keeps
+/// after its type moved past it (ADR 0156 §1.6). Each is allowed only while
+/// its inventory row lists a consumer that decodes it and has not migrated;
+/// a superseded row nobody reads is stale and the lock must drop it, so
+/// "the lock may hold extra rows" never becomes "the lock may hold any row".
+fn retained_rows(committed: &[LockRow], computed: &[LockRow]) -> Vec<LockRow> {
+    let inventory = inventory_rows();
+    let mut retained = Vec::new();
+    for row in committed {
+        if computed
+            .iter()
+            .any(|c| c.topic == row.topic && c.version == row.version)
+        {
+            continue;
+        }
+        let current = computed
+            .iter()
+            .filter(|c| c.topic == row.topic)
+            .map(|c| c.version)
+            .max()
+            .unwrap_or_else(|| {
+                panic!(
+                    "schemas.lock.json holds topic {} which no bound body computes",
+                    row.topic
+                )
+            });
+        assert!(
+            row.version < current,
+            "schemas.lock.json holds topic {} version {} above the computed version {current}",
+            row.topic,
+            row.version
+        );
+        let still_read = inventory.iter().any(|entry| {
+            entry.topic == row.topic
+                && entry.version == row.version
+                && entry
+                    .consumers
+                    .iter()
+                    .any(|c| c.role == qip_events::retirement::ConsumerRole::Decodes && !c.migrated)
+        });
+        assert!(
+            still_read,
+            "schemas.lock.json keeps topic {} version {} but consumers.lock.json lists no \
+             consumer that decodes it and has not migrated; drop the stale row",
+            row.topic, row.version
+        );
+        retained.push(row.clone());
+    }
+    retained
+}
+
 /// FABRIC-023/024: every bound body's computed [`SchemaId`] must equal its
 /// committed row, and a body the lock has no row for at all is named rather
 /// than silently treated as compatible.
@@ -513,7 +570,8 @@ fn every_bound_body_has_the_shape_its_lock_row_records() {
     );
 
     let committed = committed_rows();
-    if committed.len() != computed.len() {
+    let retained = retained_rows(&committed, &computed);
+    if committed.len() - retained.len() != computed.len() {
         panic!(
             "schemas.lock.json has {} row(s) but {} bound bodies are computed today; \
              regenerate it with exactly this content:\n{}",
@@ -587,9 +645,10 @@ fn the_lock_has_exactly_one_row_per_bound_body_and_version() {
         );
     }
 
+    let computed = computed_rows();
     assert_eq!(
-        committed.len(),
-        computed_rows().len(),
+        committed.len() - retained_rows(&committed, &computed).len(),
+        computed.len(),
         "schemas.lock.json does not have exactly one row per bound body; it has drifted from \
          the topics this build actually binds"
     );
@@ -766,5 +825,328 @@ fn the_pipeline_runs_the_compatibility_gate_against_the_pull_requests_base_lock(
              working-directory: backend\n"
         ),
         "ci.yml's test job no longer runs in backend/, so the step's --head path points nowhere"
+    );
+}
+
+// --- the consumer inventory (CONTRACT-9121) ----------------------------------
+
+fn consumers_file_path() -> PathBuf {
+    lock_file_path().with_file_name("consumers.lock.json")
+}
+
+fn scratch(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("qip-consumers-{}-{name}.json", std::process::id()))
+}
+
+/// `schema-gate --base <committed lock> --head <head> --consumers <inventory>`.
+fn schema_gate_with(
+    head: &std::path::Path,
+    consumers: &std::path::Path,
+) -> qip_cli::event_fabric::Outcome {
+    let arguments: Vec<String> = [
+        qip_cli::event_fabric::schema_gate::SUBCOMMAND,
+        "--base",
+        lock_file_path().to_str().unwrap(),
+        "--head",
+        head.to_str().unwrap(),
+        "--consumers",
+        consumers.to_str().unwrap(),
+    ]
+    .iter()
+    .map(|part| part.to_string())
+    .collect();
+    qip_cli::event_fabric::dispatch(&arguments, &qip_cli::event_fabric::Environment::process())
+        .expect("the gate reads the locks and the inventory")
+}
+
+/// The committed lock with `topic` bumped to version 2 (same shape, the id
+/// the new version hashes to), and version 1 kept or dropped as asked.
+fn lock_with_topic_bumped(topic: &str, keep_old: bool, name: &str) -> PathBuf {
+    let mut rows = committed_rows();
+    let old = rows
+        .iter()
+        .find(|row| row.topic == topic)
+        .expect("the topic is locked")
+        .clone();
+    let mut bumped = old.clone();
+    bumped.version = 2;
+    bumped.schema_id = SchemaId::new(topic, 2, &bumped.shape).as_str().to_string();
+    if !keep_old {
+        rows.retain(|row| row.topic != topic);
+    }
+    rows.push(bumped);
+    let path = scratch(name);
+    std::fs::write(&path, serde_json::to_string_pretty(&rows).unwrap()).unwrap();
+    path
+}
+
+/// The committed inventory with every consumer of `topic` marked migrated,
+/// or the topic's row removed (`None`).
+fn inventory_with(topic: &str, migrate: bool, name: &str) -> PathBuf {
+    let text = std::fs::read_to_string(consumers_file_path()).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let rows = value.as_array_mut().unwrap();
+    if migrate {
+        for row in rows.iter_mut().filter(|r| r["topic"] == topic) {
+            for consumer in row["consumers"].as_array_mut().unwrap() {
+                consumer["migrated"] = serde_json::Value::Bool(true);
+            }
+        }
+    } else {
+        rows.retain(|r| r["topic"] != topic);
+    }
+    let path = scratch(name);
+    std::fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+    path
+}
+
+/// R12-CONTRACT-9121. A version bump that takes the old version out of the
+/// lock while an inventoried consumer still decodes it fails the gate; the
+/// same change passes once that consumer is marked migrated, and a bump that
+/// keeps the old row passes without it. A version nobody surveyed is refused
+/// as firmly as one with a listed consumer: no record is not no consumer.
+///
+/// Before this the gate admitted any bump as "the producer's deliberate
+/// break", so a consumer's decoder could be taken away by a version nobody
+/// asked it about.
+///
+/// Mutation: in `schema_gate::run`, hand `judge` an empty inventory
+/// (`ConsumerInventory::default()`). The unmigrated case then exits 0 and
+/// the first assertion fails.
+#[test]
+fn a_version_bump_that_drops_the_old_version_while_an_inventoried_consumer_still_reads_it_fails_the_gate()
+ {
+    use qip_cli::event_fabric::schema_gate::{COMPATIBLE, INCOMPATIBLE};
+    let topic = "reflex.pass_marked";
+
+    // Premise: the committed inventory lists a consumer of the topic that has
+    // not migrated, or "fails the gate" below would hold for another reason.
+    let inventory = inventory_rows();
+    let listed = inventory
+        .iter()
+        .find(|row| row.topic == topic && row.version == 1)
+        .expect("premise: the topic's version 1 is surveyed");
+    assert!(
+        listed
+            .consumers
+            .iter()
+            .any(|c| c.role == qip_events::retirement::ConsumerRole::Decodes && !c.migrated),
+        "premise: a consumer still decodes {topic} version 1"
+    );
+
+    let dropped = lock_with_topic_bumped(topic, false, "dropped");
+    let kept = lock_with_topic_bumped(topic, true, "kept");
+    let migrated = inventory_with(topic, true, "migrated");
+    let unsurveyed = inventory_with(topic, false, "unsurveyed");
+
+    // The same change passes once the consumer row is migrated (premise for
+    // the failure below being the inventory's and not the bump's).
+    let passes = schema_gate_with(&dropped, &migrated);
+    assert_eq!(passes.code, COMPATIBLE, "{:?}", passes.lines);
+
+    let blocked = schema_gate_with(&dropped, &consumers_file_path());
+    assert_eq!(
+        blocked.code, INCOMPATIBLE,
+        "{topic} version 1 was dropped while qip-edge-node still decodes it and the gate \
+         passed it: {:?}",
+        blocked.lines
+    );
+    assert!(
+        blocked.lines[0].starts_with(&format!("{topic}: version 1 was dropped"))
+            && blocked.lines[0].contains("qip-edge-node"),
+        "the finding does not name the topic and the consumer: {:?}",
+        blocked.lines
+    );
+
+    let silent = schema_gate_with(&dropped, &unsurveyed);
+    assert_eq!(silent.code, INCOMPATIBLE, "{:?}", silent.lines);
+    assert!(
+        silent.lines[0].contains("has no consumer inventory"),
+        "{:?}",
+        silent.lines
+    );
+
+    let keeps = schema_gate_with(&kept, &consumers_file_path());
+    assert_eq!(keeps.code, COMPATIBLE, "{:?}", keeps.lines);
+    assert!(
+        keeps.lines[0].contains("version 1 stays locked"),
+        "{:?}",
+        keeps.lines
+    );
+
+    for path in [dropped, kept, migrated, unsurveyed] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn crate_sources(root: &std::path::Path, name: &str) -> String {
+    fn walk(dir: &std::path::Path, out: &mut String) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && let Ok(text) = std::fs::read_to_string(&path)
+            {
+                out.push_str(&text);
+                out.push('\n');
+            }
+        }
+    }
+    let mut out = String::new();
+    for group in std::fs::read_dir(root).unwrap().flatten() {
+        let candidate = group.path().join(name).join("src");
+        if candidate.is_dir() {
+            walk(&candidate, &mut out);
+        }
+    }
+    out
+}
+
+fn names_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + word.len()..].chars().next();
+        let edge = |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        edge(before) && edge(after)
+    })
+}
+
+/// Whether `text` names `module::Ty`, directly or inside a `module::{..}`
+/// import group.
+fn names_qualified(text: &str, module: &str, ty: &str) -> bool {
+    if names_word(text, &format!("{module}::{ty}")) {
+        return true;
+    }
+    let opener = format!("{module}::{{");
+    text.match_indices(&opener).any(|(at, _)| {
+        let rest = &text[at + opener.len()..];
+        rest.find('}')
+            .is_some_and(|end| names_word(&rest[..end], ty))
+    })
+}
+
+/// R12-CONTRACT-9121, the lower bound. The inventory is a reviewed file and
+/// this check does not compute consumers; it proves two things a stale
+/// inventory would break: every inventoried consumer's source names the type
+/// it is listed under, and every workspace crate whose source names a bound
+/// body (as `module::Type`, or in a `module::{..}` import) other than the
+/// crate that defines it is inventoried for that topic. It also holds each
+/// surveyed `(topic, version)` to a lock row and each lock row to a survey,
+/// which is what lets `ConsumerInventory::retire` mean something at head.
+///
+/// A crate that reaches a body by an alias or a re-export is invisible here,
+/// which is why this is a floor under the reviewed list and not a
+/// replacement for it.
+///
+/// Mutation: delete `qip-ledgerd`'s `reflex.chain_span` consumer row. The
+/// sweep finds ledgerd naming `reflex::ChainSpan` with no row and fails.
+#[test]
+fn the_consumer_inventory_names_every_crate_that_names_a_bound_body_and_every_row_names_its_type() {
+    let crates = lock_file_path()
+        .ancestors()
+        .nth(3)
+        .expect("the lock sits three levels below crates/")
+        .to_path_buf();
+    let inventory = inventory_rows();
+    let lock = committed_rows();
+    assert!(
+        !inventory.is_empty() && !lock.is_empty(),
+        "premise: there is something to cross-check"
+    );
+
+    // Survey and lock agree row for row.
+    for row in &lock {
+        assert!(
+            inventory
+                .iter()
+                .any(|i| i.topic == row.topic && i.version == row.version),
+            "schemas.lock.json holds {} version {} with no consumer survey in consumers.lock.json",
+            row.topic,
+            row.version
+        );
+    }
+    for entry in &inventory {
+        assert!(
+            lock.iter()
+                .any(|r| r.topic == entry.topic && r.version == entry.version),
+            "consumers.lock.json surveys {} version {} which the lock does not hold; drop the \
+             survey once the version is retired",
+            entry.topic,
+            entry.version
+        );
+    }
+
+    // Every listed consumer's source names its type.
+    for entry in &inventory {
+        for consumer in &entry.consumers {
+            let source = crate_sources(&crates, &consumer.name);
+            assert!(
+                !source.is_empty(),
+                "consumers.lock.json lists {} which is not a crate under backend/crates",
+                consumer.name
+            );
+            assert!(
+                names_word(&source, &consumer.type_name),
+                "consumers.lock.json lists {} as a consumer of {} under type {}, and its \
+                 source never names that type",
+                consumer.name,
+                entry.topic,
+                consumer.type_name
+            );
+        }
+    }
+
+    // Every crate naming a bound body is listed for its topic. The type's
+    // defining crate is exempt: it names its own body by being it.
+    let mut checked = 0usize;
+    for row in &lock {
+        let innermost = row
+            .type_name
+            .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+            .rfind(|part| !part.is_empty())
+            .unwrap();
+        let path: Vec<&str> = innermost.split("::").collect();
+        let (definer, module, ty) = (
+            path[0].replace('_', "-"),
+            path[path.len() - 2],
+            path[path.len() - 1],
+        );
+        let listed: BTreeSet<&str> = inventory
+            .iter()
+            .filter(|e| e.topic == row.topic && e.version == row.version)
+            .flat_map(|e| e.consumers.iter().map(|c| c.name.as_str()))
+            .collect();
+        for group in std::fs::read_dir(&crates).unwrap().flatten() {
+            for member in std::fs::read_dir(group.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let name = member.file_name().to_string_lossy().to_string();
+                if name == definer || !member.path().join("src").is_dir() {
+                    continue;
+                }
+                let source = crate_sources(&crates, &name);
+                if names_qualified(&source, module, ty) {
+                    checked += 1;
+                    assert!(
+                        listed.contains(name.as_str()),
+                        "{name} names {module}::{ty} (topic {}) and consumers.lock.json does not \
+                         list it; add its row with the role it plays, or the inventory is a floor \
+                         somebody walked through",
+                        row.topic
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "premise: the sweep found crates naming bound bodies, or it checked nothing"
     );
 }

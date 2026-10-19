@@ -24,6 +24,12 @@ backend/crates/apps/qip-deepbrain/src/main.rs @droderiquesit
 # The type system's paper-only Cell
 backend/crates/edge/qip-edge/src/cell.rs @droderiquesit
 
+# The guard suites themselves: the wildcard alone lets one reviewer weaken them
+backend/crates/tests/qip-acceptance/tests/architecture.rs @droderiquesit
+backend/crates/tests/qip-acceptance/tests/paper_boundary.rs @droderiquesit
+backend/crates/tests/qip-acceptance/tests/lane_placement.rs @droderiquesit
+backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs @droderiquesit
+
 # The event log hash chain (ADR 0007)
 backend/crates/libs/qip-events/src/ @droderiquesit
 

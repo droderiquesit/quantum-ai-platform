@@ -380,6 +380,60 @@ jobs:
             --policy .agent-guard/scripts/agent-policy.json --range "$work/range.json" \
             --environment "$TARGET_ENVIRONMENT"
 
+  # Named gates for the two claims a deployment most needs to be able to
+  # point at (R12-CICD-7116, R12-CICD-7120). The workspace suite in `ci` is
+  # one number; these are the simulation engine and the paper-trading
+  # boundary, each a job a reviewer can find in the run and a branch rule can
+  # require by name. They run on the commit being deployed, so a green `ci`
+  # for some other tree proves nothing about them.
+  #
+  # Honest limit: these run the paper tests against the source, not against
+  # the built image. Kargo's `paper` stage stays the manual gate for the
+  # image itself, as the register already records.
+  simulation-gate:
+    name: simulation engine and twin acceptance
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+      - name: install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          cache-on-failure: true
+      - name: simulation engine and twin suites
+        run: cargo test -p qip-acceptance --no-fail-fast --test arch_056_simulation_engine --test arch_042_twin_simulation
+
+  paper-gate:
+    name: paper-trading boundary acceptance
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+      - name: install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          cache-on-failure: true
+      - name: paper boundary and prod guard suites
+        run: cargo test -p qip-acceptance --no-fail-fast --test paper_boundary --test arch_007_paper_boundary --test prod_guard
+
   # One image per deployed artefact. Four of the five are workspace binaries
   # built from the one Dockerfile, so those four cannot drift apart.
   #
@@ -417,7 +471,7 @@ jobs:
   # `main.rs` fails rather than quietly shipping a library nobody serves.
   images:
     name: build and push ${{ matrix.binary }}
-    needs: gate
+    needs: [gate, simulation-gate, paper-gate]
     runs-on: ubuntu-latest
     permissions:
       contents: read
