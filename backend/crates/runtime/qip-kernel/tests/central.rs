@@ -8066,3 +8066,93 @@ fn the_live_strategy_bound_is_sized_to_the_tournament_registry() {
         qip_learning_engine::tournament::MAX_FORECASTERS
     );
 }
+
+/// ADR 0149 decision 16: a revision is a new candidate with a recorded
+/// ancestor, and the ancestor buys it nothing.
+///
+/// The failure this prevents: a lineage field that a gate or a copy path reads
+/// would turn "succeeds" into "inherits", and a retired strategy's evidence
+/// would walk back onto the ladder under a new name without being re-earned.
+/// Mutation: copying the ancestor's evidence into the successor in `register`
+/// makes the successor's holdout evidence present and the no-evidence
+/// assertion fails.
+#[test]
+fn a_successor_candidate_records_its_ancestor_inherits_no_evidence_and_still_needs_every_gate_and_the_dual_approval()
+-> Result<()> {
+    let mut plane = plane()?;
+    let ancestor = StrategyId::new("momentum-v1");
+    register(&mut plane, &ancestor, "cell-a")?;
+    walk_to(&mut plane, &ancestor, GateStage::Scaled)?;
+    plane
+        .factory_mut()
+        .retire(&ancestor, "desk", "the edge is gone", scaled_at())?;
+    // Premise: the ancestor held full evidence and is retired.
+    assert!(
+        plane
+            .factory()
+            .candidate(&ancestor)
+            .is_some_and(|c| c.evidence().holdout.is_some())
+    );
+    assert_eq!(plane.factory().stage_of(&ancestor), GateStage::Retired);
+
+    let successor = StrategyId::new("momentum-v2");
+    let (compiled, program) = compile(successor.as_str())?;
+    let candidate = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("central-tests")?,
+        "cell-a",
+        venue(),
+        start(),
+    )?
+    .with_succeeds(ancestor.clone());
+    plane.factory_mut().register(candidate)?;
+
+    let registered = plane
+        .factory()
+        .candidate(&successor)
+        .ok_or_else(|| qip_core::Error::not_found("the successor was not registered"))?;
+    assert_eq!(registered.succeeds(), Some(&ancestor));
+    // Nothing was inherited: no evidence, and the walk starts at candidate.
+    assert!(registered.evidence().holdout.is_none());
+    assert_eq!(plane.factory().stage_of(&successor), GateStage::Candidate);
+    assert_eq!(plane.factory().path(&successor), vec![GateStage::Candidate]);
+    let error = plane
+        .factory_mut()
+        .promote(&successor, None, "it used to be good", start())
+        .expect_err("a successor must earn the holdout gate itself");
+    assert!(!error.message().is_empty());
+    assert_eq!(plane.factory().stage_of(&successor), GateStage::Candidate);
+
+    // With its own evidence it climbs, and the capital-holding rung still
+    // wants two people.
+    plane
+        .factory_mut()
+        .submit_evidence(&successor, full_evidence(&successor, "cell-a")?)?;
+    for rung in [GateStage::Holdout, GateStage::Paper, GateStage::Shadow] {
+        plane
+            .factory_mut()
+            .promote(&successor, None, "the gate passed", start())?;
+        assert_eq!(plane.factory().stage_of(&successor), rung);
+    }
+    let error = plane
+        .factory_mut()
+        .promote(&successor, None, "no approver", start())
+        .expect_err("a capital-holding rung needs its dual approval");
+    assert!(!error.message().is_empty());
+    assert_eq!(plane.factory().stage_of(&successor), GateStage::Shadow);
+
+    // A lineage must name something real and something else.
+    let (compiled, program) = compile("orphan")?;
+    let orphan = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("central-tests")?,
+        "cell-a",
+        venue(),
+        start(),
+    )?
+    .with_succeeds(StrategyId::new("never-registered"));
+    assert!(plane.factory_mut().register(orphan).is_err());
+    Ok(())
+}

@@ -71,6 +71,10 @@ pub struct StrategyCandidate {
     model_reference: Option<String>,
     evidence_artifacts: Vec<String>,
     registered_at: Timestamp,
+    /// The strategy this one revises, if it does. Read by reviewers and by
+    /// nothing that decides: it inherits no evidence and shortens no rung
+    /// (ADR 0149 decision 16).
+    succeeds: Option<StrategyId>,
 }
 
 impl StrategyCandidate {
@@ -117,7 +121,25 @@ impl StrategyCandidate {
             model_reference: None,
             evidence_artifacts: Vec::new(),
             registered_at,
+            succeeds: None,
         })
+    }
+
+    /// Record that this candidate revises `ancestor`.
+    ///
+    /// Lineage only. A revised strategy is a new candidate under a new
+    /// identity and walks the whole ladder with its own evidence; naming an
+    /// ancestor copies nothing from it and moves no rung, and no gate reads
+    /// the field. [`StrategyFactory::register`] refuses an ancestor it does
+    /// not hold, and one that is the candidate itself.
+    pub fn with_succeeds(mut self, ancestor: StrategyId) -> Self {
+        self.succeeds = Some(ancestor);
+        self
+    }
+
+    /// The strategy this candidate revises, if it names one.
+    pub fn succeeds(&self) -> Option<&StrategyId> {
+        self.succeeds.as_ref()
     }
 
     /// Declare the alpha family this candidate harvests.
@@ -325,6 +347,19 @@ impl StrategyFactory {
                 "{strategy} is already registered; a revised strategy is a new candidate under a \
                  new identity, so its evidence is re-earned rather than inherited"
             )));
+        }
+        if let Some(ancestor) = candidate.succeeds() {
+            if *ancestor == strategy {
+                return Err(Error::invalid(format!(
+                    "{strategy} names itself as its ancestor; a revision is a new identity"
+                )));
+            }
+            if !self.candidates.contains_key(ancestor) {
+                return Err(Error::not_found(format!(
+                    "{strategy} claims to succeed {ancestor}, which is not registered; a lineage \
+                     that names nothing is a claim nobody can check"
+                )));
+            }
         }
         // The live set is bounded: retired strategies compact to tombstones in
         // the ledger and do not count, and nothing live is evicted to make
