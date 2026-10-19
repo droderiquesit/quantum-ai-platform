@@ -146,6 +146,7 @@ fn the_catalogue_holds_a_model_serving_objective_on_the_serving_series_at_the_pa
     assert_ne!(serving.source_series, package.source_series);
     assert!((serving.slo.target - package.slo.target).abs() < 1e-12);
     assert!((serving.slo.target - 0.99).abs() < 1e-12);
+}
 
 /// R12-OBS-9159: every objective `default_slos` declares for the reflex is
 /// bound to a series, evaluated where the node records it, and carries the
