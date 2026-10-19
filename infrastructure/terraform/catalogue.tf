@@ -274,6 +274,11 @@ locals {
       min_instances           = 0
       max_instances           = 4
       always_on_justification = ""
+      # What a cold start costs the caller, and why that is acceptable: the
+      # counterpart of `always_on_justification` for a floor of zero. A reviewer
+      # reads it in the diff; `infrastructure.rs` refuses an empty one. No
+      # latency figure is stated because none has been measured.
+      cold_start_tolerance = "The first request after idle waits while the process starts and opens its stores; every route it serves is a read or a POST /cycle the caller issues and awaits, and nothing that must happen on a clock lives here (the brains run the cycle on their own), so a cold start costs a caller latency and the platform no record."
       # No collector. The API serves `/metrics` behind `Role::Monitor`, so a
       # sidecar with no token would be answered 401 every thirty seconds
       # and chart nothing; its cycle and orders are recorded by the brains'
@@ -454,6 +459,7 @@ locals {
       min_instances           = 1
       max_instances           = 1
       always_on_justification = "Runs the cycle on its own clock over one hash-chained log; nothing requests it, so a retired instance is a stopped cycle and a second one is a forked chain."
+      cold_start_tolerance    = ""
       # Scraped, once a collector digest is pinned: the kill-switch gauge,
       # the limit breaches and the order counters every central alert
       # policy queries are recorded here.
@@ -556,6 +562,7 @@ locals {
       min_instances           = 1
       max_instances           = 1
       always_on_justification = "Runs the intelligence loop on its own clock over one hash-chained log; nothing requests it, so a retired instance is a stopped loop and a second one is a forked chain."
+      cold_start_tolerance    = ""
       # Scraped, once a collector digest is pinned, for the same series the
       # fast brain records from its own cycle.
       metrics_collector = true
