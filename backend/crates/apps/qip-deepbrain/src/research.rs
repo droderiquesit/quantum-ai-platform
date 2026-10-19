@@ -57,7 +57,10 @@ use qip_contracts::ambient::{
     AuthorityBoundary, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
     Pathway, RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
 };
-use qip_contracts::expansion::{CapabilityEntry, GapClass, OntologyTypeFamily, OntologyTypeSpec};
+use qip_contracts::expansion::{
+    CapabilityEntry, GapClass, OntologyTypeFamily, OntologyTypeSpec, SyntheticEpisode,
+    SyntheticGenerator,
+};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_expansion::campaigns::{self, TickCampaign, TickCampaignDetector, TickCampaignTrigger};
@@ -841,6 +844,10 @@ pub struct ScoutRequest {
 pub struct ConditionalScenario {
     pub signal_id: String,
     pub scenario: Scenario,
+    /// That the scenario was generated, and from what: the digest of the
+    /// signal id and the last two prices of each subject it shocks, and no
+    /// seed, because the generator draws nothing (ADR 0149 decision 18).
+    pub episode: SyntheticEpisode,
 }
 
 /// One assumption's health: when it was last challenged, how often, and how
@@ -2383,6 +2390,9 @@ impl ResearchLoop {
             if !matches!(signal.class(), SignalClass::Risk | SignalClass::Assumption) {
                 continue;
             }
+            // The canonical inputs, as their bits: a rounded price would let
+            // two different tapes share a digest.
+            let mut inputs = signal.id().to_string();
             let shocks: Vec<FactorShock> = signal
                 .affected_entities()
                 .iter()
@@ -2392,8 +2402,14 @@ impl ResearchLoop {
                         return None;
                     };
                     let moved = last / previous - 1.0;
-                    (moved.is_finite() && moved != 0.0)
-                        .then(|| FactorShock::new(format!("price:{subject}"), moved, 1.0))
+                    (moved.is_finite() && moved != 0.0).then(|| {
+                        inputs.push_str(&format!(
+                            "|{subject}|{}|{}",
+                            previous.to_bits(),
+                            last.to_bits()
+                        ));
+                        FactorShock::new(format!("price:{subject}"), moved, 1.0)
+                    })
                 })
                 .collect();
             if shocks.is_empty() {
@@ -2414,9 +2430,16 @@ impl ResearchLoop {
                 historical: false,
             };
             scenario.validate()?;
+            let episode = SyntheticEpisode::new(
+                scenario.name.clone(),
+                SyntheticGenerator::Conditional,
+                qip_core::hash::sha256_hex(inputs.as_bytes()),
+                None,
+            )?;
             generated.push(ConditionalScenario {
                 signal_id: signal.id().to_string(),
                 scenario,
+                episode,
             });
         }
         metrics.increment(AMBIENT_SCENARIOS, labels([]), generated.len() as u64);
