@@ -552,6 +552,74 @@ fn the_decide_stage_reports_where_capital_will_be_needed() -> Result<()> {
     Ok(())
 }
 
+/// ADR 0159 decision 21 at the seam a cycle crosses: the lanes DECIDE forecasts
+/// are offered to the `Forecast` contract, and only a lane with enough readings
+/// to have measured its uncertainty split is taken. One reading cannot state a
+/// split, so it is counted as not stated rather than converted with a made-up
+/// figure; several readings can.
+///
+/// Mutation: make `DemandForecast::to_forecast` accept a forecast with no split
+/// (fill it with zeros) and the one-reading cycle reports it stated.
+#[test]
+fn the_decide_stage_counts_the_forecast_lanes_the_contract_will_take_and_a_single_reading_is_not_one()
+-> Result<()> {
+    let stated = |detail: &str| -> usize {
+        let marker = " of them stated as contract forecast(s)";
+        let before = &detail[..detail.find(marker).expect("the DECIDE line reports it")];
+        before
+            .rsplit(' ')
+            .next()
+            .and_then(|count| count.parse().ok())
+            .expect("a count precedes the marker")
+    };
+
+    // One fill, one reading: the lane is forecast and cannot be stated.
+    let mut single = platform(PlatformConfig::default())?;
+    fill_one(&mut single, start())?;
+    let report = single.run_cycle(start().saturating_add(Duration::from_millis(50)));
+    let detail = report
+        .stage(Stage::Decide)
+        .expect("decide ran")
+        .detail
+        .clone();
+    assert!(
+        detail.contains("1 funding lane(s) forecast"),
+        "premise: {detail}"
+    );
+    assert_eq!(stated(&detail), 0, "{detail}");
+
+    // Six fills of differing size on six days: enough to fit and split, and
+    // spread over days so the day-ahead leverage does not cut the band off at
+    // zero (six fills a minute apart reach a day ahead through a huge leverage
+    // term, and the forecast is then, correctly, not a contract forecast).
+    let mut several = platform(PlatformConfig::default())?;
+    for day in 0..6_i64 {
+        let at = start().saturating_add(Duration::from_days(day));
+        let order = several.order_from(
+            object("AAA"),
+            Side::Buy,
+            Decimal::from_int(1_000 + 20 * ((day * 7) % 5)),
+            dec!("100"),
+            "prop-1",
+            vec!["hyp-1".to_string()],
+            at,
+        );
+        several.submit_order(order, at)?;
+    }
+    let report = several.run_cycle(start().saturating_add(Duration::from_days(6)));
+    let detail = report
+        .stage(Stage::Decide)
+        .expect("decide ran")
+        .detail
+        .clone();
+    assert!(
+        detail.contains("1 funding lane(s) forecast"),
+        "premise: {detail}"
+    );
+    assert_eq!(stated(&detail), 1, "{detail}");
+    Ok(())
+}
+
 #[test]
 fn the_desk_venue_settles_on_its_jurisdictions_calendar_and_an_undeclared_venue_is_refused_by_name()
 -> Result<()> {

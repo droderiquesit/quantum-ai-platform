@@ -32,7 +32,7 @@ use qip_contracts::control::{
 use qip_contracts::expansion::EffectAttribution;
 use qip_contracts::forecast::{
     Calibration as ForecastCalibration, Forecast, ForecastFields, OutcomeDistribution, OutcomeMass,
-    TailMass, TailSide, UncertaintyDecomposition,
+    Stated, TailMass, TailSide, UncertaintyDecomposition,
 };
 use qip_contracts::validated::Contract;
 use qip_core::Decimal;
@@ -1205,8 +1205,8 @@ fn view_forecast(spec: &WorldModelSpec, briers: &[f64], a: &Assessment) -> Resul
         },
         models_consulted: 1,
         model_disagreement: Decimal::ZERO,
-        regime_confidence_bp: bp(a.evidence_fit),
-        expected_impact: Decimal::ZERO,
+        regime_confidence_bp: Stated::Value(bp(a.evidence_fit)),
+        expected_impact: Stated::Value(Decimal::ZERO),
         calibration,
         evidence_lineage: spec.evidence_lineage.clone(),
         expires_at: a.at.saturating_add(spec.update_cadence),

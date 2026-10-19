@@ -1637,14 +1637,17 @@
   },
   {
     "id": "R12-CAPITAL-4075",
-    "status": "PARTIAL",
-    "current": "Central plane allocates with CapitalAllocator and issues envelopes; deployable_capital subtracts unfunded commitments; CapitalBook (derived uncommitted reserve, refusal below floor) exists but is not integrated.",
+    "status": "COMPLETE",
+    "current": "The floor is stated once, by the survival waterfall: SurvivalGovernor::size withholds margin, collateral, settlement, funding maturity, the emergency reserve, hedge capacity and the stressed-liquidity reserve before it releases opportunity capital, on every construction DECIDE makes, and refuses a construction whose waterfall and the ledger's deployable_capital disagree about the same balance. It installs what is left as the gross ceiling the risk state carries. qip_capital::treasury::CapitalBook is not integrated, by decision (ADR 0159 A): each of its Uses restates a fact another authority already holds (envelopes the allocator issues, collateral LedgerObligations carries, placements the region allocations are), so a kernel-side book could only be a second ledger with a floor typed in beside the waterfall's. If a future record gives it a kernel use, its floor is constructed from the waterfall and never configured.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/central/plane.rs:32 CapitalAllocator",
       "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital",
-      "backend/crates/services/qip-capital/src/treasury.rs:52 CapitalBook (unintegrated)"
+      "backend/crates/services/qip-capital/src/treasury.rs:52 CapitalBook (unintegrated)",
+      "backend/crates/runtime/qip-kernel/src/survival.rs SurvivalGovernor::budget (the reconciliation against deployable_capital)",
+      "backend/crates/runtime/qip-kernel/src/survival.rs::tests::a_waterfall_that_disagrees_with_the_ledger_is_refused",
+      "docs/adr/0159-capital-has-one-floor-one-declared-shelf-and-one-declared-withdrawal-notice-and-a-forecast-may-only-narrow-a-release-never-the-worlds-a-hedge-survives.md decision A"
     ],
-    "gap": "The uncommitted-reserve floor is already carried by the survival kernel: SurvivalGovernor builds the waterfall (emergency reserve as a fraction of equity, margin, collateral, settlement, funding maturity, stressed-liquidity reserve) and installs what is left as the gross ceiling the risk state carries (RiskState.survival_gross_ceiling, seeded by seed_survival_ceiling), so building qip_capital::treasury::CapitalBook in deployable_capital would state the same floor a second time and two claims about one fact will disagree. Needs a design decision: either CapitalBook becomes the journal of commitments against the survival floor (floor read from the governor, never configured separately), or it is retired in favour of the governor's budget. No code was changed.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1652,10 +1655,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-kernel --lib survival::; cargo test -p qip-kernel --test survival_gate",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 (lane L01) after reading survival.rs and deployable_capital."
+    "notes": "Gap corrected 2026-10-18 (lane L01) after reading survival.rs and deployable_capital. Lane W8-159 2026-10-19 (ADR 0159). Re-graded from PARTIAL: the row asked for one uncommitted-reserve floor and a refusal below it; the waterfall is that floor, runs on the default production path (Platform::construct_from reaches SurvivalGovernor::size in qip-api, qip-fastbrain and qip-deepbrain) and refuses a disagreement with the ledger. The 'CapitalBook becomes the journal of commitments or is retired' question is decided: neither, it is left unwired and its tests stand. Mutation that fired: the reconciliation check in SurvivalGovernor::budget made unreachable (`if false && reconciled != figures.deployable`) fails survival::tests::a_waterfall_that_disagrees_with_the_ledger_is_refused; restored byte for byte. The floor values (the SHIPPED_* fractions and SurvivalPolicy::from_settings) are not touched by this lane; this lane's one change in survival.rs adds LedgerFigures::parked so a yield hold does not lift the gross ceiling (see R12-CAPITAL-4078)."
   },
   {
     "id": "R12-CAPITAL-4076",
@@ -1706,32 +1709,17 @@
   {
     "id": "R12-CAPITAL-4078",
     "status": "PARTIAL",
-    "current": "route_idle_cash (paper) routes above-floor cash into named classes and dates it on the ladder; not reached from the kernel.",
+    "current": "route_idle_cash now takes an IdleCash that can be built only from the survival waterfall's report and what the cycle released (the opportunity capital the confidence governor declined to release), a validated operator-declared Shelf, RoutingTerms (share and ladder horizons) and the ReservationLedger. Each placement is a paper hold valid for the instrument's realisation, so deployable_capital sees it with no reconciliation, plus a DatedLadder entry; a hold parked in a yield instrument is left out of the gross ceiling (LedgerFigures::parked). InstrumentClass::Other is never routed and the shelf loader has no credit class; an instrument realised past MAXIMUM_RESERVATION_VALIDITY is refused at load. Platform::route_idle_capital runs once at the end of every DECIDE that built a budget, in qip-api, qip-fastbrain and qip-deepbrain, and journals a labelled paper record (YieldRoutingEntry). Nothing is routed unless a shelf with instruments and routing terms are declared.",
     "evidence": [
-      "backend/crates/services/qip-capital/src/bank.rs:449 route_idle_cash"
+      "backend/crates/services/qip-capital/src/bank.rs:449 route_idle_cash",
+      "backend/crates/services/qip-capital/src/bank.rs IdleCash, Shelf, RoutingTerms, route_idle_cash",
+      "backend/crates/runtime/qip-kernel/src/yield_shelf.rs load / load_file",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::route_idle_capital",
+      "backend/crates/runtime/qip-kernel/tests/capital.rs idle::idle_cash_routed_to_a_shelf_instrument_is_held_in_the_reservation_ledger_so_the_next_construction_has_exactly_that_much_less_free_cash",
+      "backend/crates/runtime/qip-kernel/src/survival.rs::tests::a_hold_parked_in_a_yield_instrument_does_not_lift_the_gross_ceiling",
+      "data/datasets/yield-shelf.json"
     ],
-    "gap": "route_idle_cash needs a shelf of YieldInstrument (custodian offerings with class, realisation and capacity) and nothing in the kernel, its config or any feed supplies one, so a call from DECIDE would route nothing. Also needs the uncommitted floor (see R12-CAPITAL-4075: one floor, not two). Needs a decision on where the shelf comes from (config, a custodian statement, a data source with a licence) before the paper routing record can be journalled.",
-    "implemented": true,
-    "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
-    "depends_on": [],
-    "blocked_by": "",
-    "verification": "",
-    "work_item": "",
-    "size": "M",
-    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the missing shelf, not the missing call."
-  },
-  {
-    "id": "R12-CAPITAL-4079",
-    "status": "PARTIAL",
-    "current": "Kernel builds an exit LiquidityLadder per book; qip-capital DatedLadder (dated balances/inflows/outflows/encumbrances) is not integrated; no withdrawal forecast.",
-    "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:143,797 LiquidityLadder",
-      "backend/crates/services/qip-capital/src/dated_ladder.rs:76 DatedLadder (unintegrated)"
-    ],
-    "gap": "DatedLadder needs dated inflows and outflows, and the kernel dates only unfunded commitments (CommitmentBook) and the survival governor's CapitalObligations; no withdrawal or redemption event was found in the kernel (grep of platform.rs for withdraw/redemption finds only data-source and venue withdrawals), so a withdrawal/reserve forecast cannot be built from facts the platform holds. Needs a design decision on the withdrawal signal (mandate terms? an operator declaration?) before the ladder can be fed.",
+    "gap": "2026-10-19: built, called from DECIDE in all three central roots, and unarmed everywhere. The committed data/datasets/yield-shelf.json declares no instrument, no routed share and no ladder horizons, because ADR 0159 leaves every shelf capacity, every realisation, the share of unreleased capital that may be routed and the ladder horizons to the RISK lane; no deployment sets QIP_YIELD_SHELF_PATH or mounts the file (a Cloud Run mount is a modules/cloudrun change plus per-environment tfvars under the protected infrastructure/environments/*; not attempted because there is no declared value to mount). Even armed, it moves only the capital the confidence governor declined to release, and the shipped schedule releases everything on a book with no calibration, disagreement, shift or regime signal (a plain whole cycle leaves nothing unreleased), so the share limit is the only lever on how much liquidity a cycle gives up. Routable instruments are those realised within the day a reservation may hold capital; the longer ShortDuration instruments the blueprint names need a longer-lived hold with its own record. Needs RISK to declare a shelf, a share and horizons, and a deployment to mount the file.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1739,10 +1727,35 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-capital --test bank; cargo test -p qip-kernel --test capital; cargo test -p qip-kernel --lib idle_routing_tests",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 (lane L01)."
+    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the missing shelf, not the missing call. Lane W8-159 2026-10-19 (ADR 0159). Mutations that fired, each restored byte for byte: no reservation hold taken (idle_cash_routed_to_a_shelf_instrument... fails at parked 0 against 125000); LedgerFigures::standing counting held whole (a_hold_parked... fails, ceiling difference 0 against 60000); the budget.at == now filter dropped (a quiet cycle routes off an earlier cycle's budget; idle_routing_tests fails); InstrumentClass::Other routed (three bank tests fail); share ignored (only_the_declared_share... fails); reservation-ceiling check removed (a_shelf_instrument_realised_past... fails); IdleCash accepting a release above the opportunity capital; a named shelf file that does not read treated as no shelf. The bank tests that routed 2- and 30-day instruments now route instruments realised within a day because the longer ones are refused at load by decision; no assertion was dropped. Kept PARTIAL: the behaviour is reached by default but routes nothing by default."
+  },
+  {
+    "id": "R12-CAPITAL-4079",
+    "status": "PARTIAL",
+    "current": "A RedemptionNotice (id, amount, effective instant, declarer, declared-at) is declared through Platform::declare_redemption_notice by an operator whose OperatorIdentity authenticated within 15 minutes, journaled before it is adopted, superseded by a later declaration under the same id, resumed from the log at assembly and rebuilt by replay_redemption_notices. Each DECIDE rebuilds the DatedLadder as a view from the active yield holds and every declared notice (as an Outflow) and the idle-cash router refuses any instrument that cannot be had back before the earliest outflow, naming the notice. A notice moves nothing and does not feed the survival reserve (decision 11). The kernel's exit LiquidityLadder is unchanged.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:143,797 LiquidityLadder",
+      "backend/crates/services/qip-capital/src/dated_ladder.rs:76 DatedLadder (unintegrated)",
+      "backend/crates/services/qip-capital/src/dated_ladder.rs RedemptionNotice, DatedLadder::earliest_outflow, DatedLadder::rebuilt",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::declare_redemption_notice / replay_redemption_notices / yield_ladder",
+      "backend/crates/services/qip-capital/tests/bank.rs a_declared_outflow_before_an_instruments_availability_refuses_the_placement_while_a_later_one_does_not",
+      "backend/crates/runtime/qip-kernel/tests/capital.rs idle::a_redemption_notice_is_journaled_superseded_by_id_and_rebuilt_from_the_log"
+    ],
+    "gap": "2026-10-19: no composition-root path calls Platform::declare_redemption_notice. There is no qip-api route for it, and a route would be authorised in shape and refused in fact: ADR 0065's presence gate refuses every standing credential in this build until a per-person credential exists (ADR 0076). Also not built, by decision or by absence: a retraction (a notice is superseded by id, never aged out, so a notice whose date has passed keeps refusing placements until an operator supersedes it, which is restrictive by design); the unfunded commitments' dated calls are not placed on the ladder view, because the router's one consumer reads declared notices (decision 10) and deployable_capital already withholds the whole unfunded balance. Needs a declaration route behind the per-person credential.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-capital --test bank; cargo test -p qip-kernel --test capital",
+    "work_item": "",
+    "size": "M",
+    "notes": "Gap corrected 2026-10-18 (lane L01). Lane W8-159 2026-10-19 (ADR 0159). Mutations that fired, each restored byte for byte: DatedLadder::earliest_outflow filtered to nothing (a_declared_outflow... fails: the placement is made past the outflow); notices left off the ladder view in the kernel (the whole-cycle test places the 24-hour instrument past the notice); the operator-freshness check disabled (a_redemption_notice_needs_a_fresh_operator... fails); replay skipping the entries (a_redemption_notice_is_journaled... fails with an empty rebuilt set)."
   },
   {
     "id": "R12-CAPITAL-4080",
@@ -1921,7 +1934,7 @@
       "backend/crates/runtime/qip-kernel/src/survival.rs::CombinedObligations",
       "backend/crates/services/qip-capital/src/obligations.rs::LedgerObligations"
     ],
-    "gap": "Same missing caller as R12-CAPITAL-4086 (no binary observes the ledger, so collateral and ledger settlement read zero in production); the emergency reserve is still a policy fraction (SurvivalPolicy::emergency_reserve_fraction), not a ledger account.",
+    "gap": "2026-10-19: the emergency reserve is a policy fraction of equity derived by the waterfall (SurvivalPolicy::emergency_reserve_fraction), by decision (ADR 0159 D): a reserve nobody moved is not an observed fact and the ledger books only observed facts, so it is not a ledger account and will not become one. What the ledger contributes is what it observes, margin, collateral and settlement through LedgerObligations. What remains is the obligations route: no binary calls Platform::observe_ledger_obligations, so collateral and ledger settlement read zero in production. That wiring belongs to R12-CAPITAL-4086, not to this row.",
     "implemented": false,
     "tested": true,
     "integrated": true,
@@ -1932,7 +1945,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: depends on the ledgerd obligations route in R12-CAPITAL-4086. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: depends on the ledgerd obligations route in R12-CAPITAL-4086. Kept PARTIAL. Lane W8-159 2026-10-19 (ADR 0159). Gap restated; no grade change."
   },
   {
     "id": "R12-CAPITAL-4088",
@@ -2404,13 +2417,13 @@
   {
     "id": "R12-RISK-4108",
     "status": "PARTIAL",
-    "current": "The Hedge Brain scores candidates across every world in the StressReport (library, causal, adversarial, tail and generated worlds), weighted equally because SIMULATE produces no calibrated distribution (backend/crates/runtime/qip-kernel/src/hedge.rs:17-30); different worlds are protected by different instruments (hedge_search.rs test :1034). These are stress worlds, not the platform's forecast distribution, and no binary declares candidates.",
+    "current": "The Hedge Brain scores candidates across every world in the StressReport (library, causal, adversarial, tail and generated worlds), weighted equally because SIMULATE produces no calibrated distribution (backend/crates/runtime/qip-kernel/src/hedge.rs:17-30); different worlds are protected by different instruments (hedge_search.rs test :1034). These are stress worlds, not the platform's forecast distribution. qip-api, qip-fastbrain and qip-deepbrain each declare candidates through with_hedge_candidates(paper_hedge_candidates(..)).",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/hedge.rs:14-30",
       "libs/qip-risk/src/hedge_search.rs::tests::different_worlds_are_protected_by_different_instruments",
       "backend/crates/runtime/qip-kernel/src/config.rs:565"
     ],
-    "gap": "Score against the same multi-world forecast distribution the rest of the platform uses (with its weights), and declare candidates in a binary.",
+    "gap": "2026-10-19: the candidates half of the earlier gap is done and was stale. What remains is the weights: the worlds stay equally weighted until a committed binding table and a calibrated source both exist (ADR 0159 F). A weight may then reorder hedge plans each of which already protects every world past the floor, changing the reported edge given up and nothing else, and may never remove a world from the protected set, however small the weight. Not built; the minimum resolved-forecast count is RISK's.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2421,7 +2434,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. Lane W8-159 2026-10-19 (ADR 0159). Stale 'no binary declares candidates' removed (grep -rn with_hedge_candidates backend/crates/apps finds three roots); gap restated; no grade change."
   },
   {
     "id": "R12-RISK-4109",
