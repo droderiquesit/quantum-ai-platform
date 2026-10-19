@@ -1753,6 +1753,11 @@ const LIQUIDITY_FIGURE: &str = "liquidity";
 /// A source literal, for the reason `LIQUIDITY_FIGURE` is one.
 const MARGIN_FIGURE: &str = "margin";
 
+/// The name the custody concentration is filed under in
+/// `RiskState::unevaluated` when the statements held cannot be summed. A
+/// source literal, for the reason `LIQUIDITY_FIGURE` is one.
+const CUSTODY_FIGURE: &str = "custody";
+
 /// The exposure buckets one instrument record vouches for.
 ///
 /// Axis names are the ones the default limit set looks up — `sector` and
@@ -18528,6 +18533,7 @@ impl Platform {
         // why the per-family level has no producer and no shipped cap.
         let state = crate::shared_cause::observe(&self.world, &self.price_history, state);
         let state = self.with_margin_and_funding(state, figures);
+        let state = self.with_custody_exposure(state);
         // Both maps or neither. The fractions are a sum over the same ladder
         // the day counts come from, so filling one from a ladder whose totals
         // could not be computed would leave the two halves of one liquidity
@@ -18543,6 +18549,64 @@ impl Platform {
             },
             Err(error) => state.with_unevaluated(LIQUIDITY_FIGURE, error.message()),
         }
+    }
+
+    /// Capital held at each custodian, for `custodian-concentration`
+    /// (R12-RISK-4097, the custody half).
+    ///
+    /// The balances are the statements already held in
+    /// [`Self::holdings_observed`] — the one statement of what is held where
+    /// this process can attest — summed per venue or custodian onto
+    /// [`CUSTODIAN_AXIS`], which `MaxAxisWeight` reads as a fraction of
+    /// equity. Each `observed` figure is taken as a value in the settlement
+    /// currency, exactly as `cross_margin::review` takes it; no price is
+    /// applied, and none is invented here for a non-cash holding the
+    /// statement already values.
+    ///
+    /// A debit (negative) balance is an obligation, not custody, and is left
+    /// to the margin review that charges it; counting it as negative custody
+    /// would net it against securities held at the same custodian and
+    /// understate that custodian's weight. **A sum that overflows is filed as
+    /// unevaluated, which refuses**, rather than saturating to a figure
+    /// nobody computed. With no statement the axis stays absent, as every
+    /// other axis does for a fact never observed.
+    ///
+    /// **Not measured here: the bridge half.** This process instructs no
+    /// transfer (ADR 0021), so the only in-flight quantity in the tree is the
+    /// ledger view's `in_flight`, which `reconcile_wallet` books as zero. A
+    /// `bridge` axis fed from it would be present and always empty — the
+    /// `MaxExpectedShortfall` shape — so none is filed.
+    fn with_custody_exposure(&self, state: RiskState) -> RiskState {
+        let mut state = state;
+        let mut held: BTreeMap<String, Decimal> = BTreeMap::new();
+        for (key, observation) in &self.holdings_observed {
+            if !observation.observed.is_positive() {
+                continue;
+            }
+            let bucket = held
+                .entry(key.venue.as_str().to_string())
+                .or_insert(Decimal::ZERO);
+            match bucket.checked_add(observation.observed) {
+                Some(sum) => *bucket = sum,
+                None => {
+                    return state.with_unevaluated(
+                        CUSTODY_FIGURE,
+                        format!(
+                            "the statements at {} overflow when summed; the custody \
+                             concentration cannot be measured, and a balance that cannot \
+                             be measured is not a balance of zero",
+                            key.venue.as_str()
+                        ),
+                    );
+                }
+            }
+        }
+        if !held.is_empty() {
+            state
+                .axis_exposures
+                .insert(qip_risk::limits::CUSTODIAN_AXIS.to_string(), held);
+        }
+        state
     }
 
     /// Margin utilisation and the funding buffer, for `LimitKind::MaxMarginUtilisation`
@@ -23927,6 +23991,117 @@ mod decide_tests {
             .blocking()
             .iter()
             .any(|breach| breach.limit_name == limit_name)
+    }
+
+    const CUSTODIAN_LIMIT: &str = "custodian-concentration";
+
+    fn hold_at(platform: &mut Platform, venue: &str, amount: Decimal) {
+        platform
+            .observe_statement(
+                VenueId::new(venue),
+                "USD",
+                amount,
+                Decimal::from_int(1),
+                Timestamp::from_secs(1_760_000_000),
+            )
+            .expect("a statement for a cash balance is accepted");
+    }
+
+    #[test]
+    fn the_custodian_limit_can_actually_fire() {
+        // R12-RISK-4097, custody half. Until the axis was filed the book had
+        // no way to say that 7,000,000 of 10,000,000 sat with one custodian:
+        // every other cap reads what was traded, not where cash is held.
+        let mut platform = private_market_platform(Vec::new());
+
+        // Premise: with no statement the axis is absent and the cap records
+        // nothing, so the firing below is the statement's doing.
+        let quiet = platform.risk_state();
+        assert!(
+            !quiet
+                .axis_exposures
+                .contains_key(qip_risk::limits::CUSTODIAN_AXIS)
+        );
+        assert!(!breaches(&quiet, CUSTODIAN_LIMIT));
+
+        hold_at(&mut platform, "custodian-a", Decimal::from_int(7_000_000));
+        hold_at(&mut platform, "custodian-b", Decimal::from_int(3_000_000));
+        let state = platform.risk_state();
+        let a = state
+            .axis_exposures
+            .get(qip_risk::limits::CUSTODIAN_AXIS)
+            .and_then(|buckets| buckets.get("custodian-a"))
+            .copied()
+            .unwrap_or_else(|| panic!("no custodian bucket: {:?}", state.axis_exposures));
+        assert_eq!(a, Decimal::from_int(7_000_000));
+        assert!(
+            blocks(&state, CUSTODIAN_LIMIT),
+            "0.70 of equity at one custodian did not block against the 0.60 cap: {:?}",
+            LimitSet::conservative_default().check(&state).breaches
+        );
+    }
+
+    #[test]
+    fn a_book_spread_across_custodians_inside_the_bound_is_admitted() {
+        let mut platform = private_market_platform(Vec::new());
+        hold_at(&mut platform, "custodian-a", Decimal::from_int(4_000_000));
+        hold_at(&mut platform, "custodian-b", Decimal::from_int(4_000_000));
+        hold_at(&mut platform, "custodian-c", Decimal::from_int(2_000_000));
+        let state = platform.risk_state();
+        // Premise: the axis is filed, so passing is a measurement and not an
+        // absent figure.
+        assert_eq!(
+            state
+                .axis_exposures
+                .get(qip_risk::limits::CUSTODIAN_AXIS)
+                .map(BTreeMap::len),
+            Some(3)
+        );
+        assert!(
+            !breaches(&state, CUSTODIAN_LIMIT),
+            "0.40 of equity per custodian must not even warn: {:?}",
+            LimitSet::conservative_default().check(&state).breaches
+        );
+    }
+
+    #[test]
+    fn a_debit_balance_is_not_custody() {
+        // A debit is money owed and is charged by the margin review;
+        // counting it here would net it against what the same custodian holds.
+        let mut platform = private_market_platform(Vec::new());
+        hold_at(&mut platform, "custodian-a", Decimal::from_int(-9_000_000));
+        let state = platform.risk_state();
+        assert!(
+            !state
+                .axis_exposures
+                .contains_key(qip_risk::limits::CUSTODIAN_AXIS)
+        );
+    }
+
+    #[test]
+    fn statements_that_cannot_be_summed_refuse_rather_than_admit() {
+        let mut platform = private_market_platform(Vec::new());
+        hold_at(&mut platform, "custodian-a", Decimal::MAX);
+        let key = VenueAsset {
+            venue: VenueId::new("custodian-a"),
+            asset: Asset::new("EUR").expect("a currency code is an asset"),
+        };
+        let mut second = platform.holdings_observed[&VenueAsset {
+            venue: VenueId::new("custodian-a"),
+            asset: Asset::new("USD").expect("a currency code is an asset"),
+        }]
+            .clone();
+        second.asset = key.asset.clone();
+        platform.holdings_observed.insert(key, second);
+        // Called directly: `cross_margin::review` sums the same statements
+        // with an unchecked add and panics on this input before the full
+        // `risk_state` returns. That is a separate defect, left alone here.
+        let state = platform.with_custody_exposure(RiskState::default());
+        assert!(
+            state.unevaluated.contains_key(CUSTODY_FIGURE),
+            "an overflowing custody sum was not filed unevaluated: {:?}",
+            state.unevaluated
+        );
     }
 
     #[test]
