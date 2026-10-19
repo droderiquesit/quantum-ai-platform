@@ -32,6 +32,11 @@
 //!   behaviour for a lane the fabric has barely seen.
 
 use crate::location::CapitalLocation;
+use qip_contracts::forecast::{
+    Calibration, Forecast, ForecastFields, OutcomeDistribution, QuantilePoint, Stated, TailMass,
+    TailSide, UncertaintyDecomposition,
+};
+use qip_contracts::validated::Contract;
 use qip_core::error::{Error, Result};
 use qip_core::rng::Rng;
 use qip_core::{Decimal, Duration, Timestamp};
@@ -212,6 +217,43 @@ impl DemandObservation {
     }
 }
 
+/// The prediction variance of a fitted forecast, split by what could reduce it
+/// (ADR 0159 decision 21), in squared currency units.
+///
+/// The prediction interval is the textbook one: residual dispersion, plus the
+/// uncertainty in the fit, plus a leverage term that grows with the square of
+/// the distance from the sample's centre. The first is the lane's own
+/// randomness at this horizon and no amount of data removes it, so it is the
+/// **aleatoric** part. The other two shrink with more history, so with any
+/// excess the dispersion floor added (the forecaster's declared humility about
+/// a sample too tidy to trust) they are the **epistemic** part. The pair sums
+/// to the variance the interval encodes, which is the point of stating it.
+///
+/// Statistics, hence `f64`; [`DemandForecast::to_forecast`] makes the one
+/// crossing to `Decimal`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VarianceSplit {
+    aleatoric: f64,
+    epistemic: f64,
+}
+
+impl VarianceSplit {
+    /// The lane's own randomness at the horizon: the residual component.
+    pub fn aleatoric(&self) -> f64 {
+        self.aleatoric
+    }
+
+    /// What more history would remove: the fit, leverage and floor components.
+    pub fn epistemic(&self) -> f64 {
+        self.epistemic
+    }
+
+    /// The prediction variance the interval encodes.
+    pub fn total(&self) -> f64 {
+        self.aleatoric + self.epistemic
+    }
+}
+
 /// Forecast demand for one kind of capital at one location.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DemandForecast {
@@ -225,6 +267,11 @@ pub struct DemandForecast {
     pub horizon: Duration,
     interval: Interval,
     observations: usize,
+    /// Measured by the forecaster that fitted it. `None` for a band somebody
+    /// else produced and for a lane with one reading, where there is nothing to
+    /// split; a record written before the split existed decodes as `None`.
+    #[serde(default)]
+    split: Option<VarianceSplit>,
 }
 
 impl DemandForecast {
@@ -259,6 +306,124 @@ impl DemandForecast {
             horizon,
             interval,
             observations,
+            split: None,
+        })
+    }
+
+    /// The prediction variance split, when the forecaster that fitted this
+    /// measured one.
+    pub fn variance_split(&self) -> Option<&VarianceSplit> {
+        self.split.as_ref()
+    }
+
+    /// This forecast as the contract's [`Forecast`] (ADR 0159 decision 21 and
+    /// 22).
+    ///
+    /// * The distribution is the interval's three quantiles, at the tail and
+    ///   the median, and the tail mass is the interval's own: `(1 - coverage) /
+    ///   2` below its lower bound.
+    /// * The uncertainty split is the measured one, and one model is consulted
+    ///   so its disagreement is zero, the lattice's convention for one model.
+    /// * A demand forecast has no market regime and no profit and loss of its
+    ///   own, so both are stated unmeasurable with a reason. A zero would be a
+    ///   claim.
+    /// * Calibration is `Uncalibrated`: nothing scores resolved demand
+    ///   forecasts, and saying so is not a default.
+    ///
+    /// Refused when it cannot state what the contract will not let it omit: a
+    /// band asserted by someone else or fitted on one reading has no measured
+    /// split; an interval truncated at zero no longer has `(1 - coverage) / 2`
+    /// of its mass below its lower bound. A producer that cannot state the
+    /// split, the tail or the distribution produces no `Forecast`.
+    pub fn to_forecast(&self) -> Result<Forecast> {
+        let Some(split) = &self.split else {
+            return Err(Error::invalid(format!(
+                "the {} demand forecast at {} has no measured uncertainty split ({} reading(s), \
+                 or a band somebody else produced); a Forecast states the split or does not \
+                 exist",
+                self.kind.as_str(),
+                self.location,
+                self.observations
+            )));
+        };
+        let interval = &self.interval;
+        if interval.point() - interval.lower() != interval.upper() - interval.point() {
+            return Err(Error::invalid(format!(
+                "the {} demand forecast at {} is truncated at zero, so the mass below its lower \
+                 bound is no longer the tail its coverage claims; widen the history or state no \
+                 Forecast",
+                self.kind.as_str(),
+                self.location
+            )));
+        }
+        // The statistics-to-contract crossing, made once and here: coverage is
+        // a probability claimed as an `f64`, the contract's masses are whole
+        // basis points, and the variances are `f64` statistics carried as
+        // exact decimals.
+        let tail_bp = ((1.0 - interval.confidence()) / 2.0 * 10_000.0).round() as u32;
+        let decimal = |value: f64, what: &str| {
+            Decimal::from_f64(value)
+                .ok_or_else(|| Error::numeric(format!("the demand {what} is not representable")))
+        };
+        let issued = self.as_of;
+        let target = format!("demand/{}@{}", self.kind.as_str(), self.location);
+        Forecast::new(ForecastFields {
+            schema_version: ForecastFields::SCHEMA_VERSION,
+            forecast_id: format!(
+                "demand:{}:{}:{}",
+                self.kind.as_str(),
+                self.location,
+                issued.as_nanos()
+            ),
+            model: "demand-linear-fit@1".to_string(),
+            target,
+            issued_at: issued,
+            horizon: self.horizon,
+            distribution: OutcomeDistribution::Quantiles {
+                points: vec![
+                    QuantilePoint {
+                        quantile_bp: tail_bp,
+                        value: interval.lower(),
+                    },
+                    QuantilePoint {
+                        quantile_bp: 5_000,
+                        value: interval.point(),
+                    },
+                    QuantilePoint {
+                        quantile_bp: 10_000u32.saturating_sub(tail_bp),
+                        value: interval.upper(),
+                    },
+                ],
+            },
+            uncertainty: UncertaintyDecomposition {
+                epistemic: decimal(split.epistemic(), "epistemic variance")?,
+                aleatoric: decimal(split.aleatoric(), "aleatoric variance")?,
+            },
+            tail: TailMass {
+                side: TailSide::Below,
+                threshold: interval.lower(),
+                probability_bp: tail_bp,
+            },
+            models_consulted: 1,
+            model_disagreement: Decimal::ZERO,
+            regime_confidence_bp: Stated::Unmeasurable {
+                unmeasurable: "a demand forecast fits a trend to one lane's own history and \
+                               states no market regime"
+                    .to_string(),
+            },
+            expected_impact: Stated::Unmeasurable {
+                unmeasurable: "a demand forecast is a quantity of capital needed, not a profit \
+                               or loss"
+                    .to_string(),
+            },
+            calibration: Calibration::Uncalibrated,
+            evidence_lineage: vec![format!(
+                "demand-history:{}@{}#{}obs",
+                self.kind.as_str(),
+                self.location,
+                self.observations
+            )],
+            expires_at: self.needed_by(),
         })
     }
 
@@ -440,7 +605,8 @@ impl DemandForecaster {
         let target_day = as_of.saturating_add(horizon).since(origin).as_days_f64();
 
         let z = normal_inv_cdf(1.0 - (1.0 - self.confidence) / 2.0);
-        let (point_stat, half_width_stat) = self.fit(&days, &amounts, target_day, z);
+        let fitted = self.fit(&days, &amounts, target_day, z);
+        let (point_stat, half_width_stat) = (fitted.point, fitted.half);
 
         let point = Decimal::from_f64(point_stat.max(0.0))
             .ok_or_else(|| Error::numeric("the demand point estimate was not representable"))?;
@@ -457,7 +623,24 @@ impl DemandForecaster {
             point + half,
             self.confidence,
         )?;
-        DemandForecast::new(location, kind, as_of, horizon, interval, sorted.len())
+        let mut forecast =
+            DemandForecast::new(location, kind, as_of, horizon, interval, sorted.len())?;
+        // The split sums to the variance the *floored* half-width encodes: what
+        // the floor added beyond the sample's own band is the forecaster's
+        // humility about its fit, so it is epistemic, and the residual
+        // component stays the lane's own randomness.
+        forecast.split = fitted.parts.map(|(aleatoric, fit_and_leverage)| {
+            let floor_excess = if z > 0.0 && floored > half_width_stat {
+                (floored * floored - half_width_stat * half_width_stat) / (z * z)
+            } else {
+                0.0
+            };
+            VarianceSplit {
+                aleatoric,
+                epistemic: fit_and_leverage + floor_excess,
+            }
+        });
+        Ok(forecast)
     }
 
     /// Point estimate and prediction half-width at `target_day`.
@@ -468,20 +651,34 @@ impl DemandForecaster {
     /// Two supports a spread but not a trend. Three or more supports a fitted
     /// line, and only then does the leverage term — the part that widens as the
     /// forecast reaches further from the sample's centre — mean anything.
-    fn fit(&self, days: &[f64], amounts: &[f64], target_day: f64, z: f64) -> (f64, f64) {
+    fn fit(&self, days: &[f64], amounts: &[f64], target_day: f64, z: f64) -> Fitted {
         if amounts.len() < 2 {
-            return (amounts.first().copied().unwrap_or(0.0), 0.0);
+            // One reading supports no dispersion estimate, so there is nothing
+            // to split either.
+            return Fitted {
+                point: amounts.first().copied().unwrap_or(0.0),
+                half: 0.0,
+                parts: None,
+            };
         }
-        if amounts.len() < 3 {
+        let spread_only = |amounts: &[f64]| {
             let mean = stats::mean(amounts);
             let sd = stats::stddev(amounts);
-            return (mean, z * sd * (1.0 + 1.0 / amounts.len() as f64).sqrt());
+            let n = amounts.len() as f64;
+            Fitted {
+                point: mean,
+                half: z * sd * (1.0 + 1.0 / n).sqrt(),
+                // The reading-to-reading spread is the lane's own; the `1/n`
+                // is the uncertainty in the mean.
+                parts: Some((sd * sd, sd * sd / n)),
+            }
+        };
+        if amounts.len() < 3 {
+            return spread_only(amounts);
         }
 
         let Ok(fit) = stats::linear_fit(days, amounts) else {
-            let mean = stats::mean(amounts);
-            let sd = stats::stddev(amounts);
-            return (mean, z * sd * (1.0 + 1.0 / amounts.len() as f64).sqrt());
+            return spread_only(amounts);
         };
         let intercept = fit.coefficients.first().copied().unwrap_or(0.0);
         let slope = fit.coefficients.get(1).copied().unwrap_or(0.0);
@@ -500,8 +697,25 @@ impl DemandForecaster {
             0.0
         };
         let half = z * fit.residual_stddev * (1.0 + 1.0 / n + leverage).sqrt();
-        (point, if half.is_finite() { half } else { 0.0 })
+        let residual_variance = fit.residual_stddev * fit.residual_stddev;
+        let parts = (half.is_finite() && residual_variance.is_finite())
+            .then_some((residual_variance, residual_variance * (1.0 / n + leverage)));
+        Fitted {
+            point,
+            half: if half.is_finite() { half } else { 0.0 },
+            parts,
+        }
     }
+}
+
+/// What [`DemandForecaster::fit`] measured: the point, the prediction
+/// half-width, and the variance parts behind it when there were enough
+/// readings to have any.
+struct Fitted {
+    point: f64,
+    half: f64,
+    /// `(residual, fit + leverage)` variances, summing to `(half / z)^2`.
+    parts: Option<(f64, f64)>,
 }
 
 impl Default for DemandForecaster {

@@ -16745,8 +16745,18 @@ impl Platform {
                 .iter()
                 .map(|forecast| forecast.interval().lower())
                 .fold(Decimal::ZERO, |sum, lower| sum + lower);
+            // How many of those lanes the contract will take as a `Forecast`:
+            // one with a measured uncertainty split and a tail that is its
+            // coverage's own (ADR 0159 decision 21). A lane with one reading,
+            // or a band cut off at zero, cannot state them and is not
+            // converted rather than converted with invented figures.
+            let stated = forecasts
+                .iter()
+                .filter(|forecast| forecast.to_forecast().is_ok())
+                .count();
             format!(
-                "; {} funding lane(s) forecast, at least {confident} needed within {:.0} day(s)",
+                "; {} funding lane(s) forecast, at least {confident} needed within {:.0} day(s), \
+                 {stated} of them stated as contract forecast(s) with a measured uncertainty split",
                 forecasts.len(),
                 CAPITAL_HORIZON.as_days_f64()
             )

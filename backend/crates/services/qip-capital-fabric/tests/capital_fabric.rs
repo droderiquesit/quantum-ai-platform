@@ -1918,3 +1918,217 @@ fn a_deadline_is_judged_met_missed_or_undecidable_under_the_calendar_the_venue_s
     );
     Ok(())
 }
+
+// --- the forecast contract (ADR 0159 decisions 21 and 22) --------------------
+
+/// Twelve noisy daily readings of a rising demand, and an `as_of` at the last.
+fn noisy_history() -> (Vec<DemandObservation>, Timestamp) {
+    let mut rng = Xoshiro256::seeded(0x11_5701);
+    let start = thursday();
+    let history = (0..12)
+        .map(|day| {
+            let noise = (rng.next_f64() - 0.5) * 160_000.0;
+            DemandObservation::new(
+                start.saturating_add(Duration::from_days(day)),
+                Decimal::from_int(1_000_000 + day * 20_000 + noise as i64),
+            )
+        })
+        .collect();
+    (history, start.saturating_add(Duration::from_days(11)))
+}
+
+fn relative_gap(a: Decimal, b: f64) -> f64 {
+    ((a.to_f64() - b) / b).abs()
+}
+
+#[test]
+fn a_demand_forecast_states_a_measured_uncertainty_split_that_sums_to_its_prediction_variance_and_marks_regime_and_impact_unmeasurable()
+-> Result<()> {
+    use qip_contracts::forecast::Stated;
+
+    let (history, as_of) = noisy_history();
+    // The floor is off so the band is the fitted one; the floor case follows.
+    let forecast = DemandForecaster::new()
+        .with_dispersion_floor(0.0)?
+        .forecast(
+            at_venue("XLON"),
+            DemandKind::Cash,
+            &history,
+            as_of,
+            Duration::from_days(5),
+        )?;
+    // Premise: the interval is not truncated at zero and has width, so the
+    // variance it encodes is a number to compare the split to.
+    assert!(forecast.interval().lower().is_positive());
+    assert!(forecast.interval().width().is_positive());
+    let encoded = forecast.interval().dispersion_stat().powi(2);
+
+    let contract = forecast.to_forecast()?;
+    let split = &contract.uncertainty;
+    assert!(
+        split.aleatoric.is_positive() && split.epistemic.is_positive(),
+        "{split:?}"
+    );
+    // The pair sums to the prediction variance the interval already encodes.
+    assert!(
+        relative_gap(split.total()?, encoded) < 1e-6,
+        "{} against {encoded}",
+        split.total()?
+    );
+    // And the aleatoric half is the residual alone: more of the horizon
+    // widens the epistemic part and leaves it where it was.
+    let further = DemandForecaster::new()
+        .with_dispersion_floor(0.0)?
+        .forecast(
+            at_venue("XLON"),
+            DemandKind::Cash,
+            &history,
+            as_of,
+            Duration::from_days(40),
+        )?;
+    let further = further.to_forecast()?;
+    assert_eq!(further.uncertainty.aleatoric, split.aleatoric);
+    assert!(further.uncertainty.epistemic > split.epistemic);
+
+    // The tail is the interval's own: (1 - 0.8) / 2 = 10% below its lower bound.
+    assert_eq!(contract.tail.probability_bp, 1_000);
+    assert_eq!(contract.tail.threshold, forecast.interval().lower());
+    // One model, and one model does not disagree with itself.
+    assert_eq!(contract.models_consulted, 1);
+    assert_eq!(contract.model_disagreement, Decimal::ZERO);
+    // A demand forecast has no regime and no profit and loss: stated, with a
+    // reason, not written as zero.
+    assert!(
+        matches!(&contract.regime_confidence_bp, Stated::Unmeasurable { unmeasurable } if !unmeasurable.is_empty())
+    );
+    assert!(
+        matches!(&contract.expected_impact, Stated::Unmeasurable { unmeasurable } if !unmeasurable.is_empty())
+    );
+    // A consumer that wants the compact state is refused, naming the field.
+    let refusal = contract.state().unwrap_err().to_string();
+    assert!(refusal.contains("regime_confidence_bp"), "{refusal}");
+    // It reads at the horizon and not after it.
+    assert!(contract.read_at(as_of).is_ok());
+    assert!(contract.read_at(forecast.needed_by()).is_err());
+    // And survives the wire as it was written.
+    let bytes = contract.encode()?;
+    assert_eq!(qip_contracts::forecast::Forecast::decode(&bytes)?, contract);
+    Ok(())
+}
+
+#[test]
+fn the_floor_a_tidy_history_earned_is_stated_as_what_more_history_would_remove() -> Result<()> {
+    // Identical readings fit with zero residual, so the band is the floor's.
+    // The lane's own randomness measured zero; everything the floor added is
+    // the forecaster's humility about a sample too tidy to trust, which more
+    // history would remove.
+    let start = thursday();
+    let history: Vec<DemandObservation> = (0..6)
+        .map(|day| {
+            DemandObservation::new(
+                start.saturating_add(Duration::from_days(day)),
+                Decimal::from_int(1_000_000),
+            )
+        })
+        .collect();
+    let forecast = DemandForecaster::new().forecast(
+        at_venue("XLON"),
+        DemandKind::Cash,
+        &history,
+        start.saturating_add(Duration::from_days(5)),
+        Duration::from_days(2),
+    )?;
+    let contract = forecast.to_forecast()?;
+    assert_eq!(contract.uncertainty.aleatoric, Decimal::ZERO);
+    assert!(contract.uncertainty.epistemic.is_positive());
+    let encoded = forecast.interval().dispersion_stat().powi(2);
+    assert!(relative_gap(contract.uncertainty.total()?, encoded) < 1e-6);
+    Ok(())
+}
+
+#[test]
+fn a_demand_forecast_that_cannot_state_its_split_or_its_tail_produces_no_forecast() -> Result<()> {
+    let (history, as_of) = noisy_history();
+    // One reading supports no dispersion estimate, so there is nothing to split.
+    let single = DemandForecaster::new().forecast(
+        at_venue("XLON"),
+        DemandKind::Cash,
+        &history[..1],
+        history[0].at,
+        Duration::from_days(1),
+    )?;
+    assert!(single.variance_split().is_none());
+    let refusal = single.to_forecast().unwrap_err().to_string();
+    assert!(
+        refusal.contains("no measured uncertainty split"),
+        "{refusal}"
+    );
+
+    // A band somebody else produced carries no split either.
+    let asserted = DemandForecast::new(
+        at_venue("XLON"),
+        DemandKind::Cash,
+        as_of,
+        Duration::from_days(1),
+        Interval::new(dec!("90"), dec!("100"), dec!("110"), 0.8)?,
+        5,
+    )?;
+    assert!(asserted.to_forecast().is_err());
+
+    // A wide band on a small, noisy lane is cut off at zero, and the mass below
+    // its lower bound is then not the tail its coverage claims.
+    let small: Vec<DemandObservation> = [10_i64, 400, 20, 500, 5, 450]
+        .iter()
+        .enumerate()
+        .map(|(day, amount)| {
+            DemandObservation::new(
+                thursday().saturating_add(Duration::from_days(day as i64)),
+                Decimal::from_int(*amount),
+            )
+        })
+        .collect();
+    let truncated = DemandForecaster::new().forecast(
+        at_venue("XLON"),
+        DemandKind::Cash,
+        &small,
+        thursday().saturating_add(Duration::from_days(5)),
+        Duration::from_days(1),
+    )?;
+    assert_eq!(
+        truncated.interval().lower(),
+        Decimal::ZERO,
+        "premise: the band is cut at zero"
+    );
+    assert!(
+        truncated
+            .to_forecast()
+            .unwrap_err()
+            .to_string()
+            .contains("truncated at zero")
+    );
+    Ok(())
+}
+
+#[test]
+fn a_demand_forecast_written_before_the_split_existed_still_decodes_without_one() -> Result<()> {
+    let (history, as_of) = noisy_history();
+    let forecast = DemandForecaster::new().forecast(
+        at_venue("XLON"),
+        DemandKind::Cash,
+        &history,
+        as_of,
+        Duration::from_days(1),
+    )?;
+    let mut value = serde_json::to_value(&forecast).expect("encodes");
+    assert!(
+        value
+            .as_object_mut()
+            .expect("an object")
+            .remove("split")
+            .is_some()
+    );
+    let old: DemandForecast = serde_json::from_value(value).expect("an older record decodes");
+    assert!(old.variance_split().is_none());
+    assert_eq!(old.interval(), forecast.interval());
+    Ok(())
+}
