@@ -2130,7 +2130,7 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/forecast.rs::ForecastState"
     ],
-    "gap": "No capital/risk/hedge consumer.",
+    "gap": "2026-10-19: no capital, risk or hedge consumer, by decision (ADR 0159 F). No mapping from panel beliefs to a distribution over stress worlds is built: a belief is a point-confidence claim about an instrument, a StressReport world is a scenario with a shock and no probability, and relating them would be assigning confidence (ADR 0005). A forecast may influence capital only if Calibration::Measured over at least a stated number of resolved forecasts (the number has no default and is RISK's; unset means no forecast influences anything, which is today's behaviour) and only through a committed world-to-forecast binding table. Three direction rules bind any consumer and each is a test with a mutation that slice must add: the set of worlds a hedge must survive is never reduced by a weight; a calibrated forecast may only add a forecast-derived world to the stress report, so worst_world can only worsen, and never reweights the worst-world rule or lowers the stressed-liquidity reserve; weights may reorder plans that each already protect every world and change nothing else. Nothing is built now.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2143,7 +2143,7 @@
     "verification": "unit tests",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane W8-159 2026-10-19 (ADR 0159). Gap restated; no grade change."
   },
   {
     "id": "R12-CAPITAL-10098",

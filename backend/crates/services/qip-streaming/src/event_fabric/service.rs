@@ -66,8 +66,8 @@ use qip_storage::segment::log::SegmentLogConfig;
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::event_fabric::protocol::{
     AdminIsolateResponse, AdminReleaseResponse, GroupCommitResponse, GroupJoinResponse,
-    GroupLagResponse, ProducerInitResponse, Refusal, Request, Response, Route, decode_request,
-    encode_response,
+    GroupLagResponse, IsolationStatus, ProducerInitResponse, Refusal, Request, Response, Route,
+    decode_request, encode_response,
 };
 
 use super::acl::{self, Scope};
@@ -334,7 +334,24 @@ impl Service {
     /// Answer one request. Never panics and never returns an error: every
     /// failure is a status and a body, because the caller is a listener that
     /// has to write something back.
-    pub fn handle(&self, authorization: Option<&str>, path: &str, body: &[u8]) -> Handled {
+    ///
+    /// `peer_identity` is the name the transport took from the client's
+    /// verified certificate and wrote itself into the request
+    /// (`qip_transport::server::PEER_IDENTITY_HEADER`, which the server strips
+    /// from every inbound request first, so a client cannot supply it).
+    /// `None` on a plaintext link and on a mutual-TLS listener that admits
+    /// no names. On the two admin routes a present peer name **is** the
+    /// operator: it is what the grants authorise and what the action is
+    /// recorded under, and the bearer token is not consulted (ADR 0156
+    /// §4d). Everywhere else, and on a plaintext link, the bearer token is
+    /// the identity, as before.
+    pub fn handle(
+        &self,
+        authorization: Option<&str>,
+        peer_identity: Option<&str>,
+        path: &str,
+        body: &[u8],
+    ) -> Handled {
         let mut seen = Observation::default();
         let Some(route) = Route::from_path(path) else {
             seen.outcome = "unknown_route";
@@ -348,19 +365,23 @@ impl Service {
             };
         };
         seen.route = Some(route);
-        let identity = match auth::verify(&self.identities, authorization) {
-            Ok(identity) => identity,
-            Err(error) => {
-                seen.outcome = "unauthenticated";
-                return Handled {
-                    status: 401,
-                    body: error_body(&error),
-                    observation: seen,
-                };
-            }
+        let admin = matches!(route, Route::AdminIsolate | Route::AdminRelease);
+        let identity = match peer_identity.filter(|name| admin && !name.trim().is_empty()) {
+            Some(name) => name.to_string(),
+            None => match auth::verify(&self.identities, authorization) {
+                Ok(identity) => identity.as_str().to_string(),
+                Err(error) => {
+                    seen.outcome = "unauthenticated";
+                    return Handled {
+                        status: 401,
+                        body: error_body(&error),
+                        observation: seen,
+                    };
+                }
+            },
         };
         let answered = decode_request(route, body)
-            .and_then(|request| self.answer(identity.as_str(), request, &mut seen))
+            .and_then(|request| self.answer(&identity, request, &mut seen))
             .and_then(|response| {
                 if let Response::Refused(refusal) = &response {
                     seen.outcome = "refused";
@@ -448,7 +469,17 @@ impl Service {
                 let metadata = self.broker.metadata(&r.stream, r.partition)?;
                 seen.high_watermark = Some(metadata.high_watermark());
                 seen.archived_through = Some(metadata.archived_through());
-                Ok(Response::Metadata(metadata))
+                // The isolation as the broker holds it, on every answer:
+                // a health view that had to infer it from a produce refusal
+                // would print a parked partition as healthy until somebody
+                // wrote to it (R12-FABRIC-7042).
+                let isolation = match self.broker.isolation(&r.stream, r.partition)? {
+                    Some(isolation) => {
+                        IsolationStatus::isolated(isolation.operator, isolation.reason)
+                    }
+                    None => IsolationStatus::clear(),
+                };
+                Ok(Response::Metadata(metadata.with_isolation(isolation)))
             }
             Request::ProducerInit(r) => {
                 if let Some(refusal) = self.refuse_unless_granted(

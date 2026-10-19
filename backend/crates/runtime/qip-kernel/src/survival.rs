@@ -593,6 +593,13 @@ pub struct LedgerFigures {
     pub equity: Decimal,
     /// Active reservation holds.
     pub held: Decimal,
+    /// The part of [`Self::held`] that is parked in a yield instrument
+    /// (ADR 0159). It is withheld from opportunity like any hold, but it backs
+    /// no proposal, so it is not capital the survival kernel stands behind and
+    /// [`Self::standing`] leaves it out of the gross ceiling. Counting it
+    /// there would let a routed placement raise the ceiling the Risk Gate
+    /// holds orders to by exactly the amount that was just taken out of play.
+    pub parked: Decimal,
     /// Unfunded capital commitments.
     pub obligations: Decimal,
     /// `Platform::deployable_capital` for the same instant.
@@ -644,7 +651,9 @@ impl LedgerFigures {
     /// approved proposals: what the survival kernel stands behind when it
     /// releases nothing new.
     fn standing(&self) -> Option<Decimal> {
-        self.gross.abs().checked_add(self.held)
+        self.gross
+            .abs()
+            .checked_add(self.held.checked_sub(self.parked)?)
     }
 }
 
@@ -1093,6 +1102,52 @@ mod tests {
         );
         governor.release_nothing(dec!("-400000"), dec!("100000"));
         assert_eq!(governor.gross_ceiling(), Some(dec!("500000")));
+    }
+
+    /// A hold parked in a yield instrument (ADR 0159) is withheld from
+    /// opportunity like any hold and is **not** capital the survival kernel
+    /// stands behind, so it must not lift the ceiling the Risk Gate holds
+    /// orders to. Counting it would let a routed placement raise the gross
+    /// ceiling by exactly the amount just taken out of play.
+    ///
+    /// Mutation: count `held` whole in `LedgerFigures::standing` and the
+    /// parked budget's ceiling equals the plain one.
+    #[test]
+    fn a_hold_parked_in_a_yield_instrument_does_not_lift_the_gross_ceiling() {
+        let mut governor = SurvivalGovernor::default();
+        let plain = governor
+            .size(figures(dec!("850000")), None, 0.20, &views(), at())
+            .unwrap();
+        let parked = governor
+            .size(
+                LedgerFigures {
+                    parked: dec!("60000"),
+                    ..figures(dec!("850000"))
+                },
+                None,
+                0.20,
+                &views(),
+                at(),
+            )
+            .unwrap();
+        // Premise: the parked amount is withheld the same way in both (it is
+        // inside `held`), so what is released is unchanged.
+        assert_eq!(parked.released, plain.released);
+        assert_eq!(plain.gross_ceiling - parked.gross_ceiling, dec!("60000"));
+        // The refusal path stands in the same figure.
+        governor
+            .size(
+                LedgerFigures {
+                    parked: dec!("60000"),
+                    ..figures(dec!("900000"))
+                },
+                None,
+                0.20,
+                &views(),
+                at(),
+            )
+            .unwrap_err();
+        assert_eq!(governor.gross_ceiling(), Some(dec!("440000")));
     }
 
     #[test]

@@ -182,6 +182,56 @@ pub struct TailMass {
     pub probability_bp: u32,
 }
 
+/// A figure a producer either measured or says, with a reason, it cannot.
+///
+/// Used for exactly two fields of [`ForecastFields`] — `regime_confidence_bp`
+/// and `expected_impact` — because a zero there is a claim: a demand forecast
+/// has no market regime and no profit and loss of its own, and a record that
+/// wrote `0` would assert a certainty or a neutrality nobody computed (ADR
+/// 0159 decision 22). The uncertainty split, the tail mass and the
+/// distribution have no such arm: a producer that cannot state them produces no
+/// [`Forecast`].
+///
+/// Encoded without a tag: a stated value is the bare figure, byte for byte what
+/// a version-1 record carried, so an old record decodes as `Value` and
+/// re-encodes unchanged; an unmeasurable figure is `{"unmeasurable": "<why>"}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum Stated<T> {
+    /// The producer measured it.
+    Value(T),
+    /// The producer cannot, and says why. The reason is required.
+    Unmeasurable { unmeasurable: String },
+}
+
+impl<T: Copy> Stated<T> {
+    /// The measured figure, or a refusal naming `field` and the producer's
+    /// reason. A consumer never reads a size off an unmeasurable field.
+    pub fn measured(&self, contract: &str, field: &str) -> Result<T> {
+        match self {
+            Self::Value(value) => Ok(*value),
+            Self::Unmeasurable { unmeasurable } => Err(Error::invalid(format!(
+                "a {contract} states `{field}` as unmeasurable ({unmeasurable}); nothing is \
+                 sized or scored off a figure its producer says it cannot measure"
+            ))),
+        }
+    }
+}
+
+impl<T> Stated<T> {
+    /// Whether the producer stated the figure unmeasurable.
+    pub fn is_unmeasurable(&self) -> bool {
+        matches!(self, Self::Unmeasurable { .. })
+    }
+
+    fn check_reason(&self, contract: &str, field: &str) -> Result<()> {
+        if let Self::Unmeasurable { unmeasurable } = self {
+            named(contract, &format!("{field}.unmeasurable"), unmeasurable)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForecastFields {
@@ -201,11 +251,13 @@ pub struct ForecastFields {
     pub models_consulted: u32,
     /// Spread of the consulted models' point forecasts, in target units.
     pub model_disagreement: Decimal,
-    /// Confidence that the regime the model assumes is the one in force.
-    pub regime_confidence_bp: u32,
+    /// Confidence that the regime the model assumes is the one in force, or an
+    /// explicit statement that the producer has no regime to be confident in.
+    pub regime_confidence_bp: Stated<u32>,
     /// The expected P&L or risk impact of acting on the forecast, in the
-    /// account currency. Signed.
-    pub expected_impact: Decimal,
+    /// account currency. Signed. Or an explicit statement that the producer
+    /// has no profit and loss of its own to state.
+    pub expected_impact: Stated<Decimal>,
     pub calibration: Calibration,
     /// Evidence and feature ids the forecast was computed from; at least one.
     pub evidence_lineage: Vec<String>,
@@ -216,9 +268,20 @@ pub struct ForecastFields {
 /// The §9.14 forecast. Built only through [`Validated::new`].
 pub type Forecast = Validated<ForecastFields>;
 
+/// The version that introduced [`Stated`]. A record at the version before it
+/// states both figures as measured, which is exactly what its bare numbers say.
+const FORECAST_BEFORE_STATED: u32 = 1;
+
 impl Contract for ForecastFields {
     const NAME: &'static str = "Forecast";
-    const SCHEMA_VERSION: u32 = 1;
+    const SCHEMA_VERSION: u32 = 2;
+
+    /// Version 1 still decodes: its two figures were bare numbers and are
+    /// `Stated::Value` here, and [`Self::check`] refuses a version-1 record that
+    /// claims an unmeasurable arm it predates.
+    fn reads(version: u32) -> bool {
+        version == Self::SCHEMA_VERSION || version == FORECAST_BEFORE_STATED
+    }
 
     fn schema_version(&self) -> u32 {
         self.schema_version
@@ -249,7 +312,21 @@ impl Contract for ForecastFields {
                 "reports disagreement from a single model; one model cannot disagree with itself",
             );
         }
-        basis_points(c, "regime_confidence_bp", self.regime_confidence_bp)?;
+        if self.schema_version == FORECAST_BEFORE_STATED
+            && (self.regime_confidence_bp.is_unmeasurable()
+                || self.expected_impact.is_unmeasurable())
+        {
+            return refuse(
+                c,
+                "claims an unmeasurable figure at schema version 1, which predates that arm; \
+                 write the record at the current version",
+            );
+        }
+        match &self.regime_confidence_bp {
+            Stated::Value(bp) => basis_points(c, "regime_confidence_bp", *bp)?,
+            unmeasurable => unmeasurable.check_reason(c, "regime_confidence_bp")?,
+        }
+        self.expected_impact.check_reason(c, "expected_impact")?;
         self.calibration.check(c)?;
         names(c, "evidence_lineage", &self.evidence_lineage)?;
         after(
@@ -278,13 +355,21 @@ impl Forecast {
     /// The compact §24.9 [`ForecastState`] this forecast projects to, with
     /// `confidence_bp` taken from the regime confidence — the one figure in a
     /// [`Forecast`] that says how far its own premises hold.
+    ///
+    /// Refused, naming the field, when the regime confidence is unmeasurable:
+    /// the compact state carries it as its one confidence figure, and
+    /// substituting a number for a statement that there is none would be the
+    /// zero this arm exists to prevent.
     pub fn state(&self) -> Result<ForecastState> {
+        let confidence_bp = self
+            .regime_confidence_bp
+            .measured(ForecastFields::NAME, "regime_confidence_bp")?;
         ForecastState::new(ForecastStateFields {
             schema_version: ForecastStateFields::SCHEMA_VERSION,
             target: self.target.clone(),
             horizon: self.horizon,
             distribution: self.distribution.clone(),
-            confidence_bp: self.regime_confidence_bp,
+            confidence_bp,
             uncertainty: self.uncertainty,
             expires_at: self.expires_at,
         })

@@ -262,9 +262,12 @@ impl Handler for DataPlane {
             );
         }
         let started = self.clock.now();
-        let handled =
-            self.service
-                .handle(request.header(auth::HEADER), &request.path, &request.body);
+        let handled = self.service.handle(
+            request.header(auth::HEADER),
+            request.header(qip_transport::server::PEER_IDENTITY_HEADER),
+            &request.path,
+            &request.body,
+        );
         // Nanoseconds to milliseconds for a latency histogram: a statistic,
         // so an f64, and the one place this crate crosses from integers.
         let elapsed_ms = (self.clock.now().as_nanos() - started.as_nanos()) as f64 / 1_000_000.0;

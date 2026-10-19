@@ -29,6 +29,9 @@
 //! serves batches of bytes other processes wrote.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
+#[path = "../../../libs/qip-transport/tests/support/certs.rs"]
+mod certs;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1168,6 +1171,135 @@ fn a_catalogue_topic_with_no_lock_row_is_refused_when_the_catalogue_is_applied()
         .err()
         .expect("a topic with no lock row is refused at start-up");
     assert!(error.to_string().contains("schema lock"), "{error}");
+}
+
+/// R12-FABRIC-8081 (ADR 0156 §4d). Over mutual TLS an admin request is
+/// attributed to the **certificate's name**, read from the server-written
+/// peer-identity header, and authorised against the catalogue's admin grants
+/// under that name. The request body's `operator` field is a check that must
+/// equal it, not a free-text attribution, and the bearer token is not
+/// consulted for an admin request that arrives with a verified certificate.
+///
+/// A matching name is accepted and recorded first. Then, on a partition not
+/// yet isolated: a different name in the body is refused and nothing is
+/// parked; a workload holding no admin grant is refused whatever it names
+/// itself, including the operator's name (the spoof this prevents).
+///
+/// Mutation: make the service take the operator name from the request body
+/// instead of the peer-identity header (`admin` arm of `Service::handle`
+/// choosing `r.operator`). The spoofing request is then authorised as
+/// `operator`, accepted, and the assertion that it is refused fails.
+#[test]
+fn an_isolate_request_over_mutual_tls_is_attributed_to_the_certificate_name_and_refused_when_operator_differs()
+ {
+    use qip_transport::tls::{LinkSecurity, WorkloadIdentity};
+
+    const OUTSIDER: &str = "ledgerd-test";
+    let ca = certs::authority("fabric pool");
+    let server = certs::leaf(&ca, 2, "localhost");
+    let operator_leaf = certs::leaf(&ca, 3, OPERATOR);
+    let outsider_leaf = certs::leaf(&ca, 4, OUTSIDER);
+    let pki = std::env::temp_dir().join(format!("qip-fabricd-mtls-pki-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&pki);
+    std::fs::create_dir_all(&pki).unwrap();
+    let write = |name: &str, text: String| {
+        let path = pki.join(name);
+        std::fs::write(&path, text).unwrap();
+        path.display().to_string()
+    };
+    let chain = write("chain.pem", server.certificate_pem());
+    let key = write("key.pem", server.key_pem());
+    let roots = write("roots.pem", ca.certificate_pem());
+    let peers = format!("{OPERATOR},{OUTSIDER}");
+
+    let fabric = Fabric::start_configured(
+        "mtls-admin",
+        &catalogue_json(&base_grants(), "archived"),
+        &[
+            (qip_transport::tls::TLS_MODE_VARIABLE, "mtls"),
+            (qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE, &chain),
+            (qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE, &key),
+            (qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE, &roots),
+            (qip_fabricd::config::ADMITTED_PEERS, &peers),
+        ],
+    )
+    .expect("a broker with a mutual-TLS listener starts");
+    let port = fabric
+        .running()
+        .address()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let call = |leaf: &certs::Minted, request: Request| {
+        let identity = WorkloadIdentity::from_pem(
+            leaf.certificate_pem().as_bytes(),
+            leaf.key_pem().as_bytes(),
+            ca.certificate_pem().as_bytes(),
+        )
+        .expect("minted material loads");
+        // The bearer token is a *different* identity's: an admin request with
+        // a verified certificate must not be authenticated by it.
+        HttpTransport::over(
+            &LinkSecurity::MutualTls(Arc::new(identity)),
+            &format!("localhost:{port}"),
+            BearerToken::new(token(fabric.number, CELL_A)).unwrap(),
+        )
+        .expect("a transport over the link")
+        .call(request, timeouts())
+    };
+    let isolate = |partition: u32, operator: &str| {
+        Request::AdminIsolate(AdminIsolateRequest {
+            stream: JOURNAL.to_string(),
+            partition,
+            operator: operator.to_string(),
+            reason: "mtls drill".to_string(),
+        })
+    };
+    let (parked, untouched) = (0u32, 1u32);
+    let broker = fabric.running().service().broker().clone();
+
+    // 1. The certificate's own name, matching the body: accepted, recorded.
+    match call(&operator_leaf, isolate(parked, OPERATOR)) {
+        Ok(Response::AdminIsolate(_)) => {}
+        other => panic!("premise: a matching name must be accepted, got {other:?}"),
+    }
+    let log = broker.admin_log().unwrap();
+    assert_eq!(
+        log.iter()
+            .map(|entry| (entry.action.as_str(), entry.operator.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("isolate", OPERATOR)],
+        "the action is recorded under the certificate's name"
+    );
+
+    // 2. The operator's certificate naming someone else in the body.
+    let differs = call(&operator_leaf, isolate(untouched, "someone-else"));
+    assert!(
+        differs.is_err(),
+        "a body naming a different operator was accepted: {differs:?}"
+    );
+    // 3. A workload holding no admin grant, naming the operator: the spoof.
+    let spoof = call(&outsider_leaf, isolate(untouched, OPERATOR));
+    assert!(
+        !matches!(spoof, Ok(Response::AdminIsolate(_))),
+        "a certificate without an admin grant isolated a partition by naming the operator: \
+         {spoof:?}"
+    );
+    // 4. The same workload naming itself: no grant.
+    let own = call(&outsider_leaf, isolate(untouched, OUTSIDER));
+    assert!(
+        matches!(own, Ok(Response::Refused(Refusal::AclDenied))),
+        "{own:?}"
+    );
+    assert_eq!(
+        broker.isolation(JOURNAL, untouched).unwrap(),
+        None,
+        "nothing was parked by a refused request"
+    );
+    assert_eq!(broker.admin_log().unwrap().len(), 1);
+    let _ = std::fs::remove_dir_all(&pki);
 }
 
 // --- FABRIC-028 -----------------------------------------------------------------

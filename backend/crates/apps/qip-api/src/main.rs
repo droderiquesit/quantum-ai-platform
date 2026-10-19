@@ -174,6 +174,9 @@ fn run() -> Result<()> {
             )),
     );
     config.central.arbitrage = arbitrage;
+    if let Some(shelf) = load_yield_shelf()? {
+        config = config.with_yield_shelf(shelf);
+    }
     config.central.region_dark_after = region_dark_after;
 
     // The source `POST /cycle` senses, chosen before the platform exists
@@ -838,6 +841,20 @@ fn verify_config_signature() -> Result<()> {
     }
     let key = qip_core::secret::from_environment("QIP_CONFIG_SIGNATURE_KEY")?;
     qip_api::config_signature::check(std::env::vars(), signature.as_deref(), key.as_deref())
+}
+
+/// The operator's yield-shelf declaration, from the file `QIP_YIELD_SHELF_PATH`
+/// names (ADR 0159 decision 4). Unset is the answer that routes nothing: there
+/// is no default shelf. Set and unreadable or invalid stops the process — see
+/// `qip_kernel::yield_shelf::load_file`.
+fn load_yield_shelf() -> Result<Option<qip_kernel::yield_shelf::YieldShelfDeclaration>> {
+    let Some(path) = std::env::var(qip_kernel::yield_shelf::PATH_VARIABLE)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    qip_kernel::yield_shelf::load_file(&path).map(Some)
 }
 
 /// The instrument universe, from the committed catalogue the deployment names.
