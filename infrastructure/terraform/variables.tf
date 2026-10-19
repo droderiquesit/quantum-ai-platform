@@ -75,6 +75,28 @@ variable "environment" {
   }
 }
 
+variable "owner" {
+  description = <<-EOT
+    Who answers for this environment, carried on every resource as the
+    `owner` label (R12-FINOPS-10134) so a bill or an orphan can be traced to
+    a team without asking around. A team or function name, never a personal
+    identifier: a label is readable by anything that can list the resource.
+
+    No default, on purpose. A default would label every environment whose
+    tfvars forgot the line as owned by whoever wrote the default, which is
+    the guess the label exists to remove.
+  EOT
+  type        = string
+
+  validation {
+    # Google label values: lowercase letters, digits, `_` and `-`, at most 63
+    # characters, and here also non-empty and starting with a letter so the
+    # value reads as a name.
+    condition     = can(regex("^[a-z][a-z0-9_-]{0,62}$", var.owner))
+    error_message = "The owner must be a lowercase label value: a letter, then letters, digits, '_' or '-', at most 63 characters."
+  }
+}
+
 variable "autonomy_ceiling" {
   description = <<-EOT
     The highest autonomy level this environment's platform may reach.
