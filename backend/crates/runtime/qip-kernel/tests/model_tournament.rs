@@ -493,6 +493,55 @@ fn a_hypothesis_opens_a_question_many_forecasters_answer_and_a_later_cycle_score
     Ok(())
 }
 
+/// R12-MODEL-3090 (ADR 0149 decision 13): the detector is formed at the pass
+/// instant, so nothing measured its cost or latency, and the journaled score
+/// says so rather than recording a free, instant entrant. Mutation: stamping
+/// the detector entrant `cost: Some(0.0)` in `TournamentStage::observe_hypothesis`
+/// journals `Some(0.0)` and the absent-cost assertion fails.
+#[test]
+fn the_detectors_journaled_score_records_its_cost_and_latency_as_unmetered_not_zero() -> Result<()>
+{
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let question = platform
+        .model_tournament()
+        .open_questions()
+        .next()
+        .cloned()
+        .ok_or_else(|| Error::not_found("no question opened"))?;
+    let id = question.spec().id.clone();
+    let resolves_at = question.spec().resolves_at;
+    platform.observe(vec![bar("AAA", resolves_at, 150.0, 165.0)]);
+    platform.run_cycle(resolves_at.saturating_add(Duration::from_days(2)));
+
+    let reviews = records::<TournamentReview>(&platform, TOURNAMENT_ORIGIN)?;
+    let resolved = reviews
+        .iter()
+        .flat_map(|review| review.resolved.iter())
+        .find(|resolved| resolved.question == id)
+        .ok_or_else(|| Error::not_found("the resolution was not journaled"))?;
+    let detector = resolved
+        .scores
+        .iter()
+        .find(|score| score.forecaster.starts_with("detector:"))
+        .ok_or_else(|| Error::not_found("the detector's score was not journaled"))?;
+    assert_eq!(detector.cost, None, "an unmetered detector is not free");
+    assert_eq!(detector.latency_ms, None, "nor instant");
+    // Premise: an analyst that ran under a metered run record keeps a
+    // reading, so the absence above is the detector's and not a blanket one.
+    assert!(
+        resolved
+            .scores
+            .iter()
+            .filter(|score| score.forecaster.starts_with("analyst:"))
+            .all(|score| score.cost.is_some() && score.latency_ms.is_some()),
+        "analysts with a run record are metered: {:?}",
+        resolved.scores
+    );
+    Ok(())
+}
+
 /// R12-MODEL-6018: every forecaster on a question states quantiles over the
 /// realised move, so the scorecard a later cycle writes measures each one's
 /// quantile accuracy, not only its direction. Until 2026-10-18 the stage
