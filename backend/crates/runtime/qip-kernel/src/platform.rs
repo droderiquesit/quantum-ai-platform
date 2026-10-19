@@ -18736,7 +18736,8 @@ impl Platform {
             .venue(venue)
             .is_some_and(|calibration| {
                 calibration.observations >= TWIN_MISFIT_MIN_OBSERVATIONS
-                    && !(calibration.bias_bps.abs() < TWIN_MISFIT_BIAS_BPS)
+                    && (calibration.bias_bps.is_nan()
+                        || calibration.bias_bps.abs() >= TWIN_MISFIT_BIAS_BPS)
             })
     }
 
