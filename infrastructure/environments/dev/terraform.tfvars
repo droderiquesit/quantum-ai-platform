@@ -331,9 +331,12 @@ partner_interconnects = {
   }
 }
 
-# Every managed service off. Development runs on memory, which is what the
-# implemented storage targets are for on an instance with no volume.
-enable_bigquery      = false
+# Every managed service off except BigQuery. Development runs on memory, which
+# is what the implemented storage targets are for on an instance with no
+# volume. BigQuery is on for the resolved-outcome warehouse rows
+# (R12-DATA-9054, docs/blueprint/lanes/billed-plan-2026-10-19.md, $0.10 to
+# $1.50 a month at dev volume), approved by the owner on 2026-10-19.
+enable_bigquery      = true
 enable_cloud_storage = false
 enable_alloydb       = false
 enable_bigtable      = false
