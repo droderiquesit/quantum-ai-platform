@@ -437,7 +437,7 @@ fn reload_catalogue(
         return Ok(());
     }
     let catalogue = parse_catalogue(&config.catalogue, &bytes)?;
-    service.apply_catalogue(&catalogue)?;
+    service.apply_catalogue(&catalogue, &qip_events::registry::locked_descriptors()?)?;
     *applied_catalogue = bytes;
     Ok(())
 }

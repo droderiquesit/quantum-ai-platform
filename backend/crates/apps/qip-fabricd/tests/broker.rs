@@ -960,12 +960,16 @@ fn an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it() {
 
 /// A record whose body is an event of `topic`, as a writer builds it.
 fn event_record(topic: qip_events::topic::Topic, tag: &str) -> Record {
+    event_record_at(topic, tag, 1)
+}
+
+fn event_record_at(topic: qip_events::topic::Topic, tag: &str, schema_version: u32) -> Record {
     let payload = serde_json::json!({ "tag": tag });
     let at = qip_core::Timestamp::from_secs(1_790_000_000);
     let event = qip_events::AnyEvent {
         event_id: qip_core::EventId::from_string(tag.to_string()),
         topic,
-        schema_version: 1,
+        schema_version,
         occurred_at: at,
         recorded_at: at,
         sequence: 0,
@@ -1059,6 +1063,111 @@ fn a_record_body_under_an_unregistered_topic_schema_is_refused_before_append() {
         1,
         "only the on-topic batch was appended: {fetched:?}"
     );
+}
+
+/// R12-FABRIC-8090 (ADR 0156 §1.3). Admission is by `(topic, schema_version)`:
+/// a record of an admitted topic at a version the lock does not hold for it
+/// is refused before append, naming the version. The same topic at the
+/// locked version is accepted first, so the refusal is the version's and not
+/// the topic's.
+///
+/// Mutation: `Broker::require_admitted_topics` comparing topic names only and
+/// ignoring the envelope's `schema_version` — the version-99 record is
+/// appended and the `expect_err` below fails.
+#[test]
+fn a_record_at_a_schema_version_the_lock_does_not_hold_for_its_topic_is_refused_before_append() {
+    use qip_events::topic::Topic;
+    let catalogue = catalogue_json(&base_grants(), "archived");
+    let at = catalogue.find(r#""name":"journal.test""#).unwrap();
+    let (head, tail) = catalogue.split_at(at);
+    let catalogue = format!(
+        "{head}{}",
+        tail.replacen(
+            r#""topics":[]"#,
+            r#""topics":["reflex.journal_recorded"]"#,
+            1
+        )
+    );
+    let locked = qip_events::registry::locked_descriptors().unwrap();
+    assert!(
+        locked
+            .iter()
+            .any(|d| d.topic == Topic::ReflexJournalRecorded && d.version == 1)
+            && !locked
+                .iter()
+                .any(|d| d.topic == Topic::ReflexJournalRecorded && d.version == 99),
+        "premise: the lock holds version 1 of the topic and not version 99"
+    );
+    let fabric = Fabric::start_with("body-versions", &catalogue).unwrap();
+    let partition = own_partition(CELL_A);
+    let mut producer = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    producer.init().unwrap();
+    producer
+        .send(batch_of_records(
+            QosClass::P2MarketJournal,
+            vec![event_record_at(Topic::ReflexJournalRecorded, "tick-1", 1)],
+        ))
+        .expect("premise: the topic at the locked version is accepted");
+
+    let wrong_version = producer
+        .send(batch_of_records(
+            QosClass::P2MarketJournal,
+            vec![event_record_at(Topic::ReflexJournalRecorded, "tick-2", 99)],
+        ))
+        .expect_err("a version the lock does not hold for the topic is refused");
+    assert!(
+        wrong_version
+            .to_string()
+            .contains("not compatible with the stream's registered schema"),
+        "{wrong_version}"
+    );
+
+    let fetched = fetch_all(&fabric, AUDITOR, JOURNAL, partition);
+    assert_eq!(
+        fetched.len(),
+        1,
+        "only the locked-version batch was appended: {fetched:?}"
+    );
+}
+
+/// R12-FABRIC-8090 (ADR 0156 §1.4, the half that holds today). A stream that
+/// names a topic the lock holds no row for is refused when the catalogue is
+/// applied, not streamed unchecked.
+///
+/// Mutation: `Service::apply_catalogue` treating an empty version set as
+/// admitted — the catalogue loads and the `expect_err` fails.
+#[test]
+fn a_catalogue_topic_with_no_lock_row_is_refused_when_the_catalogue_is_applied() {
+    let catalogue = catalogue_json(&base_grants(), "archived");
+    let at = catalogue.find(r#""name":"journal.test""#).unwrap();
+    let (head, tail) = catalogue.split_at(at);
+    let locked = qip_events::registry::locked_descriptors().unwrap();
+    let unlocked = qip_events::topic::Topic::ALL
+        .iter()
+        .copied()
+        .find(|t| !t.is_lossy_tolerable() && !locked.iter().any(|d| d.topic == *t))
+        .expect("premise: some topic has no lock row");
+    let ok = format!(
+        "{head}{}",
+        tail.replacen(
+            r#""topics":[]"#,
+            r#""topics":["reflex.journal_recorded"]"#,
+            1
+        )
+    );
+    Fabric::start_with("lock-row-present", &ok).expect("premise: a locked topic loads");
+    let bad = format!(
+        "{head}{}",
+        tail.replacen(
+            r#""topics":[]"#,
+            &format!(r#""topics":["{}"]"#, unlocked.name()),
+            1
+        )
+    );
+    let error = Fabric::start_with("lock-row-absent", &bad)
+        .err()
+        .expect("a topic with no lock row is refused at start-up");
+    assert!(error.to_string().contains("schema lock"), "{error}");
 }
 
 // --- FABRIC-028 -----------------------------------------------------------------
@@ -1769,29 +1878,53 @@ fn an_agent_identity_publishes_research_and_telemetry_and_is_refused_control_and
     );
 }
 
+/// R12-FABRIC-8090 / FABRIC-022. The service's registry is populated by the
+/// composition root from the lock embedded in `qip-events`, not left empty:
+/// it holds exactly the lock's rows, and a row the lock does not have is not
+/// there. The earlier form asserted `len() == 0`, which is true of a registry
+/// nothing ever fills; this one is strictly stronger because it fails for
+/// that registry.
+///
+/// Mutation: `Service::apply_catalogue` skipping `admit_all` — the registry
+/// is empty and the first assertion fails.
 #[test]
 fn the_schema_registry_is_a_production_caller_in_qip_fabricd() {
     let fabric = Fabric::start("schema_registry_production_caller");
-
-    // FABRIC-022: The service instantiates a schema registry holding every
-    // registered fabric contract's descriptor (immutable IDs, production
-    // caller). The service is a composition root: this is where SchemaRegistry
-    // becomes a production component, ready to register contracts.
     let service = fabric.running().service();
     let registry = service.schema_registry();
-
-    // Verify the registry is accessible and initialized (readlock succeeds).
     let registry_guard = registry.read().unwrap_or_else(|e| e.into_inner());
 
-    // The registry starts empty: until EventBody types are defined for all
-    // streams and registered, it holds no entries. It is a production caller
-    // by instantiation: the code path to create the service exercises
-    // SchemaRegistry::new in production, not tests only.
+    let locked = qip_events::registry::locked_descriptors().expect("the embedded lock parses");
+    assert!(
+        !locked.is_empty(),
+        "premise: the lock holds rows, so an empty registry is a failure"
+    );
+    let topics: std::collections::BTreeSet<_> = locked.iter().map(|d| d.topic).collect();
     assert_eq!(
         registry_guard.len(),
-        0,
-        "schema registry is initialized as empty in composition root"
+        topics.len(),
+        "the registry holds one descriptor per locked topic"
     );
+    for descriptor in registry_guard.iter() {
+        let highest = locked
+            .iter()
+            .filter(|d| d.topic == descriptor.topic)
+            .map(|d| d.version)
+            .max();
+        assert_eq!(
+            Some(descriptor.version),
+            highest,
+            "{} is registered at the lock's highest version",
+            descriptor.topic
+        );
+        assert!(
+            locked
+                .iter()
+                .any(|d| d.topic == descriptor.topic && d.schema_id == descriptor.schema_id),
+            "{} carries the lock's schema id",
+            descriptor.topic
+        );
+    }
 }
 
 /// Send `head` and then `body` on a fresh connection to `address`, and
