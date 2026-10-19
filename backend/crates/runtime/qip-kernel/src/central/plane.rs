@@ -2435,6 +2435,13 @@ impl CentralPlane {
         known
     }
 
+    /// Orders reported sent whose fills are not yet booked, across every cell:
+    /// the figure `qip_central_outcome_backlog_orders` gauges, as a count the
+    /// platform can compare with its ledger-lag threshold (R12-RES-10127).
+    pub fn outcome_backlog(&self) -> usize {
+        self.sent.values().map(|sent| sent.by_id.len()).sum()
+    }
+
     /// Gauge the sent-but-unfilled orders. Called before `settle`'s early
     /// return, not only on the settling path, because a report that settled nothing is
     /// exactly the one that must still bring a stalled value back to zero.

@@ -32,11 +32,13 @@ use std::sync::Arc;
 ///
 /// The one list [`dispatch`] matches and the unknown-subcommand refusal
 /// prints, so the two cannot disagree about what exists.
-pub const SUBCOMMANDS: [&str; 5] = [
+pub const SUBCOMMANDS: [&str; 7] = [
     grant::SUBCOMMAND,
     admin::ISOLATE,
     admin::RELEASE,
     lag::SUBCOMMAND,
+    inspect::HEALTH,
+    inspect::REPLAY,
     schema_gate::SUBCOMMAND,
 ];
 
@@ -211,6 +213,9 @@ pub fn dispatch(arguments: &[String], environment: &Environment) -> Result<Outco
             admin::run(action, &arguments[1..], environment)
         }
         lag::SUBCOMMAND => lag::run(&arguments[1..], environment),
+        action @ (inspect::HEALTH | inspect::REPLAY) => {
+            inspect::run(action, &arguments[1..], environment)
+        }
         schema_gate::SUBCOMMAND => schema_gate::run(&arguments[1..], environment),
         other => Err(Error::invalid(format!(
             "unknown event-fabric subcommand {other:?}; the family is: {}",

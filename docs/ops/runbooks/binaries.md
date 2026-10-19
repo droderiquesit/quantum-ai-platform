@@ -249,6 +249,7 @@ rests on a broker default); two are optional.
 | `QIP_EVENT_FABRIC_PARTITIONS` | partitions per stream, 1 to 1024. Changing it on an existing data directory changes which partition every key routes to |
 | `QIP_EVENT_FABRIC_SEGMENT_BYTES` | optional: the size at which a segment is sealed |
 | `QIP_EVENT_FABRIC_HOUSEKEEPING_MS` | optional, default 1000: how often aged segments are sealed and archived and the catalogue is re-read |
+| `QIP_OPENOBSERVE_URL`, `_ORG`, `_AUTHORIZATION`, `_INTERVAL_SECS` | optional: the telemetry drain, the one shared exporter (`qip-telemetry-drain`, ADR 0156 section 5), which also drains the span each produce leaves (stream, class and outcome only). Unset, metrics stay on the scrape endpoint and the spans stay in the tracer's bounded ring. Never run against a collector: none is vendored or attested |
 
 **What it is not.** One broker, one disk: no follower, no replication, no
 failover (ADR 0100 section 3). Plaintext TCP; the bearer token guards against

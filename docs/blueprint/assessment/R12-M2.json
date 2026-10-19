@@ -1357,15 +1357,13 @@
   {
     "id": "R12-TICK-2058",
     "status": "PARTIAL",
-    "current": "Segment archive Manifest carries a replay_index used by ArchiveReader; fabricd archives sealed segments. The acceptance suite named for TICK-039 tests a local Vec, not this code.",
+    "current": "Segment archive Manifest carries a replay_index of (offset, byte_start) used by ArchiveReader::read_indexed; fabricd archives sealed segments with the index. read_indexed re-proves the whole segment's content hash before it serves a batch, so it never returns unverified bytes. The per-batch digest format is decided and reserved (ADR 0156 2.4): a manifest wire version, replay-index entries gaining the SHA-256 of the batch's bytes as they sit in the segment, optional on read so every manifest written so far is served by the whole-segment path and never refused, and a ranged read as a new, separately named method whose result states what it proved (the batch equals the digest this manifest recorded), not a faster read_indexed.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/segment/archive.rs:188 replay_index",
-      "backend/crates/libs/qip-storage/src/segment/archive.rs:591-601 index lookup on read",
+      "backend/crates/libs/qip-storage/src/segment/archive.rs replay_index, read_indexed (whole-segment verification)",
       "backend/crates/libs/qip-storage/tests/segment_archive.rs:425 a_manifest_alone_proves_the_hash_a_contiguous_range_its_entitlements_and_a_replay_index",
-      "backend/crates/apps/qip-fabricd/src/archiver.rs:25 Archiver",
-      "backend/crates/tests/qip-acceptance/tests/tick_hot_replay_indexes.rs:13-60 vacuous: tests a Vec built in the test"
+      "backend/crates/apps/qip-fabricd/src/archiver.rs:25 Archiver"
     ],
-    "gap": "Applies to the event-fabric segment log, not a market-tick lake. No ranged read, and one cannot be added as the closure proposed without weakening integrity: ArchiveReader::read_indexed (archive.rs:662) re-proves the whole segment's content hash (manifest.verify at archive.rs:716) before serving any batch, and the manifest's replay_index holds only (offset, byte_start) pairs, so a fetched byte range has nothing to be verified against. Closing it needs a per-batch digest in the replay index (a Manifest wire-format change, with a refusal or full-segment fallback for manifests written before it) and then BlobStore::get_range verified against that digest.",
+    "gap": "Ranged archive reads are not built, by decision: a ranged read trusts the manifest's digests exactly as far as the manifest is trusted, where the whole-segment path trusts it only for the hash, so it proves less; that weakening is stated and the build waits on a committed measurement of hydrate bytes and latency per read_indexed on the broker's replay path showing the whole-segment cost is the problem. Segment size is bounded by roll_after_bytes and the last hydrated segment is cached, so no such measurement exists. tick_hot_replay_indexes.rs must drive the real archiver (a separate test lane). (Restated 2026-10-19.)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1378,7 +1376,7 @@
     "verification": "cargo test -p qip-storage --test segment_archive",
     "work_item": "",
     "size": "M",
-    "notes": "tick_hot_replay_indexes.rs would pass with all production code deleted (the 2026-10-18 triage reports it rewritten to drive the real archiver; not re-read by lane L23). 2026-10-18 lane L23: kept PARTIAL - a get_range that served bytes before the whole-segment hash was re-proved would break read_indexed's documented guarantee that it never returns unverified bytes; the per-batch digest is the missing design step."
+    "notes": "tick_hot_replay_indexes.rs would pass with all production code deleted (the 2026-10-18 triage reports it rewritten to drive the real archiver; not re-read by lane L23). 2026-10-18 lane L23: kept PARTIAL - a get_range that served bytes before the whole-segment hash was re-proved would break read_indexed's documented guarantee that it never returns unverified bytes; the per-batch digest is the missing design step. Lane W8-156, 2026-10-19 (ADR 0156) §2.4. Decision and register restatement only; no code changed, and the capability the requirement names (fetching only a byte range) is not built, so the row stays PARTIAL."
   },
   {
     "id": "R12-TICK-2059",

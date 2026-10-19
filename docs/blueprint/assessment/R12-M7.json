@@ -927,15 +927,16 @@
   {
     "id": "R12-FABRIC-7042",
     "status": "PARTIAL",
-    "current": "qip-cli event-fabric grant (ACLs), isolate/release (isolation) and, since 2026-10-18, lag exist. 'qip event-fabric lag --peer --stream --partition --group' asks the broker's group/lag route and prints the group's committed offset, the partition's high watermark and their gap as the broker computed them; a group that never committed is refused, not reported caught up. Loopback-only peer and file-only operator token, as for isolate.",
+    "current": "qip CLI event-fabric grant (ACLs), isolate/release (isolation), lag, health and replay exist. health asks the broker's metadata route and prints the leader epoch, high watermark, archived_through and isolation as the broker computed them (the metadata answer now carries an isolation status, optional on the wire so an older broker still decodes); it exits 3 for a parked partition and refuses an answer that omits the isolation field rather than print it as healthy. replay fetches a partition from an offset, decodes each batch, checks that every batch's previous-batch hash is the SHA-256 of the batch before it and prints AGREES (0) or DIFFERS (3); a range with nothing in it is refused because nothing verified is not agreement. It re-drives nothing. Loopback-only peer and file-only operator token, as for isolate.",
     "evidence": [
-      "backend/crates/apps/qip-cli/src/event_fabric/inspect.rs, admin.rs:181 event-fabric grant/isolate/release subcommands (qip-cli main.rs:75)",
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:699 Broker::isolate",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:939 operator isolates one partition",
-      "backend/crates/apps/qip-cli/src/event_fabric/lag.rs:83 lag::run",
-      "backend/crates/apps/qip-cli/tests/event_fabric_admin.rs:393 the_lag_command_reports_a_groups_committed_offset_against_the_high_watermark"
+      "backend/crates/apps/qip-cli/src/event_fabric/inspect.rs run, replay",
+      "backend/crates/libs/qip-transport/src/event_fabric/protocol.rs Metadata::with_isolation, IsolationStatus",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs Service::answer (Metadata)",
+      "backend/crates/apps/qip-cli/tests/event_fabric_admin.rs the_health_command_reports_isolation_and_refuses_a_response_that_omits_it",
+      "backend/crates/apps/qip-cli/tests/event_fabric_admin.rs the_replay_command_agrees_on_an_intact_chain_and_differs_on_a_broken_one",
+      "backend/crates/apps/qip-cli/tests/event_fabric_admin.rs the_lag_command_reports_a_groups_committed_offset_against_the_high_watermark"
     ],
-    "gap": "Two views remain: partition health (the broker's metadata route already returns leader epoch, high watermark and archived_through, but no CLI asks it, and the response carries no isolation state, so a health view would need the route to report isolation too) and fabric replay (qip replay replays the event log, not a fabric partition). Mirroring has no view because the fabric does not mirror (ADR 0100).",
+    "gap": "Mirroring: not built; specified by ADR 0119 (StreamPolicy refuses mirroring other than None until then, pinned by fabric_083). The mirror-lag view is the mirror's checkpoint read as lag already reads a group's, and arrives with the mirror; a view of a mechanism that does not exist would read as one that is idle. The mirror host is a second-region deployment, billed, waiting on a record superseding ADR 0035. (Corrected 2026-10-19: health and replay are built.)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -946,7 +947,7 @@
     "verification": "cargo test -p qip-cli --test event_fabric_admin",
     "work_item": "",
     "size": "M",
-    "notes": " Lane L24 2026-10-18: lag view added. Mutation: printing the committed offset where the lag belongs fails the exact-line assertion; restored, qip-cli suite passes. Kept PARTIAL for the health and replay views."
+    "notes": " Lane L24 2026-10-18: lag view added. Mutation: printing the committed offset where the lag belongs fails the exact-line assertion; restored, qip-cli suite passes. Kept PARTIAL for the health and replay views. Lane W8-156, 2026-10-19 (ADR 0156) §4b. Mutations fired and restored: the isolation dropped from the metadata answer (the health command refuses and the healthy line cannot be printed); the previous-batch-hash comparison skipped in replay (the swapped-batch fetch reports AGREES). The committed local catalogue grants the operator admin only and a fetch needs consume, so the replay test grants consume in its own copy of the catalogue; the committed grants are not widened."
   },
   {
     "id": "R12-FABRIC-7043",
@@ -2602,25 +2603,25 @@
   {
     "id": "R12-OBS-7115",
     "status": "PARTIAL",
-    "current": "Deep brain feeds an EntityGraph each iteration with infrastructure (its own iteration time), application, data-quality, model-drift and venue-fill signals; infrastructure/application attach to the deep brain process only, and the production test asserts only the Infrastructure class.",
+    "current": "Deep brain feeds an EntityGraph each iteration with infrastructure (its own iteration time), application, data-quality, model-drift and venue-fill signals; infrastructure/application attach to the deep brain process only, and the production test asserts only the Infrastructure class. Scope is one process by decision (ADR 0156 5.6): each process keeps its in-process graph scoped to itself, and no process pushes its graph to another or scrapes a peer across the reflex, fabric and service VPCs, which are separate and unjoined.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/operations.rs:289 observe feeds five SignalClass values",
       "backend/crates/apps/qip-deepbrain/src/main.rs:646 Operations::new; :663 passed to run loop",
       "backend/crates/libs/qip-observability/tests/aiops.rs:20 five_signal_classes_about_one_instrument_are_reachable_from_its_single_node",
       "backend/crates/apps/qip-deepbrain/tests/research.rs:439 signals_of_all_five_classes_attach_to_the_shared_deployment_entity"
     ],
-    "gap": "Graph over the platform (other binaries, edge nodes, infra), and a production test that the five classes share entity keys.",
+    "gap": "The platform graph over other binaries, edge nodes and infrastructure is joined where signals are ingested, by shared entity keys, which needs proven ingestion first: a collector (vendored, attested, with an egress listener) is a billed deployment and nothing has been shown to ingest. The deployment entity key moves from a literal to service, region and cell values when the join is built. A graph assembled before ingestion is shown would chart a platform nothing has proved is being observed. (Restated 2026-10-19.)",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "a billed, attested collector and proven ingestion (ADR 0156 5.4, 5.6)",
     "verification": "cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now has a production feed, but scope is one process. Lane L03, 2026-10-18: the closure's 'production test asserts only Infrastructure' is stale. Operations::signal records every class on the deployment key plus the model or venue key, and tests/research.rs:439 signals_of_all_five_classes_attach_to_the_shared_deployment_entity asserts all five classes on the one deployment node. What remains is the gap as stated: one process's graph, not the platform's."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now has a production feed, but scope is one process. Lane L03, 2026-10-18: the closure's 'production test asserts only Infrastructure' is stale. Operations::signal records every class on the deployment key plus the model or venue key, and tests/research.rs:439 signals_of_all_five_classes_attach_to_the_shared_deployment_entity asserts all five classes on the one deployment node. What remains is the gap as stated: one process's graph, not the platform's. Lane W8-156, 2026-10-19 (ADR 0156) §5.6. Decision and register restatement only; no code changed."
   },
   {
     "id": "R12-CICD-7116",

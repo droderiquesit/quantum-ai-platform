@@ -216,6 +216,46 @@ pub struct Metadata {
     leader_epoch: u64,
     high_watermark: u64,
     archived_through: u64,
+    isolation: Option<IsolationStatus>,
+}
+
+/// Whether an operator has parked a partition, as the broker computed it and
+/// reported it on a metadata answer (R12-FABRIC-7042).
+///
+/// A struct of its own, and optional on [`Metadata`], so that "not
+/// isolated" and "this broker did not say" are different answers: a health
+/// view that read a missing field as healthy would print an isolated
+/// partition as fine when the broker predates the field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IsolationStatus {
+    pub isolated: bool,
+    /// The identity the isolation is recorded under; present only when
+    /// `isolated`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+    /// The reason the operator gave; present only when `isolated`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl IsolationStatus {
+    /// A partition taking writes.
+    pub fn clear() -> Self {
+        Self {
+            isolated: false,
+            operator: None,
+            reason: None,
+        }
+    }
+
+    /// A partition an operator has parked.
+    pub fn isolated(operator: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            isolated: true,
+            operator: Some(operator.into()),
+            reason: Some(reason.into()),
+        }
+    }
 }
 
 impl Metadata {
@@ -233,7 +273,23 @@ impl Metadata {
             leader_epoch,
             high_watermark,
             archived_through,
+            isolation: None,
         })
+    }
+
+    /// This answer, carrying the isolation the broker computed. The service
+    /// sets it on every metadata answer; a constructor that does not leaves
+    /// it unreported.
+    #[must_use]
+    pub fn with_isolation(mut self, isolation: IsolationStatus) -> Self {
+        self.isolation = Some(isolation);
+        self
+    }
+
+    /// The isolation the broker reported, or `None` when this answer does not
+    /// say (an older broker, or a caller that built the answer by hand).
+    pub fn isolation(&self) -> Option<&IsolationStatus> {
+        self.isolation.as_ref()
     }
 
     pub fn stream(&self) -> &str {
@@ -260,6 +316,9 @@ struct MetadataWire {
     leader_epoch: u64,
     high_watermark: u64,
     archived_through: u64,
+    /// Absent on an answer from a broker that predates it; never inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    isolation: Option<IsolationStatus>,
 }
 
 impl From<Metadata> for MetadataWire {
@@ -270,6 +329,7 @@ impl From<Metadata> for MetadataWire {
             leader_epoch: value.leader_epoch,
             high_watermark: value.high_watermark,
             archived_through: value.archived_through,
+            isolation: value.isolation,
         }
     }
 }
@@ -278,13 +338,17 @@ impl TryFrom<MetadataWire> for Metadata {
     type Error = Error;
 
     fn try_from(wire: MetadataWire) -> Result<Self> {
-        Metadata::new(
+        let metadata = Metadata::new(
             wire.stream,
             wire.partition,
             wire.leader_epoch,
             wire.high_watermark,
             wire.archived_through,
-        )
+        )?;
+        Ok(match wire.isolation {
+            Some(isolation) => metadata.with_isolation(isolation),
+            None => metadata,
+        })
     }
 }
 

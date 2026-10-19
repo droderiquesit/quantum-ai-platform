@@ -232,6 +232,13 @@ export function roleOf(commit) {
   return trailers(inner?.message).find((t) => t.key === "agent-role")?.value;
 }
 
+/** The `Agent-Model` a commit declares, lower-cased, or undefined. */
+export function modelOf(commit) {
+  const inner = commit?.commit ?? commit;
+  const model = trailers(inner?.message).find((t) => t.key === "agent-model")?.value;
+  return model === undefined ? undefined : lower(model);
+}
+
 /**
  * Judge a set of changes. `files` are repository paths; `commits` GitHub
  * commit objects; `reviews` GitHub review objects.
@@ -285,6 +292,32 @@ export function judgeChange({ policy, headRef, headSha, files, commits, reviews,
     const outside = files.filter((f) => !matchesAny(f, entry.may_edit));
     if (outside.length > 0) {
       refusals.push(`the ${role} role (${entry.kind}) may not change: ${outside.join(", ")}`);
+    }
+  }
+
+  // 1a. Independent review (CICD-9072). Where one change carries both a coder
+  //     role's commit and a reviewer role's, the two must name different
+  //     models in an `Agent-Model` trailer: a model reviewing its own work
+  //     shares the blind spots that produced it, and a review that cannot
+  //     disagree is a second signature rather than a second opinion. A change
+  //     carrying only one of the kinds is not judged here (nothing to compare),
+  //     and a commit of either kind with no trailer, in a change that does
+  //     carry both, is refused rather than assumed different.
+  const kindOf = (commit) => policy.roles?.[roleOf(commit)]?.kind;
+  const coderCommits = agentCommits.filter((c) => kindOf(c) === "coder");
+  const reviewerCommits = agentCommits.filter((c) => kindOf(c) === "reviewer");
+  if (coderCommits.length > 0 && reviewerCommits.length > 0) {
+    const unnamed = [...coderCommits, ...reviewerCommits].filter((c) => modelOf(c) === undefined);
+    if (unnamed.length > 0) {
+      refusals.push(
+        `${unnamed.length} coder or reviewer commit(s) carry no Agent-Model trailer, so the reviewer's independence from the coder cannot be judged`,
+      );
+    } else {
+      const coders = new Set(coderCommits.map(modelOf));
+      const shared = [...new Set(reviewerCommits.map(modelOf))].filter((m) => coders.has(m));
+      if (shared.length > 0) {
+        refusals.push(`a reviewer-role commit names the same model as a coder-role commit (${shared.join(", ")}); a reviewer must be a different model from the one that wrote the change`);
+      }
     }
   }
 

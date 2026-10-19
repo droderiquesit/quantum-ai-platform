@@ -140,9 +140,12 @@ struct DataPlane(Arc<Service>);
 
 impl Handler for DataPlane {
     fn handle(&self, request: &Request) -> Response {
-        let handled = self
-            .0
-            .handle(request.header(auth::HEADER), &request.path, &request.body);
+        let handled = self.0.handle(
+            request.header(auth::HEADER),
+            None,
+            &request.path,
+            &request.body,
+        );
         Response::new(handled.status, "application/json", handled.body)
     }
 }
@@ -464,6 +467,12 @@ fn warm_platform_assembled_at(config: PlatformConfig, assembled: Timestamp) -> R
     let clock = Arc::new(ManualClock::new(assembled));
     let context = Context::new(clock, config.seed);
     let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    // This fixture's venue rejects a seeded share of orders, so a "buy, then
+    // sell" run sells before the buy has filled and takes the book briefly
+    // short. A short is refused unless a lender has said it is borrowable
+    // (R12-RISK-4096), and that is what this fixture's premise needs to
+    // state: a lender reading, not a looser rule.
+    platform.observe_borrow("obj-ACME", dec!("1000000"), start_time(), start_time())?;
     let mut tape: Vec<SensedRecord> = (1..=60)
         .rev()
         .map(|back| {

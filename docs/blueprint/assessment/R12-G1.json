@@ -1172,12 +1172,13 @@
   {
     "id": "R12-GCP-8053",
     "status": "PARTIAL",
-    "current": "Acceptance test refuses any Shared VPC declaration; reflex/fabric/service (plus data/engineering) VPCs are separate. No NCC resources exist, so the networks are not joined at all.",
+    "current": "Acceptance tests refuse any Shared VPC declaration and any Network Connectivity hub, spoke or VPC peering: reflex/fabric/service (plus data/engineering) VPCs are separate and not joined at all, which is today's correct state with one execution node in one region (ADR 0035). The topology rule for the record that supersedes ADR 0035's 'one' is decided (ADR 0156 6c): the hub joins VPC spokes (Shared VPC stays refused), route export is deny by default per pair, the only prefix a spoke may export is its control-fabric subnet and only to the other regions' control-fabric spokes, and the reflex and service VPCs are never exported to the hub.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:505 no_shared_vpc_is_declared_so_no_host_project_lends_a_subnet_across_a_folder",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs no_shared_vpc_is_declared_so_no_host_project_lends_a_subnet_across_a_folder",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region",
       "infrastructure/terraform/modules/network/main.tf:33-41,73,134"
     ],
-    "gap": "Not built. modules/network declares three VPCs (and the console egress subnet), none with an endpoint a hub could carry, and an NCC hub with spokes and route export filters changes how the networks reach one another: it is a topology decision for an ADR, with route filters that must be reasoned per pair, not a resource to add beside the deny-ingress rules. No peering joins two networks today, which is the half an acceptance scan could pin now.",
+    "gap": "The NCC hub, spokes and the per-pair export filters are not built: they wait for the record superseding ADR 0035, and the hub, its attachments and its data transfer are billed and the owner's. When that record arrives the scan above is replaced by one checking the rule. (Corrected 2026-10-19.)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1186,11 +1187,11 @@
     "depends_on": [
       "R12-GCP-8056"
     ],
-    "blocked_by": "",
+    "blocked_by": "second-region record superseding ADR 0035 (hub is billed, owner's)",
     "verification": "cargo test -p qip-acceptance --test gcp_placement",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 after reading the network module; status unchanged."
+    "notes": "Gap corrected 2026-10-18 after reading the network module; status unchanged. Lane W8-156, 2026-10-19 (ADR 0156) §6c. Mutation fired and restored: a google_network_connectivity_hub resource added to the network module (the scan names it)."
   },
   {
     "id": "R12-API-8054",
@@ -1795,46 +1796,50 @@
   {
     "id": "R12-FABRIC-8081",
     "status": "PARTIAL",
-    "current": "qip CLI 'event-fabric isolate/release/inspect/grant/schema-gate' with operator attribution over a bearer token, loopback only; topics come from the catalogue file. No quota/retention change, partition move or drain; no mTLS/IAM.",
+    "current": "qip CLI event-fabric grant, isolate, release, lag, health, replay and schema-gate, with operator attribution over a bearer token, loopback only; topics come from the catalogue file. The service now reads the peer-identity header the transport writes after stripping any client-supplied copy: on the two admin routes a verified certificate name is the operator, the catalogue's admin grants authorise that name, the action is recorded under it, the request body's operator field must equal it, and the bearer token is not consulted. A workload holding no admin grant that names the operator in the body is refused. The bearer path survives for a plaintext link, which only a local deployment opens (ADR 0112). No quota/retention change, partition move or drain.",
     "evidence": [
-      "backend/crates/apps/qip-cli/src/event_fabric/admin.rs:1-28",
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:699,735 isolate/release",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:939 an_operator_isolates_one_partition_and_only_that_partition_refuses_produce_until_released"
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs Service::handle (peer_identity)",
+      "backend/crates/libs/qip-transport/src/server.rs PEER_IDENTITY_HEADER",
+      "backend/crates/apps/qip-fabricd/src/lib.rs DataPlane::handle",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs an_isolate_request_over_mutual_tls_is_attributed_to_the_certificate_name_and_refused_when_operator_differs",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs an_operator_isolates_one_partition_and_only_that_partition_refuses_produce_until_released",
+      "backend/crates/apps/qip-cli/src/event_fabric/admin.rs"
     ],
-    "gap": "Remaining admin verbs; mTLS/IAM binding.",
+    "gap": "Remaining admin verbs (quota or retention change, partition move, drain), each its own slice with its own refusal test (ADR 0156 4d). An operator certificate template (a CA Service template naming the operator identity: infrastructure, billed, the owner's) and a workload-certificate source in the CLI, so an operator can reach a deployed broker from somewhere other than its own host; until then incident access is on the broker's own host over plaintext loopback with the bearer token. Not deployed. (Corrected 2026-10-19: the mTLS identity binding itself is built and tested; the earlier 'mTLS blocked' reason is stale.)",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "mTLS blocked (ADR 0009, ADR 0100 C2)",
-    "verification": "cargo test -p qip-fabricd --test broker",
+    "blocked_by": "operator certificate template (infrastructure, billed, owner's): ADR 0156 4d",
+    "verification": "cargo test -p qip-fabricd --test broker; cargo test -p qip-cli --test event_fabric_admin",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane W8-156, 2026-10-19 (ADR 0156) §4d. Mutations fired and restored: the operator name taken from the request body instead of the header (the spoofing request is authorised as operator and accepted); the peer identity ignored (the certificate-attributed request fails). The CLI's admin.rs module doc, which said mutual TLS was BLOCKED(C2), is corrected."
   },
   {
     "id": "R12-OBS-8082",
     "status": "PARTIAL",
-    "current": "fabricd serves health and Prometheus metrics on a separate listener; a test stops the data plane and health still reports. No traces; not OTel.",
+    "current": "fabricd serves health and Prometheus metrics on a separate listener; a test stops the data plane and health still reports. The data plane now records one span per produce at the request handler (DataPlane::finish_span), with the attributes stream, class and outcome and nothing else: never a partition key, a producer id or an event id, and a stream the catalogue does not declare is recorded as undeclared. The spans live on the broker's Telemetry tracer, exposed as Running::observability(); main spawns the shared drain on them when QIP_OPENOBSERVE_URL is set, and records them unexported when it is not.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/health.rs",
-      "backend/crates/apps/qip-fabricd/src/telemetry.rs",
+      "backend/crates/apps/qip-fabricd/src/lib.rs DataPlane::finish_span, Running::observability",
+      "backend/crates/apps/qip-fabricd/src/main.rs (drain spawned when configured)",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs an_acknowledged_produce_leaves_one_span_naming_stream_and_class_and_never_a_key_or_producer",
       "backend/crates/apps/qip-fabricd/tests/broker.rs:1184 health_and_metrics_keep_answering_and_report_the_outage_when_the_data_plane_stops"
     ],
-    "gap": "Traces, OTLP export and a deployed scraper. qip-fabricd records no spans at all (its telemetry is a metrics registry only; the Tracer lives in qip_observability::Telemetry, which the fabric broker does not construct), so an exporter has nothing to drain until append and replay are instrumented at Broker::produce and fetch off the data plane; and the exporter itself waits on the shared drain home and the collector decisions recorded on R12-OBS-9140.",
+    "gap": "The spans leave the process only through the OTLP drain, and nothing is pointed at a collector (QIP_OPENOBSERVE_URL is unset everywhere; no collector is vendored or attested, the egress bootstrap has no listener for one), so no span has been shown to be ingested and there is no deployed scraper for the metrics either. Fetch, metadata and group routes are not spanned: only produce, the route whose cost an operator asks about first. The tracer's ring is capped at ten thousand spans and drops its oldest. (Corrected 2026-10-19.)",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "a billed, attested collector (ADR 0156 5.4)",
     "verification": "cargo test -p qip-fabricd --test broker",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L17 from fabricd's telemetry.rs and main.rs; nothing in the code changed."
+    "notes": "Gap corrected 2026-10-18 by lane L17 from fabricd's telemetry.rs and main.rs; nothing in the code changed. Lane W8-156, 2026-10-19 (ADR 0156) §5.5. Mutations fired and restored: the partition key added as a span attribute (the exact-attributes assertion fails); the span never started (the span-exists premise fails). fabricd's telemetry is now built with Telemetry::foreground."
   },
   {
     "id": "R12-FABRIC-8083",
@@ -2004,14 +2009,16 @@
   {
     "id": "R12-FABRIC-8090",
     "status": "PARTIAL",
-    "current": "CI runs the schema-gate lock diff; the broker refuses an unregistered batch schema id. At runtime Service::apply_catalogue now also registers each catalogue stream's body topics (Broker::register_body_topics), and Broker::produce_to refuses with SchemaRefused, before anything is appended, a batch carrying a record whose event topic the stream does not admit or whose body cannot be read. A stream the catalogue declares with no topics admits any, as before.",
+    "current": "CI runs the schema-gate lock diff. The service's registry is populated from the schema lock embedded in qip-events (qip_events::registry::locked_descriptors; Service::new and fabricd's reload pass it to apply_catalogue), and Broker::produce_to refuses with SchemaRefused, before anything is appended, a record whose event topic the stream does not admit, whose envelope schema_version the lock does not hold for its topic, or whose body cannot be read. A catalogue topic the lock holds no row for stops the catalogue. Admission is by (topic, version), not by runtime shape: a shape read off a runtime value hides a retyped field behind null and empty arrays, so shape stays held at build time by the lock suite and the gate. A stream the catalogue declares with no topics is still unrestricted.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs register_body_topics, require_admitted_topics",
-      "backend/crates/services/qip-streaming/src/event_fabric/service.rs apply_catalogue",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs a_record_body_under_an_unregistered_topic_schema_is_refused_before_append",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it"
+      "backend/crates/libs/qip-events/src/registry.rs locked_descriptors, descriptors_from_lock, EMBEDDED_LOCK",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs Service::apply_catalogue",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs register_body_schemas, require_admitted_topics",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs a_record_at_a_schema_version_the_lock_does_not_hold_for_its_topic_is_refused_before_append",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs a_catalogue_topic_with_no_lock_row_is_refused_when_the_catalogue_is_applied",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs the_schema_registry_is_a_production_caller_in_qip_fabricd"
     ],
-    "gap": "The body's schema version and shape per topic are still not registered: the broker admits a topic by name and not by (SchemaId, version), because the service's SchemaRegistry is empty by design (the_schema_registry_is_a_production_caller_in_qip_fabricd asserts len 0) and qip-streaming holds no EventBody descriptors to take a topic's current version and shape from. A stream with an empty topic list in the catalogue is unrestricted.",
+    "gap": "ADR 0156 1.4 also refuses a stream that names no topics, and that half cannot land: the committed telemetry.local (infrastructure/event-fabric/streams.local.json) names none, because no body in the lock can ride a P4 telemetry stream, and refusing it would stop fabricd on the committed catalogue. What closes it is a registered telemetry body (a lock row and a topic) so the stream can name it, or an ADR deciding that stream's admission; then the empty-topics case is refused. Until then a stream with no topics admits any record. (Corrected 2026-10-19.)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2022,7 +2029,7 @@
     "verification": "cargo test -p qip-fabricd --test broker",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: skipping the admitted-topic comparison appends the off-topic batch and the fetch returns two batches; the service registering nothing leaves the stream unrestricted. Existing suites pass: qip-streaming, qip-fabricd, qip-ledgerd, qip-edge-node, qip-transport, and the qip-acceptance event_fabric suites run. Kept PARTIAL: topic admission is the half that needs no descriptors; version and shape need the registry populated first."
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: skipping the admitted-topic comparison appends the off-topic batch and the fetch returns two batches; the service registering nothing leaves the stream unrestricted. Existing suites pass: qip-streaming, qip-fabricd, qip-ledgerd, qip-edge-node, qip-transport, and the qip-acceptance event_fabric suites run. Kept PARTIAL: topic admission is the half that needs no descriptors; version and shape need the registry populated first. Lane W8-156, 2026-10-19 (ADR 0156) §1.1-1.5. Mutations fired and restored: the version comparison disabled in require_admitted_topics (the version-99 record is appended); the no-lock-row refusal disabled at both layers, the service and the broker, which are redundant by design so only breaking both fires the test; admit_all taking no descriptors (the registry-fill test fails). The old registry assertion `len() == 0` is replaced by one that the registry holds one descriptor per locked topic at its highest version with the lock's schema id: strictly stronger, and false for the empty registry the old one blessed."
   },
   {
     "id": "R12-FABRIC-8091",
@@ -2140,15 +2147,13 @@
   {
     "id": "R12-FABRIC-8096",
     "status": "PARTIAL",
-    "current": "The root's event_fabric_broker object instantiates modules/event-fabric-broker (fabric.tf) with one to three addresses (two or three only beside ADR 0111's Spanner managed log). Each broker is a google_compute_instance_from_template in the zone its address is named into (zone for the first, additional_zones in order for the rest), on a reserved internal address; the module refuses two brokers in one zone and a zone outside the region at plan, and machine_type defaults to and is validated as a C4/C4D shape. event_fabric_broker is null in every environment, because no broker boot image has been baked.",
+    "current": "The root's event_fabric_broker object instantiates modules/event-fabric-broker (fabric.tf) with one to three addresses (two or three only beside ADR 0111's Spanner managed log). Each broker is a google_compute_instance_from_template in the zone its address is named into, on a reserved internal address; the module refuses two brokers in one zone, a zone outside the region and a fourth address at plan, and machine_type defaults to and is validated as a C4/C4D shape. Requirement restated (ADR 0156 6a, ADR 0111 Amendment 1): three brokers per production region, one per zone, C4 or C4D; five only after a committed throughput measurement and a record that resizes the lease. event_fabric_broker is null in every environment, because no broker boot image has been baked.",
     "evidence": [
       "infrastructure/terraform/modules/event-fabric-broker/main.tf:181 instance zone = local.broker_zone[each.value]; one-per-zone and in-region preconditions",
-      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:197 broker_zones; machine_type default c4-standard-4 validated ^c4d?-",
-      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:312 three_brokers_are_placed_in_three_zones, two_brokers_in_one_zone_are_refused, a_broker_zone_outside_the_region_is_refused, a_c3_broker_shape_is_refused",
-      "infrastructure/terraform/tests/fabric.tftest.hcl:183 three_brokers_behind_the_spanner_lease_are_provisioned (three zones), additional_brokers_without_a_zone_each_are_refused",
-      "infrastructure/terraform/fabric.tf broker_zones from zone + additional_zones; placement precondition on their lengths"
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf broker_internal_addresses (at most three)",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:527 fabric_084 (one per zone on a C4 shape, capped at three)"
     ],
-    "gap": "Five per production region: the module caps a region at three (ADR 0111's lease ceiling; ADR 0111 Amendment 1 treats three, one per zone, as the requirement's minimum), and prod sets no event_fabric_broker, so no prod plan shows any broker.",
+    "gap": "Whether prod sets event_fabric_broker is the owner's switch in a protected tfvars file (infrastructure/environments/prod/terraform.tfvars) and the instances bill, so no prod plan shows any broker; the module is reached by no environment. Five is a measured future that needs its own record. (Restated 2026-10-19; the earlier 'five per region' gap is withdrawn.)",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2157,11 +2162,11 @@
     "depends_on": [
       "R12-FABRIC-8086"
     ],
-    "blocked_by": "",
+    "blocked_by": "owner's prod switch (protected tfvars, billed): ADR 0156 6a",
     "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cd infrastructure/terraform && terraform test -filter=tests/fabric.tftest.hcl; cargo test -p qip-acceptance --test event_fabric_scaling",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L22, 2026-10-18: per-address zones, the one-per-zone refusal, the in-region refusal and the C4/C4D shape validation added; root wiring via the orchestrator's protected-path patch (additional_zones, c4-standard-4 default). Mutations: drop the one-per-zone precondition - two_brokers_in_one_zone_are_refused fails; put the instance back on var.zone - three_brokers_are_placed_in_three_zones and acceptance fabric_084/fabric_101 fail; remove the machine_type validation - a_c3_broker_shape_is_refused fails; default c3-standard-4 - fabric_084 fails; all restored. The root fabric harness had planned its brokers in us-east4-a under the root's default region europe-west2; the new in-region refusal caught it and the harness's broker zones now sit in europe-west2. Module terraform test 23 passed; root terraform test 103 passed."
+    "notes": "Lane L22, 2026-10-18: per-address zones, the one-per-zone refusal, the in-region refusal and the C4/C4D shape validation added; root wiring via the orchestrator's protected-path patch (additional_zones, c4-standard-4 default). Mutations: drop the one-per-zone precondition - two_brokers_in_one_zone_are_refused fails; put the instance back on var.zone - three_brokers_are_placed_in_three_zones and acceptance fabric_084/fabric_101 fail; remove the machine_type validation - a_c3_broker_shape_is_refused fails; default c3-standard-4 - fabric_084 fails; all restored. The root fabric harness had planned its brokers in us-east4-a under the root's default region europe-west2; the new in-region refusal caught it and the harness's broker zones now sit in europe-west2. Module terraform test 23 passed; root terraform test 103 passed. Lane W8-156, 2026-10-19 (ADR 0156) §6a. Restatement only; no code changed, and kept PARTIAL because the module runs on no default path (null in every environment) and terraform is not installed here to run its tests. fabric_084's name still says gap-pin; the ceiling of three it pins is now the requirement."
   },
   {
     "id": "R12-FABRIC-8097",
@@ -2212,14 +2217,14 @@
   {
     "id": "R12-FABRIC-8099",
     "status": "PARTIAL",
-    "current": "Each broker address is a reserved INTERNAL google_compute_address (purpose GCE_ENDPOINT) in the control-fabric subnet, and the machine takes its network_ip from that reservation; the template and machines declare no access_config, the template is tagged internal-only, and the folder's org policy denies every VM external address. No NCC hub or export exists. The module is instantiated only when event_fabric_broker is set, which no environment does.",
+    "current": "Each broker address is a reserved INTERNAL google_compute_address (purpose GCE_ENDPOINT) in the control-fabric subnet, and the machine takes its network_ip from that reservation; the template and machines declare no access_config, the template is tagged internal-only, and the folder's org policy denies every VM external address. No NCC hub, spoke, export filter or VPC peering is declared anywhere under infrastructure/, and an acceptance scan pins that until the record superseding ADR 0035's one execution node arrives (ADR 0156 6b). The module is instantiated only when event_fabric_broker is set, which no environment does.",
     "evidence": [
       "infrastructure/terraform/modules/event-fabric-broker/main.tf:150 google_compute_address.event_fabric_broker (INTERNAL, subnet, one per broker)",
       "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:265 each_broker_address_is_a_reserved_internal_address_the_machine_takes",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:952 fabric_089_brokers_are_pinned_to_internal_addresses_and_no_layer_declares_a_public_one",
-      "infrastructure/foundation/main.tf google_org_policy_policy.vm_external_ip deny_all"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:987 fabric_089_brokers_are_pinned_to_internal_addresses_and_no_layer_declares_a_public_one",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region"
     ],
-    "gap": "Cross-region mirror prefixes exported only through the latency NCC hub: no NCC hub, spoke or export filter exists in the tree, and mirroring is refused for every stream class (fabric_083), so there is nothing yet to export. Not deployed: event_fabric_broker is null in every environment.",
+    "gap": "Cross-region mirror prefixes exported only through the latency NCC hub: nothing to export until a second region and the mirror's deployment exist (ADR 0113 section 4, ADR 0119 decision 3). Then only the control-fabric subnet is exported, and only to the other regions' control-fabric spokes (ADR 0156 6c). The hub, its attachments and its data transfer are billed and the owner's. Not deployed: event_fabric_broker is null in every environment. (Restated 2026-10-19.)",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2228,11 +2233,11 @@
     "depends_on": [
       "R12-GCP-8057"
     ],
-    "blocked_by": "",
-    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cargo test -p qip-acceptance --test event_fabric_scaling fabric_089",
+    "blocked_by": "second-region record superseding ADR 0035 (hub is billed, owner's)",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cargo test -p qip-acceptance --test event_fabric_scaling fabric_089; cargo test -p qip-acceptance --test gcp_placement",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L22, 2026-10-18: reserved internal addresses added (the 'addresses are reserved internal' half of the plan clause). Mutation: address_type EXTERNAL - the tftest run and fabric_089's reservation check both fail; restored. Kept PARTIAL for the NCC export and for deployment."
+    "notes": "Lane L22, 2026-10-18: reserved internal addresses added (the 'addresses are reserved internal' half of the plan clause). Mutation: address_type EXTERNAL - the tftest run and fabric_089's reservation check both fail; restored. Kept PARTIAL for the NCC export and for deployment. Lane W8-156, 2026-10-19 (ADR 0156) §6b-6c. The hub-absence scan is mutation-verified under GCP-8053. Kept PARTIAL: the requirement's export half is unbuilt by decision and the module is reached by no environment."
   },
   {
     "id": "R12-SEC-8100",

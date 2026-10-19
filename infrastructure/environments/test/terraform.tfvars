@@ -17,6 +17,8 @@ project_number = 0
 environment      = "test"
 region           = "europe-west2"
 autonomy_ceiling = "paper_trading"
+# Placeholder the owner fills in: a team label, never a personal identifier.
+owner = "platform"
 
 # --- The trust zones (blueprint §46.1) ---------------------------------------
 #

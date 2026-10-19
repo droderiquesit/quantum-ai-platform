@@ -29,6 +29,9 @@
 //! serves batches of bytes other processes wrote.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
+#[path = "../../../libs/qip-transport/tests/support/certs.rs"]
+mod certs;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1168,6 +1171,204 @@ fn a_catalogue_topic_with_no_lock_row_is_refused_when_the_catalogue_is_applied()
         .err()
         .expect("a topic with no lock row is refused at start-up");
     assert!(error.to_string().contains("schema lock"), "{error}");
+}
+
+/// R12-FABRIC-8081 (ADR 0156 §4d). Over mutual TLS an admin request is
+/// attributed to the **certificate's name**, read from the server-written
+/// peer-identity header, and authorised against the catalogue's admin grants
+/// under that name. The request body's `operator` field is a check that must
+/// equal it, not a free-text attribution, and the bearer token is not
+/// consulted for an admin request that arrives with a verified certificate.
+///
+/// A matching name is accepted and recorded first. Then, on a partition not
+/// yet isolated: a different name in the body is refused and nothing is
+/// parked; a workload holding no admin grant is refused whatever it names
+/// itself, including the operator's name (the spoof this prevents).
+///
+/// Mutation: make the service take the operator name from the request body
+/// instead of the peer-identity header (`admin` arm of `Service::handle`
+/// choosing `r.operator`). The spoofing request is then authorised as
+/// `operator`, accepted, and the assertion that it is refused fails.
+#[test]
+fn an_isolate_request_over_mutual_tls_is_attributed_to_the_certificate_name_and_refused_when_operator_differs()
+ {
+    use qip_transport::tls::{LinkSecurity, WorkloadIdentity};
+
+    const OUTSIDER: &str = "ledgerd-test";
+    let ca = certs::authority("fabric pool");
+    let server = certs::leaf(&ca, 2, "localhost");
+    let operator_leaf = certs::leaf(&ca, 3, OPERATOR);
+    let outsider_leaf = certs::leaf(&ca, 4, OUTSIDER);
+    let pki = std::env::temp_dir().join(format!("qip-fabricd-mtls-pki-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&pki);
+    std::fs::create_dir_all(&pki).unwrap();
+    let write = |name: &str, text: String| {
+        let path = pki.join(name);
+        std::fs::write(&path, text).unwrap();
+        path.display().to_string()
+    };
+    let chain = write("chain.pem", server.certificate_pem());
+    let key = write("key.pem", server.key_pem());
+    let roots = write("roots.pem", ca.certificate_pem());
+    let peers = format!("{OPERATOR},{OUTSIDER}");
+
+    let fabric = Fabric::start_configured(
+        "mtls-admin",
+        &catalogue_json(&base_grants(), "archived"),
+        &[
+            (qip_transport::tls::TLS_MODE_VARIABLE, "mtls"),
+            (qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE, &chain),
+            (qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE, &key),
+            (qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE, &roots),
+            (qip_fabricd::config::ADMITTED_PEERS, &peers),
+        ],
+    )
+    .expect("a broker with a mutual-TLS listener starts");
+    let port = fabric
+        .running()
+        .address()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let call = |leaf: &certs::Minted, request: Request| {
+        let identity = WorkloadIdentity::from_pem(
+            leaf.certificate_pem().as_bytes(),
+            leaf.key_pem().as_bytes(),
+            ca.certificate_pem().as_bytes(),
+        )
+        .expect("minted material loads");
+        // The bearer token is a *different* identity's: an admin request with
+        // a verified certificate must not be authenticated by it.
+        HttpTransport::over(
+            &LinkSecurity::MutualTls(Arc::new(identity)),
+            &format!("localhost:{port}"),
+            BearerToken::new(token(fabric.number, CELL_A)).unwrap(),
+        )
+        .expect("a transport over the link")
+        .call(request, timeouts())
+    };
+    let isolate = |partition: u32, operator: &str| {
+        Request::AdminIsolate(AdminIsolateRequest {
+            stream: JOURNAL.to_string(),
+            partition,
+            operator: operator.to_string(),
+            reason: "mtls drill".to_string(),
+        })
+    };
+    let (parked, untouched) = (0u32, 1u32);
+    let broker = fabric.running().service().broker().clone();
+
+    // 1. The certificate's own name, matching the body: accepted, recorded.
+    match call(&operator_leaf, isolate(parked, OPERATOR)) {
+        Ok(Response::AdminIsolate(_)) => {}
+        other => panic!("premise: a matching name must be accepted, got {other:?}"),
+    }
+    let log = broker.admin_log().unwrap();
+    assert_eq!(
+        log.iter()
+            .map(|entry| (entry.action.as_str(), entry.operator.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("isolate", OPERATOR)],
+        "the action is recorded under the certificate's name"
+    );
+
+    // 2. The operator's certificate naming someone else in the body.
+    let differs = call(&operator_leaf, isolate(untouched, "someone-else"));
+    assert!(
+        differs.is_err(),
+        "a body naming a different operator was accepted: {differs:?}"
+    );
+    // 3. A workload holding no admin grant, naming the operator: the spoof.
+    let spoof = call(&outsider_leaf, isolate(untouched, OPERATOR));
+    assert!(
+        !matches!(spoof, Ok(Response::AdminIsolate(_))),
+        "a certificate without an admin grant isolated a partition by naming the operator: \
+         {spoof:?}"
+    );
+    // 4. The same workload naming itself: no grant.
+    let own = call(&outsider_leaf, isolate(untouched, OUTSIDER));
+    assert!(
+        matches!(own, Ok(Response::Refused(Refusal::AclDenied))),
+        "{own:?}"
+    );
+    assert_eq!(
+        broker.isolation(JOURNAL, untouched).unwrap(),
+        None,
+        "nothing was parked by a refused request"
+    );
+    assert_eq!(broker.admin_log().unwrap().len(), 1);
+    let _ = std::fs::remove_dir_all(&pki);
+}
+
+/// R12-OBS-8082 (ADR 0156 §5.5). An acknowledged produce leaves exactly one
+/// span, recorded at the request handler, whose attributes are `stream`,
+/// `class` and `outcome` and nothing else: never the partition key, the
+/// producer id, or an event id. A span attribute is read by whatever the
+/// collector builds on it, so an unbounded one is a cardinality bomb in
+/// someone else's database.
+///
+/// The span's existence is asserted first, and the serialised span is searched
+/// for the key, the producer and the event's tag, so "never a key" is checked
+/// against values that were really on the request.
+///
+/// Mutation: add the partition key as a span attribute in
+/// `DataPlane::finish_span` (`span.set_attribute("key", ..)`). The attribute
+/// set is no longer exactly stream, class and outcome and the equality fails.
+#[test]
+fn an_acknowledged_produce_leaves_one_span_naming_stream_and_class_and_never_a_key_or_producer() {
+    use qip_events::topic::Topic;
+    let catalogue = catalogue_json(&base_grants(), "archived");
+    let fabric = Fabric::start_with("produce-span", &catalogue).unwrap();
+    let partition = own_partition(CELL_A);
+    let mut producer = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    producer.init().unwrap();
+    producer
+        .send(batch_of_records(
+            QosClass::P2MarketJournal,
+            vec![event_record(Topic::ReflexJournalRecorded, "span-tag-9c1")],
+        ))
+        .expect("the produce is acknowledged");
+
+    let tracer = fabric.running().observability().tracer.clone();
+    let spans: Vec<_> = tracer
+        .spans()
+        .into_iter()
+        .filter(|span| span.name == "fabricd.produce")
+        .collect();
+    assert_eq!(
+        spans.len(),
+        1,
+        "one acknowledged produce, one span: {spans:?}"
+    );
+    let span = &spans[0];
+    let mut attributes = span.attributes.clone();
+    // The tracer stamps every span with the service it belongs to.
+    attributes.remove("service.name");
+    assert_eq!(
+        attributes,
+        BTreeMap::from([
+            ("class".to_string(), "p2_market_journal".to_string()),
+            ("outcome".to_string(), "success".to_string()),
+            ("stream".to_string(), JOURNAL.to_string()),
+        ]),
+        "a produce span carries stream, class and outcome only"
+    );
+    let serialised = serde_json::to_string(span).unwrap();
+    for unbounded in [CELL_A, "cell-a", "span-tag-9c1"] {
+        assert!(
+            !serialised.contains(unbounded),
+            "the span carries {unbounded:?}, which is a key, a producer or an event id: \
+             {serialised}"
+        );
+    }
+    // Routes that are not a produce leave none: the init above is a request
+    // the handler served and recorded no span for.
+    assert!(
+        tracer.spans().iter().all(|s| s.name == "fabricd.produce"),
+        "only produces are spanned"
+    );
 }
 
 // --- FABRIC-028 -----------------------------------------------------------------
