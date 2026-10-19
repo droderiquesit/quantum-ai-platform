@@ -203,7 +203,11 @@ fn the_provider_builds_local_adapters() {
         let store = provider.key_value(&format!("test-{target:?}")).unwrap();
         store.put("k", serde_json::json!(1)).unwrap();
         assert_eq!(store.len().unwrap(), 1);
-        assert!(provider.blobs("artifacts").is_ok());
+        assert!(
+            provider
+                .blobs(qip_storage::classes::MODEL_ARTIFACTS_NAMESPACE)
+                .is_ok()
+        );
         assert!(target.is_implemented());
         assert_eq!(
             target.required_configuration(),

@@ -67,7 +67,7 @@ pub use crate::managed::{Environment, ManagedSettings};
 /// what wrote it. It is deleted on the way out of a successful preflight; a
 /// leftover means the process died between the write and the delete, which is
 /// itself worth being able to see.
-pub const PREFLIGHT_NAMESPACE: &str = "preflight";
+pub const PREFLIGHT_NAMESPACE: &str = crate::classes::PREFLIGHT_NAMESPACE;
 
 /// The environment variable naming the storage target.
 pub const TARGET_VARIABLE: &str = "QIP_STORAGE_TARGET";

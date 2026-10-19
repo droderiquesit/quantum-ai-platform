@@ -145,6 +145,14 @@ fn prove_archive_writable(store: &dyn BlobStore, leader_epoch: u64) -> Result<()
 /// `prove_archive_writable` then proves it takes and returns an object, so a
 /// bucket that exists but this broker may not write is refused at start too.
 fn open_archive(target: &ArchiveTarget, clock: Arc<dyn Clock>) -> Result<Arc<dyn BlobStore>> {
+    // The prefix is configurable; the class is not (ADR 0156 §3.2). An
+    // archive store is made only for the declared, immutable archive role, so
+    // a build whose list lost it, or declared it overwritable, stops here
+    // rather than writing sealed segments somewhere unclassified.
+    qip_storage::classes::archive_class(
+        qip_storage::classes::DECLARED,
+        qip_storage::classes::FABRIC_ARCHIVE_ROLE,
+    )?;
     match target {
         ArchiveTarget::Directory(directory) => Ok(Arc::new(FileBlobStore::open(directory)?)),
         ArchiveTarget::CloudStorage {
