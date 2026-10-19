@@ -443,17 +443,18 @@
   },
   {
     "id": "R12-DATA-7021",
-    "status": "PARTIAL",
-    "current": "data-finder licensing posture and refetch-health SLO exist; data_infrastructure_guards acceptance suite. The connector path (ConnectorArm over a Platform) is proven to retain no fetched body in the event log, journal KV, knowledge-pack or tick-lake stores by a canary test.",
+    "status": "COMPLETE",
+    "current": "data-finder licensing posture and refetch-health SLO exist; data_infrastructure_guards acceptance suite. Canary tests hold the invariant across every ingestion path: ConnectorArm (journal KV, knowledge packs, tick lake, event log) and, new, the REST market-data adapter, the narrative adapter and the alternative-data adapter, each fetched over a loopback socket, taken through IngestionService::poll_batch, published to an event log and absorbed by Platform::observe with a cycle run, then searched in the platform's log and the ingestion log.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src",
       "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos (data-refetch-health)",
-      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:526 a_canary_in_a_fetched_body_is_found_in_no_durable_store_after_a_poll_through_the_platform"
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:526 a_canary_in_a_fetched_body_is_found_in_no_durable_store_after_a_poll_through_the_platform",
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs::a_canary_in_a_rest_narrative_or_alternative_body_is_found_in_no_durable_store_after_a_poll_through_the_platform"
     ],
-    "gap": "The canary test covers the connector path only (ConnectorArm, one shipped connector). The other ingestion paths - the narrative/news adapters and the REST market-data adapter - have no equivalent canary test; the register's 'every ingestion path' is not yet verified.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -461,7 +462,7 @@
     "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L08 2026-10-18. Kept PARTIAL: closure's cross-store canary test landed (see R12-DATA-1029 for the mutation, which fired) but covers one path of several."
+    "notes": "Closed 2026-10-18 by lane RT-B. Mutations, each restored byte for byte: REST trade_id built from the whole wire body, narrative headline built from the document body, alternative-data metric built from the whole wire body - each failed the event-log assertion for its own path. Scope stated: the key-value journal, knowledge-pack store and tick lake are written only by ConnectorArm (rest.rs, narrative.rs, alternative.rs and service.rs name no KeyValueStore or BlobStore), so for the other three paths the durable stores are the two event logs searched. qip-fastbrain builds the REST adapter; the narrative and alternative-data adapters have no composition root in any app yet, so for them the proof is at the adapter-and-platform seam."
   },
   {
     "id": "R12-MODEL-7022",
@@ -2894,25 +2895,27 @@
   },
   {
     "id": "R12-OBS-7128",
-    "status": "PARTIAL",
-    "current": "critical_paths declares model-serving-package (0.99, Week) on qip_model_packages_total{outcome}, evaluated every deep-brain round and recorded as qip_slo_budget_consumed. Register text stale (says no SLO).",
+    "status": "COMPLETE",
+    "current": "critical_paths declares model-serving (0.99, Week) on qip_model_serves_total{outcome=served|refused}, recorded in Platform::serve_model (and promote_model's own serve) and evaluated every deep-brain round by Operations::observe, beside model-serving-package (qip_model_packages_total). An unfed objective reads unmeasured.",
     "evidence": [
       "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos",
       "backend/crates/libs/qip-observability/src/critical_paths.rs::critical_path_slos",
-      "backend/crates/apps/qip-deepbrain/src/operations.rs::Operations::observe"
+      "backend/crates/apps/qip-deepbrain/src/operations.rs::Operations::observe",
+      "backend/crates/runtime/qip-kernel/tests/model_serving_series.rs::a_served_model_request_moves_the_serving_series_and_an_unserved_objective_reads_unmeasured",
+      "backend/crates/libs/qip-observability/tests/critical_paths.rs::the_catalogue_holds_a_model_serving_objective_on_the_serving_series_at_the_package_target"
     ],
-    "gap": "Objective measures whether a promoted package was written, not model serving availability/latency; no serving-path series feeds it.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "slo test",
+    "verification": "cd backend && cargo test -p qip-kernel --test model_serving_series && cargo test -p qip-observability --test critical_paths",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Closed 2026-10-18 by lane RT-B. Mutations: deleting the count call in serve_model failed the kernel test on the series staying at zero; changing the new objective's target to 0.98 failed the catalogue test; both restored. aiops.rs's catalogue length expectation moved from 10 to 11 because an objective was added; uniqueness of names is still asserted. workload_metrics_exist and alert policies untouched."
   },
   {
     "id": "R12-OBS-7129",
@@ -4018,7 +4021,7 @@
       "backend/crates/tests/qip-acceptance/tests/fusion.rs::nothing_recorded_or_printed_after_the_fusion_instant_changes_the_fused_state",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs:652 the one production caller of fuse"
     ],
-    "gap": "The acceptance suite exists (2026-10-18): a graph built only through qip-world-model's public API fuses with kernel traces, surfaces all three Mismatch kinds, is bitemporally filtered (a later event and a later tick change nothing at the fusion instant) and replays to the same digest. Not as the closure proposed: fuse is not called from Platform's UNDERSTAND stage and no fused mismatch is journaled there; its only production caller is qip-deepbrain tick_desk, which counts mismatches and ships the opportunity map. Journaling the fused state in UNDERSTAND is unbuilt code, not a test.",
+    "gap": "2026-10-18: kept PARTIAL. The row's check reads 'Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite.' The acceptance suite exists (fusion.rs: a graph built through qip-world-model's public API fuses with kernel traces, surfaces all three Mismatch kinds, is bitemporally filtered and replays to one digest), but the first half is not met: the constituents are not enumerated in the register and the WORLD slice still holds PARTIAL and MISSING rows (32 PARTIAL, 5 MISSING on this date), among them the off-by-default tick desk (R12-WORLD-9035, -9037) that is fuse's only production caller. The statement also says the two are 'time-aligned and fused'; Platform's UNDERSTAND stage does not call fuse and journals no fused state, so on a default production path nothing fuses. That is unbuilt code, not a missing test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
