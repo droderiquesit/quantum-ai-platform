@@ -171,7 +171,21 @@ fn a_version_bump_admits_a_break_and_a_rollback_or_a_deleted_row_does_not() {
         INCOMPATIBLE,
         "premise: the removal is incompatible when the version does not move"
     );
-    let bumped = gate("bumped", &base, &[row("reflex.outcome", 2, &narrower)]).unwrap();
+    // The head keeps version 1's row beside version 2's: since ADR 0156 §1.6
+    // a bump that *drops* the old row is admitted only when the consumer
+    // inventory says nobody still decodes it
+    // (`event_fabric_schema_lock::a_version_bump_that_drops_the_old_version...`).
+    // The property pinned here, that a bump is the producer's deliberate
+    // break, is unchanged.
+    let bumped = gate(
+        "bumped",
+        &base,
+        &[
+            row("reflex.outcome", 1, &order()),
+            row("reflex.outcome", 2, &narrower),
+        ],
+    )
+    .unwrap();
     assert_eq!(bumped.code, COMPATIBLE, "{:?}", bumped.lines);
     assert!(
         bumped.lines[0].starts_with("reflex.outcome: version 1 -> 2"),

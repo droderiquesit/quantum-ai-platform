@@ -9,6 +9,7 @@
 //! a quiet mesh.
 
 use qip_contracts::ambient::{Disposition, SignalClass};
+use qip_contracts::expansion::SyntheticGenerator;
 use qip_core::{Clock, Context, Decimal, Duration, ManualClock, ObjectId, Timestamp};
 use qip_deepbrain::ambient_journal::{
     AMBIENT_ORIGIN, AmbientJournal, AmbientRecord, JournalDestination, records,
@@ -335,6 +336,39 @@ fn a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist
         .unwrap_or_else(|| panic!("the scenario shocks the surprised subject: {risk:?}"));
     assert!((shock.magnitude - 0.3).abs() < 0.01, "{shock:?}");
     assert!(!risk.1.historical);
+
+    // The same record says the scenario was generated, and from what
+    // (R12-EXPAND-6033): an input digest, the conditional generator, and no
+    // seed because nothing was drawn. Mutation: write `episode: None` in
+    // `AmbientJournal::record`, or give the episode a seed — the assertions
+    // below fail (or the constructor refuses).
+    let episode = journaled
+        .iter()
+        .find_map(|r| match r {
+            AmbientRecord::Scenario {
+                signal_id, episode, ..
+            } if signal_id.ends_with("/risk") => episode.as_ref(),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the risk scenario journals its episode: {journaled:?}"));
+    assert_eq!(episode.generator(), SyntheticGenerator::Conditional);
+    assert_eq!(
+        episode.seed(),
+        None,
+        "a deterministic generator drew nothing"
+    );
+    assert_eq!(episode.scenario(), risk.1.name);
+    assert_eq!(episode.input_digest().len(), 64);
+
+    // A record written before the field existed still decodes, to "absent".
+    let old = serde_json::json!({
+        "entry": "scenario", "cycle": 1, "signal_id": "s",
+        "scenario": serde_json::to_value(risk.1).unwrap_or_default()
+    });
+    match serde_json::from_value::<AmbientRecord>(old) {
+        Ok(AmbientRecord::Scenario { episode: None, .. }) => {}
+        other => panic!("an old scenario record must decode with no episode: {other:?}"),
+    }
 }
 
 /// Assumption health is maintained state (R12-AMBIENT-1143): a coverage gap

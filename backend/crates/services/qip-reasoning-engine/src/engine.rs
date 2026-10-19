@@ -14,7 +14,7 @@
 //!   number here comes from the evidence set, and a model's role — where one
 //!   is configured at all — is narrative, not judgement.
 
-use crate::belief::BeliefState;
+use crate::belief::BeliefClock;
 use crate::evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
 use crate::hypothesis::{CausalChain, Claim, Hypothesis, HypothesisDraft, HypothesisStatus};
 use crate::redteam::{RedTeam, ReviewOutcome, ReviewPolicy};
@@ -122,7 +122,7 @@ pub struct ReasoningEngine {
     /// at the instant a hypothesis is formed, and by nothing else — not the
     /// origin factors the self-model hands over, which weight the *next*
     /// belief but are not evidence of anything.
-    beliefs: BeliefState,
+    belief_clock: BeliefClock,
 }
 
 impl ReasoningEngine {
@@ -132,7 +132,7 @@ impl ReasoningEngine {
             sequence: 0,
             action_bar: 0.60,
             origin_factors: BTreeMap::new(),
-            beliefs: BeliefState::new(),
+            belief_clock: BeliefClock::new(),
         }
     }
 
@@ -143,8 +143,8 @@ impl ReasoningEngine {
     /// The engine's record of when it last formed a belief.
     ///
     /// What the kernel reads for §6.2 row 4 at sizing time.
-    pub fn beliefs(&self) -> &BeliefState {
-        &self.beliefs
+    pub fn belief_clock(&self) -> &BeliefClock {
+        &self.belief_clock
     }
 
     /// Replace the per-origin factors every later hypothesis is formed with.
@@ -235,7 +235,7 @@ impl ReasoningEngine {
         // clock. Recorded here and nowhere else, after the form succeeded,
         // so a refused draft leaves the belief state exactly as old as it
         // was — a refusal is not evidence absorbed.
-        self.beliefs.absorbed(input.now);
+        self.belief_clock.absorbed(input.now);
 
         let base = self.sequence;
         let mut counter = 0u64;

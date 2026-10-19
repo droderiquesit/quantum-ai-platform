@@ -1,10 +1,12 @@
 //! Event Fabric infrastructure basics: FABRIC-006, FABRIC-007, FABRIC-008, FABRIC-009, FABRIC-010.
 //!
 //! Tests for fabric durability/replay, control distribution, regional infrastructure,
-//! transport security (QUIC/mTLS), and RF3 replication across zones.
+//! transport security (mutual TLS 1.3 over HTTP/1.1; ADR 0112, ADR 0156 4a), and RF3 replication across zones.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
+#[path = "../../../libs/qip-transport/tests/support/certs.rs"]
+mod certs;
 mod event_fabric_support;
 
 use event_fabric_support::{STREAM, batch, broker_module, broker_with, norm, spec};
@@ -83,96 +85,102 @@ fn fabric_006_fabric_records_are_durable_and_replayable() {
     assert_eq!(replayed, expected, "replay is not the acknowledged order");
 }
 
+/// FABRIC-007 (R12-FABRIC-10195): the fabric distributes capital, risk and
+/// strategy control to Reflex Cells, and every cell receives the updates for
+/// its region and the global constraints that apply to it.
+///
+/// The earlier form built `ControlMessage` structs in the test and counted
+/// them. This one produces control frames to a real P0 stream through the
+/// broker, keyed by cell (the control stream's partition key, ADR 0100 §5),
+/// fans a region's frame out to each cell in the region and a global frame to
+/// every cell, then fetches each cell's partition back and asserts what it
+/// holds: its region's frames, the global one, and nothing addressed to
+/// another region. A frame that landed on the wrong cell's partition, or a
+/// partition that lost one on the way back, fails.
+///
+/// Mutation: in `Broker::produce_to`, append to partition 0 whatever
+/// partition the caller named. The cells' own partitions are empty and the
+/// fetch fails at the first cell ("offset 0 was served torn"). Ran, failed,
+/// restored.
 #[test]
 fn fabric_007_fabric_distributes_capital_risk_and_strategy_control_to_reflex_cells() {
-    // FABRIC-007: The fabric distributes capital, risk and strategy control to
-    // Reflex Cells, and every cell receives updates for its region and the global
-    // constraints applying to it.
+    use qip_events::event_fabric::codec::{Batch, DecodeOutcome};
+    use qip_events::event_fabric::policy::QosClass;
+    use qip_streaming::event_fabric::partition::partition_for;
+    use std::collections::{BTreeMap, BTreeSet};
 
-    #[derive(Debug, Clone)]
-    struct ControlMessage {
-        _kind: String,
-        _destination_region: String,
-        applies_to_cells: Vec<String>,
+    const PARTITIONS: u32 = 16;
+    let (broker, _dir) = broker_with("fabric-007", PARTITIONS, spec(QosClass::P0Control));
+
+    // (cell, region): two cells in one region, one in another.
+    let cells = [
+        ("cell-usw-1", "us-west1"),
+        ("cell-usw-2", "us-west1"),
+        ("cell-euw-1", "eu-west1"),
+    ];
+    let partition_of = |cell: &str| partition_for(cell, PARTITIONS).expect("a partition");
+    let partitions: BTreeSet<u32> = cells.iter().map(|(cell, _)| partition_of(cell)).collect();
+    assert_eq!(
+        partitions.len(),
+        cells.len(),
+        "premise: the three cells route to three partitions, or a cell's partition could hold \
+         another cell's frame legitimately"
+    );
+
+    // (frame id, the region it is addressed to, or None for global).
+    let frames: [(&str, Option<&str>); 5] = [
+        ("capital_grant|us-west1", Some("us-west1")),
+        ("risk_limit|us-west1", Some("us-west1")),
+        ("strategy_activation|us-west1", Some("us-west1")),
+        ("risk_limit|eu-west1", Some("eu-west1")),
+        ("halt|global", None),
+    ];
+
+    let mut sequence: BTreeMap<u32, u64> = BTreeMap::new();
+    let mut expected: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    for (id, region) in frames {
+        for (cell, cell_region) in cells {
+            if region.is_some_and(|region| region != cell_region) {
+                continue;
+            }
+            let partition = partition_of(cell);
+            let next = sequence.entry(partition).or_insert(0);
+            broker
+                .produce_to(STREAM, partition, batch("control-centre", 1, *next, id))
+                .expect("the broker answers")
+                .expect("a control frame is admitted");
+            *next += 1;
+            expected.entry(cell).or_default().insert(id.to_string());
+        }
     }
+    assert_eq!(
+        expected["cell-usw-1"].len(),
+        4,
+        "premise: a us-west1 cell is addressed by three regional frames and the global one"
+    );
 
-    #[derive(Debug, Clone)]
-    struct ControlDistribution {
-        capital_messages: Vec<ControlMessage>,
-        risk_messages: Vec<ControlMessage>,
-        strategy_messages: Vec<ControlMessage>,
+    for (cell, _) in cells {
+        let partition = partition_of(cell);
+        let mut held = BTreeSet::new();
+        for offset in 0..sequence[&partition] {
+            let served = broker
+                .fetch(STREAM, partition, offset, 1)
+                .expect("an acknowledged offset is served");
+            let bytes = qip_core::hash::from_hex(served.batches()).expect("hex");
+            match Batch::decode(&bytes).expect("decodes") {
+                DecodeOutcome::Complete(batch) => {
+                    held.extend(batch.records.iter().map(|r| r.event_id.clone()));
+                }
+                DecodeOutcome::Torn => panic!("{cell}'s offset {offset} was served torn"),
+            }
+        }
+        assert_eq!(
+            held, expected[cell],
+            "{cell}'s partition does not hold exactly its region's frames and the global one"
+        );
     }
-
-    let mut distribution = ControlDistribution {
-        capital_messages: Vec::new(),
-        risk_messages: Vec::new(),
-        strategy_messages: Vec::new(),
-    };
-
-    // Scenario 1: Capital control reaches appropriate cells
-    let capital_grant = ControlMessage {
-        _kind: "capital_grant".to_string(),
-        _destination_region: "us-west1".to_string(),
-        applies_to_cells: vec!["cell-usw-1".to_string(), "cell-usw-2".to_string()],
-    };
-
-    distribution.capital_messages.push(capital_grant);
-
-    // Scenario 2: Risk control reaches appropriate cells
-    let risk_limit = ControlMessage {
-        _kind: "risk_limit".to_string(),
-        _destination_region: "us-west1".to_string(),
-        applies_to_cells: vec!["cell-usw-1".to_string(), "cell-usw-2".to_string()],
-    };
-
-    distribution.risk_messages.push(risk_limit);
-
-    // Scenario 3: Strategy control reaches appropriate cells
-    let strategy_config = ControlMessage {
-        _kind: "strategy_activation".to_string(),
-        _destination_region: "us-west1".to_string(),
-        applies_to_cells: vec!["cell-usw-1".to_string(), "cell-usw-2".to_string()],
-    };
-
-    distribution.strategy_messages.push(strategy_config);
-
-    // Verify each region's cells receive all three control types
-    assert_eq!(distribution.capital_messages.len(), 1);
-    assert_eq!(distribution.risk_messages.len(), 1);
-    assert_eq!(distribution.strategy_messages.len(), 1);
-
-    // Each cell receives global and regional constraints
-    assert!(
-        distribution
-            .capital_messages
-            .iter()
-            .all(|m| !m.applies_to_cells.is_empty())
-    );
-    assert!(
-        distribution
-            .risk_messages
-            .iter()
-            .all(|m| !m.applies_to_cells.is_empty())
-    );
-    assert!(
-        distribution
-            .strategy_messages
-            .iter()
-            .all(|m| !m.applies_to_cells.is_empty())
-    );
 }
 
-/// FABRIC-008: a region's brokers are placed one to a zone and in the region,
-/// refused at plan otherwise. The previous test built two `RegionalBrokerCluster`
-/// fixtures with three nodes each and asserted three. What the module does is
-/// different and checkable: it plans one broker by default (RF1, FABRIC-086
-/// blocked on C2), and a lifecycle precondition on the machine resource
-/// refuses two brokers in one zone and any zone outside `var.region`.
-///
-/// Mutation: delete the `distinct(...)` precondition from
-/// `google_compute_instance_from_template` in the module — the zone-spread
-/// assertion fires; or change `broker_count`'s `1` to `3` — the default-count
-/// assertion fires.
 #[test]
 fn fabric_008_each_region_runs_fabric_on_dedicated_broker_vms_across_three_zones() {
     let main = norm_text(&broker_module("main.tf"));
@@ -202,70 +210,175 @@ fn fabric_008_each_region_runs_fabric_on_dedicated_broker_vms_across_three_zones
     );
 }
 
+/// FABRIC-009 (R12-FABRIC-10195): fabric sessions use mutual TLS 1.3 over
+/// HTTP/1.1 through `rustls`, both certificates verified, the peer identity
+/// taken from the certificate; QUIC is admitted for a hop only on a committed
+/// TCP+TLS against QUIC measurement (ADR 0112 §4 and Amendment 1).
+///
+/// The earlier form asserted a struct it built said "QUIC" and named a trust
+/// anchor ("the event log's root") that no mechanism in the tree implements;
+/// the trust anchor is the CA pool. This one binds a real `Server::bind_tls`
+/// listener and drives it: a client holding a certificate its pool chains is
+/// served first, over TLS 1.3 and an HTTP/1.1 status line, and is named by the
+/// certificate; a client with no certificate, one from another authority, and
+/// one the server does not admit never reach the handler. The no-QUIC fact
+/// stays pinned by `fabric_036`'s gap-pin.
+///
+/// Mutation: make `Server::bind_tls` not require a client certificate (build
+/// the verifier with `allow_unauthenticated`). The certificate-less client
+/// then completes the handshake and is answered (403, from the server's
+/// second layer, so the handler still does not run), and the assertion that
+/// an anonymous client gets no answer fails. Ran, failed, restored.
 #[test]
-fn fabric_009_fabric_sessions_use_quic_with_mutual_tls() {
-    // FABRIC-009: Fabric sessions use QUIC with mutual TLS, with client and broker
-    // certificates verified and session keys derived from the event log's trust anchor.
+fn fabric_009_fabric_sessions_are_mutual_tls_over_http_one_and_a_client_without_a_certificate_never_reaches_a_handler()
+ {
+    use qip_transport::rustls::pki_types::ServerName;
+    use qip_transport::rustls::{ClientConnection, ProtocolVersion, Stream};
+    use qip_transport::server::{
+        Handler, PEER_IDENTITY_HEADER, Request, Response, Server, ServerLimits,
+    };
+    use qip_transport::tls::{PeerNames, TlsServer, WorkloadIdentity, server_authenticated_client};
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[derive(Debug, Clone)]
-    struct TLSContext {
-        _protocol: String,
-        has_client_cert: bool,
-        has_broker_cert: bool,
-        trust_anchor: String,
+    struct Counting(Arc<AtomicUsize>);
+    impl Handler for Counting {
+        fn handle(&self, request: &Request) -> Response {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Response::text(
+                200,
+                request
+                    .header(PEER_IDENTITY_HEADER)
+                    .unwrap_or("none")
+                    .to_string(),
+            )
+        }
     }
 
-    #[derive(Debug, Clone)]
-    struct FabricSession {
-        _session_id: String,
-        transport: String,
-        tls_context: TLSContext,
-    }
-
-    // Scenario 1: Sessions use QUIC transport
-    let session = FabricSession {
-        _session_id: "sess-001".to_string(),
-        transport: "QUIC".to_string(),
-        tls_context: TLSContext {
-            _protocol: "TLS 1.3".to_string(),
-            has_client_cert: true,
-            has_broker_cert: true,
-            trust_anchor: "event_log_root".to_string(),
-        },
+    let ca = certs::authority("fabric pool");
+    let server_leaf = certs::leaf(&ca, 2, "localhost");
+    let broker_name = "edge-node.test.qip.internal";
+    let client_leaf = certs::leaf(&ca, 3, broker_name);
+    let load = |leaf: &certs::Minted, roots: &certs::Minted| {
+        WorkloadIdentity::from_pem(
+            leaf.certificate_pem().as_bytes(),
+            leaf.key_pem().as_bytes(),
+            roots.certificate_pem().as_bytes(),
+        )
+        .expect("minted material loads")
     };
 
-    assert_eq!(session.transport, "QUIC");
-
-    // Scenario 2: Mutual TLS is configured (both client and broker verify)
-    assert!(session.tls_context.has_client_cert);
-    assert!(session.tls_context.has_broker_cert);
-
-    // Scenario 3: Certificates verified against event log trust anchor
-    assert_eq!(session.tls_context.trust_anchor, "event_log_root");
-
-    // Scenario 4: Multiple sessions follow the same security model
-    let mut sessions = vec![session];
-    for i in 1..5 {
-        let s = FabricSession {
-            _session_id: format!("sess-{:03}", i),
-            transport: "QUIC".to_string(),
-            tls_context: TLSContext {
-                _protocol: "TLS 1.3".to_string(),
-                has_client_cert: true,
-                has_broker_cert: true,
-                trust_anchor: "event_log_root".to_string(),
-            },
-        };
-        sessions.push(s);
-    }
-
-    assert_eq!(sessions.len(), 5);
-    assert!(sessions.iter().all(|s| s.transport == "QUIC"));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server = Server::bind_tls(
+        "127.0.0.1:0",
+        Arc::new(Counting(Arc::clone(&calls))),
+        ServerLimits::default(),
+        TlsServer {
+            config: load(&server_leaf, &ca)
+                .server_config()
+                .expect("server config"),
+            peers: PeerNames::new([broker_name.to_string()]).expect("names"),
+        },
+    )
+    .expect("binds an ephemeral port");
     assert!(
-        sessions
-            .iter()
-            .all(|s| s.tls_context.has_client_cert && s.tls_context.has_broker_cert)
+        server.is_mutual_tls(),
+        "premise: the listener demands client certificates"
     );
+    let address = server.local_address().expect("address");
+    let serving = std::thread::spawn(move || {
+        for _ in 0..4 {
+            let _ = server.serve_once();
+        }
+    });
+
+    // One session: TLS handshake, one HTTP/1.1 request, the protocol version
+    // and status line read back. Errors surface where the handshake or the
+    // first read fails, which for a refused client is the point.
+    let session = |config: Arc<qip_transport::rustls::ClientConfig>| -> Result<(ProtocolVersion, String, String), String> {
+        let mut tcp = std::net::TcpStream::connect(&address).map_err(|e| e.to_string())?;
+        tcp.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+        tcp.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
+        let name = ServerName::try_from("localhost").expect("a server name");
+        let mut connection = ClientConnection::new(config, name).map_err(|e| e.to_string())?;
+        let mut stream = Stream::new(&mut connection, &mut tcp);
+        stream
+            .write_all(b"GET /who HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .map_err(|e| e.to_string())?;
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).map_err(|e| e.to_string())?;
+        let version = connection.protocol_version().ok_or("no protocol version")?;
+        let status = answer.lines().next().unwrap_or("").to_string();
+        let body = answer.rsplit("\r\n\r\n").next().unwrap_or("").to_string();
+        Ok((version, status, body))
+    };
+
+    // 1. A client with a certificate the pool chains and the server admits:
+    //    served, over TLS 1.3, with an HTTP/1.1 status line, named by the
+    //    certificate and not by anything it claimed.
+    let (version, status, body) = session(load(&client_leaf, &ca).client_config().expect("config"))
+        .expect("a certificate-bearing client is served");
+    assert_eq!(version, ProtocolVersion::TLSv1_3);
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    assert_eq!(
+        body, broker_name,
+        "the peer identity is the certificate's name"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "premise: the handler ran for the good client"
+    );
+
+    // 2. No certificate: refused before the handler.
+    let anonymous =
+        session(server_authenticated_client(ca.certificate_pem().as_bytes()).expect("config"));
+    assert!(
+        anonymous.is_err(),
+        "a client with no certificate was answered: {anonymous:?}"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a client without a certificate reached the handler"
+    );
+
+    // 3. A certificate from another authority.
+    let stranger_ca = certs::authority("someone else's pool");
+    let stranger = certs::leaf(&stranger_ca, 9, broker_name);
+    let foreign = session(
+        WorkloadIdentity::from_pem(
+            stranger.certificate_pem().as_bytes(),
+            stranger.key_pem().as_bytes(),
+            ca.certificate_pem().as_bytes(),
+        )
+        .expect("loads")
+        .client_config()
+        .expect("config"),
+    );
+    assert!(
+        foreign.is_err(),
+        "a foreign certificate was admitted: {foreign:?}"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a foreign certificate reached the handler"
+    );
+
+    // 4. A certificate the pool chains but the server does not name.
+    let unlisted = certs::leaf(&ca, 4, "ledgerd.test.qip.internal");
+    let (_, status, _) = session(load(&unlisted, &ca).client_config().expect("config"))
+        .expect("the refusal is an HTTP answer");
+    assert!(status.starts_with("HTTP/1.1 403"), "{status}");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "an unadmitted workload reached the handler"
+    );
+
+    serving.join().expect("the server thread");
 }
 
 #[test]

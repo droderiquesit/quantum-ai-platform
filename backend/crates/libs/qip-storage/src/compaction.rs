@@ -7,21 +7,38 @@
 //! Compaction respects locked objects (DATA-052) and must not remove landing
 //! segments before they are archived (DATA-068). The current implementation
 //! is transport-agnostic and works with any [`BlobStore`].
+//!
+//! **Compaction is for the lake's small objects and refuses the segment
+//! archive** (ADR 0156 §2). Merging archive objects is wrong both ways: keep
+//! the originals and storage grows by a merged copy per pass; delete them and
+//! `ArchiveReader::hydrate` fails for every archived segment, because each is
+//! fetched by the exact key its manifest names and verified against the
+//! manifest's content hash. A merged object also has no place in the seal
+//! chain, whose links are hashes of the *segments*. Fewer, larger archive
+//! objects come from `roll_after_bytes`, where the segment is cut. The
+//! refusal is on the keys listed, not on the prefix asked for, so an empty or
+//! a broad prefix cannot reach the archive either.
+//!
+//! Nothing outside this module's tests calls the compactor yet; it is kept
+//! with its refusal until the lake needs a pass.
 
 use crate::blob::BlobStore;
-use qip_core::error::Result;
+use crate::segment::archive::is_archive_key;
+use qip_core::error::{Error, Result};
 
 /// Configuration for a compaction job.
 #[derive(Clone, Debug)]
 pub struct CompactionConfig {
-    /// Minimum size in bytes for the input objects to compact.
+    /// Minimum size in bytes for the input objects to compact: an object
+    /// smaller than this is left alone and is not reported as merged.
     pub min_object_size: usize,
     /// Maximum size in bytes for a single compacted segment.
     pub max_segment_size: usize,
 }
 
 impl CompactionConfig {
-    /// A reasonable default: compact objects 64KB or smaller into 4MB segments.
+    /// The default: leave objects under 64KB alone, and merge into segments of
+    /// at most 4MB.
     pub fn new() -> Self {
         Self {
             min_object_size: 64 * 1024,
@@ -87,6 +104,16 @@ impl<'a> Compactor<'a> {
     pub fn compact(&self, prefix: &str) -> Result<CompactionResult> {
         // List all objects under the prefix.
         let keys = self.store.list(prefix)?;
+        // Refuse before reading or writing anything: a pass that merged one
+        // archive object and then met a second would already have written.
+        if let Some(archive_key) = keys.iter().find(|key| is_archive_key(key)) {
+            return Err(Error::denied(format!(
+                "refusing to compact '{prefix}': it lists the segment archive object \
+                 '{archive_key}', and archive objects are immutable evidence fetched by exact \
+                 key and chained by hash. Compact a lake prefix, or raise roll_after_bytes to \
+                 cut fewer, larger segments"
+            )));
+        }
         if keys.is_empty() {
             return Ok(CompactionResult {
                 compacted_segments: Vec::new(),
@@ -95,10 +122,12 @@ impl<'a> Compactor<'a> {
             });
         }
 
-        // Read and filter: keep only objects smaller than the max compaction size.
+        // Read and filter: keep only objects at least `min_object_size` and
+        // smaller than the max compaction size.
         let mut objects = Vec::new();
         for key in &keys {
             if let Ok(Some(bytes)) = self.store.get(key)
+                && bytes.len() >= self.config.min_object_size
                 && bytes.len() < self.config.max_segment_size
             {
                 objects.push((key.clone(), bytes));
@@ -113,6 +142,11 @@ impl<'a> Compactor<'a> {
             });
         }
 
+        // Only what was merged is reported as merged: the caller may delete
+        // the originals it is handed, and an object this pass skipped is not
+        // one it covered.
+        let merged_objects = objects.iter().map(|(key, _)| key.clone()).collect();
+
         // Merge objects into larger segments.
         let segments = self.merge_objects(objects)?;
 
@@ -121,7 +155,6 @@ impl<'a> Compactor<'a> {
             .iter()
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
-        let merged_objects = keys;
         let total_bytes_merged = segments.iter().map(|(_, bytes)| bytes.len() as u64).sum();
 
         Ok(CompactionResult {

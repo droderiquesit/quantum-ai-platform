@@ -10,7 +10,7 @@ use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompilerLimits, StrategyCompiler, WarningKind};
 use qip_strategy::ir::{ArithmeticOp, CompareOp, Expr, LogicalOp, Rule, StrategySpec, Type};
-use qip_strategy::model::{DistilledModel, TreeNode};
+use qip_strategy::model::{DistilledModel, ModelCalibration, TreeNode};
 use qip_strategy::program::{Node, NodeRef, Op, Program};
 use qip_strategy::runtime::StrategyRuntime;
 
@@ -1700,4 +1700,68 @@ fn a_compiled_strategy_never_exceeds_its_declared_cost_on_adversarial_inputs() {
             "tight budget should refuse evaluations"
         );
     }
+}
+
+// --- ADR 0149 decision 17: a calibration enters a digest only when present ---
+
+#[test]
+fn a_calibrated_model_has_a_different_digest_from_its_uncalibrated_form_and_an_uncalibrated_model_digests_exactly_as_before()
+ {
+    // The failure this prevents: appending a calibration part unconditionally
+    // would move the digest of every model a manifest or a signed pack already
+    // names, and the cell, which compares digests, would refuse them all at
+    // once. The literal below was produced by the digest before the field
+    // existed; it is the pin, not a value read back from the code under test.
+    let legacy = "m|linear|4607182418800017408|4611686018427387904";
+    let plain = DistilledModel::linear("m", 1.0, vec![2.0]).unwrap();
+    assert_eq!(
+        plain.digest(),
+        legacy,
+        "an uncalibrated digest must not move"
+    );
+
+    // An old serialised record has no `calibration` key; it must decode to
+    // "uncalibrated" and write back the bytes it was read from.
+    let old_record = r#"{"name":"m","form":{"linear":{"intercept":1.0,"coefficients":[2.0]}}}"#;
+    let decoded: DistilledModel = serde_json::from_str(old_record).expect("an old record decodes");
+    assert_eq!(decoded.calibration(), None);
+    assert_eq!(decoded.digest(), legacy);
+    assert_eq!(
+        serde_json::to_string(&decoded).expect("encodes"),
+        old_record
+    );
+
+    // Premise for the other half: the two forms differ in digest, and the
+    // calibrated one carries the version tag.
+    let calibrated = plain
+        .clone()
+        .with_calibration(ModelCalibration::new(0.5, 0.25).unwrap())
+        .unwrap();
+    assert_ne!(calibrated.digest(), plain.digest());
+    assert!(
+        calibrated
+            .digest()
+            .split('|')
+            .any(|part| part == "calibration/v1"),
+        "the calibration part is version-tagged: {}",
+        calibrated.digest()
+    );
+    // The legacy digest is a prefix: the part is appended, nothing before it moves.
+    assert!(calibrated.digest().starts_with(legacy));
+    // Two different calibrations are two different models.
+    let other = plain
+        .with_calibration(ModelCalibration::new(0.5, 0.5).unwrap())
+        .unwrap();
+    assert_ne!(other.digest(), calibrated.digest());
+
+    // The cell evaluates through `evaluate`: the calibration lands after the
+    // raw score (1 + 2*3 = 7 -> 0.5*7 + 0.25).
+    let value = calibrated.evaluate(&[3.0]).unwrap();
+    assert!(approx_eq(value, 3.75, 1e-12), "calibrated score {value}");
+}
+
+#[test]
+fn a_non_finite_calibration_is_refused_rather_than_stored() {
+    assert!(ModelCalibration::new(f64::NAN, 0.0).is_err());
+    assert!(ModelCalibration::new(1.0, f64::INFINITY).is_err());
 }

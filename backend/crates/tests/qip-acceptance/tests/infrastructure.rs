@@ -14097,3 +14097,44 @@ fn an_unbounded_or_missing_log_retention_is_found_by_the_scan() {
         .join("\n");
     assert_eq!(workload_bucket_retention(&removed), None);
 }
+
+/// R12-GCP-10032 (ADR 0156 §6d). A catalogue workload with a floor of zero
+/// states what a cold start costs its caller and why that is acceptable, in
+/// `cold_start_tolerance`, the way a floor above zero states
+/// `always_on_justification`. No latency figure is demanded: a
+/// seconds-per-workload SLO is an owner input, and inventing one here would be
+/// a number nobody measured. The field is read by this test and by a reviewer
+/// reading the diff, which is where the catalogue's other written
+/// justifications are read.
+///
+/// The first assertion is that a zero-floor workload exists, or the loop below
+/// holds over nothing.
+///
+/// Mutation: blank the api workload's `cold_start_tolerance`. The test fails
+/// naming `api`.
+#[test]
+fn a_workload_with_a_zero_instance_floor_states_what_a_cold_start_costs_its_caller() {
+    let workloads = catalogue_workloads();
+    let zero_floor: Vec<&(String, String)> = workloads
+        .iter()
+        .filter(|(_, body)| catalogue_field(body, "min_instances") == "0")
+        .collect();
+    assert!(
+        !zero_floor.is_empty(),
+        "no catalogue workload has a zero instance floor; the cold-start rule below is vacuous"
+    );
+    for (name, body) in zero_floor {
+        let tolerance = catalogue_field(body, "cold_start_tolerance");
+        assert!(
+            tolerance.len() > 40,
+            "{name} scales to zero and its `cold_start_tolerance` is {tolerance:?}: say what a \
+             cold start costs its caller and why that is acceptable, as a floor above zero \
+             must say why it is warm"
+        );
+    }
+    // The brains keep their floor of one, so a cold start is not a cost they
+    // have: nothing requests them, and a retired instance is a stopped cycle.
+    for (name, floor) in workloads_that_run_the_cycle_over_the_journal("min_instances") {
+        assert_eq!(floor, "1", "{name} must keep its warm instance");
+    }
+}

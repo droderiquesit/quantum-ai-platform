@@ -53,7 +53,7 @@
 //! No transport security: the bearer token travels over plaintext TCP, and
 //! `qip_transport::event_fabric::auth` says what that does and does not buy.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
 use qip_core::error::{Error, Result};
@@ -61,7 +61,7 @@ use qip_events::event_fabric::catalogue::{Catalogue, Grant, Permission};
 use qip_events::event_fabric::codec::{Batch, DecodeOutcome, MAX_BATCH_LEN};
 use qip_events::event_fabric::policy::{BATCH_SCHEMA_VERSION, QosClass, StreamPolicy};
 use qip_events::event_fabric::schema_id::Shape;
-use qip_events::registry::SchemaRegistry;
+use qip_events::registry::{SchemaDescriptor, SchemaRegistry};
 use qip_storage::segment::log::SegmentLogConfig;
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::event_fabric::protocol::{
@@ -227,7 +227,10 @@ impl Service {
             segments,
             schema_registry: RwLock::new(SchemaRegistry::new()),
         };
-        service.apply_catalogue(catalogue)?;
+        // The lock embedded in qip-events: the broker admits against the lock
+        // its image was built with and reads no file (ADR 0156 §1.2).
+        let descriptors = qip_events::registry::locked_descriptors()?;
+        service.apply_catalogue(catalogue, &descriptors)?;
         Ok(service)
     }
 
@@ -258,7 +261,9 @@ impl Service {
         &self.schema_registry
     }
 
-    /// Declare every stream in `catalogue`, register its batch schema, and
+    /// Declare every stream in `catalogue`, register its batch schema,
+    /// register `descriptors` (the schema lock's rows) in the service's
+    /// registry, and
     /// replace the grants in force with the catalogue's (FABRIC-018: a grant
     /// added to the catalogue is honoured without a restart).
     ///
@@ -267,7 +272,15 @@ impl Service {
     /// declared stream's policy, or removes a topic from a stream without a
     /// schema version bump — therefore changes nothing about who may do
     /// what.
-    pub fn apply_catalogue(&self, catalogue: &Catalogue) -> Result<()> {
+    pub fn apply_catalogue(
+        &self,
+        catalogue: &Catalogue,
+        descriptors: &[SchemaDescriptor],
+    ) -> Result<()> {
+        self.schema_registry
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .admit_all(descriptors.iter().cloned())?;
         let mut classes = BTreeMap::new();
         for (name, declaration) in catalogue.streams() {
             let policy = &declaration.policy;
@@ -284,16 +297,31 @@ impl Service {
                 stream_shape(&declaration.topics),
             )?;
             // A stream declared with no topic list admits any, as it always
-            // has; one that names topics admits exactly those.
+            // has: the committed `telemetry.local` names none because no
+            // registered body can be carried on it, and ADR 0156 §1.4's
+            // refusal of such a stream waits on one (see R12-FABRIC-8090).
+            // One that names topics admits exactly those, at the versions
+            // the lock holds for each, and a topic the lock holds no row
+            // for is refused here rather than streamed unchecked.
             if !declaration.topics.is_empty() {
-                self.broker.register_body_topics(
-                    name,
-                    declaration
-                        .topics
+                let mut admitted = BTreeMap::new();
+                for topic in &declaration.topics {
+                    let versions: BTreeSet<u32> = descriptors
                         .iter()
-                        .map(|topic| topic.name().to_string())
-                        .collect(),
-                )?;
+                        .filter(|d| d.topic == *topic)
+                        .map(|d| d.version)
+                        .collect();
+                    if versions.is_empty() {
+                        return Err(Error::invalid(format!(
+                            "stream '{name}' names topic '{}', which the schema lock holds no \
+                             row for; add its row (regenerate schemas.lock.json) or drop the \
+                             topic from the catalogue",
+                            topic.name()
+                        )));
+                    }
+                    admitted.insert(topic.name().to_string(), versions);
+                }
+                self.broker.register_body_schemas(name, admitted)?;
             }
             classes.insert(name.clone(), policy.qos_class());
         }

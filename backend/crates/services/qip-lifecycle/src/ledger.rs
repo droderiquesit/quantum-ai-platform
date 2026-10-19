@@ -149,10 +149,48 @@ impl LedgerEntry {
     }
 }
 
+/// How many strategies may stand outside retirement at once.
+///
+/// A working-set bound on records, not an exposure cap: capital limits are the
+/// corridors' and the envelopes'. Equal to the forecast tournament's
+/// `MAX_FORECASTERS` so the two registries are sized to one order, which
+/// `qip-kernel`'s tests pin. Nothing live is evicted to make room — a ledger
+/// that dropped a capital-holding strategy's record would hide it — so the
+/// bound is enforced by refusing a new candidate (ADR 0149 decision 15).
+pub const MAX_LIVE_STRATEGIES: usize = 4_096;
+
+/// What a retired strategy leaves in the ledger.
+///
+/// A retired strategy is terminal, so its detailed history is a record the
+/// event log holds and the ledger need not. The tombstone keeps the only parts
+/// that have a live consumer: where it stands (always retired), the rungs it
+/// stood on and when, why it was withdrawn, and a digest of the full history
+/// so a reviewer holding the log can check the compaction dropped nothing it
+/// should not have.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Tombstone {
+    /// Each move's destination rung and instant, in order; the path is
+    /// candidate followed by these.
+    pub moves: Vec<(GateStage, Timestamp)>,
+    /// The rationale of the retirement itself.
+    pub reason: String,
+    /// The retirement entry, kept whole: the one move of a retired strategy
+    /// that a reviewer reads first, and what [`LifecycleLedger::history`]
+    /// still returns for it.
+    pub retirement: LedgerEntry,
+    /// SHA-256 over the full history as it stood when it was compacted.
+    pub history_digest: String,
+}
+
 /// Every move every strategy has made.
 #[derive(Clone, Debug, Default)]
 pub struct LifecycleLedger {
     entries: BTreeMap<StrategyId, Vec<LedgerEntry>>,
+    /// Retired strategies, compacted. A retired id is refused for good from
+    /// here: `stage_of` reads `Retired` for a key in this map, so
+    /// `record_promotion` and `demote` refuse it exactly as they did while
+    /// the detailed entries were held.
+    retired: BTreeMap<StrategyId, Tombstone>,
     /// Where each move is counted, if whoever composed the ledger gave it a
     /// registry. Handed in rather than constructed, because a ledger that
     /// made its own registry would count into a series nothing scrapes; and
@@ -302,18 +340,39 @@ impl LifecycleLedger {
     /// no registration step, because a strategy nobody has promoted has
     /// exactly the permissions of one that was just proposed.
     pub fn stage_of(&self, strategy: &StrategyId) -> GateStage {
+        if self.retired.contains_key(strategy) {
+            return GateStage::Retired;
+        }
         self.entries
             .get(strategy)
             .and_then(|entries| entries.last())
             .map_or(GateStage::Candidate, |entry| entry.promotion.to)
     }
 
+    /// The detailed moves of a strategy that has not been retired. For a
+    /// retired one, only the retirement itself: the rest is compacted to a
+    /// [`Tombstone`], and its path is still [`Self::path`].
     pub fn history(&self, strategy: &StrategyId) -> &[LedgerEntry] {
+        if let Some(tombstone) = self.retired.get(strategy) {
+            return std::slice::from_ref(&tombstone.retirement);
+        }
         self.entries.get(strategy).map_or(&[], Vec::as_slice)
     }
 
+    /// Every strategy that was ever moved, live or retired.
     pub fn strategies(&self) -> impl Iterator<Item = &StrategyId> {
-        self.entries.keys()
+        self.entries.keys().chain(self.retired.keys())
+    }
+
+    /// The tombstone a retired strategy left, if it is retired.
+    pub fn tombstone(&self, strategy: &StrategyId) -> Option<&Tombstone> {
+        self.retired.get(strategy)
+    }
+
+    /// How many strategies the ledger holds in full, which is the live set:
+    /// a retired strategy is a tombstone, not an entry.
+    pub fn live_count(&self) -> usize {
+        self.entries.len()
     }
 
     /// The rungs a strategy has stood on, in order, starting at candidate.
@@ -323,6 +382,10 @@ impl LifecycleLedger {
     /// test suite asserts it cannot happen.
     pub fn path(&self, strategy: &StrategyId) -> Vec<GateStage> {
         let mut path = vec![GateStage::Candidate];
+        if let Some(tombstone) = self.retired.get(strategy) {
+            path.extend(tombstone.moves.iter().map(|(stage, _)| *stage));
+            return path;
+        }
         for entry in self.history(strategy) {
             path.push(entry.promotion.to);
         }
@@ -546,9 +609,50 @@ impl LifecycleLedger {
                 // becomes consequential.
                 horizon: None,
             });
+        if to == GateStage::Retired {
+            self.compact(strategy);
+        }
         self.record_move(names::STRATEGY_DEMOTIONS, record.from, record.to);
         self.reemit_corridor_policy(record.at);
         Ok(record)
+    }
+
+    /// Replace a just-retired strategy's entries with its tombstone.
+    ///
+    /// Called only from [`Self::demote`] after the retirement entry is
+    /// pushed, so the digest covers the retirement itself.
+    fn compact(&mut self, strategy: &StrategyId) {
+        let Some(entries) = self.entries.remove(strategy) else {
+            return;
+        };
+        let mut canonical = String::new();
+        for entry in &entries {
+            canonical.push_str(&format!(
+                "{}|{}|{}|{}|{}|{}\n",
+                entry.promotion.at.to_rfc3339(),
+                entry.promotion.from.as_str(),
+                entry.promotion.to.as_str(),
+                entry.promotion.approver.as_deref().unwrap_or("-"),
+                entry.promotion.rationale,
+                entry.promotion.evidence.join(";")
+            ));
+        }
+        let Some(retirement) = entries.last().cloned() else {
+            return;
+        };
+        let reason = retirement.promotion.rationale.clone();
+        self.retired.insert(
+            strategy.clone(),
+            Tombstone {
+                moves: entries
+                    .iter()
+                    .map(|entry| (entry.promotion.to, entry.promotion.at))
+                    .collect(),
+                reason,
+                retirement,
+                history_digest: qip_core::hash::sha256_hex(canonical.as_bytes()),
+            },
+        );
     }
 
     /// Withdraw a strategy for good.
