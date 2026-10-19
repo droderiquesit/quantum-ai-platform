@@ -87,6 +87,10 @@ impl GoldenSignals {
             "the share of this service's capacity in use; above one means it is over capacity \
              (saturation)",
         );
+        metrics.describe(
+            names::SERVICE_SATURATION_CHECKS,
+            "saturation readings judged against the declared ceiling: within or over",
+        );
         Self { metrics }
     }
 
@@ -116,8 +120,23 @@ impl GoldenSignals {
                  {used} of {capacity}; pass the service's real capacity"
             )));
         }
+        let ratio = used / capacity;
         self.metrics
-            .gauge(names::SERVICE_SATURATION, Labels::new(), used / capacity);
+            .gauge(names::SERVICE_SATURATION, Labels::new(), ratio);
+        // The gauge says how full the service is now; the `service-saturation`
+        // objective needs readings it can call good or bad, so each one is
+        // judged against the declared ceiling here, where it is known.
+        self.metrics.count(
+            names::SERVICE_SATURATION_CHECKS,
+            labels([(
+                "outcome",
+                if ratio <= crate::critical_paths::SERVICE_SATURATION_CEILING {
+                    "within"
+                } else {
+                    "over"
+                },
+            )]),
+        );
         Ok(())
     }
 }

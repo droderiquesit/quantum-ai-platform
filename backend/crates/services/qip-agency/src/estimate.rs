@@ -25,14 +25,24 @@
 
 use crate::attribution::{EffectAttribution, Identification};
 use crate::causal::StructuralModel;
-use qip_core::Error;
+use qip_core::{Error, sha256_hex};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Which method produced an estimate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EstimatorKind {
+    /// Two groups the caller formed ([`operator_formed_comparison`]). The
+    /// name is kept for the wire; the label it earns is
+    /// [`Identification::NotIdentified`].
     RandomisedExperiment,
+    /// A hold-out whose assignment this module drew ([`Experiment`]).
+    HoldOutExperiment,
+    /// A staged rollout whose waves this module drew ([`staged_experiment`]).
+    StagedExperiment,
+    MatchedControl,
+    BayesianCausal,
     DifferenceInDifferences,
     SyntheticControl,
     InstrumentalVariable,
@@ -115,17 +125,522 @@ fn sample(what: &str, values: &[f64], at_least: usize) -> Result<(f64, f64), Err
     Ok((mean, variance))
 }
 
-/// A randomised (or staged, randomly assigned) experiment: the difference in
-/// means between treated and control, with its standard error.
-pub fn randomised_experiment(treated: &[f64], control: &[f64]) -> Result<Estimate, Error> {
+/// The difference in means between treated and control, with its standard
+/// error, labelled with what the caller's method earns. Private on purpose:
+/// the label is the caller's claim, so it is written at each call site where
+/// it is earned ([`Experiment::analyse`], from an assignment drawn here) and
+/// where it is not ([`operator_formed_comparison`]), never defaulted.
+fn difference_in_means(
+    treated: &[f64],
+    control: &[f64],
+    kind: EstimatorKind,
+    identification: Identification,
+) -> Result<Estimate, Error> {
     let (mt, vt) = sample("the treated group", treated, 2)?;
     let (mc, vc) = sample("the control group", control, 2)?;
     Ok(Estimate {
-        kind: EstimatorKind::RandomisedExperiment,
-        identification: Identification::Experiment,
+        kind,
+        identification,
         effect: mt - mc,
         standard_error: Some((vt / treated.len() as f64 + vc / control.len() as f64).sqrt()),
         observations: treated.len() + control.len(),
+    })
+}
+
+/// R12-COVERAGE-7188: two groups the caller formed, compared by difference
+/// in means. The estimate is labelled [`Identification::NotIdentified`].
+///
+/// The failure prevented is an experiment that earns its label from its
+/// author. This function used to label the comparison
+/// `Identification::Experiment` on the strength of the caller saying the
+/// groups were randomised; an operator whose hold-out had been refused (a
+/// held-out cell dropped) could resubmit the same numbers as two groups and
+/// widen autonomy on a selection effect. Nothing here can see how the groups
+/// were formed, so the label is the one [`correlation`] gets, and
+/// `ActionPolicy::widen` refuses it. Evidence that may widen comes from
+/// [`Experiment`] or [`staged_experiment`], where the assignment is a pure
+/// function of a committed seed.
+pub fn operator_formed_comparison(treated: &[f64], control: &[f64]) -> Result<Estimate, Error> {
+    difference_in_means(
+        treated,
+        control,
+        EstimatorKind::RandomisedExperiment,
+        Identification::NotIdentified,
+    )
+}
+
+/// R12-COVERAGE-7188: a randomised hold-out across units (cells, venues or
+/// time windows) whose assignment is drawn here, from a seed, and not
+/// chosen by whoever supplies the outcomes.
+///
+/// The failure prevented is an experiment that earns its label from its
+/// author. [`operator_formed_comparison`] takes two groups it cannot check,
+/// and so earns no label; an operator who put the units that did well in the
+/// treated group would otherwise get `Identification::Experiment` for a
+/// selection effect.
+/// Here the split is a pure function of the seed and the unit names: units
+/// are ranked by the SHA-256 of `seed`, a newline and the unit, and the
+/// first `held_out` are the control. Anyone holding the seed and the unit
+/// list recomputes who was held out, and the outcomes are refused unless
+/// they cover exactly those units, so the analysis cannot drop an
+/// inconvenient one. The seed must be committed (journaled) before any
+/// outcome exists; that ordering is the caller's, and nothing here can
+/// prove it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Experiment {
+    treated: BTreeSet<String>,
+    control: BTreeSet<String>,
+}
+
+impl Experiment {
+    /// Draw the hold-out. `hold_out_bps` is the share of units held out, in
+    /// basis points `1..=9999`; at least two units must land on each side,
+    /// because a group of one has no variance to compare with. Refused, not
+    /// rounded to fit, when they cannot.
+    pub fn design(seed: &str, units: &[String], hold_out_bps: u32) -> Result<Self, Error> {
+        if seed.trim().is_empty() {
+            return Err(Error::invalid(
+                "an experiment needs a seed committed before its outcomes exist; got a blank one",
+            ));
+        }
+        if !(1..=9_999).contains(&hold_out_bps) {
+            return Err(Error::invalid(format!(
+                "hold_out_bps {hold_out_bps} is outside 1..=9999; a hold-out of none or of all \
+                 is not an experiment"
+            )));
+        }
+        let mut distinct = BTreeSet::new();
+        for unit in units {
+            if unit.trim().is_empty() || !distinct.insert(unit.as_str()) {
+                return Err(Error::invalid(format!(
+                    "experiment unit `{unit}` is blank or listed twice; units are distinct"
+                )));
+            }
+        }
+        let held_out = units.len() * hold_out_bps as usize / 10_000;
+        if held_out < 2 || units.len() - held_out < 2 {
+            return Err(Error::invalid(format!(
+                "{} unit(s) held out {hold_out_bps} bps leaves {held_out} in control and {} \
+                 treated; each side needs at least two",
+                units.len(),
+                units.len().saturating_sub(held_out)
+            )));
+        }
+        let mut ranked: Vec<(String, &str)> = distinct
+            .into_iter()
+            .map(|unit| (sha256_hex(format!("{seed}\n{unit}").as_bytes()), unit))
+            .collect();
+        ranked.sort();
+        let control = ranked
+            .iter()
+            .take(held_out)
+            .map(|(_, unit)| (*unit).to_string())
+            .collect();
+        let treated = ranked
+            .iter()
+            .skip(held_out)
+            .map(|(_, unit)| (*unit).to_string())
+            .collect();
+        Ok(Self { treated, control })
+    }
+
+    pub fn treated(&self) -> &BTreeSet<String> {
+        &self.treated
+    }
+
+    pub fn control(&self) -> &BTreeSet<String> {
+        &self.control
+    }
+
+    /// The effect of treatment on `outcomes`, one figure per unit. Refused
+    /// unless the outcomes cover exactly the designed units: a missing one
+    /// is a unit dropped after the fact, an extra one was never assigned.
+    pub fn analyse(&self, outcomes: &BTreeMap<String, f64>) -> Result<Estimate, Error> {
+        if let Some(unit) = outcomes
+            .keys()
+            .find(|u| !self.treated.contains(*u) && !self.control.contains(*u))
+        {
+            return Err(Error::denied(format!(
+                "outcome for `{unit}`, which the design never assigned"
+            )));
+        }
+        let group = |units: &BTreeSet<String>| -> Result<Vec<f64>, Error> {
+            units
+                .iter()
+                .map(|unit| {
+                    outcomes.get(unit).copied().ok_or_else(|| {
+                        Error::denied(format!(
+                            "no outcome for `{unit}`, which the design assigned; a unit is not \
+                             dropped after the fact"
+                        ))
+                    })
+                })
+                .collect()
+        };
+        let treated = group(&self.treated)?;
+        let control = group(&self.control)?;
+        difference_in_means(
+            &treated,
+            &control,
+            EstimatorKind::HoldOutExperiment,
+            Identification::Experiment,
+        )
+    }
+
+    /// [`Self::analyse`] at each horizon (seconds after the intervention),
+    /// every figure identified by the same assignment.
+    pub fn analyse_horizons(
+        &self,
+        horizons: &BTreeMap<u64, BTreeMap<String, f64>>,
+    ) -> Result<BTreeMap<u64, Estimate>, Error> {
+        if horizons.is_empty() {
+            return Err(Error::invalid(
+                "an experiment is analysed at one horizon or more",
+            ));
+        }
+        horizons
+            .iter()
+            .map(|(horizon, outcomes)| Ok((*horizon, self.analyse(outcomes)?)))
+            .collect()
+    }
+}
+
+/// R12-AGENCY-6102: the stage each unit is rolled out in, drawn from `seed`
+/// the way [`Experiment::design`] draws a hold-out: units ranked by the
+/// SHA-256 of the seed and the unit, then cut into `stages` consecutive
+/// waves of as equal a size as the unit count allows (earlier waves take
+/// the remainder). Stage 0 is rolled out first.
+pub fn stage_assignment(
+    seed: &str,
+    units: &[String],
+    stages: usize,
+) -> Result<BTreeMap<String, usize>, Error> {
+    if seed.trim().is_empty() {
+        return Err(Error::invalid(
+            "a staged experiment needs a seed committed before its outcomes exist; got a blank one",
+        ));
+    }
+    if stages < 2 {
+        return Err(Error::invalid(
+            "a staged rollout has at least two stages; one stage is everyone at once",
+        ));
+    }
+    let mut distinct = BTreeSet::new();
+    for unit in units {
+        if unit.trim().is_empty() || !distinct.insert(unit.as_str()) {
+            return Err(Error::invalid(format!(
+                "staged unit `{unit}` is blank or listed twice; units are distinct"
+            )));
+        }
+    }
+    // The smallest wave is both the fewest treated in the first period and
+    // the fewest not-yet-treated in the last; a group of one has no variance.
+    let narrowest = units.len() / stages;
+    if narrowest < 2 {
+        return Err(Error::invalid(format!(
+            "{} unit(s) in {stages} stages leaves a wave of {narrowest}; each period needs at \
+             least two units treated and two not yet treated",
+            units.len()
+        )));
+    }
+    let mut ranked: Vec<(String, &str)> = distinct
+        .into_iter()
+        .map(|unit| (sha256_hex(format!("{seed}\n{unit}").as_bytes()), unit))
+        .collect();
+    ranked.sort();
+    let (base, extra) = (units.len() / stages, units.len() % stages);
+    let mut out = BTreeMap::new();
+    let mut at = 0;
+    for stage in 0..stages {
+        let size = base + usize::from(stage < extra);
+        for (_, unit) in &ranked[at..at + size] {
+            out.insert((*unit).to_string(), stage);
+        }
+        at += size;
+    }
+    Ok(out)
+}
+
+/// A staged (stepped) rollout whose waves were drawn here: in period `p`
+/// (`1..stages`) the units of stages `0..p` are treated and the rest are not
+/// yet, so every period is a randomised comparison; the effect is the mean
+/// of the periods' differences in means. `outcomes` maps each period to one
+/// figure per unit and must hold exactly periods `1..stages`, each covering
+/// exactly the units — a period or a unit left out is a result left out.
+pub fn staged_experiment(
+    seed: &str,
+    units: &[String],
+    stages: usize,
+    outcomes: &BTreeMap<usize, BTreeMap<String, f64>>,
+) -> Result<Estimate, Error> {
+    let stage_of = stage_assignment(seed, units, stages)?;
+    let wanted: BTreeSet<usize> = (1..stages).collect();
+    let given: BTreeSet<usize> = outcomes.keys().copied().collect();
+    if wanted != given {
+        return Err(Error::denied(format!(
+            "a {stages}-stage rollout is measured in periods {wanted:?}; outcomes were given \
+             for {given:?}"
+        )));
+    }
+    let mut differences = Vec::with_capacity(outcomes.len());
+    let mut observations = 0;
+    for (period, per_unit) in outcomes {
+        if let Some(unit) = per_unit.keys().find(|u| !stage_of.contains_key(*u)) {
+            return Err(Error::denied(format!(
+                "period {period} holds an outcome for `{unit}`, which the design never assigned"
+            )));
+        }
+        let (mut treated, mut waiting) = (Vec::new(), Vec::new());
+        for (unit, stage) in &stage_of {
+            let value = per_unit.get(unit).copied().ok_or_else(|| {
+                Error::denied(format!(
+                    "period {period} has no outcome for `{unit}`; a unit is not dropped after \
+                     the fact"
+                ))
+            })?;
+            if *stage < *period {
+                treated.push(value);
+            } else {
+                waiting.push(value);
+            }
+        }
+        let (mt, vt) = sample("the treated units", &treated, 2)?;
+        let (mw, vw) = sample("the not-yet-treated units", &waiting, 2)?;
+        differences.push((
+            mt - mw,
+            vt / treated.len() as f64 + vw / waiting.len() as f64,
+        ));
+        observations += treated.len() + waiting.len();
+    }
+    let periods = differences.len() as f64;
+    Ok(Estimate {
+        kind: EstimatorKind::StagedExperiment,
+        identification: Identification::Experiment,
+        effect: differences.iter().map(|(d, _)| d).sum::<f64>() / periods,
+        // Periods share units, so their errors are not independent; summing
+        // the variances as if they were understates nothing the caller may
+        // rely on, and a tighter figure would need the covariance.
+        standard_error: Some(differences.iter().map(|(_, v)| v).sum::<f64>().sqrt() / periods),
+        observations,
+    })
+}
+
+/// Nearest-neighbour matching on observed covariates: each treated unit is
+/// paired, without replacement and in the order given, with the closest
+/// unused unit of the pool (Euclidean distance on the covariates as given),
+/// and the effect is the mean treated-minus-matched outcome.
+///
+/// Identified only conditionally on the covariates: it assumes nothing
+/// unmeasured moves both treatment and outcome, which the label says. A pair
+/// farther apart than `caliper` is refused, not dropped — dropping the
+/// treated units with no comparable control would estimate the effect on the
+/// easy cases and call it the effect.
+pub fn matched_control(
+    treated_covariates: &[Vec<f64>],
+    treated_outcomes: &[f64],
+    pool_covariates: &[Vec<f64>],
+    pool_outcomes: &[f64],
+    caliper: f64,
+) -> Result<Estimate, Error> {
+    if !caliper.is_finite() || caliper <= 0.0 {
+        return Err(Error::invalid(
+            "the caliper is the farthest apart a matched pair may be; it must be finite and positive",
+        ));
+    }
+    if treated_covariates.len() != treated_outcomes.len()
+        || pool_covariates.len() != pool_outcomes.len()
+    {
+        return Err(Error::invalid(
+            "every unit needs one outcome beside its covariates",
+        ));
+    }
+    sample("the treated outcomes", treated_outcomes, 2)?;
+    if pool_outcomes.len() < treated_outcomes.len() {
+        return Err(Error::invalid(format!(
+            "{} candidate controls cannot match {} treated units without replacement",
+            pool_outcomes.len(),
+            treated_outcomes.len()
+        )));
+    }
+    sample("the pool outcomes", pool_outcomes, 1)?;
+    let dims = treated_covariates.first().map_or(0, Vec::len);
+    if dims == 0 {
+        return Err(Error::invalid(
+            "matching needs at least one observed covariate; with none every unit matches every other",
+        ));
+    }
+    for row in treated_covariates.iter().chain(pool_covariates) {
+        if row.len() != dims || row.iter().any(|v| !v.is_finite()) {
+            return Err(Error::invalid(format!(
+                "every unit needs {dims} finite covariate(s)"
+            )));
+        }
+    }
+    let mut used = vec![false; pool_covariates.len()];
+    let mut gaps = Vec::with_capacity(treated_covariates.len());
+    for (i, row) in treated_covariates.iter().enumerate() {
+        let best = pool_covariates
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| !used[*j])
+            .map(|(j, other)| {
+                let distance = row
+                    .iter()
+                    .zip(other)
+                    .map(|(a, b)| (a - b).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                (distance, j)
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        match best {
+            Some((distance, j)) if distance <= caliper => {
+                used[j] = true;
+                gaps.push(treated_outcomes[i] - pool_outcomes[j]);
+            }
+            _ => {
+                return Err(Error::denied(format!(
+                    "treated unit {i} has no unused control within {caliper} on its covariates; \
+                     the effect is not estimated over the units that happen to have a match"
+                )));
+            }
+        }
+    }
+    let (effect, variance) = sample("the matched gaps", &gaps, 2)?;
+    Ok(Estimate {
+        kind: EstimatorKind::MatchedControl,
+        identification: Identification::Observational {
+            strategy: "nearest-neighbour matching on observed covariates within a caliper, \
+                       assuming no unmeasured confounder"
+                .into(),
+        },
+        effect,
+        standard_error: Some((variance / gaps.len() as f64).sqrt()),
+        observations: treated_outcomes.len() + gaps.len(),
+    })
+}
+
+/// A Bayesian linear causal model, `y = a + tau d + beta x + noise`, with an
+/// independent `Normal(0, prior_sd^2)` prior on `tau` and on every `beta`
+/// and a flat prior on the intercept. The effect is the posterior mean of
+/// `tau` and its standard error the posterior standard deviation, with the
+/// noise variance set to the least-squares residual variance.
+///
+/// The prior is stated by the caller and does the shrinking: a narrow one
+/// pulls the effect toward zero however the data lean. Identified only
+/// conditionally on `covariates` capturing every confounder, which the label
+/// says; the Bayesian arithmetic adds uncertainty, not identification.
+pub fn bayesian_causal(
+    treatment: &[f64],
+    covariates: &[Vec<f64>],
+    outcome: &[f64],
+    prior_sd: f64,
+) -> Result<Estimate, Error> {
+    if !prior_sd.is_finite() || prior_sd <= 0.0 {
+        return Err(Error::invalid(
+            "prior_sd is the width of the prior on the effect; it must be finite and positive",
+        ));
+    }
+    let n = outcome.len();
+    if treatment.len() != n || covariates.len() != n {
+        return Err(Error::invalid(
+            "treatment, covariates and outcome must be observed on the same units",
+        ));
+    }
+    sample("the outcome", outcome, 5)?;
+    sample("the treatment indicator", treatment, 5)?;
+    // Exact bit patterns: an indicator is 0 or 1, not something near them.
+    let (zero, one) = (0.0f64.to_bits(), 1.0f64.to_bits());
+    if treatment
+        .iter()
+        .any(|d| d.to_bits() != zero && d.to_bits() != one)
+    {
+        return Err(Error::invalid(
+            "the treatment is an indicator: 0 or 1 per unit",
+        ));
+    }
+    let treated = treatment.iter().filter(|d| d.to_bits() == one).count();
+    if treated < 2 || n - treated < 2 {
+        return Err(Error::invalid(format!(
+            "{treated} treated of {n}: each side needs at least two units"
+        )));
+    }
+    let k = covariates.first().map_or(0, Vec::len);
+    if covariates
+        .iter()
+        .any(|row| row.len() != k || row.iter().any(|v| !v.is_finite()))
+    {
+        return Err(Error::invalid(
+            "every unit needs the same number of finite covariates",
+        ));
+    }
+    // Centre every column so the flat intercept drops out.
+    let p = 1 + k;
+    let mut columns: Vec<Vec<f64>> = Vec::with_capacity(p);
+    columns.push(treatment.to_vec());
+    for c in 0..k {
+        columns.push(covariates.iter().map(|row| row[c]).collect());
+    }
+    for column in &mut columns {
+        let mean = column.iter().sum::<f64>() / n as f64;
+        column.iter_mut().for_each(|v| *v -= mean);
+    }
+    let y_mean = outcome.iter().sum::<f64>() / n as f64;
+    let y: Vec<f64> = outcome.iter().map(|v| v - y_mean).collect();
+    let gram = |ridge: f64| -> Vec<Vec<f64>> {
+        (0..p)
+            .map(|i| {
+                (0..p)
+                    .map(|j| {
+                        columns[i]
+                            .iter()
+                            .zip(&columns[j])
+                            .map(|(a, b)| a * b)
+                            .sum::<f64>()
+                            + if i == j { ridge } else { 0.0 }
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let moment: Vec<f64> = (0..p)
+        .map(|i| columns[i].iter().zip(&y).map(|(a, b)| a * b).sum())
+        .collect();
+    let collinear = || {
+        Error::numeric(
+            "the treatment is collinear with the covariates; its effect is not separable",
+        )
+    };
+    let ols = crate::causal::solve(gram(0.0), moment.clone()).ok_or_else(collinear)?;
+    let dof = n as f64 - 1.0 - p as f64;
+    if dof < 1.0 {
+        return Err(Error::invalid(format!(
+            "{n} units leave {dof} residual degree(s) of freedom for {p} coefficient(s)"
+        )));
+    }
+    let residual: f64 = (0..n)
+        .map(|r| {
+            let fit: f64 = (0..p).map(|i| ols[i] * columns[i][r]).sum();
+            (y[r] - fit).powi(2)
+        })
+        .sum::<f64>()
+        / dof;
+    // Posterior precision / sigma^2 = X'X + (sigma^2 / prior_sd^2) I.
+    let ridge = residual / (prior_sd * prior_sd);
+    let posterior = crate::causal::solve(gram(ridge), moment).ok_or_else(collinear)?;
+    let mut unit = vec![0.0; p];
+    unit[0] = 1.0;
+    let column = crate::causal::solve(gram(ridge), unit).ok_or_else(collinear)?;
+    Ok(Estimate {
+        kind: EstimatorKind::BayesianCausal,
+        identification: Identification::Observational {
+            strategy: "Bayesian linear model adjusting for the observed covariates under a stated \
+                       Gaussian prior, assuming no unmeasured confounder"
+                .into(),
+        },
+        effect: posterior[0],
+        standard_error: Some((residual * column[0]).max(0.0).sqrt()),
+        observations: n,
     })
 }
 
@@ -354,6 +869,36 @@ pub fn correlation(x: &[f64], y: &[f64]) -> Result<Estimate, Error> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum EstimateInput {
+    /// A hold-out drawn here from `seed` ([`Experiment`]); the operator
+    /// supplies the units and their outcomes, never the assignment.
+    HoldOutExperiment {
+        seed: String,
+        units: Vec<String>,
+        hold_out_bps: u32,
+        outcomes: BTreeMap<String, f64>,
+    },
+    StagedExperiment {
+        seed: String,
+        units: Vec<String>,
+        stages: usize,
+        outcomes: BTreeMap<usize, BTreeMap<String, f64>>,
+    },
+    MatchedControl {
+        treated_covariates: Vec<Vec<f64>>,
+        treated_outcomes: Vec<f64>,
+        pool_covariates: Vec<Vec<f64>>,
+        pool_outcomes: Vec<f64>,
+        caliper: f64,
+    },
+    BayesianCausal {
+        treatment: Vec<f64>,
+        covariates: Vec<Vec<f64>>,
+        outcome: Vec<f64>,
+        prior_sd: f64,
+    },
+    /// Two groups the operator formed. Runs, and earns
+    /// [`Identification::NotIdentified`], so it widens nothing; use
+    /// `HoldOutExperiment` for evidence that may.
     RandomisedExperiment {
         treated: Vec<f64>,
         control: Vec<f64>,
@@ -385,8 +930,39 @@ impl EstimateInput {
     /// Run the estimator the input names.
     pub fn estimate(&self) -> Result<Estimate, Error> {
         match self {
+            Self::HoldOutExperiment {
+                seed,
+                units,
+                hold_out_bps,
+                outcomes,
+            } => Experiment::design(seed, units, *hold_out_bps)?.analyse(outcomes),
+            Self::StagedExperiment {
+                seed,
+                units,
+                stages,
+                outcomes,
+            } => staged_experiment(seed, units, *stages, outcomes),
+            Self::MatchedControl {
+                treated_covariates,
+                treated_outcomes,
+                pool_covariates,
+                pool_outcomes,
+                caliper,
+            } => matched_control(
+                treated_covariates,
+                treated_outcomes,
+                pool_covariates,
+                pool_outcomes,
+                *caliper,
+            ),
+            Self::BayesianCausal {
+                treatment,
+                covariates,
+                outcome,
+                prior_sd,
+            } => bayesian_causal(treatment, covariates, outcome, *prior_sd),
             Self::RandomisedExperiment { treated, control } => {
-                randomised_experiment(treated, control)
+                operator_formed_comparison(treated, control)
             }
             Self::DifferenceInDifferences {
                 treated_before,

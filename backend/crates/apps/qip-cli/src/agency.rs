@@ -71,11 +71,14 @@
 
 use qip_agency::attribution::EffectAttribution;
 use qip_agency::autonomy::ActionPolicy;
+use qip_agency::causal::Scenario;
+use qip_agency::conduct_brain::{EvidenceDecl, EvidenceManifest, HoldingsList};
 use qip_agency::engine::{
     Adapter, Governance, Learning, LearningOutcome, Outcome, Report, Request, learn_shadowed,
-    run_governed, widen,
+    run_governed_with, widen,
 };
 use qip_agency::estimate::EstimateInput;
+use qip_agency::generate::ScenarioSource;
 use qip_agency::guard::{ActionGuard, GuardPolicy};
 use qip_agency::journal::{self, PassEntry, Provenance, WideningOutcome};
 use qip_agency::memory::ActionOutcomeMemory;
@@ -86,8 +89,10 @@ use qip_contracts::action::Method;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Decimal, SystemClock, Timestamp};
 use qip_events::EventLog;
+use qip_twin::futures::{FutureTree, TreeConfig, TwinState, WorldDriver};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// Every pass cleared every gate.
 pub const ADMITTED: u8 = 0;
@@ -151,6 +156,23 @@ pub struct AgencyPolicy {
     /// policy document's hash, so which revocations stood is on the record.
     #[serde(default)]
     pub revoked_tools: Vec<String>,
+    /// The evidence the operator holds (R12-AGENCY-1056 / 1057): every
+    /// citation of every draft is resolved against these records, by id, for
+    /// its recorded source and its recorded statement. The requester writes
+    /// the draft and the citation; the operator writes this list, so a
+    /// citation naming evidence that is not here, or claiming what its record
+    /// does not say, withholds the pass. A policy with no list holds no
+    /// evidence, and every pass is withheld: absence is not a licence to cite
+    /// anything.
+    #[serde(default)]
+    pub evidence: Vec<EvidenceDecl>,
+    /// The instruments and products the platform is positioned in
+    /// (R12-AGENCY-1066). A draft naming one, as whole words, must carry a
+    /// `position` disclosure with text, or the pass is withheld as
+    /// undisclosed promotion. An empty list is the operator saying the
+    /// platform holds nothing; a binary that has positions lists them.
+    #[serde(default)]
+    pub holdings: Vec<String>,
 }
 
 /// A request to widen one class's policy, with the data to check it on.
@@ -163,11 +185,85 @@ pub struct WideningDecl {
     pub evidence: EstimateInput,
 }
 
+/// R12-AGENCY-6088: a market digital twin the pass is simulated against, in
+/// addition to the request's declared scenarios. The twin is fitted here from
+/// the series the document supplies, read only at or before `as_of`, and each
+/// of its live synthetic futures becomes one scenario under every structural
+/// model.
+///
+/// `bind` names, per structural variable, the instrument whose hypothesised
+/// move over the horizon sets that variable in the scenario. The branch states
+/// the move in basis points and nothing rescales it, so a bound variable is
+/// one the request states in basis points; a binding that names an instrument
+/// the twin does not hold is refused rather than left at its declared value.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TwinDecl {
+    pub as_of: Timestamp,
+    pub series: BTreeMap<String, Vec<(Timestamp, f64)>>,
+    pub drivers: Vec<WorldDriver>,
+    pub config: TreeConfig,
+    pub bind: BTreeMap<String, String>,
+}
+
+/// A grown future tree as a [`ScenarioSource`].
+#[derive(Debug)]
+struct TwinScenarios {
+    scenarios: Vec<Scenario>,
+}
+
+impl TwinScenarios {
+    fn grow(decl: &TwinDecl) -> Result<Self> {
+        if decl.bind.is_empty() {
+            return Err(Error::invalid(
+                "the twin binds no structural variable to an instrument, so its futures would \
+                 change nothing in any simulation",
+            ));
+        }
+        let state = TwinState::fit(&decl.series, decl.as_of)?;
+        let tree = FutureTree::grow(&state, &decl.drivers, decl.config.clone())?;
+        let mut scenarios = Vec::new();
+        for branch in tree.live() {
+            let mut exogenous = BTreeMap::new();
+            for (variable, instrument) in &decl.bind {
+                let impact = branch.impact_bps.get(instrument).ok_or_else(|| {
+                    Error::invalid(format!(
+                        "`{variable}` is bound to instrument `{instrument}`, which twin branch \
+                         `{}` does not hold",
+                        branch.id
+                    ))
+                })?;
+                exogenous.insert(variable.clone(), *impact);
+            }
+            scenarios.push(Scenario {
+                name: format!("twin:{}", branch.id),
+                exogenous,
+            });
+        }
+        if scenarios.is_empty() {
+            return Err(Error::invalid(
+                "the twin has no live future to simulate against",
+            ));
+        }
+        Ok(Self { scenarios })
+    }
+}
+
+impl ScenarioSource for TwinScenarios {
+    fn scenarios(&self) -> Result<Vec<Scenario>> {
+        Ok(self.scenarios.clone())
+    }
+}
+
 /// One pass's document: the engine's request, and what this binary adds.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PassDocument {
     #[serde(flatten)]
     pub request: Request,
+    /// A market twin whose synthetic futures the pass is also simulated
+    /// against (R12-AGENCY-6088).
+    #[serde(default)]
+    pub twin: Option<TwinDecl>,
     /// Ask to widen a class's policy before this pass runs.
     #[serde(default)]
     pub widening: Option<WideningDecl>,
@@ -258,7 +354,11 @@ impl Session {
                  unregistered, so declare the tools the agency may use",
             ));
         }
-        let mut guard = ActionGuard::from_policy(policy.guard)?;
+        let manifest = EvidenceManifest::new(policy.evidence)?;
+        let holdings = HoldingsList::new(policy.holdings)?;
+        let mut guard = ActionGuard::from_policy(policy.guard)?
+            .with_evidence(Arc::new(manifest))
+            .with_holdings(Arc::new(holdings));
         let register = EligibilityRegister::from_records(policy.eligibility)?;
         let mut policies = BTreeMap::new();
         for decl in policy.action_policies {
@@ -424,13 +524,25 @@ impl Session {
         let goal_target = document.request.goal.target_state.clone();
         let acting = document.request.goal.acting_identity.clone();
         let audit_from = self.guard.audit().len();
-        let report = run_governed(
+        let twin = document
+            .twin
+            .as_ref()
+            .map(TwinScenarios::grow)
+            .transpose()?;
+        if twin.is_some() && document.request.structural.is_none() {
+            return Err(Error::invalid(
+                "the request names a twin and declares no `structural` model; there is nothing \
+                 to simulate its futures under",
+            ));
+        }
+        let report = run_governed_with(
             document.request,
             Governance {
                 policy,
                 guard: Some(&mut self.guard),
                 eligibility: Some((&self.register, now)),
             },
+            twin.as_ref().map(|t| t as &dyn ScenarioSource),
             &mut Unwired,
         )?;
         let learning = self.learn(number, &report, &goal_target)?;
@@ -516,6 +628,23 @@ fn render(
             .cloned()
             .unwrap_or_else(|| format!("proposal {}", index + 1));
         lines.push(format!("refused {label}: {}", refusal.message()));
+    }
+    if let Some(blocked) = &report.blocked {
+        lines.push(format!(
+            "plan withheld and kept: {} step(s), {} the guard refuses even alone",
+            blocked.steps.len(),
+            blocked.offending.len()
+        ));
+        lines.push(match &blocked.alternative {
+            qip_agency::engine::Alternative::Reduced(steps) => format!(
+                "truthful alternative, proposed and not sent: the same plan without the refused \
+                 step(s), {} step(s) remaining",
+                steps.len()
+            ),
+            qip_agency::engine::Alternative::NoAction(why) => {
+                format!("truthful alternative: do nothing; {why}")
+            }
+        });
     }
     if let Some(chain) = &report.approvals {
         lines.push(format!(

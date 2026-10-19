@@ -37,6 +37,11 @@
 //! way to create it.
 
 use crate::tournament::{Measure, Scorecard};
+use qip_contracts::challenge::{
+    ChallengeRequest, ChallengeRequestFields, ChallengeTarget, ChallengeVerdict, CriticOutcome,
+    CriticReport, VerificationResult, VerificationResultFields,
+};
+use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -187,6 +192,65 @@ pub struct Verification {
     pub at: Timestamp,
     pub findings: Vec<CriticFinding>,
     pub verdict: SocietyVerdict,
+}
+
+impl Verification {
+    /// This record as the §27 [`VerificationResult`] answering `request_id`.
+    ///
+    /// The contract cross-checks the verdict against the findings, so a
+    /// society whose `conclude` ever disagreed with its own critics would be
+    /// refused here rather than released.
+    pub fn as_result(&self, request_id: &str) -> Result<VerificationResult> {
+        let target = match &self.target {
+            Target::Prediction {
+                hypothesis_id,
+                subject,
+            } => ChallengeTarget::Prediction {
+                hypothesis_id: hypothesis_id.clone(),
+                subject: subject.clone(),
+            },
+            Target::Model { reference } => ChallengeTarget::Model {
+                reference: reference.clone(),
+            },
+        };
+        let reports = self
+            .findings
+            .iter()
+            .map(|finding| CriticReport {
+                critic: finding.critic.as_str().to_string(),
+                outcome: match &finding.verdict {
+                    CriticVerdict::Survived { examined } => CriticOutcome::Survived {
+                        examined: examined.clone(),
+                    },
+                    CriticVerdict::Refuted { reason } => CriticOutcome::Refuted {
+                        reason: reason.clone(),
+                    },
+                    CriticVerdict::Abstained { missing } => CriticOutcome::Abstained {
+                        missing: missing.clone(),
+                    },
+                },
+            })
+            .collect();
+        let verdict = match &self.verdict {
+            SocietyVerdict::Survived => ChallengeVerdict::Survived,
+            SocietyVerdict::Refuted { by, .. } => ChallengeVerdict::Refuted {
+                by: by.iter().map(|kind| kind.as_str().to_string()).collect(),
+            },
+            SocietyVerdict::Unverified { examined } => ChallengeVerdict::Unverified {
+                examined: u32::try_from(*examined).map_err(|_| {
+                    Error::invalid("examined count does not fit the contract's u32")
+                })?,
+            },
+        };
+        VerificationResult::new(VerificationResultFields {
+            schema_version: 1,
+            request_id: request_id.to_string(),
+            target,
+            reports,
+            verdict,
+            concluded_at: self.at,
+        })
+    }
 }
 
 /// One item of evidence, as the critics see it.
@@ -708,6 +772,91 @@ impl VerifierSociety {
         )
     }
 
+    /// The request that asks every critic in the society to attack
+    /// `dossier`'s prediction (R12-REASON-9032).
+    pub fn request_for_prediction(
+        &self,
+        request_id: impl Into<String>,
+        dossier: &PredictionDossier,
+        requested_by: impl Into<String>,
+        at: Timestamp,
+    ) -> Result<ChallengeRequest> {
+        ChallengeRequest::new(ChallengeRequestFields {
+            schema_version: 1,
+            request_id: request_id.into(),
+            target: ChallengeTarget::Prediction {
+                hypothesis_id: dossier.hypothesis_id.clone(),
+                subject: dossier.subject.clone(),
+            },
+            critics: self
+                .critics
+                .iter()
+                .map(|critic| critic.kind().as_str().to_string())
+                .collect(),
+            requested_by: requested_by.into(),
+            requested_at: at,
+        })
+    }
+
+    /// Answer a [`ChallengeRequest`] over a prediction: only the critics it
+    /// names attack, and what comes back is the contract result, checked
+    /// against its own reports and against the request.
+    ///
+    /// Refuses a request that targets a different hypothesis or subject from
+    /// the dossier, or that names a critic this society does not hold — a
+    /// request answered by fewer critics than it asked would read as a wider
+    /// examination than took place.
+    pub fn challenge_prediction(
+        &self,
+        request: &ChallengeRequest,
+        dossier: &PredictionDossier,
+        at: Timestamp,
+    ) -> Result<VerificationResult> {
+        let expected = ChallengeTarget::Prediction {
+            hypothesis_id: dossier.hypothesis_id.clone(),
+            subject: dossier.subject.clone(),
+        };
+        if request.target != expected {
+            return Err(Error::invalid(format!(
+                "challenge `{}` targets {:?}, not the dossier's {expected:?}; build the request \
+                 from the dossier it is answered with",
+                request.request_id, request.target
+            )));
+        }
+        let held: BTreeSet<&str> = self.critics.iter().map(|c| c.kind().as_str()).collect();
+        if let Some(unknown) = request
+            .critics
+            .iter()
+            .find(|name| !held.contains(name.as_str()))
+        {
+            return Err(Error::invalid(format!(
+                "challenge `{}` asks for critic `{unknown}`, which this society does not hold; \
+                 ask for one of {held:?}",
+                request.request_id
+            )));
+        }
+        let findings: Vec<CriticFinding> = self
+            .critics
+            .iter()
+            .filter(|critic| request.critics.iter().any(|n| n == critic.kind().as_str()))
+            .map(|critic| CriticFinding {
+                critic: critic.kind(),
+                verdict: critic.attack_prediction(dossier),
+            })
+            .collect();
+        let verification = Self::conclude(
+            Target::Prediction {
+                hypothesis_id: dossier.hypothesis_id.clone(),
+                subject: dossier.subject.clone(),
+            },
+            findings,
+            at,
+        );
+        let result = verification.as_result(&request.request_id)?;
+        result.answers(request)?;
+        Ok(result)
+    }
+
     /// Attack a model at promotion.
     pub fn attack_model(&self, dossier: &ModelDossier, at: Timestamp) -> Verification {
         let findings = self
@@ -935,5 +1084,73 @@ mod tests {
         let mut fresh = dossier;
         fresh.latest_regime_crossing = None;
         assert!(!society.attack_model(&fresh, at(60)).verdict.is_refuted());
+    }
+
+    /// R12-REASON-9032: a fatal finding comes back as the contract result,
+    /// refuted by the critic that raised it and no other, and the result
+    /// answers the request it was asked under. Premise first: the same
+    /// dossier unaltered survives, so the refutation is the alteration's.
+    /// Mutation: map `SocietyVerdict::Refuted` to `ChallengeVerdict::Survived`
+    /// in `Verification::as_result` — the contract refuses the result
+    /// ("survived while tail_risk refuted it") and `expect` fails.
+    #[test]
+    fn a_fatal_challenge_comes_back_as_a_contract_result_refuted_by_the_critic_that_raised_it() {
+        let society = VerifierSociety::standard();
+        let ask = |dossier: &PredictionDossier| {
+            let request = society
+                .request_for_prediction("challenge-1", dossier, "kernel/test", at(0))
+                .expect("a request");
+            let result = society
+                .challenge_prediction(&request, dossier, at(0))
+                .expect("the contract accepts the society's own verdict");
+            (request, result)
+        };
+        let (request, clean) = ask(&sound());
+        assert_eq!(request.critics.len(), 8, "premise: every critic is asked");
+        assert_eq!(clean.verdict, ChallengeVerdict::Survived, "{clean:?}");
+
+        let mut fragile = sound();
+        fragile.adverse_tail_bps = Some(900.0);
+        let (request, result) = ask(&fragile);
+
+        assert_eq!(
+            result.verdict,
+            ChallengeVerdict::Refuted {
+                by: vec!["tail_risk".to_string()]
+            }
+        );
+        result
+            .answers(&request)
+            .expect("it answers its own request");
+    }
+
+    /// A request is answered by exactly the critics it names, and a request
+    /// naming one the society does not hold is refused rather than answered
+    /// by fewer critics than it asked. Mutation: drop the `held` check in
+    /// `challenge_prediction` — the unknown critic is silently skipped and the
+    /// refusal assertion fails.
+    #[test]
+    fn a_challenge_is_answered_by_the_critics_it_names_and_refuses_one_the_society_lacks() {
+        let society = VerifierSociety::standard();
+        let dossier = sound();
+        let mut fields = society
+            .request_for_prediction("challenge-2", &dossier, "kernel/test", at(0))
+            .expect("a request")
+            .into_fields();
+        fields.critics = vec!["bull".to_string(), "bear".to_string()];
+        let narrow = ChallengeRequest::new(fields.clone()).expect("two critics");
+
+        let result = society
+            .challenge_prediction(&narrow, &dossier, at(0))
+            .expect("two named critics answer");
+        assert_eq!(result.reports.len(), 2, "{result:?}");
+
+        fields.critics.push("astrologer".to_string());
+        let unknown = ChallengeRequest::new(fields).expect("well-formed, if unanswerable");
+        let refusal = society.challenge_prediction(&unknown, &dossier, at(0));
+        assert!(
+            refusal.is_err(),
+            "a critic nobody holds was answered for: {refusal:?}"
+        );
     }
 }

@@ -864,13 +864,30 @@ fn run() -> Result<()> {
     // HMAC under a seed-derived key — is the defect W1.4 exists to remove.
     // Until it lands every package is compiled, counted as `held_unsigned`,
     // and written nowhere.
-    let mut research =
-        qip_deepbrain::research::ResearchLoop::new(research_config, research_coverage)?
-            .with_package_store(
-                config
-                    .storage
-                    .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
-            );
+    // The tools this process runs (R12-EXPAND-6059) are read from the
+    // settings already parsed rather than listed: the classical solver
+    // always, the quantum simulator where `compute` attached it, one
+    // connector per catalogued source polled above.
+    // The ontology registry the sweep consults, built here from the same
+    // coverage map the detector reads: one Asset type per asset class the
+    // universe holds, beside the types every detector reads. A class the
+    // registry does not name stops the sweep by name.
+    let research_ontology = qip_deepbrain::research::sweep_ontology_over(&research_coverage)?;
+    let mut research = qip_deepbrain::research::ResearchLoop::new_for_node(
+        research_config,
+        research_coverage,
+        &compute,
+        config
+            .connector_feed
+            .as_ref()
+            .map_or(&[][..], |feed| feed.source_ids.as_slice()),
+    )?
+    .with_ontology(research_ontology)?
+    .with_package_store(
+        config
+            .storage
+            .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
+    );
     if let (Some(tally), qip_deepbrain::language::HostedDecision::Installed(hosted)) =
         (&language_model.replies, &language_model.hosted)
     {
@@ -906,10 +923,39 @@ fn run() -> Result<()> {
         "  agency outbox:    {} (drafts only; external action stays refused)",
         outbox_destination.describe()
     );
-    let mut operations = qip_deepbrain::operations::Operations::new(started)?;
+    // The research warehouse (`warehouse.rs`, R12-DATA-9054): resolved
+    // outcomes streamed to BigQuery. Off, and printed as off, in every
+    // environment that names no QIP_BIGQUERY_PROJECT and
+    // QIP_BIGQUERY_DATASET; a half-named or unreachable target stops the
+    // process here rather than reading as a warehouse that is quietly absent.
+    let mut warehouse = qip_deepbrain::warehouse::OutcomeSink::from_lookup(
+        &|name| std::env::var(name).ok(),
+        clock.clone(),
+    )
+    .map_err(configuration)?;
+    println!(
+        "  warehouse:        {}",
+        if warehouse.is_some() {
+            format!(
+                "resolved outcomes stream to {}",
+                qip_deepbrain::warehouse::OUTCOMES_TABLE
+            )
+        } else {
+            "off (QIP_BIGQUERY_PROJECT and QIP_BIGQUERY_DATASET unset)".to_string()
+        }
+    );
+    // The remediation journal: the audit record of an automated action is
+    // written here before the action runs, so a node that restarts after
+    // disabling research still holds the account of why.
+    let remediation_journal = qip_deepbrain::operations::RemediationJournal::beside(
+        &config.event_log,
+        std::sync::Arc::new(qip_core::SystemClock),
+    )?;
+    let mut operations =
+        qip_deepbrain::operations::Operations::journalled(started, remediation_journal)?;
     println!(
         "  operations:       level shifts in iteration time open an incident; the one runbook \
-         may switch off research until restart"
+         may switch off research until restart, and its audit record is journalled first"
     );
 
     // The tick desk (`tick_desk.rs`): the one reader of recorded market
@@ -946,6 +992,7 @@ fn run() -> Result<()> {
             permissions: permission_watch.as_mut(),
             ambient: Some(&mut ambient),
             agency: Some(&mut agency),
+            warehouse: warehouse.as_mut(),
             desk: Some(&mut desk_shipper),
         },
         |outcome| {
@@ -1031,6 +1078,9 @@ fn run() -> Result<()> {
                 println!("  {}", round.describe());
             }
             if let Some(round) = &outcome.agency {
+                println!("  {}", round.describe());
+            }
+            if let Some(round) = &outcome.warehouse {
                 println!("  {}", round.describe());
             }
             if let Some(line) = outcome.operations.as_ref().and_then(|o| o.describe()) {

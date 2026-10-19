@@ -352,6 +352,25 @@ impl Fabric {
         );
     }
 
+    /// [`Self::restart`] after the data directory is deleted: the same
+    /// archive, a new empty disk.
+    fn restart_on_an_empty_disk(&mut self) {
+        self.running.take().expect("running").stop();
+        std::fs::remove_dir_all(&self.config.data_dir).expect("the data directory is removed");
+        assert!(
+            !self.config.data_dir.exists(),
+            "premise: the restarted broker finds no local segment"
+        );
+        self.running = Some(
+            start_with_archive(
+                &self.config,
+                Arc::new(SystemClock),
+                Some(self.archive.clone()),
+            )
+            .expect("a broker starts on an empty disk beside its archive"),
+        );
+    }
+
     fn transport(&self, identity: &str) -> HttpTransport {
         HttpTransport::new(
             format!("http://{}", self.running().address()),
@@ -937,6 +956,109 @@ fn an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it() {
     broker
         .register_schema(JOURNAL, id, BATCH_SCHEMA_VERSION + 1, retyped)
         .expect("a deliberate version bump is admitted");
+}
+
+/// A record whose body is an event of `topic`, as a writer builds it.
+fn event_record(topic: qip_events::topic::Topic, tag: &str) -> Record {
+    let payload = serde_json::json!({ "tag": tag });
+    let at = qip_core::Timestamp::from_secs(1_790_000_000);
+    let event = qip_events::AnyEvent {
+        event_id: qip_core::EventId::from_string(tag.to_string()),
+        topic,
+        schema_version: 1,
+        occurred_at: at,
+        recorded_at: at,
+        sequence: 0,
+        lineage: qip_core::Lineage::root(
+            qip_core::CorrelationId::from_string("COR00000000000000000000009"),
+            "fabricd.test",
+        ),
+        idempotency_key: Some(tag.to_string()),
+        payload_hash: qip_core::sha256_hex(
+            qip_core::canonical::canonical_json(&payload).as_bytes(),
+        ),
+        payload,
+    };
+    Record::from_any_event(&event, PayloadCodec::CanonicalJson).unwrap()
+}
+
+fn batch_of_records(class: QosClass, records: Vec<Record>) -> Batch {
+    Batch::new(
+        MessageType::Data,
+        class.batch_schema_id(),
+        BATCH_SCHEMA_VERSION,
+        PayloadCodec::CanonicalJson,
+        records,
+    )
+    .unwrap()
+}
+
+/// R12-FABRIC-8090. A stream whose catalogue entry names topics admits a
+/// record of those topics and refuses one of any other, before anything is
+/// appended: the batch schema says the batch is well formed, not that what
+/// it carries belongs on the stream. A body that cannot be read is refused
+/// too, since its topic cannot be checked.
+///
+/// Mutation: `Broker::produce_to` skipping `require_admitted_topics` — the
+/// off-topic batch is acknowledged and the fetch below returns two batches.
+#[test]
+fn a_record_body_under_an_unregistered_topic_schema_is_refused_before_append() {
+    use qip_events::topic::Topic;
+    let catalogue = catalogue_json(&base_grants(), "archived");
+    let at = catalogue.find(r#""name":"journal.test""#).unwrap();
+    let (head, tail) = catalogue.split_at(at);
+    let catalogue = format!(
+        "{head}{}",
+        tail.replacen(
+            r#""topics":[]"#,
+            r#""topics":["reflex.journal_recorded"]"#,
+            1
+        )
+    );
+    assert!(
+        catalogue.contains(r#""topics":["reflex.journal_recorded"]"#),
+        "premise: the journal stream names its topic"
+    );
+    let fabric = Fabric::start_with("body-topics", &catalogue).unwrap();
+    let partition = own_partition(CELL_A);
+    let mut producer = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    producer.init().unwrap();
+    producer
+        .send(batch_of_records(
+            QosClass::P2MarketJournal,
+            vec![event_record(Topic::ReflexJournalRecorded, "tick-1")],
+        ))
+        .expect("premise: a record of the stream's own topic is accepted");
+
+    let off_topic = producer
+        .send(batch_of_records(
+            QosClass::P2MarketJournal,
+            vec![
+                event_record(Topic::ReflexJournalRecorded, "tick-2"),
+                event_record(Topic::ReflexOutcomeRecorded, "alert-1"),
+            ],
+        ))
+        .expect_err("a batch carrying another topic is refused whole");
+    // The producer SDK words a `SchemaRefused` answer this way; the
+    // broker's own sentence (which topic, which stream) stays on its side.
+    let refused = "not compatible with the stream's registered schema";
+    assert!(off_topic.to_string().contains(refused), "{off_topic}");
+
+    let unreadable = producer
+        .send(batch_of(
+            QosClass::P2MarketJournal,
+            "raw",
+            &[b"not an event".to_vec()],
+        ))
+        .expect_err("a body that cannot be read cannot be admitted");
+    assert!(unreadable.to_string().contains(refused), "{unreadable}");
+
+    let fetched = fetch_all(&fabric, AUDITOR, JOURNAL, partition);
+    assert_eq!(
+        fetched.len(),
+        1,
+        "only the on-topic batch was appended: {fetched:?}"
+    );
 }
 
 // --- FABRIC-028 -----------------------------------------------------------------
@@ -1905,4 +2027,91 @@ fn the_broker_data_plane_runs_under_the_capped_server_limits() {
     assert_eq!(limits.max_concurrent, defaults.max_concurrent);
     assert_eq!(limits.max_handshaking, defaults.max_handshaking);
     assert_eq!(limits.max_body, qip_fabricd::MAXIMUM_REQUEST_BYTES);
+}
+
+/// RES-9170: the broker's disk is gone and the archive is not. A broker
+/// started on the empty data directory serves the same offsets from the same
+/// bytes, and the next record it accepts continues after them. Before
+/// `Broker::rebuild_from_archive` ran at start the new broker's partitions
+/// began at offset zero beside an archive holding offsets 0..N, so a
+/// replacement disk gave those offsets to new records and the next archive
+/// pass wrote their manifests over the old ones.
+///
+/// Mutation: delete the `archiver::rebuild(&broker)?` call in
+/// `start_composed` — the restarted broker's high watermark is 0, `rebuilt()`
+/// is empty and the first assertion after the restart fires. Mutation: in
+/// `Broker::rebuild_from_archive`, skip the `recover_producers` call after the
+/// replay — the history is served right but the writer's next sequence reads
+/// zero, and the `next_sequence` assertion fires.
+#[test]
+fn a_broker_started_on_an_empty_disk_serves_the_archived_offsets_and_continues_after_them() {
+    let mut fabric = Fabric::start("rebuild");
+    let partition = own_partition(CELL_A);
+    let mut journal = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    journal.init().unwrap();
+    let mut sent = Vec::new();
+    for index in 0..40u8 {
+        let records = vec![vec![index; 1500]];
+        journal
+            .send(batch_of(
+                QosClass::P2MarketJournal,
+                &format!("j{index}"),
+                &records,
+            ))
+            .unwrap();
+        sent.push(records);
+    }
+    wait_until("every journal batch is sealed and archived", || {
+        metadata(&fabric, AUDITOR, JOURNAL, partition).2 == 40
+    });
+    assert_eq!(
+        fetch_all(&fabric, AUDITOR, JOURNAL, partition).len(),
+        40,
+        "premise: the journal holds forty batches before its disk goes"
+    );
+
+    fabric.restart_on_an_empty_disk();
+
+    assert_eq!(
+        fabric
+            .running()
+            .rebuilt()
+            .replayed
+            .get(&(JOURNAL.to_string(), partition)),
+        Some(&40),
+        "the start reports what it rebuilt: {:?}",
+        fabric.running().rebuilt()
+    );
+    assert_eq!(metadata(&fabric, AUDITOR, JOURNAL, partition).1, 40);
+    let served = fetch_all(&fabric, AUDITOR, JOURNAL, partition);
+    assert_eq!(
+        served.iter().map(payloads_of).collect::<Vec<_>>(),
+        sent,
+        "the rebuilt broker serves every archived batch, byte for byte"
+    );
+    assert_eq!(
+        fabric
+            .running()
+            .service()
+            .broker()
+            .next_sequence(JOURNAL, partition, CELL_A)
+            .unwrap(),
+        40,
+        "the rebuilt producer table continues the writer's sequence, so a retry of an archived \
+         batch is a duplicate and not new"
+    );
+    let mut journal = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    journal.init().unwrap();
+    let ack = journal
+        .send(batch_of(
+            QosClass::P2MarketJournal,
+            "after-rebuild",
+            &[vec![200u8; 1500]],
+        ))
+        .unwrap();
+    assert_eq!(
+        ack.base_offset(),
+        40,
+        "the next record continues after the rebuilt offsets rather than reusing them"
+    );
 }

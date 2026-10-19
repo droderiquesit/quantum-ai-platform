@@ -30,11 +30,14 @@ use qip_quantum::provider::{
     QuantumProvider, SimulatedProvider,
 };
 use qip_quantum::qaoa::QaoaSettings;
-use qip_quantum::solver::{ClassicalSolver, ProviderSolver, QuboSolver, SolverKind};
+use qip_quantum::solver::{
+    ClassicalSolver, GatewayEntrant, ProviderSolver, QuboSolver, SolverEffort, SolverKind,
+};
+use qip_quantum::{Delivery, GatewayLimits, QuantumGateway};
 use qip_transport::retry::RecordingSleeper;
 use server::{Action, Route, TestService};
 use std::sync::Arc;
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 
 const TOKEN: &str = "ibm-api-token-nobody-logs";
 const BACKEND: &str = "ibm_torino";
@@ -627,21 +630,54 @@ fn an_https_endpoint_is_refused_because_this_transport_has_no_tls() -> Result<()
 
 // --- what a working connection still does not buy -----------------------------------
 
+/// R12-QUANT-4029: the device's answer reaches a benchmark through the
+/// gateway, not through a synchronous `ProviderSolver::solve`, and is still a
+/// candidate: re-scored classically, beside a baseline computed first.
+///
+/// This test used to wrap the connected provider in `ProviderSolver` and
+/// benchmark it inline, which waited on the provider's queue on the caller's
+/// thread. It now submits, polls, and enters the collected result, and still
+/// proves the same property: the device answer is never usable until it has
+/// been re-evaluated against the problem.
 #[test]
 fn a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline() -> Result<()> {
     let service = TestService::routed(working_routes("job-14", "-3.5"));
     let (provider, _sleeper) = connected(&service.url())?;
     let provider = Arc::new(provider);
+    let qubo = problem();
 
-    // Through the same seam the compute router and the benchmark use.
-    let solver = ProviderSolver::new(provider.clone(), QaoaSettings::default());
+    // The synchronous seam is closed to a provider that is not a simulator.
+    let refused = ProviderSolver::new(provider.clone(), QaoaSettings::default())
+        .solve(&qubo, &SolverEffort::default())
+        .expect_err("a hosted provider was solved synchronously");
+    assert_eq!(refused.code(), "denied", "{}", refused.message());
+    assert!(
+        refused.message().contains("QuantumGateway::submit"),
+        "{}",
+        refused.message()
+    );
+
+    // The open one: submit, poll, enter the collected result.
+    let gateway = QuantumGateway::new(provider.clone(), GatewayLimits::default())?;
+    let ticket = gateway.submit(
+        "optimisation",
+        Delivery::Polled,
+        qubo.clone(),
+        QaoaSettings::default(),
+    )?;
+    let deadline = Instant::now() + StdDuration::from_secs(30);
+    while !gateway.is_ready(ticket)? {
+        assert!(Instant::now() < deadline, "the hosted job never answered");
+        std::thread::sleep(StdDuration::from_millis(1));
+    }
+    let solver =
+        GatewayEntrant::collect(&gateway, ticket)?.expect("a ready job collects on its first poll");
     assert_eq!(solver.kind(), SolverKind::Quantum);
     assert!(
         solver.kind().needs_a_classical_baseline(),
         "a device's answer has no more claim on being believed than a heuristic's"
     );
 
-    let qubo = problem();
     let report = SolverBenchmark::new(ClassicalSolver::exhaustive(20))
         .with_solver(Arc::new(solver))
         .with_repeats(1)

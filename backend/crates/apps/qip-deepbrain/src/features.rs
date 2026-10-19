@@ -27,6 +27,17 @@ pub const FEATURES: [&str; 5] = [
     "volume_share",
 ];
 
+/// How each feature is computed, in words, in the order of [`FEATURES`]. What
+/// a card's per-feature lineage records as the derivation, so a reviewer reads
+/// the definition beside the digest of the code that implements it.
+pub const DERIVATIONS: [&str; 5] = [
+    "close[t] / close[t-1] - 1",
+    "close[t] / close[t-5] - 1",
+    "standard deviation of the ten one-bar returns ending at t",
+    "(high[t] - low[t]) / close[t]",
+    "volume[t] over the mean volume of the ten bars before t",
+];
+
 /// Bars of history a feature row needs behind it.
 ///
 /// The longest window any feature above reads. A row assembled with less is not
@@ -150,6 +161,11 @@ pub struct FeatureLineage {
     pub code_digest: String,
     pub source_digest: String,
     pub computed_at: Timestamp,
+    /// The close of the newest decision bar a feature row was computed at:
+    /// the latest source instant any value reads, and the instant it is known.
+    pub decision_through: Option<Timestamp>,
+    /// Rows the as-of audit recomputed, zero until [`Self::audited`] says.
+    pub audited_rows: usize,
 }
 
 impl FeatureLineage {
@@ -160,7 +176,21 @@ impl FeatureLineage {
             code_digest: code_digest(),
             source_digest: source_digest(bars),
             computed_at: now,
+            // Row i is decided at bars[LOOKBACK + i] and the last row's target
+            // is the final bar, so the newest decision bar is the one before.
+            decision_through: bars
+                .len()
+                .checked_sub(2)
+                .filter(|at| *at >= LOOKBACK)
+                .map(|at| bars[at].close_time()),
+            audited_rows: 0,
         }
+    }
+
+    /// Record how many rows the as-of audit examined.
+    pub const fn audited(mut self, rows: usize) -> Self {
+        self.audited_rows = rows;
+        self
     }
 
     /// Write the lineage onto a card's parameters, where it outlives this
@@ -176,5 +206,26 @@ impl FeatureLineage {
             "feature_computed_at".to_string(),
             self.computed_at.to_rfc3339(),
         );
+        // Per feature, so a reviewer (and a promotion) can see where each one
+        // came from. A window too short to have a decision bar records none,
+        // and a card with none cannot be promoted by the desk.
+        let Some(through) = self.decision_through else {
+            return;
+        };
+        for (feature, derivation) in FEATURES.iter().zip(DERIVATIONS) {
+            if card.features.iter().any(|name| name == feature) {
+                card.feature_lineage.insert(
+                    (*feature).to_string(),
+                    qip_ai::registry::FeatureOrigin {
+                        derivation: derivation.to_string(),
+                        source_digest: self.source_digest.clone(),
+                        code_digest: self.code_digest.clone(),
+                        source_through: through,
+                        decision_at: through,
+                        audited_rows: self.audited_rows,
+                    },
+                );
+            }
+        }
     }
 }

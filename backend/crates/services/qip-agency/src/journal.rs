@@ -51,7 +51,7 @@
 use crate::attribution::EffectAttribution;
 use crate::autonomy::Authority;
 use crate::causal::SimulationResult;
-use crate::engine::{Learning, LearningOutcome, Outcome, Report};
+use crate::engine::{Alternative, Learning, LearningOutcome, Outcome, Report};
 use crate::estimate::EstimatorKind;
 use crate::guard::Voice;
 use crate::memory::{ActionOutcome, FailureEpisode};
@@ -144,6 +144,21 @@ pub enum AgencyRecord {
         pass: u64,
         intent: ActionIntent,
     },
+    /// The guard withheld the plan (R12-RES-7110): the plan, the guard's
+    /// reasons, the steps that could not clear alone, and the alternative
+    /// sought. A proposal, not an approval: nothing journaled here was sent.
+    PlanBlocked {
+        pass: u64,
+        steps: Vec<String>,
+        reason: String,
+        offending: Vec<String>,
+        /// `reduced` or `no_action`.
+        alternative: String,
+        /// The steps of a reduced alternative; empty for `no_action`.
+        alternative_steps: Vec<String>,
+        /// Why no alternative remains; empty for `reduced`.
+        alternative_detail: String,
+    },
     /// The observe-effect, attribute and update stages ran on this outcome.
     Learned {
         pass: u64,
@@ -198,6 +213,7 @@ impl AgencyRecord {
             | Self::ToolDecision { pass, .. }
             | Self::VoiceReleased { pass, .. }
             | Self::IntentRecorded { pass, .. }
+            | Self::PlanBlocked { pass, .. }
             | Self::Learned { pass, .. }
             | Self::LearningWithheld { pass, .. }
             | Self::PassConcluded { pass, .. } => *pass,
@@ -215,6 +231,7 @@ impl AgencyRecord {
             Self::ToolDecision { .. } => "tool",
             Self::VoiceReleased { .. } => "voice",
             Self::IntentRecorded { .. } => "intent",
+            Self::PlanBlocked { .. } => "blocked",
             Self::Learned { .. } => "learned",
             Self::LearningWithheld { .. } => "learning-withheld",
             Self::PassConcluded { .. } => "concluded",
@@ -416,6 +433,29 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
                 intent: intent.clone(),
             },
             intent.created_at,
+        )?;
+    }
+    if let Some(blocked) = &report.blocked {
+        let label = |s: &crate::plan::Step| {
+            format!("{} on {}, exposure {}", s.tool, s.variable, s.exposure)
+        };
+        let (alternative, alternative_steps, alternative_detail) = match &blocked.alternative {
+            Alternative::Reduced(steps) => {
+                ("reduced", steps.iter().map(label).collect(), String::new())
+            }
+            Alternative::NoAction(why) => ("no_action", Vec::new(), why.clone()),
+        };
+        w.write(
+            AgencyRecord::PlanBlocked {
+                pass,
+                steps: blocked.steps.iter().map(label).collect(),
+                reason: blocked.reason.clone(),
+                offending: blocked.offending.iter().map(label).collect(),
+                alternative: alternative.to_string(),
+                alternative_steps,
+                alternative_detail,
+            },
+            at,
         )?;
     }
     for decision in report.audit.iter().skip(audit_from) {
@@ -666,6 +706,7 @@ pub fn lineages(log: &EventLog) -> Result<BTreeMap<u64, PassLineage>, Error> {
             AgencyRecord::PassConcluded { outcome, .. } => entry.outcome = Some(outcome),
             AgencyRecord::Widened { .. }
             | AgencyRecord::WideningRefused { .. }
+            | AgencyRecord::PlanBlocked { .. }
             | AgencyRecord::LearningWithheld { .. } => {}
         }
     }

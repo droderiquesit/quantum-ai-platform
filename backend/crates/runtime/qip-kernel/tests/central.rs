@@ -1560,6 +1560,7 @@ fn arbitrage_policy(venues: &[&str]) -> ArbitragePolicy {
                 market: format!("AAA-USD@{venue}"),
                 base: "AAA".to_string(),
                 quote: "USD".to_string(),
+                costs: None,
             })
             .collect(),
         start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
@@ -2207,6 +2208,7 @@ fn a_market_at_an_undescribed_venue_is_refused_when_the_plane_assembles() -> Res
         market: "AAA-USD@XPAR".to_string(),
         base: "AAA".to_string(),
         quote: "USD".to_string(),
+        costs: None,
     });
     let Err(error) = plane_with_arbitrage(policy) else {
         panic!("a market at an undescribed venue should not assemble");
@@ -7964,9 +7966,17 @@ fn decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant() 
     let mut calm = platform_at_pilot(&id)?;
     let (full, calm_entry) = issue_through_the_platform(&mut calm, &id)?;
     assert_eq!(calm_entry.outcome, "issued");
+    // A platform that has measured nothing about itself still reads its
+    // causal graph, beliefs and self-model as never produced, and a grant
+    // narrows on that (R12-RISK-4113). The premise here is narrower than it
+    // was: none of the governor's own four triggers has fired.
+    let calm_detail = calm_entry.detail.clone().unwrap_or_default();
     assert!(
-        calm_entry.detail.is_none(),
-        "premise: an unmeasured platform signs the whole allocation: {calm_entry:?}"
+        calm_detail.contains("stale or unavailable")
+            && !calm_detail.contains("calibration")
+            && !calm_detail.contains("recent returns"),
+        "premise: only the evidence-freshness contraction bites an unmeasured platform: \
+         {calm_entry:?}"
     );
 
     let mut decayed = platform_at_pilot(&id)?;

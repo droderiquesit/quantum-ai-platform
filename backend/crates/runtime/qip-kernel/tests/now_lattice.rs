@@ -405,3 +405,310 @@ fn an_estimator_outage_shrinks_the_ensemble_and_the_now_state_still_updates() {
     assert_eq!(review.ensemble.len(), 3);
     assert!(!review.deltas.is_empty());
 }
+
+/// R12-CONTRACT-6109: the lattice pass folds every forecast it issues into
+/// the §24.9 `ForecastState` a control loop reads, and journals the two side
+/// by side. Nothing in the workspace built the contract outside its own
+/// tests, so a drift between `Forecast` and `ForecastState` (a horizon or an
+/// expiry dropped in the projection) would have been invisible. A journaled
+/// state with a field removed must not decode, because the contract refuses a
+/// missing field. Mutations: skip the projection in `LatticeStage::run`
+/// (`states` is empty, so the length premise fails); insert each state at
+/// the front (the per-forecast comparison fails on the target).
+#[test]
+fn every_issued_forecast_is_journaled_with_its_control_plane_state_and_a_dropped_field_is_refused()
+{
+    let mut platform = platform();
+    platform.observe(calm_history());
+    platform.run_cycle(start());
+    let review: LatticeReview = last(&platform, "lattice:");
+    assert!(
+        !review.issued.is_empty(),
+        "premise: the pass issued forecasts"
+    );
+    assert_eq!(
+        review.states.len(),
+        review.issued.len(),
+        "a forecast was issued without its control-plane state"
+    );
+    let horizons: BTreeSet<_> = review.issued.iter().map(|f| f.horizon).collect();
+    assert!(
+        horizons.len() > 1,
+        "premise: more than one horizon, so a mismatched pair shows"
+    );
+    for (forecast, state) in review.issued.iter().zip(&review.states) {
+        assert_eq!(state.target, forecast.target);
+        assert_eq!(state.horizon, forecast.horizon);
+        assert_eq!(state.expires_at, forecast.expires_at);
+        assert_eq!(state.confidence_bp, forecast.regime_confidence_bp);
+    }
+
+    let journaled = serde_json::to_value(&review).unwrap();
+    let decoded: LatticeReview = serde_json::from_value(journaled.clone()).unwrap();
+    assert_eq!(decoded, review, "premise: a journaled record round-trips");
+
+    let mut broken = journaled;
+    broken["states"][0]
+        .as_object_mut()
+        .expect("premise: a state is an object")
+        .remove("confidence_bp");
+    let refused = serde_json::from_value::<LatticeReview>(broken);
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("missing field `confidence_bp`")),
+        "{refused:?}"
+    );
+}
+
+/// R12-WORLD-3083: a forecast inconsistent with its adjacent horizon is
+/// flagged by the cycle, on the record and on the counter, and never repaired.
+/// The first cycle over calm history issues hours-days medians that sit outside
+/// the weeks-months 80% interval for both instruments, so the premise is a real
+/// finding rather than a manufactured one. The flagged list must be exactly
+/// what `constrain` finds over the forecasts the same record carries, and the
+/// forecasts must be unchanged by being flagged: a silently widened interval is
+/// a forecast nobody issued. Mutations: skip the `constrain` call in
+/// `LatticeStage::run` (the premise fails); drop the
+/// counter increment in `Platform` (the counter assertion fails).
+#[test]
+fn a_forecast_outside_its_longer_neighbours_interval_is_flagged_in_the_review_and_on_the_counter() {
+    use qip_observability::metrics::labels;
+    use qip_world_model::lattice::{InconsistencyKind, constrain};
+
+    let mut platform = platform();
+    platform.observe(calm_history());
+    platform.run_cycle(start());
+    let review: LatticeReview = last(&platform, "lattice:");
+
+    let flagged: Vec<_> = review
+        .inconsistencies
+        .iter()
+        .filter(|i| i.kind == InconsistencyKind::MedianOutside)
+        .collect();
+    assert!(
+        !flagged.is_empty(),
+        "premise: calm history leaves a short-horizon median outside the longer interval"
+    );
+    for finding in &flagged {
+        assert_eq!(
+            (finding.shorter.as_str(), finding.longer.as_str()),
+            ("hours_days", "weeks_months"),
+            "{finding:?}"
+        );
+    }
+    let targets: BTreeSet<&str> = flagged.iter().map(|f| f.target.as_str()).collect();
+    assert_eq!(targets, BTreeSet::from(["obj-AAA/close", "obj-BBB/close"]));
+
+    // Flagged, not repaired: the journaled forecasts reproduce the flags.
+    let mut recomputed = Vec::new();
+    for target in &targets {
+        let chain: Vec<_> = review
+            .issued
+            .iter()
+            .filter(|f| f.target == *target)
+            .map(|f| f.fields())
+            .collect();
+        recomputed.extend(constrain(&chain));
+    }
+    assert_eq!(recomputed, review.inconsistencies);
+
+    let count = platform.telemetry().metrics.snapshot().counter(
+        qip_kernel::lattice_stage::LATTICE_INCONSISTENCIES_TOTAL,
+        &labels([("kind", "median_outside")]),
+    );
+    assert_eq!(count, flagged.len() as u64);
+}
+
+/// R12-WORLD-9026: forecasts resolved under two different regime labels are
+/// scored under each, and the per-regime score history is durable in the log:
+/// the `ScoreRecord`s the cycle journals whole rebuild exactly the per-horizon, per-regime
+/// Brier the calibrator holds. Driven at the stage, which is what each cycle
+/// calls, because the platform's own regime label reads a surprise series that
+/// bars never feed, so a cycle over bars alone labels every instrument
+/// `quiet/normal` and could not show two regimes. The premise (two labels
+/// resolved) is asserted, not assumed. Mutations in
+/// `Calibrator::score` (qip-world-model): blank the regime on the
+/// `ScoreRecord` (the distinct-regimes premise fails); file every resolution
+/// under the `other` label (no card exists for a scored label).
+#[test]
+fn forecasts_resolved_in_two_regimes_are_scored_under_each_and_the_journal_rebuilds_the_regime_cards()
+ {
+    use qip_kernel::lattice_stage::{LatticeInputs, LatticeStage, LatticeTarget};
+
+    let target = |subject: &str, regime: &str, answer: Option<f64>| LatticeTarget {
+        subject: subject.to_string(),
+        closes: (0..30_i64)
+            .map(|i| (day(i - 29), if i % 2 == 0 { 100.2 } else { 99.8 }))
+            .chain(answer.map(|close| (day(1), close)))
+            .collect(),
+        regime: regime.to_string(),
+        held_quantity: 0.0,
+        now_return: None,
+    };
+    let mut stage = LatticeStage::new().expect("the stage builds");
+    stage.run(
+        LatticeInputs {
+            cycle: 1,
+            targets: vec![
+                target("obj-AAA", "trending/elevated", None),
+                target("obj-BBB", "quiet/normal", None),
+            ],
+            surprised: BTreeSet::new(),
+        },
+        start(),
+    );
+    // A day later each close answers the day-ahead forecast; the climbing
+    // instrument closes far from its forecast and the quiet one near it.
+    let review = stage.run(
+        LatticeInputs {
+            cycle: 2,
+            targets: vec![
+                target("obj-AAA", "trending/elevated", Some(112.0)),
+                target("obj-BBB", "quiet/normal", Some(100.05)),
+            ],
+            surprised: BTreeSet::new(),
+        },
+        day(1),
+    );
+
+    let day_ahead: Vec<_> = review
+        .scored
+        .iter()
+        .filter(|s| s.horizon == LatticeHorizon::HoursDays)
+        .collect();
+    assert_eq!(
+        day_ahead.len(),
+        2,
+        "premise: both day-ahead forecasts resolved"
+    );
+    let regimes: BTreeSet<&str> = day_ahead.iter().map(|s| s.regime.as_str()).collect();
+    assert_eq!(
+        regimes,
+        BTreeSet::from(["quiet/normal", "trending/elevated"]),
+        "premise: two distinct regimes"
+    );
+
+    let cards = stage.calibrator().regime_scorecards();
+    for regime in &regimes {
+        let rebuilt: Vec<f64> = day_ahead
+            .iter()
+            .filter(|s| s.regime == *regime)
+            .map(|s| s.brier)
+            .collect();
+        let card = cards
+            .get(&(LatticeHorizon::HoursDays, (*regime).to_string()))
+            .unwrap_or_else(|| panic!("no card for {regime}: {:?}", cards.keys()));
+        assert_eq!(card.resolved, rebuilt.len() as u64, "{regime}");
+        let mean = rebuilt.iter().sum::<f64>() / rebuilt.len() as f64;
+        assert!(
+            (card.brier_sum / card.resolved as f64 - mean).abs() < 1e-12,
+            "{regime}: the journal rebuilds {mean}, the card holds {}",
+            card.brier_sum / card.resolved as f64
+        );
+        let pinball: f64 = day_ahead
+            .iter()
+            .filter(|s| s.regime == *regime)
+            .map(|s| s.pinball)
+            .sum();
+        assert!(
+            (card.pinball_sum - pinball).abs() < 1e-12,
+            "{regime}: the journal rebuilds a pinball sum of {pinball}, the card holds {}",
+            card.pinball_sum
+        );
+    }
+    assert!(
+        (day_ahead[0].pinball - day_ahead[1].pinball).abs() > 1e-6,
+        "premise: the regimes differ in score, so a merged card would be wrong"
+    );
+}
+
+/// R12-WORLD-10170: the calibration objective is judged from the card, and only
+/// once the card has enough resolutions to judge. Mutations: compare with `<`
+/// (the breached case reads met); ignore the minimum (the short card is judged).
+#[test]
+fn a_horizon_is_judged_against_the_brier_bound_only_once_it_has_enough_resolutions() {
+    use qip_kernel::lattice_stage::{
+        CALIBRATION_BRIER_BOUND, CALIBRATION_MIN_RESOLVED, calibration_slo_breached,
+    };
+    use qip_world_model::lattice::Scorecard;
+
+    let card = |resolved: u64, brier: f64| Scorecard {
+        resolved,
+        brier_sum: brier * resolved as f64,
+        pinball_sum: 0.0,
+        covered: 0,
+    };
+    let bound = CALIBRATION_BRIER_BOUND;
+    let enough = CALIBRATION_MIN_RESOLVED;
+    assert_eq!(
+        calibration_slo_breached(&card(enough, bound + 0.1), bound, enough),
+        Some(true)
+    );
+    assert_eq!(
+        calibration_slo_breached(&card(enough, bound - 0.1), bound, enough),
+        Some(false)
+    );
+    assert_eq!(
+        calibration_slo_breached(&card(enough - 1, bound + 0.4), bound, enough),
+        None,
+        "a card one resolution short was judged"
+    );
+    assert!(
+        bound > 0.25,
+        "premise: the bound must sit above the 0.25 a forecast of one half always scores"
+    );
+}
+
+/// R12-WORLD-10170's exit test: one run records the NOW state, the forecast
+/// contracts and the calibration objective's gauge. The objective is silent
+/// while a horizon has too few resolutions and then written every cycle with the
+/// verdict; a calm tape forecast at one half scores 0.25, inside the bound, so
+/// the gauge reads 0. Mutation: never write the gauge (the final assertion
+/// fails).
+#[test]
+fn a_run_records_the_now_state_the_forecasts_and_the_calibration_objective_gauge() {
+    use qip_kernel::lattice_stage::{CALIBRATION_MIN_RESOLVED, LATTICE_CALIBRATION_SLO_BREACHED};
+    use qip_observability::metrics::labels;
+
+    let mut platform = platform();
+    platform.observe(calm_history());
+    platform.run_cycle(start());
+    let gauge = |platform: &Platform| {
+        platform.telemetry().metrics.snapshot().gauge(
+            LATTICE_CALIBRATION_SLO_BREACHED,
+            &labels([("horizon", "hours_days")]),
+        )
+    };
+    assert_eq!(
+        gauge(&platform),
+        None,
+        "premise: nothing is resolved after one cycle"
+    );
+
+    let mut days = 0_i64;
+    while platform
+        .lattice()
+        .calibrator()
+        .scorecard(LatticeHorizon::HoursDays)
+        .is_none_or(|card| card.resolved < CALIBRATION_MIN_RESOLVED)
+    {
+        days += 1;
+        assert!(days < 60, "premise: the card never reached the minimum");
+        platform.observe(SYMBOLS.iter().map(|s| bar(s, day(days), 100.1)).collect());
+        platform.run_cycle(day(days));
+    }
+
+    let now: NowReview = last(&platform, "now:");
+    assert!(!now.deltas.is_empty(), "the NOW state was not recorded");
+    let lattice: LatticeReview = last(&platform, "lattice:");
+    assert!(
+        !lattice.issued.is_empty(),
+        "no forecast contract was issued"
+    );
+    assert_eq!(
+        gauge(&platform),
+        Some(0.0),
+        "the objective is met and the gauge says so"
+    );
+}

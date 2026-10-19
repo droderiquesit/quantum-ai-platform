@@ -8,7 +8,7 @@
       "backend/crates/services/qip-world-model/src/federation.rs:288 ResearchTask (no production caller)",
       "backend/crates/libs/qip-storage/src/provider.rs:14-32 StorageTarget names Spanner/Bigtable/BigQuery but no Spanner/Bigtable adapter"
     ],
-    "gap": "Evidence read path from Spanner Graph/BQ; publication of research tasks/results as Fabric topics; ambient agents as a running service.",
+    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -18,11 +18,11 @@
       "R12-DATA-9052",
       "R12-DATA-9054"
     ],
-    "blocked_by": "",
+    "blocked_by": "owner decision O02 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-acceptance --test ambient_attention (extend with a fabric publish assertion)",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Evidence read path from Spanner Graph/BQ; publication of research tasks/results as Fabric topics; ambient agents as a running service."
   },
   {
     "id": "R12-MODEL-9002",
@@ -283,18 +283,18 @@
       "infrastructure/gitops/envs/dev/fastbrain.yaml",
       "infrastructure/gitops/envs/dev/deepbrain.yaml"
     ],
-    "gap": "Split cognitive services into their own binaries/Run services if independent scaling is wanted (an architecture decision; ADR 0024's catalogue).",
+    "gap": "Owner decision O24 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split cognitive services or the strategic lattice into separately deployed Cloud Run services (ADR 0024 catalogue). Enables: Independent scaling and a strategic service whose outage only backs up research. Costs: More services, images, identities and minimum instances.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O24 (design-decisions-2026-10-18)",
     "verification": "inspection of infrastructure/gitops/envs/*/ RunService manifests",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O24; gap before it: Split cognitive services into their own binaries/Run services if independent scaling is wanted (an architecture decision; ADR 0024's catalogue)."
   },
   {
     "id": "R12-CONTRACT-9013",
@@ -541,7 +541,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:3293",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:849 every_lane_0_stage_is_linked_into_the_node"
     ],
-    "gap": "Calibration of micro forecasts and outcome storage.",
+    "gap": "No predicted edge exists to calibrate: qip_contracts::signal::Signal carries a conviction, a desired quantity and inputs, not an expected edge or return, and the cell sees a fill (a venue fact about quantity and price) but never the realised outcome of the position, which is marked to market elsewhere. A tally of conviction against fill would measure execution, not forecast skill, and calling it calibration would be the overclaim the row exists to avoid. Closing it needs an expected-edge field on Signal produced by qip-strategy's runtime (the same contract change R12-RISK-5044 names) and a realised-outcome signal back to the cell; outcome storage stays out of scope until a storage ADR.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -552,7 +552,7 @@
     "verification": "cargo test -p qip-edge",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure's 'predicted edge against the venue-confirmed fill' compares two things that are not both in the cell: no edge is predicted and a fill is not an outcome."
   },
   {
     "id": "R12-WORLD-9024",
@@ -562,7 +562,7 @@
       "backend/crates/services/qip-world-model/src/lattice.rs:538",
       "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_stale_forecast_is_refused_and_its_staleness_multiplier_shrinks_with_age"
     ],
-    "gap": "Capital sizing does not contract on forecast staleness. staleness_multiplier has no caller outside its own module and test (grep), and lattice.rs:32-35 and lattice_stage.rs:32-36 both say no thesis, size or order reads a lattice forecast. No tactical forecast service exists. The 'sizing shrinks; removing the expiry check fails' half of the check has no test.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: a staleness cap from lattice::staleness_multiplier at the sizing seam, with a test that an expired forecast vetoes the thesis.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -573,7 +573,7 @@
     "verification": "cargo test -p qip-edge",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The expiry half is real; the sizing half is explicitly unwired."
+    "notes": "Round-2 independent audit, 2026-10-11: The expiry half is real; the sizing half is explicitly unwired. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Capital sizing does not contract on forecast staleness. staleness_multiplier has no caller outside its own module and test (grep), and lattice.rs:32-35 and lattice_stage.rs:32-36 both say no thesis, size or order reads a lattice forecast. No tactical forecast service exists. The 'sizing shrinks; removing the expiry check fails' half of the check has no test."
   },
   {
     "id": "R12-WORLD-9025",
@@ -585,32 +585,29 @@
       "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs",
       "backend/crates/apps/qip-deepbrain/src/node.rs::gate_strategic_service"
     ],
-    "gap": "No separate strategic service: forecasts run inside the same run_cycle; a real separate-process outage is neither built nor tested.",
+    "gap": "Owner decision O24 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split cognitive services or the strategic lattice into separately deployed Cloud Run services (ADR 0024 catalogue). Enables: Independent scaling and a strategic service whose outage only backs up research. Costs: More services, images, identities and minimum instances.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O24 (design-decisions-2026-10-18)",
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The backlog semantics are right; the service separation is simulated by a flag. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The backlog semantics are right; the service separation is simulated by a flag. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision O24; gap before it: No separate strategic service: forecasts run inside the same run_cycle; a real separate-process outage is neither built nor tested."
   },
   {
     "id": "R12-WORLD-9026",
-    "status": "PARTIAL",
-    "current": "Lattice Calibrator scores resolved forecasts with Brier, pinball and interval coverage per horizon and per regime; per-horizon scorecards and score records journaled each cycle and gauged.",
+    "status": "COMPLETE",
+    "current": "Every resolved forecast is scored by the Calibrator under the regime label it was issued under: the ScoreRecord carries the regime, LatticeReview::scored journals it whole each cycle, and the calibrator keeps a Scorecard per (horizon, regime) (bounded, overflow filed under 'other'). The journaled records rebuild the per-regime Brier mean and pinball sum the calibrator holds, so regime score history is durable in the log.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14585 stage_learn, :15155 calibrate_resolved, :8901 learn_from",
-      "backend/crates/libs/qip-observability/src/metrics.rs:1023-1034 Brier metrics",
-      "backend/crates/services/qip-prediction/src/scoring.rs",
-      "backend/crates/services/qip-prediction/tests/scoring.rs",
-      "backend/crates/services/qip-world-model/src/lattice.rs::Calibrator",
-      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeReview"
+      "backend/crates/services/qip-world-model/src/lattice.rs::Calibrator::score",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeReview::scored",
+      "runtime/qip-kernel/tests/now_lattice.rs::forecasts_resolved_in_two_regimes_are_scored_under_each_and_the_journal_rebuilds_the_regime_cards"
     ],
-    "gap": "Regime scorecards live in memory only (LatticeReview journals per-horizon scorecards); kernel test asserts horizon scoring, not regime; no durable regime scorecard history.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -618,10 +615,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cd backend && cargo test -p qip-kernel --test now_lattice",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L07, 2026-10-18: closed. Mutations in Calibrator::score: blanking ScoreRecord.regime -> 'premise: two distinct regimes' left {\"\"}; filing every resolution under 'other' -> 'no card for quiet/normal'; both restored (now_lattice: 11 passed). Stated limit: the test drives LatticeStage with explicit regime labels because Platform's own label (market/volatility regime) reads the fundamental-surprise series that bars never feed, so a bars-only cycle labels every instrument quiet/normal; two regimes on a running root need a fundamentals feed. Direction Brier at p=0.5 is 0.25 for every call, so pinball carries the regime difference."
   },
   {
     "id": "R12-WORLD-9027",
@@ -654,18 +651,18 @@
       "backend/crates/libs/qip-agents/src/runtime.rs",
       "backend/crates/libs/qip-agents/src/manifest.rs:88 AgentManifest"
     ],
-    "gap": "A runtime field in the manifest and a second adapter.",
+    "gap": "Owner decision O25 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Vertex AI Agent Engine as a second agent runtime. Enables: Managed agent sessions and memory. Costs: A managed paid runtime and a contract change to AgentManifest.",
     "implemented": true,
     "tested": false,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O25 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-agents",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O25; gap before it: A runtime field in the manifest and a second adapter."
   },
   {
     "id": "R12-AMBIENT-9029",
@@ -743,14 +740,15 @@
   {
     "id": "R12-REASON-9032",
     "status": "PARTIAL",
-    "current": "RedTeam deterministically attacks every hypothesis in the kernel's REASON stage, with severity aggregation and contradiction detection; it targets hypotheses rather than forecasts and there are no ChallengeRequest/VerificationResult contracts.",
+    "current": "The §27 pair exists: qip_contracts::challenge ChallengeRequest and VerificationResult (strict decode; a verdict is cross-checked against the reports it summarises - survived over a refutation, refuted naming a critic that did not refute, or a miscounted examined total is refused - and a result is checked against the request it answers). qip-learning-engine's VerifierSociety builds the request (request_for_prediction), answers one (challenge_prediction, only the named critics attack, an unheld critic is refused) and Verification::as_result states any attack as the contract. The kernel's TournamentStage records an exchange (request plus result) on the journaled TournamentReview for every important prediction the society attacks. Critics already attacked predictions, not only hypotheses, before this.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/redteam.rs",
-      "backend/crates/services/qip-reasoning-engine/src/contradiction.rs",
-      "backend/crates/services/qip-reasoning-engine/src/engine.rs:131",
-      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs"
+      "backend/crates/libs/qip-contracts/src/challenge.rs",
+      "backend/crates/libs/qip-contracts/tests/challenge.rs a_verdict_that_contradicts_its_own_reports_is_refused",
+      "backend/crates/services/qip-learning-engine/src/verifier.rs VerifierSociety::challenge_prediction, Verification::as_result",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs challenge_exchange and TournamentReview.challenges",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs tests::a_fatal_attack_is_recorded_as_a_refuted_result_that_answers_its_request"
     ],
-    "gap": "Apply to forecasts; typed challenge contracts.",
+    "gap": "Two limits. The call site that pushes the exchange (TournamentStage::observe_reasoning) is not driven by a test: no fixture cycle forms an important prediction (the first-cycle fixture forms a hypothesis at confidence 0.42, below IMPORTANCE_CONFIDENCE and unapproved), so only the extracted challenge_exchange helper is mutation-proven. And nothing outside the journal reads the pair: challenge_prediction, the receiving-brain entry point, has no caller outside tests.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -758,10 +756,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-contracts --test challenge && cargo test -p qip-learning-engine --lib verifier && cargo test -p qip-kernel --lib model_tournament",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - the survived-over-refutation arm removed from VerificationResultFields::check ('survived was accepted over a refuting finding'); SocietyVerdict::Refuted mapped to ChallengeVerdict::Survived in Verification::as_result (the learning-engine fatal-challenge test and the kernel exchange test both failed on the contract's refusal); the unheld-critic check removed in challenge_prediction ('a critic nobody holds was answered for'). Kept PARTIAL for the two limits."
   },
   {
     "id": "R12-AMBIENT-9033",
@@ -962,18 +960,18 @@
       "services/qip-optimization-engine/tests/learning.rs::a_replayed_router_holds_the_live_routers_learning_and_a_losing_substrate_stays_stopped",
       "services/qip-optimization-engine/tests/learning.rs::every_solve_records_quality_cost_and_latency_per_run_and_the_registry_standing_moves"
     ],
-    "gap": "The learning can only choose among CPU, quantum-inspired and a simulated QPU; GPU, TPU and hardware QPU arms do not exist, so the router cannot learn which of the listed substrates wins. Problem class is the instance size only.",
+    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O04 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-kernel --test solver_routing",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The old gap (learning from SolverBenchmarked history) is closed. Held at PARTIAL on the missing substrates, taking the lower grade."
+    "notes": "Round-2 independent audit, 2026-10-11: The old gap (learning from SolverBenchmarked history) is closed. Held at PARTIAL on the missing substrates, taking the lower grade. ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: The learning can only choose among CPU, quantum-inspired and a simulated QPU; GPU, TPU and hardware QPU arms do not exist, so the router cannot learn which of the listed substrates wins. Problem class is the instance size only."
   },
   {
     "id": "R12-QUANT-9042",
@@ -1141,7 +1139,7 @@
       "backend/crates/libs/qip-risk/src/hedge_search.rs::search",
       "backend/crates/runtime/qip-kernel/src/hedge.rs::plan"
     ],
-    "gap": "Does not use the hybrid solver router; produces an unwind-feasibility flag and liquidity-decay days, not an unwind plan.",
+    "gap": "Decided by ADR 0134 (accepted 2026-10-18): The hybrid solver router is qip-optimization-engine's compute router: hedge and hypothesis searches submit to it asynchronously, the classical answer is always computed, a hedge result carries an unwind plan, and the next quantum research family is feature-subset selection on the simulated provider. Code left: UnwindPlan in hedge_search.rs (stages sum to the position) and hedge jobs through ComputeRouter, with tests.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -1152,7 +1150,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Does not use the hybrid solver router; produces an unwind-feasibility flag and liquidity-decay days, not an unwind plan."
   },
   {
     "id": "R12-RISK-9050",
@@ -1214,18 +1212,18 @@
       "infrastructure/terraform/modules/data/main.tf:380-392",
       "infrastructure/environments/dev/terraform.tfvars:284"
     ],
-    "gap": "Spanner graph adapter with promoted-only writes.",
+    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O02 (design-decisions-2026-10-18)",
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner graph adapter with promoted-only writes."
   },
   {
     "id": "R12-DATA-9053",
@@ -1253,24 +1251,25 @@
   {
     "id": "R12-DATA-9054",
     "status": "PARTIAL",
-    "current": "qip_mesh::bigquery::BigQueryWarehouse streams rows and runs queries; enable_bigquery=false in dev; resolved-outcome writes not wired.",
+    "current": "qip_mesh::bigquery::BigQueryWarehouse streams rows and runs queries. qip-deepbrain now constructs it: warehouse::OutcomeSink::from_lookup (called from main.rs) resolves QIP_BIGQUERY_PROJECT/DATASET plus QIP_GCP_ENDPOINT and one credential, refuses a half-named or unreachable target, and node::run_with ships every graded thesis in Platform::evaluations() to the resolved_outcomes table each cycle, keyed by hypothesis id, holding rejected rows for the next cycle. With no project or dataset named (every environment: enable_bigquery=false in dev/test/stage/prod, no QIP_BIGQUERY_* in catalogue.tf) the sink is None and the banner says off.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/gcp/mod.rs:3-12",
-      "backend/crates/services/qip-mesh/src/bigquery.rs",
-      "infrastructure/terraform/modules/data/main.tf:85"
+      "backend/crates/apps/qip-deepbrain/src/warehouse.rs:OutcomeSink",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:loops.warehouse",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:OutcomeSink::from_lookup",
+      "backend/crates/apps/qip-deepbrain/tests/warehouse.rs:the_run_loop_ships_a_graded_thesis_to_the_warehouse"
     ],
-    "gap": "Wire outcome/tournament writes; enable dataset.",
+    "gap": "Code path wired and tested; awaiting the owner's enable_bigquery switch. Nothing in the tree turns it on: enable_bigquery=false in every environment tfvars (protected), no QIP_BIGQUERY_PROJECT/DATASET/QIP_GCP_ENDPOINT or credential in infrastructure/terraform/catalogue.tf, and the resolved_outcomes table is not created, so the sink is None and nothing has reached BigQuery. Tournament (evolution trial) outcomes are not streamed; only graded theses (Platform::evaluations()).",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "cargo test -p qip-deepbrain --test warehouse",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-verified 2026-10-18: cargo test -p qip-deepbrain --test warehouse (4 passed); mutation replacing the rows in OutcomeSink::ship with an empty insert failed the streaming, retry and run-loop tests. Earlier mutations: marking rejected rows shipped failed the retry test; making the node.rs warehouse arm unreachable failed the_run_loop_ships_a_graded_thesis_to_the_warehouse. The tests run against a loopback socket standing in for the TLS-terminating proxy. No billed resource was enabled by this lane."
   },
   {
     "id": "R12-DATA-9055",
@@ -1374,18 +1373,18 @@
       "infrastructure/terraform/modules/identity/variables.tf:29-32 default ENABLED",
       "infrastructure/environments/dev/terraform.tfvars:478"
     ],
-    "gap": "Mandatory MFA plan and passkeys.",
+    "gap": "Owner decision O23 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable passkeys on the Identity Platform tenant: raise the provider pin or set it in the console and record it. Enables: Passkeys for operators. Costs: A provider pin change or a manual tenant change outside Terraform.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O23 (design-decisions-2026-10-18)",
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O23; gap before it: Mandatory MFA plan and passkeys."
   },
   {
     "id": "R12-SEC-9060",
@@ -1489,18 +1488,18 @@
       "backend/crates/tests/qip-acceptance/tests/egress.rs",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs:370"
     ],
-    "gap": "Dedicated project if required.",
+    "gap": "Owner decision O17 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split scouts and engineering into their own projects before the second region (ADR 0113 §4, ADR 0118). Enables: Project-level isolation for scouts and engineering. Costs: More projects, budgets and IAM; ADR 0118 bootstrap re-run.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O17 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-acceptance --test egress --test security_controls",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O17; gap before it: Dedicated project if required."
   },
   {
     "id": "R12-SEC-9065",
@@ -1588,18 +1587,18 @@
       "scripts/agent-guard.test.mjs: 'a sandbox workflow with a secret, a credential, a write or no time limit is refused'",
       "scripts/agent-guard.test.mjs: 'the committed agent sandbox workflow passes the sandbox rule'"
     ],
-    "gap": "The coder agent's own working environment (the session that writes code and pushes) gets no sandboxed credential from this repository. Only CI acceptance runs are sandboxed. Agent identity is recognised by markers (author, co-author trailer, branch prefix, actor glob; scripts/agent-policy.json:4-11), and the policy admits that an agent pushing as its user without markers is invisible to every check. No per-run credential is issued.",
+    "gap": "Owner decision O18 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Give agent sessions their own identity (a Workload Identity pool) and scoped per-run credentials. Enables: A principal that distinguishes an agent from a person; sandboxed credentials. Costs: New IAM pool and providers; issuing credentials to agents.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O18 (design-decisions-2026-10-18)",
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: A real gate refuses agent dispatch of deploying workflows, but it is marker-based, not credential-based."
+    "notes": "Round-2 independent audit, 2026-10-11: A real gate refuses agent dispatch of deploying workflows, but it is marker-based, not credential-based. ADR lane 2026-10-18: gap re-graded against decision O18; gap before it: The coder agent's own working environment (the session that writes code and pushes) gets no sandboxed credential from this repository. Only CI acceptance runs are sandboxed. Agent identity is recognised by markers (author, co-author trailer, branch prefix, actor glob; scripts/agent-policy.json:4-11), and the policy admits that an agent pushing as its user without markers is invisible to every check. No per-run credential is issued."
   },
   {
     "id": "R12-CICD-9069",
@@ -1676,7 +1675,7 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/cicd_gates.rs:23 code_reviewer_and_security_engineer_have_distinct_models"
     ],
-    "gap": "Enforcement at PR time.",
+    "gap": "Enforcement at PR time. The independence rule is written and tested as a patch to scripts/agent-guard.mjs and agent-guard.test.mjs (docs/blueprint/lanes/L23-patch-CICD-9072.patch: a change carrying both a coder and a reviewer role commit must name different models in Agent-Model trailers, and a commit of either kind with no trailer is refused in such a change); both files are protected paths, so it is not applied. Even applied, no commit today carries an Agent-Model trailer, so it binds only changes that adopt the convention.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1687,7 +1686,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: patch developed in a scratch worktree, 38 agent-guard tests pass; mutations fired - the shared-model refusal and the unnamed-model refusal each removed (the new test failed)."
   },
   {
     "id": "R12-CICD-9073",
@@ -1722,7 +1721,7 @@
       "backend/crates/apps/qip-deepbrain/src/operations.rs::CapabilitySwitch",
       "backend/crates/apps/qip-deepbrain/src/operations.rs::runbooks"
     ],
-    "gap": "Runbooks are committed code, not signed; no signature verification of runbooks.",
+    "gap": "Runbooks are committed code and are not signed. The deep brain installs no artefact signer: QIP_ARTEFACT_SIGNER is read only by qip-api (signing.rs), and the deep brain's package signer is unset (reflex packages are held_unsigned). Signing the set needs a signer in the deep brain's process (a KMS key grant, a protected-path Terraform change) and a verifier in Operations::new that refuses an unsigned or tampered set.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1733,7 +1732,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Checked 2026-10-18. The refuse-and-audit half is already structural: a runbook set is fixed at construction, Remediator::new refuses an action outside PERMITTED_ACTIONS, and a target the effector does not hold is audited as failed (aiops_remediation.rs)."
   },
   {
     "id": "R12-GOV-9075",
@@ -1875,37 +1874,38 @@
   },
   {
     "id": "R12-CICD-9081",
-    "status": "PARTIAL",
-    "current": "aiops remediation records an audit trail before acting through Effector; no production Effector; config changes go through GitOps.",
+    "status": "COMPLETE",
+    "current": "Remediator::journalled writes the authorising audit record to an AuditSink before Effector::apply and the outcome record after; qip-deepbrain main.rs builds Operations::journalled over a RemediationJournal (hash-chained EventLog beside the platform log), and an action whose record cannot be journalled is refused and not applied.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/aiops.rs",
-      "backend/crates/libs/qip-observability/tests/aiops.rs"
+      "backend/crates/libs/qip-observability/src/aiops.rs Remediator::journalled, AuditSink",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs RemediationJournal",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs an_effect_whose_audit_record_cannot_be_journalled_is_refused_and_not_applied"
     ],
-    "gap": "Production Effector with durable (event-log) audit.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-observability --test aiops",
+    "verification": "cargo test -p qip-deepbrain --test research -- journal",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutation: dropping the `return Err(Error::denied(why))` after a failed journal write fails the refusal test (effector ran). The journal is as durable as the platform event log it sits beside: in memory where that is."
   },
   {
     "id": "R12-CICD-9082",
     "status": "PARTIAL",
-    "current": "scripts/agent-lanes.mjs validates a lane manifest (acceptance commands required; budget.minutes and budget.usd bounded by policy, :96-103), checks a lane's diff stays inside what it owns, and runs acceptance commands killed at the minutes budget (:157-190). agent-sandbox.yml runs it on workflow_dispatch with timeout-minutes from the budget.",
+    "current": "scripts/agent-lanes.mjs validates a lane manifest (acceptance commands required; budget.minutes, budget.usd and budget.tokens bounded by policy), checks a lane's diff stays inside what it owns, runs acceptance killed at the minutes budget, and meters model spend: judgeSpend reads the model gateway's JSONL ledger against the lane's tokens and usd budget and refuses an unreadable line as over (agent-lanes.test.mjs, 17 tests pass). A manifest is committed (scripts/lanes/round-3.json) and ci.yml's scripts job validates it on every pull request.",
     "evidence": [
-      "scripts/agent-lanes.mjs:1-40",
-      "scripts/agent-lanes.mjs:96-103",
-      "scripts/agent-lanes.mjs:157-190",
-      ".github/workflows/agent-sandbox.yml",
-      "scripts/agent-lanes.test.mjs:77-126"
+      "scripts/agent-lanes.mjs judgeSpend and the spend command",
+      "scripts/agent-lanes.test.mjs a lane that spent past its token or its USD budget is refused, each for its own reason",
+      "scripts/lanes/round-3.json",
+      "scripts/agent-policy.json lane_limits",
+      ".github/workflows/ci.yml:666 agent-lanes.mjs validate"
     ],
-    "gap": "The minutes budget bounds only the acceptance run, not the agent's work; budget.usd is range-checked and never metered; tool/model usage is not budgeted per lane. The sandbox is dispatch-only and not required for merge, and no lane manifest is committed (no docs/lanes/), so nothing has ever run under it.",
+    "gap": "No workflow runs `agent-lanes.mjs spend`, so no lane is ever metered: the ledger is written by model-gateway.mjs on the machine the agent works on, and nothing carries it to a runner or to the pull request. The sandbox (agent-sandbox.yml) is dispatch-only and not required for merge (an owner setting), and the minutes budget still bounds only the acceptance run. Metering needs a protected-path step that fetches the ledger and fails the lane.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1916,18 +1916,20 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. agent-guard.mjs admits it cannot see an agent committing without an Agent-Role trailer (agent-guard.mjs:30-32)."
+    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (budget.usd never metered, no manifest committed) was stale. Nothing implemented; no protected path touched."
   },
   {
     "id": "R12-CICD-9083",
     "status": "PARTIAL",
-    "current": "agent-lanes.mjs validate refuses two lanes whose ownership globs overlap unless one depends on the other (transitively), refuses dependency cycles, and prints the waves the DAG implies; check-diff finds a lane editing outside its ownership (scripts/agent-lanes.mjs:20-40, 47-60).",
+    "current": "agent-lanes.mjs validate refuses two lanes whose ownership globs overlap unless one depends on the other (transitively), and refuses cycles. A round manifest is committed (scripts/lanes/round-3.json) and validated on every pull request by ci.yml's scripts job; agent-guard.mjs holds a commit carrying Agent-Lane: <id> to that lane's owns on the pull request (agent-boundary.yml) and at the deploy gate, and refuses a trailer naming no lane.",
     "evidence": [
-      "scripts/agent-lanes.mjs:20-60",
-      "scripts/agent-lanes.test.mjs:44-75",
-      ".github/workflows/agent-sandbox.yml:94"
+      "scripts/agent-lanes.mjs:149-170 ownership overlap must be ordered",
+      "scripts/agent-guard.mjs judgeChange step 1b lane territory",
+      "scripts/lanes/round-3.json",
+      ".github/workflows/ci.yml:666",
+      ".github/workflows/agent-boundary.yml"
     ],
-    "gap": "It is a validator for a hand-written manifest, run only when agent-sandbox is dispatched; no orchestrator maintains the DAG or schedules lanes, nothing requires a manifest before parallel work starts, and none is committed. The ADR-number collision class (shared index files) is not prevented unless the manifest author declares ownership of the index.",
+    "gap": "An agent commit with no Agent-Lane trailer is held to no lane, so a second agent that does not declare one edits the same boundary unchecked; requiring a lane would refuse every session that does not carry the trailer (this lane's included). No orchestrator maintains the DAG or schedules lanes, and the ADR-number collision class is prevented only where the manifest orders the index file (round-3 does for docs/adr/README.md).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1938,7 +1940,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL."
+    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (run only on dispatch, none committed) was stale. Nothing implemented; no protected path touched."
   },
   {
     "id": "R12-SEC-9084",
@@ -2317,18 +2319,18 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/property_fuzz.rs"
     ],
-    "gap": "A fuzz job (cargo-fuzz is a tool, not a crate dependency).",
+    "gap": "Owner decision O22 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit libfuzzer-sys and a nightly toolchain for a PR fuzz job. Enables: cargo-fuzz targets in CI. Costs: A crate and a second toolchain; CI minutes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O22 (design-decisions-2026-10-18)",
     "verification": "inspection of ci.yml",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O22; gap before it: A fuzz job (cargo-fuzz is a tool, not a crate dependency)."
   },
   {
     "id": "R12-CICD-9102",
@@ -2634,18 +2636,18 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:8658",
       "backend/crates/runtime/qip-kernel/tests/self_observation.rs:68"
     ],
-    "gap": "Wire into promotion and rollback.",
+    "gap": "Owner decision O21 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit automatic rollback on Cloud Run (ADR 0114 refuses Argo Rollouts). Enables: release_decision driving a rollback and an incident. Costs: A controller acting on production traffic without a person.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O21 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-kernel --test self_observation",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O21; gap before it: Wire into promotion and rollback."
   },
   {
     "id": "R12-CICD-9116",
@@ -2762,7 +2764,7 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs:616 a_bound_body_that_loses_a_field_fails_the_compatibility_gate_and_one_that_gains_a_field_passes, :675"
     ],
-    "gap": "Consumer inventory and migration tooling.",
+    "gap": "The schema gate (qip-cli schema_gate.rs) judges two locks and admits a version bump as the producer's deliberate break without asking who still reads the old version; qip_events::retirement::ConsumerInventory (survey, depend, migrate_off, retire refusing an unsurveyed or consumed version) is tested but nothing populates it from the tree and the lock rows carry no consumer list. Needs a committed per-topic consumer inventory the gate reads and a rule for what it admits, plus dual-read/write migration tooling.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2773,7 +2775,7 @@
     "verification": "cargo test -p qip-acceptance --test event_fabric_schema_lock",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'consumers computed from the dependency graph' is a heuristic (which crates decode a type is not recorded in Cargo metadata); a committed, reviewed inventory is the form retirement.rs already assumes. Kept PARTIAL."
   },
   {
     "id": "R12-SEC-9122",
@@ -3179,7 +3181,7 @@
       "backend/crates/apps/qip-api/src/main.rs:366-368",
       "backend/crates/apps/qip-edge-node/src/telemetry.rs"
     ],
-    "gap": "OTLP from the remaining binaries; proof of ingestion.",
+    "gap": "A fourth and fifth copy of the drain is the wrong first step and the closure's last clause is refused by a standing test: qip-api, qip-fastbrain and qip-deepbrain each carry a ~780-line copy of openobserve.rs (deepbrain's module doc argues three copies of a credential parser are already a liability and pins the copies byte-identical in tests/openobserve.rs), so the drain should first move to a shared home (it needs qip-transport's HttpClient and qip-observability's Snapshot::to_otlp_metrics, and no app may depend on an app) before qip-fabricd and qip-ledgerd adopt it. Setting QIP_OPENOBSERVE_URL on the three that already drain contradicts manifest_wiring.rs's argued-unset entries and infrastructure/terraform/modules/openobserve/main.tf: no collector is vendored or attested and infrastructure/egress/envoy.yaml has no OpenObserve listener, so nothing may point at one yet. Ingestion is unproven for the same reason.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3190,7 +3192,7 @@
     "verification": "cargo test -p qip-api",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L17 from the three existing openobserve.rs copies, manifest_wiring.rs and the egress bootstrap; nothing in the code changed."
   },
   {
     "id": "R12-OBS-9141",
@@ -3490,7 +3492,7 @@
       "backend/crates/libs/qip-core/src/lineage.rs",
       "backend/crates/libs/qip-contracts/src/reflex.rs::chain_correlation"
     ],
-    "gap": "Test that a correlation id set at the API appears in the cell's event metadata; Cloud Trace.",
+    "gap": "Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: the same payload fields as OBS-7018, asserting the API-set correlation id is reachable from the cell's ChainOpened.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3501,7 +3503,7 @@
     "verification": "new acceptance test",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): The named verification (id set at the API appears in the cell) is not met and the two id schemes are independent."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): The named verification (id set at the API appears in the cell) is not met and the two id schemes are independent. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Test that a correlation id set at the API appears in the cell's event metadata; Cloud Trace."
   },
   {
     "id": "R12-OBS-9155",
@@ -3534,7 +3536,7 @@
       "backend/crates/tests/qip-acceptance/tests/slo.rs:67,149",
       "backend/crates/runtime/qip-kernel/tests/self_observation.rs:68"
     ],
-    "gap": "Wire to promotion.",
+    "gap": "Wire to promotion: Platform::release_decision (platform.rs:9457) is tested but no process serves its objective snapshot (apps/qip-api/src/routes.rs has no objective route), only 2 of 15 blueprint objectives are fed (blueprint_objectives.rs), and the promotion step is in .github/workflows/deploy.yml, a protected path a lane does not edit.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3545,7 +3547,7 @@
     "verification": "cargo test -p qip-kernel --test self_observation",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: a qip-cli release-gate reading a snapshot nothing serves would be a gate that never blocks (an objective nothing fed never blocks, by design). Needs, in order: an API route serving the ObjectiveLedger snapshot, a qip-cli release-gate subcommand reading it, then the deploy.yml step (protected; patch for the owner). Kept PARTIAL."
   },
   {
     "id": "R12-OBS-9157",
@@ -3598,15 +3600,19 @@
   {
     "id": "R12-OBS-9159",
     "status": "PARTIAL",
-    "current": "All five declared as reflex SLOs with targets (tested); none measured on a deployment.",
+    "current": "The six reflex objectives slo::default_slos declares (decision-latency p99 and p99.9, venue-round-trip-time-p99, stale-book-age-max, risk-gate-latency-p99, dropped-feed-messages-zero) are bound by critical_paths::reflex_objectives to series the node records, with the declaration's own thresholds and targets and service edge-node, and evaluated at every /metrics scrape with the node's other paths. Recorded: EDGE_DECISION_LATENCY_MS (PassMeter::measure), EDGE_VENUE_ACK_LATENCY_MS (Cell, first report on an order), EDGE_BOOK_AGE_MS (Cell::work), and two new series - EDGE_RISK_GATE_LATENCY_MS (Cell::risk_admit, around the gate's check, whatever it decides) and EDGE_FEED_MESSAGES{outcome=delivered|dropped} (Cell::absorb_sequenced; dropped is the sequences an abandoned gap established lost). Every label is a pub const or source literal. After three metered passes each objective reads more than zero observations.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:258-295",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs:326 reflex_component_slos_are_declared_with_correct_targets"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs reflex_objectives",
+      "backend/crates/edge/qip-edge/src/telemetry.rs risk_gate_latency, feed_messages",
+      "backend/crates/edge/qip-edge/src/cell.rs risk_admit, absorb_sequenced",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs the_decision_latency_reflex_objectives_are_measured_by_a_metered_pass, the_venue_round_trip_reflex_objective_is_measured_when_a_venue_answers_an_order, the_stale_book_reflex_objective_is_measured_from_the_age_of_the_book, the_risk_gate_reflex_objective_is_measured_when_the_gate_decides_an_order, the_dropped_feed_reflex_objective_is_measured_from_the_messages_the_sequencer_released",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs an_abandoned_sequence_gap_counts_the_messages_it_lost_as_dropped",
+      "backend/crates/libs/qip-observability/tests/critical_paths.rs every_declared_reflex_objective_is_bound_to_a_series_the_node_records"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "Measured is not informative, and nothing is deployed (2026-10-18). qip-edge-node runs passes only under QIP_VENUE_FEED=simulated and no execution node exists in any environment, so no process records these series. Against the simulated feed stale-book age is zero on every pass (the heartbeat is stamped at the pass instant) and no sequence gap can open, so stale-book-age-max and dropped-feed-messages-zero can only be met; venue round trip is timed against the simulated gateway. Evaluation is at scrape time on the health thread, not inside the decision loop's turn, because an evaluation walks the whole registry. Ingestion is unproven: workload_metrics_exist stays false and no alert policy was added.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -3614,7 +3620,7 @@
     "verification": "cargo test -p qip-acceptance --test slo",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutations (2026-10-18), each deleting one recording site: the PassMeter observe_latency_ms, Cell's venue_ack_latency call, the book_age call, the risk_gate_latency call and the feed_messages call each failed the matching 'still unmeasured after three metered passes' assertion for that objective alone; changing the lost-range arithmetic to missing_to - missing_from failed the dropped-count test (1 against 2) and removing the feed_messages call failed its delivered premise; renaming the risk-gate binding failed the declaration test. critical_paths.rs recording_writes_observations... now expects the reflex objectives in its count (statuses.len() adds reflex_objectives().len()), because evaluate_where evaluates them."
   },
   {
     "id": "R12-OBS-9160",
@@ -3638,35 +3644,40 @@
   },
   {
     "id": "R12-OBS-9161",
-    "status": "PARTIAL",
-    "current": "Golden-signal names (service requests/errors/latency/saturation) registered and recorded by deepbrain; mesh circuit state recorded on edge; workloads are Cloud Run.",
+    "status": "COMPLETE",
+    "current": "Four service objectives are declared in critical_paths::service_objectives and evaluated at runtime: service-request-latency (p99 under 1000 ms over a day, SERVICE_LATENCY_MS), service-error-rate (99 percent, SERVICE_REQUESTS less SERVICE_ERRORS through the new SourceRule::TotalLessCounter) and service-saturation (readings at or under 0.8 of capacity, SERVICE_SATURATION_CHECKS counted in GoldenSignals::saturation) are evaluated by the deep brain against the registry that records the golden signals; mesh-circuit-closed (99 percent, EDGE_MESH_CIRCUIT_CHECKS counted in MeshSeries::observe) is evaluated by the node on every /metrics scrape. Pod disruption is named not applicable to Cloud Run in NOT_APPLICABLE_SERVICE_OBJECTIVES.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/metrics.rs:852-856",
-      "backend/crates/apps/qip-deepbrain/src/node.rs",
-      "backend/crates/libs/qip-observability/src/golden.rs"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs service_objectives, SourceRule::TotalLessCounter, NOT_APPLICABLE_SERVICE_OBJECTIVES, evaluate_where",
+      "backend/crates/libs/qip-observability/src/golden.rs GoldenSignals::saturation counts SERVICE_SATURATION_CHECKS",
+      "backend/crates/apps/qip-edge-node/src/telemetry.rs MeshSeries::observe counts EDGE_MESH_CIRCUIT_CHECKS",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs evaluates every non-edge-node objective into the platform registry",
+      "backend/crates/tests/qip-acceptance/tests/slo.rs the_service_objectives_are_declared_on_the_golden_signals_and_measured_when_their_series_move",
+      "backend/crates/apps/qip-edge-node/src/telemetry.rs the_mesh_circuit_objective_is_measured_from_judged_readings_of_the_circuit"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-acceptance --test slo the_service_objectives_are_declared_on_the_golden_signals_and_measured_when_their_series_move; cargo test -p qip-edge-node --lib mesh_circuit; cargo test -p qip-observability --test critical_paths",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L22. The targets (0.99, 1000 ms, 0.8) are declared, not measured; nothing has run long enough to say what a healthy deep brain does. Mutations that fired: stop subtracting errors in TotalLessCounter (error-rate reads 1.0); delete the SERVICE_SATURATION_CHECKS count (saturation stays unmeasured); count every circuit reading as closed (mesh test reads 1.0). critical_paths::evaluate now returns the service objectives after the eight critical paths, so tests/critical_paths.rs asserts the sum. No ingestion of these series is shown anywhere: workload_metrics_exist is still false and the node is not deployed."
   },
   {
     "id": "R12-OBS-9162",
     "status": "PARTIAL",
-    "current": "Ledger commit latency and lag recorded (qip-ledgerd), outcome backlog recorded centrally; no mismatch-age or abort-rate SLO; ledger is not Spanner.",
+    "current": "Ledger commit latency and lag recorded (qip-ledgerd), outcome backlog recorded centrally. Since 2026-10-18 qip_observability::critical_paths::ledger_objectives declares ledger-lag (backlog ceiling 1000 records, 99%/hour), ledger-mismatch-age (ceiling 300 s, 99%/hour) and ledger-abort-rate (commits not refused or in conflict, 99.9%/day) beside the catalogue's ledger-commit; qip-ledgerd records each reading against that declaration's own ceiling (qip_ledger_lag_checks_total, qip_ledger_mismatch_age_checks_total, qip_ledger_mismatch_age_seconds) and evaluates all four on every applied batch and every idle poll. A running ledger fed a booked fill and a live fill reads all three measured.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/telemetry.rs:34",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:5240 CENTRAL_OUTCOME_BACKLOG"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs::ledger_objectives",
+      "backend/crates/apps/qip-ledgerd/src/telemetry.rs::LedgerTelemetry::{lag,mismatch_age_seconds,check}",
+      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_mismatch_age",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_ledger_with_a_booked_fill_and_a_parked_cell_measures_lag_mismatch_age_and_abort_rate"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "Ingestion is unproven: nothing scrapes or exports the ledger's registry (no deployed ledger, qip-ledgerd has no OTLP drain, workload_metrics_exist is false). The 1000-record and 300-second ceilings and the targets are declared, not measured against a healthy ledger, and the deep brain still evaluates ledger-commit against a registry that never holds its series (the three new objectives are kept out of the critical-path catalogue, which a test holds at eight, so only qip-ledgerd evaluates them). The mismatch age is aged from this process's first sight of a park, so a park inherited across a restart reads younger than it is until the persisted Park carries its own time.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3674,20 +3685,22 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-ledgerd --test fabric a_ledger_with_a_booked_fill_and_a_parked_cell",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Objectives declared and recorded 2026-10-18 by lane L15; mutation-verified (dropping the lag check call; emptying the abort objective's bad outcomes; never stamping the park time)."
   },
   {
     "id": "R12-OBS-9163",
     "status": "PARTIAL",
-    "current": "data-archive-delay, data-refetch-health and data-lineage-completeness declared as SLOs; their metric names are registered but have no recording site.",
+    "current": "data-lineage-completeness is recorded by Platform::count_lineage (qip_data_lineage_completeness and the linked/unlinked records counter, kernel test tests/kernel.rs); data-refetch-health is now recorded per source by Platform::record_refetch_health from ConnectorArm::refetch, the share of re-requested extents the source still served. data-archive-delay, the Bigtable p99, knowledge-delta and BQ freshness objectives have no recording site. The three data-plane SLOs are declared in slo.rs default_slos.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:245-256",
-      "backend/crates/libs/qip-observability/src/metrics.rs:657-665"
+      "backend/crates/runtime/qip-kernel/src/platform.rs count_lineage records DATA_LINEAGE_COMPLETENESS",
+      "backend/crates/runtime/qip-kernel/src/references.rs Platform::record_refetch_health",
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs ConnectorArm::refetch calls it",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs a_referenced_extent_is_refetched_on_cadence_and_a_withdrawn_one_is_marked_unretrievable asserts the gauge at 1.0 and 0.0"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "(1) data-archive-delay has no seam to record at: nothing in the tree ingests a GCS archive and learns how long ago it was written (qip-fabricd writes the archive and records EVENT_FABRIC_ARCHIVE_LAG, a different fact). (2) No data-plane objective is evaluated: the three SLOs are declared but no SourceRule turns a gauge into good and total counts, so each reads unmeasured until a checks counter is added the way the ledger and service objectives have one. (3) The refetch pass runs only when QIP_DEEPBRAIN_REFETCH_EVERY is above zero, which no committed environment sets. (4) Bigtable p99, knowledge-delta and BQ freshness stay unmeasured until the data stores are on.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3695,32 +3708,34 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-deepbrain --lib a_referenced_extent_is_refetched_on_cadence_and_a_withdrawn_one_is_marked_unretrievable",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 L22: refetch-health recording added and the lineage recording found already in place (the row said neither had a site). Mutations that fired: delete the record call in ConnectorArm::refetch; invert the served share. DATA_REFETCH_HEALTH doc now says the gauge is the served share (it said 0/1 per attempt)."
   },
   {
     "id": "R12-OBS-9164",
-    "status": "PARTIAL",
-    "current": "belief-calibration-within-tolerance declared; agent failures counted; SolverBenchmarked journals quantum/classical comparison; no package-freshness or training-queue SLO.",
+    "status": "COMPLETE",
+    "current": "Two objectives are declared in slo.rs (model-package-freshness: a promoted package at most a week old; research-queue-depth: at most 768 items) and bound in critical_paths.rs to counters of checks recorded where the age gauge (Operations::observe) and the queue-depth gauge (ResearchLoop::sweep_over) are written, so both read unmeasured until a round runs and measured after.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:371",
-      "backend/crates/libs/qip-observability/src/metrics.rs:682",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:2797"
+      "backend/crates/libs/qip-observability/src/slo.rs model_package_freshness, research_queue_depth",
+      "backend/crates/libs/qip-observability/src/critical_paths.rs critical_path_slos",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs MODEL_PACKAGE_FRESHNESS_CHECKS",
+      "backend/crates/apps/qip-deepbrain/src/research.rs RESEARCH_QUEUE_CHECKS",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_round_moves_the_model_freshness_and_research_queue_objectives_from_unmeasured_to_measured"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-deepbrain --test research -- a_round_moves; cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutation: pointing either counter site at the gauge name leaves its objective at zero observations and fails the test. Both objectives are evaluated by the deep brain's existing evaluate_where over its own registry; no alert policy is added, so nothing pages on them until workload_metrics_exist is flipped."
   },
   {
     "id": "R12-OBS-9165",
@@ -3830,13 +3845,13 @@
   {
     "id": "R12-RES-9170",
     "status": "PARTIAL",
-    "current": "The cell keeps working on its last verified policy with freshness-reduced sizing and spools locally with a journal-pressure halt; mirroring is refused; archives exist (fabricd archiver) but no rebuild procedure.",
+    "current": "The cell keeps working on its last verified policy with freshness-reduced sizing and spools locally with a journal-pressure halt; mirroring is refused. A fabric broker started on an empty data directory beside its archive now rebuilds every empty unmanaged partition before it serves: Broker::rebuild_from_archive replays the archive's manifest-indexed batches (hash re-proved, original stamps kept) into the fresh log, folds them into the producer table and chain tail, and qip-fabricd's start_composed calls it through archiver::rebuild; the next record continues at the archived high offset instead of reusing offsets 0..N.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/pressure.rs",
-      "backend/crates/tests/qip-acceptance/tests/arch_004_regional_cell_autonomy.rs",
-      "backend/crates/apps/qip-fabricd/src/archiver.rs"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs::Broker::rebuild_from_archive",
+      "backend/crates/apps/qip-fabricd/src/archiver.rs::rebuild",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs::a_broker_started_on_an_empty_disk_serves_the_archived_offsets_and_continues_after_them"
     ],
-    "gap": "Rebuild-from-archive procedure; mirroring (refused).",
+    "gap": "Recovery stops at the end of what was archived: batches past archived_through are not rebuilt and rely on producer-retained re-send (ADR 0100 §3); a managed partition is not rebuilt from the archive (its log is Spanner's). The test runs on an in-memory blob store, not the GCS adapter or a deployed region, and no region-level rebuild drill (cells, fabric and ledger together) has been run. Mirroring remains refused by ADR 0100 §3.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3844,10 +3859,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "game day",
+    "verification": "cargo test -p qip-fabricd --test broker a_broker_started_on_an_empty_disk",
     "work_item": "",
     "size": "L",
-    "notes": "Mirroring portion blocked by ADR 0100 §3."
+    "notes": "Mirroring portion blocked by ADR 0100 §3. Gap corrected and fabric half implemented 2026-10-18 by lane L17; mutation-verified (removing the start call; skipping the producer-table fold)."
   },
   {
     "id": "R12-RES-9171",
@@ -4202,7 +4217,7 @@
       "backend/crates/libs/qip-storage/src/compaction.rs",
       "backend/crates/libs/qip-storage/src/segment/archive.rs:138"
     ],
-    "gap": "Async compaction proof.",
+    "gap": "The closure as graded cannot be taken: qip_storage::compaction::Compactor concatenates every object under a prefix into a content-addressed blob (segments/compacted/<sha256>) and returns the originals as deletable without deleting them, and the archive's objects (segments/sha256/<hash>, one per sealed segment) are each named by an archive-manifest row that ArchiveReader::hydrate fetches by that exact key and verifies against the manifest's content hash. Compacting the archive prefix would either leave the originals (storage grows by a merged copy per pass, since the compactor re-reads its own output) or, if they were deleted, break hydration of every archived segment. Closing needs a compactor that rewrites the manifest's blob key and replay-index offsets atomically with the merge (an ADR 0100 archive-format decision) and honours min_object_size, which Compactor never reads; then a housekeeping-tick caller and a broker test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4213,7 +4228,7 @@
     "verification": "cargo test -p qip-storage",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L17 from the code (archive.rs blob_key/hydrate, compaction.rs compact/merge_objects); nothing in the code changed."
   },
   {
     "id": "R12-FINOPS-9188",

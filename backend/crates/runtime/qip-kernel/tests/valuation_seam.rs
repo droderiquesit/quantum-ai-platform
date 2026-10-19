@@ -794,10 +794,16 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
     // divides out of that ratio and changes nothing about the claim. What it
     // does change is the absolute figure, and a premise asserting an
     // absolute figure has to be told.
+    //
+    // 0.02 since ADR 0125 decision 4: the federation's momentum and reversion
+    // members disagree materially on this synthetic tape and that disagreement
+    // narrows the same bound by the schedule's 0.5 (spread of 0.4 and over).
+    // It is a common factor too — same instrument, same tape — so it divides
+    // out of the ratio this test proves and moves only the absolute figure.
     assert!(
-        (reference_leg.target_weight - 0.04).abs() < 1e-9,
+        (reference_leg.target_weight - 0.02).abs() < 1e-9,
         "the premise failed: the reference leg is not at the mandate's 8% cap narrowed by the \
-         regime's unattributed 0.5: {}",
+         regime's unattributed 0.5 and the federation's material-disagreement 0.5: {}",
         reference_leg.target_weight
     );
 
@@ -956,8 +962,11 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
     // tape, same regime — so it divides out of "a quarter of the unnarrowed
     // notional" and the compounding of ADR 0055 with ADR 0063 is what is
     // still being asserted.
+    // 0.01 since ADR 0125 decision 4: the federation's 0.5 on this tape is a
+    // third common factor (see the reference premise above), and the ratio to
+    // the reference leg — one half, the fill record's — is unchanged.
     assert!(
-        (leg.target_weight - 0.02).abs() < 1e-9,
+        (leg.target_weight - 0.01).abs() < 1e-9,
         "the weight bound was not halved by the fill record: {}",
         leg.target_weight
     );
@@ -965,7 +974,7 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
         compounded
             .compromises
             .iter()
-            .any(|c| c.starts_with("obj-AAA: sizing bound narrowed from 8.00% to 2.00%")),
+            .any(|c| c.starts_with("obj-AAA: sizing bound narrowed from 8.00% to 1.00%")),
         "the proposal does not name the cap: {:?}",
         compounded.compromises
     );

@@ -156,6 +156,7 @@ fn pass(rate_window: u64) -> PassDecl {
                 evidence_citations: vec![EvidenceCitation {
                     source_id: "venue-feed".into(),
                     evidence_id: "spread-series-1".into(),
+                    claim: None,
                     confidence_bps: 9000,
                 }],
                 disclosures: vec![Disclosure {
@@ -179,6 +180,10 @@ fn pass(rate_window: u64) -> PassDecl {
 }
 
 fn guard() -> ActionGuard {
+    guard_allowing(&["desk-agent"])
+}
+
+fn guard_allowing(callers: &[&str]) -> ActionGuard {
     ActionGuard::from_policy(GuardPolicy {
         conduct: ConductPolicy {
             authorized_sources: vec!["venue-feed".into()],
@@ -203,6 +208,13 @@ fn guard() -> ActionGuard {
             max_actions_per_window: 1,
             budget_units: 1_000,
             revocation_path: "operator revokes in the policy file".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: qip_contracts::action::CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: callers.iter().map(|c| (*c).to_string()).collect(),
         }],
     })
     .unwrap()
@@ -670,4 +682,126 @@ fn one_pass_folds_into_one_connected_lineage_and_a_dropped_approval_breaks_it() 
     let err = broken.verify().unwrap_err();
     assert!(err.message().contains("the execution"), "{err}");
     assert!(err.message().contains("no plan approval"), "{err}");
+}
+
+/// R12-RES-7110: a plan the guard withheld is on the log with the reasons
+/// and the alternative sought, not only as a `stopped` sentence.
+/// Mutation: in `journal::record_pass`, drop the `PlanBlocked` write; the
+/// record is then absent and this test fails at the first `expect`.
+#[test]
+fn a_withheld_plan_is_journaled_with_its_reasons_and_the_alternative_sought() {
+    let policy = narrow();
+    let mut guard = guard();
+    let mut lying = request(1);
+    lying
+        .pass
+        .as_mut()
+        .expect("premise: the request declares its pass")
+        .communications
+        .get_mut("quoter")
+        .unwrap()
+        .content = "Quote 20 lots: a guaranteed fill on venue-a".into();
+    let registry = register("US");
+    let report = run_governed(
+        lying,
+        Governance {
+            policy: Some(&policy),
+            guard: Some(&mut guard),
+            eligibility: Some((&registry, Timestamp::from_secs(100))),
+        },
+        &mut Refusing::default(),
+    )
+    .unwrap();
+    assert!(
+        matches!(report.outcome, Outcome::Stopped(_)),
+        "premise: the guard withheld the plan: {:?}",
+        report.outcome
+    );
+    let mut log = EventLog::in_memory();
+    journal::record_pass(
+        &mut log,
+        PassEntry {
+            pass: 1,
+            provenance: &provenance(),
+            report: &report,
+            widening: None,
+            audit_from: 0,
+            goal_target: "spread under 5 bps",
+            acting_identity: "desk-agent",
+            learning: None,
+            at: Timestamp::from_secs(100),
+        },
+    )
+    .unwrap();
+    let blocked = journal::records(&log)
+        .unwrap()
+        .into_iter()
+        .find_map(|record| match record {
+            AgencyRecord::PlanBlocked {
+                steps,
+                reason,
+                offending,
+                alternative,
+                alternative_steps,
+                alternative_detail,
+                ..
+            } => Some((
+                steps,
+                reason,
+                offending,
+                alternative,
+                alternative_steps,
+                alternative_detail,
+            )),
+            _ => None,
+        })
+        .expect("the withheld plan is on the log");
+    assert_eq!(blocked.0.len(), 1);
+    assert!(blocked.1.contains("no_false_claims"), "{}", blocked.1);
+    assert_eq!(blocked.2, blocked.0, "the one step is the one that lied");
+    assert_eq!(blocked.3, "no_action");
+    assert!(blocked.4.is_empty());
+    assert!(!blocked.5.is_empty(), "no alternative says why");
+}
+
+/// Mutation: remove the `permits_caller` loop in `ActionGuard::preflight` —
+/// the pass reaches the adapter although its identity is not an allowed caller.
+#[test]
+fn a_plan_naming_a_tool_its_identity_may_not_call_is_refused_before_the_adapter_is_reached() {
+    let policy = narrow();
+    let registry = register("US");
+    let run = |mut guard: ActionGuard, adapter: &mut Refusing| {
+        run_governed(
+            request(1),
+            Governance {
+                policy: Some(&policy),
+                guard: Some(&mut guard),
+                eligibility: Some((&registry, Timestamp::from_secs(100))),
+            },
+            adapter,
+        )
+        .unwrap()
+    };
+
+    // Premise: with the identity among the callers the pass reaches the venue.
+    let mut allowed = Refusing::default();
+    let report = run(guard_allowing(&["desk-agent"]), &mut allowed);
+    assert_eq!(
+        allowed.attempts, 1,
+        "premise: the pass was attempted: {:?}",
+        report.outcome
+    );
+
+    let mut barred = Refusing::default();
+    let report = run(guard_allowing(&["some-other-agent"]), &mut barred);
+    assert_eq!(
+        barred.attempts, 0,
+        "the adapter was reached by a caller the tool bars"
+    );
+    let blocked = report.blocked.expect("the guard refuses the plan");
+    assert!(
+        blocked.reason.contains("not among the callers allowed"),
+        "{}",
+        blocked.reason
+    );
 }

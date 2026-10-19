@@ -392,3 +392,137 @@ fn a_book_that_has_traded_nowhere_says_nothing_about_collateral_rather_than_a_re
     );
     Ok(())
 }
+
+fn kinds_observed(platform: &Platform) -> Vec<qip_capital_fabric::forecast::DemandKind> {
+    let mut kinds: Vec<_> = platform
+        .demand_lanes()
+        .into_iter()
+        .map(|(_, kind, _)| kind)
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+    kinds
+}
+
+/// R12-AMBIENT-3072: the cross-margin read LEARN already runs is also the
+/// platform's observation of collateral and inventory demand. Only cash was
+/// ever fed to the forecaster, so the pre-positioning plan could anticipate
+/// nothing else.
+///
+/// Mutation: delete the `record_obligation_demand` call in
+/// `Platform::review_cross_margin` - both kinds disappear and the assertion
+/// fires. Mutation: invert the maintenance filter in
+/// `record_obligation_demand` - the collateral assertion fires alone.
+#[test]
+fn the_cross_margin_read_records_collateral_and_inventory_demand_at_the_venue_it_read() -> Result<()>
+{
+    use qip_capital_fabric::forecast::DemandKind;
+
+    let (mut platform, counterparty) = traded()?;
+    assert_eq!(
+        kinds_observed(&platform),
+        vec![DemandKind::Cash],
+        "premise: before LEARN reads the book only the fill's cash has been observed"
+    );
+    platform.run_cycle(start());
+    let lanes = platform.demand_lanes();
+    for kind in [DemandKind::Collateral, DemandKind::Inventory] {
+        assert!(
+            lanes.iter().any(|(location, lane_kind, count)| {
+                *lane_kind == kind && location.venue == counterparty && *count >= 1
+            }),
+            "no {kind:?} demand was recorded at {counterparty}: {lanes:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A book that has traded nowhere has nothing to maintain and nothing on
+/// hand, and records no such demand: a zero is not an observation of need.
+///
+/// Mutation: record a fixed Collateral observation unconditionally - the
+/// untraded book gains a lane and the assertion fires.
+#[test]
+fn a_book_that_traded_nowhere_records_no_collateral_or_inventory_demand() -> Result<()> {
+    let mut platform = platform()?;
+    platform.run_cycle(start());
+    assert!(
+        platform.demand_lanes().is_empty(),
+        "an untraded book has no demand lane of any kind: {:?}",
+        platform.demand_lanes()
+    );
+    Ok(())
+}
+
+/// R12-AMBIENT-3072: a fill in an instrument the desk declared as a hedge
+/// records `Hedge` demand beside `Cash`; the same fill without the
+/// declaration records cash alone.
+///
+/// Mutation: make `is_declared_hedge_instrument` return `false` - the
+/// declared-hedge assertion fires. Mutation: make it return `true` - the
+/// undeclared-instrument assertion fires.
+#[test]
+fn a_hedge_fill_records_hedge_demand_and_an_ordinary_fill_does_not() -> Result<()> {
+    use qip_capital_fabric::forecast::DemandKind;
+    use qip_kernel::hedge_review::HedgePolicyDeclaration;
+    use qip_risk::hedge::HedgeAxis;
+
+    let (ordinary, _) = traded()?;
+    assert_eq!(
+        kinds_observed(&ordinary),
+        vec![DemandKind::Cash],
+        "an ordinary fill recorded demand other than cash"
+    );
+
+    let config = PlatformConfig::default()
+        .with_initial_equity(Decimal::from_int(10_000_000))
+        .with_hedge_policies(vec![HedgePolicyDeclaration::new(
+            "technology-concentration",
+            HedgeAxis::Sector,
+            "InformationTechnology",
+            ObjectId::from_string(TRADED),
+            dec!("1"),
+        )]);
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut universe = Universe::new();
+    universe.insert(
+        FinancialObject::builder(
+            ObjectId::from_string(TRADED),
+            "ACME",
+            InstrumentType::CommonStock,
+            liquidity(),
+        )
+        .venue("XNYS")
+        .sector(Sector::InformationTechnology)
+        .price(dec!("100"))
+        .provenance(Provenance::synthetic("collateral-seam", start()))
+        .build(start())?,
+    )?;
+    let mut hedger = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        LimitSet::conservative_default(),
+    )?;
+    let order = hedger.order_from(
+        ObjectId::from_string(TRADED),
+        Side::Buy,
+        dec!("2000"),
+        dec!("100"),
+        "prop-hedge",
+        vec!["hyp-hedge".to_string()],
+        start(),
+    );
+    hedger.submit_order(order, start())?;
+    assert!(
+        !hedger.orders().fills().is_empty(),
+        "premise: the hedge order filled"
+    );
+    assert_eq!(
+        kinds_observed(&hedger),
+        vec![DemandKind::Cash, DemandKind::Hedge],
+        "a fill in a declared hedge instrument did not record hedge demand"
+    );
+    Ok(())
+}

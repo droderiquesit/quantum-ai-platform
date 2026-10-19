@@ -161,6 +161,11 @@ impl MeshSeries {
             names::EDGE_MESH_CIRCUIT,
             "the uplink circuit to the central plane: 1 on the state it is in",
         );
+        metrics.describe(
+            names::EDGE_MESH_CIRCUIT_CHECKS,
+            "uplink circuit readings: closed when it could carry a delta, open when it was open \
+             or probing",
+        );
         Self {
             metrics,
             base,
@@ -266,6 +271,23 @@ impl MeshSeries {
         // after it closed, which is the only fact on this link an operator is
         // ever paged about. `state` is the three-variant `BreakerState`, so
         // this is three series per cell.
+        // The same reading as a judged count, for the `mesh-circuit-closed`
+        // objective: a half-open circuit is still refusing traffic but for
+        // its probe, so it is counted with open.
+        self.metrics.count(
+            names::EDGE_MESH_CIRCUIT_CHECKS,
+            // Labelled by `outcome` alone, unlike the series above: the
+            // objective's rule reads the exact label set, and `cell` and
+            // `region` are one value per process.
+            qip_observability::metrics::labels([(
+                "outcome",
+                if health.circuit == BreakerState::Closed {
+                    "closed"
+                } else {
+                    "open"
+                },
+            )]),
+        );
         for state in [
             BreakerState::Closed,
             BreakerState::Open,
@@ -338,6 +360,47 @@ mod tests {
             3,
             "re-observing an unchanged total counted the same deltas twice"
         );
+    }
+
+    /// R12-OBS-9161: the `mesh-circuit-closed` objective reads a judged count,
+    /// not the one-hot gauge. An open reading and a half-open one are both
+    /// "not closed", and the objective is measured from the readings.
+    ///
+    /// Mutation: count every reading as `closed` in `MeshSeries::observe` -
+    /// the objective reads fully met after two non-closed readings and the
+    /// achieved-fraction assertion fails.
+    #[test]
+    fn the_mesh_circuit_objective_is_measured_from_judged_readings_of_the_circuit() {
+        use qip_observability::critical_paths::{
+            MESH_CIRCUIT_OBJECTIVE, evaluate_where, service_objectives,
+        };
+        let metrics = Arc::new(Metrics::new("qip-edge-node"));
+        let mut series = MeshSeries::new(Arc::clone(&metrics), "cell-a", "eu-west");
+        let evaluate = || {
+            evaluate_where(&metrics.snapshot(), |path| {
+                path.slo.name == MESH_CIRCUIT_OBJECTIVE
+            })
+        };
+        assert!(
+            service_objectives()
+                .iter()
+                .any(|path| path.slo.name == MESH_CIRCUIT_OBJECTIVE
+                    && path.slo.service == qip_observability::critical_paths::EDGE_NODE_SERVICE),
+            "premise: the node evaluates the objective"
+        );
+        assert_eq!(evaluate()[0].observations, 0, "premise: unmeasured");
+
+        series.observe(&health(0, BreakerState::Closed));
+        series.observe(&health(0, BreakerState::Open));
+        series.observe(&health(0, BreakerState::HalfOpen));
+        series.observe(&health(0, BreakerState::Closed));
+        let status = &evaluate()[0];
+        assert_eq!(status.observations, 4);
+        assert!(
+            (status.achieved - 0.5).abs() < 1e-12,
+            "two of four readings were not closed: {status:?}"
+        );
+        assert!(!status.is_met);
     }
 
     #[test]

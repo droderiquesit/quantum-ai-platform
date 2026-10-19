@@ -16,8 +16,8 @@ use qip_core::testing::approx_eq;
 use qip_core::time::{Duration, Timestamp};
 use qip_learning_engine::evaluation::{Evaluation, Verdict};
 use qip_learning_engine::self_model::{
-    CAPABILITY_WINDOW, CapabilityEstimate, ComponentKey, ComponentKind, MAX_COMPONENTS,
-    MINIMUM_SAMPLE, ScoredOutcome, SelfModel,
+    CAPABILITY_WINDOW, CapabilityEstimate, ComponentKey, ComponentKind, DRIFT_TOLERANCE,
+    MAX_COMPONENTS, MINIMUM_SAMPLE, ScoredOutcome, SelfModel,
 };
 
 fn start() -> Timestamp {
@@ -385,4 +385,151 @@ fn a_world_model_forecast_is_charged_by_the_side_it_took_and_never_freshens_the_
     assert_eq!(estimate.hits(), 1);
     assert_eq!(model.sample_facts().count(), 0);
     Ok(())
+}
+
+/// A confident outcome: stated at `confidence`, right or wrong.
+fn graded(n: usize, confidence: f64, correct: bool) -> ScoredOutcome {
+    ScoredOutcome::new(format!("hyp-{n}"), confidence, correct, at(n)).expect("a probability")
+}
+
+/// A component right for its older twenty outcomes and wrong for its newer
+/// twenty, all stated at 0.8: the window average still reads it as a coin
+/// flip's worth of accuracy, and nothing in that number says the detector or
+/// the data behind it has moved. Mutation: make `Capability::weight` return
+/// `accuracy` unconditionally — the factor stays at the window's 0.5 and the
+/// last assertion fails.
+#[test]
+fn a_component_that_has_started_missing_is_weighted_by_its_recent_record_not_its_window_average()
+-> Result<()> {
+    let key = ComponentKey::detector("vol-spike")?;
+    let mut model = SelfModel::new();
+    for n in 0..20 {
+        model.record(key.clone(), graded(n, 0.8, true));
+    }
+    let steady = model.estimate(&key)?;
+    assert!(
+        steady.drift.is_none(),
+        "premise: twenty straight hits is not drift: {:?}",
+        steady.drift
+    );
+    for n in 20..40 {
+        model.record(key.clone(), graded(n, 0.8, false));
+    }
+
+    let capability = model.estimate(&key)?;
+    let drift = capability.drift.as_ref().expect("the record has worsened");
+    assert!(drift.worsening() > 0.5, "{drift:?}");
+    // 20 of 40 over the window, shrunk: (20 + 2) / (40 + 4) = 0.5.
+    assert!(approx_eq(capability.accuracy, 0.5, 1e-9), "{capability:?}");
+    // 0 of 20 lately, shrunk: (0 + 2) / (20 + 4).
+    assert!(
+        approx_eq(drift.recent_accuracy, 2.0 / 24.0, 1e-9),
+        "{drift:?}"
+    );
+    let factor = model.factor(&key).expect("measured");
+    assert!(
+        approx_eq(factor, 2.0 / 24.0, 1e-9),
+        "a drifting component kept its window weight {factor}"
+    );
+    assert!(
+        approx_eq(model.origin_factors()["vol-spike"], factor, 1e-12),
+        "REASON is handed a different factor from the one the model reports"
+    );
+    Ok(())
+}
+
+/// The other side of the tolerance, and of the direction: a component that
+/// has improved, and one whose halves differ by less than the tolerance,
+/// keep their window accuracy. A drift test that fired on a lucky streak, or
+/// on getting better, would discount the platform's best components.
+/// Mutation: drop the `<= DRIFT_TOLERANCE` return (always report drift) —
+/// the steady component reports drift and the first assertion fails.
+#[test]
+fn a_component_that_improved_or_wobbled_inside_the_tolerance_is_not_called_drifting() -> Result<()>
+{
+    let mut steady = CapabilityEstimate::new();
+    for n in 0..40 {
+        steady.record(graded(n, 0.7, n % 2 == 0));
+    }
+    assert!(steady.is_estimable(), "premise: the record is long enough");
+    assert!(steady.drift().is_none(), "{:?}", steady.drift());
+
+    let mut improving = CapabilityEstimate::new();
+    for n in 0..20 {
+        improving.record(graded(n, 0.8, false));
+    }
+    for n in 20..40 {
+        improving.record(graded(n, 0.8, true));
+    }
+    assert!(improving.drift().is_none(), "{:?}", improving.drift());
+
+    let mut short = CapabilityEstimate::new();
+    for n in 0..MINIMUM_SAMPLE {
+        short.record(graded(n, 0.8, true));
+    }
+    for n in MINIMUM_SAMPLE..2 * MINIMUM_SAMPLE - 1 {
+        short.record(graded(n, 0.8, false));
+    }
+    assert!(
+        short.drift().is_none(),
+        "a window under twice the minimum sample was judged: {:?}",
+        short.drift()
+    );
+    Ok(())
+}
+
+/// Forty outcomes at 0.7 confidence in which the older twenty miss
+/// `older_misses` times and the newer twenty `newer_misses` times. A miss
+/// scores 0.49 and a hit 0.09, so each extra miss in the newer half worsens
+/// the mean Brier by exactly 0.02.
+fn two_halves(older_misses: usize, newer_misses: usize) -> CapabilityEstimate {
+    let mut record = CapabilityEstimate::new();
+    for n in 0..20 {
+        record.record(graded(n, 0.7, n >= older_misses));
+    }
+    for n in 20..40 {
+        record.record(graded(n, 0.7, n - 20 >= newer_misses));
+    }
+    record
+}
+
+/// The tolerance has two sides and the tests held neither: the steady window
+/// alternated hit and miss, so both halves scored identically and any
+/// tolerance from zero to a half passed. One unlucky outcome (0.02 worse)
+/// and two (0.04) are inside the tolerance and must not discount a
+/// component; three (0.06) are outside it and must.
+///
+/// Mutation: compare against `0.0` instead of `DRIFT_TOLERANCE` in
+/// `CapabilityEstimate::drift` — the one-extra-miss window is called
+/// drifting and the first assertion fails. Against `0.45` — the 0.06 window
+/// is not called drifting and the last `expect` fails. Against `0.03` and
+/// `0.07` the two-extra-miss and three-extra-miss windows fail likewise.
+#[test]
+fn a_window_worse_by_less_than_the_tolerance_is_not_drifting_and_one_worse_by_more_is() {
+    const {
+        assert!(CAPABILITY_WINDOW >= 40, "premise: the window holds forty");
+        assert!(
+            0.04 < DRIFT_TOLERANCE && DRIFT_TOLERANCE < 0.06,
+            "premise: the cases below straddle the tolerance"
+        );
+    }
+    for newer_misses in [3, 4] {
+        let record = two_halves(2, newer_misses);
+        assert!(record.is_estimable(), "premise: the record is long enough");
+        assert!(
+            record.drift().is_none(),
+            "{} extra misses are inside the tolerance: {:?}",
+            newer_misses - 2,
+            record.drift()
+        );
+    }
+    let record = two_halves(2, 5);
+    let drift = record
+        .drift()
+        .expect("three extra misses are past the tolerance");
+    assert!(
+        approx_eq(drift.worsening(), 0.06, 1e-9),
+        "premise: the window is worse by 0.06, got {}",
+        drift.worsening()
+    );
 }

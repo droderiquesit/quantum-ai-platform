@@ -3,8 +3,9 @@
 
 use qip_core::Timestamp;
 use qip_observability::aiops::{
-    Effector, EntityGraph, EntityKey, ReleaseDecision, Remediator, Runbook, Signal, SignalClass,
-    TimelineEvent, TimelineSource, build_timeline, detect_level_shift, release_gate,
+    AuditRecord, AuditSink, Effector, EntityGraph, EntityKey, ReleaseDecision, Remediator, Runbook,
+    Signal, SignalClass, TimelineEvent, TimelineSource, build_timeline, detect_level_shift,
+    release_gate,
 };
 use qip_observability::critical_paths::critical_path_slos;
 use qip_observability::slo::{Slo, SloWindow};
@@ -224,9 +225,9 @@ fn an_exhausted_budget_refuses_a_promotion_to_its_plane_and_remaining_budget_let
 #[test]
 fn the_catalogue_holds_one_objective_per_critical_path_and_an_unfed_one_reads_unmeasured() {
     let c = critical_path_slos();
-    assert_eq!(c.len(), 8);
+    assert_eq!(c.len(), 10);
     let names: BTreeSet<_> = c.iter().map(|p| p.slo.name.clone()).collect();
-    assert_eq!(names.len(), 8);
+    assert_eq!(names.len(), 10);
     for p in &c {
         assert!(!p.source_series.is_empty());
         assert!(p.slo.target > 0.0 && p.slo.target <= 1.0);
@@ -237,4 +238,50 @@ fn the_catalogue_holds_one_objective_per_critical_path_and_an_unfed_one_reads_un
         );
     }
     assert!(c[0].evaluate(10, 10).is_observed());
+}
+
+/// Takes the authorising record and refuses every later one.
+#[derive(Debug, Default)]
+struct FullAfterOne(usize);
+
+impl AuditSink for FullAfterOne {
+    fn journal(&mut self, _record: &AuditRecord) -> qip_core::error::Result<()> {
+        self.0 += 1;
+        if self.0 > 1 {
+            return Err(qip_core::error::Error::io("disk full"));
+        }
+        Ok(())
+    }
+}
+
+/// An action that ran is an `Ok` to the caller that asks for the outcome,
+/// with the sink's failure beside it; `remediate` keeps reporting it as an
+/// error for callers that do not distinguish.
+///
+/// Mutation: make `remediate_outcome` return `Err` when `journal_last`
+/// fails — the first assertion fires.
+#[test]
+fn an_applied_action_whose_outcome_cannot_be_journalled_is_an_ok_with_the_failure_beside_it() {
+    let mut r =
+        Remediator::journalled(runbooks(), Recorder::default(), Box::new(FullAfterOne(0))).unwrap();
+    let applied = r.remediate_outcome("INC-1", "restart", "qip-api").unwrap();
+    assert_eq!(applied.result, "done");
+    assert!(
+        applied
+            .unjournalled
+            .as_deref()
+            .is_some_and(|why| why.contains("disk full")),
+        "{applied:?}"
+    );
+
+    let mut r =
+        Remediator::journalled(runbooks(), Recorder::default(), Box::new(FullAfterOne(0))).unwrap();
+    let error = r.remediate("INC-2", "restart", "qip-api").unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("was applied, but its outcome could not be journalled"),
+        "{}",
+        error.message()
+    );
 }

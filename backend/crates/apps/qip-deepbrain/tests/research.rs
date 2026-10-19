@@ -7,11 +7,14 @@
 //! Each test asserts its premise first — that the platform holds the state
 //! the detector reads — so an empty platform cannot pass for a quiet one.
 
+use qip_capital_fabric::{CapitalLocation, DemandKind, Region};
 use qip_core::{Clock, Context, Decimal, Duration, ManualClock, ObjectId, Timestamp};
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::evolution::{EvolutionConfig, EvolutionEngine};
 use qip_deepbrain::node::{self, Loops};
-use qip_deepbrain::operations::{CapabilitySwitch, IterationFacts, Operations, quantum_outcome};
+use qip_deepbrain::operations::{
+    CapabilitySwitch, IterationFacts, Operations, RemediationJournal, quantum_outcome, runbooks,
+};
 use qip_deepbrain::research::{ResearchConfig, ResearchLoop, limit_approach_signals};
 use qip_deepbrain::status::NodeStatus;
 use qip_financial::quality::DataQuality;
@@ -22,7 +25,9 @@ use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_market_ingestion::synthetic::{EnvironmentConfig, SyntheticEnvironment};
 use qip_observability::Telemetry;
-use qip_observability::aiops::{Effector, EntityKey, SignalClass};
+use qip_observability::aiops::{
+    AuditRecord, AuditSink, Effector, EntityKey, Remediator, SignalClass,
+};
 use qip_observability::metrics::{labels, names};
 use qip_optimization_engine::QuantumDispatch;
 use qip_risk::limits::{LimitSet, RiskState};
@@ -362,6 +367,7 @@ fn the_run_loop_sweeps_research_and_observes_operations_every_cycle() {
             permissions: None,
             ambient: None,
             agency: None,
+            warehouse: None,
         },
         |outcome| {
             researched += usize::from(outcome.research.is_some());
@@ -470,6 +476,320 @@ fn the_effector_carries_out_nothing_but_disabling_this_nodes_own_research() {
     );
     assert!(switch.apply("disable_capability", "research").is_ok());
     assert!(switch.is_disabled("research"));
+}
+
+/// A sink that cannot take a record, as a full disk or a lost file would be.
+#[derive(Debug)]
+struct UnwritableJournal;
+
+impl AuditSink for UnwritableJournal {
+    fn journal(&mut self, _record: &AuditRecord) -> qip_core::error::Result<()> {
+        Err(qip_core::error::Error::io("the journal's disk is full"))
+    }
+}
+
+/// R12-CICD-9081. An effect whose audit record stayed in the process left no
+/// account of itself once the restart it was waiting for came.
+#[test]
+fn an_incident_journals_the_authorising_record_before_the_effect_and_the_outcome_after() {
+    let platform = platform();
+    let journal = RemediationJournal::open(None, Arc::new(ManualClock::new(start())))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut ops =
+        Operations::journalled(start(), journal.clone()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        journal.records().unwrap_or_default().is_empty(),
+        "premise: nothing is journalled before an incident"
+    );
+    for i in 0..24i64 {
+        let ms = if i < 12 {
+            10.0 + (i % 2) as f64
+        } else {
+            1_000.0
+        };
+        let at = start().saturating_add(Duration::from_secs(i));
+        ops.observe(&platform, &facts(at, ms, &[]))
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+    assert!(ops.is_disabled("research"), "premise: the runbook ran");
+    let records = journal.records().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(records.len(), 2, "authorisation then outcome: {records:?}");
+    assert!(
+        records[0]
+            .result
+            .starts_with("authorised by shed-research-on-iteration-shift"),
+        "{:?}",
+        records[0]
+    );
+    assert_eq!(
+        records[1].result,
+        "research disabled until the process restarts"
+    );
+    assert_eq!(
+        records[1].prev_hash, records[0].hash,
+        "the two are one chain"
+    );
+    assert_eq!(&records[..], ops.remediator().audit().records());
+}
+
+/// R12-CICD-9081. Mutation: call `apply` before `journal_last` and this
+/// fails, because the effector has already switched research off.
+#[test]
+fn an_effect_whose_audit_record_cannot_be_journalled_is_refused_and_not_applied() {
+    let mut remediator = Remediator::journalled(
+        runbooks(),
+        CapabilitySwitch::default(),
+        Box::new(UnwritableJournal),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        !remediator.effector().is_disabled("research"),
+        "premise: research is on"
+    );
+    let refusal = remediator
+        .remediate("INC-1", "disable_capability", "research")
+        .err()
+        .unwrap_or_else(|| panic!("an unjournalled action must be refused"));
+    assert!(
+        refusal.message().contains("could not be journalled"),
+        "{}",
+        refusal.message()
+    );
+    assert!(
+        !remediator.effector().is_disabled("research"),
+        "the effector must not have run"
+    );
+    assert!(remediator.audit().verify());
+}
+
+/// A sink that takes the authorising record and then goes: the disk fills
+/// between the record that precedes the effect and the one that follows it.
+#[derive(Debug, Default)]
+struct FailsAfterTheAuthorisation {
+    taken: usize,
+}
+
+impl AuditSink for FailsAfterTheAuthorisation {
+    fn journal(&mut self, _record: &AuditRecord) -> qip_core::error::Result<()> {
+        self.taken += 1;
+        if self.taken > 1 {
+            return Err(qip_core::error::Error::io("the journal's disk is full"));
+        }
+        Ok(())
+    }
+}
+
+/// An action that ran and whose outcome record then failed to journal is an
+/// applied action. `open_incident` counted it `refused` and marked the
+/// incident's remediation failed while research was in fact switched off, so
+/// the series and the incident said the opposite of the node.
+///
+/// Mutation: in `Operations::open_incident`, label the unjournalled case
+/// `applied` instead of `applied_unjournalled` — the count reads 0 and the
+/// first assertion fires. Mutation: make `Remediator::remediate_outcome`
+/// return `Err` for the unjournalled case — the incident takes the refused
+/// arm and the same assertion fires.
+#[test]
+fn an_action_that_ran_but_could_not_journal_its_outcome_is_counted_applied_not_refused() {
+    let platform = platform();
+    let metrics = platform.telemetry().metrics.clone();
+    let mut ops =
+        Operations::journalled_to(start(), Box::new(FailsAfterTheAuthorisation::default()))
+            .unwrap_or_else(|e| panic!("{e}"));
+    let mut incident = None;
+    for i in 0..24i64 {
+        let ms = if i < 12 {
+            10.0 + (i % 2) as f64
+        } else {
+            1_000.0
+        };
+        let at = start().saturating_add(Duration::from_secs(i));
+        let round = ops
+            .observe(&platform, &facts(at, ms, &[]))
+            .unwrap_or_else(|e| panic!("{e}"));
+        incident = incident.or(round.incident);
+    }
+    assert!(ops.is_disabled("research"), "premise: the runbook ran");
+    let counted = |outcome: &str| {
+        metrics.snapshot().counter(
+            names::AIOPS_REMEDIATIONS,
+            &labels([("action", "disable_capability"), ("outcome", outcome)]),
+        )
+    };
+    assert_eq!(counted("applied_unjournalled"), 1);
+    assert_eq!(
+        counted("refused"),
+        0,
+        "research is off, so the action was not refused"
+    );
+    let incident = incident.unwrap_or_else(|| panic!("premise: a shift opened an incident"));
+    let remediation = incident
+        .remediation
+        .unwrap_or_else(|why| panic!("the incident marks an applied action failed: {why}"));
+    assert!(
+        remediation.contains("could not be journalled"),
+        "the incident says the outcome was not journalled: {remediation}"
+    );
+}
+
+/// R12-OBS-9164: model package freshness and the research queue's depth are
+/// objectives backed by recorded series. A round of the operations loop and
+/// a research sweep move both from unmeasured to measured.
+///
+/// Mutation: delete the `names::MODEL_PACKAGE_FRESHNESS_CHECKS` count in
+/// `Operations::observe` or the `names::RESEARCH_QUEUE_CHECKS` count in
+/// `sweep_over`; the matching objective stays at zero observations.
+#[test]
+fn a_round_moves_the_model_freshness_and_research_queue_objectives_from_unmeasured_to_measured() {
+    let platform = platform();
+    let metrics = platform.telemetry().metrics.clone();
+    let statuses = || {
+        qip_observability::critical_paths::evaluate_where(&metrics.snapshot(), |path| {
+            path.slo.service == "deepbrain"
+        })
+    };
+    let observations = |name: &str| {
+        statuses()
+            .iter()
+            .find(|s| s.slo.name == name)
+            .unwrap_or_else(|| panic!("{name} is not a deepbrain objective"))
+            .observations
+    };
+    assert_eq!(
+        observations("model-package-freshness"),
+        0,
+        "premise: nothing measured before the round"
+    );
+    assert_eq!(observations("research-queue-depth"), 0, "premise");
+
+    let mut ops = Operations::new(start()).unwrap_or_else(|e| panic!("{e}"));
+    ops.observe(
+        &platform,
+        &IterationFacts {
+            package_promoted: true,
+            ..facts(start(), 10.0, &[])
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let mut loop_ = research(coverage(&[("Equity", &["obj-A"])]));
+    loop_
+        .sweep(&platform, start(), &set(&["vendor"]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    assert_eq!(observations("model-package-freshness"), 1);
+    assert_eq!(observations("research-queue-depth"), 1);
+    assert!(
+        statuses()
+            .iter()
+            .filter(|s| ["model-package-freshness", "research-queue-depth"]
+                .contains(&s.slo.name.as_str()))
+            .all(|s| s.is_met),
+        "a fresh package and a shallow queue meet both"
+    );
+}
+
+/// A platform with four days of cash demand at its declared venue, so the
+/// planner has a lane to forecast and, over a five-day horizon, a movement
+/// that pays for itself.
+fn platform_with_a_funding_lane() -> Platform {
+    let mut platform = platform();
+    let (venue, region) = platform
+        .settlement_book()
+        .venues()
+        .map(|(venue, region)| (venue.clone(), region.as_str().to_string()))
+        .next()
+        .unwrap_or_else(|| panic!("premise: the platform declares a settling venue"));
+    let lane = CapitalLocation::new(Region::new(&region), qip_core::Currency::USD, venue);
+    for day in 0..4 {
+        platform.record_capital_demand(
+            lane.clone(),
+            DemandKind::Cash,
+            start().saturating_add(Duration::from_days(day)),
+            qip_core::dec!("250000"),
+        );
+    }
+    platform
+}
+
+fn capital_research(sentinel: bool) -> ResearchLoop {
+    let config = ResearchConfig {
+        capital_sentinel: sentinel,
+        capital_horizon: Duration::from_days(5),
+        ..ResearchConfig::default()
+    };
+    ResearchLoop::new(config, BTreeMap::new()).unwrap_or_else(|e| panic!("{e}"))
+}
+
+fn capital_signals(round: &qip_deepbrain::research::ResearchRound) -> usize {
+    round
+        .signals
+        .iter()
+        .filter(|s| s.class() == qip_contracts::ambient::SignalClass::Capital)
+        .count()
+}
+
+/// R12-AMBIENT-3072/3065: the DECIDE stage's pre-positioning plan reaches the
+/// attention router as a capital signal that takes the capital-preparation
+/// pathway and is dispatched as advice, not offered to the research desk as a
+/// gap; with the sentinel off the sweep raises none.
+///
+/// Mutation: route `SignalClass::Capital` to `Pathway::ResearchTask` in
+/// `RoutingPolicy::standard`; the event's pathway is not capital preparation
+/// and the advice is never dispatched.
+#[test]
+fn a_recommended_movement_is_a_capital_preparation_signal_dispatched_as_advice_and_absent_when_the_sentinel_is_off()
+ {
+    let platform = platform_with_a_funding_lane();
+    let at = start().saturating_add(Duration::from_days(4));
+    let plan = platform
+        .pre_position(at, Duration::from_days(5))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        plan.moves.len(),
+        1,
+        "premise: the plan recommends one movement: {}",
+        plan.describe()
+    );
+
+    let mut off = capital_research(false);
+    let quiet = off
+        .sweep(&platform, at, &set(&["vendor"]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(capital_signals(&quiet), 0, "the sentinel is off");
+    assert!(quiet.capital_advice.is_empty());
+
+    let mut on = capital_research(true);
+    let round = on
+        .sweep(&platform, at, &set(&["vendor"]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(capital_signals(&round), 1, "{round:?}");
+    let event = round
+        .attention_events
+        .iter()
+        .find(|e| e.pathway == qip_contracts::ambient::Pathway::CapitalPreparation)
+        .unwrap_or_else(|| panic!("no event took the capital pathway: {round:?}"));
+    assert_eq!(
+        event.disposition,
+        qip_contracts::ambient::Disposition::Activated
+    );
+    assert_eq!(round.capital_advice.len(), 1, "{round:?}");
+    assert_eq!(
+        round.capital_advice[0].amount_base,
+        plan.moves[0].amount_base
+    );
+    assert!(
+        on.advisories()
+            .any(|a| a.view().contains("CapitalPreparation")),
+        "the advice is filed as an advisory"
+    );
+    assert!(
+        !on.desk()
+            .queue()
+            .ranked()
+            .iter()
+            .any(|e| e.item().research_question.contains("capital:")),
+        "a capital signal is not a research gap"
+    );
 }
 
 fn routing(dispatch: QuantumDispatch, ran: &[&str]) -> SolverRoutingJournal {
@@ -766,6 +1086,7 @@ fn a_sweep_record_carries_the_evolution_round_that_preceded_it() {
             permissions: None,
             ambient: None,
             agency: None,
+            warehouse: None,
         },
         |outcome| {
             manual.advance(Duration::from_mins(1));
@@ -893,4 +1214,380 @@ fn a_scout_job_handed_to_the_discovery_desk_becomes_a_target_of_its_next_pass() 
         "each once, in order"
     );
     assert_eq!(desk.scout_queue().count(), 0, "the pass took the queue");
+}
+
+/// R12-EXPAND-6059: the tools the node registers are the tools its settings
+/// say it runs, by the names the acquisition planner resolves them by.
+///
+/// The failure this prevents: the registry held three desks and the hosted
+/// endpoint, so a gap that needed a classical solver or a quantum backend —
+/// both of which the process runs — was queued as a tool to build and the
+/// sweep spent compute rebuilding what the router already had; and the
+/// opposite, a registry that listed a quantum backend on a node whose
+/// compute settings attached none, admitting a gap unblocked on a tool that
+/// would never answer. `tick-replay` stays unregistered because the node does
+/// not hold it (the deployed-sweep test in `expansion_rows.rs` depends on
+/// that).
+#[test]
+fn the_node_registers_every_tool_kind_it_actually_runs() {
+    use qip_agents::tools::ToolKind;
+    use qip_deepbrain::research::{node_tools, registered_tools, registered_tools_holding};
+    use qip_expansion::plan::AcquisitionAction;
+    use qip_kernel::compute_routing::{ComputeSettings, QuantumProviderChoice};
+
+    let off = ComputeSettings::default();
+    let simulated = ComputeSettings {
+        provider: QuantumProviderChoice::Simulated,
+        ..off
+    };
+    let names = |tools: &qip_agents::tools::ToolRegistry, kind| -> Vec<String> {
+        tools
+            .by_kind(kind)
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect()
+    };
+
+    // Premise: the bare registry holds neither a solver nor a quantum
+    // backend, so what follows is added by `node_tools` and nothing else.
+    let bare = registered_tools().unwrap_or_else(|e| panic!("{e}"));
+    assert!(names(&bare, ToolKind::Solver).is_empty());
+    assert!(names(&bare, ToolKind::QuantumBackend).is_empty());
+
+    // Off: the classical router's solver, no quantum backend, no connector.
+    let held = registered_tools_holding(&node_tools(&off, &[])).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(names(&held, ToolKind::Solver), ["classical-solver"]);
+    assert!(names(&held, ToolKind::QuantumBackend).is_empty());
+
+    // Simulated and two polled sources: the backend and a connector each.
+    let sources = vec!["src-a".to_string(), "src-b".to_string()];
+    let held = registered_tools_holding(&node_tools(&simulated, &sources))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(names(&held, ToolKind::QuantumBackend), ["quantum-backend"]);
+    assert_eq!(
+        names(&held, ToolKind::Connector),
+        ["connector/src-a", "connector/src-b", "source-discovery"]
+    );
+    // The names are the planner's: a gap formulating a solver finds both
+    // tools it needs registered rather than queued to build.
+    for (name, kind) in AcquisitionAction::FormulateSolver.tools() {
+        let spec = held
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} unregistered"));
+        assert_eq!(spec.kind(), *kind);
+    }
+    assert!(held.get("tick-replay").is_none());
+
+    // The loop the root builds counts what it holds.
+    let loop_ = ResearchLoop::new_for_node(
+        ResearchConfig::default(),
+        coverage(&[]),
+        &simulated,
+        &sources,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let round = {
+        let mut loop_ = loop_;
+        loop_
+            .sweep(&platform(), start(), &set(&["src-a"]), &set(&["US"]))
+            .unwrap_or_else(|e| panic!("{e}"))
+    };
+    assert_eq!(
+        round.registries.tools,
+        qip_deepbrain::research::tool_count(&held),
+        "{:?}",
+        round.registries
+    );
+}
+
+// --- regret reaches the sweep (R12-AMBIENT-3071) ---------------------------
+
+/// A platform that knows `AAA`, so a refused order and the twin's pricing of
+/// it have an instrument to be about.
+fn platform_knowing_aaa() -> Platform {
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::costs::LiquidityProfile;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    let mut universe = Universe::new();
+    universe
+        .insert(
+            FinancialObject::builder(
+                ObjectId::from_string("obj-AAA".to_string()),
+                "AAA",
+                InstrumentType::CommonStock,
+                LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+            )
+            .venue("XNYS")
+            .sector(Sector::InformationTechnology)
+            .price(Decimal::from_int(100))
+            .provenance(Provenance::synthetic("test", start()))
+            .build(start())
+            .unwrap_or_else(|e| panic!("a valid object: {e}")),
+        )
+        .unwrap_or_else(|e| panic!("insertable: {e}"));
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        LimitSet::conservative_default(),
+    )
+    .unwrap_or_else(|e| panic!("the platform assembles: {e}"))
+}
+
+/// A flat tape: `count` quiet daily bars ending at `start`, then a flat
+/// `level` for `days` after it. The twin marks a declined path at the open of
+/// a bar. `Platform::capture_submission` books a buy against the ask, so the
+/// twin's gross for a declined buy is `(entry - exit) * quantity` (see
+/// `qip-kernel/tests/learning.rs`, where a *rise* scores the decline
+/// unfavourable): a level far below the ~100 entry is what makes each
+/// declined buy score as a regret. The premise below asserts the score
+/// rather than trusting this reading.
+fn tape_stepping_to(level: f64, count: i64, days: i64) -> Vec<SensedRecord> {
+    let mut records = Vec::new();
+    for i in 0..count {
+        let wiggle = if i % 2 == 0 { 0.3 } else { -0.3 };
+        records.push(bar(
+            "obj-AAA",
+            start().saturating_sub(Duration::from_days(count - i)),
+            100.0 + wiggle,
+        ));
+    }
+    for day in 1..=days {
+        records.push(bar(
+            "obj-AAA",
+            start().saturating_add(Duration::from_days(day)),
+            level,
+        ));
+    }
+    records
+}
+
+/// R12-AMBIENT-3071: counterfactual regret reaches the deep brain's sweep.
+/// Three declines the twin prices as regrets at one gate (`MIN_REGRETS`) are
+/// read by `ResearchLoop::sweep` straight off `Platform::declined_scores`,
+/// priced, and routed as an Opportunity-class signal to the research-task
+/// pathway naming that gate.
+///
+/// The failure this prevents: LEARN prices every veto and nothing reads the
+/// result, so a gate that keeps refusing what would have earned is a number
+/// on a counter and never a learning objective. The pure observation is
+/// covered by `a_repeated_veto_gap_carries_the_earnings_its_gate_forwent`;
+/// this proves the platform-to-sweep read and the routing, which that test
+/// does not touch.
+///
+/// Mutation: delete `observations.extend(veto_observations(&declines)?)` in
+/// `ResearchLoop::sweep_over` — no Opportunity-class signal is raised and the
+/// last block fails.
+#[test]
+fn three_regretted_declines_at_one_gate_reach_the_sweep_as_an_opportunity_class_research_signal() {
+    use qip_contracts::ambient::{Pathway, SignalClass};
+    use qip_deepbrain::research::MIN_REGRETS;
+    use qip_execution_engine::order::Side;
+
+    let mut platform = platform_knowing_aaa();
+    platform.observe(tape_stepping_to(30.0, 90, 5));
+    for n in 0..MIN_REGRETS {
+        let order = platform.order_from(
+            ObjectId::from_string("obj-AAA".to_string()),
+            Side::Buy,
+            Decimal::from_int(1000),
+            Decimal::from_int(100),
+            &format!("prop-refused-{n}"),
+            Vec::new(),
+            start(),
+        );
+        assert!(
+            platform.submit_order(order, start()).is_err(),
+            "premise: an untraceable order is refused"
+        );
+    }
+    assert_eq!(platform.declined_awaiting_score(), MIN_REGRETS);
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+    // Premise: LEARN priced all three and every one is a regret at one gate,
+    // so the sweep has exactly the evidence the detector asks for.
+    let scores = platform.declined_scores();
+    assert_eq!(scores.len(), MIN_REGRETS, "{scores:?}");
+    assert!(scores.iter().all(|s| s.regret), "{scores:?}");
+    let gate = scores[0].gate.clone();
+    assert!(scores.iter().all(|s| s.gate == gate), "{scores:?}");
+
+    let mut loop_ = research(coverage(&[]));
+    let round = loop_
+        .sweep(
+            &platform,
+            start().saturating_add(Duration::from_days(3)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    let evidence = format!("declined_scores:gate:{gate}");
+    let signal = round
+        .signals
+        .iter()
+        .find(|s| s.class() == SignalClass::Opportunity && s.evidence_ids().contains(&evidence))
+        .unwrap_or_else(|| {
+            panic!(
+                "no Opportunity-class signal names `{evidence}`: {:?}",
+                round.signals
+            )
+        });
+    let event = round
+        .attention_events
+        .iter()
+        .find(|e| e.signal_id == signal.id())
+        .unwrap_or_else(|| panic!("the signal was never routed: {:?}", round.attention_events));
+    assert_eq!(
+        event.pathway,
+        Pathway::ResearchTask,
+        "the regret gap is routed to the research-task pathway: {event:?}"
+    );
+}
+
+// --- residual gaps are priced, and ranked by their deadline (R12-EXPAND-6048) ---
+
+/// Fill one buy of `quantity` at 100 on a platform that knows `AAA`, and
+/// hand the platform back with its venue's name and the notional it traded.
+fn platform_with_a_fill_of(quantity: i64) -> (Platform, String, Decimal) {
+    use qip_execution_engine::order::Side;
+    let mut platform = platform_knowing_aaa();
+    platform.observe(tape_stepping_to(100.0, 90, 5));
+    let order = platform.order_from(
+        ObjectId::from_string("obj-AAA".to_string()),
+        Side::Buy,
+        Decimal::from_int(quantity),
+        Decimal::from_int(100),
+        "prop-filled",
+        vec!["hyp-prop-filled".to_string()],
+        start(),
+    );
+    platform
+        .submit_order(order, start())
+        .unwrap_or_else(|e| panic!("the order is accepted: {e}"));
+    let notionals = qip_deepbrain::research::fill_notionals(&platform)
+        .unwrap_or_else(|e| panic!("notionals: {e}"));
+    let (venue, notional) = notionals
+        .iter()
+        .next()
+        .map(|(v, n)| (v.clone(), *n))
+        .unwrap_or_else(|| panic!("premise: the fill is on the outcome record"));
+    (platform, venue, notional)
+}
+
+/// The sweep's residual gap for `venue`, from fills that each missed the twin
+/// by `bps`, and its economic value on the router's basis-point scale.
+fn residual_gap_value_bp(platform: &Platform, venue: &str, bps: f64) -> u32 {
+    use qip_contracts::ambient::SignalClass;
+    use qip_deepbrain::research::FillObservation;
+    let fills: Vec<FillObservation> = (0..4)
+        .map(|i| FillObservation {
+            venue: venue.to_string(),
+            object_id: "obj-AAA".to_string(),
+            filled_at: start().saturating_add(Duration::from_mins(i)),
+            trade_error_bps: Some(bps),
+        })
+        .collect();
+    let mut loop_ = research(coverage(&[]));
+    let round = loop_
+        .sweep_over(
+            platform,
+            &fills,
+            &[],
+            start().saturating_add(Duration::from_days(1)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    let evidence = format!("fill_scores:{venue}");
+    round
+        .signals
+        .iter()
+        .find(|s| s.class() == SignalClass::Risk && s.evidence_ids().contains(&evidence))
+        .unwrap_or_else(|| panic!("no residual signal for `{venue}`: {:?}", round.signals))
+        .economic_value_bp()
+}
+
+/// R12-EXPAND-6048: the notional the platform filled at a venue prices that
+/// venue's residual gap. Two platforms miss the twin by the same 40 bps; the
+/// one that filled three times the size states three times the economic value
+/// to the router, and the figure is the mean miss times the notional traded.
+///
+/// The failure prevented: residual gaps carried no size, so slippage cost was
+/// unmeasurable from the fill record and a venue missing on a rounding error's
+/// worth ranked level with one missing on the book.
+///
+/// Mutation: in `sweep_over`, call `unexplained_residuals` (the unpriced
+/// detector) instead of `unexplained_residuals_priced`; both gaps state zero
+/// and the first assertion on the smaller fill's figure fails.
+#[test]
+fn a_residual_gap_is_priced_from_the_notional_the_platform_filled() {
+    let (small, venue_small, notional_small) = platform_with_a_fill_of(50);
+    let (large, venue_large, notional_large) = platform_with_a_fill_of(150);
+    assert_eq!(venue_small, venue_large, "premise: one simulated venue");
+    assert!(
+        notional_large > notional_small && notional_small.is_positive(),
+        "premise: {notional_large} against {notional_small}"
+    );
+
+    // 40 bps of the notional, in units, then in the scale's hundredths.
+    let expected =
+        |notional: Decimal| (40.0 * notional.to_f64() / 10_000.0 / 100.0 * 10_000.0).round() as u32;
+    let small_bp = residual_gap_value_bp(&small, &venue_small, 40.0);
+    let large_bp = residual_gap_value_bp(&large, &venue_large, 40.0);
+    assert!(small_bp > 0, "the smaller fills' gap states no value");
+    assert_eq!(small_bp, expected(notional_small));
+    assert_eq!(large_bp, expected(notional_large));
+    assert!(large_bp > small_bp);
+}
+
+/// R12-EXPAND-6048: the deadline the research loop holds at admission reaches
+/// the desk's ranking. A gap admitted with its whole window ahead is queued at
+/// the urgency floor, not at the zero the desk used to state for every gap.
+///
+/// Mutation: pass `0.0` for the urgency to `offer_by_deadline` in
+/// `ResearchLoop::admit`; the queued item's urgency is zero and this fails.
+#[test]
+fn a_gap_admitted_by_the_research_loop_is_queued_at_the_urgency_its_deadline_gives_it() {
+    use qip_deepbrain::research::URGENCY_FLOOR_BP;
+    let (platform, venue, _) = platform_with_a_fill_of(50);
+    let fills: Vec<qip_deepbrain::research::FillObservation> = (0..4)
+        .map(|i| qip_deepbrain::research::FillObservation {
+            venue: venue.clone(),
+            object_id: "obj-AAA".to_string(),
+            filled_at: start().saturating_add(Duration::from_mins(i)),
+            trade_error_bps: Some(40.0),
+        })
+        .collect();
+    let mut loop_ = research(coverage(&[]));
+    let round = loop_
+        .sweep_over(
+            &platform,
+            &fills,
+            &[],
+            start().saturating_add(Duration::from_days(1)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        round.admissions.get("queued").copied().unwrap_or(0),
+        1,
+        "premise: the residual gap was queued: {:?}",
+        round.admissions
+    );
+    let queued = loop_.desk().queue().ranked();
+    let urgency = queued
+        .iter()
+        .map(|e| e.score().urgency)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let floor = f64::from(URGENCY_FLOOR_BP) / 10_000.0;
+    assert!(
+        (urgency - floor).abs() < 1e-9,
+        "queued at urgency {urgency}, not the floor {floor}"
+    );
 }

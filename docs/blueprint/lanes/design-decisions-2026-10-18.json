@@ -1,0 +1,538 @@
+{
+ "date": "2026-10-18",
+ "source": "docs/blueprint/lanes/triage-2026-10-18.json#design_adr",
+ "rows": 122,
+ "decisions": [
+  {
+   "id": "D01",
+   "classification": "delegable",
+   "rows": [
+    "R12-WORLD-1003",
+    "R12-WORLD-3037",
+    "R12-WORLD-9024",
+    "R12-REASON-1004",
+    "R12-REASON-1024",
+    "R12-REASON-3053",
+    "R12-REASON-3108"
+   ],
+   "statement": "An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one.",
+   "record": "ADR 0125"
+  },
+  {
+   "id": "D02",
+   "classification": "delegable",
+   "rows": [
+    "R12-CONTRACT-7066",
+    "R12-CAPITAL-4088",
+    "R12-CAPITAL-10098"
+   ],
+   "statement": "The downward capital authority is the signed CapitalEnvelope alone; it gains a drawdown bound, the CapitalGrant is stated from it rather than sent beside it, and a hedge plan reaches a cell only as a narrowing frame it may refuse.",
+   "record": "ADR 0126"
+  },
+  {
+   "id": "D03",
+   "classification": "delegable",
+   "rows": [
+    "R12-COVERAGE-7157",
+    "R12-CAPITAL-1095",
+    "R12-CAPITAL-1096",
+    "R12-CAPITAL-1097",
+    "R12-CAPITAL-1098",
+    "R12-CAPITAL-1099",
+    "R12-CAPITAL-1100",
+    "R12-CAPITAL-7204"
+   ],
+   "statement": "The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first.",
+   "record": "ADR 0127"
+  },
+  {
+   "id": "D04",
+   "classification": "delegable",
+   "rows": [
+    "R12-FABRIC-10077",
+    "R12-FABRIC-10177",
+    "R12-FABRIC-1027"
+   ],
+   "statement": "The qip-mesh spine is the platform's control fabric for signed downward frames and cell deltas; the event fabric carries outcomes and records; an acceptance scan admits no third cross-process path.",
+   "record": "ADR 0128"
+  },
+  {
+   "id": "D05",
+   "classification": "delegable",
+   "rows": [
+    "R12-FABRIC-8022",
+    "R12-FABRIC-8084",
+    "R12-CONTRACT-7089",
+    "R12-OBS-7018",
+    "R12-OBS-9154"
+   ],
+   "statement": "The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger.",
+   "record": "ADR 0129"
+  },
+  {
+   "id": "D06",
+   "classification": "delegable",
+   "rows": [
+    "R12-LEDGER-5011",
+    "R12-LEDGER-5014",
+    "R12-LEDGER-1197",
+    "R12-LEDGER-10185",
+    "R12-LEDGER-5017"
+   ],
+   "statement": "Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against.",
+   "record": "ADR 0130"
+  },
+  {
+   "id": "D07",
+   "classification": "delegable",
+   "rows": [
+    "R12-MODEL-4023",
+    "R12-REASON-10099",
+    "R12-REASON-3115",
+    "R12-REASON-7203",
+    "R12-CICD-10150"
+   ],
+   "statement": "Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration.",
+   "record": "ADR 0131"
+  },
+  {
+   "id": "D08",
+   "classification": "delegable",
+   "rows": [
+    "R12-TICK-2053",
+    "R12-DATA-8013",
+    "R12-FABRIC-10102"
+   ],
+   "statement": "One admission header (three times, uncertainty, source hash, entitlement) shared by MarketEvent and every SensedRecord; SourceManifest v2 is additive and v1 stays readable; ticks reach the fabric only as bounded per-pass feature digests.",
+   "record": "ADR 0132"
+  },
+  {
+   "id": "D09",
+   "classification": "delegable",
+   "rows": [
+    "R12-TICK-2086",
+    "R12-WORLD-3084",
+    "R12-WORLD-7197",
+    "R12-EXPAND-6038",
+    "R12-REFLEX-5034",
+    "R12-REFLEX-5047"
+   ],
+   "statement": "What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape).",
+   "record": "ADR 0133"
+  },
+  {
+   "id": "D10",
+   "classification": "delegable",
+   "rows": [
+    "R12-COVERAGE-7183",
+    "R12-RISK-9049",
+    "R12-EXPAND-6036"
+   ],
+   "statement": "The hybrid solver router is qip-optimization-engine's compute router: hedge and hypothesis searches submit to it asynchronously, the classical answer is always computed, a hedge result carries an unwind plan, and the next quantum research family is feature-subset selection on the simulated provider.",
+   "record": "ADR 0134"
+  },
+  {
+   "id": "D11",
+   "classification": "delegable",
+   "rows": [
+    "R12-FABRIC-10016",
+    "R12-FABRIC-8098"
+   ],
+   "statement": "Fabric clients bootstrap from the broker module's SRV record through an in-tree DNS query in qip-transport, keep the last good answer for a bounded staleness and fall back to configured addresses; the cluster map is a broker request arm.",
+   "record": "ADR 0135"
+  },
+  {
+   "id": "D12",
+   "classification": "delegable",
+   "rows": [
+    "R12-EXEC-1067"
+   ],
+   "statement": "Cross-cell wash activity is made impossible by giving each venue-instrument book one owning cell through a signed policy slot, with handovers that gap and never overlap, not by a central pre-trade hop.",
+   "record": "ADR 0136"
+  },
+  {
+   "id": "D13",
+   "classification": "delegable",
+   "rows": [
+    "R12-WORLD-10187"
+   ],
+   "statement": "A forecast is material when it reaches a size, a capital plan, a published record or a promotion, and every material forecast is a qip_contracts Forecast: lattice members, DemandForecast and the return forecast an ApprovedThesis is sized on.",
+   "record": "ADR 0140"
+  },
+  {
+   "id": "D14",
+   "classification": "delegable",
+   "rows": [
+    "R12-MODEL-4002"
+   ],
+   "statement": "The hosted language-model adapters move from qip-reasoning-engine/src/providers to services/qip-language-providers, linked by qip-deepbrain alone and pinned out of the fast lanes by lane_placement.rs.",
+   "record": "ADR 0138"
+  },
+  {
+   "id": "D15",
+   "classification": "delegable",
+   "rows": [
+    "R12-EVID-2034"
+   ],
+   "statement": "A committed issuer registry lets connectors verify detached signatures with ring, and the evidence fabric credits SignatureVerified only from a VerifiedSignature token the verifier constructs.",
+   "record": "ADR 0139"
+  },
+  {
+   "id": "D16",
+   "classification": "delegable",
+   "rows": [
+    "R12-DATA-8112"
+   ],
+   "statement": "Research connector polling runs as a scout Cloud Run job in the existing project with its own identity, no trading role, its own proxy routes and immutable records the deep brain only reads.",
+   "record": "ADR 0144"
+  },
+  {
+   "id": "D17",
+   "classification": "delegable",
+   "rows": [
+    "R12-EXPAND-6071"
+   ],
+   "statement": "Agency authority is a typed schedule widen reads, with evidence, rollback and approvers per level; nothing above NarrowReversible is granted, and External and Capital stay refused by ADR 0114 D8 and ADR 0003/0021/0108.",
+   "record": "ADR 0141"
+  },
+  {
+   "id": "D18",
+   "classification": "delegable",
+   "rows": [
+    "R12-EXPAND-6050"
+   ],
+   "statement": "Shadow is a forward window where the candidate is scored and provably not installed; paper is a later disjoint window where it is installed and acts; ORDER becomes Historical, Simulated, Shadow, Paper.",
+   "record": "ADR 0142"
+  },
+  {
+   "id": "D19",
+   "classification": "delegable",
+   "rows": [
+    "R12-ARCH-7134"
+   ],
+   "statement": "A committed phase register lists each phase's exit capability and named tests, and an acceptance test refuses a phase entered over an unexited predecessor; no runtime feature flags.",
+   "record": "ADR 0143"
+  },
+  {
+   "id": "D20",
+   "classification": "delegable",
+   "rows": [
+    "R12-REFLEX-8069"
+   ],
+   "statement": "A GcsLeaseStore implements LeaseStore over one object whose generation is the version, in a regional bucket created with the nodes; no Spanner instance for a lock.",
+   "record": "ADR 0137"
+  },
+  {
+   "id": "E01",
+   "classification": "delegable",
+   "rows": [
+    "R12-FABRIC-7057",
+    "R12-FABRIC-7142",
+    "R12-FABRIC-7211",
+    "R12-RES-10131",
+    "R12-RES-8039",
+    "R12-CONTRACT-7092"
+   ],
+   "statement": "Cross-region mirroring is decided: an in-tree asynchronous fabric-mirror consumer (ADR 0119, accepted 2026-10-11); the rows' 'C8 refuses mirroring' text is stale and what is left is the build and a second region to deploy into.",
+   "record": "ADR 0119 (existing)"
+  },
+  {
+   "id": "E02",
+   "classification": "delegable",
+   "rows": [
+    "R12-FABRIC-7037",
+    "R12-FABRIC-7136"
+   ],
+   "statement": "The metadata quorum is decided: Spanner under lease-epoch checks, three brokers one per zone, openraft not taken (ADR 0111 Amendment 1).",
+   "record": "ADR 0111 Amendment 1 (existing)"
+  },
+  {
+   "id": "E03",
+   "classification": "delegable",
+   "rows": [
+    "R12-RISK-4111"
+   ],
+   "statement": "Attested operator presence is decided (ADR 0120, per-person WebAuthn keys); the row's 'write ADR 0121' is stale and the code slice is left.",
+   "record": "ADR 0120 (existing)"
+  },
+  {
+   "id": "O01",
+   "classification": "owner",
+   "rows": [
+    "R12-DATA-10040",
+    "R12-DATA-8130"
+   ],
+   "statement": "Admit a Postgres wire client (crate or in-tree) and an AlloyDB instance for workflow metadata, reversing ADR 0113's refusal of AlloyDB.",
+   "enables": "AlloyDB adapter behind StorageTarget::AlloyDb and workflow state off the journal.",
+   "costs": "A new crate or an in-tree wire protocol plus TLS; an AlloyDB cluster billed per vCPU-hour from creation."
+  },
+  {
+   "id": "O02",
+   "classification": "owner",
+   "rows": [
+    "R12-DATA-8006",
+    "R12-DATA-8015",
+    "R12-DATA-9052",
+    "R12-ARCH-8029",
+    "R12-WORLD-8129",
+    "R12-AMBIENT-9001"
+   ],
+   "statement": "Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only).",
+   "enables": "Graph store of promoted entities, hot feature store, evidence reads through the fabric.",
+   "costs": "Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2."
+  },
+  {
+   "id": "O03",
+   "classification": "owner",
+   "rows": [
+    "R12-DATA-2009"
+   ],
+   "statement": "Decide the licence for each alternative-data provider (satellite, AIS, flight, port, traffic, commodity, energy grid, IoT) under ADR 0034.",
+   "enables": "Seven connector modules join connector_feed.rs dispatch.",
+   "costs": "Vendor contracts and fees, and an external account per provider."
+  },
+  {
+   "id": "O04",
+   "classification": "owner",
+   "rows": [
+    "R12-MODEL-7007",
+    "R12-QUANT-10095",
+    "R12-QUANT-1013",
+    "R12-QUANT-10173",
+    "R12-QUANT-10190",
+    "R12-QUANT-10208",
+    "R12-QUANT-9041",
+    "R12-EXPAND-6034"
+   ],
+   "statement": "Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane.",
+   "enables": "Gpu/Tpu substrate arms, measured workload fit, larger model families.",
+   "costs": "Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree."
+  },
+  {
+   "id": "O05",
+   "classification": "owner",
+   "rows": [
+    "R12-COVERAGE-7155"
+   ],
+   "statement": "Admit a hosted large model as a foundry candidate through qip-deepbrain's language gateway.",
+   "enables": "A large-model candidate class under the same promotion ladder.",
+   "costs": "A provider credential and per-token spend through the gateway."
+  },
+  {
+   "id": "O06",
+   "classification": "owner",
+   "rows": [
+    "R12-QUANT-4046"
+   ],
+   "statement": "Admit IBM QPU hardware: account, credential, egress route and budget.",
+   "enables": "Hosted admission in compute_routing.rs::from_lookup.",
+   "costs": "An external account, a credential, per-job QPU spend."
+  },
+  {
+   "id": "O07",
+   "classification": "owner",
+   "rows": [
+    "R12-FABRIC-7046",
+    "R12-FABRIC-8083",
+    "R12-MESH-10075",
+    "R12-MESH-8003"
+   ],
+   "statement": "Admit a QUIC crate under ADR 0109, after ADR 0112 §4's committed cross-region TCP+TLS versus QUIC measurement.",
+   "enables": "QUIC for the fabric hop and the peer link.",
+   "costs": "A new transport crate and its closure; the measurement needs a second region."
+  },
+  {
+   "id": "O08",
+   "classification": "owner",
+   "rows": [
+    "R12-FABRIC-7039",
+    "R12-FABRIC-8077"
+   ],
+   "statement": "Admit prost/protobuf codegen for generated fabric bindings.",
+   "enables": "Versioned Protobuf descriptors and generated types.",
+   "costs": "A codegen dependency and build-time tool on the allow-list."
+  },
+  {
+   "id": "O09",
+   "classification": "owner",
+   "rows": [
+    "R12-FABRIC-7045"
+   ],
+   "statement": "Admit an OpenTelemetry exporter crate and tokio on the fabric SDK path.",
+   "enables": "Async subscriptions and OTel hooks in the SDK.",
+   "costs": "A new exporter crate; tokio moves closer to the cell than ADR 0109 Amendment 2 allows without a measurement."
+  },
+  {
+   "id": "O10",
+   "classification": "owner",
+   "rows": [
+    "R12-FABRIC-7049"
+   ],
+   "statement": "Admit blake3 for the fabric content hash.",
+   "enables": "The Blake3 codec arm (SHA-256 today).",
+   "costs": "One crate on the allow-list; two hashes in the codec."
+  },
+  {
+   "id": "O11",
+   "classification": "owner",
+   "rows": [
+    "R12-FABRIC-8093",
+    "R12-FABRIC-8094"
+   ],
+   "statement": "Raise P2/P3 replication above RF1 (ADR 0111 §2 waits on a measurement).",
+   "enables": "RF2/3 for P2/P3, tiered retention, throttled mirroring.",
+   "costs": "Spanner or Managed Kafka capacity for bulk classes."
+  },
+  {
+   "id": "O12",
+   "classification": "owner",
+   "rows": [
+    "R12-REASON-3058"
+   ],
+   "statement": "Admit an SMT/MILP solver crate (Z3 refused by ADR 0099 C5).",
+   "enables": "SMT theories and MILP in constraint.rs.",
+   "costs": "A large native dependency or a long in-tree solver."
+  },
+  {
+   "id": "O13",
+   "classification": "owner",
+   "rows": [
+    "R12-REFLEX-7003",
+    "R12-REFLEX-8065"
+   ],
+   "statement": "Admit libc for mlockall/busy-poll and a local-SSD machine shape.",
+   "enables": "Memory locking and busy polling on the node.",
+   "costs": "libc on the allow-list (syscall surface under unsafe_code=forbid); local SSD billing."
+  },
+  {
+   "id": "O14",
+   "classification": "owner",
+   "rows": [
+    "R12-REFLEX-10074",
+    "R12-EXEC-7004"
+   ],
+   "statement": "Admit a real venue connection, even market-data-only (ADR 0003/0021).",
+   "enables": "Native venue feeds into the reflex node.",
+   "costs": "A venue licence, credential and account; the paper boundary's feed half changes."
+  },
+  {
+   "id": "O15",
+   "classification": "owner",
+   "rows": [
+    "R12-EXEC-1168",
+    "R12-EXEC-5045",
+    "R12-EXEC-5073",
+    "R12-CAPITAL-5078"
+   ],
+   "statement": "Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal.",
+   "enables": "Quotes placed on the simulator, an edge quote engine, market-making reservations.",
+   "costs": "The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue."
+  },
+  {
+   "id": "O16",
+   "classification": "owner",
+   "rows": [
+    "R12-COVERAGE-7187",
+    "R12-AGENCY-1183",
+    "R12-AGENCY-6094",
+    "R12-AGENCY-7028"
+   ],
+   "statement": "Reopen ADR 0114 D8 for an outbound channel or external action surface.",
+   "enables": "A real channel behind ConductGate, surveys, public adapters.",
+   "costs": "A public channel, its credential and account, and reputational exposure."
+  },
+  {
+   "id": "O17",
+   "classification": "owner",
+   "rows": [
+    "R12-SEC-9064",
+    "R12-GCP-8051"
+   ],
+   "statement": "Split scouts and engineering into their own projects before the second region (ADR 0113 §4, ADR 0118).",
+   "enables": "Project-level isolation for scouts and engineering.",
+   "costs": "More projects, budgets and IAM; ADR 0118 bootstrap re-run."
+  },
+  {
+   "id": "O18",
+   "classification": "owner",
+   "rows": [
+    "R12-SEC-10201",
+    "R12-SEC-9068"
+   ],
+   "statement": "Give agent sessions their own identity (a Workload Identity pool) and scoped per-run credentials.",
+   "enables": "A principal that distinguishes an agent from a person; sandboxed credentials.",
+   "costs": "New IAM pool and providers; issuing credentials to agents."
+  },
+  {
+   "id": "O19",
+   "classification": "owner",
+   "rows": [
+    "R12-CICD-10088"
+   ],
+   "statement": "Choose the provenance producer: a pinned third-party action or a gcloud-only SLSA statement.",
+   "enables": "SLSA provenance attached to every pushed image.",
+   "costs": "A third-party action in the supply chain, or in-tree statement generation; deploy.yml is a protected path."
+  },
+  {
+   "id": "O20",
+   "classification": "owner",
+   "rows": [
+    "R12-CICD-10182"
+   ],
+   "statement": "Reopen prod reconciliation from Git (ADR 0036/0093).",
+   "enables": "Production reconciled by the control plane.",
+   "costs": "Reopens prod promotion, which the deploy gate and gitops.rs refuse."
+  },
+  {
+   "id": "O21",
+   "classification": "owner",
+   "rows": [
+    "R12-CICD-9115"
+   ],
+   "statement": "Admit automatic rollback on Cloud Run (ADR 0114 refuses Argo Rollouts).",
+   "enables": "release_decision driving a rollback and an incident.",
+   "costs": "A controller acting on production traffic without a person."
+  },
+  {
+   "id": "O22",
+   "classification": "owner",
+   "rows": [
+    "R12-CICD-9101"
+   ],
+   "statement": "Admit libfuzzer-sys and a nightly toolchain for a PR fuzz job.",
+   "enables": "cargo-fuzz targets in CI.",
+   "costs": "A crate and a second toolchain; CI minutes."
+  },
+  {
+   "id": "O23",
+   "classification": "owner",
+   "rows": [
+    "R12-API-9059"
+   ],
+   "statement": "Enable passkeys on the Identity Platform tenant: raise the provider pin or set it in the console and record it.",
+   "enables": "Passkeys for operators.",
+   "costs": "A provider pin change or a manual tenant change outside Terraform."
+  },
+  {
+   "id": "O24",
+   "classification": "owner",
+   "rows": [
+    "R12-ARCH-9012",
+    "R12-WORLD-9025"
+   ],
+   "statement": "Split cognitive services or the strategic lattice into separately deployed Cloud Run services (ADR 0024 catalogue).",
+   "enables": "Independent scaling and a strategic service whose outage only backs up research.",
+   "costs": "More services, images, identities and minimum instances."
+  },
+  {
+   "id": "O25",
+   "classification": "owner",
+   "rows": [
+    "R12-ARCH-9028"
+   ],
+   "statement": "Admit Vertex AI Agent Engine as a second agent runtime.",
+   "enables": "Managed agent sessions and memory.",
+   "costs": "A managed paid runtime and a contract change to AgentManifest."
+  }
+ ]
+}

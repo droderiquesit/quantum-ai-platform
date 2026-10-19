@@ -279,6 +279,19 @@ impl Branch {
     }
 }
 
+/// One live branch's implication for a portfolio: how likely the world is and
+/// how far the portfolio moves in it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PortfolioOutcome {
+    pub branch_id: String,
+    /// The branch's share of the live probability mass; the weights of one
+    /// distribution sum to one.
+    pub weight: f64,
+    /// Hypothesised portfolio move over the horizon, in basis points of net
+    /// asset value.
+    pub portfolio_bps: f64,
+}
+
 /// How a tree grows and is pruned.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TreeConfig {
@@ -518,6 +531,71 @@ impl FutureTree {
         self.branches
             .values()
             .filter(|b| b.status == BranchStatus::Live)
+    }
+
+    /// The portfolio outcome each live branch implies, as a probability
+    /// distribution over portfolio moves (R12-TICK-10121).
+    ///
+    /// `positions` is the signed weight of each instrument in the portfolio
+    /// (a fraction of net asset value, negative for a short), so a branch's
+    /// outcome is `sum(weight * impact_bps)` in basis points of the whole
+    /// portfolio. Live branch probabilities are renormalised to sum to one,
+    /// because pruning removes branches without redistributing their mass
+    /// and an outcome distribution whose weights summed to less than one
+    /// would understate every tail. An instrument a branch has no impact for
+    /// contributes nothing, since the branch asserts no move for it.
+    ///
+    /// The weights and impacts are statistics, so they stay `f64`; no money
+    /// amount crosses here. Refuses an empty or non-finite position set,
+    /// positions that touch no instrument the tree models (an outcome of
+    /// zero everywhere would read as a hedged book), and a tree with no live
+    /// mass, rather than returning an empty distribution.
+    pub fn portfolio_outcomes(
+        &self,
+        positions: &BTreeMap<String, f64>,
+    ) -> Result<Vec<PortfolioOutcome>> {
+        if positions.is_empty() {
+            return Err(Error::invalid(
+                "a portfolio outcome needs at least one position; an empty book has no outcome",
+            ));
+        }
+        for (instrument, weight) in positions {
+            if !weight.is_finite() {
+                return Err(Error::invalid(format!(
+                    "position {instrument} has weight {weight}, which is not a finite number"
+                )));
+            }
+        }
+        if !positions
+            .keys()
+            .any(|instrument| self.state.instruments.contains_key(instrument))
+        {
+            return Err(Error::invalid(
+                "no position names an instrument the tree models, so every outcome would read \
+                 as zero; position the instruments the twin was fitted on",
+            ));
+        }
+        let live: Vec<&Branch> = self.live().collect();
+        let mass: f64 = live.iter().map(|b| b.probability).sum();
+        if live.is_empty() || !mass.is_finite() || mass <= 0.0 {
+            return Err(Error::invalid(
+                "the tree has no live branch with probability, so there is no distribution \
+                 to state",
+            ));
+        }
+        Ok(live
+            .into_iter()
+            .map(|branch| PortfolioOutcome {
+                branch_id: branch.id.clone(),
+                weight: branch.probability / mass,
+                portfolio_bps: positions
+                    .iter()
+                    .map(|(instrument, weight)| {
+                        weight * branch.impact_bps.get(instrument).copied().unwrap_or(0.0)
+                    })
+                    .sum(),
+            })
+            .collect())
     }
 
     /// Standardised distance of `moves` from `branch`, over the instruments

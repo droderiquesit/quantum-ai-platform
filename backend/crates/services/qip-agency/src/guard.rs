@@ -44,7 +44,9 @@
 //! decisions a previous process journaled, so a budget is not reset by
 //! running the binary again.
 
-use crate::conduct_brain::{CommunicationDraft, ConductGate, ConductPolicy, StepConduct};
+use crate::conduct_brain::{
+    CommunicationDraft, ConductGate, ConductPolicy, EvidenceResolver, HoldingsResolver, StepConduct,
+};
 use crate::goal::GoalSpec;
 use crate::plan::Step;
 use qip_contracts::action::{
@@ -59,6 +61,7 @@ use qip_core::decimal::SCALE;
 use qip_core::{Decimal, Error, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 /// How many released voices a guard remembers across passes. Bounded, like
 /// every working set here; the durable record is the journal, which
@@ -237,6 +240,22 @@ impl ActionGuard {
             floor: 0,
             voices: VecDeque::new(),
         })
+    }
+
+    /// Attach the platform's record of evidence to the conduct gate
+    /// (R12-AGENCY-1056 / 1057): every citation of every draft is then
+    /// resolved against it, and one that resolves to nothing, to another
+    /// source or to another statement withholds the plan.
+    pub fn with_evidence(mut self, resolver: Arc<dyn EvidenceResolver>) -> Self {
+        self.gate = self.gate.with_resolver(resolver);
+        self
+    }
+
+    /// Attach what the platform holds to the conduct gate (R12-AGENCY-1066):
+    /// a draft naming a held instrument then needs a `position` disclosure.
+    pub fn with_holdings(mut self, holdings: Arc<dyn HoldingsResolver>) -> Self {
+        self.gate = self.gate.with_holdings(holdings);
+        self
     }
 
     /// Re-apply the voices a previous process released, so a message said
@@ -470,6 +489,14 @@ impl ActionGuard {
             .iter()
             .map(|c| (c.step.tool.as_str(), c.channel.as_str(), c.cost_units))
             .collect();
+        // The caller is the goal's acting identity. A tool declares who may
+        // invoke it, and a plan that names a tool its identity may not call
+        // is refused before the first step, not after the rate and budget
+        // have been looked at.
+        for step in &cleared {
+            self.registry
+                .permits_caller(&step.step.tool, &goal.acting_identity)?;
+        }
         self.registry.admits_all(pass.rate_window, &actions)?;
         let mut admitted = Vec::with_capacity(cleared.len());
         for (index, (staged, face)) in cleared.into_iter().zip(&faces).enumerate() {

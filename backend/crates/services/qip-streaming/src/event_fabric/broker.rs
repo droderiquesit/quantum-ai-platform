@@ -80,10 +80,45 @@ fn content_hash_hex(hash: &ContentHash) -> Option<String> {
 struct ManagedSeat {
     log: Arc<dyn ManagedLog>,
     holder: String,
+    /// This instance's name without the leader epoch, which is what the
+    /// rendezvous placement is computed over.
+    instance: String,
+    placement: Option<Placement>,
     leases: Mutex<BTreeMap<(String, u32), Lease>>,
 }
 
+/// ADR 0111 Amendment 1 §2: the instances of the region and how long a
+/// partition's non-preferred instances wait after its lease has expired.
+#[derive(Debug)]
+struct Placement {
+    instances: Vec<String>,
+    grace_ms: u64,
+    /// Until this broker-clock instant a non-preferred instance only follows
+    /// a partition it holds no lease on, even when no lease row exists yet:
+    /// a vacant row has no expiry to count a grace from, and without this the
+    /// first instance up would lead everything.
+    settled_at_ns: i64,
+}
+
 impl ManagedSeat {
+    /// What this instance defers to for `(stream, partition)`: the grace it
+    /// waits after the lease has expired and the instant before which it only
+    /// follows. `None` for the rendezvous-preferred leader, and without a
+    /// placement.
+    fn deferral(&self, stream: &str, partition: u32) -> Option<(u64, i64)> {
+        let placement = self.placement.as_ref()?;
+        let names: Vec<&str> = placement.instances.iter().map(String::as_str).collect();
+        match partition::leader_for(stream, partition, &names) {
+            Ok(preferred) if preferred != self.instance => {
+                Some((placement.grace_ms, placement.settled_at_ns))
+            }
+            // The preferred leader contends at once. An error is unreachable
+            // once `with_placement` has validated the set; contending at once
+            // is then the pre-placement behaviour.
+            _ => None,
+        }
+    }
+
     fn lease(&self, stream: &str, partition: u32) -> Option<Lease> {
         self.leases
             .lock()
@@ -115,6 +150,30 @@ pub struct LeaseReport {
     pub following: BTreeMap<(String, u32), String>,
     /// Partitions whose lease or log could not be read this pass, and why.
     pub failed: BTreeMap<(String, u32), String>,
+}
+
+/// What [`Broker::relinquish_leases`] did, per partition this instance led.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReleaseReport {
+    /// Partitions whose lease was lapsed in the database, so a follower can
+    /// take them now rather than at the TTL.
+    pub released: Vec<(String, u32)>,
+    /// Partitions led here whose lease had already been superseded.
+    pub superseded: Vec<(String, u32)>,
+    /// Partitions whose release the database refused or never answered, and
+    /// why. This instance has stopped acknowledging them all the same; their
+    /// leases lapse at the TTL.
+    pub failed: BTreeMap<(String, u32), String>,
+}
+
+/// What [`Broker::rebuild_from_archive`] replayed, per local partition it
+/// found empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RebuildReport {
+    /// Batches replayed into each partition, which is also the offset the
+    /// partition now continues at. A partition the archive holds nothing for
+    /// is absent rather than zero.
+    pub replayed: BTreeMap<(String, u32), u64>,
 }
 
 /// The one key this broker's metadata store holds. A `DurableStore` rooted
@@ -166,6 +225,11 @@ struct CurrentSchema {
 struct StreamSchemas {
     registered: BTreeSet<(u32, u32)>,
     current: BTreeMap<u32, CurrentSchema>,
+    /// The event topics the stream admits in a record's body, when the
+    /// catalogue declared them (R12-FABRIC-8090). `None` is a stream declared
+    /// without a topic list, which admits any; `Some` refuses a record of any
+    /// other topic before it is appended.
+    body_topics: Option<BTreeSet<String>>,
 }
 
 /// A stream's fixed shape: how many partitions it has, and the segment log
@@ -498,7 +562,49 @@ impl Broker {
         self.managed = Some(ManagedSeat {
             log,
             holder: format!("{instance}#{}", self.leader_epoch),
+            instance: instance.to_string(),
+            placement: None,
             leases: Mutex::new(BTreeMap::new()),
+        });
+        Ok(self)
+    }
+
+    /// Prefer rendezvous placement of managed partitions over `instances`
+    /// (ADR 0111 Amendment 1 §2, R12-FABRIC-8085): this instance contends at
+    /// once only for the partitions [`partition::leader_for`] names it for,
+    /// and for any other waits `grace_ms` after the lease has expired. The
+    /// lease still decides who holds, so a wrong or stale instance list
+    /// changes where leaders settle and never who may commit.
+    ///
+    /// Refuses a broker not seated at a managed log, a set that does not
+    /// include this instance, and an empty, blank or repeated name.
+    pub fn with_placement(mut self, instances: Vec<String>, grace_ms: u64) -> Result<Self> {
+        let seat = self.managed.as_ref().ok_or_else(|| {
+            Error::invalid("placement was asked of a broker with no managed log; seat it first")
+        })?;
+        if !instances.contains(&seat.instance) {
+            return Err(Error::invalid(format!(
+                "the placement set {instances:?} does not include this instance '{}'; an \
+                 instance outside its own set would never be preferred for anything",
+                seat.instance
+            )));
+        }
+        let names: Vec<&str> = instances.iter().map(String::as_str).collect();
+        partition::leader_for("placement", 0, &names)?;
+        let settled_at_ns = i64::try_from(grace_ms)
+            .ok()
+            .and_then(|ms| ms.checked_mul(1_000_000))
+            .and_then(|ns| self.clock.now().as_nanos().checked_add(ns))
+            .ok_or_else(|| {
+                Error::invalid(format!("a placement grace of {grace_ms} ms overflows"))
+            })?;
+        let seat = self.managed.as_mut().ok_or_else(|| {
+            Error::invalid("placement was asked of a broker with no managed log; seat it first")
+        })?;
+        seat.placement = Some(Placement {
+            instances,
+            grace_ms,
+            settled_at_ns,
         });
         Ok(self)
     }
@@ -676,6 +782,27 @@ impl Broker {
         Ok(())
     }
 
+    /// Declare the event topics `stream` admits in a record's body. A
+    /// produce carrying a record of any other topic is refused with
+    /// [`Refusal::SchemaRefused`] before anything is appended: the batch
+    /// schema registered by [`Self::register_schema`] says the batch is well
+    /// formed, and this says what is in it belongs on this stream.
+    ///
+    /// Replaces the set for `stream` rather than adding to it, so a catalogue
+    /// that narrows a stream narrows what it accepts. Refuses an empty set:
+    /// a stream admitting nothing is a catalogue mistake, not a closed stream.
+    pub fn register_body_topics(&self, stream: &str, topics: BTreeSet<String>) -> Result<()> {
+        if topics.is_empty() {
+            return Err(Error::invalid(format!(
+                "stream '{stream}' was given no body topics; a stream that admits no event \
+                 is a catalogue mistake, so declare the topics it carries"
+            )));
+        }
+        let mut schemas = self.schemas.lock().unwrap_or_else(|e| e.into_inner());
+        schemas.entry(stream.to_string()).or_default().body_topics = Some(topics);
+        Ok(())
+    }
+
     /// Produce `batch` (already stamped by the drain — see
     /// [`qip_events::event_fabric::codec::stamp_drain`]) under `key`, which
     /// [`partition::partition_for`] routes to one of `stream`'s declared
@@ -741,6 +868,9 @@ impl Broker {
         if let Err(error) =
             self.require_registered_schema(stream, batch.schema_id, batch.schema_version)
         {
+            return Ok(Err(ProduceRefusal::new(Refusal::SchemaRefused, error)));
+        }
+        if let Err(error) = self.require_admitted_topics(stream, &batch) {
             return Ok(Err(ProduceRefusal::new(Refusal::SchemaRefused, error)));
         }
         self.refuse_when_a_group_lags(stream, partition)?;
@@ -1174,9 +1304,33 @@ impl Broker {
         for (stream, partition) in self.managed_partitions() {
             let key = (stream.clone(), partition);
             let reference = PartitionRef::new(stream.clone(), partition);
+            let deferral = seat.deferral(&stream, partition);
+            if let Some((_, settled_at_ns)) = deferral
+                && self.clock.now().as_nanos() < settled_at_ns
+                && seat.lease(&stream, partition).is_none()
+            {
+                // Settling: the preferred instance has had no time yet to
+                // take what is vacant, so this one follows and leaves it.
+                match self.follow_partition(seat, &stream, partition) {
+                    Ok(()) => {
+                        report
+                            .following
+                            .insert(key, "(deferring to the preferred leader)".to_string());
+                    }
+                    Err(error) => {
+                        report.failed.insert(key, error.to_string());
+                    }
+                }
+                continue;
+            }
             let outcome = seat
                 .log
-                .acquire(&reference, &seat.holder, ttl_ms)
+                .acquire_after_expiry(
+                    &reference,
+                    &seat.holder,
+                    ttl_ms,
+                    deferral.map_or(0, |(grace_ms, _)| grace_ms),
+                )
                 .and_then(|outcome| {
                     let state = self.partition_state(&stream, partition)?;
                     let mut cursor = state.cursor.lock().unwrap_or_else(|e| e.into_inner());
@@ -1205,6 +1359,87 @@ impl Broker {
                 }
                 Err(error) => {
                     report.failed.insert(key, error.to_string());
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// Follow `(stream, partition)`'s committed log into this instance's own
+    /// without asking the database for a lease.
+    fn follow_partition(&self, seat: &ManagedSeat, stream: &str, partition: u32) -> Result<()> {
+        let state = self.partition_state(stream, partition)?;
+        let mut cursor = state.cursor.lock().unwrap_or_else(|e| e.into_inner());
+        // Not leading: a later promotion must catch up afresh.
+        cursor.caught_up_epoch = None;
+        self.catch_up(seat, stream, partition, &state, &mut cursor)?;
+        Ok(())
+    }
+
+    /// One pass of a draining instance: follow every managed partition's
+    /// committed log into this instance's own, without asking the database
+    /// for a lease.
+    ///
+    /// [`Self::tend_leases`] is the only periodic caller of `catch_up` for a
+    /// partition this instance does not lead, so a lease thread that
+    /// answered a drain by calling only [`Self::relinquish_leases`] left the
+    /// drained instance's disk frozen at the offset it drained at: a fetch
+    /// reported a high watermark that stopped advancing while the new leader
+    /// committed, and a restart-free rollback to this instance would have
+    /// had a whole gap to catch up. Taking a lease is what a drain must not
+    /// do, so this never calls `acquire`.
+    ///
+    /// Every partition is reported as `following`, under a holder string
+    /// that says it was not read: learning the holder is what `acquire`
+    /// does, and `acquire` would take an expired lease.
+    pub fn follow_leases(&self) -> Result<LeaseReport> {
+        let seat = self.managed.as_ref().ok_or_else(|| {
+            Error::invalid("follow_leases was called on a broker with no managed log")
+        })?;
+        let mut report = LeaseReport::default();
+        for (stream, partition) in self.managed_partitions() {
+            let key = (stream.clone(), partition);
+            let outcome = self.follow_partition(seat, &stream, partition);
+            match outcome {
+                Ok(()) => {
+                    report
+                        .following
+                        .insert(key, "(not read while draining)".to_string());
+                }
+                Err(error) => {
+                    report.failed.insert(key, error.to_string());
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// Stop leading every managed partition and hand each lease back, so a
+    /// drained instance's follower takes over at once instead of after the
+    /// TTL (RES-8103). The instance stops acknowledging a partition the
+    /// moment its lease is forgotten here, before the database is asked, so
+    /// a release that fails costs the TTL and never an acknowledgement from a
+    /// broker that no longer intends to lead.
+    ///
+    /// Idempotent: a partition with no lease held is skipped. Nothing here
+    /// stops [`Self::tend_leases`] from taking the leases again; the caller
+    /// that drains must stop calling it, or call this again each pass.
+    pub fn relinquish_leases(&self) -> Result<ReleaseReport> {
+        let seat = self.managed.as_ref().ok_or_else(|| {
+            Error::invalid("relinquish_leases was called on a broker with no managed log")
+        })?;
+        let mut report = ReleaseReport::default();
+        for (stream, partition) in self.managed_partitions() {
+            let Some(lease) = seat.lease(&stream, partition) else {
+                continue;
+            };
+            seat.set_lease(&stream, partition, None);
+            let reference = PartitionRef::new(stream.clone(), partition);
+            match seat.log.release(&reference, &lease) {
+                Ok(true) => report.released.push((stream, partition)),
+                Ok(false) => report.superseded.push((stream, partition)),
+                Err(error) => {
+                    report.failed.insert((stream, partition), error.to_string());
                 }
             }
         }
@@ -1548,6 +1783,96 @@ impl Broker {
             }
             _ => Ok(None),
         }
+    }
+
+    /// Rebuild every empty local partition from the archive (RES-9170): the
+    /// broker's disk was lost or replaced, the archive was not, and a
+    /// partition that restarted at offset zero beside an archive holding
+    /// offsets 0..N would hand those offsets to new records, which the next
+    /// archive pass would then write over the manifests of the old ones.
+    ///
+    /// Each batch is read through the archive's manifest index, which
+    /// re-proves its content hash, and appended with the stamp it was archived
+    /// with, so its offset, epoch and chain link are exactly the original's
+    /// and the first offset this broker then assigns continues the chain.
+    /// Replay stops at the first offset the archive does not hold. That is
+    /// the end of what was archived: records past `archived_through` were
+    /// never safe to release (ADR 0100 §3), so their producers still hold
+    /// them and re-send. A partition that already holds any local batch is
+    /// left alone, and so is a managed one, whose log the database holds and
+    /// [`Self::tend_leases`] follows.
+    ///
+    /// Refuses to run without an archive reader. Call it before the broker
+    /// serves, since it assumes nothing has been produced to the partitions
+    /// it rebuilds.
+    pub fn rebuild_from_archive(&self) -> Result<RebuildReport> {
+        let reader = self.archive.as_ref().ok_or_else(|| {
+            Error::invalid(
+                "rebuild_from_archive was called on a broker with no archive reader; there is \
+                 nothing to rebuild from",
+            )
+        })?;
+        let managed: std::collections::BTreeSet<(String, u32)> =
+            self.managed_partitions().into_iter().collect();
+        let mut report = RebuildReport::default();
+        for (stream, partition_count) in self.declared_streams() {
+            for partition in 0..partition_count {
+                if managed.contains(&(stream.clone(), partition)) {
+                    continue;
+                }
+                let state = self.partition_state(&stream, partition)?;
+                if state.log.high_water() != 0 {
+                    continue;
+                }
+                let mut offset = 0u64;
+                while let Some((batch, segment_last)) =
+                    reader.read_indexed_with_extent(&stream, partition, offset)?
+                {
+                    if batch.base_offset != offset {
+                        return Err(Error::invalid(format!(
+                            "{stream}:{partition}: the archive answered offset {offset} with a \
+                             batch stamped for offset {}; refusing to rebuild from it",
+                            batch.base_offset
+                        )));
+                    }
+                    let assigned = state.log.append(&batch)?;
+                    if assigned != offset {
+                        return Err(Error::io(format!(
+                            "{stream}:{partition}: replaying archived offset {offset} was \
+                             assigned offset {assigned}; the rebuilt log has diverged"
+                        )));
+                    }
+                    // Seal where the archive's segment ended. The log rolls on
+                    // size alone, and segments the original broker cut by age
+                    // end elsewhere: re-archived under different index keys
+                    // they would leave the old keys beside the new, and the
+                    // reader's largest-start-at-or-below rule would answer an
+                    // offset the archive holds from a stale, shorter manifest
+                    // as absent.
+                    if offset == segment_last {
+                        state.log.seal_active()?;
+                    }
+                    offset += 1;
+                }
+                if offset == 0 {
+                    continue;
+                }
+                // Fold what was replayed into the producer table and the
+                // chain tail, which `partition_state` computed from an empty
+                // log: without them a producer restarting against the rebuilt
+                // partition is told its sequence is zero and its next batch
+                // chains to nothing.
+                self.recover_producers(&stream, partition, &state.log)?;
+                let tail = recover_last_batch_hash(&state.log)?;
+                state
+                    .cursor
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .last_batch_hash = tail;
+                report.replayed.insert((stream.clone(), partition), offset);
+            }
+        }
+        Ok(report)
     }
 
     /// Delete the local copy of every archived, indexed sealed segment that
@@ -1897,6 +2222,36 @@ impl Broker {
             "stream '{stream}' has no registered schema id {schema_id} version {schema_version}; \
              refusing to produce it (FABRIC-024) rather than let it become fetchable"
         )))
+    }
+
+    /// Refuse a batch carrying a record whose event topic the stream does not
+    /// admit, or whose body cannot be read to tell. A stream with no
+    /// declared topics admits any.
+    fn require_admitted_topics(&self, stream: &str, batch: &Batch) -> Result<()> {
+        let schemas = self.schemas.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(admitted) = schemas.get(stream).and_then(|s| s.body_topics.as_ref()) else {
+            return Ok(());
+        };
+        for record in &batch.records {
+            let event = record.decode_payload(batch.encoding).map_err(|error| {
+                Error::denied(format!(
+                    "record {} on stream '{stream}' has a body that cannot be read ({}), so \
+                     its topic cannot be checked against the stream's; refusing to append it",
+                    record.event_id,
+                    error.message()
+                ))
+            })?;
+            if !admitted.contains(event.topic.name()) {
+                return Err(Error::denied(format!(
+                    "record {} carries topic '{}', which stream '{stream}' does not admit \
+                     (it admits {}); refusing to append it (FABRIC-024)",
+                    record.event_id,
+                    event.topic.name(),
+                    admitted.iter().cloned().collect::<Vec<_>>().join(", ")
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn partition_state(&self, stream: &str, partition: u32) -> Result<Arc<PartitionState>> {

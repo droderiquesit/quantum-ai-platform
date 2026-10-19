@@ -13,9 +13,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use qip_agency::estimate::Experiment;
 use qip_agency::journal::{self, AgencyRecord};
+use qip_core::{Duration, Timestamp};
 use qip_events::EventLog;
+use qip_twin::futures::{FutureTree, TreeConfig, TwinState, WorldDriver};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -43,9 +47,17 @@ fn policy_document() -> Value {
                 "channels": ["paper-venue"],
                 "max_actions_per_window": 1,
                 "budget_units": 1000,
-                "revocation_path": "operator removes it from this file"
+                "revocation_path": "operator removes it from this file",
+                "provenance": "in-tree test fixture, no third-party dependency",
+                "sandbox_tests": ["quoter-sandbox-smoke"],
+                "cost_latency": {"cost_units": 1, "latency_ms": 100},
+                "allowed_callers": ["desk-agent"]
             }]
         },
+        "evidence": [{
+            "id": "spread-series-1", "source_id": "venue-feed",
+            "statement": "quoted spreads on venue-a are wider than the desk target"
+        }],
         "eligibility": [
             {
                 "subject": {"kind": "venue", "id": "venue-a"},
@@ -126,6 +138,7 @@ fn request(window: u64) -> Value {
                 "sender_identity": "desk-agent",
                 "evidence_citations": [{
                     "source_id": "venue-feed", "evidence_id": "spread-series-1",
+                    "claim": "quoted spreads on venue-a are wider than the desk target",
                     "confidence_bps": 9000
                 }],
                 "disclosures": [{"kind": "paper_venue", "text": "Paper venue: no live order is placed"}],
@@ -143,7 +156,7 @@ fn request(window: u64) -> Value {
     })
 }
 
-/// The request, asking to widen the market policy on a randomised
+/// The request, asking to widen the market policy on a hold-out
 /// experiment whose data reproduces the attribution, and to act under it.
 fn acting(window: u64) -> Value {
     let mut document = request(window);
@@ -180,9 +193,34 @@ fn acting(window: u64) -> Value {
             "identifiability": 0.8,
             "resulting_updates": ["raise quote-size prior"]
         },
-        "evidence": {"randomised_experiment": {"treated": [3.0, 4.0, 5.0], "control": [0.0, 1.0, 2.0]}}
+        "evidence": hold_out_evidence()
     });
     document
+}
+
+/// R12-COVERAGE-7188: evidence for a treated-minus-held-out effect of 3.0
+/// from a hold-out the binary draws itself (twelve cells, a quarter held
+/// out). Replaces the `randomised_experiment` fixture, whose groups the
+/// operator formed.
+fn hold_out_evidence() -> Value {
+    let units: Vec<String> = (0..12).map(|i| format!("cell-{i:02}")).collect();
+    let design = qip_agency::estimate::Experiment::design("seed-2026-10-18", &units, 2500).unwrap();
+    let outcomes: serde_json::Map<String, Value> = units
+        .iter()
+        .map(|u| {
+            (
+                u.clone(),
+                json!(if design.treated().contains(u) {
+                    4.0
+                } else {
+                    1.0
+                }),
+            )
+        })
+        .collect();
+    json!({"hold_out_experiment": {
+        "seed": "seed-2026-10-18", "units": units, "hold_out_bps": 2500, "outcomes": outcomes
+    }})
 }
 
 struct Scratch {
@@ -338,7 +376,7 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
     );
     assert_eq!(code, 3, "stdout {out} stderr {err}");
     assert!(
-        out.contains("widened Market on a RandomisedExperiment estimate"),
+        out.contains("widened Market on a HoldOutExperiment estimate"),
         "{out}"
     );
     assert!(out.contains("outcome: attempted and refused"), "{out}");
@@ -357,6 +395,7 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             AgencyRecord::ToolDecision { .. } => "tool",
             AgencyRecord::VoiceReleased { .. } => "voice",
             AgencyRecord::IntentRecorded { .. } => "intent",
+            AgencyRecord::PlanBlocked { .. } => "blocked",
             AgencyRecord::Learned { .. } => "learned",
             AgencyRecord::LearningWithheld { .. } => "learning withheld",
             AgencyRecord::PassConcluded { .. } => "concluded",
@@ -472,6 +511,349 @@ fn a_correlation_labelled_as_an_experiment_widens_nothing_and_says_so_on_the_rec
     );
 }
 
+/// R12-COVERAGE-7188: the shadow binary widens on a hold-out it drew itself,
+/// and refuses the same evidence once an operator drops a held-out cell.
+/// Mutation: in `Experiment::analyse`, delete the missing-outcome check — the
+/// second pass then widens on a hold-out missing its inconvenient cell.
+#[test]
+fn the_binary_widens_on_a_hold_out_it_drew_and_refuses_one_with_a_cell_dropped() {
+    let scratch = Scratch::new("holdout");
+    let policy = scratch.write("policy.json", &policy_document());
+    let units: Vec<String> = (0..12).map(|i| format!("cell-{i:02}")).collect();
+    let design = Experiment::design("seed-2026-10-18", &units, 2500).unwrap();
+    let outcomes: serde_json::Map<String, Value> = units
+        .iter()
+        .map(|u| {
+            let value = if design.treated().contains(u) {
+                4.0
+            } else {
+                1.0
+            };
+            (u.clone(), json!(value))
+        })
+        .collect();
+    let widening = |outcomes: &serde_json::Map<String, Value>| {
+        let mut document = acting(1);
+        document["widening"]["evidence"] = json!({"hold_out_experiment": {
+            "seed": "seed-2026-10-18", "units": units, "hold_out_bps": 2500,
+            "outcomes": outcomes
+        }});
+        document
+    };
+
+    let whole = scratch.write("whole.json", &widening(&outcomes));
+    let (out, err, code) = qip(
+        &[&policy, &scratch.journal(), &whole],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(code, 3, "stdout {out} stderr {err}");
+    assert!(
+        out.contains("widened Market on a HoldOutExperiment estimate"),
+        "{out}"
+    );
+
+    let mut dropped = outcomes.clone();
+    let cell = design.control().iter().next().unwrap().clone();
+    dropped.remove(&cell);
+    let partial = scratch.write("partial.json", &widening(&dropped));
+    let fresh = scratch.dir.join("fresh-holdout.jsonl");
+    let (out, err, code) = qip(
+        &[&policy, &fresh, &partial],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(code, 0, "stdout {out} stderr {err}");
+    assert!(out.contains("widening Market refused"), "{out}");
+    assert!(
+        out.contains("a unit is not dropped after the fact"),
+        "{out}"
+    );
+    assert!(out.contains("outcome: shadowed"), "{out}");
+}
+
+/// R12-COVERAGE-7188: an operator whose hold-out the binary refused (a cell
+/// dropped) cannot resubmit the same outcomes as two groups of their own
+/// forming and widen anyway. The groups are the very ones the design drew
+/// and the outcomes the very ones supplied, so the only thing that changed
+/// is who claims to have formed the groups. Claiming `experiment` is refused
+/// because the method does not earn it; claiming what the method does earn
+/// (`not_identified`) is refused because nothing unidentified widens.
+///
+/// Mutation: in `estimate::operator_formed_comparison` restore
+/// `Identification::Experiment` — the first resubmission then widens and the
+/// binary exits 3 with "widened Market on a RandomisedExperiment estimate".
+#[test]
+fn the_binary_refuses_to_widen_on_operator_chosen_groups_resubmitted_as_the_same_data() {
+    let scratch = Scratch::new("operator-groups");
+    let policy = scratch.write("policy.json", &policy_document());
+    let units: Vec<String> = (0..12).map(|i| format!("cell-{i:02}")).collect();
+    let design = Experiment::design("seed-2026-10-18", &units, 2500).unwrap();
+    let outcome = |u: &String| {
+        if design.treated().contains(u) {
+            4.0
+        } else {
+            1.0
+        }
+    };
+    let group = |cells: &std::collections::BTreeSet<String>| -> Vec<f64> {
+        cells.iter().map(outcome).collect()
+    };
+    let resubmitted = json!({"randomised_experiment": {
+        "treated": group(design.treated()), "control": group(design.control())
+    }});
+
+    // Premise: the unmodified hold-out widens, so a refusal below is the
+    // resubmission's and not a fixture fault.
+    let whole = scratch.write("whole.json", &acting(1));
+    let (out, err, code) = qip(
+        &[&policy, &scratch.journal(), &whole],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(code, 3, "premise: stdout {out} stderr {err}");
+    assert!(
+        out.contains("widened Market on a HoldOutExperiment"),
+        "{out}"
+    );
+
+    for (name, label, identifiability, reason) in [
+        (
+            "claims-experiment",
+            json!("experiment"),
+            0.8,
+            "earned by the method",
+        ),
+        (
+            "claims-nothing",
+            json!("not_identified"),
+            0.0,
+            "not identified",
+        ),
+    ] {
+        let mut document = acting(1);
+        document["widening"]["evidence"] = resubmitted.clone();
+        document["widening"]["attribution"]["identification"] = label;
+        document["widening"]["attribution"]["identifiability"] = json!(identifiability);
+        let path = scratch.write(&format!("{name}.json"), &document);
+        let fresh = scratch.dir.join(format!("{name}.jsonl"));
+        let (out, err, code) = qip(
+            &[&policy, &fresh, &path],
+            &["--policy", "--journal", "--request"],
+            &[],
+        );
+        assert_eq!(code, 0, "{name}: stdout {out} stderr {err}");
+        assert!(out.contains("widening Market refused"), "{name}: {out}");
+        assert!(!out.contains("widened Market"), "{name}: {out}");
+        assert!(out.contains("outcome: shadowed"), "{name}: {out}");
+        let journaled = records(&fresh);
+        assert!(
+            journaled.iter().any(|r| matches!(
+                r,
+                AgencyRecord::WideningRefused { reason: why, .. } if why.contains(reason)
+            )),
+            "{name}: expected a refusal containing `{reason}`: {out}"
+        );
+        assert!(
+            !journaled.iter().any(|r| matches!(
+                r,
+                AgencyRecord::Widened { .. } | AgencyRecord::Executed { .. }
+            )),
+            "{name}: nothing widened or executed"
+        );
+    }
+}
+
+/// R12-AGENCY-6088: a pass is simulated against the futures of a market twin
+/// the document describes, beside its declared scenarios, under every
+/// structural model. Mutation: in `Session::pass`, pass `None` instead of the
+/// twin to `run_governed_with` — the journal holds only the declared two.
+#[test]
+fn the_binary_simulates_a_pass_against_the_futures_of_the_twin_the_document_describes() {
+    let scratch = Scratch::new("twin");
+    let policy = scratch.write("policy.json", &policy_document());
+    let series = BTreeMap::from([(
+        "EURUSD".to_string(),
+        (1..=12)
+            .map(|i| {
+                (
+                    Timestamp::from_secs(i),
+                    1.10 + [0.0, 0.0005, -0.0007, 0.0003][(i % 4) as usize],
+                )
+            })
+            .collect::<Vec<_>>(),
+    )]);
+    let config = TreeConfig {
+        horizon: Duration::from_secs(60),
+        shock_sigmas: vec![1.0, 2.0],
+        propagation: vec![0.5, 1.0],
+        prune_below: 0.01,
+        split_beyond_sigmas: 4.0,
+        max_branches: 64,
+    };
+    let drivers = vec![WorldDriver {
+        id: "evt-rates".into(),
+        sensitivities: BTreeMap::from([("EURUSD".to_string(), 1.0)]),
+        evidence: vec!["doc-1".into()],
+    }];
+    let tree = FutureTree::grow(
+        &TwinState::fit(&series, Timestamp::from_secs(12)).unwrap(),
+        &drivers,
+        config.clone(),
+    )
+    .unwrap();
+    let live = tree.live().count();
+    assert!(live >= 2, "premise: the twin grew {live} live futures");
+
+    let mut shadow = acting(1);
+    shadow.as_object_mut().unwrap().remove("widening");
+    shadow.as_object_mut().unwrap().remove("act_as");
+    let scenarios = |document: &Value, name: &str| -> Vec<String> {
+        let path = scratch.write(&format!("{name}.json"), document);
+        let journal = scratch.dir.join(format!("{name}.jsonl"));
+        let (out, err, code) = qip(
+            &[&policy, &journal, &path],
+            &["--policy", "--journal", "--request"],
+            &[],
+        );
+        assert_eq!(code, 0, "{name}: stdout {out} stderr {err}");
+        records(&journal)
+            .into_iter()
+            .find_map(|r| match r {
+                AgencyRecord::PassConcluded { simulations, .. } => {
+                    Some(simulations.into_iter().map(|b| b.scenario).collect())
+                }
+                _ => None,
+            })
+            .expect("the pass is concluded on the journal")
+    };
+    let declared = scenarios(&shadow, "declared");
+    assert_eq!(
+        declared,
+        ["calm", "stressed"],
+        "premise: no twin, two scenarios"
+    );
+
+    let mut with_twin = shadow.clone();
+    with_twin["twin"] = json!({
+        "as_of": Timestamp::from_secs(12),
+        "series": series,
+        "drivers": drivers,
+        "config": config,
+        "bind": {"spread": "EURUSD"}
+    });
+    let simulated = scenarios(&with_twin, "twin");
+    let from_twin = simulated.iter().filter(|s| s.starts_with("twin:")).count();
+    assert_eq!(from_twin, live, "one result per live future: {simulated:?}");
+    assert_eq!(simulated.len(), 2 + live, "the declared two beside them");
+
+    // A binding to an instrument the twin does not hold is refused, not left
+    // at the declared value.
+    let mut unbound = with_twin.clone();
+    unbound["twin"]["bind"] = json!({"spread": "GBPUSD"});
+    let path = scratch.write("unbound.json", &unbound);
+    let (out, err, code) = qip(
+        &[&policy, &scratch.dir.join("unbound.jsonl"), &path],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(code, 1, "stdout {out} stderr {err}");
+    assert!(err.contains("GBPUSD"), "{err}");
+}
+
+/// R12-AGENCY-1056 / 1057: the binary resolves every citation against the
+/// evidence the operator's policy holds. A requester who cites a record the
+/// operator never listed, claims what the record does not say, or declares an
+/// authorized source for evidence recorded under another is withheld, and a
+/// policy that lists no evidence withholds every pass.
+/// Mutation: in `Session::open`, build the guard with no `with_evidence` —
+/// every case below executes as before.
+#[test]
+fn the_binary_resolves_every_citation_against_the_operators_evidence_and_a_policy_with_none_withholds_every_pass()
+ {
+    let scratch = Scratch::new("citations");
+    let run = |name: &str, policy: &Value, pass: &Value| -> (String, i32) {
+        let policy = scratch.write(&format!("{name}-policy.json"), policy);
+        let pass = scratch.write(&format!("{name}-pass.json"), pass);
+        let journal = scratch.dir.join(format!("{name}.jsonl"));
+        let (out, err, code) = qip(
+            &[&policy, &journal, &pass],
+            &["--policy", "--journal", "--request"],
+            &[],
+        );
+        (format!("{out}{err}"), code)
+    };
+    let (out, code) = run("honest", &policy_document(), &request(1));
+    assert_eq!(code, 0, "premise: a resolving citation is shadowed: {out}");
+
+    let mut no_evidence = policy_document();
+    no_evidence.as_object_mut().unwrap().remove("evidence");
+    let (out, code) = run("none", &no_evidence, &request(1));
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("resolves to no evidence"), "{out}");
+
+    let mut unlisted = request(1);
+    unlisted["pass"]["communications"]["quoter"]["evidence_citations"][0]["evidence_id"] =
+        json!("spread-series-9");
+    let (out, code) = run("unlisted", &policy_document(), &unlisted);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("resolves to no evidence"), "{out}");
+
+    let mut misrecorded = policy_document();
+    misrecorded["evidence"][0]["source_id"] = json!("blog");
+    let (out, code) = run("forged", &misrecorded, &request(1));
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("the record names 'blog'"), "{out}");
+
+    let mut other_claim = request(1);
+    other_claim["pass"]["communications"]["quoter"]["evidence_citations"][0]["claim"] =
+        json!("quoted spreads on venue-a are tight");
+    let (out, code) = run("claim", &policy_document(), &other_claim);
+    assert_eq!(code, 3, "{out}");
+    assert!(
+        out.contains("is not the statement the record holds"),
+        "{out}"
+    );
+}
+
+/// R12-AGENCY-1066: the binary withholds a draft that names an instrument
+/// the operator's policy says the platform holds unless it carries a
+/// `position` disclosure. Mutation: in `Session::open`, build the guard with
+/// no `with_holdings` — the undisclosed promotion is shadowed.
+#[test]
+fn the_binary_withholds_a_draft_promoting_a_held_instrument_without_a_position_disclosure() {
+    let scratch = Scratch::new("holdings");
+    let mut policy = policy_document();
+    policy["holdings"] = json!(["venue-a bonds"]);
+    let policy = scratch.write("policy.json", &policy);
+    let run = |name: &str, pass: &Value| -> (String, i32) {
+        let pass = scratch.write(&format!("{name}.json"), pass);
+        let journal = scratch.dir.join(format!("{name}.jsonl"));
+        let (out, err, code) = qip(
+            &[&policy, &journal, &pass],
+            &["--policy", "--journal", "--request"],
+            &[],
+        );
+        (format!("{out}{err}"), code)
+    };
+    let mut promotional = request(1);
+    promotional["pass"]["communications"]["quoter"]["content"] =
+        json!("Quote 20 lots: venue-a bonds are the better risk on this tape");
+    let (out, code) = run("undisclosed", &promotional);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("undisclosed promotion"), "{out}");
+
+    promotional["pass"]["communications"]["quoter"]["disclosures"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "position", "text": "The desk holds venue-a bonds"}));
+    let (out, code) = run("disclosed", &promotional);
+    assert_eq!(
+        code, 0,
+        "premise: with the disclosure it is shadowed: {out}"
+    );
+}
+
 /// The conduct gate and the eligibility register run in the binary, and
 /// their refusals are on the record. Mutation: in `Session::pass`, pass
 /// `eligibility: None` to `run_governed` — the GB-only venue is shadowed.
@@ -492,6 +874,21 @@ fn the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refu
     );
     assert_eq!(code, 3, "{out}");
     assert!(out.contains("no_rumour_engineering"), "{out}");
+    // R12-RES-7110: the withheld plan and the alternative sought are said
+    // and journaled. Mutation: in `engine::execute`, return `blocked: None`
+    // from the guard-refusal arm — neither the line nor the record appears.
+    assert!(
+        out.contains("plan withheld and kept: 1 step(s), 1 "),
+        "{out}"
+    );
+    assert!(out.contains("truthful alternative: do nothing"), "{out}");
+    assert!(
+        records(&journal).iter().any(|r| matches!(
+            r,
+            AgencyRecord::PlanBlocked { alternative, .. } if alternative == "no_action"
+        )),
+        "the withheld plan is on the journal"
+    );
 
     let mut elsewhere = policy_document();
     elsewhere["eligibility"][0]["jurisdictions"] = json!(["GB"]);

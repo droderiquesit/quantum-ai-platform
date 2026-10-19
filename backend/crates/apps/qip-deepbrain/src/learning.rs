@@ -129,8 +129,11 @@ use qip_core::{ObjectId, Timestamp};
 use qip_evolution::scoring::{Outcome, Scoreboard};
 use qip_kernel::Platform;
 use qip_kernel::central::models::{ModelRegistration, register_fit, require_calibrated_baseline};
+use qip_lifecycle::{Evaluator, EvaluatorPolicy};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
+use qip_training::ConformalInterval;
+use qip_training::campaign::{CampaignDraft, TrainingCampaign};
 use qip_training::dataset::TrainingDataset;
 use qip_training::distill::{Distillation, FidelityPolicy, StudentForm, distil};
 use qip_training::estimators::{DRIFT_BUCKETS, FeatureEstimators, StreamingDrift, degraded_models};
@@ -268,9 +271,45 @@ fn choose_class(board: &Scoreboard, regime: &str) -> (ModelFamily, ClassReason) 
     }
 }
 
+/// The miscoverage of the prediction interval a registered card records: 0.1
+/// asks for an interval that covers nine in ten realised returns.
+const CONFORMAL_ALPHA: f64 = 0.1;
+
 /// The dataset name a round on `subject` fits under.
 fn dataset_name(subject: &ObjectId) -> String {
     format!("{DATASET_PREFIX}{}", subject.as_str())
+}
+
+/// Write what a fit was validated on onto its card: the regime the round
+/// classified, and the range each feature took in the rows it was fitted and
+/// judged on (the holdout tail is validation evidence too).
+///
+/// Both are read by `ModelRegistry::ineligible_in_regime`, so a standing model
+/// is flagged in a regime it was never scored in and on inputs it would have
+/// to extrapolate to answer.
+fn record_validation_scope(
+    card: &mut ModelCard,
+    regime: &str,
+    fitted_on: &TrainingDataset,
+) -> Result<()> {
+    card.validated_regimes.insert(regime.to_string());
+    let mut bounds = BTreeMap::new();
+    for (index, name) in fitted_on.feature_names().iter().enumerate() {
+        let column = fitted_on.rows().iter().map(|row| row[index]);
+        let low = column.clone().fold(f64::INFINITY, f64::min);
+        let high = column.fold(f64::NEG_INFINITY, f64::max);
+        bounds.insert(name.clone(), (low, high));
+    }
+    *card = card.clone().with_training_bounds(bounds)?;
+    Ok(())
+}
+
+/// Write the campaign and build a fit is attributed to onto its card.
+fn stamp_provenance(card: &mut ModelCard, provenance: &Option<(String, String)>) {
+    if let Some((campaign_id, code_version)) = provenance {
+        card.campaign_id = Some(campaign_id.clone());
+        card.code_version = Some(code_version.clone());
+    }
 }
 
 /// The instrument a card was fitted on, as the card itself records it.
@@ -390,6 +429,13 @@ pub struct LearningRound {
     /// engine assembled it through one — every production round does; a
     /// desk driven directly by a test may not have.
     pub campaign: Option<crate::campaign::CampaignSummary>,
+    /// One [`TrainingCampaign`] per standing model this round found past its
+    /// own drift threshold and answered with the fit it registered
+    /// (R12-EXPAND-6032): which model, how far it had drifted, the window the
+    /// successor was fitted on and the lineage it inherits. Distinct from
+    /// [`Self::campaign`], which is the data-fetch campaign the window came
+    /// through. Empty when nothing drifted past its bound.
+    pub training_campaigns: Vec<TrainingCampaign>,
     /// Why no campaign opened this round: the stream was refused at the
     /// door — neither a source the platform holds an admission for nor one
     /// it generated, or a standing admission that has stopped granting.
@@ -536,6 +582,7 @@ impl LearningRound {
             distillation: None,
             distillation_refusal: None,
             campaign: None,
+            training_campaigns: Vec::new(),
             refused_by_door: Some(reason.into()),
             promotion: None,
             rolled_back: Vec::new(),
@@ -589,6 +636,12 @@ impl LearningRound {
             Some(campaign) => format!("; {}", campaign.describe()),
             None => String::new(),
         };
+        let campaign = self
+            .training_campaigns
+            .iter()
+            .fold(campaign, |line, retrain| {
+                format!("{line}; {}", retrain.describe())
+            });
         let unattributed = if self.unattributed.is_empty() {
             String::new()
         } else {
@@ -702,6 +755,13 @@ pub struct LearningDesk {
     /// stability index of 12.4 that was about a different instrument. That is
     /// worse than no score, because it reads as a measurement.
     reference: BTreeMap<String, FittedSample>,
+    /// The campaign and build the next fit is attributed to
+    /// (R12-EXPAND-6076), set by the engine before each round.
+    provenance: Option<(String, String)>,
+    /// Whether [`Self::promote_candidate`] refuses a card with no campaign
+    /// or code version. The engine, which always supplies both, sets it; a
+    /// desk driven alone in a test does not.
+    require_provenance: bool,
     /// The feature stream as it stood when the desk last fitted, held as
     /// summaries rather than as the stream.
     ///
@@ -767,12 +827,30 @@ impl LearningDesk {
             promoted_artifacts: BTreeMap::new(),
             displaced_artifacts: BTreeMap::new(),
             reference: BTreeMap::new(),
+            provenance: None,
+            require_provenance: false,
             stream_reference: BTreeMap::new(),
             classes: Scoreboard::models(),
             fits: 0,
             seed,
             stats: LearningStats::default(),
         }
+    }
+
+    /// Refuse to promote a card that cannot be traced to a research campaign
+    /// and a build (R12-EXPAND-6076). The production engine turns this on.
+    pub const fn requiring_provenance(mut self) -> Self {
+        self.require_provenance = true;
+        self
+    }
+
+    /// Attribute the next round's fits to `campaign_id` and `code_version`.
+    pub fn note_provenance(
+        &mut self,
+        campaign_id: impl Into<String>,
+        code_version: impl Into<String>,
+    ) {
+        self.provenance = Some((campaign_id.into(), code_version.into()));
     }
 
     /// The model-class board: how often each teacher class cleared the skill
@@ -866,6 +944,29 @@ impl LearningDesk {
         };
         if !candidate.passed_skill_bar {
             return not_promoted("it did not clear the skill bar on its own holdout".to_string());
+        }
+        // Where every feature came from, and that it was audited as of its
+        // decision instant (R12-MODEL-4016). The registry refuses a recorded
+        // look-ahead at promotion; a card recording no lineage at all is
+        // refused here, because the desk is the one producer that always
+        // writes it and a card without it was not registered by a fit.
+        if let Some(card) = self.registry.get(&reference) {
+            if self.require_provenance
+                && let Some(gap) = card.provenance_gap()
+            {
+                return not_promoted(gap);
+            }
+            let missing = card.features_without_lineage();
+            if !missing.is_empty() {
+                return not_promoted(format!(
+                    "its card records no lineage for {}",
+                    missing.join(", ")
+                ));
+            }
+            let findings = card.lineage_findings();
+            if !findings.is_empty() {
+                return not_promoted(findings.join("; "));
+            }
         }
         let artifact = InTreeProvider::pack(&candidate.teacher)?;
         let served = match platform.serve_model(&artifact) {
@@ -1024,6 +1125,9 @@ impl LearningDesk {
             .map(ModelCard::reference)
             .collect();
         if degraded.is_empty() {
+            // Said even when nothing drifted, so a drift the last round saw
+            // and this one does not is cleared rather than remembered.
+            platform.observe_model_drift(&self.registry);
             return Ok(Vec::new());
         }
         // MODEL-057: a rollback moves the alias too, and names this desk.
@@ -1046,6 +1150,10 @@ impl LearningDesk {
                 reactivated,
             });
         }
+        // What is still drifted after the rollbacks narrows the centre's
+        // sizing through the self-model row (R12-RES-7101): a card the
+        // rollback retired no longer counts, one it could not roll back does.
+        platform.observe_model_drift(&self.registry);
         Ok(rolled_back)
     }
 
@@ -1103,6 +1211,14 @@ impl LearningDesk {
         }
         self.stats.rounds += 1;
         let columns = feature_columns(bars);
+        // The newest feature row stands for the inputs the standing models
+        // would be asked about next: a model is judged in the regime this
+        // round classified and on a window it was not fitted to extrapolate
+        // across (R12-MODEL-4020, R12-RISK-4099).
+        let latest: BTreeMap<String, f64> = columns
+            .iter()
+            .filter_map(|(name, column)| column.last().map(|value| (name.clone(), *value)))
+            .collect();
         // Every comparison below is scoped to this instrument. A model fitted
         // on another one is left alone this round, not measured against these
         // bars; it is measured when its own subject next comes round.
@@ -1246,6 +1362,7 @@ impl LearningDesk {
                         distillation: None,
                         distillation_refusal: None,
                         campaign: None,
+                        training_campaigns: Vec::new(),
                         refused_by_door: None,
                         class_choice: None,
                         promotion: None,
@@ -1256,11 +1373,19 @@ impl LearningDesk {
 
         let ineligible = self
             .registry
-            .ineligible(now)
+            .ineligible_in_regime(now, regime, |card| {
+                (card_subject(card) == Some(on_subject)).then_some(&latest)
+            })
             .into_iter()
             .map(|(card, reason)| format!("{}: {reason}", card.reference()))
             .collect();
 
+        let training_campaigns = match &registration {
+            Some(registered) => {
+                self.open_training_campaigns(subject, &drift, &registered.reference, bars, now)?
+            }
+            None => Vec::new(),
+        };
         Ok(LearningRound {
             subject: subject.as_str().to_string(),
             registration,
@@ -1271,11 +1396,60 @@ impl LearningDesk {
             distillation,
             distillation_refusal,
             campaign: None,
+            training_campaigns,
             refused_by_door: None,
             class_choice,
             promotion: None,
             rolled_back: Vec::new(),
         })
+    }
+
+    /// One campaign per model this round measured past its own threshold,
+    /// each naming the fit that answered it.
+    ///
+    /// The lineage is read off the drifted card itself: the model, and the
+    /// source window and feature code it was fitted from, which
+    /// [`FeatureLineage::record_on`] wrote there. A card that predates the
+    /// lineage carries the model alone rather than an invented digest.
+    fn open_training_campaigns(
+        &self,
+        subject: &ObjectId,
+        drift: &[DriftObservation],
+        successor: &str,
+        bars: &[Bar],
+        now: Timestamp,
+    ) -> Result<Vec<TrainingCampaign>> {
+        let dataset_digest = crate::features::source_digest(bars);
+        let mut opened = Vec::new();
+        for observed in drift.iter().filter(|o| o.above_threshold) {
+            let Some(card) = self.registry.get(&observed.reference) else {
+                continue;
+            };
+            if observed.reference == successor {
+                continue;
+            }
+            let mut teacher_lineage = vec![format!("model:{}", observed.reference)];
+            for (key, label) in [
+                ("feature_source_digest", "fitted-on"),
+                ("feature_code_digest", "feature-code"),
+            ] {
+                if let Some(value) = card.parameters.get(key) {
+                    teacher_lineage.push(format!("{label}:{value}"));
+                }
+            }
+            opened.push(TrainingCampaign::open(CampaignDraft {
+                subject: subject.as_str().to_string(),
+                replaces: observed.reference.clone(),
+                drift_score: observed.population_stability_index,
+                drift_threshold: card.drift_threshold,
+                worst_feature: observed.worst_feature.clone(),
+                dataset_digest: dataset_digest.clone(),
+                teacher_lineage,
+                successor: successor.to_string(),
+                opened_at: now,
+            })?);
+        }
+        Ok(opened)
     }
 
     /// The features whose distribution has moved further than the estimators
@@ -1338,7 +1512,7 @@ impl LearningDesk {
         ClassChoice,
     )> {
         let targets = next_bar_returns(bars);
-        audit_features_as_of(bars, columns)?;
+        let audited_rows = audit_features_as_of(bars, columns)?;
         let times: Vec<Timestamp> = bars
             .iter()
             .skip(LOOKBACK)
@@ -1431,19 +1605,30 @@ impl LearningDesk {
         require_calibrated_baseline(&self.registry, &baseline_registration.reference)?;
         // Every card this round registers names the source window and the
         // code its features came from (MODEL-029).
-        let lineage = FeatureLineage::of(bars, now);
+        let lineage = FeatureLineage::of(bars, now).audited(audited_rows);
+        let provenance = self.provenance.clone();
         if let Some(card) = self.registry.get_mut(&baseline_registration.reference) {
             lineage.record_on(card);
+            record_validation_scope(card, regime, &dataset)?;
+            stamp_provenance(card, &provenance);
         }
         let challenger = trainer.fit(&spec_for(CHALLENGER_CLASS), &dataset, now);
-        let baseline_skilled = baseline
-            .fit()
-            .is_some_and(|fit| fit.claims_skill(&self.policy));
-        let challenger_skilled = challenger.as_ref().ok().map(|teacher| {
-            teacher
-                .fit()
-                .is_some_and(|fit| fit.claims_skill(&self.policy))
+        // Skill is judged by the evaluator from the predictions each class
+        // made on the holdout tail, never read from the fit's own
+        // diagnostics (R12-MODEL-6001): the trainer that produced a model is
+        // not the party that says it learned something.
+        let (_, holdout) = dataset.split_at_fraction(spec.holdout_fraction)?;
+        let evaluator = Evaluator::new(EvaluatorPolicy {
+            minimum_observations: self.policy.minimum_holdout_observations,
+            minimum_r2: self.policy.minimum_holdout_r2,
         });
+        let judged = |teacher: &TrainedTeacher| -> Result<bool> {
+            Ok(evaluator
+                .judge(&teacher.predict_all(&holdout)?, holdout.targets())?
+                .skilled)
+        };
+        let baseline_skilled = judged(&baseline)?;
+        let challenger_skilled = challenger.as_ref().ok().map(judged).transpose()?;
         self.classes.observe(Outcome::binary(
             BASELINE_CLASS.as_str(),
             regime,
@@ -1482,10 +1667,39 @@ impl LearningDesk {
                 )?;
                 if let Some(card) = self.registry.get_mut(&registration.reference) {
                     lineage.record_on(card);
+                    record_validation_scope(card, regime, &dataset)?;
+                    stamp_provenance(card, &provenance);
                 }
                 registration
             }
         };
+
+        // How wide the prediction's error band is, calibrated on the holdout
+        // tail the fit never saw (R12-MODEL-4006). A holdout too small for the
+        // requested coverage leaves a stated limitation instead of a number
+        // that would be a guess.
+        if let Some(card) = self.registry.get_mut(&registration.reference) {
+            match ConformalInterval::calibrate(&teacher, &holdout, CONFORMAL_ALPHA) {
+                Ok(interval) => {
+                    card.parameters.insert(
+                        "conformal_alpha".to_string(),
+                        format!("{}", interval.alpha()),
+                    );
+                    card.parameters.insert(
+                        "conformal_half_width".to_string(),
+                        format!("{}", interval.half_width()),
+                    );
+                    card.parameters.insert(
+                        "conformal_calibration_rows".to_string(),
+                        interval.calibration_rows().to_string(),
+                    );
+                }
+                Err(error) => card.limitations.push(format!(
+                    "no calibrated prediction interval: {}",
+                    error.message()
+                )),
+            }
+        }
 
         // Distil the teacher into the linear form the execution path is
         // actually allowed to run, probed on the same holdout tail the
@@ -1665,6 +1879,56 @@ mod tests {
             qip_risk::limits::LimitSet::conservative_default(),
             Box::new(InTreeProvider),
         )
+    }
+
+    #[test]
+    fn a_drifted_model_with_nothing_to_return_to_still_narrows_the_centre_until_it_recovers()
+    -> Result<()> {
+        // The failure this guards (R12-RES-7101): a model that drifted with no
+        // predecessor to fall back to was refused decisions and nothing else,
+        // so the centre kept sizing as if its panel were healthy. The round
+        // reports what is still drifted after it has rolled back what it could.
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the round"))?;
+        let reference = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        desk.promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+
+        // Premise: healthy, and nothing is named.
+        assert!(desk.roll_back_degraded(&mut platform, at())?.is_empty());
+        assert!(platform.drifted_models().is_empty());
+
+        let threshold = desk
+            .registry
+            .get(&reference)
+            .map(|card| card.drift_threshold)
+            .ok_or_else(|| Error::not_found("the card"))?;
+        desk.registry.record_drift(&reference, threshold * 2.0)?;
+        let later = at().saturating_add(qip_core::Duration::from_mins(1));
+        assert!(
+            desk.roll_back_degraded(&mut platform, later)?.is_empty(),
+            "premise: a lone model has nothing to roll back to"
+        );
+        assert!(
+            platform.drifted_models().contains(&reference),
+            "the drifted model is not named to the platform: {:?}",
+            platform.drifted_models()
+        );
+
+        // Recovery clears the reading on the next round.
+        desk.registry.record_drift(&reference, 0.0)?;
+        desk.roll_back_degraded(&mut platform, later)?;
+        assert!(platform.drifted_models().is_empty());
+        Ok(())
     }
 
     #[test]
@@ -2143,6 +2407,99 @@ mod tests {
         Ok(())
     }
 
+    /// R12-EXPAND-6032: the retraining a drift triggers leaves a record
+    /// naming the model it answered, the drift that justified it, the window
+    /// the successor was fitted on and the lineage it inherits.
+    ///
+    /// The failure this prevents: `degraded_models` and the per-model drift
+    /// score selected what to refit and the refit registered a model, and
+    /// nothing joined the two, so "why does this model exist" was answered by
+    /// a version number. Mutation: dropping the `open_training_campaigns`
+    /// call in `learn` empties the list and the first assertion after the
+    /// premise fails.
+    #[test]
+    fn a_drifted_model_opens_one_training_campaign_naming_its_drift_and_dataset() -> Result<()> {
+        let mut desk = learning_desk();
+        let calm = super::tests_support::learnable(400);
+        let first = desk
+            .maybe_learn(&subject(), &calm, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+        let drifted = first
+            .registration
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        assert!(
+            first.training_campaigns.is_empty(),
+            "premise: a first round has nothing standing to have drifted"
+        );
+
+        let shocked = super::tests_support::shocked(400);
+        let second = desk
+            .maybe_learn(&subject(), &shocked, REGIME, 2, at())?
+            .ok_or_else(|| Error::not_found("the second round"))?;
+        let successor = second
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a second registration"))?
+            .reference
+            .clone();
+        // Premise: the model did drift past its own threshold this round,
+        // and its successor is a different reference.
+        let observation = second
+            .drift
+            .iter()
+            .find(|o| o.reference == drifted)
+            .ok_or_else(|| Error::not_found("the drift measurement"))?;
+        assert!(observation.above_threshold);
+        assert_ne!(drifted, successor);
+
+        let [campaign] = second.training_campaigns.as_slice() else {
+            return Err(Error::invalid(format!(
+                "expected exactly one training campaign; got {:?}",
+                second.training_campaigns
+            )));
+        };
+        assert_eq!(campaign.replaces(), drifted);
+        assert_eq!(campaign.successor(), successor);
+        assert_eq!(campaign.subject(), subject().as_str());
+        assert!(
+            (campaign.drift_score() - observation.population_stability_index).abs() < 1e-12,
+            "the campaign carries the score the round measured"
+        );
+        assert_eq!(campaign.worst_feature(), observation.worst_feature);
+        assert_eq!(
+            campaign.dataset_digest(),
+            crate::features::source_digest(&shocked),
+            "the campaign names the window the successor was fitted on"
+        );
+        let standing = desk
+            .registry()
+            .get(&drifted)
+            .ok_or_else(|| Error::not_found("the drifted card"))?;
+        let fitted_on = standing
+            .parameters
+            .get("feature_source_digest")
+            .ok_or_else(|| Error::not_found("the drifted card's source digest"))?;
+        assert!(
+            campaign
+                .teacher_lineage()
+                .contains(&format!("fitted-on:{fitted_on}")),
+            "{:?}",
+            campaign.teacher_lineage()
+        );
+        assert!(
+            campaign
+                .teacher_lineage()
+                .contains(&format!("model:{drifted}"))
+        );
+        assert!(
+            second.describe().contains("retrained"),
+            "{}",
+            second.describe()
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_model_whose_features_have_moved_records_drift_past_its_own_threshold() -> Result<()> {
         // The control that could not fire. `decision_eligibility` refuses a
@@ -2516,6 +2873,240 @@ mod tests {
             refusal.message().contains("drift"),
             "the model was refused for some other reason: {}",
             refusal.message()
+        );
+        Ok(())
+    }
+
+    /// R12-MODEL-4020, R12-RISK-4099. A card the desk registers records the
+    /// regime it was judged in and the range each feature took in its fitting
+    /// rows, and a round in another regime lists the promoted model as
+    /// ineligible there while the regime it was validated in does not.
+    ///
+    /// Mutation: dropping the `record_validation_scope` call after
+    /// `lineage.record_on` for the baseline leaves the card with no recorded
+    /// regime, so the stressed round lists nothing and the last assertion
+    /// fails.
+    #[test]
+    fn a_model_fitted_in_one_regime_is_listed_ineligible_in_another() -> Result<()> {
+        const STRESSED: &str = "reversal/stressed";
+        let mut desk = learning_desk();
+        let bars = super::tests_support::learnable(400);
+        let reference = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        if desk.registry_mut().promote(&reference, at()).is_err() {
+            return Err(Error::invalid(
+                "the fit did not clear the skill bar, so this test cannot reach a promoted card",
+            ));
+        }
+        let card = desk
+            .registry()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the registered card"))?;
+        assert_eq!(
+            card.validated_regimes
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![REGIME]
+        );
+        assert_eq!(
+            card.training_bounds.keys().cloned().collect::<Vec<_>>(),
+            card.features
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            "every feature the card consumes has a recorded range"
+        );
+        assert!(card.training_bounds.values().all(|(low, high)| low <= high));
+
+        // Premise: the same window in the regime it was validated in leaves
+        // the promoted model eligible, so the stressed listing is the regime.
+        let same = desk
+            .maybe_learn(&subject(), &bars, REGIME, 2, at())?
+            .ok_or_else(|| Error::not_found("a round"))?;
+        assert!(
+            !same
+                .ineligible
+                .iter()
+                .any(|line| line.starts_with(&reference)),
+            "premise: {:?}",
+            same.ineligible
+        );
+        let stressed = desk
+            .maybe_learn(&subject(), &bars, STRESSED, 3, at())?
+            .ok_or_else(|| Error::not_found("a round"))?;
+        let line = stressed
+            .ineligible
+            .iter()
+            .find(|line| line.starts_with(&reference))
+            .ok_or_else(|| Error::invalid(format!("not listed: {:?}", stressed.ineligible)))?;
+        assert!(line.contains("never scored in reversal/stressed"), "{line}");
+        Ok(())
+    }
+
+    /// R12-MODEL-4016. A registered card names, per feature, its derivation,
+    /// the digests of its source and code, the instant it reads through and
+    /// the rows the as-of audit examined; and a card whose lineage was
+    /// removed is not promoted by the desk.
+    ///
+    /// Mutation: drop `lineage.record_on` for the baseline — the card has no
+    /// lineage and the first assertion fails. Mutation: delete the
+    /// `features_without_lineage` refusal in `promote_candidate` — the
+    /// stripped card is promoted and the `NotPromoted` match fails.
+    #[test]
+    fn a_registered_card_records_per_feature_lineage_and_one_without_it_is_not_promoted()
+    -> Result<()> {
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let reference = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        let card = desk
+            .registry()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the card"))?;
+        assert_eq!(card.features.len(), FEATURES.len());
+        assert!(card.features_without_lineage().is_empty());
+        let through = bars[bars.len() - 2].close_time();
+        for (feature, origin) in &card.feature_lineage {
+            assert!(!origin.derivation.is_empty(), "{feature}");
+            assert_eq!(origin.code_digest, crate::features::code_digest());
+            assert_eq!(origin.source_digest, crate::features::source_digest(&bars));
+            assert_eq!(origin.source_through, through, "{feature}");
+            assert_eq!(origin.decision_at, through, "{feature}");
+            assert!(origin.audited_rows > 0, "{feature} was not audited");
+        }
+        assert!(card.lineage_findings().is_empty());
+
+        // Strip the lineage and the desk refuses to promote the candidate.
+        let mut stripped = desk
+            .registry()
+            .get(&reference)
+            .cloned()
+            .ok_or_else(|| Error::not_found("the card"))?;
+        stripped.feature_lineage.clear();
+        desk.registry_mut().register(stripped);
+        let outcome = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        let PromotionOutcome::NotPromoted { reason, .. } = outcome else {
+            return Err(Error::invalid(
+                "a card with no feature lineage was promoted".to_string(),
+            ));
+        };
+        assert!(
+            reason.contains("records no lineage for return_1"),
+            "{reason}"
+        );
+        Ok(())
+    }
+
+    /// R12-EXPAND-6076. A desk that requires provenance does not promote a
+    /// card fitted with none, and promotes the same fit once the campaign and
+    /// build are noted.
+    ///
+    /// Mutation: delete the `provenance_gap` refusal in `promote_candidate` —
+    /// the unattributed fit is promoted and the `NotPromoted` match fails.
+    #[test]
+    fn a_desk_requiring_provenance_refuses_a_fit_with_no_campaign_or_code_version() -> Result<()> {
+        let bars = super::tests_support::learnable(400);
+        let mut platform = serving_platform()?;
+
+        let mut bare = learning_desk().requiring_provenance();
+        bare.maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round"))?;
+        let outcome = bare
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        let PromotionOutcome::NotPromoted { reason, .. } = outcome else {
+            return Err(Error::invalid(
+                "an unattributed fit was promoted".to_string(),
+            ));
+        };
+        assert!(
+            reason.contains("neither a research campaign nor a code version"),
+            "{reason}"
+        );
+
+        let mut noted = learning_desk().requiring_provenance();
+        noted.note_provenance("CMP-1", "qip-kernel 0.1.0 (test)");
+        let reference = noted
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        let card = noted
+            .registry()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the card"))?;
+        assert_eq!(card.campaign_id.as_deref(), Some("CMP-1"));
+        assert_eq!(
+            card.code_version.as_deref(),
+            Some("qip-kernel 0.1.0 (test)")
+        );
+        let outcome = noted
+            .promote_candidate(&mut serving_platform()?, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(outcome, PromotionOutcome::Promoted { .. }),
+            "the attributed fit was not promoted: {}",
+            outcome.describe()
+        );
+        Ok(())
+    }
+
+    /// R12-MODEL-4006. The card a round registers records a conformal
+    /// prediction interval calibrated on the holdout tail: the miscoverage,
+    /// a positive finite half-width, and the number of rows behind it.
+    ///
+    /// Mutation: delete the `ConformalInterval::calibrate` block after the
+    /// registration — the card records no half-width and the first assertion
+    /// fails.
+    #[test]
+    fn a_registered_card_records_a_calibrated_prediction_interval() -> Result<()> {
+        let mut desk = learning_desk();
+        let bars = super::tests_support::learnable(400);
+        let reference = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        let card = desk
+            .registry()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the card"))?;
+        let half_width: f64 = card
+            .parameters
+            .get("conformal_half_width")
+            .ok_or_else(|| Error::not_found("a conformal half-width on the card"))?
+            .parse()
+            .map_err(|_| Error::invalid("the half-width is not a number".to_string()))?;
+        assert!(half_width.is_finite() && half_width > 0.0, "{half_width}");
+        assert_eq!(
+            card.parameters.get("conformal_alpha").map(String::as_str),
+            Some("0.1")
+        );
+        let rows: usize = card
+            .parameters
+            .get("conformal_calibration_rows")
+            .and_then(|rows| rows.parse().ok())
+            .ok_or_else(|| Error::not_found("a calibration row count"))?;
+        assert!(
+            rows >= 9,
+            "a 90% interval needs at least nine rows, got {rows}"
+        );
+        assert!(
+            card.limitations
+                .iter()
+                .all(|l| !l.contains("prediction interval"))
         );
         Ok(())
     }

@@ -224,7 +224,7 @@ pub const EDGE_FILL_TIME_MILLIS: &str = "qip_edge_fill_time_millis";
 /// fill needs to know which half was slow. An order that rests and is never
 /// answered contributes nothing, because nothing the venue said can be
 /// timed; that silence is what the fill-time and expiry series report.
-pub const EDGE_VENUE_ACK_LATENCY_MILLIS: &str = "qip_edge_venue_ack_latency_ms";
+pub const EDGE_VENUE_ACK_LATENCY_MILLIS: &str = names::EDGE_VENUE_ACK_LATENCY_MS;
 
 /// Legs of an arbitrage cycle the cell sent, by what the venue reported each
 /// of them completed (§32.1's size decomposition).
@@ -530,6 +530,19 @@ impl CellMetrics {
              completed: unanswered, whole, short, unviable",
         );
         m.describe(
+            names::EDGE_RISK_GATE_LATENCY_MS,
+            "milliseconds the cell's risk gate took to decide one order, whatever it decided",
+        );
+        m.describe(
+            names::EDGE_FEED_MESSAGES,
+            "feed messages the sequencer accounted for, by outcome: delivered in order, or \
+             dropped because an abandoned gap established them lost",
+        );
+        m.describe(
+            names::EDGE_BOOK_AGE_MS,
+            "milliseconds since the cell last heard each venue's feed, per venue per pass",
+        );
+        m.describe(
             EDGE_FILL_TIME_UNMEASURED,
             "configured venues with too few fills for their fill time to be judged",
         );
@@ -590,6 +603,55 @@ impl CellMetrics {
     pub fn work_pass(&self) {
         self.metrics
             .count(names::EDGE_WORK_PASSES, self.base.clone());
+    }
+
+    /// How long it has been since the cell last heard `venue`'s feed
+    /// (R12-OBS-7123), in milliseconds and recorded every pass.
+    ///
+    /// The `market-data-freshness` critical path is read from this. It is the
+    /// age of the book the pass is about to decide on, not of the policy the
+    /// centre last sent, which `qip_edge_capability_freshness` reports and
+    /// which says nothing about prices. `venue` is bounded by
+    /// `CellConfig::venues`: only a configured venue's heartbeat is kept.
+    pub fn book_age(&self, venue: &VenueId, age: Duration) {
+        // The same reporting-only crossing to `f64` as `fill_time`.
+        #[allow(clippy::cast_precision_loss)]
+        let millis = age.as_nanos() as f64 / 1_000_000.0;
+        self.metrics.observe_latency_ms(
+            names::EDGE_BOOK_AGE_MS,
+            self.with("venue", venue.as_str()),
+            millis,
+        );
+    }
+
+    /// How long the Risk Gate took to decide one order (R12-OBS-9159), in
+    /// milliseconds, recorded for every order the cell consults it on and
+    /// whatever it decided: a refusal that took ten times as long as an
+    /// approval is the slow gate the reflex `risk-gate-latency-p99` objective
+    /// exists to show, so it is not left out of the histogram.
+    pub fn risk_gate_latency(&self, taken: std::time::Duration) {
+        self.metrics.observe_latency_ms(
+            names::EDGE_RISK_GATE_LATENCY_MS,
+            self.base.clone(),
+            taken.as_secs_f64() * 1000.0,
+        );
+    }
+
+    /// What the sequencer accounted for in one batch (R12-OBS-9159): messages
+    /// released in order, and sequences an abandoned gap established were
+    /// lost. An outcome with a zero count is not written, so a feed that has
+    /// never dropped reads `dropped` as absent; the objective reads
+    /// `delivered` against the total.
+    pub fn feed_messages(&self, delivered: u64, dropped: u64) {
+        for (outcome, count) in [("delivered", delivered), ("dropped", dropped)] {
+            if count > 0 {
+                self.metrics.increment(
+                    names::EDGE_FEED_MESSAGES,
+                    self.with("outcome", outcome),
+                    count,
+                );
+            }
+        }
     }
 
     /// The halt state, by source.

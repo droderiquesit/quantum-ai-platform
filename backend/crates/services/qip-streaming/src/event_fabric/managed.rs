@@ -122,6 +122,48 @@ pub trait ManagedLog: Send + Sync + std::fmt::Debug {
     /// its epoch; taking an expired one from anybody else bumps it.
     fn acquire(&self, partition: &PartitionRef, holder: &str, ttl_ms: u64) -> Result<LeaseOutcome>;
 
+    /// [`Self::acquire`], except that another holder's lease is not taken
+    /// until it has been expired for `grace_ms` of the database's own time
+    /// (ADR 0111 Amendment 1, §2): an instance that is not a partition's
+    /// rendezvous-preferred leader gives the preferred one that long to
+    /// renew or retake it. Renewing one's own lease is never delayed.
+    ///
+    /// The default contends at once. A log that cannot defer loses only the
+    /// placement preference, never safety: the lease alone decides who
+    /// holds, so ignoring the grace cannot let two instances lead.
+    fn acquire_after_expiry(
+        &self,
+        partition: &PartitionRef,
+        holder: &str,
+        ttl_ms: u64,
+        grace_ms: u64,
+    ) -> Result<LeaseOutcome> {
+        let _ = grace_ms;
+        self.acquire(partition, holder, ttl_ms)
+    }
+
+    /// Hand `lease` back: lapse it now, in the database's own time, rather
+    /// than leaving the next holder to wait out the TTL. `Ok(true)` when the
+    /// row was still this holder's at this epoch and has been lapsed;
+    /// `Ok(false)` when somebody had already superseded it, so there was
+    /// nothing of this holder's to hand back.
+    ///
+    /// A drained broker that only stopped renewing would hold its partitions
+    /// for up to a TTL after it stopped acknowledging them, and a P0/P1
+    /// producer would be refused by both brokers for that long. The epoch is
+    /// kept: the next holder takes the lapsed row at the next epoch exactly
+    /// as it would after a crash, so fencing is unchanged.
+    ///
+    /// The default refuses, as the blob store's conditional write does: a log that cannot lapse a lease must say so, not report a release
+    /// it did not make.
+    fn release(&self, partition: &PartitionRef, lease: &Lease) -> Result<bool> {
+        let _ = lease;
+        Err(Error::invalid(format!(
+            "this managed log cannot release the lease on {}:{}; the lease will lapse at its              TTL instead",
+            partition.stream, partition.partition
+        )))
+    }
+
     /// Commit `row` iff `lease` is still the holder's at `row.lease_epoch`
     /// and `row.offset` is one past the last committed offset.
     fn commit(&self, lease: &Lease, row: &CommittedBatch) -> Result<CommitOutcome>;
@@ -231,8 +273,22 @@ impl MemoryManagedLog {
 
 impl ManagedLog for MemoryManagedLog {
     fn acquire(&self, partition: &PartitionRef, holder: &str, ttl_ms: u64) -> Result<LeaseOutcome> {
+        self.acquire_after_expiry(partition, holder, ttl_ms, 0)
+    }
+
+    fn acquire_after_expiry(
+        &self,
+        partition: &PartitionRef,
+        holder: &str,
+        ttl_ms: u64,
+        grace_ms: u64,
+    ) -> Result<LeaseOutcome> {
         self.reachable(holder)?;
         let now = self.clock.now().as_nanos();
+        let grace_ns = i64::try_from(grace_ms)
+            .ok()
+            .and_then(|ms| ms.checked_mul(1_000_000))
+            .ok_or_else(|| Error::invalid(format!("a lease grace of {grace_ms} ms overflows")))?;
         let ttl_ns = i64::try_from(ttl_ms)
             .ok()
             .and_then(|ms| ms.checked_mul(1_000_000))
@@ -243,7 +299,7 @@ impl ManagedLog for MemoryManagedLog {
             Some((current, epoch, _)) if current == holder => {
                 (holder.to_string(), *epoch, now + ttl_ns)
             }
-            Some((current, epoch, expires)) if *expires > now => {
+            Some((current, epoch, expires)) if expires.saturating_add(grace_ns) > now => {
                 return Ok(LeaseOutcome::HeldByOther {
                     holder: current.clone(),
                     epoch: *epoch,
@@ -262,6 +318,19 @@ impl ManagedLog for MemoryManagedLog {
         };
         state.leases.insert(partition.clone(), next);
         Ok(LeaseOutcome::Held(lease))
+    }
+
+    fn release(&self, partition: &PartitionRef, lease: &Lease) -> Result<bool> {
+        self.reachable(&lease.holder)?;
+        let now = self.clock.now().as_nanos();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        match state.leases.get_mut(partition) {
+            Some((holder, epoch, expires)) if *holder == lease.holder && *epoch == lease.epoch => {
+                *expires = now;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     fn commit(&self, lease: &Lease, row: &CommittedBatch) -> Result<CommitOutcome> {

@@ -19,6 +19,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use qip_agency::autonomy::Authority;
+use qip_agency::estimate::{EstimateInput, stage_assignment};
 use qip_agency::journal::{self, AgencyRecord};
 use qip_agency::memory::Observed;
 use qip_core::Decimal;
@@ -51,9 +52,17 @@ fn policy_document() -> Value {
                 "channels": ["paper-venue"],
                 "max_actions_per_window": 1,
                 "budget_units": 1000,
-                "revocation_path": "operator removes it from this file"
+                "revocation_path": "operator removes it from this file",
+                "provenance": "in-tree test fixture, no third-party dependency",
+                "sandbox_tests": ["quoter-sandbox-smoke"],
+                "cost_latency": {"cost_units": 1, "latency_ms": 100},
+                "allowed_callers": ["desk-agent"]
             }]
         },
+        "evidence": [{
+            "id": "spread-series-1", "source_id": "venue-feed",
+            "statement": "quoted spreads on venue-a are wider than the desk target"
+        }],
         "eligibility": [
             {
                 "subject": {"kind": "venue", "id": "venue-a"},
@@ -134,6 +143,7 @@ fn request(window: u64) -> Value {
                 "sender_identity": "desk-agent",
                 "evidence_citations": [{
                     "source_id": "venue-feed", "evidence_id": "spread-series-1",
+                    "claim": "quoted spreads on venue-a are wider than the desk target",
                     "confidence_bps": 9000
                 }],
                 "disclosures": [{"kind": "paper_venue", "text": "Paper venue: no live order is placed"}],
@@ -378,6 +388,9 @@ fn a_tool_declaration_missing_any_control_stops_the_binary_before_a_pass() {
         ("revocation_path", json!("")),
         ("disclosure_policy", json!("")),
         ("max_actions_per_window", json!(0)),
+        ("provenance", json!("")),
+        ("sandbox_tests", json!([])),
+        ("allowed_callers", json!([])),
     ] {
         let mut policy = policy_document();
         policy["guard"]["tools"][0][field] = blank;
@@ -413,6 +426,31 @@ fn attribution(identification: Value, effect: f64) -> Value {
         "identifiability": 0.8,
         "resulting_updates": ["raise quote-size prior"]
     })
+}
+
+/// R12-COVERAGE-7188: evidence for a treated-minus-held-out effect of 3.0
+/// from a hold-out the binary draws itself (twelve cells, a quarter held
+/// out). Replaces the `randomised_experiment` fixture, whose groups the
+/// operator formed.
+fn hold_out_evidence() -> Value {
+    let units: Vec<String> = (0..12).map(|i| format!("cell-{i:02}")).collect();
+    let design = qip_agency::estimate::Experiment::design("seed-2026-10-18", &units, 2500).unwrap();
+    let outcomes: serde_json::Map<String, Value> = units
+        .iter()
+        .map(|u| {
+            (
+                u.clone(),
+                json!(if design.treated().contains(u) {
+                    4.0
+                } else {
+                    1.0
+                }),
+            )
+        })
+        .collect();
+    json!({"hold_out_experiment": {
+        "seed": "seed-2026-10-18", "units": units, "hold_out_bps": 2500, "outcomes": outcomes
+    }})
 }
 
 fn widening(attribution: Value, evidence: Value) -> Value {
@@ -458,8 +496,8 @@ fn each_estimator_is_journaled_with_its_method_and_a_label_it_did_not_earn_is_re
         (
             "rct",
             json!("experiment"),
-            json!({"randomised_experiment": {"treated": [3.0, 4.0, 5.0], "control": [0.0, 1.0, 2.0]}}),
-            "randomised_experiment",
+            hold_out_evidence(),
+            "hold_out_experiment",
         ),
     ];
     for (name, label, evidence, method) in cases {
@@ -482,6 +520,108 @@ fn each_estimator_is_journaled_with_its_method_and_a_label_it_did_not_earn_is_re
             })
             .collect();
         assert_eq!(widened, [method], "{name}: {out}");
+    }
+
+    // R12-AGENCY-6102: the matched, staged and Bayesian estimators run in the
+    // binary too. Each case's label is read from the library, so a label the
+    // binary hard-coded would not be what is tested; the effects of the first
+    // two are known by hand.
+    let units: Vec<String> = (0..12).map(|i| format!("cell-{i:02}")).collect();
+    let stage_of = stage_assignment("rollout-seed", &units, 3).unwrap();
+    let staged: serde_json::Map<String, Value> = (1..3)
+        .map(|period| {
+            let per_unit: serde_json::Map<String, Value> = units
+                .iter()
+                .map(|u| {
+                    (
+                        u.clone(),
+                        json!(if stage_of[u] < period { 3.0 } else { 1.0 }),
+                    )
+                })
+                .collect();
+            (period.to_string(), Value::Object(per_unit))
+        })
+        .collect();
+    let inputs = [
+        (
+            "matched",
+            "matched_control",
+            json!({"matched_control": {
+                "treated_covariates": [[1.0], [2.0], [3.0]],
+                "treated_outcomes": [11.0, 12.0, 13.0],
+                "pool_covariates": [[1.1], [2.1], [3.1], [9.0]],
+                "pool_outcomes": [1.0, 2.0, 3.0, 50.0],
+                "caliper": 0.5
+            }}),
+            Some(10.0),
+        ),
+        (
+            "staged",
+            "staged_experiment",
+            json!({"staged_experiment": {
+                "seed": "rollout-seed", "units": units, "stages": 3, "outcomes": staged
+            }}),
+            Some(2.0),
+        ),
+        (
+            "bayes",
+            "bayesian_causal",
+            json!({"bayesian_causal": {
+                "treatment": [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+                "covariates": [[3.0], [1.0], [5.0], [2.0], [7.0], [3.0], [8.0], [4.0]],
+                "outcome": [5.1, 1.4, 7.0, 2.1, 9.2, 2.4, 10.9, 3.1],
+                "prior_sd": 10.0
+            }}),
+            None,
+        ),
+    ];
+    for (name, method, evidence, known) in inputs {
+        let estimate = serde_json::from_value::<EstimateInput>(evidence.clone())
+            .unwrap()
+            .estimate()
+            .unwrap();
+        if let Some(known) = known {
+            assert!(
+                (estimate.effect() - known).abs() < 1e-9,
+                "{name}: {}",
+                estimate.effect()
+            );
+        }
+        let label = serde_json::to_value(estimate.identification()).unwrap();
+        let (out, _, journaled) = pass(
+            name,
+            &policy_document(),
+            &widening(attribution(label, estimate.effect()), evidence.clone()),
+        );
+        let widened: Vec<String> = journaled
+            .iter()
+            .filter_map(|r| match r {
+                AgencyRecord::Widened { estimator, .. } => serde_json::to_value(estimator)
+                    .unwrap()
+                    .as_str()
+                    .map(str::to_string),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(widened, [method], "{name}: {out}");
+        // The same data written up as an experiment widens nothing unless the
+        // method earned that label.
+        if estimate.identification() != &qip_agency::attribution::Identification::Experiment {
+            let (out, _, journaled) = pass(
+                &format!("{name}-relabelled"),
+                &policy_document(),
+                &widening(
+                    attribution(json!("experiment"), estimate.effect()),
+                    evidence,
+                ),
+            );
+            assert!(
+                !journaled
+                    .iter()
+                    .any(|r| matches!(r, AgencyRecord::Widened { .. })),
+                "{name}: {out}"
+            );
+        }
     }
 
     let (out, _, journaled) = pass(
@@ -509,8 +649,7 @@ fn each_estimator_is_journaled_with_its_method_and_a_label_it_did_not_earn_is_re
 /// chain check — the chainless attribution widens.
 #[test]
 fn an_attribution_missing_its_chain_confounders_rivals_or_horizons_is_refused_on_the_record() {
-    let evidence =
-        json!({"randomised_experiment": {"treated": [3.0, 4.0, 5.0], "control": [0.0, 1.0, 2.0]}});
+    let evidence = hold_out_evidence();
     let (out, _, journaled) = pass(
         "complete-attribution",
         &policy_document(),
@@ -600,8 +739,7 @@ fn withheld(records: &[AgencyRecord]) -> Vec<&str> {
 /// horizon value as `0.0` (the hand-computed effect assertions fail).
 #[test]
 fn a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update() {
-    let evidence =
-        json!({"randomised_experiment": {"treated": [3.0, 4.0, 5.0], "control": [0.0, 1.0, 2.0]}});
+    let evidence = hold_out_evidence();
     let document = with_structural_model(widening(attribution(json!("experiment"), 3.0), evidence));
     let (out, code, journaled) = pass("learned", &policy_document(), &document);
     assert_eq!(code, 0, "premise: the pass is shadowed: {out}");

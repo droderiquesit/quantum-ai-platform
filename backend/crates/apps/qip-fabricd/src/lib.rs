@@ -278,6 +278,16 @@ impl Handler for HealthPlane {
     }
 }
 
+/// The file whose presence in the data directory drains the broker's
+/// leadership (RES-8103): an operator or a pre-stop hook creates it, and the
+/// lease thread hands every lease back on its next pass and stops renewing.
+/// The thread removes the file once it has acted, and a broker removes any
+/// it finds at start, so a drain lasts one process and not every restart.
+/// A file rather than a signal because the process holds no handler for one
+/// (`unsafe` is forbidden), and the data directory is the one place this
+/// binary already owns the filesystem of.
+pub const DRAIN_FILE: &str = "DRAIN";
+
 /// A started broker: its two addresses, and the handles that stop it.
 pub struct Running {
     address: String,
@@ -289,6 +299,10 @@ pub struct Running {
     stop_data: Arc<AtomicBool>,
     stop_health: Arc<AtomicBool>,
     stop_housekeeping: Arc<AtomicBool>,
+    /// Set by [`Running::drain`] or by the operator's [`DRAIN_FILE`]; read by
+    /// the lease thread, which then hands leases back instead of renewing.
+    draining: Arc<AtomicBool>,
+    rebuilt: qip_streaming::event_fabric::broker::RebuildReport,
     data_thread: Option<JoinHandle<()>>,
     other_threads: Vec<JoinHandle<()>>,
     /// The listener's certificate and its renewal loop, under
@@ -325,6 +339,12 @@ impl Running {
         &self.health_address
     }
 
+    /// The partitions this start rebuilt from the archive, and how many
+    /// batches each was given back; empty on a broker whose disk was intact.
+    pub fn rebuilt(&self) -> &qip_streaming::event_fabric::broker::RebuildReport {
+        &self.rebuilt
+    }
+
     /// The protocol handler, for a caller in the same process.
     pub fn service(&self) -> &Arc<Service> {
         &self.service
@@ -336,6 +356,19 @@ impl Running {
 
     pub fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
+    }
+
+    /// Drain leadership (RES-8103): stop leading every managed partition and
+    /// hand each lease back, so a follower takes over now rather than a TTL
+    /// from now. The broker stays up and keeps following, so a P2-P4 stream
+    /// and the health plane are unaffected; it does not take a lease again
+    /// until the process restarts.
+    ///
+    /// An error means the broker is not seated at a managed log, so there is
+    /// no leadership to hand over.
+    pub fn drain(&self) -> Result<qip_streaming::event_fabric::broker::ReleaseReport> {
+        self.draining.store(true, Ordering::SeqCst);
+        self.service.broker().relinquish_leases()
     }
 
     /// Stop serving the protocol and leave health and metrics up, reporting
@@ -519,6 +552,16 @@ fn start_composed(
         }
         (None, None) => broker,
     };
+    // Rendezvous placement (ADR 0111 Amendment 1 §2): with the region's
+    // instances named, this one contends at once only for the partitions it
+    // is preferred for. Without them every instance contends for everything,
+    // as a single broker does.
+    let broker = match &config.managed {
+        Some(settings) if !settings.instances.is_empty() => {
+            broker.with_placement(settings.instances.clone(), settings.placement_grace_ms)?
+        }
+        _ => broker,
+    };
     let broker = Arc::new(broker);
     prove_archive_writable(archive_store.as_ref(), broker.leader_epoch())?;
     let service = Arc::new(Service::new(
@@ -528,6 +571,10 @@ fn start_composed(
         config.partitions,
         segment_config(clock.clone(), config.segment_bytes),
     )?);
+    // Before anything is served: a partition on a replaced disk is rebuilt
+    // from the archive, so it continues the offsets the archive holds rather
+    // than reusing them (RES-9170).
+    let rebuilt = archiver::rebuild(&broker)?;
     for (stream, partition_count) in broker.declared_streams() {
         for partition in 0..partition_count {
             broker.metadata(&stream, partition)?;
@@ -544,6 +591,21 @@ fn start_composed(
     // TTL. A pass that cannot reach the database is reported, not fatal: the
     // P2-P4 streams this broker also serves do not depend on it.
     if let Some(settings) = &config.managed {
+        // A DRAIN file found here belongs to the process that was stopped:
+        // a drain lasts for the process lifetime, as `Running::drain` says,
+        // so the restarted broker leads again. Removed before the first
+        // lease pass, or that pass takes leases the thread then hands back.
+        match std::fs::remove_file(config.data_dir.join(DRAIN_FILE)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(qip_core::error::Error::io(format!(
+                    "cannot clear the {DRAIN_FILE} file a previous process left in {}: {error}; \
+                     remove it by hand, or this broker would drain for good",
+                    config.data_dir.display()
+                )));
+            }
+        }
         let report = broker.tend_leases(settings.lease_ttl_ms);
         if let Ok(report) = &report {
             telemetry.leases(report);
@@ -648,16 +710,47 @@ fn start_composed(
     };
     // ADR 0111's lease loop, on a thread of its own: a Spanner round trip
     // that stalls holds this thread, never the produce path's.
+    let draining = Arc::new(AtomicBool::new(false));
     let lease_thread = config.managed.as_ref().map(|settings| {
         let broker = service.broker().clone();
         let health = health.clone();
         let telemetry = telemetry.clone();
         let stop = stop_housekeeping.clone();
+        let draining = draining.clone();
+        let drain_file = config.data_dir.join(DRAIN_FILE);
         let ttl_ms = settings.lease_ttl_ms;
         let renew_every = Duration::from_millis(ttl_ms / 3);
         std::thread::spawn(move || {
             while !stop.load(Ordering::SeqCst) {
                 std::thread::sleep(renew_every);
+                if drain_file.exists() {
+                    draining.store(true, Ordering::SeqCst);
+                    // The file is a request, answered once. Left in the
+                    // persistent data directory it would drain the restarted
+                    // process too, and an upgrade that drains each broker in
+                    // turn would leave every one of them draining for good.
+                    // If the removal fails the flag above already holds for
+                    // this process; the start-up removal clears it for the
+                    // next.
+                    let _ = std::fs::remove_file(&drain_file);
+                }
+                // Every pass of a draining broker hands back whatever it
+                // holds, rather than once: a renewal that was already in
+                // flight when the drain began can have taken a lease after
+                // the first release, and this is what returns it.
+                if draining.load(Ordering::SeqCst) {
+                    let _ = broker.relinquish_leases();
+                    // Still follow, without a lease: the doc on
+                    // `Running::drain` promises a broker that keeps up, and
+                    // the health body and the series must say it leads
+                    // nothing rather than repeat the last pre-drain count.
+                    let report = broker.follow_leases();
+                    if let Ok(report) = &report {
+                        telemetry.leases(report);
+                    }
+                    health.lease_pass(&report);
+                    continue;
+                }
                 let report = broker.tend_leases(ttl_ms);
                 if let Ok(report) = &report {
                     telemetry.leases(report);
@@ -694,6 +787,8 @@ fn start_composed(
         stop_data,
         stop_health,
         stop_housekeeping,
+        draining,
+        rebuilt,
         data_thread: Some(data_thread),
         other_threads: [health_thread, archive_thread, catalogue_thread]
             .into_iter()

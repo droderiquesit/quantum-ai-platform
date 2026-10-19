@@ -25,15 +25,19 @@
 //! reads one ordered account instead of four dashboards.
 
 use qip_core::error::{Error, Result};
-use qip_core::{Duration, Timestamp};
+use qip_core::{Clock, Duration, Timestamp};
+use qip_events::{Envelope, EventBody, EventLog, Topic};
 use qip_kernel::Platform;
 use qip_observability::aiops::{
-    Anomaly, Effector, EntityGraph, EntityKey, Remediator, Runbook, Signal, SignalClass,
-    TimelineEvent, TimelineSource, build_timeline, detect_level_shift,
+    Anomaly, AuditRecord, AuditSink, Effector, EntityGraph, EntityKey, Remediator, Runbook, Signal,
+    SignalClass, TimelineEvent, TimelineSource, build_timeline, detect_level_shift,
 };
 use qip_observability::critical_paths;
 use qip_observability::metrics::{Metrics, labels, names};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 /// The capabilities this node may switch off, by the names runbooks target.
 pub const CAPABILITIES: [&str; 1] = ["research"];
@@ -60,6 +64,110 @@ pub fn runbooks() -> Vec<Runbook> {
         action: "disable_capability".to_string(),
         targets: BTreeSet::from(["research".to_string()]),
     }]
+}
+
+/// The producer every remediation record carries.
+pub const REMEDIATION_ORIGIN: &str = "deepbrain/aiops";
+
+/// One remediation audit record as it sits on the journal (R12-CICD-9081).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemediationEntry {
+    pub record: AuditRecord,
+}
+
+impl EventBody for RemediationEntry {
+    /// An automated change to the running node is a System fact; the journal
+    /// is its own log, as the ambient journal's is, so the kernel's replay
+    /// never decodes one as its own type.
+    const TOPIC: Topic = Topic::SystemAlert;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The hash-chained log a remediation's audit record is written to *before*
+/// the effector runs. Cloning shares the log, so the composition root can
+/// keep a handle to read it back while the [`Remediator`] owns the sink.
+#[derive(Debug, Clone)]
+pub struct RemediationJournal {
+    log: Arc<Mutex<EventLog>>,
+    clock: Arc<dyn Clock>,
+}
+
+impl RemediationJournal {
+    /// Open the journal at `path`, or in memory, refusing a chain that does
+    /// not verify: appending to an edited journal extends a record nobody can
+    /// trust.
+    pub fn open(path: Option<PathBuf>, clock: Arc<dyn Clock>) -> Result<Self> {
+        let log = match path {
+            Some(path) => EventLog::open(path)?,
+            None => EventLog::in_memory(),
+        };
+        if let Err(sequence) = log.verify_chain() {
+            return Err(Error::invalid(format!(
+                "the remediation journal's hash chain breaks at sequence {sequence}; move the \
+                 file aside rather than extend it"
+            )));
+        }
+        Ok(Self {
+            log: Arc::new(Mutex::new(log)),
+            clock,
+        })
+    }
+
+    /// Beside the platform's own log when that is a file, in memory when it
+    /// is, so the journal is as durable as the decisions it accompanies.
+    pub fn beside(
+        platform_log: &qip_kernel::EventLogDestination,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
+        Self::open(
+            match platform_log {
+                qip_kernel::EventLogDestination::InMemory => None,
+                qip_kernel::EventLogDestination::File { path, .. } => {
+                    let mut name = path.as_os_str().to_owned();
+                    name.push(".aiops.jsonl");
+                    Some(PathBuf::from(name))
+                }
+            },
+            clock,
+        )
+    }
+
+    /// Every record journalled so far, in order.
+    pub fn records(&self) -> Result<Vec<AuditRecord>> {
+        let log = self
+            .log
+            .lock()
+            .map_err(|_| Error::io("the remediation journal's lock was poisoned"))?;
+        log.events()
+            .map(|e| Ok(e.decode::<RemediationEntry>()?.body.record))
+            .collect()
+    }
+}
+
+impl AuditSink for RemediationJournal {
+    fn journal(&mut self, record: &AuditRecord) -> Result<()> {
+        let mut log = self
+            .log
+            .lock()
+            .map_err(|_| Error::io("the remediation journal's lock was poisoned"))?;
+        let next = log.len() as u64 + 1;
+        let at = self.clock.now();
+        let event = Envelope::new(
+            qip_core::EventId::from_string(format!("evt-aiops-{next}")),
+            at,
+            at,
+            qip_core::lineage::Lineage::root(
+                qip_core::CorrelationId::from_string(record.incident.clone()),
+                REMEDIATION_ORIGIN,
+            ),
+            RemediationEntry {
+                record: record.clone(),
+            },
+        )
+        .erase()?;
+        log.append(&event)?;
+        Ok(())
+    }
 }
 
 /// The effector: this node's switchable capabilities, and nothing else.
@@ -201,6 +309,24 @@ pub struct Operations {
 
 impl Operations {
     pub fn new(started: Timestamp) -> Result<Self> {
+        Self::build(started, None)
+    }
+
+    /// As [`Self::new`], with every remediation's audit record written to
+    /// `journal` before the effector runs (R12-CICD-9081). A deployed node is
+    /// built this way: an in-process trail does not survive the restart a
+    /// disabled capability is waiting for.
+    pub fn journalled(started: Timestamp, journal: RemediationJournal) -> Result<Self> {
+        Self::build(started, Some(Box::new(journal)))
+    }
+
+    /// As [`Self::journalled`], to any sink: for a test that must make the
+    /// journal fail at a chosen record.
+    pub fn journalled_to(started: Timestamp, sink: Box<dyn AuditSink>) -> Result<Self> {
+        Self::build(started, Some(sink))
+    }
+
+    fn build(started: Timestamp, journal: Option<Box<dyn AuditSink>>) -> Result<Self> {
         let mut timeline = VecDeque::new();
         timeline.push_back(TimelineEvent {
             source: TimelineSource::Deployment,
@@ -212,7 +338,12 @@ impl Operations {
             graph: EntityGraph::with_retention(GRAPH_RETENTION)?,
             iterations: VecDeque::new(),
             timeline,
-            remediator: Remediator::new(runbooks(), CapabilitySwitch::default())?,
+            remediator: match journal {
+                Some(sink) => {
+                    Remediator::journalled(runbooks(), CapabilitySwitch::default(), sink)?
+                }
+                None => Remediator::new(runbooks(), CapabilitySwitch::default())?,
+            },
             incidents: 0,
             last_shift_end: None,
             fills_read: 0,
@@ -375,6 +506,19 @@ impl Operations {
                 labels([]),
                 at.since(promoted).as_secs_f64(),
             );
+            // The age read against the objective's ceiling, so the gauge's
+            // staleness is a good/total split an objective can be evaluated
+            // on (R12-OBS-9164).
+            let ceiling = qip_observability::slo::MODEL_PACKAGE_MAX_AGE_SECONDS;
+            let outcome = if at.since(promoted).as_secs_f64() <= ceiling {
+                "fresh"
+            } else {
+                "stale"
+            };
+            metrics.count(
+                names::MODEL_PACKAGE_FRESHNESS_CHECKS,
+                labels([("outcome", outcome)]),
+            );
         }
 
         if self.iterations.len() == SERIES_RETAINED {
@@ -434,13 +578,23 @@ impl Operations {
             &events,
         )?;
         let action = "disable_capability";
-        let remediation = match self.remediator.remediate(&id, action, "research") {
-            Ok(done) => {
+        let remediation = match self.remediator.remediate_outcome(&id, action, "research") {
+            Ok(applied) => {
+                // An action that ran is counted as run even when the sink
+                // then refused its outcome record: the capability is off
+                // either way, and `refused` would tell an operator it is on.
+                let (outcome, note) = match &applied.unjournalled {
+                    None => ("applied", String::new()),
+                    Some(why) => (
+                        "applied_unjournalled",
+                        format!("; its outcome could not be journalled: {why}"),
+                    ),
+                };
                 metrics.count(
                     names::AIOPS_REMEDIATIONS,
-                    labels([("action", action), ("outcome", "applied")]),
+                    labels([("action", action), ("outcome", outcome)]),
                 );
-                Ok(done)
+                Ok(format!("{}{note}", applied.result))
             }
             Err(refused) => {
                 metrics.count(

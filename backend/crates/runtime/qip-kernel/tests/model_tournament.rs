@@ -285,6 +285,150 @@ fn a_filled_order_is_attributed_its_marked_pnl_under_all_seven_keys() -> Result<
     Ok(())
 }
 
+/// A cycle forms a hypothesis, an order citing it fills, and LEARN attributes
+/// it once the instrument has been marked up. Returns the platform, the order
+/// id and the hypothesis id the order cites.
+fn a_filled_order_citing_a_formed_hypothesis() -> Result<(Platform, String, String)> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+    let question = platform
+        .model_tournament()
+        .open_questions()
+        .next()
+        .cloned()
+        .ok_or_else(|| Error::not_found(format!("no hypothesis formed:\n{}", first.summarise())))?;
+    let hypothesis = question
+        .spec()
+        .id
+        .strip_prefix("q-")
+        .ok_or_else(|| Error::not_found("premise: the question id no longer names its hypothesis"))?
+        .to_string();
+
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-formed",
+        vec![hypothesis.clone()],
+        start(),
+    );
+    let order_id = order.order_id.clone();
+    platform.submit_order(order, start())?;
+    assert!(
+        platform
+            .orders()
+            .fills()
+            .into_iter()
+            .any(|fill| fill.order_id == order_id),
+        "premise: the accepted order did not fill"
+    );
+    platform.observe(flat_bars_after("AAA", start(), 3, 110.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(5)));
+    Ok((platform, order_id.to_string(), hypothesis))
+}
+
+/// R12-MODEL-6003: the model and evidence-source keys populate from a
+/// hypothesis REASON actually formed. The seven-key test above uses an order
+/// citing a hypothesis no cycle formed and so proves only that these two keys
+/// degrade to `unattributed`; a lineage that was never written would pass it.
+/// Here a cycle forms the hypothesis, an order citing it fills, and the
+/// attribution must name the detector that raised it and the origin of the
+/// evidence it stood on. Mutations that must fail it: deleting the
+/// `note_hypothesis` call in `observe_hypothesis` (both keys read
+/// `unattributed`); emptying `forecasters` in `note_hypothesis` (no
+/// `detector:` model key).
+#[test]
+fn an_order_citing_a_hypothesis_a_cycle_formed_is_attributed_its_model_and_evidence_source()
+-> Result<()> {
+    let (platform, order_id, hypothesis) = a_filled_order_citing_a_formed_hypothesis()?;
+
+    let pass = platform
+        .last_attribution()
+        .ok_or_else(|| Error::not_found("LEARN attributed nothing"))?;
+    let keyed = pass
+        .keyed
+        .positions
+        .iter()
+        .find(|p| p.object_id == order_id.as_str())
+        .ok_or_else(|| Error::not_found("the fill is missing from the keyed attribution"))?;
+    assert!(
+        keyed.stamped,
+        "the accepted order was not stamped at release"
+    );
+    assert_eq!(
+        keyed.keys.values(Dimension::Belief),
+        vec![hypothesis.as_str()]
+    );
+    let models = keyed.keys.values(Dimension::Model);
+    assert!(
+        !models.is_empty() && models.iter().all(|m| *m != UNATTRIBUTED),
+        "model keys {models:?}"
+    );
+    assert!(
+        models.iter().any(|m| m.starts_with("detector:")),
+        "the detector that raised the hypothesis is not credited: {models:?}"
+    );
+    let sources = keyed.keys.values(Dimension::EvidenceSource);
+    assert!(
+        !sources.is_empty() && sources.iter().all(|s| *s != UNATTRIBUTED),
+        "evidence-source keys {sources:?}"
+    );
+    Ok(())
+}
+
+/// R12-MODEL-6021: the P&L attributed to each forecaster, shown in a cycle,
+/// is the position's marked P&L split over the forecasters that informed it,
+/// and the forecasters' figures sum to the positions they informed. The fill
+/// is marked up from about 100 to 110 so the position's P&L is positive and a
+/// forecaster credited nothing is visible. Mutations: have `by_forecaster`
+/// read `Dimension::Belief` (the keys are the hypothesis id, not forecasters);
+/// drop the `note_hypothesis` call in `observe_hypothesis` (the one key is
+/// `unattributed`, not the detector).
+#[test]
+fn each_forecaster_a_cycle_credited_is_attributed_a_share_of_the_marked_pnl_that_sums_to_the_position()
+-> Result<()> {
+    let (platform, order_id, _hypothesis) = a_filled_order_citing_a_formed_hypothesis()?;
+    let pass = platform
+        .last_attribution()
+        .ok_or_else(|| Error::not_found("LEARN attributed nothing"))?;
+    let position = pass
+        .attribution
+        .positions
+        .iter()
+        .find(|p| p.object_id == order_id.as_str())
+        .ok_or_else(|| Error::not_found("the fill is missing from the attribution"))?;
+    assert!(
+        position.total.is_positive(),
+        "premise: the marked-up position made money, so a zero share is visible"
+    );
+
+    let credited = qip_kernel::attribution::by_forecaster(pass)?;
+    assert!(
+        credited.keys().any(|k| k.starts_with("detector:")),
+        "the detector that raised the hypothesis is not among the credited: {credited:?}"
+    );
+    assert!(
+        !credited.contains_key(UNATTRIBUTED),
+        "premise: every forecaster resolves: {credited:?}"
+    );
+    assert!(
+        credited.values().all(|share| share.is_positive()),
+        "a forecaster that informed a winning position was credited nothing: {credited:?}"
+    );
+    let sum = credited
+        .values()
+        .fold(Decimal::ZERO, |sum, share| sum + *share);
+    let drift = (sum - position.total).abs();
+    assert!(
+        drift <= dec!("0.000001"),
+        "the forecasters' shares sum to {sum}, the position made {}",
+        position.total
+    );
+    Ok(())
+}
+
 // --- W3.3: the tournament through the cycle --------------------------------
 
 /// R12-MODEL-7198 from a composition root's call: a cycle that forms a

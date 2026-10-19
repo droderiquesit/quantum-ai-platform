@@ -429,6 +429,41 @@ pub enum Decision {
     /// the usual answer, and the answer belongs in the chain, not in the
     /// node's log.
     StrategyWithdrawn { strategy: String },
+    /// A venue's feed began, or stopped, stamping its messages ahead of the
+    /// cell's own clock by more than the cell tolerates.
+    ///
+    /// A venue time later than the instant the cell captured the message is
+    /// not latency, which is never negative: one of the two clocks is wrong,
+    /// and the cell cannot tell which from one venue alone. Recorded on the
+    /// transition only, in the register of [`Self::FeedSilent`] and
+    /// [`Self::FeedReconciled`], so the chain says when orders to the venue
+    /// stopped and when they resumed. `skew_ms` is the largest the venue led
+    /// by in the batch that moved the state and `limit_ms` the bound it was
+    /// judged against, so the entry can be checked from itself.
+    ClockSkew {
+        venue: String,
+        skewed: bool,
+        skew_ms: i64,
+        limit_ms: i64,
+    },
+    /// A strategy's plan was admitted to the cell, with the identity of
+    /// everything it will run: the plan's own digest and the digest of each
+    /// learned model it carries.
+    ///
+    /// Recorded because the journal named the policy sequence in force
+    /// (`PolicyApplied`) and the grants an order drew on (`OrderSent`), but
+    /// not *which plan* or *which model weights* produced the signal behind
+    /// it — so "replay this order" could name the payload and not the
+    /// computation, and a model swapped under an unchanged name read the
+    /// same in the chain. `digest` is `Cell::deployment_digest`; `models`
+    /// is each inline model's name and its own content digest, in name
+    /// order. Empty, and so absent, for a plan that carries no model.
+    PlanAdmitted {
+        strategy: String,
+        digest: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        models: Vec<(String, String)>,
+    },
     /// The region table was re-based to this cell's share of its region's
     /// grant, as a verified policy payload's grant manifest named it
     /// (ADR 0039).
@@ -683,6 +718,8 @@ impl Decision {
             Self::CycleRested { .. } => "cycle_rested",
             Self::CycleAbandoned { .. } => "cycle_abandoned",
             Self::StrategyWithdrawn { .. } => "strategy_withdrawn",
+            Self::PlanAdmitted { .. } => "plan_admitted",
+            Self::ClockSkew { .. } => "clock_skew",
             Self::RegionShareApplied { .. } => "region_share_applied",
             Self::RegionOutlookChanged { .. } => "region_outlook_changed",
             Self::ReconciliationRequired { .. } => "reconciliation_required",

@@ -7,7 +7,7 @@
 //! * [`ExecutableScope::route`] (GOV-016) — an opportunity outside the scope
 //!   comes back as a [`ShadowRecord`], a type with no path to
 //!   [`ActionIntent`]. Re-scoring re-enters `route`; it has no other door.
-//! * [`ToolRegistry`] (GOV-017) — a tool acts only if registered with all six
+//! * [`ToolRegistry`] (GOV-017) — a tool acts only if registered with all its
 //!   declarations, inside its rate and budget, and not revoked. Every refusal
 //!   after revocation is audited.
 //! * [`check_justification`] (GOV-021) — profit and price impact are motives,
@@ -293,16 +293,71 @@ pub enum Routed {
 }
 
 /// The instruments an opportunity may become an action in.
+///
+/// Optionally also the jurisdictions the platform is licensed to act in
+/// ([`Self::with_jurisdictions`]). Technical capability and legal capability
+/// are separate questions: an instrument can be one the platform can price,
+/// size and route and still be one it may not trade, and a scope that only
+/// held the first would execute it.
 #[derive(Clone, Debug, Default)]
 pub struct ExecutableScope {
     instruments: BTreeSet<String>,
+    legal: Option<LegalScope>,
+}
+
+/// The licence half of an [`ExecutableScope`].
+#[derive(Clone, Debug, Default)]
+struct LegalScope {
+    /// Jurisdictions the platform is licensed to execute in.
+    authorised: BTreeSet<String>,
+    /// The jurisdictions that govern each instrument.
+    governing: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl ExecutableScope {
     pub fn new(instruments: impl IntoIterator<Item = String>) -> Self {
         Self {
             instruments: instruments.into_iter().collect(),
+            legal: None,
         }
+    }
+
+    /// Require a licence to execute: an instrument becomes executable only if
+    /// it names at least one governing jurisdiction and every one of them is
+    /// in `authorised`. Research is untouched — an instrument outside the
+    /// licence still routes to a [`ShadowRecord`], which the research path
+    /// reads in every jurisdiction — and [`ActionClass::Research`] intents
+    /// are not gated, since they move nothing.
+    ///
+    /// Fails closed in both directions: an instrument whose governing
+    /// jurisdictions are unknown is refused, not presumed local, and one
+    /// governed partly by an unlicensed jurisdiction is refused, not admitted
+    /// on the strength of the licensed part.
+    #[must_use]
+    pub fn with_jurisdictions(
+        mut self,
+        authorised: impl IntoIterator<Item = String>,
+        governing: impl IntoIterator<Item = (String, BTreeSet<String>)>,
+    ) -> Self {
+        self.legal = Some(LegalScope {
+            authorised: authorised.into_iter().collect(),
+            governing: governing.into_iter().collect(),
+        });
+        self
+    }
+
+    /// Whether the licence half admits `instrument` for `action_class`.
+    fn licensed(&self, instrument: &str, action_class: ActionClass) -> bool {
+        let Some(legal) = &self.legal else {
+            return true;
+        };
+        if action_class == ActionClass::Research {
+            return true;
+        }
+        legal
+            .governing
+            .get(instrument)
+            .is_some_and(|set| !set.is_empty() && set.is_subset(&legal.authorised))
     }
 
     /// Fail closed: an empty scope makes everything shadow. The score is not a
@@ -319,7 +374,7 @@ impl ExecutableScope {
         action_class: ActionClass,
     ) -> Routed {
         let (opportunity, instrument) = (opportunity.to_string(), instrument.to_string());
-        if self.instruments.contains(&instrument) {
+        if self.instruments.contains(&instrument) && self.licensed(&instrument, action_class) {
             Routed::Executable(ActionIntent {
                 opportunity,
                 instrument,
@@ -369,6 +424,31 @@ pub struct ToolRegistration {
     pub max_actions_per_window: u64,
     pub budget_units: u64,
     pub revocation_path: String,
+    /// Where the tool came from and what it depends on: the dependency and
+    /// security provenance (crate, digest, SBOM) a reviewer can check, in
+    /// words. Blank is refused: a tool nobody can trace is one nobody can
+    /// patch when its dependency is found compromised.
+    pub provenance: String,
+    /// The sandbox tests the tool passed before it was registered, by name.
+    /// At least one: a tool registered without having been exercised in a
+    /// sandbox has been exercised on the first real call.
+    pub sandbox_tests: BTreeSet<String>,
+    /// What one call is expected to cost and how long it may take.
+    pub cost_latency: CostLatency,
+    /// The identities allowed to invoke the tool. Distinct from
+    /// `acting_identity`, which is whom the tool acts as: a caller outside
+    /// this set is refused by [`ToolRegistry::permits_caller`].
+    pub allowed_callers: BTreeSet<String>,
+}
+
+/// A tool's declared per-call cost and latency bound (R12-CONTRACT-7087).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CostLatency {
+    /// Budget units one call is expected to spend.
+    pub cost_units: u64,
+    /// The longest one call may take, in milliseconds.
+    pub latency_ms: u64,
 }
 
 /// One audited tool decision.
@@ -434,10 +514,27 @@ impl ToolRegistry {
             ("rate limit", reg.max_actions_per_window == 0),
             ("budget", reg.budget_units == 0),
             ("revocation path", blank(&reg.revocation_path)),
+            ("provenance", blank(&reg.provenance)),
+            ("sandbox tests", reg.sandbox_tests.is_empty()),
+            (
+                "cost and latency",
+                reg.cost_latency.cost_units == 0 || reg.cost_latency.latency_ms == 0,
+            ),
+            ("allowed callers", reg.allowed_callers.is_empty()),
         ];
         if let Some((name, _)) = missing.iter().find(|(_, m)| *m) {
             return Err(Error::invalid(format!(
-                "action tool registration lacks its {name}; declare all six of identity, scope, disclosure, channels, limits and revocation path"
+                "action tool registration lacks its {name}; declare identity, scope, disclosure, channels, limits, revocation path, provenance, sandbox tests, cost and latency, and allowed callers"
+            )));
+        }
+        // A tool whose one call costs more than its whole budget could never
+        // be called: a limit that cannot be met is a registration that cannot
+        // act, and is refused here rather than discovered on the first use.
+        if reg.cost_latency.cost_units > reg.budget_units {
+            return Err(Error::invalid(format!(
+                "tool {} declares a per-call cost of {} units against a budget of {}; no call \
+                 could ever be admitted",
+                reg.tool, reg.cost_latency.cost_units, reg.budget_units
             )));
         }
         // A second registration under the same name used to replace the
@@ -461,6 +558,23 @@ impl ToolRegistry {
             },
         );
         Ok(())
+    }
+
+    /// Whether `caller` may invoke the tool. Changes nothing and audits
+    /// nothing; refused for an unregistered tool and for a caller outside the
+    /// tool's declared set.
+    pub fn permits_caller(&self, tool: &str, caller: &str) -> Result<()> {
+        let slot = self
+            .tools
+            .get(tool)
+            .ok_or_else(|| Error::not_found(format!("tool {tool} is not registered")))?;
+        if slot.reg.allowed_callers.contains(caller) {
+            Ok(())
+        } else {
+            Err(Error::denied(format!(
+                "action refused: {caller} is not among the callers allowed to invoke {tool}"
+            )))
+        }
     }
 
     /// Revoke a tool; its next action is refused and audited.
@@ -1008,6 +1122,13 @@ mod tests {
             max_actions_per_window: 10,
             budget_units: 1000,
             revocation_path: "/policy/revoke/payment".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         assert!(registry.register(reg).is_ok());
 
@@ -1028,6 +1149,13 @@ mod tests {
             max_actions_per_window: 10,
             budget_units: 1000,
             revocation_path: "/policy/revoke".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         let result = registry.register(reg);
         assert!(result.is_err());
@@ -1046,6 +1174,13 @@ mod tests {
             max_actions_per_window: 10,
             budget_units: 1000,
             revocation_path: "/policy/revoke".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: [""].into_iter().map(String::from).collect(),
         };
         let result = registry.register(reg);
         assert!(result.is_err());
@@ -1064,6 +1199,13 @@ mod tests {
             max_actions_per_window: 10,
             budget_units: 1000,
             revocation_path: "/policy/revoke".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         let result = registry.register(reg);
         assert!(result.is_err());
@@ -1082,6 +1224,13 @@ mod tests {
             max_actions_per_window: 10,
             budget_units: 1000,
             revocation_path: "/policy/revoke".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         let result = registry.register(reg);
         assert!(result.is_err());
@@ -1100,6 +1249,13 @@ mod tests {
             max_actions_per_window: 10,
             budget_units: 1000,
             revocation_path: "/policy/revoke".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         let result = registry.register(reg);
         assert!(result.is_err());
@@ -1118,6 +1274,13 @@ mod tests {
             max_actions_per_window: 0,
             budget_units: 1000,
             revocation_path: "/policy/revoke".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         let result = registry.register(reg);
         assert!(result.is_err());
@@ -1136,6 +1299,13 @@ mod tests {
             max_actions_per_window: 10,
             budget_units: 0,
             revocation_path: "/policy/revoke".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         let result = registry.register(reg);
         assert!(result.is_err());
@@ -1154,6 +1324,13 @@ mod tests {
             max_actions_per_window: 10,
             budget_units: 1000,
             revocation_path: "".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         let result = registry.register(reg);
         assert!(result.is_err());
@@ -1172,6 +1349,13 @@ mod tests {
             max_actions_per_window: 10,
             budget_units: 1000,
             revocation_path: "/policy/revoke/payment".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         assert!(registry.register(reg).is_ok());
 
@@ -1195,6 +1379,13 @@ mod tests {
             max_actions_per_window: 10,
             budget_units: 1000,
             revocation_path: "/policy/revoke/payment".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         assert!(registry.register(reg).is_ok());
 
@@ -1216,6 +1407,13 @@ mod tests {
             max_actions_per_window: 2,
             budget_units: 1000,
             revocation_path: "/policy/revoke/payment".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         assert!(registry.register(reg).is_ok());
 
@@ -1239,6 +1437,13 @@ mod tests {
             max_actions_per_window: 100,
             budget_units: 500,
             revocation_path: "/policy/revoke/payment".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         assert!(registry.register(reg).is_ok());
 
@@ -1261,6 +1466,13 @@ mod tests {
             max_actions_per_window: 10,
             budget_units: 1000,
             revocation_path: "/policy/revoke/payment".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["operator_1"].into_iter().map(String::from).collect(),
         };
         assert!(registry.register(reg).is_ok());
 
@@ -1610,6 +1822,13 @@ mod tests {
             max_actions_per_window: 5,
             budget_units: 5,
             revocation_path: "ops".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["agent"].into_iter().map(String::from).collect(),
         };
         let mut registry = ToolRegistry::new();
         registry.register(reg.clone()).unwrap();
@@ -1631,6 +1850,13 @@ mod tests {
             max_actions_per_window: 1,
             budget_units: 3,
             revocation_path: "ops".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["agent"].into_iter().map(String::from).collect(),
         };
         let mut registry = ToolRegistry::new();
         registry.register(reg).unwrap();
@@ -1660,6 +1886,13 @@ mod tests {
             max_actions_per_window: 2,
             budget_units: 10,
             revocation_path: "ops".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: ["agent"].into_iter().map(String::from).collect(),
         };
         let mut registry = ToolRegistry::new();
         registry.register(reg).unwrap();

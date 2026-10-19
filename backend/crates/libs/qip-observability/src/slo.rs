@@ -351,6 +351,48 @@ pub fn fabric_archive_backlog() -> Slo {
     Slo::backlog_at_most(FABRIC_ARCHIVE_BACKLOG, "fabric", 2.0, 0.99, SloWindow::Hour)
 }
 
+/// The name of the model-package freshness objective.
+pub const MODEL_PACKAGE_FRESHNESS: &str = "model-package-freshness";
+
+/// Seconds a promoted model package may go without a successor before an
+/// observation counts as stale: a week, the cadence a research desk retrains
+/// on. The deep brain reads each iteration's age against it.
+pub const MODEL_PACKAGE_MAX_AGE_SECONDS: f64 = 604_800.0;
+
+/// How fresh the served model package is (R12-OBS-9164): the fraction of
+/// iterations at which the last promoted package was at most a week old.
+/// One constructor, so the declaration and the evaluation cannot carry two
+/// ceilings.
+pub fn model_package_freshness() -> Slo {
+    Slo::backlog_at_most(
+        MODEL_PACKAGE_FRESHNESS,
+        "deepbrain",
+        MODEL_PACKAGE_MAX_AGE_SECONDS,
+        0.95,
+        SloWindow::Week,
+    )
+}
+
+/// The name of the research queue-depth objective.
+pub const RESEARCH_QUEUE_DEPTH: &str = "research-queue-depth";
+
+/// The depth the research queue may reach before a sweep counts against the
+/// objective: three quarters of the curriculum's `MAX_QUEUE` of 1,024, past
+/// which a full queue refuses work nobody has answered.
+pub const RESEARCH_QUEUE_CEILING: f64 = 768.0;
+
+/// The training/evaluation backlog objective: the fraction of sweeps that
+/// left the research queue at most [`RESEARCH_QUEUE_CEILING`] deep.
+pub fn research_queue_depth() -> Slo {
+    Slo::backlog_at_most(
+        RESEARCH_QUEUE_DEPTH,
+        "deepbrain",
+        RESEARCH_QUEUE_CEILING,
+        0.99,
+        SloWindow::Day,
+    )
+}
+
 /// The names of §49.1 objectives that **cannot** be measured without a
 /// deployed, running system, and the reason each cannot.
 ///

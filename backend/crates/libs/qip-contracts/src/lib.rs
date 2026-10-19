@@ -31,6 +31,7 @@ pub mod action;
 pub mod ambient;
 pub mod capital;
 pub mod captured_event;
+pub mod challenge;
 pub mod degradation;
 pub mod edge;
 pub mod expansion;
@@ -84,6 +85,7 @@ pub mod world_model;
 pub use capital::{
     CapitalAdmission, CapitalEnvelope, CapitalGrant, ExposureBounds, ExposureBreach, Utilisation,
 };
+pub use challenge::{ChallengeRequest, VerificationResult};
 pub use control::{ComputePlan, ForecastConsensus, HedgePlan, InformationRequest, ModelVote};
 pub use control_pack::ControlPackAnnouncement;
 pub use degradation::{AllocationMode, Capability, DegradationState, Freshness, StrategyClass};
@@ -92,7 +94,7 @@ pub use episode::Episode;
 pub use evidence_packet::EvidencePacket;
 pub use expansion::{
     BrainSpec, CurriculumItem, GapClass, GapSignal, MemoryEntry, MemoryKind, RetentionPolicy,
-    ValuePolicy,
+    SourceSpec, ValuePolicy,
 };
 pub use feature::{
     Distribution, FeatureKey, FeatureSnapshot, FeatureValue, FeatureVector, ForecastLattice,

@@ -604,7 +604,7 @@ impl LedgerOperationFields {
     /// [`LedgerEvent::new`]'s rules: an empty name or unit, a `:` or `/`
     /// inside a name, a non-positive amount.
     pub fn to_event(&self) -> Result<LedgerEvent> {
-        LedgerEvent::new(
+        let event = LedgerEvent::new(
             SourceEvent {
                 cell: self.origin.clone(),
                 session: 0,
@@ -615,7 +615,26 @@ impl LedgerOperationFields {
             self.settlement,
             FeeReport::Unreported,
             self.postings(),
-        )
+        )?;
+        match self.owner() {
+            Some(owner) => event.with_owner(owner),
+            None => Ok(event),
+        }
+    }
+
+    /// Whose capital the operation moves, for the kinds that name exactly one
+    /// owner: the treasury that allocates or grants, the mandate that
+    /// subscribes. The rest move capital between books or ends and are left
+    /// unowned rather than attributed to whichever party happens to be named
+    /// first, which would read as a statement and be a guess.
+    pub fn owner(&self) -> Option<&str> {
+        match &self.kind {
+            OperationKind::TreasuryAllocation { treasury, .. }
+            | OperationKind::CapitalGrantFunded { treasury, .. }
+            | OperationKind::CapitalGrantRecalled { treasury, .. } => Some(treasury),
+            OperationKind::MandateSubscription { mandate, .. } => Some(mandate),
+            _ => None,
+        }
     }
 }
 

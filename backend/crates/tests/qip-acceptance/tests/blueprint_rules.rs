@@ -127,7 +127,7 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 43] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 44] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
     // Tests the guard above, the hook the harness runs before every Bash
@@ -176,6 +176,11 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 43] = [
     // them, and a harness linked into the workspace would be the thing it
     // measures. On a workflow path only as `node --test` in ci.yml's
     // `scripts` job. The fixture is its test double and models no binary.
+    // The agent-authority drill (R12 SEC-10157): it calls the Node judges
+    // `scripts/agent-guard.mjs` and `scripts/agent-lanes.mjs` directly, so
+    // it is Node for the reason they are; Rust would have to shell out to
+    // them and could not import the functions it is testing.
+    "scripts/game-day/agent-escalation.mjs",
     "scripts/game-day/fixtures/fake-service.mjs",
     "scripts/game-day/harness.mjs",
     "scripts/game-day/harness.test.mjs",

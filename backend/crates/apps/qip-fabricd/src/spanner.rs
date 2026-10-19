@@ -64,11 +64,18 @@ const MAXIMUM_ROWS_PER_READ: u32 = 4;
 
 const SELECT_LEASE: &str = "SELECT holder, epoch, expires_at <= CURRENT_TIMESTAMP() AS expired \
      FROM fabric_leases WHERE region = @region AND stream = @stream AND partition_id = @partition";
+/// [`SELECT_LEASE`] with the lease counted expired only `@grace` milliseconds
+/// after its expiry (ADR 0111 Amendment 1 §2).
+const SELECT_LEASE_AFTER_GRACE: &str = "SELECT holder, epoch, \
+     expires_at <= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @grace MILLISECOND) AS expired \
+     FROM fabric_leases WHERE region = @region AND stream = @stream AND partition_id = @partition";
 const INSERT_LEASE: &str = "INSERT INTO fabric_leases (region, stream, partition_id, holder, \
      epoch, expires_at) VALUES (@region, @stream, @partition, @holder, @epoch, \
      TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL @ttl MILLISECOND))";
 const UPDATE_LEASE: &str = "UPDATE fabric_leases SET holder = @holder, epoch = @epoch, \
      expires_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL @ttl MILLISECOND) \
+     WHERE region = @region AND stream = @stream AND partition_id = @partition";
+const RELEASE_LEASE: &str = "UPDATE fabric_leases SET expires_at = CURRENT_TIMESTAMP() \
      WHERE region = @region AND stream = @stream AND partition_id = @partition";
 const NEXT_OFFSET: &str = "SELECT IFNULL(MAX(batch_offset) + 1, 0) FROM fabric_batches \
      WHERE region = @region AND stream = @stream AND partition_id = @partition";
@@ -484,12 +491,32 @@ macro_rules! attempt {
 
 impl ManagedLog for SpannerManagedLog {
     fn acquire(&self, partition: &PartitionRef, holder: &str, ttl_ms: u64) -> Result<LeaseOutcome> {
+        self.acquire_after_expiry(partition, holder, ttl_ms, 0)
+    }
+
+    fn acquire_after_expiry(
+        &self,
+        partition: &PartitionRef,
+        holder: &str,
+        ttl_ms: u64,
+        grace_ms: u64,
+    ) -> Result<LeaseOutcome> {
         let ttl = i64::try_from(ttl_ms)
             .map_err(|_| Error::numeric(format!("a lease TTL of {ttl_ms} ms overflows INT64")))?;
+        let grace = i64::try_from(grace_ms).map_err(|_| {
+            Error::numeric(format!("a lease grace of {grace_ms} ms overflows INT64"))
+        })?;
         self.read_write("lease", |transaction| {
-            let found = attempt!(
-                transaction.execute(statement(SELECT_LEASE, self.partition_params(partition)))
-            );
+            // No grace is the statement this method has always run.
+            let found = if grace_ms == 0 {
+                attempt!(
+                    transaction.execute(statement(SELECT_LEASE, self.partition_params(partition)))
+                )
+            } else {
+                let mut params = self.partition_params(partition);
+                params.push(("grace", Param::Int(grace)));
+                attempt!(transaction.execute(statement(SELECT_LEASE_AFTER_GRACE, params)))
+            };
             let current = rows(&found).into_iter().next();
             let mut params = self.partition_params(partition);
             params.push(("holder", Param::Str(holder.to_string())));
@@ -523,6 +550,29 @@ impl ManagedLog for SpannerManagedLog {
                 holder: holder.to_string(),
                 epoch,
             }))))
+        })
+    }
+
+    fn release(&self, partition: &PartitionRef, lease: &Lease) -> Result<bool> {
+        self.read_write("lease release", |transaction| {
+            let found = attempt!(
+                transaction.execute(statement(SELECT_LEASE, self.partition_params(partition)))
+            );
+            let Some(row) = rows(&found).into_iter().next() else {
+                return Ok(Ok(Step::Rollback(false)));
+            };
+            let current_holder = as_text(cell(&row, 0, "the lease holder")?, "holder")?;
+            let epoch = as_u64(cell(&row, 1, "the lease epoch")?, "lease epoch")?;
+            // Only the holder at this epoch may lapse the row: a release that
+            // lapsed a successor's lease would depose the very instance the
+            // handover was for.
+            if current_holder != lease.holder || epoch != lease.epoch {
+                return Ok(Ok(Step::Rollback(false)));
+            }
+            attempt!(
+                transaction.execute(statement(RELEASE_LEASE, self.partition_params(partition)))
+            );
+            Ok(Ok(Step::Commit(true)))
         })
     }
 
@@ -892,6 +942,53 @@ mod tests {
                 epoch: 4
             }
         );
+        assert!(rpc.calls().iter().all(|c| !sql_of(c).starts_with("UPDATE")));
+    }
+
+    /// A release lapses the row only for the holder at the epoch it holds; a
+    /// successor's lease is never touched.
+    ///
+    /// Mutation: in `release`, skip the `current_holder != lease.holder ||
+    /// epoch != lease.epoch` comparison — the superseded call issues the
+    /// UPDATE and the "no UPDATE" assertion fires.
+    #[test]
+    fn a_release_lapses_the_holders_own_lease_and_leaves_a_successors_alone() {
+        let partition = PartitionRef::new("control.test", 0);
+        let rpc = Scripted::new(vec![
+            session(),
+            began(json!([["fabricd-a#3", "4", false]])),
+            RpcAnswer::Ok(json!({})),
+            RpcAnswer::Ok(json!({})),
+        ]);
+        let log = SpannerManagedLog::new(rpc.clone(), DB, "europe-west2");
+        let held = Lease {
+            holder: "fabricd-a#3".to_string(),
+            epoch: 4,
+        };
+        assert!(log.release(&partition, &held).expect("answered"));
+        let updates: Vec<String> = rpc
+            .calls()
+            .iter()
+            .map(sql_of)
+            .filter(|sql| sql.starts_with("UPDATE"))
+            .collect();
+        assert_eq!(
+            updates.len(),
+            1,
+            "premise: the holder's release writes once"
+        );
+        assert!(
+            updates[0].contains("expires_at = CURRENT_TIMESTAMP()"),
+            "{updates:?}"
+        );
+
+        let rpc = Scripted::new(vec![
+            session(),
+            began(json!([["fabricd-b#1", "5", false]])),
+            RpcAnswer::Ok(json!({})),
+        ]);
+        let log = SpannerManagedLog::new(rpc.clone(), DB, "europe-west2");
+        assert!(!log.release(&partition, &held).expect("answered"));
         assert!(rpc.calls().iter().all(|c| !sql_of(c).starts_with("UPDATE")));
     }
 

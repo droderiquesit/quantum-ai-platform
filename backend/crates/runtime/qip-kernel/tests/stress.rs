@@ -180,11 +180,16 @@ fn the_simulate_stage_stresses_the_open_book_against_the_standard_library() -> R
     let stress = platform
         .stress_report()
         .expect("a book with a position and history is stressed");
-    assert_eq!(
-        stress.scenarios.len(),
-        qip_simulation_engine::scenario::standard_library().len(),
-        "every scenario in the library is applied, not a subset"
-    );
+    let library = qip_simulation_engine::scenario::standard_library();
+    for entry in &library {
+        assert!(
+            stress.scenarios.iter().any(|r| r.scenario == entry.name),
+            "library scenario {} was not applied, only a subset",
+            entry.name
+        );
+    }
+    // The library plus the one composed event (R12-RISK-3103), nothing else.
+    assert_eq!(stress.scenarios.len(), library.len() + 1);
     // The stage is billed for both halves of what it did. Counting only the
     // scenarios was a regression: a platform with a long tape and no position
     // then reported producing nothing, and a blind cycle cost the same as a
@@ -369,6 +374,50 @@ fn noise(seed: u64, count: usize, scale: f64) -> Vec<f64> {
         .collect()
 }
 
+/// R12-RISK-3103: the composed scenario — two library entries' shocks joined
+/// into a factor set the library holds nowhere — is applied to the book a
+/// cycle stresses and lands in the report beside the library's own results.
+///
+/// Mutation: delete `applied.extend(crate::tail::composed_scenario(..))` in
+/// `stress_the_book` and the lookup below finds no such scenario.
+#[test]
+fn the_composed_scenario_reaches_the_stress_report_a_cycle_produces() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(observations("AAA", 120, 0.0));
+    buy(&mut platform, "AAA", dec!("40000"), start())?;
+    platform.run_cycle(start().saturating_add(Duration::from_days(1)));
+    let stress = platform
+        .stress_report()
+        .expect("premise: an open book with history is stressed");
+    let library = qip_simulation_engine::scenario::standard_library();
+    assert!(
+        stress
+            .scenarios
+            .iter()
+            .any(|result| library.iter().any(|entry| entry.name == result.scenario)),
+        "premise: the library's own scenarios were applied"
+    );
+    assert!(
+        library
+            .iter()
+            .all(|entry| entry.name != qip_kernel::tail::COMPOSED_SCENARIO),
+        "premise: the composed name is no library entry's"
+    );
+    assert!(
+        stress
+            .scenarios
+            .iter()
+            .any(|result| result.scenario == qip_kernel::tail::COMPOSED_SCENARIO),
+        "the composed scenario never reached the report: {:?}",
+        stress
+            .scenarios
+            .iter()
+            .map(|r| &r.scenario)
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
 /// R12-RISK-4116..4120, 4123, 4124: the six survival worlds and the
 /// generated ones reach the stress report a real cycle produces, priced
 /// against the book. Their call in `stress_the_book` could be deleted until
@@ -484,6 +533,7 @@ fn decayed_calibration_shrinks_allocation_through_the_gate() -> Result<()> {
         hypothesis_id: "hyp-stress".to_string(),
         object_id: "obj-AAA".to_string(),
         regime: MarketRegime::Trending,
+        reliability: None,
     }];
     let at = start().saturating_add(Duration::from_days(1));
 
@@ -864,6 +914,7 @@ fn view(symbol: &str) -> qip_kernel::confidence::ThesisView {
         hypothesis_id: format!("hyp-{symbol}"),
         object_id: object(symbol).to_string(),
         regime: qip_cost_router::MarketRegime::Trending,
+        reliability: None,
     }
 }
 

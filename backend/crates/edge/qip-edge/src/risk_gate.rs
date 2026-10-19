@@ -115,7 +115,10 @@ impl CellRiskGate {
             | LimitKind::MaxDailyLoss { .. }
             | LimitKind::MinLiquidity { .. }
             | LimitKind::MaxDaysToLiquidate { .. }
-            | LimitKind::MinCashBuffer { .. } => false,
+            | LimitKind::MinCashBuffer { .. }
+            // Statements and commitments are the desk's; a cell holds neither.
+            | LimitKind::MaxMarginUtilisation { .. }
+            | LimitKind::MinFundingBuffer { .. } => false,
         }
     }
 

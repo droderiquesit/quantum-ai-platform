@@ -109,6 +109,32 @@ fn a_signal_without_a_named_trigger_or_with_an_out_of_range_severity_is_refused(
     assert!(loud.is_err());
 }
 
+/// R12-AMBIENT-3065: `Pathway::CapitalPreparation` has a route. With four
+/// classes it had none, so the pathway the blueprint names for "prepare
+/// capital" was a label no signal could reach.
+///
+/// Mutation: route `SignalClass::Capital` to `Pathway::ResearchTask` in
+/// `RoutingPolicy::standard`.
+#[test]
+fn a_capital_signal_is_routed_to_capital_preparation_and_no_other_class_is() {
+    assert!(
+        SignalClass::ALL.contains(&SignalClass::Capital),
+        "premise: capital is a class"
+    );
+    let mut reached = Vec::new();
+    for class in SignalClass::ALL {
+        let mut router = AttentionRouter::new(policy(1_000, 0));
+        let events = router
+            .route(&signal(1, class, 9_000, 0), at(0))
+            .expect("routes");
+        assert_eq!(events.len(), 1, "{class:?}");
+        if events[0].pathway == Pathway::CapitalPreparation {
+            reached.push(class);
+        }
+    }
+    assert_eq!(reached, vec![SignalClass::Capital]);
+}
+
 #[test]
 fn a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_classes_pathway() {
     let mut rng = Lcg(7);
@@ -117,12 +143,13 @@ fn a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_clas
         SignalClass::Opportunity => Pathway::ResearchTask,
         SignalClass::Risk => Pathway::RiskReview,
         SignalClass::Assumption => Pathway::ReflexModelUpdate,
+        SignalClass::Capital => Pathway::CapitalPreparation,
     };
     let (mut quiet, mut material) = (0, 0);
     for i in 0..400usize {
         // A fresh router per case: this property is about one signal, not the budget.
         let mut router = AttentionRouter::new(policy(1_000, 0));
-        let class = SignalClass::ALL[(rng.next() % 4) as usize];
+        let class = SignalClass::ALL[(rng.next() % SignalClass::ALL.len() as u64) as usize];
         let severity = (rng.next() % 10_001) as u32;
         let events = router
             .route(&signal(i, class, severity, 0), at(0))
@@ -159,7 +186,12 @@ fn a_storm_never_exceeds_the_attention_budget_and_every_excess_signal_is_deferre
         for c in 0..calls {
             let secs = w * WINDOW_SECS + if c == 0 { 0 } else { (rng.next() % 59) as i64 };
             let secs = secs.max(w * WINDOW_SECS);
-            let s = signal(n, SignalClass::ALL[(rng.next() % 4) as usize], 9_000, secs);
+            let s = signal(
+                n,
+                SignalClass::ALL[(rng.next() % SignalClass::ALL.len() as u64) as usize],
+                9_000,
+                secs,
+            );
             material_ids.insert(s.id().to_string());
             n += 1;
             events.extend(router.route(&s, at(secs)).expect("routes"));
@@ -1096,4 +1128,152 @@ fn an_attention_event_missing_any_contract_field_is_refused_on_decode() {
     let mut granted = full.clone();
     granted["authority"] = serde_json::json!("execution");
     assert!(serde_json::from_value::<AttentionEvent>(granted).is_err());
+}
+
+/// Mutation: remove the `uncertainty_reduction_bp` shrinkage in
+/// `InfoRequest::record_acquisition` — the request then stays viable however
+/// much has been bought, and the final assertion fails.
+#[test]
+fn a_request_viable_at_creation_halts_once_its_acquisitions_have_consumed_its_value() {
+    let mut req = InfoRequest::new(
+        "req-1",
+        "decision-1",
+        criteria(10_000, 9_000, 8_000, 1_000),
+        at(1_000),
+        at(0),
+    )
+    .expect("valid request");
+    let floor = 2_000;
+    let initial = req.criteria().net_value_bp();
+    assert_eq!(
+        initial, 6_480,
+        "premise: 1.0 * 0.9 * 0.8 * 0.9 of the scale"
+    );
+    assert!(
+        !req.should_halt(at(1), floor),
+        "premise: the request is viable at creation"
+    );
+
+    // One purchase of 1,000 bp keeps nine tenths of the reduction on offer.
+    req.record_acquisition(1_000).expect("valid cost");
+    assert_eq!(req.criteria().uncertainty_reduction_bp, 8_100);
+    assert!(req.criteria().net_value_bp() < initial);
+
+    let mut purchases = 1;
+    while !req.should_halt(at(1), floor) {
+        let before = req.criteria().net_value_bp();
+        req.record_acquisition(1_000).expect("valid cost");
+        purchases += 1;
+        assert!(
+            req.criteria().net_value_bp() < before,
+            "a purchase did not lower the marginal value"
+        );
+        assert!(purchases < 100, "the request never halted");
+    }
+    assert!(req.criteria().net_value_bp() < floor);
+    assert_eq!(req.cumulative_cost_bp(), purchases * 1_000);
+
+    // An acquisition that costs the whole decision value leaves nothing to buy.
+    let mut all = InfoRequest::new(
+        "req-2",
+        "decision-2",
+        criteria(10_000, 10_000, 10_000, 0),
+        at(1_000),
+        at(0),
+    )
+    .expect("valid request");
+    all.record_acquisition(10_000).expect("valid cost");
+    assert_eq!(all.criteria().net_value_bp(), 0);
+    assert!(all.should_halt(at(1), 1));
+}
+
+/// Mutation: restore `self.deferred.pop_front()` in `AttentionRouter::route`'s
+/// window drain — the earlier, lower-value signal is activated first.
+#[test]
+fn a_higher_value_deferred_signal_is_activated_before_an_earlier_lower_one() {
+    let mut router = AttentionRouter::new(policy(1, 8));
+    let valued = |id: usize, severity: u32, economic: Option<u32>, secs: i64| {
+        let built = signal(id, SignalClass::Surprise, severity, secs);
+        match economic {
+            Some(bp) => built.with_economic_value_bp(bp).expect("within the scale"),
+            None => built,
+        }
+    };
+    // Window one: the first signal takes the whole budget and the rest are
+    // held in arrival order. Values (severity x economic value): 2 is 4.1M,
+    // 3 is 60M, 4 is 4.5M, 5 and 6 tie at 32M and 5 arrived first.
+    let arrivals = [
+        valued(1, 9_000, None, 0),
+        valued(2, 4_100, Some(1_000), 1),
+        valued(3, 6_000, Some(10_000), 2),
+        valued(4, 9_000, Some(500), 3),
+        valued(5, 4_000, Some(8_000), 4),
+        valued(6, 8_000, Some(4_000), 5),
+    ];
+    let mut activated: Vec<String> = Vec::new();
+    for s in &arrivals {
+        for event in router
+            .route(s, at(s.detected_at().as_secs()))
+            .expect("routes")
+        {
+            if event.disposition == Disposition::Activated {
+                activated.push(event.signal_id.clone());
+            }
+        }
+    }
+    assert_eq!(
+        activated,
+        ["sig-1"],
+        "premise: only the first signal fit the window"
+    );
+    assert_eq!(
+        router.deferred_len(),
+        5,
+        "premise: the other five are held, so the drain has a choice to make"
+    );
+
+    // Each later window admits one held signal. A signal below materiality
+    // opens the window without taking a slot of its own.
+    for window in 1..=5_i64 {
+        let tick = signal(
+            100 + window as usize,
+            SignalClass::Surprise,
+            100,
+            window * WINDOW_SECS,
+        );
+        for event in router
+            .route(&tick, at(window * WINDOW_SECS))
+            .expect("routes")
+        {
+            if event.disposition == Disposition::Activated {
+                activated.push(event.signal_id.clone());
+            }
+        }
+    }
+    assert_eq!(
+        activated,
+        ["sig-1", "sig-3", "sig-5", "sig-6", "sig-4", "sig-2"],
+        "held signals must drain by severity x economic value, the older first among equals"
+    );
+    assert_eq!(router.deferred_len(), 0);
+}
+
+#[test]
+fn an_economic_value_is_refused_above_the_scale_and_an_unstated_one_does_not_change_the_encoding() {
+    let plain = signal(1, SignalClass::Surprise, 5_000, 0);
+    assert_eq!(plain.economic_value_bp(), 10_000);
+    assert!(plain.clone().with_economic_value_bp(10_001).is_err());
+    let text = serde_json::to_string(&plain).expect("encodes");
+    assert!(
+        !text.contains("economic_value_bp"),
+        "an unstated value must not change the encoding of a recorded signal"
+    );
+    let stated = plain
+        .with_economic_value_bp(2_500)
+        .expect("within the scale");
+    let text = serde_json::to_string(&stated).expect("encodes");
+    assert!(text.contains("\"economic_value_bp\":2500"));
+    let back: AmbientSignal = serde_json::from_str(&text).expect("decodes");
+    assert_eq!(back, stated);
+    assert_eq!(stated.attention_value(), 5_000 * 2_500);
 }

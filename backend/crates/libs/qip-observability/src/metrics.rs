@@ -676,9 +676,10 @@ pub mod names {
     /// the platform became aware of it. A histogram recording the observed lag
     /// for each archive. Recorded when archive ingestion completes.
     pub const DATA_ARCHIVE_DELAY_MINUTES: &str = "qip_data_archive_delay_minutes";
-    /// Source re-fetch successes and failures, recorded by source as attempts
-    /// that did/did not produce new data. Gauge at 0 for failures, 1 for
-    /// success, recorded per source on each re-fetch cycle.
+    /// Source re-fetch health, per source on each re-fetch pass that asked for
+    /// anything: the share of the extents re-requested that the source still
+    /// served, from 1 (all served) to 0 (none). Recorded by
+    /// `Platform::record_refetch_health`.
     pub const DATA_REFETCH_HEALTH: &str = "qip_data_refetch_health";
 
     // Discovery and reasoning. The funnel from "something looked odd" to "a
@@ -871,6 +872,12 @@ pub mod names {
     pub const SERVICE_LATENCY_MS: &str = "qip_service_latency_milliseconds";
     /// A ratio, deliberately not clamped at one: over one is over capacity.
     pub const SERVICE_SATURATION: &str = "qip_service_saturation_ratio";
+    /// Saturation readings judged against
+    /// [`crate::critical_paths::SERVICE_SATURATION_CEILING`], by `outcome`
+    /// (`within` or `over`), counted where [`SERVICE_SATURATION`] is written
+    /// because a gauge carries no good/total split. The series the
+    /// `service-saturation` objective is read from.
+    pub const SERVICE_SATURATION_CHECKS: &str = "qip_service_saturation_checks_total";
     /// Entries in the platform's own hash-chained event log. A gauge rather
     /// than a counter: it is the length of a log, not a rate of appends, and
     /// an operator asking whether the chain is growing wants the length.
@@ -990,6 +997,12 @@ pub mod names {
     /// The uplink circuit to the centre, by `state`: `1` on the state it is
     /// in and `0` on the others.
     pub const EDGE_MESH_CIRCUIT: &str = "qip_edge_mesh_circuit";
+    /// Uplink circuit readings, by `outcome`: `closed` when the circuit to the
+    /// central plane could carry a delta and `open` when it was open or only
+    /// probing. Counted beside [`EDGE_MESH_CIRCUIT`], whose one-hot gauge
+    /// carries no good/total split; the `mesh-circuit-closed` objective is
+    /// read from it.
+    pub const EDGE_MESH_CIRCUIT_CHECKS: &str = "qip_edge_mesh_circuit_checks_total";
     /// The shortest fresh peer clock round trip, in milliseconds, across
     /// the cell's peer links (MESH-007): the measured latency to the nearest
     /// peer. Absent, not zero, while no peer has a fresh sample.
@@ -1363,6 +1376,25 @@ pub mod names {
     /// node's pass meter times it: the series the reflex
     /// `decision-latency-p99` and `-p99.9` objectives are read from.
     pub const EDGE_DECISION_LATENCY_MS: &str = "qip_edge_decision_latency_ms";
+    /// Milliseconds since the cell last heard each venue's feed, per venue
+    /// per pass, as `Cell::work` reads it before the halt check. The series
+    /// the `market-data-freshness` critical path is read from: a book older
+    /// than the objective's threshold is a pass that decided on stale prices.
+    pub const EDGE_BOOK_AGE_MS: &str = "qip_edge_book_age_ms";
+    /// Milliseconds from the cell's release of an order to the venue's first
+    /// report on it, by venue: the series the reflex `venue-round-trip-time-p99`
+    /// objective is read from. `qip_edge::telemetry::EDGE_VENUE_ACK_LATENCY_MILLIS`
+    /// is this constant, so the recorder and the reader cannot name two series.
+    pub const EDGE_VENUE_ACK_LATENCY_MS: &str = "qip_edge_venue_ack_latency_ms";
+    /// Milliseconds the cell's Risk Gate took to decide one order, recorded
+    /// around the gate's check wherever the cell consults it: the series the
+    /// reflex `risk-gate-latency-p99` objective is read from.
+    pub const EDGE_RISK_GATE_LATENCY_MS: &str = "qip_edge_risk_gate_latency_ms";
+    /// Feed messages the cell's sequencer accounted for, by `outcome`:
+    /// `delivered` (released in order) or `dropped` (sequences an abandoned
+    /// gap established were lost). The series the reflex
+    /// `dropped-feed-messages-zero` objective is read from.
+    pub const EDGE_FEED_MESSAGES: &str = "qip_edge_feed_messages_total";
 
     // Ledger metrics (ledgerd)
     pub const LEDGER_COMMITS: &str = "qip_ledger_commits_total";
@@ -1373,6 +1405,17 @@ pub mod names {
     pub const LEDGER_UNBALANCED_REFUSED: &str = "qip_ledger_unbalanced_refused_total";
     pub const LEDGER_LAG: &str = "qip_ledger_lag_records";
     pub const LEDGER_STORE_RETRIES: &str = "qip_ledger_store_retries_total";
+    /// How long the longest-parked cell has been parked, in seconds. A park
+    /// is the ledger's reconciliation mismatch: a record it could not book
+    /// honestly, held until a gap fills or an operator releases it.
+    pub const LEDGER_MISMATCH_AGE_SECONDS: &str = "qip_ledger_mismatch_age_seconds";
+    /// Each reading of the outcome-to-ledger lag, judged against the
+    /// `ledger-lag` objective's ceiling: `outcome` is `within` or `over`.
+    pub const LEDGER_LAG_CHECKS: &str = "qip_ledger_lag_checks_total";
+    /// Each reading of the mismatch age, judged against the
+    /// `ledger-mismatch-age` objective's ceiling: `outcome` is `within` or
+    /// `over`.
+    pub const LEDGER_MISMATCH_AGE_CHECKS: &str = "qip_ledger_mismatch_age_checks_total";
 
     // The deep brain's research, ambient and operations loops
     // (`qip-deepbrain/src/{research,operations}.rs`). Every label is an enum
@@ -1428,4 +1471,11 @@ pub mod names {
     /// freshness. Absent, not zero, until a first package is promoted —
     /// a zero would read as a model promoted this instant.
     pub const MODEL_PACKAGE_AGE: &str = "qip_model_package_age_seconds";
+    /// Each iteration's reading of that age against the freshness objective's
+    /// ceiling, by outcome (`fresh`, `stale`): the good/total split the
+    /// age gauge cannot carry (R12-OBS-9164).
+    pub const MODEL_PACKAGE_FRESHNESS_CHECKS: &str = "qip_model_package_freshness_checks_total";
+    /// Each sweep's reading of the research queue's depth against the
+    /// queue-depth objective's ceiling, by outcome (`within`, `over`).
+    pub const RESEARCH_QUEUE_CHECKS: &str = "qip_research_queue_checks_total";
 }

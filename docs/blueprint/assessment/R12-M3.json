@@ -394,7 +394,7 @@
       "backend/crates/runtime/qip-kernel/tests/capital_calls.rs",
       "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
     ],
-    "gap": "No private-markets agent. Commitments and capital calls exist only in the kernel, and illiquid marks would come from the desk book, which is fixed at assembly. Needs a desk facility the kernel writes commitments and calls into, and a fed book, before an agent can cover illiquid valuation, commitments and capital calls.",
+    "gap": "Blocked on the same kernel feed as R12-CAPITAL-3020 (BookView and RiskView as Upstreams) plus a desk facility the kernel writes commitments and capital calls into; the private-markets agent comes after both.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -405,7 +405,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. "
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  Gap sharpened 2026-10-18 (lane L01); no code changed."
   },
   {
     "id": "R12-ASSET-3019",
@@ -416,7 +416,7 @@
       "grep -rn '\"approved_conviction\"' over runtime, apps and services finds no writer outside tests",
       "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
     ],
-    "gap": "PortfolioConstruction is constructed but reports no data in every running binary: nothing in production writes the approved_conviction feature it sizes from. Divestment also needs the live book, which the desk fixes at assembly. Needs the kernel to record approved convictions on the world model in REASON and to feed the book, then divestment and causal-driver allocation findings in the agent.",
+    "gap": "Two prerequisites, neither done: the kernel feeding BookView as an Upstream (see R12-CAPITAL-3020), and a kernel writer for the approved_conviction feature PortfolioConstruction sizes from (nothing outside tests writes it; REASON approves a thesis and the conviction is not recorded on the world model). Then divestment and causal-driver findings in the agent.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -427,7 +427,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The previous text called the agent \"in production\"; it is constructed there and has never produced a finding."
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The previous text called the agent \"in production\"; it is constructed there and has never produced a finding. Gap sharpened 2026-10-18 (lane L01); no code changed."
   },
   {
     "id": "R12-CAPITAL-3020",
@@ -438,7 +438,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:21671 forecast_capital_demand, kernel-side",
       "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
     ],
-    "gap": "No capital specialist. Its inputs — cash, gross, leverage, funding, grants — are on the desk's book and risk facilities, which production fixes at assembly (empty book at initial equity), so an agent added now would report the assembly-time book forever. Needs the kernel to feed book and risk as Upstreams (the RiskView patch in lane L16's report) before an agent here can cover its scope.",
+    "gap": "No capital specialist, and the kernel half is not done: Desk::new is given a BookView and RiskView at assembly (empty book, initial equity) that nothing updates, while only world, market and research memory are Upstreams. Feeding them is a kernel change with a behavioural consequence that needs a decision: RiskView with the live risk_state and limits makes the Risk agent veto against the real book instead of the assembly-time empty one, and BookView needs a qip_portfolio::Portfolio rebuilt from the desk's fills. Then an agent in qip-investment-agents can cover cash, gross, leverage, funding and grants.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -449,7 +449,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. "
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  Gap sharpened 2026-10-18 (lane L01); no code changed."
   },
   {
     "id": "R12-RISK-3021",
@@ -600,7 +600,7 @@
       "backend/crates/apps/qip-deepbrain/src/brains.rs ambient_specs, AMBIENT_ATTENTION",
       "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry"
     ],
-    "gap": "Not an agent of the production Organisation (qip-investment-agents standard_agents): it emits attention events, not Organisation findings, so coverage::covered_scopes, which reads findings, cannot count it; removing it drops its scope from the Brain Registry only.",
+    "gap": "Not an agent of the production Organisation (qip-investment-agents standard_agents): the router emits attention events, not Organisation findings, so coverage::covered_scopes, which reads findings, cannot count it; removing it drops its scope from the Brain Registry only. Closing needs a decision, not a registration: either the router becomes an Organisation agent (it has no Desk input; it reads a research sweep) or coverage::Scope gains an ambient scope evidenced by findings qip-deepbrain composes from the sweep. The second changes the organisation test that asserts every Scope is covered by the standard organisation on a populated desk, so it needs an ADR. The grader's proposal to register a BrainSpec in now.rs::specialist_registry is already done (brains.rs holds ambient/attention).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -611,7 +611,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Narrowed 2026-10-18 by lane L04: registry entry and the scope-drop test added (mutation: giving a NOW specialist the attention-routing domain keeps the scope after removal and the test fails). Kept PARTIAL: rostering it as an Organisation agent needs an Agent impl producing Findings."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
   },
   {
     "id": "R12-AGENCY-3028",
@@ -622,7 +622,7 @@
       "backend/crates/apps/qip-deepbrain/src/brains.rs ambient_specs, CAUSAL_AGENCY",
       "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry"
     ],
-    "gap": "Not an agent of the production Organisation emitting Findings; removing it drops its scope from the Brain Registry only, and coverage::covered_scopes cannot count it.",
+    "gap": "Not an agent of the production Organisation emitting Findings; removing it drops its scope from the Brain Registry only, and coverage::covered_scopes cannot count it. Same decision as R12-AMBIENT-3027: an Organisation agent has a Desk to read and the ambient agency reads a research sweep, so either the agency is wrapped as an agent whose finding is composed from AgencyRound (goal, candidates, gate verdicts) or coverage::Scope gains an ambient scope; the second changes the every-Scope-is-covered organisation test and needs an ADR. The BrainSpec registration the grader proposed already exists (brains.rs, ambient/causal-agency).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -633,7 +633,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Narrowed 2026-10-18 by lane L04 (registry entry and scope-drop test). Kept PARTIAL for the same reason as R12-AMBIENT-3027."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
   },
   {
     "id": "R12-GOV-3029",
@@ -730,15 +730,16 @@
   },
   {
     "id": "R12-WORLD-3033",
-    "status": "PARTIAL",
-    "current": "Platform EpisodicMemory written by LEARN (remember_resolved) with market and world state; episodic digest issued.",
+    "status": "COMPLETE",
+    "current": "Platform EpisodicMemory is written by LEARN (remember_resolved) with market and world state, and now with what the platform did: EpisodeOutcome::fills lists the venue's fills (order id, quantity, price) on every remembered order whose attribution lineage cites the claim's hypothesis (Platform::fills_expressing). A thesis with no order, or whose orders did not fill, remembers none; an order whose lineage was evicted is not found and records no fill rather than a guessed one. The field is skipped when empty and defaulted on decode, so earlier episodes read unchanged.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:453 episodes: EpisodicMemory",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:5506 issue_episodic_digest",
-      "backend/crates/runtime/qip-kernel/tests/episodic.rs:207 an_episode_the_cycle_wrote_carries_the_market_and_world_state_measured_when_it_reasoned",
-      "backend/crates/runtime/qip-kernel/tests/episodic.rs:281 a_resolved_episode_records_how_far_the_outcome_was_from_what_the_claim_expected"
+      "backend/crates/libs/qip-ai/src/memory/episode.rs::EpisodeFill",
+      "backend/crates/libs/qip-ai/src/memory/episode.rs::EpisodeOutcome::fills",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::fills_expressing",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::remember_resolved",
+      "runtime/qip-kernel/tests/episodic.rs::a_resolved_episode_remembers_the_fills_on_the_orders_that_expressed_its_claim"
     ],
-    "gap": "Episodes are per resolved thesis; 'what it did' (orders/fills) is not part of the episode record.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -746,10 +747,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test episodic",
+    "verification": "cd backend && cargo test -p qip-kernel --test episodic && cargo test -p qip-ai",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: closed, differently from the triage: the fills sit on EpisodeOutcome (what followed) rather than inside the Copy enum DecisionTaken, which every constructor and the sampler match on. Mutations: leaving the vector empty in remember_resolved -> fills.len() left 0 against the OMS's fill; matching the lineage's belief key against a hypothesis nothing cites -> same failure; both restored (qip-ai + qip-kernel: 1072 passed, 0 failed; clippy -D warnings clean). Limits: orders are found through the bounded attribution lineage, and fills only, not the order's placement record."
   },
   {
     "id": "R12-WORLD-3034",
@@ -795,11 +796,14 @@
   {
     "id": "R12-WORLD-3036",
     "status": "PARTIAL",
-    "current": "Self-model grades components and scales evidence; drift and operational health are not part of it; capability boundaries not modelled.",
+    "current": "The self-model grades components and scales evidence by them, and since 2026-10-18 it also detects model/data drift: CapabilityEstimate::drift compares the mean Brier of the older and newer half of a component's window (each at least MINIMUM_SAMPLE) and reports a Drift when the newer half is worse by more than DRIFT_TOLERANCE; Capability::weight then weights a drifting component by its recent shrunk accuracy instead of the window average, and SelfModel::factor and origin_factors (handed to REASON at platform.rs:9763) use it. Operational health and capability boundaries are not modelled.",
     "evidence": [
-      "(no line-cited evidence re-read in this audit; status carried from prior assessment)"
+      "backend/crates/services/qip-learning-engine/src/self_model.rs Drift, CapabilityEstimate::drift, Capability::weight",
+      "backend/crates/services/qip-learning-engine/tests/self_model.rs a_component_that_has_started_missing_is_weighted_by_its_recent_record_not_its_window_average",
+      "backend/crates/services/qip-learning-engine/tests/self_model.rs a_component_that_improved_or_wobbled_inside_the_tolerance_is_not_called_drifting",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9763 set_origin_factors(self.self_model.origin_factors())"
     ],
-    "gap": "Drift, operational health and capability boundaries in the self-model.",
+    "gap": "Operational health (kill-switch/halt and stale-feed facts the kernel already holds, as a self-model input) and a capability boundary per registered asset class are not in the self-model. Drift is per component and covers forecasts only; a feed whose data drifted without its component's Brier worsening is not seen.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -807,10 +811,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test self_model",
+    "verification": "cargo test -p qip-learning-engine --test self_model && cargo test -p qip-kernel --test self_model",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged; not re-read line by line in this audit (no landed lane commit targets it), so PARTIAL is carried, not re-proven."
+    "notes": "2026-10-18 lane L23: drift third closed, health and boundaries not. Mutations fired - Capability::weight returning the window accuracy ('a drifting component kept its window weight 0.5'); the tolerance check removed (the steady component reported drift). DRIFT_TOLERANCE 0.05 is a chosen constant, said so in its doc."
   },
   {
     "id": "R12-WORLD-3037",
@@ -821,7 +825,7 @@
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:872 a_population_differing_on_all_five_axes_is_built_and_every_fed_member_produces_state",
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review"
     ],
-    "gap": "Decisions consume the federation; every member produces state each cycle.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the same federation narrowing slice as WORLD-1003, so a decision reads the population rather than the single WorldModel.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -832,7 +836,7 @@
     "verification": "cargo test -p qip-world-model --test federation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Federation now built by the kernel; advisory only."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Federation now built by the kernel; advisory only. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Decisions consume the federation; every member produces state each cycle."
   },
   {
     "id": "R12-WORLD-3038",
@@ -885,26 +889,27 @@
   },
   {
     "id": "R12-WORLD-3040",
-    "status": "PARTIAL",
-    "current": "ScoredView records evidence fit, predictive performance, causal coherence and uncertainty in the cycle.",
+    "status": "COMPLETE",
+    "current": "Each instrument member's causal_coherence is 1 - |its probability - the causal graph's implied probability| from the live claims into that instrument (Platform::causal_views: each cause's latest return x the claim's signed transmission), and its evidence_fit is its own replayed residuals over the series' latest returns (1 - Brier, scaled by history length), per member. Where the graph holds no live claim into an instrument a member keeps the coherence it was declared under, and that is stated in the code.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:232 ScoredView",
-      "backend/crates/services/qip-world-model/tests/federation.rs:302 arbitration_records_all_four_dimensions_and_ranks_by_evidence_fit_when_only_that_differs",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs tape_reading, residual_fit, CAUSAL_GLOBAL, CausalView",
+      "backend/crates/runtime/qip-kernel/src/platform.rs causal_views, passed to the stage by understand_federation",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs two_members_on_one_tape_differ_in_coherence_when_one_contradicts_a_live_claim_and_in_fit",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs the_global_causal_model_is_a_member_that_reads_the_graphs_claims_into_the_instrument",
+      "backend/crates/runtime/qip-kernel/src/platform.rs the_causal_view_handed_to_the_federation_is_the_causes_move_over_the_claims_signed_transmission"
     ],
-    "gap": "In production causal_coherence is a hard-coded constant per member and evidence_fit is identical across instrument members, so two of four dimensions are not measured comparisons.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test federation",
+    "verification": "cargo test -p qip-kernel --lib federation_stage && cargo test -p qip-kernel --test symbolic_federation && cargo test -p qip-kernel --lib the_causal_view_handed",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutations fired: restoring the constant coherence (Some(_) => prior) -> the momentum/reversion ordering no longer flips with the claim's sign ('0.5 0.5'); using transmission() for signed_transmission() in causal_views -> the platform test reads -0.0041 against -0.0101. The domain member's fit is still the history-length term."
   },
   {
     "id": "R12-WORLD-3041",
@@ -931,13 +936,16 @@
   },
   {
     "id": "R12-WORLD-3042",
-    "status": "PARTIAL",
-    "current": "World-model CausalGraph integrated (claims, retirement, propagation).",
+    "status": "COMPLETE",
+    "current": "markets.causal-graph.global.macro is a declared federation member (scope, 7-day lease, evidence lineage world:causal-graph) fed every pass on every instrument proposition from the world model's graph: its probability is the logistic of the graph-implied next return over the instrument's volatility, its fit and uncertainty from the claim count and mean confidence, and it states an even view with near-zero evidence where no live claim reaches the instrument. It is scored like the others when the proposition resolves.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/causal.rs CausalGraph",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:10385 stage_understand"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs tape_reading, residual_fit, CAUSAL_GLOBAL, CausalView",
+      "backend/crates/runtime/qip-kernel/src/platform.rs causal_views, passed to the stage by understand_federation",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs two_members_on_one_tape_differ_in_coherence_when_one_contradicts_a_live_claim_and_in_fit",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs the_global_causal_model_is_a_member_that_reads_the_graphs_claims_into_the_instrument",
+      "backend/crates/runtime/qip-kernel/src/platform.rs the_causal_view_handed_to_the_federation_is_the_causes_move_over_the_claims_signed_transmission"
     ],
-    "gap": "Not registered as a federation member with scope/expiry.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -945,10 +953,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model",
+    "verification": "cargo test -p qip-kernel --lib federation_stage && cargo test -p qip-kernel --lib the_causal_view_handed",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutations fired: feeding the member a constant 0.5 -> the rising and falling claims read alike and the member test fails; dropping its declaration fails the population premise. The population is ten and an instrument proposition carries eight views."
   },
   {
     "id": "R12-WORLD-3043",
@@ -1017,7 +1025,7 @@
       "backend/crates/services/qip-world-model/src/lib.rs:19-40 module list",
       "backend/crates/services/qip-world-model/tests/liquidity.rs"
     ],
-    "gap": "Not federated members; integration varies by module.",
+    "gap": "Not started. The bar tape carries OHLCV and no buy/sell split, so an order-flow imbalance (qip_world_model::order_flow::FlowObservation) cannot be formed from it, and nothing in the kernel absorbs a FlowObservation or a price-impact observation; a microstructure member fed from bars would be the regional member again. Needs a producer of signed flow or trade-side data before the member has anything of its own to say.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1028,7 +1036,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-WORLD-3047",
@@ -1039,7 +1047,7 @@
       "backend/crates/services/qip-prediction/src/resolution.rs",
       "backend/crates/services/qip-prediction/tests/belief.rs"
     ],
-    "gap": "Not a federated world model.",
+    "gap": "Not started. The event-market plane (event_markets.rs) belongs to its own paper book and prices markets, not instruments: no belief ties a federation instrument proposition to a pending event resolution, so a member whose view is 'the belief tree's probability for the instrument's pending resolution' has no per-instrument source, and the plane opens only with a licensed source (none is in the catalogue).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1050,7 +1058,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-WORLD-3048",
@@ -1060,7 +1068,7 @@
       "backend/crates/services/qip-capital-fabric/src/forecast.rs:324 DemandForecaster",
       "backend/crates/runtime/qip-kernel/src/pre_positioning.rs"
     ],
-    "gap": "Not a federated world model.",
+    "gap": "Not started. DemandForecaster output and pre_positioning exposure are per currency and per funding need, not per instrument proposition, and 'realised funding use' as the resolution has no instrument-level event the stage can wait on; the member needs its own proposition (next-pass funding draw) and a resolver, which is new federation vocabulary.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1071,7 +1079,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-WORLD-3049",
@@ -1172,7 +1180,7 @@
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:18 advisory: called after REASON has decided"
     ],
-    "gap": "Compose at least one symbolic verdict into hypothesis formation, as the verification requires.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the same veto slice as REASON-1004, feeding the rule verdict into approval.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1183,7 +1191,7 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoners",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Compose at least one symbolic verdict into hypothesis formation, as the verification requires."
   },
   {
     "id": "R12-REASON-3054",
@@ -1261,14 +1269,13 @@
   {
     "id": "R12-REASON-3057",
     "status": "PARTIAL",
-    "current": "The kernel loads a versioned rule pack (eligibility plus paper-boundary and kill-switch invariants) and evaluates it per hypothesis; replay re-evaluates and refuses a non-reproducing verdict.",
+    "current": "The kernel loads a versioned rule pack (v2) and evaluates it per hypothesis; replay re-evaluates and refuses a non-reproducing verdict. Besides eligibility and the paper-boundary/kill-switch invariants, v2 carries a market-structure fact (lot_headroom: the position budget left after buying one lot at the last price, from the instrument's lot and multiplier and the tightest MaxPositionWeight) and an accounting fact (cash_headroom: cash left after one lot), each gating r10-eligible, with rules r60/r61 naming the breach and invariant i30 forbidding eligibility on negative cash.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:537 derive",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:264 rule_pack; :595 replay"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs rule_pack (v2: r60, r61, i30), rule_inputs",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs a_hypothesis_whose_smallest_lot_breaks_the_budget_or_the_cash_is_ruled_against_and_replays",
+      "backend/crates/runtime/qip-kernel/src/platform.rs lot_headrooms, called from reason_symbolically"
     ],
-    "gap": "Only an eligibility plus paper/kill-switch rule pack is wired; accounting, market-structure and contract rules are not.",
+    "gap": "Tick-grid and contract-specification rules (expiry, deliverability, multiplier) are not in the pack: the tape the platform holds is f64-derived, so an on-tick rule would rule against every synthetic price, and a contract rule needs the derivative extension's expiry carried into SymbolicInput. Accounting is one invariant (no negative cash after the smallest lot), not a double-entry check.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1276,10 +1283,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cargo test -p qip-kernel --lib symbolic_stage && cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Rule pack now loaded by the kernel. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The only rule pack (symbolic_stage.rs:264 rule_pack) encodes hypothesis eligibility and paper/kill-switch invariants; no accounting-invariant, market-structure or contract rule pack."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Pack bumped to v2, so a record written under v1 is refused at replay (verify names the pack version). Mutation fired: dropping the two headroom conditions from r10-eligible -> the lot case stays eligible and the unit test fails."
   },
   {
     "id": "R12-REASON-3058",
@@ -1292,18 +1299,18 @@
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:488 acting() constraint problem",
       "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs:598 a_constraint_problem_yields_a_satisfying_assignment_or_a_conflicting_subset_that_is_itself_unsatisfiable"
     ],
-    "gap": "Only CSP/SAT/bounded-linear-integer and QUBO export exist; SMT, MILP and graph solvers are absent.",
+    "gap": "Owner decision O12 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit an SMT/MILP solver crate (Z3 refused by ADR 0099 C5). Enables: SMT theories and MILP in constraint.rs. Costs: A large native dependency or a long in-tree solver.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O12 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-reasoning-engine --test reasoners",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Now has a production caller; the in-cycle problem is small. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): constraint.rs states 'no SMT theories beyond bounded linear integer'; Z3 refused (ADR 0099 C5); no MILP solver (bounded enumeration only) and no graph solver cited."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Now has a production caller; the in-cycle problem is small. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): constraint.rs states 'no SMT theories beyond bounded linear integer'; Z3 refused (ADR 0099 C5); no MILP solver (bounded enumeration only) and no graph solver cited. ADR lane 2026-10-18: gap re-graded against decision O12; gap before it: Only CSP/SAT/bounded-linear-integer and QUBO export exist; SMT, MILP and graph solvers are absent."
   },
   {
     "id": "R12-REASON-3059",
@@ -1355,23 +1362,26 @@
   },
   {
     "id": "R12-REASON-3061",
-    "status": "PARTIAL",
-    "current": "qip-agency plans tools/actions from a goal (CLI shadow only); no research-plan synthesis from goals and constraints is reached in the cycle.",
+    "status": "COMPLETE",
+    "current": "ResearchLoop::plan_sweep compiles each sweep's started items into a qip_agency InterventionPlan (research_plan.rs): a Research GoalSpec with the sweep's compute budget and a zero risk envelope, an affordance graph of the registered tools, the planner identity holding only the research authority. The proven plan is carried on ResearchRound::plan and journaled as AmbientRecord::SweepPlan beside the sweep's signals; a plan over budget is an error recorded in plan_refused, not a trimmed plan.",
     "evidence": [
-      "backend/crates/apps/qip-cli/src/agency.rs:48 shadow-only engine run"
+      "backend/crates/apps/qip-deepbrain/src/research_plan.rs compile",
+      "backend/crates/apps/qip-deepbrain/src/research.rs plan_sweep",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs AmbientRecord::SweepPlan",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs a_sweep_compiles_its_started_items_into_a_deterministic_cited_journaled_plan"
     ],
-    "gap": "Research/experiment plan synthesis integrated.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cargo test -p qip-deepbrain --test research_market -- a_sweep_compiles",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Mutations: dropping the `round.plan = plan` assignment and filtering the journal append each fail the test. The plan is a record of the sweep's choice, not an executor: nothing runs from it. Tool edges are priced at the dearest declared cost of a kind sharing the tool, so the plan can only over-state, never under-state, what the budget is held to."
   },
   {
     "id": "R12-REASON-3062",
@@ -1444,26 +1454,26 @@
   },
   {
     "id": "R12-AMBIENT-3065",
-    "status": "PARTIAL",
-    "current": "The production sweep routes every gap through AttentionRouter (materiality 1000 bp, 256 activations/hour); a 300-signal storm activates 256 and journals 44 as Deferred/Shed; below-materiality signals wake nothing.",
+    "status": "COMPLETE",
+    "current": "SignalClass::Capital routes to Pathway::CapitalPreparation in RoutingPolicy::standard; ResearchLoop::sweep_over raises one Capital signal per movement in Platform::pre_position and, on activation, dispatches by pathway: a capital signal is filed as an advisory and recorded in ResearchRound::capital_advice instead of being offered to the desk as a gap.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter (only consumer outside crate is an acceptance test)",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:112",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:148 a_storm_never_exceeds_the_attention_budget_and_every_excess_signal_is_deferred_or_shed",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:41"
+      "backend/crates/libs/qip-contracts/src/ambient.rs SignalClass::Capital, RoutingPolicy::standard",
+      "backend/crates/apps/qip-deepbrain/src/research.rs capital_signal, CapitalAdvice, the CapitalPreparation dispatch in sweep_over",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs a_capital_signal_is_routed_to_capital_preparation_and_no_other_class_is",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_recommended_movement_is_a_capital_preparation_signal_dispatched_as_advice_and_absent_when_the_sentinel_is_off"
     ],
-    "gap": "Pathway::CapitalPreparation is unreachable (no class routes to it); RiskReview and ReflexModelUpdate are labels, since admit treats every pathway the same.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient",
+    "verification": "cargo test -p qip-contracts --test ambient; cargo test -p qip-deepbrain --test research -- a_recommended",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Mutations: routing Capital to ResearchTask fails both tests; disabling the CapitalPreparation dispatch arm leaves capital_advice empty and fails the deepbrain test. RiskReview and ReflexModelUpdate still go through admit as research gaps; only the capital pathway has its own dispatch, because only it has a recipient other than the research desk."
   },
   {
     "id": "R12-AMBIENT-3066",
@@ -1517,7 +1527,7 @@
       "backend/crates/runtime/qip-kernel/src/falsification.rs:1-12",
       "backend/crates/runtime/qip-kernel/tests/falsification.rs:213"
     ],
-    "gap": "Covers thesis falsifiers only, once per cycle; strategy and risk-model premises unchecked.",
+    "gap": "Covers thesis falsifiers only, once per cycle. Two premises stay unchecked, and the first has no stored side to check: (1) risk-model premise: Platform::stress_the_book re-estimates every beta and specific variance from the retained price history each cycle (qip_risk::market_factor::MarketFactor::estimate), so the model's assumption is the recent tape by construction and nothing remembers the fit it sized under; a premise check needs a stored fit snapshot (betas, market volatility, stressed correlation) with a stated horizon and band, and the bands are a risk-desk decision. (2) strategy premise: no per-strategy premise is recorded to falsify. The route onward exists: qip_expansion::detectors::model_drift raises a GapTrigger::ModelDrift observation, which deepbrain research.rs::signal_class files as SignalClass::Assumption, fed through node.rs note_drifted_models.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1528,7 +1538,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. The triage closure compares RiskState assumed volatility with realised, but RiskState.volatility is a measurement and carries no assumed counterpart."
   },
   {
     "id": "R12-AMBIENT-3069",
@@ -1575,14 +1585,15 @@
   },
   {
     "id": "R12-AMBIENT-3071",
-    "status": "PARTIAL",
-    "current": "LEARN prices declined and filled paths under one per-cycle cap (COUNTERFACTUALS_PER_CYCLE); a due path past the cap stays queued, is counted under qip_counterfactuals_deferred_total and is priced on a later cycle, so the cap delays scoring and drops nothing. A path is dropped only when the twin refuses to price it (counted unscored{reason=refused}) or when the bounded queue is full at capture (counted unscored{reason=*_capacity}). The resulting DeclinedScore and FillScore records feed the regret findings and the size-cap review inside the kernel; no router or opportunity sweep reads them.",
+    "status": "COMPLETE",
+    "current": "LEARN prices declined and filled paths under one per-cycle cap (COUNTERFACTUALS_PER_CYCLE); a due path past the cap stays queued, is counted under qip_counterfactuals_deferred_total and is priced on a later cycle, so the cap delays scoring and drops nothing. A path is dropped only when the twin refuses to price it (counted unscored{reason=refused}) or when the bounded queue is full at capture (counted unscored{reason=*_capacity}). The resulting DeclinedScore records feed the regret findings and the size-cap review inside the kernel, and the deep brain's sweep reads them: ResearchLoop::sweep_over hands each DeclinedScore's (gate, regret, would_have_earned) to veto_observations, and a gate holding MIN_REGRETS (3) regretted declines raises a GapTrigger::MissedOpportunity gap, which signal_class maps to SignalClass::Opportunity and the attention router sends to Pathway::ResearchTask, naming the gate in its evidence (declined_scores:gate:<gate>).",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs fn score_declined: deferred due paths are counted and left in self.declined",
-      "backend/crates/runtime/qip-kernel/src/platform.rs fn score_filled: same rule under the remaining budget",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over (platform.declined_scores() into veto_observations)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::three_regretted_declines_at_one_gate_reach_the_sweep_as_an_opportunity_class_research_signal (real Platform, three refused orders priced by a LEARN cycle; mutation: delete the veto_observations extend in sweep_over, no Opportunity-class signal; second mutation: read the economic value with basis_points instead of economic_scale_bp, the sweep errors)"
     ],
-    "gap": "Output reaches no router: counterfactual regret is not raised as an opportunity-class signal the deep brain sweep (or any router) consumes. The carry-over the triage closure asked for already exists and is tested.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1590,22 +1601,24 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test learning declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle",
+    "verification": "cd backend && cargo test -p qip-deepbrain --test research three_regretted_declines_at_one_gate_reach_the_sweep_as_an_opportunity_class_research_signal",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 (lane L01): the clause said the per-cycle cap drops some declines; it defers them and a test pins that. Kept PARTIAL on the missing router. Read, not run, by this lane."
+    "notes": "Corrected 2026-10-18 (lane L01): the clause said the per-cycle cap drops some declines; it defers them and a test pins that. Kept PARTIAL on the missing router. Read, not run, by this lane. Closed 2026-10-18 (lane RT-C). The sweep-level test found a defect the pure veto test could not: ResearchLoop::admit read a priced gap's economic value with basis_points(value / 100) and `?`, so a gate whose regretted declines forwent more than 100 units failed the whole sweep (the fixture's three declines priced at 2089.6). admit now reads an off-scale figure as the scale's end (economic_scale_bp), the same full scale emit gives the signal, and still refuses a negative or non-finite one. Fixture direction: the twin scores a declined buy against the ask, so a falling tape is what scores as regret (learning.rs documents it); the test asserts the regret bit as its premise rather than the reading."
   },
   {
     "id": "R12-AMBIENT-3072",
-    "status": "PARTIAL",
-    "current": "DECIDE plans pre-positioning every cycle and LEARN scores it (pre_positioning.rs:1-42; platform.rs plan_pre_positioning/score_pre_positioning ~14890, ~15585), reached from every binary that runs the cycle. Demand history is fed only from fills, as DemandKind::Cash (platform.rs:17462-17473). Pathway::CapitalPreparation exists (qip-contracts/src/ambient.rs:51) but nothing raises an AmbientSignal from the pre-positioning plan; its only non-test use is a label string (qip-deepbrain/src/research.rs:327).",
+    "status": "COMPLETE",
+    "current": "ResearchLoop::sweep_over reads Platform::pre_position each sweep and raises one SignalClass::Capital signal (Pathway::CapitalPreparation) per recommended movement, activated into ResearchRound::capital_advice and an advisory; ResearchConfig::capital_sentinel=false raises none, and it defaults to true. The demand history the plan forecasts from is fed beyond cash on the default cycle: a fill in an instrument the desk declared as a hedge (hedge_policies or hedge_candidates, the declarations the DECIDE survey proposes from) records DemandKind::Hedge beside Cash at the fill site, and the cross-margin read LEARN runs every cycle (review_cross_margin) records DemandKind::Collateral (per-venue maintenance, observed or not) and DemandKind::Inventory (per-venue gross carried) through record_obligation_demand. A venue requiring or carrying nothing records nothing.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs:1-42",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17462-17473",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:44-53",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:327"
+      "backend/crates/apps/qip-deepbrain/src/research.rs capital_signal",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_recommended_movement_is_a_capital_preparation_signal_dispatched_as_advice_and_absent_when_the_sentinel_is_off",
+      "backend/crates/runtime/qip-kernel/src/platform.rs is_declared_hedge_instrument, record_obligation_demand",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs a_hedge_fill_records_hedge_demand_and_an_ordinary_fill_does_not",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs the_cross_margin_read_records_collateral_and_inventory_demand_at_the_venue_it_read",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs a_book_that_traded_nowhere_records_no_collateral_or_inventory_demand"
     ],
-    "gap": "Output does not reach the attention router (no CapitalPreparation signal is produced anywhere); collateral, inventory and hedge demand are never observed (only Cash is recorded); no test shows disabling the sentinel removes router signals.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1613,10 +1626,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel",
+    "verification": "cargo test -p qip-kernel --test collateral && cargo test -p qip-deepbrain --test research",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Old gap said 'collateral/cash only'; the code now records Cash only from fills. The movement plan is deliberately never executed (pre_positioning.rs:23-35, ADR 0021)."
+    "notes": "Mutations that fired (2026-10-18): capital sentinel forced off or on in sweep (the CapitalPreparation test fails at both); the record_obligation_demand call deleted, its maintenance filter inverted, is_declared_hedge_instrument forced false or true, and a fixed observation recorded unconditionally (each fails the matching collateral.rs test). Collateral and Inventory are observations of what the book stands in each cycle, not a forecast of need; Hedge is inferred from the instrument because the fill carries no purpose of its own."
   },
   {
     "id": "R12-AMBIENT-3073",
@@ -1863,14 +1876,14 @@
   },
   {
     "id": "R12-WORLD-3083",
-    "status": "PARTIAL",
-    "current": "lattice::constrain flags narrowing and median-outside inconsistencies across adjacent horizons each cycle (LATTICE_INCONSISTENCIES_TOTAL); NOW latent return feeds lattice targets.",
+    "status": "COMPLETE",
+    "current": "Every cycle LatticeStage::run checks each target's freshly issued horizon chain with qip_world_model::lattice::constrain, journals the findings in LatticeReview::inconsistencies and Platform counts them on qip_lattice_inconsistencies_total{kind}. Flagging never repairs: the forecasts are journaled as issued. Over the calm test history the first cycle flags the hours-days median outside the weeks-months 80% interval for both instruments.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/horizons.rs:868 HorizonRegister",
-      "backend/crates/services/qip-lifecycle/src/horizon.rs:304 HorizonAssurance",
-      "backend/crates/services/qip-world-model/src/lattice.rs::constrain"
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeStage::run (constrain)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (LATTICE_INCONSISTENCIES_TOTAL count)",
+      "runtime/qip-kernel/tests/now_lattice.rs::a_forecast_outside_its_longer_neighbours_interval_is_flagged_in_the_review_and_on_the_counter"
     ],
-    "gap": "Flagged, not reconciled into any forecast; microstructure (microsecond) forecasts are never issued, so they constrain nothing.",
+    "gap": "",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1880,10 +1893,10 @@
       "R12-WORLD-3082"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo test -p qip-kernel --test now_lattice",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L07, 2026-10-18: closed. Mutations: skipping the constrain call -> 'premise: calm history leaves a short-horizon median outside the longer interval'; draining the platform's counter loop -> counter left 0 right 2; both restored (now_lattice: 10 passed). Not claimed: reconciliation of the flagged pair into the forecasts and the microsecond row stay WORLD-7197's gap; only the horizons due in a pass are compared, so a fresh short row against a still-current longer row is not checked until the longer one re-issues."
   },
   {
     "id": "R12-WORLD-3084",
@@ -1896,7 +1909,7 @@
       "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::the_central_lane_may_not_issue_a_microsecond_forecast",
       "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_cycle_issues_at_every_central_horizon_and_never_the_microsecond_row"
     ],
-    "gap": "The horizon is not served by the named model families or outputs: the population is two generic price models per row. Nothing downstream reads PromotionTarget to gate where outputs go (grep finds no consumer outside lattice.rs), so 'promoted only to' is a label checked at admission, not a promotion gate. The admission test exercises wrong targets only for MicrosecondsMs and SecondsMinutes (forecast_lattice.rs:81-98). The microsecond row is never issued: no reflex-lane caller of issue() exists, and the cell's microstructure forecasts are disclaimed (lattice_stage.rs:20-22).",
+    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: a ReflexForecast contract in qip-contracts and a node issuer with a calibration test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1909,7 +1922,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Admission is tested for this row."
+    "notes": "Round-2 independent audit, 2026-10-11: Admission is tested for this row. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: The horizon is not served by the named model families or outputs: the population is two generic price models per row. Nothing downstream reads PromotionTarget to gate where outputs go (grep finds no consumer outside lattice.rs), so 'promoted only to' is a label checked at admission, not a promotion gate. The admission test exercises wrong targets only for MicrosecondsMs and SecondsMinutes (forecast_lattice.rs:81-98). The microsecond row is never issued: no reflex-lane caller of issue() exists, and the cell's microstructure forecasts are disclaimed (lattice_stage.rs:20-22)."
   },
   {
     "id": "R12-WORLD-3085",
@@ -2348,14 +2361,15 @@
   },
   {
     "id": "R12-RISK-3103",
-    "status": "PARTIAL",
-    "current": "SIMULATE adds two synthetic worlds per cycle (backend/crates/runtime/qip-kernel/src/tail.rs:219, :514-560): each position's worst retained historical excursion amplified by a seeded draw, all positions adverse at once. They reach the survival kernel's reserve. This is magnitude amplification of each position's own history, not a search for factor or scenario combinations absent from the library; the test asserts the generated loss exceeds the model-failure world's, not that the combination is absent from the library.",
+    "status": "COMPLETE",
+    "current": "SIMULATE now applies one composed event beside the library: tail::composed_scenario joins the two library scenarios whose union of shocked factors is widest and equals no single entry's factor set, keeping the worse reading (larger magnitude, shorter window, higher liquidity multiplier and correlation) where both shock a factor. Platform::stress_the_book runs it through the same StressTester as the library, so it lands in StressReport.scenarios and a breach of the loss tolerance is a stage problem that narrows capital like any library scenario. The two generated worlds still amplify each position's own history; the composed event is the combination the library lacks.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/tail.rs:514-560",
-      "runtime/qip-kernel/src/tail.rs::tests::generated_worlds_exceed_the_books_history_and_replay_for_the_same_cycle",
-      "runtime/qip-kernel/src/survival.rs::tests (every generated world narrows the release)"
+      "backend/crates/runtime/qip-kernel/src/tail.rs::composed_scenario",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (applied.extend(composed_scenario) in stress_the_book)",
+      "backend/crates/runtime/qip-kernel/src/tail.rs::tests::the_composed_scenario_shocks_a_factor_set_no_library_entry_holds",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::the_composed_scenario_reaches_the_stress_report_a_cycle_produces"
     ],
-    "gap": "A generator that composes scenario-library components into combinations the library does not hold, and a test asserting the generated combination is absent from it.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2363,10 +2377,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-kernel --lib tail:: && cargo test -p qip-kernel --test stress",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Lane L07, 2026-10-18. Mutations that fired: keep the milder magnitude on a shared factor -> the severity assertion fails; return a library entry as the composition -> the absence premise fails; skip the union-exists filter -> the no-composition test fails; delete the extend in stress_the_book -> the cycle test fails. The composition is one deterministic join, not a search over all combinations, and the join overlaps on equity rather than being disjoint; a correlation inversion or regime flip is RISK-4116's clause. The tester carries stressed_correlation without computing with it. Only stricter: the extra scenario can add a breach, never remove one."
   },
   {
     "id": "R12-AMBIENT-3104",
@@ -2377,7 +2391,7 @@
       "backend/crates/apps/qip-deepbrain/tests/research.rs:171 a_gap_worth_less_than_its_cheapest_observation_launches_no_information_request",
       "backend/crates/apps/qip-deepbrain/src/node.rs:450 maybe_sweep runs in the deep brain run loop"
     ],
-    "gap": "VOI is computed for research gaps, not for major uncertain decisions; urgency is a stated constant (UNMEASURED_URGENCY_BP); the \"launch\" is a record with no acquisition behind it; choice is between two fixed options rather than discriminating sources.",
+    "gap": "VOI is priced for research gaps only. The urgency constant and the launch-only record in this row are closed (urgency_bp from the signal deadline, R12-AMBIENT-3106; launch hands scout jobs, R12-AMBIENT-9033), but DECIDE emits no decision-uncertainty gap: platform.rs reads a proposal's confidence and nothing carries a low-confidence decision, its deadline and its value at stake to the research intake. That needs a new intake type in qip-kernel and a hand-off in node.rs, which is a kernel change this lane does not make.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2388,7 +2402,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now has a deep-brain caller, but scope is gaps not decisions and nothing is actually acquired."
+    "notes": "Checked 2026-10-18 against research.rs admit (urgency_bp, cheapest_viable) and launch_ranked."
   },
   {
     "id": "R12-DATA-3105",
@@ -2439,12 +2453,13 @@
   {
     "id": "R12-AMBIENT-3107",
     "status": "PARTIAL",
-    "current": "InfoRequest::should_halt now called in deepbrain research sweep at creation and per sweep.",
+    "current": "InfoRequest::record_acquisition shrinks the criteria remaining uncertainty reduction by the acquisition cost (basis points of the decision value, floored), so should_halt compares the marginal net value left after earlier purchases instead of the value fixed at creation. qip-deepbrain research.rs launches each request once and reports its launch rank read before the purchase.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:737 should_halt",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:699 info_request_should_halt_checks_deadline_and_minimum_viable_value"
+      "backend/crates/libs/qip-contracts/src/ambient.rs InfoRequest::record_acquisition / should_halt",
+      "backend/crates/apps/qip-deepbrain/src/research.rs launch_ranked",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs a_request_viable_at_creation_halts_once_its_acquisitions_have_consumed_its_value"
     ],
-    "gap": "Net value fixed at creation; not recomputed as marginal value after each acquisition.",
+    "gap": "The shrinkage is a proxy by cost, and production never makes a second acquisition against a request: deepbrain launch_ranked records exactly one acquisition and the next sweep completes it, so the marginal halt is proven on the contract but gates nothing on a running path. Closing needs repeated scout rounds against one request and the realised information gain fed back in place of the cost proxy.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2454,10 +2469,10 @@
       "R12-AMBIENT-3104"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-contracts --test ambient a_request_viable",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 L12: mutation that fired: removing the uncertainty_reduction_bp shrinkage left it at 9000 where the test expects 8100. Kept PARTIAL: contract half only."
   },
   {
     "id": "R12-REASON-3108",
@@ -2470,7 +2485,7 @@
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs:443-453",
       "backend/crates/runtime/qip-kernel/src/platform.rs:12585-12592"
     ],
-    "gap": "A critic's refutation must be able to refuse the hypothesis it falsifies (today it is advisory: tournament hold-out only); a kernel test that a refuted thesis is not sized.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: observe_hypothesis returning a typed refusal that reason_about_the_queue honours, and a kernel test that a DataPoisoning refutation yields no proposal.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2481,7 +2496,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The poisoning critic is wired (old gap closed). 'Can refuse it' holds only at verdict level."
+    "notes": "Round-2 independent audit, 2026-10-11: The poisoning critic is wired (old gap closed). 'Can refuse it' holds only at verdict level. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: A critic's refutation must be able to refuse the hypothesis it falsifies (today it is advisory: tournament hold-out only); a kernel test that a refuted thesis is not sized."
   },
   {
     "id": "R12-REASON-3109",
@@ -2516,7 +2531,7 @@
       "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::run_market",
       "backend/crates/services/qip-expansion/src/meta.rs::MetaIntelligence::allocate"
     ],
-    "gap": "Production bids are research-desk items only; models, agents and solvers never bid; TPU budget is zero. Allocation covers questions/simulations/data, not every listed recipient.",
+    "gap": "Only research items bid. A model-retraining, agent or solver bid is accepted by MetaIntelligence::allocate but has no consumer on a grant: the learning desk retrains on its own cadence (learning.rs due) and nothing lets a grant bring a round forward; agent budgets are not reachable from the research loop (see R12-AMBIENT-10094); no pending-QUBO queue exists for solver bids. TPU zero budget is a deployment fact.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2527,7 +2542,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Checked 2026-10-18. Model bids are the nearest: a drifted model could bid, and a grant could force LearningDesk to run next cycle; not built because a grant that changes nothing would be a label."
   },
   {
     "id": "R12-AMBIENT-3111",
@@ -2628,7 +2643,7 @@
       "backend/crates/runtime/qip-kernel/src/central/foundry.rs:102",
       "backend/crates/apps/qip-deepbrain/src/evolution.rs:821 StrategyFoundry::new"
     ],
-    "gap": "Discovery-to-symbolic-to-package pipeline.",
+    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: the same signer plus a reflex package loader in qip-edge, tested in research_market.rs.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2639,7 +2654,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D07; gap before it: Discovery-to-symbolic-to-package pipeline."
   },
   {
     "id": "R12-REFLEX-3116",
@@ -2675,7 +2690,7 @@
       "backend/crates/services/qip-world-model/src/lattice.rs",
       "backend/crates/runtime/qip-kernel/src/lattice_stage.rs"
     ],
-    "gap": "Not every material prediction site constructs one: qip-capital-fabric/src/forecast.rs and qip-financial valuation keep their own Forecast types.",
+    "gap": "The two named producers cannot construct the contract without inventing figures: qip_capital_fabric::forecast::DemandForecast carries location, kind, as_of, horizon, an interval and an observation count, and qip_financial's valuation forecasts are cashflow series (CashflowForecast); neither computes the contract's epistemic/aleatoric split, tail mass, regime confidence, model disagreement or expected impact, and Forecast refuses a record that cannot state them. A TryFrom would have to fill those with constants, which is a number nobody computed. Needs each producer to measure (or explicitly declare unmeasurable) the split first.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2686,7 +2701,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": "UncertaintyType is an either/or label, not a decomposition. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding Forecast exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's TryFrom conversions were not written because every field they would have to default is one the contract exists to refuse an unstated value for. Kept PARTIAL. Prior notes retained: the typed contract is produced by qip-world-model lattice.rs and federation.rs and read by the kernel's lattice stage."
   },
   {
     "id": "R12-OBS-3118",

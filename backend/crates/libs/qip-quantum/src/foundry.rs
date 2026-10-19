@@ -197,9 +197,16 @@ impl Foundry {
             },
         )?;
         let reason = "research family not built: no encoding, baseline or benchmark exists in-tree, and a variational or kernel model would need an ADR for any dependency it implies";
+        // Symbolic search is the one other family with an encoding and a
+        // baseline in-tree, so its reason is its own: saying "no encoding
+        // exists" of it would be a false statement about the tree
+        // (R12-QUANT-4040).
+        let symbolic = "research family not routed: the constraint encoder (`Problem::to_qubo`) and its proven classical minimiser (`Problem::minimise`) exist, and a quantum entrant is benchmarked on a constraint QUBO in qip-kernel's symbolic_federation test, but no problem the cycle poses is QUBO-admissible (the acting problem has Boolean domains and non-linear guards), so nothing routes this family and it is not registered";
         for kind in FamilyKind::ALL {
-            if kind != FamilyKind::PortfolioAllocation {
-                f.record_not_built(kind, reason)?;
+            match kind {
+                FamilyKind::PortfolioAllocation => {}
+                FamilyKind::SymbolicCombinatorialSearch => f.record_not_built(kind, symbolic)?,
+                _ => f.record_not_built(kind, reason)?,
             }
         }
         Ok(f)

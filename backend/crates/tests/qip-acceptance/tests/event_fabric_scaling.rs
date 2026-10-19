@@ -856,7 +856,10 @@ fn fabric_088_gap_metadata_carries_an_epoch_not_a_leader_map_and_nothing_routes_
          that clients route by it"
     );
 
-    // The router exists; nothing production calls it.
+    // The router exists, and exactly one production file calls it: the
+    // broker, to decide which instance contends at once for a managed
+    // partition's lease (ADR 0111 Amendment 1 §2, R12-FABRIC-8085). No client
+    // routes by it; the metadata answer above names no leader.
     let sources = qip_acceptance::files_with_extension("backend/crates", "rs");
     let mut scanned = 0;
     let mut callers = Vec::new();
@@ -884,8 +887,17 @@ fn fabric_088_gap_metadata_carries_an_epoch_not_a_leader_map_and_nothing_routes_
         "premise: the router exists where this test says it does"
     );
     assert!(
-        callers.is_empty(),
-        "a production source calls leader_for ({callers:?}) — assert clients route by it"
+        callers.len() == 1
+            && callers[0]
+                .ends_with("backend/crates/services/qip-streaming/src/event_fabric/broker.rs"),
+        "the only production caller of leader_for is the broker's lease placement; a client or \
+         another service calling it ({callers:?}) is a client routing by leader — assert that"
+    );
+    let broker =
+        qip_acceptance::read("backend/crates/services/qip-streaming/src/event_fabric/broker.rs");
+    assert!(
+        broker.contains("partition::leader_for(stream, partition, &names)"),
+        "premise: the caller is the lease placement and not some other use"
     );
 }
 

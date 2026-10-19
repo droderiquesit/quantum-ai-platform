@@ -400,3 +400,70 @@ fn a_sale_on_the_desk_venues_t_plus_one_calendar_is_withheld_until_it_settles() 
     );
     Ok(())
 }
+
+/// R12-CAPITAL-4080: a venue carrying exposure that nobody has read a
+/// statement for is charged its maintenance in the waterfall, so the cross-
+/// margin finding acts on capital rather than only on a report. The ceiling
+/// the gate reads falls by the maintenance the review computes for the book
+/// as filled, and by no more.
+///
+/// Mutation: make `CapitalObligations::margin_required` for
+/// `CrossMarginReview` return zero — the ceiling does not move and the
+/// equality fails.
+#[test]
+fn a_filled_book_with_no_statement_is_charged_its_maintenance_in_the_ceiling() -> Result<()> {
+    use qip_capital::margin::MarginModel;
+    use qip_core::Currency;
+
+    let mut platform = platform()?;
+    platform.set_survival_policy(SurvivalPolicy::shipped());
+    let empty = platform.survival_gross_ceiling().expect("seeded");
+    assert_eq!(empty, dec!("9500000"), "premise: nothing is withheld yet");
+
+    buy(&mut platform, dec!("20000"))?;
+    assert!(
+        !platform.orders().fills().is_empty(),
+        "premise: the order filled, so a counterparty carries gross"
+    );
+    assert!(
+        platform.holdings_observed().is_empty(),
+        "premise: no statement was read for any venue"
+    );
+    // Re-seed from the book as it now stands.
+    platform.set_survival_policy(SurvivalPolicy::shipped());
+    let review = qip_kernel::cross_margin::review(
+        platform.holdings_observed(),
+        platform.risk_figures(),
+        &MarginModel::default(),
+        Currency::USD,
+    )?;
+    assert!(
+        review.maintenance_required.is_positive(),
+        "premise: the filled book requires maintenance"
+    );
+    let charged = platform.survival_gross_ceiling().expect("re-seeded");
+    use qip_risk::aggregate::AggregateFigures;
+    let gross: Decimal = platform
+        .risk_figures()
+        .axis_exposures()
+        .get(qip_risk::limits::COUNTERPARTY_AXIS)
+        .into_iter()
+        .flatten()
+        .map(|(_, gross)| *gross)
+        .sum();
+    assert!(gross.is_positive(), "premise: the book carries gross");
+    // The fill's own commission and spread come out of equity, which moves
+    // the ceiling by a hundred or so; the maintenance is two orders larger.
+    let slack = dec!("1000");
+    assert!(
+        review.maintenance_required > slack * dec!("100"),
+        "premise: the maintenance dwarfs the fill's costs, or the bound below proves nothing"
+    );
+    let expected = empty + gross - review.maintenance_required;
+    assert!(
+        (charged - expected).abs() < slack,
+        "the ceiling {charged} is not the empty ceiling plus held gross less the maintenance \
+         charged ({expected})"
+    );
+    Ok(())
+}

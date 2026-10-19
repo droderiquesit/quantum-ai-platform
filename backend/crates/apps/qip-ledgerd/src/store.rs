@@ -473,6 +473,12 @@ pub struct LedgerStore {
     /// decision reads the tail, the park and the cursor first, and two
     /// deliveries deciding on the same tail would both apply.
     writer: Mutex<()>,
+    /// When this process first saw each cell parked, so the age of the
+    /// longest park is a measurement and not a guess. In memory and
+    /// monotonic: a park inherited from before a restart is aged from the
+    /// restart, which understates it, and that understatement is stated on
+    /// [`Self::record_mismatch_age`] rather than hidden.
+    parked_since: Mutex<BTreeMap<String, std::time::Instant>>,
 }
 
 impl LedgerStore {
@@ -497,6 +503,7 @@ impl LedgerStore {
             store: backend,
             telemetry,
             writer: Mutex::new(()),
+            parked_since: Mutex::new(BTreeMap::new()),
         };
         ledger.verify_history()?;
         // A restarted process reports the parks it inherited, not zero.
@@ -1473,9 +1480,37 @@ impl LedgerStore {
     }
 
     fn record_parked_keys(&self) -> Result<()> {
-        let parked = self.store.scan_prefix(PREFIX_PARK)?.len();
-        self.telemetry.parked_keys(parked as u64);
+        let parked = self.parked()?;
+        self.telemetry.parked_keys(parked.len() as u64);
+        let now = std::time::Instant::now();
+        let mut since = self.parked_since.lock().unwrap_or_else(|e| e.into_inner());
+        since.retain(|cell, _| parked.contains_key(cell));
+        for cell in parked.keys() {
+            since.entry(cell.clone()).or_insert(now);
+        }
+        drop(since);
+        self.record_mismatch_age();
         Ok(())
+    }
+
+    /// Record how long the longest-parked cell has been parked, zero when
+    /// none is: the ledger's reconciliation mismatch age. Called whenever the
+    /// park set changes and on every consumer step, because the age grows
+    /// while nothing else happens.
+    ///
+    /// The clock starts when this process first saw the park, so a park
+    /// inherited from before a restart reads younger than it is. The
+    /// understatement runs towards "reconciled sooner than it was", which is
+    /// the wrong direction for an alarm, and is why the persisted park does
+    /// not yet carry its own time: that is a change to a stored row.
+    pub fn record_mismatch_age(&self) {
+        let since = self.parked_since.lock().unwrap_or_else(|e| e.into_inner());
+        let age = since
+            .values()
+            .min()
+            .map_or(0.0, |oldest| oldest.elapsed().as_secs_f64());
+        drop(since);
+        self.telemetry.mismatch_age_seconds(age);
     }
 }
 

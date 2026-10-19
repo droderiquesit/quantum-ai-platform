@@ -93,7 +93,8 @@ use qip_capital_fabric::tolerance::{
     class_for_desk_cash,
 };
 use qip_capital_fabric::wallet::{
-    Asset, HoldingObservation, LedgerView, Provenance as HoldingProvenance, VenueAsset,
+    Asset, HoldingObservation, LedgerView, Provenance as HoldingProvenance, ReconciliationOutcome,
+    VenueAsset,
 };
 use qip_capital_fabric::{
     CapitalLocation, DemandForecast, DemandForecaster, DemandKind, DemandObservation, FundingCurve,
@@ -182,7 +183,7 @@ use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::factor::FactorRisk;
-use qip_risk::limits::{LimitSet, RiskState};
+use qip_risk::limits::{LimitSet, MarginBasis, RiskState, VenueMargin};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
@@ -659,6 +660,15 @@ pub struct Platform {
     /// read twice: a cycle that reaches no construction journals nothing
     /// rather than the last cycle's comparison.
     cycle_solver_routing: Option<SolverRoutingJournal>,
+    /// The latest DECIDE solve, kept for the next UNDERSTAND to state in the
+    /// quantum contract (R12-QUANT-4063).
+    pending_routing: Option<(u64, qip_optimization_engine::RoutingDecision)>,
+    /// Production models whose drift stands past their threshold, as the last
+    /// registry read found them (R12-RES-7101). Bounded by the registry.
+    drifted_models: BTreeSet<String>,
+    /// What the latest federation review earns each instrument in DECIDE's
+    /// caps (ADR 0125 decision 4), with the spread behind it.
+    federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -807,6 +817,11 @@ pub struct Platform {
     /// assembly like `asset_classes`; the release loop asks it which
     /// permission an order needs.
     derivative_types: BTreeMap<String, InstrumentType>,
+    /// The smallest tradable unit of every instrument — lot size times
+    /// contract multiplier — taken from the universe at assembly like
+    /// `asset_classes`. What the symbolic rule pack prices one lot with
+    /// (R12-REASON-3057).
+    lot_units: BTreeMap<String, Decimal>,
     /// COVERAGE-013: who may trade which derivative type. Empty at assembly,
     /// so every derivative order is refused until a composition root grants.
     derivative_permissions: DerivativePermissions,
@@ -814,6 +829,12 @@ pub struct Platform {
     /// `None` refuses every derivative, because a grant with nobody to read
     /// it against must not admit anything.
     derivative_desk: Option<(String, Jurisdiction)>,
+    /// The jurisdictions this platform is licensed to execute in, read by
+    /// [`Platform::executable_scope`]. `None` applies no licence gate: the
+    /// determination is compliance's and a composition root states it through
+    /// [`Platform::license_jurisdictions`]. Once stated, an instrument whose
+    /// governing jurisdictions are not all in it is shadow, never executable.
+    licensed_jurisdictions: Option<BTreeSet<Jurisdiction>>,
     /// The classes this platform is registered to trade (blueprint §17.7),
     /// and the gate `Self::new` admits the universe through. Built at
     /// assembly from the shipped table and never from the universe: a
@@ -1216,6 +1237,17 @@ const COUNTERFACTUALS_PER_CYCLE: usize = 8;
 /// reported on the cycle, because evicting the oldest waiting path would
 /// silently choose which veto goes unexamined.
 const DECLINED_HISTORY: usize = 256;
+
+/// The `control` an order refused for a wallet reconciliation halt is counted
+/// under, and the `gate` its rejection record carries (R12-ASSET-4074). A
+/// source literal, so the label has exactly one value for this refusal.
+const WALLET_HALT_CONTROL: &str = "wallet-halt";
+
+/// Why no proposal is signed while the desk's feed to the ledger cannot take
+/// another record (R12-RES-7098). One sentence for the cycle report; the
+/// counter carries it as `control="ledger"`, never as this text.
+const LEDGER_UNCOMMITTED_REASON: &str = "the desk's ledger feed is full or has a gap, so new \
+     exposure would not reach the authoritative ledger; cancels and fill booking continue";
 
 /// Minimum scored, declined paths on the same instrument before
 /// [`Platform::counterfactual_sizing_multiplier`] trusts the pattern enough to
@@ -1715,6 +1747,11 @@ const FABRIC_CORRELATION: &str = "capital-fabric-journal";
 /// the label's cardinality is fixed at compile time and no instrument,
 /// strategy or order id can ever reach it.
 const LIQUIDITY_FIGURE: &str = "liquidity";
+
+/// The name the cross-margin read is filed under in `RiskState::unevaluated`
+/// when a venue statement exists and the review of it could not be computed.
+/// A source literal, for the reason `LIQUIDITY_FIGURE` is one.
+const MARGIN_FIGURE: &str = "margin";
 
 /// The exposure buckets one instrument record vouches for.
 ///
@@ -3183,6 +3220,9 @@ struct FilledPath {
     /// of the fill error can say which way the twin was wrong.
     side: BookSide,
     decided_at: Timestamp,
+    /// What the venue left unfilled of the order when it reported, from the
+    /// order manager's own book (R12-MODEL-6004). Zero for a whole fill.
+    unfilled: Decimal,
 }
 
 /// What the twin found about one fill, once it has priced the sizes not
@@ -3220,6 +3260,21 @@ pub struct FillScore {
     /// prices. `None` where the twin's own `trade` alternative did not fill,
     /// so there was no simulated entry to compare. A statistic, not money.
     pub trade_error_bps: Option<f64>,
+    /// The quantity the venue left unfilled when it reported this order,
+    /// zero for a whole fill (R12-MODEL-6004). Without it a partial fill and
+    /// a whole one left the same score, and the size findings above — priced
+    /// on the quantity that traded — read as though the order had been the
+    /// size that was asked for. Defaults to zero for a score written before
+    /// the field existed, which is the reading those records were made under.
+    #[serde(default)]
+    pub unfilled: Decimal,
+}
+
+impl FillScore {
+    /// Whether the venue filled only part of the order this scores.
+    pub fn is_partial(&self) -> bool {
+        self.unfilled.is_positive()
+    }
 }
 
 /// What the LEARN stage's calibration pass left in the journal.
@@ -4762,6 +4817,15 @@ impl Platform {
         // platform holds no record of is refused at the door every desk order
         // passes, not risk-checked against a book with no figures for it.
         let known_instruments: Vec<String> = asset_classes.keys().cloned().collect();
+        let lot_units: BTreeMap<String, Decimal> = universe
+            .iter()
+            .map(|object| {
+                (
+                    object.object_id.as_str().to_string(),
+                    object.lot_size * object.contract_multiplier,
+                )
+            })
+            .collect();
         let derivative_types: BTreeMap<String, InstrumentType> = universe
             .iter()
             .filter(|object| object.instrument_type.is_derivative())
@@ -5237,6 +5301,9 @@ impl Platform {
             cycle_family_structure: None,
             cycle_horizon_arming: None,
             cycle_solver_routing: None,
+            pending_routing: None,
+            drifted_models: BTreeSet::new(),
+            federation_narrowing: BTreeMap::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -5261,8 +5328,10 @@ impl Platform {
             inherited_through,
             asset_classes,
             derivative_types,
+            lot_units,
             derivative_permissions: DerivativePermissions::none(),
             derivative_desk: None,
+            licensed_jurisdictions: None,
             asset_class_registry,
             breadth: crate::breadth::BreadthPlane::default(),
             exposure_axes,
@@ -5805,6 +5874,11 @@ impl Platform {
         metrics.describe(
             names::DATA_LINEAGE_COMPLETENESS,
             "the fraction of records received since assembly whose lineage reached the event log",
+        );
+        metrics.describe(
+            names::DATA_REFETCH_HEALTH,
+            "the share of the extents a re-fetch pass asked a source for again that the source \
+             still served, per source: 1 all served, 0 none",
         );
         metrics.describe(
             names::CENTRAL_CROSSES_SETTLED,
@@ -8436,7 +8510,7 @@ impl Platform {
                 // than skipped when a measurement it reads is malformed — a
                 // grant signed past a governor that could not decide is a
                 // grant the governor never saw.
-                let narrowing = self.governor.grant_decision();
+                let narrowing = self.grant_narrowing(now);
                 let outcome = narrowing.and_then(|narrowing| {
                     self.central
                         .issue_narrowed(
@@ -9872,6 +9946,12 @@ impl Platform {
     /// The survival policy every construction withholds under.
     pub fn survival_policy(&self) -> &crate::survival::SurvivalPolicy {
         self.governor.policy()
+    }
+
+    /// Free cash and the funding-maturity tier the survival waterfall last
+    /// withheld — the figures `LimitKind::MinFundingBuffer` is read from.
+    pub fn survival_funding_read(&self) -> Option<(Decimal, Decimal)> {
+        self.governor.funding_read()
     }
 
     /// The gross the survival kernel stands behind now — the figure
@@ -12049,6 +12129,18 @@ impl Platform {
                     );
                 }
             }
+            // The calibration objective, judged each cycle from the same card.
+            if let Some(breached) = crate::lattice_stage::calibration_slo_breached(
+                &card,
+                crate::lattice_stage::CALIBRATION_BRIER_BOUND,
+                crate::lattice_stage::CALIBRATION_MIN_RESOLVED,
+            ) {
+                self.telemetry.metrics.gauge(
+                    crate::lattice_stage::LATTICE_CALIBRATION_SLO_BREACHED,
+                    labels([("horizon", horizon.as_str())]),
+                    if breached { 1.0 } else { 0.0 },
+                );
+            }
         }
         for inconsistency in &lattice.inconsistencies {
             self.telemetry.metrics.count(
@@ -12119,12 +12211,57 @@ impl Platform {
     /// the detail clause and the problems: each member assessment the
     /// federation refused, and a review the log refused, are findings the
     /// stage carries rather than silences.
+    /// What the causal graph's live claims into each instrument imply for its
+    /// next return (R12-WORLD-3040, -3042): each cause's latest return
+    /// carried over the claim's signed transmission, summed. An instrument no
+    /// live claim reaches is absent, and the federation's causal member says
+    /// it has nothing to go on rather than reading zero as "no move".
+    fn causal_views(
+        &self,
+        now: Timestamp,
+    ) -> BTreeMap<String, crate::federation_stage::CausalView> {
+        let latest: BTreeMap<&String, f64> = self
+            .price_history
+            .iter()
+            .filter_map(|(subject, closes)| Self::returns_of(closes).last().map(|r| (subject, *r)))
+            .collect();
+        let world = self.world.read();
+        self.price_history
+            .keys()
+            .filter_map(|subject| {
+                let claims = world.causal().incoming(subject, now);
+                if claims.is_empty() {
+                    return None;
+                }
+                let lean: f64 = claims
+                    .iter()
+                    .filter_map(|edge| {
+                        latest
+                            .get(&edge.cause)
+                            .map(|moved| edge.signed_transmission() * moved)
+                    })
+                    .sum();
+                let confidence =
+                    claims.iter().map(|edge| edge.confidence).sum::<f64>() / claims.len() as f64;
+                Some((
+                    subject.clone(),
+                    crate::federation_stage::CausalView {
+                        lean,
+                        claims: claims.len(),
+                        confidence,
+                    },
+                ))
+            })
+            .collect()
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
         };
         let mut instruments = Vec::new();
         let mut thin_subjects = 0;
+        let causal_views = self.causal_views(now);
         for (subject, closes) in &self.price_history {
             let returns = Self::returns_of(closes);
             let (Some(last_close), Some(bar)) = (
@@ -12143,6 +12280,7 @@ impl Platform {
                 last_close: *last_close,
                 observed_through: bar.close_time(),
                 spread_ratio: self.spread_ratio(subject),
+                causal: causal_views.get(subject).copied(),
             });
         }
         let level = self.autonomy.level();
@@ -12169,6 +12307,13 @@ impl Platform {
             }),
         };
         let review = self.federation.run(&inputs, now);
+        // What this review's disagreements earn each instrument in DECIDE
+        // (ADR 0125 decision 4), replaced wholesale so a disagreement that
+        // has resolved stops narrowing on the next pass.
+        self.federation_narrowing = crate::federation_stage::narrowings_of(
+            &review,
+            inputs.instruments.iter().map(|view| view.subject.clone()),
+        );
         let detail = review.detail();
         let mut problems: Vec<String> = review
             .refused
@@ -12210,6 +12355,14 @@ impl Platform {
             ));
         }
         (detail, problems)
+    }
+
+    /// What the latest federation review earns each instrument in DECIDE's
+    /// caps, and the spread it rests on.
+    pub const fn federation_narrowing(
+        &self,
+    ) -> &BTreeMap<String, (crate::federation_stage::Narrowing, f64)> {
+        &self.federation_narrowing
     }
 
     /// The World Model Federation as the UNDERSTAND stage runs it.
@@ -12514,19 +12667,41 @@ impl Platform {
     ///
     /// Returns a vector of routing decisions that were journalled this cycle,
     /// for observability and for the stage outcome detail.
-    fn route_quantum_decisions(&mut self, _now: Timestamp) -> Vec<RoutingDecision> {
-        // M6 A4 Packet 1: infrastructure wire for quantum routing.
-        // This method will be expanded by later packets to:
-        // - Check for active optimization problems in the portfolio or reasoning engine
-        // - For each problem, compute a classical baseline solution
-        // - For each problem, optionally compute a quantum solution
-        // - Create a RoutingDecision comparing the two
-        // - Journal the decision with metadata for auditability
-        //
-        // For now, return empty vector as no problems may be active yet.
-        // As later packets wire in the quantum router integration, this will
-        // populate the vector with actual routing decisions.
-        Vec::new()
+    fn route_quantum_decisions(&mut self, now: Timestamp) -> Vec<RoutingDecision> {
+        // The previous DECIDE's solve, taken so each is journalled once. It
+        // is the previous cycle's because UNDERSTAND runs before DECIDE:
+        // the record carries that cycle's number, not this one's.
+        let Some((cycle, routing)) = self.pending_routing.take() else {
+            return Vec::new();
+        };
+        match crate::quantum_routing::contract_of(cycle, &routing) {
+            Ok(None) => Vec::new(),
+            Ok(Some(recorded)) => {
+                let decision = recorded.decision.clone();
+                match self.journal_record(
+                    recorded,
+                    crate::quantum_routing::QUANTUM_ROUTING_ORIGIN,
+                    now,
+                ) {
+                    Ok(()) => vec![decision],
+                    Err(error) => {
+                        self.capture_problems.push(format!(
+                            "cycle {cycle}'s solve was stated in the quantum contract and not \
+                             journalled: {}",
+                            error.message()
+                        ));
+                        Vec::new()
+                    }
+                }
+            }
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "cycle {cycle}'s solve could not be stated in the quantum contract: {}",
+                    error.message()
+                ));
+                Vec::new()
+            }
+        }
     }
 
     fn stage_discover(&mut self, now: Timestamp) -> StageOutcome {
@@ -13702,6 +13877,51 @@ impl Platform {
     /// reference and returns a clause and a problem, so the derivation has no
     /// path back into the thesis, its conviction or any order: that is what
     /// keeps it advisory by construction rather than by convention.
+    /// What one lot of `subject` leaves of the position budget and of cash,
+    /// in whole currency units, for the symbolic rule pack (REASON-3057).
+    ///
+    /// Each is `None` where its inputs are unreadable — no lot on record, no
+    /// price yet, no position cap among the limits — so the pack is given a
+    /// fact only when there is one. The budget is equity times the tightest
+    /// `MaxPositionWeight`; the whole-unit floor makes the figure a strict
+    /// answer to "does one lot fit", never a rounding in the lot's favour.
+    fn lot_headrooms(&self, subject: &str) -> (Option<i64>, Option<i64>) {
+        let Some(unit) = self.lot_units.get(subject) else {
+            return (None, None);
+        };
+        let Some(price) = self
+            .price_history
+            .get(subject)
+            .and_then(|closes| closes.last())
+            .and_then(|close| Decimal::from_f64(*close))
+        else {
+            return (None, None);
+        };
+        let lot_notional = *unit * price;
+        let whole = |amount: Decimal| {
+            // Floored, so a headroom of minus one hundredth is minus one and
+            // still reads as a shortfall.
+            let floored = amount.to_f64().floor();
+            (floored.is_finite() && floored.abs() < 9.0e15).then_some(floored as i64)
+        };
+        let cap = self
+            .monitor
+            .limits()
+            .limits
+            .iter()
+            .filter_map(|limit| match limit.kind {
+                qip_risk::limits::LimitKind::MaxPositionWeight { limit } => Some(limit),
+                _ => None,
+            })
+            .fold(None, |tightest: Option<f64>, limit| {
+                Some(tightest.map_or(limit, |t| t.min(limit)))
+            });
+        let lot_headroom = cap
+            .and_then(Decimal::from_f64)
+            .and_then(|weight| whole(self.capital.equity() * weight - lot_notional));
+        (lot_headroom, whole(self.capital.cash - lot_notional))
+    }
+
     fn reason_symbolically(
         &mut self,
         opportunity: &Opportunity,
@@ -13726,6 +13946,7 @@ impl Platform {
                     .map(|latest| (id.clone(), *latest))
             })
             .collect();
+        let (lot_headroom, cash_headroom) = self.lot_headrooms(subject.as_str());
         let input = SymbolicInput {
             cycle: self.cycle,
             hypothesis_id: hypothesis.hypothesis_id.as_str().to_string(),
@@ -13766,6 +13987,8 @@ impl Platform {
                 .asset_classes
                 .get(subject.as_str())
                 .map(|class| class.as_str().to_string()),
+            lot_headroom,
+            cash_headroom,
         };
         let derivation = {
             let world = self.world.read();
@@ -14127,6 +14350,7 @@ impl Platform {
                 realised_move_bps: outcome.realised_move_bps,
                 realised_pnl: outcome.realised_pnl,
                 expected_move_bps: expected.get(outcome.hypothesis_id.as_str()).copied(),
+                fills: self.fills_expressing(&outcome.hypothesis_id),
             });
             episode.known_at = now;
             if let Some(lesson) = self.write_research_memory(&episode, now) {
@@ -14136,6 +14360,56 @@ impl Platform {
             remembered += 1;
         }
         Ok((remembered, lessons))
+    }
+
+    /// The weakest estimated accuracy among the components that produced
+    /// `hypothesis` (its detector and the analysts that ran on it), read from
+    /// the self-model at sizing. `None` when the hypothesis has no remembered
+    /// lineage or none of its components has a graded record: silence is not
+    /// unreliability.
+    fn thesis_reliability(&self, hypothesis: &str) -> Option<f64> {
+        let lineage = self.attribution_lineage.lineage(hypothesis)?;
+        lineage
+            .forecasters
+            .iter()
+            .filter_map(|forecaster| {
+                let (kind, id) = forecaster.split_once(':')?;
+                let key = match kind {
+                    "detector" => ComponentKey::detector(id),
+                    "analyst" => ComponentKey::analyst(id),
+                    _ => return None,
+                }
+                .ok()?;
+                self.self_model.factor(&key)
+            })
+            .reduce(f64::min)
+    }
+
+    /// The venue's fills on every remembered order that expressed
+    /// `hypothesis`, so an episode says what the platform did about its claim
+    /// and not only what it claimed. Matched through the attribution
+    /// lineage's belief key, which is stamped when the order is accepted; an
+    /// order whose lineage was evicted is not found, and the episode then
+    /// records no fill rather than a guessed one.
+    fn fills_expressing(&self, hypothesis: &str) -> Vec<qip_ai::memory::EpisodeFill> {
+        use qip_learning_engine::keyed_attribution::Dimension;
+        let orders: BTreeSet<String> = self
+            .attribution_lineage
+            .keys()
+            .into_iter()
+            .filter(|(_, keys)| keys.values(Dimension::Belief).contains(&hypothesis))
+            .map(|(order, _)| order)
+            .collect();
+        self.orders()
+            .fills()
+            .into_iter()
+            .filter(|fill| orders.contains(fill.order_id.as_str()))
+            .map(|fill| qip_ai::memory::EpisodeFill {
+                order_id: fill.order_id.to_string(),
+                quantity: fill.quantity,
+                price: fill.price,
+            })
+            .collect()
     }
 
     /// Write one resolved episode into the research organisation's memory,
@@ -14317,7 +14591,8 @@ impl Platform {
     ) -> Result<qip_contracts::degradation::DegradationState> {
         use qip_contracts::degradation::{
             BELIEF_HORIZON, BeliefFreshness, CAUSAL_GRAPH_HORIZON, Capability,
-            CausalGraphFreshness, DegradationState, SELF_MODEL_HORIZON, SelfModelFreshness,
+            CausalGraphFreshness, DegradationState, Freshness, SELF_MODEL_HORIZON,
+            SelfModelFreshness,
         };
         let mut state = DegradationState::fully_available();
         let self_model = SelfModelFreshness::assess(
@@ -14326,7 +14601,18 @@ impl Platform {
             SELF_MODEL_HORIZON,
             now,
         )?;
-        state.observe(Capability::SelfModel, self_model.freshness());
+        // A production model past its drift threshold is a component the
+        // platform has just measured as unreliable, which is what this row
+        // is the estimate of. It reads no better than stale however fresh the
+        // outcomes are (R12-RES-7101): a rollback retires the card and
+        // clears the reading, and a rollback that could not run leaves the
+        // sizing narrowed rather than the drift silent.
+        let self_model_freshness = if self.drifted_models.is_empty() {
+            self_model.freshness()
+        } else {
+            self_model.freshness().max(Freshness::Stale)
+        };
+        state.observe(Capability::SelfModel, self_model_freshness);
         let causal = CausalGraphFreshness::assess(
             self.world.read().causal().last_updated(),
             CAUSAL_GRAPH_HORIZON,
@@ -14337,6 +14623,62 @@ impl Platform {
             BeliefFreshness::assess(self.reasoning.beliefs().last_updated(), BELIEF_HORIZON, now)?;
         state.observe(Capability::BeliefState, belief.freshness());
         Ok(state)
+    }
+
+    /// The contraction the next capital grant takes: the confidence
+    /// governor's, compounded with the centre's §6.2 sizing multiplier so a
+    /// grant narrows when the evidence the centre sizes on has gone stale
+    /// exactly as a construction does (R12-RISK-4113). Contraction only: the
+    /// multiplier is in `(0, 1]` by construction and the product is checked.
+    /// A freshness reading that cannot be taken refuses the grant rather than
+    /// signing it against a table nobody read.
+    pub(crate) fn grant_narrowing(
+        &self,
+        now: Timestamp,
+    ) -> Result<crate::confidence::ConfidenceDecision> {
+        let mut decision = self.governor.grant_decision()?;
+        let freshness = self.central_degradation(now)?.central_sizing_multiplier();
+        if freshness < Decimal::ONE {
+            decision.multiplier = decision.multiplier.checked_mul(freshness).ok_or_else(|| {
+                Error::numeric(
+                    "narrowing the capital grant by evidence freshness overflows".to_string(),
+                )
+            })?;
+            decision.contractions.push(crate::confidence::Contraction {
+                trigger: crate::confidence::Trigger::EvidenceFreshness,
+                subject: None,
+                multiplier: freshness,
+                reason: format!(
+                    "the evidence the centre sizes on is stale or unavailable (§6.2); the grant \
+                     is narrowed to {freshness}"
+                ),
+            });
+        }
+        Ok(decision)
+    }
+
+    /// Read the model registry for production models that have drifted past
+    /// their threshold, and remember which (R12-RES-7101).
+    ///
+    /// The registry belongs to the process that serves models, not to the
+    /// platform, so the platform only learns of drift when that process says
+    /// so; the deep brain's learning round calls this after it has measured
+    /// drift and rolled back what it could. What is kept is the set of
+    /// references and nothing else: [`Self::central_degradation`] reads
+    /// "any" from it and narrows the self-model row, and a later call with a
+    /// registry whose drifted cards were retired empties the set again.
+    pub fn observe_model_drift(&mut self, registry: &qip_ai::registry::ModelRegistry) {
+        self.drifted_models = registry
+            .iter()
+            .filter(|card| card.stage == qip_ai::registry::ModelStage::Production)
+            .filter(|card| card.drift_score > card.drift_threshold)
+            .map(qip_ai::registry::ModelCard::reference)
+            .collect();
+    }
+
+    /// The production models the last registry read found drifted.
+    pub const fn drifted_models(&self) -> &BTreeSet<String> {
+        &self.drifted_models
     }
 
     /// The credit register derived from the universe at assembly: one profile
@@ -14793,6 +15135,7 @@ impl Platform {
                 hypothesis_id: thesis.hypothesis_id.clone(),
                 object_id: thesis.object_id.as_str().to_string(),
                 regime: self.market_regime(thesis.object_id.as_str()),
+                reliability: self.thesis_reliability(&thesis.hypothesis_id),
             })
             .collect();
         let figures = self.survival_figures(free, now)?;
@@ -14848,6 +15191,17 @@ impl Platform {
         crate::regime_allocation::narrow(&mut caps, &mut capped, theses, |subject| {
             self.market_regime(subject)
         });
+        // ADR 0125 decision 4: a federation that disagrees about an
+        // instrument narrows its bound by the declared schedule, compounding
+        // with the two above and never above one.
+        crate::federation_stage::narrow(
+            &mut caps,
+            &mut capped,
+            theses
+                .iter()
+                .map(|thesis| thesis.object_id.as_str().to_string()),
+            &self.federation_narrowing,
+        );
         // Every survival tier and confidence contraction that bit, on the
         // same DECIDE detail line the caps above reach: the recorded capital
         // response a tail world the book does not survive is required to
@@ -14875,6 +15229,7 @@ impl Platform {
         // on exactly the cycles an operator most wants to read.
         let comparison = SolverRoutingJournal::of(&outcome.routing);
         self.cycle_solver_routing = Some(comparison.clone());
+        self.pending_routing = Some((self.cycle, outcome.routing.clone()));
         // QUANT-031's benchmark record, from the same value the cycle entry
         // carries; `SolverBenchmarked` says why that is one comparison under
         // two keys and not two accounts of it. A log that will not take it
@@ -15590,7 +15945,13 @@ impl Platform {
         let tester =
             StressTester::new(costs.commission_bps + costs.half_spread_bps + costs.tax_bps);
         let scenarios = standard_library();
-        let results = match tester.apply_all(&scenarios, &exposures, equity.to_f64(), now) {
+        // R12-RISK-3103: beside the library, one event joining two entries'
+        // factor sets that no entry holds together. Only the loss tolerance
+        // and the survival kernel read it, so it can narrow, never widen;
+        // the adversarial sequence below stays bounded by the library proper.
+        let mut applied = scenarios.clone();
+        applied.extend(crate::tail::composed_scenario(&scenarios));
+        let results = match tester.apply_all(&applied, &exposures, equity.to_f64(), now) {
             Ok(results) => results,
             Err(error) => {
                 problems.push(format!("stress test refused: {}", error.message()));
@@ -16377,12 +16738,28 @@ impl Platform {
         // same reason, which makes this the second layer rather than the only
         // one; it is the layer that states the reason once on the cycle
         // report instead of once per order.
-        let signable = action.permits_new_risk() && compliance.is_ok() && unevaluated.is_none();
+        //
+        // And a book whose accounting cannot be committed is not signable
+        // either (R12-RES-7098). The ledger is the authority for what the
+        // desk holds; a desk whose feed to it is full, or whose chain has
+        // advanced over a record it could not queue, is taking risk the
+        // authority has not been told about, and it would keep taking it for
+        // as long as nothing drains the feed. Withheld here, at the one place
+        // new exposure is authorised, so cancels and the book following the
+        // venue (`a_full_feed_does_not_stop_the_book_following_the_venue`)
+        // are untouched: only a *new* signature is refused.
+        let ledger_blocked = self.desk_ledger.is_full() || self.desk_ledger.has_gap();
+        let signable = action.permits_new_risk()
+            && compliance.is_ok()
+            && unevaluated.is_none()
+            && !ledger_blocked;
         if !signable {
             let reason = if !action.permits_new_risk() {
                 format!("the risk monitor is at {}", action.as_str())
             } else if let Some(refusal) = &unevaluated {
                 format!("the liquidity floor was not evaluated: {refusal}")
+            } else if ledger_blocked {
+                LEDGER_UNCOMMITTED_REASON.to_string()
             } else {
                 compliance
                     .err()
@@ -16408,6 +16785,8 @@ impl Platform {
                         "risk-monitor"
                     } else if unevaluated.is_some() {
                         "liquidity-read"
+                    } else if ledger_blocked {
+                        "ledger"
                     } else {
                         "compliance"
                     },
@@ -18022,6 +18401,8 @@ impl Platform {
             }
         };
 
+        self.record_obligation_demand(&review, now);
+
         let mut problems = Vec::new();
         // **Only a margin call is a problem. An unread account is a
         // sentence.** The distinction is the one the `reconcile_wallet` call
@@ -18146,6 +18527,7 @@ impl Platform {
         // pre-trade veto and the monitor read. See `crate::shared_cause` for
         // why the per-family level has no producer and no shipped cap.
         let state = crate::shared_cause::observe(&self.world, &self.price_history, state);
+        let state = self.with_margin_and_funding(state, figures);
         // Both maps or neither. The fractions are a sum over the same ladder
         // the day counts come from, so filling one from a ladder whose totals
         // could not be computed would leave the two halves of one liquidity
@@ -18161,6 +18543,101 @@ impl Platform {
             },
             Err(error) => state.with_unevaluated(LIQUIDITY_FIGURE, error.message()),
         }
+    }
+
+    /// Margin utilisation and the funding buffer, for `LimitKind::MaxMarginUtilisation`
+    /// and `LimitKind::MinFundingBuffer` (R12-RISK-4098).
+    ///
+    /// Both existed as measurements — the cross-margin review raised a finding
+    /// and a stage problem on a call, and the survival waterfall withheld the
+    /// funding-maturity tier — and neither reached the gate, so an order could
+    /// deepen a call the platform had just reported or draw a book below the
+    /// commitments it owed. They are filed here, on the one state the gate and
+    /// the monitor both read, from the same review and the same sizing the
+    /// survival kernel already ran, never a second derivation.
+    ///
+    /// **Margin utilisation is over observed venues only.** Maintenance at a
+    /// venue nobody has a statement for is the cross-margin finding's to
+    /// report, and a desk is entitled to have handed in nothing; folding it in
+    /// here would refuse every order of every deployment that observes one
+    /// venue and not another. With no statement the figure stays absent. A
+    /// review that cannot be read when a statement exists is filed as
+    /// unevaluated, which refuses, because an obligation that could not be
+    /// measured is not an obligation of zero.
+    ///
+    /// **The funding buffer is filed only while a commitment stands**, from
+    /// the latest sizing or seed of the survival governor: equity less held capital less the
+    /// funding-maturity tier, over equity. Non-positive equity files negative
+    /// infinity, a floor breach, rather than an undefined ratio.
+    fn with_margin_and_funding(
+        &self,
+        state: RiskState,
+        figures: &impl AggregateFigures,
+    ) -> RiskState {
+        let mut state = state;
+        if !self.holdings_observed.is_empty() {
+            match crate::cross_margin::review(
+                &self.holdings_observed,
+                figures,
+                &MarginModel::default(),
+                SETTLEMENT_CURRENCY,
+            ) {
+                Ok(review) => {
+                    // Each observed venue is its own isolated domain with
+                    // rehypothecation forbidden, so the figure is the worst
+                    // single venue: pooling cover let a surplus at one prime
+                    // hide a call at another. The same per-venue cover and
+                    // debit go to the limit as a basis, so it can charge the
+                    // order under check; this figure is the book as it stands.
+                    let model = MarginModel::default();
+                    let mut venues = BTreeMap::new();
+                    let mut worst = 0.0_f64;
+                    for coverage in &review.coverage {
+                        worst = worst.max(coverage.utilisation());
+                        // The coverage carries maintenance whole; the debit is
+                        // what is left once the rated gross is taken out, the
+                        // inverse of `cross_margin::requirement`.
+                        let gross = figures
+                            .axis_exposures()
+                            .get(qip_risk::limits::COUNTERPARTY_AXIS)
+                            .and_then(|axis| axis.get(coverage.venue.as_str()))
+                            .copied()
+                            .filter(|gross| gross.is_positive())
+                            .unwrap_or(Decimal::ZERO);
+                        let debit = coverage.maintenance - gross * model.maintenance_rate;
+                        venues.insert(
+                            coverage.venue.as_str().to_string(),
+                            VenueMargin {
+                                cover: coverage.effective(),
+                                debit,
+                            },
+                        );
+                    }
+                    state.margin_utilisation = Some(worst);
+                    state.margin_basis = Some(MarginBasis {
+                        maintenance_rate: model.maintenance_rate,
+                        venues,
+                    });
+                }
+                Err(error) => {
+                    state = state.with_unevaluated(MARGIN_FIGURE, error.message());
+                }
+            }
+        }
+        if let Some((free_cash, maturing)) = self.governor.funding_read()
+            && maturing.is_positive()
+        {
+            let equity = self.capital.equity();
+            state.funding_buffer = Some(if !equity.is_positive() {
+                f64::NEG_INFINITY
+            } else {
+                match free_cash.checked_sub(maturing) {
+                    Some(left) => left.to_f64() / equity.to_f64(),
+                    None => f64::NEG_INFINITY,
+                }
+            });
+        }
+        state
     }
 
     /// The book as a liquidity ladder, or a refusal naming what stopped it.
@@ -18335,6 +18812,13 @@ impl Platform {
     /// and a record that kept only the first could say what the platform earned
     /// and not what it declined.
     pub fn submit_order(&mut self, order: Order, now: Timestamp) -> Result<()> {
+        // R12-ASSET-4074: a venue-asset the wallet reconciliation halted is
+        // not traded into. Before the pre-trade routing on purpose: the
+        // desk's own books disagree with the custodian's about this asset,
+        // and no limit computed from them is a limit on what is really held.
+        if let Some(reason) = self.wallet_halt_for(order.object_id.as_str(), order.side) {
+            return self.refuse_for_wallet_halt(&order, reason, now);
+        }
         // R12-RISK-3022: the pre-trade check is routed through the cost router
         // as a decision that must be deterministic, and the order does not go
         // further without that routing. `Router::determine` returns a type that
@@ -18410,6 +18894,81 @@ impl Platform {
                     .unwrap_or_else(|| "refused with no reason recorded".to_string()),
             ))
         }
+    }
+
+    /// Why the desk may not send this order into the book its custodian
+    /// statement disagrees with, or `None` when nothing halts it
+    /// (R12-ASSET-4074).
+    ///
+    /// The wallet reconciliation halts a *venue-asset* and says so in the
+    /// fabric's latest outcome for it; this is where the desk side reads that
+    /// outcome. Two scopes, and only these two: an instrument the desk's venue
+    /// halted refuses every order in that instrument, and a halted settlement
+    /// cash refuses a *buy* anywhere at that venue, because a buy spends the
+    /// balance nobody can vouch for while a sell does not. Other venues and
+    /// other instruments are untouched, which is the same scoping
+    /// `CentralPlane::record_halt` gives a cell. The latest outcome per
+    /// venue-asset is what is read, so a later clean reconciliation lifts the
+    /// halt without a latch to clear.
+    pub fn wallet_halt_for(&self, object_id: &str, side: Side) -> Option<String> {
+        let desk_venue = VenueId::new(self.broker.name());
+        self.fabric
+            .state()
+            .reconciliations()
+            .values()
+            .find_map(|outcome| {
+                let ReconciliationOutcome::Halt {
+                    venue,
+                    asset,
+                    alert,
+                    ..
+                } = outcome
+                else {
+                    return None;
+                };
+                if *venue != desk_venue {
+                    return None;
+                }
+                let cash = asset.as_str() == SETTLEMENT_CURRENCY.to_string();
+                let applies = if cash {
+                    matches!(side, Side::Buy)
+                } else {
+                    asset.as_str() == object_id
+                };
+                applies.then(|| {
+                    format!(
+                        "{venue} {asset} is halted by the wallet reconciliation: {}",
+                        alert.message
+                    )
+                })
+            })
+    }
+
+    /// Put an order the wallet halt stopped on the record and refuse it.
+    fn refuse_for_wallet_halt(
+        &mut self,
+        order: &Order,
+        reason: String,
+        now: Timestamp,
+    ) -> Result<()> {
+        let correlation = self.correlation_for(now);
+        self.telemetry.metrics.count(
+            names::ORDERS_REFUSED,
+            labels([("control", WALLET_HALT_CONTROL)]),
+        );
+        let _ = self.capture(
+            now,
+            &correlation,
+            order.object_id.clone(),
+            Action::Rejected {
+                order_id: order.order_id.clone(),
+                gate: WALLET_HALT_CONTROL.to_string(),
+                reason: reason.clone(),
+            },
+            RealisedOutcome::nothing_happened(now),
+            reason.clone(),
+        );
+        Err(Error::denied(reason))
     }
 
     /// The strategy, capital policy, risk rule set and execution path an
@@ -18796,6 +19355,25 @@ impl Platform {
                 fill.at,
                 fill.notional().abs(),
             );
+            // A fill in an instrument the desk declared as a hedge is hedge
+            // demand as well as cash: the fill itself does not say it was a
+            // hedge, but the declarations name every instrument a hedge may
+            // be struck in, and that is the only statement of intent the
+            // platform holds. Read from the same declarations the DECIDE
+            // survey proposes from, so a hedge cannot be proposed in an
+            // instrument whose fill would not be recognised.
+            if self.is_declared_hedge_instrument(object_id) {
+                self.record_capital_demand(
+                    CapitalLocation::new(
+                        CapitalRegion::new(HOME_REGION),
+                        Currency::USD,
+                        venue.clone(),
+                    ),
+                    DemandKind::Hedge,
+                    fill.at,
+                    fill.notional().abs(),
+                );
+            }
 
             // And it is capital that moved. This is the edge that makes the
             // risk state real: the same fills the outcome capture records are
@@ -18903,6 +19481,7 @@ impl Platform {
                         fill_price,
                         side: book_side(side),
                         decided_at: now,
+                        unfilled: shortfall.map_or(Decimal::ZERO, |(_, remaining)| remaining),
                     }),
                     None => self.capture_problems.push(format!(
                         "filled order {} will not be priced for its size: its fills do not \
@@ -19073,6 +19652,18 @@ impl Platform {
         }
     }
 
+    /// State the jurisdictions this platform is licensed to execute in.
+    /// Replaces any earlier statement whole; an empty set licenses nothing,
+    /// so every instrument becomes research-only until a jurisdiction is named.
+    pub fn license_jurisdictions(&mut self, jurisdictions: impl IntoIterator<Item = Jurisdiction>) {
+        self.licensed_jurisdictions = Some(jurisdictions.into_iter().collect());
+    }
+
+    /// The licence stated through [`Self::license_jurisdictions`], if any.
+    pub(crate) fn licensed_jurisdictions(&self) -> Option<&BTreeSet<Jurisdiction>> {
+        self.licensed_jurisdictions.as_ref()
+    }
+
     /// Grant the derivative permissions this platform trades under, for
     /// `entity` in `jurisdiction`. Replaces any earlier grant whole.
     pub fn authorise_derivatives(
@@ -19224,6 +19815,10 @@ impl Platform {
         // covered when the pass began, and a candidate this call registers
         // must not erase the reason it was assessed.
         let targets = self.discovery_targets(now)?;
+        // The lead ledger's current ranking, so a source is scored on how far
+        // its facts have led the same fact elsewhere and not only on the age
+        // of the sample it was probed with (R12-DATA-2023).
+        self.data_finder.observe_leads(&self.source_leads.ranking());
         let decisions = self.data_finder.assess(candidates, probe, now)?;
         // Before the catalogue, and raised on failure: see
         // `source_lifecycle` for why a move the log does not hold must not
@@ -20584,6 +21179,7 @@ impl Platform {
                         smaller_favoured,
                         larger_favoured,
                         trade_error_bps,
+                        unfilled: path.unfilled,
                     });
                     if self.fill_scores.len() > DECLINED_HISTORY {
                         let excess = self.fill_scores.len() - DECLINED_HISTORY;
@@ -20631,6 +21227,21 @@ impl Platform {
     /// What the twin found about each priced fill, most recent last.
     pub fn fill_scores(&self) -> &[FillScore] {
         &self.fill_scores
+    }
+
+    /// The venue the desk's orders go to: the name its fills are
+    /// calibrated and its quotes priced under.
+    pub fn desk_venue(&self) -> &str {
+        self.broker.name()
+    }
+
+    /// The calibration the fill-scoring pass writes, for a test that sets a
+    /// venue's measured error without staging the scored fills that would
+    /// produce it. The production writer is `score_filled`; this is the same
+    /// `FillCalibration`, not a second copy.
+    #[doc(hidden)]
+    pub fn fill_calibration_mut(&mut self) -> &mut qip_twin::calibration::FillCalibration {
+        &mut self.fill_calibration
     }
 
     /// The twin's per-venue fill calibration, as the scored fills have moved
@@ -21921,6 +22532,72 @@ impl Platform {
             .entry((location, kind))
             .or_default()
             .push(DemandObservation::new(at, amount));
+    }
+
+    /// Whether `instrument` is one the desk declared it may hedge with: a
+    /// hedge policy's instrument or a hedge candidate's.
+    fn is_declared_hedge_instrument(&self, instrument: &ObjectId) -> bool {
+        self.config
+            .hedge_policies
+            .iter()
+            .any(|policy| &policy.instrument == instrument)
+            || self
+                .config
+                .hedge_candidates
+                .iter()
+                .any(|candidate| &candidate.instrument == instrument)
+    }
+
+    /// Record the collateral and inventory demand a cross-margin read
+    /// observed: per venue, the maintenance its exposure requires (whether or
+    /// not a statement covers it) as [`DemandKind::Collateral`], and the gross
+    /// the book carries there as [`DemandKind::Inventory`].
+    ///
+    /// Before this, only [`DemandKind::Cash`] was ever fed, so the forecaster
+    /// had three kinds nobody could ask about and the pre-positioning plan
+    /// could only ever anticipate cash. Both figures are what the book
+    /// stands in at this cycle, observed rather than projected; a venue
+    /// requiring or carrying nothing records nothing, since a zero is not an
+    /// observation of need.
+    fn record_obligation_demand(
+        &mut self,
+        review: &crate::cross_margin::CrossMarginReview,
+        at: Timestamp,
+    ) {
+        let lane = |venue: &VenueId| {
+            CapitalLocation::new(
+                CapitalRegion::new(HOME_REGION),
+                Currency::USD,
+                venue.clone(),
+            )
+        };
+        let maintenance: Vec<(VenueId, Decimal)> = review
+            .coverage
+            .iter()
+            .map(|line| (line.venue.clone(), line.maintenance))
+            .chain(
+                review
+                    .unobserved
+                    .iter()
+                    .map(|gap| (gap.venue.clone(), gap.maintenance)),
+            )
+            .filter(|(_, amount)| amount.is_positive())
+            .collect();
+        for (venue, amount) in maintenance {
+            self.record_capital_demand(lane(&venue), DemandKind::Collateral, at, amount);
+        }
+        let carried: Vec<(VenueId, Decimal)> = self
+            .aggregates
+            .axis_exposures()
+            .get(qip_risk::limits::COUNTERPARTY_AXIS)
+            .into_iter()
+            .flatten()
+            .filter(|(_, gross)| gross.is_positive())
+            .map(|(counterparty, gross)| (VenueId::new(counterparty.clone()), *gross))
+            .collect();
+        for (venue, gross) in carried {
+            self.record_capital_demand(lane(&venue), DemandKind::Inventory, at, gross);
+        }
     }
 
     /// The settlement calendars the pre-positioning planner quotes on, per
@@ -24804,6 +25481,60 @@ mod simulate_tests {
             .expect("an edge naming both ends is admitted");
     }
 
+    /// R12-WORLD-3042: the federation's causal member is fed only from a live
+    /// claim that reaches the instrument, and the figure is the cause's
+    /// latest move carried over the claim's signed transmission. Mutation:
+    /// drop the sign (`transmission()` for `signed_transmission()`) — the
+    /// substitution claim below then reads the wrong way round.
+    #[test]
+    fn the_causal_view_handed_to_the_federation_is_the_causes_move_over_the_claims_signed_transmission()
+     {
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+        feed_history(&mut platform, "MSFT", 80);
+        // Premise: with no claim in the graph no instrument has a causal view.
+        assert!(platform.causal_views(start()).is_empty());
+
+        platform
+            .world
+            .update(|world| {
+                world.claim_causal(
+                    qip_world_model::causal::CausalEdge::new(
+                        "MSFT",
+                        "AAPL",
+                        qip_world_model::causal::Mechanism::CompetitiveSubstitution,
+                        0.5,
+                        Duration::from_days(1),
+                        start(),
+                    )
+                    .expect("a strength in [0, 1] is admitted")
+                    .with_confidence(0.8)
+                    .expect("a confidence in [0, 1] is admitted"),
+                )
+            })
+            .expect("an edge naming both ends is admitted");
+        let views = platform.causal_views(start());
+        assert_eq!(views.len(), 1, "only the claimed effect has a view");
+        let view = views.get("AAPL").expect("AAPL is the claimed effect");
+        let moved = *Platform::returns_of(&platform.price_history["MSFT"])
+            .last()
+            .expect("MSFT has returns");
+        // Competitive substitution inverts the cause, at 0.5 * 0.8.
+        assert!(moved != 0.0, "the premise: the cause moved");
+        assert!(
+            (view.lean - (-0.4 * moved)).abs() < 1e-12,
+            "{view:?} {moved}"
+        );
+        assert_eq!(view.claims, 1);
+        assert!((view.confidence - 0.8).abs() < 1e-12);
+        // A claim not yet knowable is not read.
+        assert!(
+            platform
+                .causal_views(start().saturating_sub(Duration::from_days(1)))
+                .is_empty()
+        );
+    }
+
     #[test]
     fn a_shock_at_a_claimed_driver_reaches_a_position_the_factor_model_cannot_see() {
         // Blueprint §23.7's third row: "a shock at a driver, propagated
@@ -25756,6 +26487,161 @@ mod central_sizing_tests {
     }
 
     #[test]
+    fn a_drifted_production_model_narrows_the_central_multiplier_until_the_registry_stops_naming_it()
+     {
+        // The failure this guards (R12-RES-7101): a production model past its
+        // drift threshold was rolled back or refused a decision, and the
+        // centre went on sizing at the multiplier a healthy panel earned, so
+        // capital was not shrunk by a component the platform had just
+        // measured as unreliable.
+        use qip_ai::registry::{ModelCard, ModelRegistry, ModelStage};
+        use qip_core::ModelId;
+        let mut platform = platform();
+        let resolves_at = start().saturating_add(Duration::from_days(5));
+        feed_self_model(
+            &mut platform,
+            qip_learning_engine::self_model::MINIMUM_SAMPLE,
+            resolves_at,
+        );
+        let at = resolves_at.saturating_add(Duration::from_secs(100));
+        let multiplier = |platform: &Platform| {
+            platform
+                .central_degradation(at)
+                .expect("the table reads")
+                .central_sizing_multiplier()
+        };
+        let healthy = multiplier(&platform);
+        assert_eq!(
+            healthy,
+            dec!("0.375"),
+            "premise: a fed self-model narrows nothing beyond the two unavailable rows"
+        );
+
+        let mut card = ModelCard::new(
+            ModelId::from_string("m-drift"),
+            "drift",
+            "1",
+            "desk",
+            start(),
+        );
+        card.stage = ModelStage::Production;
+        card.drift_threshold = 0.2;
+        card.drift_score = 0.1;
+        let mut registry = ModelRegistry::new();
+        registry.register(card);
+        platform.observe_model_drift(&registry);
+        assert!(platform.drifted_models().is_empty());
+        assert_eq!(
+            multiplier(&platform),
+            healthy,
+            "a model inside its threshold narrowed"
+        );
+
+        registry
+            .record_drift("drift@1", 0.9)
+            .expect("the card is registered");
+        assert!(
+            registry
+                .iter()
+                .any(|card| card.drift_score > card.drift_threshold),
+            "premise: the card has drifted past its threshold"
+        );
+        platform.observe_model_drift(&registry);
+        assert_eq!(platform.drifted_models().len(), 1);
+        assert_eq!(
+            multiplier(&platform),
+            healthy * dec!("0.75"),
+            "a drifted production model did not narrow the self-model row to its stale factor"
+        );
+
+        // Retiring the card — what a rollback does — clears the reading.
+        registry.retire("drift@1", at).expect("the card retires");
+        platform.observe_model_drift(&registry);
+        assert!(platform.drifted_models().is_empty());
+        assert_eq!(
+            multiplier(&platform),
+            healthy,
+            "the narrowing outlived the model"
+        );
+    }
+
+    /// R12-RISK-4113: a capital grant contracts when the evidence the centre
+    /// sizes on falls in freshness, and never widens past what the confidence
+    /// governor alone would sign. The platforms differ only in when their one
+    /// causal claim was recorded. Mutations: return the governor's decision
+    /// unchanged from `grant_narrowing` (the stale grant equals the fresh
+    /// one, and neither carries the contraction); multiply by the reciprocal
+    /// (the widening assertion fails).
+    #[test]
+    fn a_stale_causal_graph_narrows_the_next_capital_grant_below_a_fresh_one_and_neither_widens_it()
+    {
+        use crate::confidence::Trigger;
+        use qip_world_model::causal::{CausalEdge, Mechanism};
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        let claim = |recorded_at: Timestamp| {
+            CausalEdge::new(
+                "ent-cause",
+                "ent-effect",
+                Mechanism::SupplyChain,
+                0.5,
+                Duration::from_days(1),
+                recorded_at,
+            )
+            .expect("a strength in [0, 1] is admitted")
+        };
+        let fresh = platform();
+        fresh
+            .world
+            .update(|world| world.claim_causal(claim(now.saturating_sub(Duration::from_days(1)))))
+            .expect("an edge naming both ends is admitted");
+        let stale = platform();
+        stale
+            .world
+            .update(|world| world.claim_causal(claim(now.saturating_sub(Duration::from_days(365)))))
+            .expect("an edge naming both ends is admitted");
+
+        let governor_alone = fresh.governor.grant_decision().expect("the governor reads");
+        assert_eq!(
+            governor_alone.multiplier,
+            Decimal::ONE,
+            "premise: no measurement has contracted the governor's own grant"
+        );
+        let fresh_grant = fresh.grant_narrowing(now).expect("the grant reads");
+        let stale_grant = stale.grant_narrowing(now).expect("the grant reads");
+
+        assert!(
+            fresh_grant.multiplier < Decimal::ONE,
+            "belief and self-model are unavailable here, so even a fresh graph narrows"
+        );
+        assert!(
+            stale_grant.multiplier < fresh_grant.multiplier,
+            "a stale graph must narrow the grant below a fresh one: {} vs {}",
+            stale_grant.multiplier,
+            fresh_grant.multiplier
+        );
+        assert!(
+            stale_grant.multiplier <= governor_alone.multiplier,
+            "evidence freshness widened a grant"
+        );
+        for grant in [&fresh_grant, &stale_grant] {
+            assert!(
+                grant
+                    .contractions
+                    .iter()
+                    .any(|c| c.trigger == Trigger::EvidenceFreshness),
+                "the contraction is not named: {:?}",
+                grant.contractions
+            );
+        }
+        assert_eq!(
+            stale_grant.multiplier,
+            fresh_grant.multiplier * dec!("0.75"),
+            "the stale graph narrows by the row 2 factor and nothing else"
+        );
+    }
+
+    #[test]
     fn a_backdated_causal_graph_narrows_the_central_multiplier_to_the_stale_value_and_a_fresh_one_does_not()
      {
         // The failure this closes: the centre's table started row 2 fresh
@@ -25887,6 +26773,139 @@ mod self_model_tests {
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
+    }
+
+    fn objects() -> Universe {
+        use qip_financial::asset_class::{InstrumentType, Sector};
+        use qip_financial::costs::LiquidityProfile;
+        use qip_financial::object::FinancialObject;
+        use qip_financial::quality::Provenance;
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    ObjectId::from_string("obj-AAA"),
+                    "AAA",
+                    InstrumentType::CommonStock,
+                    LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(Decimal::from_int(100))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
+            )
+            .expect("insertable");
+        universe
+    }
+
+    /// The founding tape: noise with a jump two thirds of the way in, so a
+    /// detector finds something and REASON forms a hypothesis.
+    fn tape() -> Vec<qip_market_ingestion::adapter::SensedRecord> {
+        use qip_market::bar::{Bar, Interval};
+        let mut price = 100.0_f64;
+        (0..120_usize)
+            .map(|i| {
+                let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
+                let jump = if i == 80 { 0.09 } else { 0.0 };
+                let open = price;
+                price *= 1.0 + noise + jump;
+                let at = start().saturating_sub(Duration::from_days((120 - i) as i64));
+                qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(Bar {
+                    object_id: ObjectId::from_string("obj-AAA"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: at,
+                    open: Decimal::from_f64(open).expect("a price"),
+                    high: Decimal::from_f64(open.max(price) * 1.002).expect("a price"),
+                    low: Decimal::from_f64(open.min(price) * 0.998).expect("a price"),
+                    close: Decimal::from_f64(price).expect("a price"),
+                    volume: Decimal::from_int(1_000_000),
+                    trade_count: 5_000,
+                    vwap: Decimal::from_f64((open + price) / 2.0),
+                    quality: qip_financial::quality::DataQuality::default(),
+                }))
+            })
+            .collect()
+    }
+
+    fn reasoning_platform() -> Platform {
+        let config = PlatformConfig {
+            review: qip_reasoning_engine::redteam::ReviewPolicy {
+                minimum_surviving_confidence: 0.10,
+                ..qip_reasoning_engine::redteam::ReviewPolicy::default()
+            },
+            ..PlatformConfig::default()
+        };
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            objects(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// R12-RISK-4110: the self-model's per-component reliability is read at
+    /// sizing. The same tape is sized twice; the second platform's self-model
+    /// has graded the detector that raises the hypothesis wrong twelve times
+    /// first, and its construction carries a reliability contraction the first
+    /// does not. Mutations: pass `reliability: None` in `construct_from`'s
+    /// `ThesisView` (the contraction disappears); skip the reliability block in
+    /// `ConfidenceSignals::decide` (same).
+    #[test]
+    fn a_thesis_raised_by_a_detector_the_self_model_grades_worse_than_chance_is_sized_smaller() {
+        use crate::confidence::Trigger;
+        use qip_learning_engine::self_model::{MINIMUM_SAMPLE, ScoredOutcome};
+
+        let mut probe = reasoning_platform();
+        probe.observe(tape());
+        probe.run_cycle(start());
+        let class = probe.predictions()[0]
+            .claim
+            .as_ref()
+            .map(|claim| claim.class.clone())
+            .expect("premise: the tape formed a claim");
+        let reliability_contraction = |platform: &Platform| {
+            platform.governor.last().and_then(|budget| {
+                budget
+                    .confidence
+                    .contractions
+                    .iter()
+                    .find(|c| c.trigger == Trigger::Reliability)
+                    .cloned()
+            })
+        };
+        assert!(
+            probe.governor.last().is_some(),
+            "premise: the cycle sized a construction"
+        );
+        assert!(
+            reliability_contraction(&probe).is_none(),
+            "an ungraded detector contracted the size"
+        );
+
+        let mut graded = reasoning_platform();
+        let key = ComponentKey::detector(class).expect("a detector key");
+        for n in 0..=MINIMUM_SAMPLE + 2 {
+            graded.self_model.record(
+                key.clone(),
+                ScoredOutcome::new(format!("past-{n}"), 0.9, false, start())
+                    .expect("a probability"),
+            );
+        }
+        assert!(
+            graded.self_model.factor(&key).is_some_and(|f| f < 0.35),
+            "premise: twelve misses leave the detector far below chance"
+        );
+        graded.observe(tape());
+        graded.run_cycle(start());
+        let contraction = reliability_contraction(&graded)
+            .expect("a worse-than-chance detector contracted nothing");
+        assert!(contraction.multiplier < Decimal::ONE, "{contraction:?}");
     }
 
     #[test]
@@ -28767,6 +29786,7 @@ mod counterfactual_trial_seam_tests {
             smaller_favoured: false,
             larger_favoured,
             trade_error_bps: None,
+            unfilled: Decimal::ZERO,
         }
     }
 
@@ -29088,6 +30108,7 @@ mod episodic_slot_tests {
                 realised_move_bps: 12.0,
                 realised_pnl: 250.0,
                 expected_move_bps: None,
+                fills: Vec::new(),
             }),
             at: known_at.saturating_sub(Duration::from_hours(24)),
             known_at,

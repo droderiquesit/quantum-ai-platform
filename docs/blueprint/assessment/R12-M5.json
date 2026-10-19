@@ -248,7 +248,7 @@
       "backend/crates/libs/qip-contracts/src/ledger.rs:42 Settlement::Simulated only",
       "backend/crates/libs/qip-contracts/tests/ledger_event.rs:6 settlement_has_no_variant_but_simulated"
     ],
-    "gap": "A simulated settlement lifecycle (pending -> settled, T+n) without introducing a live variant. No producer observes a settlement: the venue settles at the fill and the desk's T+1 register is a projection, so recording 'settled' would be the kernel's clock passing a calendar's estimate, not a reported fact. A lifecycle needs an in-settlement subledger the fill posts into and a settled transition the ledger books, which changes how fills post cash today and is an ADR, not a producer.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: the in_settlement account, the fill posting change, and Decision::Settled from the simulated gateway, with a test that cash is unavailable before the settlement date.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -259,7 +259,7 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": "Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL, no operation added; ADR 0123 'Consequences' says each kind needs a producer that observes the fact, and none does."
+    "notes": "Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL, no operation added; ADR 0123 'Consequences' says each kind needs a producer that observes the fact, and none does. ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: A simulated settlement lifecycle (pending -> settled, T+n) without introducing a live variant. No producer observes a settlement: the venue settles at the fill and the desk's T+1 register is a projection, so recording 'settled' would be the kernel's clock passing a calendar's estimate, not a reported fact. A lifecycle needs an in-settlement subledger the fill posts into and a settled transition the ledger books, which changes how fills post cash today and is an ADR, not a producer."
   },
   {
     "id": "R12-LEDGER-5012",
@@ -319,7 +319,7 @@
       "backend/crates/libs/qip-contracts/src/reflex.rs::chain_correlation",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::one_correlation_id_joins_every_hop_from_the_signal_to_the_ledger_event"
     ],
-    "gap": "Intent id and settlement record on the ledger event; a balance-to-intent walk in both directions. A settlement record has nothing to carry: no production path observes a settlement (the simulated venue settles at the fill; the desk's T+1 register is a projection), so the walk still stops at order/signal. Treasury and capital-grant fundings now reach the ledger as operations whose source cites the operation id and the desk chain, so a funding balance walks back to the grant's own identity (strategy@cell@granted-at) and the journalled CapitalGrantFunded record; that is a lineage for a funding, not the intent -> order -> fill -> settlement chain this row names.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: SourceEvent gains the ChainOpened journal sequence and the settlement posting names the fill's event, with an acceptance walk ledger to journal to intent.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -330,7 +330,7 @@
     "verification": "new acceptance test walking ledger -> journal -> intent",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Walk stops at order/signal: no intent id, no settlement record. The new test walks forward from the signal and back from the event key, but not through settlement. Desk chain ids no longer repeat across restarts: resume_book continues the order counter past the log's (vertical_slice_ship::an_order_after_a_restart_does_not_share_a_correlation_id_with_one_before). Orders that never filled leave no fill in the log, so their ids can be reissued; they never reached the ledger. Shipper adds no intent id or settlement record (checked against 84e4e33d). 2026-10-17: FillBooked is journalled under the decision cycle's correlation id, so a restarted or healed desk record keeps it (vertical_slice_ship::a_restart_requeues_each_record_under_the_cycle_that_placed_the_order); the cycle id still is not on the ledger wire. Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL; no settlement record was added because nothing reports one."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Walk stops at order/signal: no intent id, no settlement record. The new test walks forward from the signal and back from the event key, but not through settlement. Desk chain ids no longer repeat across restarts: resume_book continues the order counter past the log's (vertical_slice_ship::an_order_after_a_restart_does_not_share_a_correlation_id_with_one_before). Orders that never filled leave no fill in the log, so their ids can be reissued; they never reached the ledger. Shipper adds no intent id or settlement record (checked against 84e4e33d). 2026-10-17: FillBooked is journalled under the decision cycle's correlation id, so a restarted or healed desk record keeps it (vertical_slice_ship::a_restart_requeues_each_record_under_the_cycle_that_placed_the_order); the cycle id still is not on the ledger wire. Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL; no settlement record was added because nothing reports one. ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: Intent id and settlement record on the ledger event; a balance-to-intent walk in both directions. A settlement record has nothing to carry: no production path observes a settlement (the simulated venue settles at the fill; the desk's T+1 register is a projection), so the walk still stops at order/signal. Treasury and capital-grant fundings now reach the ledger as operations whose source cites the operation id and the desk chain, so a funding balance walks back to the grant's own identity (strategy@cell@granted-at) and the journalled CapitalGrantFunded record; that is a lineage for a funding, not the intent -> order -> fill -> settlement chain this row names."
   },
   {
     "id": "R12-LEDGER-5015",
@@ -400,7 +400,7 @@
       "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
       "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for custody or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: CustodyMovement postings from the custody statement, with a subledger and trial-balance test.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -411,7 +411,7 @@
     "verification": "cargo test -p qip-ledgerd plus a subledger test",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: No production producer: nothing in any binary builds a LedgerOperation for custody or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests."
   },
   {
     "id": "R12-LEDGER-5018",
@@ -627,25 +627,26 @@
   },
   {
     "id": "R12-LEDGER-5028",
-    "status": "PARTIAL",
-    "current": "Cell journal records PolicyApplied with payload sequence (backend/crates/libs/qip-contracts/src/reflex.rs:265) so versions in force are recoverable from the chain; plan admission checks model digest against trained_models manifest (backend/crates/edge/qip-edge/src/cell.rs:3318). OrderSent/Filled decisions do not carry version ids themselves (reflex.rs:148-207); OpportunityEpoch carries model_versions (backend/crates/services/qip-mesh/src/peer.rs:189) but is unintegrated.",
+    "status": "COMPLETE",
+    "current": "The journal now names every version an order was sent under. PolicyApplied records the payload sequence (which carries the risk envelope and feasibility slots); PlanAdmitted, new, records each admitted strategy's deployment digest and each inline model's own digest, written in Cell::install and again when Cell::classify changes the digest; StrategyWithdrawn ends a plan; OrderSent records the grants it drew on. qip_edge::replay::versions_in_force reads the entries in sequence and names, at each OrderSent, the policy sequence, the plans and models in force and the grants.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/reflex.rs:265 PolicyApplied",
-      "backend/crates/edge/qip-edge/src/cell.rs:3318 check_models_promoted",
-      "backend/crates/services/qip-mesh/src/peer.rs:189 model_versions"
+      "backend/crates/libs/qip-contracts/src/reflex.rs:444 Decision::PlanAdmitted",
+      "backend/crates/edge/qip-edge/src/cell.rs:3592 install journals the admission; :3684 classify re-journals; :3746 plan_admitted names plan and model digests",
+      "backend/crates/edge/qip-edge/src/replay.rs:41 versions_in_force",
+      "backend/crates/edge/qip-edge/tests/replay.rs:125 deploying_a_plan_with_a_model_journals_the_plan_digest_and_the_model_digest; :184 the_versions_in_force_at_each_order_are_named_from_the_journal_alone; :261 an_order_before_any_policy_or_plan_is_named_with_no_version_rather_than_a_guess"
     ],
-    "gap": "Stamp each decision (or each pass) with plan digest, model digests, grant and risk-limit versions; test reconstructing versions per order from the journal.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new qip-edge test: replay journal, assert versions per OrderSent",
+    "verification": "cargo test -p qip-edge --test replay",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. Mutations: not journaling the admission in install fails the deploy test (0 admissions, expected 1); dropping the PolicyApplied arm of the reader fails the reader test (None, expected Some(7)); not removing a plan on StrategyWithdrawn fails it at the last order (alpha still in force). Limits of the claim: risk limits are named by the policy sequence, not restated, and CapitalRenewed still records approver and expiry only; the reader is a library function with no binary calling it, so replay is by an auditor's tooling, not a node subcommand."
   },
   {
     "id": "R12-REFLEX-5029",
@@ -682,7 +683,7 @@
       "backend/crates/edge/qip-edge/tests/policy_rollback.rs:63",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs:159"
     ],
-    "gap": "Cell consumption of belief_priors and opportunity_definitions; signing is symmetric HMAC (ADR 0043 lists asymmetric signing as an open gap); no deployment.",
+    "gap": "Cell consumption of belief_priors and opportunity_definitions: no rule says how a prior changes a cell's scored confidence or which detector an opportunity id names. ADR 0088 records that no cell reads the values, forbids sizing on a belief's mean and leaves 'whether a cell ever reads a distribution' as a separate decision; ADR 0133 says a cell reads a centre input 'as a model input, exactly as it reads belief_priors' without defining that input. Signing is symmetric HMAC (ADR 0043 lists asymmetric signing as an open gap); no deployment.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -693,7 +694,7 @@
     "verification": "cargo test -p qip-edge --test policy_rollback --test model_manifest --test feasibility",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. Writing the blend of a prior into a conviction, or an id-to-detector admission rule, here would invent arithmetic ADR 0005 says is never assigned and an interface the ADR leaves to an owner decision. What is missing is that decision, not the plumbing."
   },
   {
     "id": "R12-REFLEX-5031",
@@ -775,7 +776,7 @@
       "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs",
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn"
     ],
-    "gap": "Telemetry is not a fabric record; model acknowledgments are not shown on the fabric.",
+    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: no new path: a test pinning that telemetry is scrape-only and the register reading the single-source rule as the design.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -788,7 +789,7 @@
     "verification": "node test with in-process qip-streaming broker double",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Telemetry and acks clause unmet. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Telemetry and acks clause unmet. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Telemetry is not a fabric record; model acknowledgments are not shown on the fabric."
   },
   {
     "id": "R12-MESH-5035",
@@ -921,7 +922,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:3318",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs:227"
     ],
-    "gap": "No calibration of local scores at the edge; manifest producer (kernel model_serving.rs) not shipped to nodes by any deployed path.",
+    "gap": "DistilledModel (qip-strategy model.rs) has no calibration: it returns the raw tree or linear score, and there is no calibration table in the struct, its digest or the training distillation (qip-training distill.rs); the kernel manifest producer (model_serving.rs) is still not shipped to nodes by a deployed path. DistilledModel is constructed or matched at over a hundred sites, so a new field changes every model digest and manifest.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -932,7 +933,7 @@
     "verification": "cargo test -p qip-edge --test model_manifest",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: not attempted; the change alters digests that manifests pin. Kept PARTIAL."
   },
   {
     "id": "R12-REFLEX-5041",
@@ -967,7 +968,7 @@
       "backend/crates/apps/qip-edge-node/tests/arbitrage.rs:313",
       "backend/crates/apps/qip-edge-node/src/main.rs:620"
     ],
-    "gap": "Discovery outside the whitelist and distributed opportunities (peer mesh).",
+    "gap": "Discovery outside the whitelist cannot be built from what the cell holds: a book is named by its instrument id and the cell has no market reference saying which instruments a market converts between (WhitelistedConversion.from/to come only from the signed whitelist), so a graph over every venue book has no edges to search. The installer already reports each tradable side with no edge (Installation::InstalledWithGaps, MESH-023). Closing it needs a signed market reference (market -> from/to instruments) in the policy payload, and an ADR if it widens what the centre permits; distributed scanning stays with the peer mesh switch.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -978,7 +979,7 @@
     "verification": "cargo test -p qip-edge-node --test arbitrage",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure (run qip_arbitrage::search over the full venue graph) presumes a full graph; the whitelist is the only source of conversions and the module doc states a cycle is never built from a book alone because that would trade a conversion nobody permitted."
   },
   {
     "id": "R12-REFLEX-5043",
@@ -1036,18 +1037,18 @@
       "backend/crates/apps/qip-edge-node/tests/pass.rs:1173",
       "backend/crates/apps/qip-edge-node/src/lib.rs:180 mode gate"
     ],
-    "gap": "An edge quote engine (quoting mode is refused at the node).",
+    "gap": "Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O15 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-edge-node --test pass; cargo test -p qip-edge --test best_venue",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: An edge quote engine (quoting mode is refused at the node)."
   },
   {
     "id": "R12-MESH-5046",
@@ -1084,7 +1085,7 @@
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs::the_cells_spooled_p1_records_are_booked_by_the_real_ledger_store_once"
     ],
-    "gap": "Forward to learning; one end-to-end test with forward-removal mutation.",
+    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: no new path: a test pinning that learning reads fills from the cell report and not the fabric.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1098,7 +1099,7 @@
     "verification": "acceptance test node journal -> fabricd -> ledgerd balance",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement says ledger and learning; learning leg absent."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement says ledger and learning; learning leg absent. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Forward to learning; one end-to-end test with forward-removal mutation."
   },
   {
     "id": "R12-MESH-5048",
@@ -1263,15 +1264,14 @@
   {
     "id": "R12-MESH-5055",
     "status": "PARTIAL",
-    "current": "The net edge deducts a path-wide funding line (size × funding_rate_annual_f64 × holding period; EdgeAssumptions default 0.05, netedge.rs:105-136, :191-252). It also deducts a per-edge 'measured borrow' Funding line summed from EdgeCosts.borrow_rate_annual over the holding period (netedge.rs:56-58, :344-373). The edge node copies per-conversion borrow from the signed whitelist's WhitelistedCosts (apps/qip-edge-node/src/arbitrage.rs:212-237; libs/qip-contracts/src/policy.rs:603-632). No producer anywhere constructs WhitelistedCosts (grep finds only the struct), so every production conversion is priced at zero borrow. The cell's own funding/borrow state (edge/qip-edge/src/cell.rs:1596-1607, funding.rs) is not fed to the desk.",
+    "current": "A stated borrow_rate_annual now travels from ArbitragePolicy (WhitelistedMarket.costs) onto both conversions of the book and the cell charges it over the holding period (qip-edge-node arbitrage.rs, qip-arbitrage netedge); the centre no longer ships a zero borrow where an operator states one. The carry assumption is still the path-wide constant.",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/netedge.rs:344",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs:242",
-      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:218",
-      "backend/crates/libs/qip-contracts/src/policy.rs:621",
-      "edge/qip-arbitrage/tests/edge_costs.rs::a_measured_borrow_rate_is_charged_over_the_holding_period"
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs WhitelistedMarket.costs, ArbitragePolicy::validate_costs, whitelist_for",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs a_markets_stated_costs_ship_on_both_of_its_conversions_and_an_impossible_one_is_refused",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:241 the cell prices the stated costs",
+      "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs net falls by each stated figure"
     ],
-    "gap": "Feed measured funding/borrow per edge: a centre producer of WhitelistedCosts, or wiring the cell's funding state into EdgeCosts. Replace the constant path-wide 5% assumption with a measured carry.",
+    "gap": "The borrow rate is stated, not measured: the centre holds no funding state, qip-edge's funding.rs is not fed into EdgeCosts at the desk refresh, and the path-wide 5% carry is still a constant assumption. No committed deployment states a borrow rate.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1279,21 +1279,22 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-arbitrage",
+    "verification": "cargo test -p qip-kernel --lib central::whitelist && cargo test -p qip-arbitrage --test edge_costs",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The test asserts the borrow line equals the hand-computed figure and that net falls. It does not assert net falls by exactly that figure, which the verification asks for. The deduction arithmetic is real; its input is never measured."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutation fired: whitelist_for shipping costs: None -> the carried-costs assertion fails."
   },
   {
     "id": "R12-MESH-5056",
     "status": "PARTIAL",
-    "current": "EdgeCosts (tax_duty_fraction, logistics_fraction, ...) on every conversion, charged as named net-edge deductions with tests; node installer maps payload WhitelistedCosts. The centre's whitelist builder ships costs: None, and an unset ArbitragePolicy emits an empty whitelist.",
+    "current": "The centre can now ship per-conversion duty, logistics, settlement-risk and fill figures: WhitelistedMarket.costs is validated against the cell's own ranges and carried by whitelist_for on both conversions of the book; the cell prices them and the net edge falls by exactly each figure (qip-arbitrage edge_costs.rs).",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/graph.rs:374",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs::EdgeCosts",
-      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs::whitelist_for"
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs WhitelistedMarket.costs, ArbitragePolicy::validate_costs, whitelist_for",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs a_markets_stated_costs_ship_on_both_of_its_conversions_and_an_impossible_one_is_refused",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:241 the cell prices the stated costs",
+      "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs net falls by each stated figure"
     ],
-    "gap": "No producer states tax/duty or logistics costs in production; arbitrage desk off unless operator policy set.",
+    "gap": "No committed deployment states any costs: CentralConfig::arbitrage is unset or states none in every committed environment, so each production edge still ships costs: None. The figures are an operator's statement, not a measurement, and tax/duty needs a jurisdictional source this repository does not hold.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1301,10 +1302,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-arbitrage",
+    "verification": "cargo test -p qip-kernel --lib central::whitelist && cargo test -p qip-arbitrage --test edge_costs",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutation fired: whitelist_for shipping costs: None -> the carried-costs assertion fails."
   },
   {
     "id": "R12-MESH-5057",
@@ -1479,7 +1480,7 @@
       "backend/crates/edge/qip-arbitrage/src/plan.rs:130",
       "edge/qip-arbitrage/tests/arbitrage.rs::the_least_reversible_leg_is_planned_first"
     ],
-    "gap": "A per-cycle policy that selects concurrent versus risk-ordered execution, honoured by the cell's send path, with a test proving each arm.",
+    "gap": "No per-cycle policy field selects concurrent versus risk-ordered legs: CycleWhitelist (qip-contracts policy.rs) carries cycles, conversions and start_sizes; qip-edge-node's desk_from_whitelist_in builds PlanSettings::with_budget(PLAN_BUDGET) from a literal; LegPlanner::plan always sorts legs least-reversible first, and LegPlan consumers read steps by position. A Concurrent arm loosens the stranded-leg protection the ordering exists for, so it needs the cell's send path and the residual-risk budget (LegPlan::residual_after assumes sequential completion) revisited together, and a decision on who may select it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1490,7 +1491,7 @@
     "verification": "cargo test -p qip-arbitrage --test arbitrage",
     "work_item": "",
     "size": "S",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged."
+    "notes": "Lane L24 2026-10-18 re-graded: not a one-field change; a field the planner honoured but the send path ignored would be a policy that reads as a control and cannot fire. Kept PARTIAL."
   },
   {
     "id": "R12-MESH-5065",
@@ -1524,7 +1525,7 @@
       "backend/crates/libs/qip-contracts/src/reflex.rs:359",
       "backend/crates/apps/qip-ledgerd/src/store.rs:729"
     ],
-    "gap": "Cycle-completion record and a netting test.",
+    "gap": "CycleCommitted is journaled on the P2 lane only: qip-edge-node's event_fabric/writer.rs::is_outcome returns false for it because ADR 0100 §5's P1 row names six kinds and the cycle kinds are not among them, and qip-ledgerd consumes the P1 outcomes stream, so a cycle-completion record cannot reach the ledger without widening that row by a new ADR. The cell also keeps no per-cycle fill tally to decide 'every leg filled' (observe_cycle_leg watches legs as they are sent). Then qip-contracts reflex.rs needs the new Decision variant, store.rs a balanced cycle event over the leg fills, and an acceptance test that the cycle's cash nets and that dropping one leg's posting breaks it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1537,7 +1538,7 @@
     "verification": "acceptance test cycle -> ledger",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: CycleCommitted means 'all legs sent', not 'completed'. Individual fills can reach the ledger, but the requirement's cycle-level record does not exist. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged by the commits."
+    "notes": "Round-2 independent audit, 2026-10-11: CycleCommitted means 'all legs sent', not 'completed'. Re-graded 2026-10-17: unchanged. Gap corrected 2026-10-18 by lane L15 from writer.rs::is_outcome and cell.rs's CycleCommitted sites; nothing in the code changed."
   },
   {
     "id": "R12-CAPITAL-5067",
@@ -1567,7 +1568,7 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined (proposals only)"
     ],
-    "gap": "Counterfactual scoring of cycles and the coordination rule.",
+    "gap": "Cell refusals cannot be priced from the centre: a cell's report carries them as DeltaRefusal { gate, reason, venue } only (qip-edge cell.rs refusals: Vec<(String, String)>, mesh.rs DeltaRefusal), with no instrument, side or quantity, and the twin's evaluate_alternatives needs an order to re-price. Closing needs the cell wire to carry the refused intent (a qip-mesh/qip-edge change outside the kernel) or the cell to price locally; then score_declined can queue them beside the desk's own. The desk's own refusals are already captured and priced (tests/learning.rs a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1578,7 +1579,7 @@
     "verification": "new kernel/learning test over cycle refusals",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the wire, not a missing call in score_declined."
   },
   {
     "id": "R12-MESH-5069",
@@ -1685,18 +1686,18 @@
       "backend/crates/runtime/qip-kernel/src/quote_loop.rs:309",
       "backend/crates/tests/qip-acceptance/tests/quote_loop.rs:326"
     ],
-    "gap": "Quotes are never placed (even on the simulator); no edge quote engine.",
+    "gap": "Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O15 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-execution-engine; qip-acceptance quote_loop",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: Quotes are never placed (even on the simulator); no edge quote engine."
   },
   {
     "id": "R12-EXEC-5074",
@@ -1769,24 +1770,27 @@
   },
   {
     "id": "R12-EXEC-5077",
-    "status": "PARTIAL",
-    "current": "VenueQuotingModel per-venue QuotePolicy (backend/crates/services/qip-execution-engine/src/quoting.rs:633-672); edge VenueModel for feasibility (qip-edge feasibility.rs). Kernel uses default_policy (quote_loop.rs:155).",
+    "status": "COMPLETE",
+    "current": "The kernel's quote loop no longer feeds one default_policy() to every venue. QuoteLoopReview::of builds a VenueQuotingModel through quote_loop::quoting_model for the desk venue (Platform::desk_venue), each venue's policy being venue_policy of the default over that venue's FillCalibration entry, the signed twin-against-fill error LEARN already measures in score_filled. A venue with at least QUOTE_MIN_FILL_OBSERVATIONS fills whose bias is negative (the twin flattered it) has its base half spread widened by that bias, capped at the policy ceiling; an unmeasured venue, a thinly measured one, or one the twin undersold quotes the default exactly. The widening is applied on every ACT stage pass.",
     "evidence": [
-      "backend/crates/services/qip-execution-engine/src/quoting.rs:633",
-      "backend/crates/runtime/qip-kernel/src/quote_loop.rs:155"
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs::venue_policy",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs::quoting_model",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs::QuoteLoopReview::of",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs::tests::a_venue_the_twin_flattered_is_quoted_wider_and_one_it_undersold_is_not_quoted_tighter",
+      "backend/crates/tests/qip-acceptance/tests/quote_loop.rs::two_venues_with_different_measured_fill_error_quote_different_half_spreads_for_the_same_inputs"
     ],
-    "gap": "Measured per-venue microstructure models fed into quoting.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-execution-engine",
+    "verification": "cargo test -p qip-kernel --lib quote_loop && cargo test -p qip-acceptance --test quote_loop",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18. Mutations that fired: pricing under default_policy() again in the pass -> the widened-base assertion fails (base 10 against 36.89 implied); a bias threshold nothing meets -> two kernel tests and the acceptance ordering test fail (harsh 10, mild 10, unmeasured 10). Limits stated: the one measured dimension is the twin's fill error, not queue, latency or toxicity; venue_review tallies are not read; the loop quotes at the desk venue only; and the widening is one-way by design (a quote is never tightened on evidence a venue fills better than modelled). The quote is a priced intent and nothing sends it; the quote-loop boundary scans in the acceptance suite pass."
   },
   {
     "id": "R12-CAPITAL-5078",
@@ -1797,18 +1801,18 @@
       "backend/crates/edge/qip-edge/tests/reservation.rs",
       "backend/crates/edge/qip-edge/tests/region_table.rs"
     ],
-    "gap": "Market-making reservations through the same table.",
+    "gap": "Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O15 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-edge --test reservation --test region_table",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: Market-making reservations through the same table."
   },
   {
     "id": "R12-EXEC-5079",
@@ -1843,7 +1847,7 @@
       "qip-execution-engine/src/market_creation.rs::tests::an_approved_creation_lists_seeds_and_publishes_its_rule_at_the_simulated_venue",
       "qip-kernel/tests/breadth.rs::a_planned_market_is_created_listed_and_seeded_on_the_simulated_venue_and_journaled"
     ],
-    "gap": "Inventory management after seeding (fills against the created book debit inventory, replenishment/withdrawal on exhaustion); live creation stays BLOCKED (ADR 0003/0021).",
+    "gap": "Inventory management after seeding is absent and has no flow to drive it: SimulatedBroker::fill_price only sweeps the listed book read-only (broker.rs:456), so a fill never consumes resting depth, and nothing routes a fill on a created product back to MarketFactory. The factory side (a settle_fill debiting CreatedMarket.inventory and re-listing the consumed ladder) is the easy half; the broker consuming the book and the kernel reporting the fill are the missing path. Live creation stays BLOCKED (ADR 0003/0021).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1856,7 +1860,7 @@
     "verification": "acceptance test listing + seeding at SimulatedExchange",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: False claim: the kernel test's doc says 'Mutation: make MarketFactory::seed skip venue.list_book(book) and the venue's book is empty' (tests/breadth.rs:114-116), but the test never reads the venue's book; it asserts market.stage == Seeded and the journal, both set regardless (market_creation.rs:496-512). The unit test does assert depth (market_creation.rs:796-800)."
+    "notes": "Lane L24 2026-10-18 re-graded: the kernel test's mutation claim (tests/breadth.rs) now reads the venue's book through Platform::listed_book, so that part of the 2026-10-11 audit finding is closed; inventory management remains. Kept PARTIAL."
   },
   {
     "id": "R12-EXEC-5081",
@@ -2069,16 +2073,13 @@
   {
     "id": "R12-COMMERCE-5090",
     "status": "PARTIAL",
-    "current": "qip_financial::commerce_resale::UnitAttributes::new refuses a unit record missing any of twelve named attributes (commerce_resale.rs:25-80). The kernel's CommerceResearch builds that record once per received unit (commerce_research.rs:687-690 calling unit_attributes at :799-860) inside the cycle (breadth.rs:318, :363), installed from qip-deepbrain main.rs:321 via QIP_DEEPBRAIN_BREADTH_PLAN (opt-in; breadth.rs:26/31). The live per-unit state (condition, location, state) is in the event-sourced Ledger (commerce.rs:643-738). But the twelve-attribute record is a receipt-time snapshot of strings: condition is hard-coded \"new\" and inventory_state \"held\" (commerce_research.rs:808-811) and self.attributes is only ever inserted (:687), never updated on sale, move or return; payment_chargeback_risk is always Absent (commerce_research.rs:844-850).",
+    "current": "Each unit received by the commerce research plane carries all twelve attributes, and its condition, location and inventory state are now read from the commerce Ledger record at receipt and refreshed after every sale and return (CommerceResearch::refresh_attributes), so a sold unit reads sold and a returned one open_box instead of the literals new/held written once at receipt. Payment and chargeback risk remains explicitly Absent with its reason.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/commerce_resale.rs:25-80",
-      "backend/crates/runtime/qip-kernel/src/commerce_research.rs:687-690",
-      "backend/crates/runtime/qip-kernel/src/commerce_research.rs:799-860",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:321",
-      "qip-financial/tests/commerce_resale.rs::a_unit_record_missing_any_of_the_twelve_attributes_is_refused_naming_it_and_a_full_one_is_kept",
-      "qip-kernel/tests/breadth.rs::commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_cycle"
+      "backend/crates/runtime/qip-kernel/src/commerce_research.rs unit_attributes (ledger-derived), refresh_attributes, condition_name, state_name",
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs a_units_tracked_state_follows_the_ledger_after_it_is_sold",
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_cycle"
     ],
-    "gap": "Keep the attribute record current with the ledger (inventory_state/condition/location after Sold, Moved, Returned events) or derive it from the ledger; model payment/chargeback risk rather than marking it Absent; a deployment that sets the breadth plan (none does).",
+    "gap": "Chargeback risk is still never computed: the plan terms (fees, returns, customs, storage, logistics) carry no payment-network or merchant settlement term to derive a rate from, so a number would be invented; the attribute stays Absent with a reason. The plane also runs only under QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets (grep of infrastructure finds none).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2086,10 +2087,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
+    "verification": "cargo test -p qip-kernel --test breadth",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The kernel test only asserts each attribute name is present (breadth.rs:578-581); it would pass with a stale or wrong value. The feed is SyntheticCommerceFeed only."
+    "notes": "2026-10-18 L22: stale-record half closed, chargeback half kept PARTIAL. Mutation: delete the refresh_attributes call after take_return_owed - a sold unit still reads held and the test fails; restored byte for byte. The record is also moved at the unit_attributes call site now: it fails closed when the ledger does not hold the unit rather than inventing one."
   },
   {
     "id": "R12-COMMERCE-5091",
@@ -2267,7 +2268,7 @@
       "qip-kernel/src/asset_class_registry.rs::tests::an_fx_forward_is_spot_carried_along_both_curves",
       "qip-kernel/src/asset_class_registry.rs::tests::withdrawing_a_class_makes_its_instruments_refused_by_the_same_admission"
     ],
-    "gap": "An FX forward instrument priced by covered_interest_forward on the production valuation path and traded on paper; funding and currency conversion reached from the cycle (multi-currency FxRates, bank conversions); a test trading an FX forward.",
+    "gap": "Not reached in this session. covered_interest_forward is read nowhere in production per the grader (asset_class_registry.rs defines it), the kernel builds FxRates with USD only, and qip_capital::bank::convert has no kernel or app caller; pricing a tenor-bearing ForeignExchange instrument also needs a tenor and the two currencies' rates from somewhere the universe record has not been shown to carry.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2278,17 +2279,19 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The registry docs claim forwards/swaps/funding/conversion are covered by TermStructure registration; only spot FX and cash are proven to trade. The class-level mutation (withdraw a record) is proven for DigitalAsset only in the unit test; the kernel test's stated mutation (delete the FX record) is plausible since assembly refuses, not run here."
+    "notes": "Round-2 independent audit, 2026-10-11: The registry docs claim forwards/swaps/funding/conversion are covered by TermStructure registration; only spot FX and cash are proven to trade. The class-level mutation (withdraw a record) is proven for DigitalAsset only in the unit test; the kernel test's stated mutation (delete the FX record) is plausible since assembly refuses, not run here. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-COVERAGE-5099",
     "status": "PARTIAL",
-    "current": "Equity registered with corporate actions (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:401-424); corporate actions in qip-market (backend/crates/libs/qip-market/src/corporate_action.rs). Fund registered.",
+    "current": "Equity is registered with corporate actions (asset_class_registry.rs; qip-market corporate_action.rs). A basket and an index are instruments already: InstrumentType::Index (Equity) with Extension::Index(IndexDetails { methodology, constituent_count, rebalance_frequency, divisor, is_total_return }) and InstrumentType::SyntheticBasket (StructuredProduct) with Extension::Structured naming its underlying_object_ids. Each assembles, an order in it passes the desk control path and fills at the simulated venue, and each is refused when its class record is withdrawn or that withdrawal is itself refused. Platform::apply_corporate_action adjusts the retained history and the open lot and journals the action in the event log.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:401",
-      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs:101"
+      "backend/crates/libs/qip-financial/src/extensions.rs::IndexDetails",
+      "backend/crates/libs/qip-financial/src/asset_class.rs (Index, SyntheticBasket)",
+      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::apply_corporate_action"
     ],
-    "gap": "Baskets/indices as instruments; corporate-action application through the ledger.",
+    "gap": "Two things remain. (1) A basket or index is a record with no constituent weights: IndexDetails holds a count and a divisor and StructuredProductDetails holds underlying ids without weights, so nothing values either from its constituents or assembles an exposure through them. (2) An applied corporate action is journaled in the event log and adjusts the lot, but no LedgerEvent is posted for it, so the double-entry ledger of record never sees a split's unit change or a dividend. The triage closure's premise that no basket or index kind exists is wrong.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2299,17 +2302,19 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Same test and mutation as COVERAGE-5100 (AssetClassRegistry::admit returning Ok fires it). Posting a corporate action to the ledger needs a decision on which LedgerOperation carries a unit change and on how ledger and event log stay one claim; not taken here."
   },
   {
     "id": "R12-COVERAGE-5100",
     "status": "PARTIAL",
-    "current": "FixedIncome, Credit, Rates registered (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:432-502); credit/valuation in qip-financial.",
+    "current": "FixedIncome, Credit and Rates are registered (asset_class_registry.rs). A repo is an instrument already: InstrumentType::Repo classed Rates, carrying Extension::Repo(RepoDetails { collateral_object, maturity, repo_rate, haircut, is_reverse, counterparty }), and the object model demands its maturity. A repo of that shape assembles into the platform, an order in it passes the desk control path and fills at the simulated venue (paper, stamped simulated), and the registry refuses it when its class record is withdrawn. qip-capital models FinancingFunction::Repo as a permission with a counterparty and jurisdiction.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:432",
-      "backend/crates/libs/qip-financial/tests/credit.rs"
+      "backend/crates/libs/qip-financial/src/extensions.rs::RepoDetails",
+      "backend/crates/libs/qip-financial/src/asset_class.rs (InstrumentType::Repo -> Rates)",
+      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class",
+      "backend/crates/services/qip-capital/src/treasury.rs::FinancingFunction::Repo"
     ],
-    "gap": "Repo/funding interfaces.",
+    "gap": "No repo economics and no funding interface: nothing values a repo (cash lent against collateral value less haircut, accrued interest at repo_rate to maturity), nothing settles its two legs against the ledger accounts that exist for it (Account::Collateral, Account::Obligation, Account::Accrual) and nothing consumes FinancingFunction::Repo outside qip-capital's own tests. The triage closure's premise that no repo instrument exists in the workspace is wrong; its repo.rs would duplicate RepoDetails.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2320,7 +2325,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Test added: a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class; mutation that fired: AssetClassRegistry::admit returning Ok -> the test fails (an unregistered class was admitted) alongside two older assembly tests. Withdrawing the Rates record is itself refused by AssetClassRegistry::without because FixedIncome is hedged with Rates, which the test records."
   },
   {
     "id": "R12-COVERAGE-5101",
@@ -2329,7 +2334,7 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:584"
     ],
-    "gap": "Shipping/storage economics linked to commodity valuation.",
+    "gap": "Not reached in this session. The Commodity record is a TermStructure label (asset_class_registry.rs) and qip_financial::physical models landed cost for commerce legs (customs, spoilage, marketplace fees); whether any of those fields is storage-and-freight carry on a futures curve is a modelling decision to make before the wiring.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2340,7 +2345,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-COVERAGE-5102",

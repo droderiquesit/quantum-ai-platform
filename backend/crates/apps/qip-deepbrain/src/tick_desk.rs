@@ -50,6 +50,7 @@ use qip_ai::registry::ModelCard;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, ModelId, Timestamp};
 use qip_kernel::fusion::{FusionConfig, MarketTrace, OpportunityMap, TracePoint, fuse};
+use qip_kernel::platform::FillScore;
 use qip_simulation_engine::conditions::MessageBudget;
 use qip_simulation_engine::tick_replay::{
     ExecutionModel, ReplayOrder, ReplayRun, ReplaySession, ReplayTick,
@@ -59,9 +60,9 @@ use qip_storage::lake::Lake;
 use qip_storage::lake_codec::{CompressionReport, SegmentCodec, measure_partitions};
 use qip_storage::lake_history::{HistoryQuery, MARKET_PREFIX};
 use qip_training::microstructure::{
-    BenchmarkReport, BookObservation, FillModel, LabelPlan, MicroExample, TradeObservation,
-    VolatilityModel, benchmark_fill_model, build_examples, split_in_time, train_fill_model,
-    train_volatility_model,
+    BenchmarkReport, BookObservation, FillModel, FillResidualObservation, LabelPlan, MicroExample,
+    ResidualExample, TradeObservation, VolatilityModel, benchmark_fill_model, build_examples,
+    join_fill_residuals, split_in_time, train_fill_model, train_volatility_model,
 };
 use qip_twin::futures::{FutureTree, ObservedMoves, TreeConfig, TwinState, WorldDriver};
 use qip_world_model::graph::KnowledgeGraph;
@@ -294,6 +295,18 @@ pub struct TickRound {
     pub contaminated: usize,
     pub refused_unreliable: usize,
     pub refused_uncovered: usize,
+    /// The venue fills this round was handed, and the rows they became
+    /// (R12-TICK-6014): each fill whose twin entry was off, joined to the
+    /// labelled instant it followed. The training and evaluation rows the
+    /// platform's own execution produced, beside the replayed ones.
+    pub residuals_offered: usize,
+    pub residual_examples: Vec<ResidualExample>,
+    /// Fills with no replayed history on their venue and instrument.
+    pub residuals_unmatched: usize,
+    /// The fill model scored on the residual rows that fall in its holdout,
+    /// and only those: a row from the fitted portion would grade the model
+    /// on data it saw.
+    pub residual_benchmark: Option<BenchmarkReport>,
     pub fill_model: Option<FillModel>,
     pub volatility_model: Option<VolatilityModel>,
     pub benchmark: Option<BenchmarkReport>,
@@ -332,7 +345,8 @@ impl TickRound {
         });
         format!(
             "tick desk: manifest {} — {} segment(s), {} tick(s) ({} unparsed, {} withheld) \
-             under [{}]; replay {replay}; {} example(s) ({} refused unreliable, {} uncovered); \
+             under [{}]; replay {replay}; {} example(s) ({} refused unreliable, {} uncovered), \
+             {} of {} venue fill(s) joined as residual rows ({} unmatched); \
              fill model {}; card {}; {} event(s) fused, {} mismatch(es); map shipped to [{}], \
              refused {:?}; future tree {} branch(es), {} live{}",
             self.manifest,
@@ -348,6 +362,9 @@ impl TickRound {
             self.examples,
             self.refused_unreliable,
             self.refused_uncovered,
+            self.residual_examples.len(),
+            self.residuals_offered,
+            self.residuals_unmatched,
             self.fill_model.as_ref().map_or_else(
                 || format!("not trained ({})", self.training_refused.join("; ")),
                 |m| format!(
@@ -384,6 +401,23 @@ impl TickRound {
     }
 }
 
+/// The fills whose twin entry could be compared with the venue's, as the
+/// training side reads them. A fill the twin did not simulate has no error
+/// and so no row; the desk does not invent a zero for it.
+pub fn fill_residuals(fills: &[FillScore]) -> Vec<FillResidualObservation> {
+    fills
+        .iter()
+        .filter_map(|fill| {
+            Some(FillResidualObservation {
+                venue: fill.venue.clone(),
+                instrument: fill.object_id.as_str().to_string(),
+                filled_at: fill.filled_at,
+                error_bps: fill.trade_error_bps?,
+            })
+        })
+        .collect()
+}
+
 /// The desk. See the module doc.
 #[derive(Debug)]
 pub struct TickDesk {
@@ -392,6 +426,10 @@ pub struct TickDesk {
     outputs: Arc<dyn BlobStore>,
     rounds: u64,
     tree: Option<FutureTree>,
+    /// The strongest fused posterior per instrument from the last round
+    /// (`FusedState::posteriors`), which the evolution engine reads as a
+    /// search prior (R12-TICK-2085).
+    posteriors: BTreeMap<String, f64>,
 }
 
 impl TickDesk {
@@ -406,11 +444,17 @@ impl TickDesk {
             outputs,
             rounds: 0,
             tree: None,
+            posteriors: BTreeMap::new(),
         }
     }
 
     pub const fn config(&self) -> &TickDeskConfig {
         &self.config
+    }
+
+    /// What the last round's fused events believe about each instrument.
+    pub const fn posteriors(&self) -> &BTreeMap<String, f64> {
+        &self.posteriors
     }
 
     /// The synthetic future tree the last round grew.
@@ -425,10 +469,22 @@ impl TickDesk {
         cycle: u64,
         now: Timestamp,
     ) -> Result<Option<TickRound>> {
+        self.maybe_round_with_fills(graph, cycle, now, &[])
+    }
+
+    /// [`Self::maybe_round`] handing the round the platform's scored fills.
+    pub fn maybe_round_with_fills(
+        &mut self,
+        graph: &KnowledgeGraph,
+        cycle: u64,
+        now: Timestamp,
+        fills: &[FillScore],
+    ) -> Result<Option<TickRound>> {
         if !self.config.enabled() || !cycle.is_multiple_of(self.config.every_cycles) {
             return Ok(None);
         }
-        self.round(graph, now, Vec::new()).map(Some)
+        self.round_with_fills(graph, now, Vec::new(), fills)
+            .map(Some)
     }
 
     /// One round over the lake as of `now`, replaying `decisions` against
@@ -438,6 +494,18 @@ impl TickDesk {
         graph: &KnowledgeGraph,
         now: Timestamp,
         decisions: Vec<ReplayOrder>,
+    ) -> Result<TickRound> {
+        self.round_with_fills(graph, now, decisions, &[])
+    }
+
+    /// [`Self::round`] with the platform's scored venue fills, whose twin
+    /// error becomes residual rows (R12-TICK-6014).
+    pub fn round_with_fills(
+        &mut self,
+        graph: &KnowledgeGraph,
+        now: Timestamp,
+        decisions: Vec<ReplayOrder>,
+        fills: &[FillScore],
     ) -> Result<TickRound> {
         self.rounds += 1;
         let mut round = TickRound {
@@ -593,6 +661,27 @@ impl TickDesk {
         }
         round.labelled = labelled.examples;
 
+        // --- the platform's own fills, as rows --------------------------------
+        let residuals = fill_residuals(fills);
+        round.residuals_offered = residuals.len();
+        let joined = join_fill_residuals(&round.labelled, &residuals)?;
+        round.residuals_unmatched = joined.unmatched;
+        if let (Some(model), Ok((_, holdout))) =
+            (&round.fill_model, split_in_time(&round.labelled, 0.3))
+            && let Some(first) = holdout.first().map(|e| e.at)
+        {
+            let held: Vec<MicroExample> = joined
+                .rows
+                .iter()
+                .filter(|row| row.example.at >= first)
+                .map(|row| row.example.clone())
+                .collect();
+            if !held.is_empty() {
+                round.residual_benchmark = Some(benchmark_fill_model(model, &held));
+            }
+        }
+        round.residual_examples = joined.rows;
+
         // --- the model card and its entitlements ------------------------------
         let mut permitted: Option<BTreeSet<String>> = None;
         for entitlement in &round.entitlements_read {
@@ -663,6 +752,7 @@ impl TickDesk {
             max_events: 1_024,
         };
         let fused = fuse(graph, &traces, now, &fusion_config)?;
+        self.posteriors = fused.posteriors();
         round.fused_events = fused.events.len();
         round.mismatches = fused.mismatches().len();
         let map = fused.opportunity_map(MAP_CAPACITY, MAP_TTL)?;

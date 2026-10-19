@@ -34,8 +34,9 @@
 //! exposures already do beside it.
 
 use qip_core::Timestamp;
+use qip_simulation_engine::scenario::{FactorShock, Scenario};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The scenario name the counterparty world is reported and charted under.
 /// A literal, so the `scenario` label stays bounded by source text.
@@ -642,6 +643,93 @@ fn correlation_inversion(book: &TailBook<'_>, held: &[&TailPosition], at: Timest
         ),
     )
 }
+
+/// The name the composed scenario is reported and charted under. A literal,
+/// so the `scenario` label stays bounded by source text however the pair it
+/// joins changes with the library.
+pub const COMPOSED_SCENARIO: &str = "composed-unprecedented";
+
+fn factor_set(scenario: &Scenario) -> BTreeSet<&str> {
+    scenario
+        .shocks
+        .iter()
+        .map(|shock| shock.factor.as_str())
+        .collect()
+}
+
+/// A scenario no library entry holds: two library scenarios' shocks joined
+/// into one event (R12-RISK-3103).
+///
+/// The generated worlds above amplify each position's *own* history, so they
+/// never produce a combination of factors the library lacks. The library
+/// itself shocks the factors one scenario at a time, so a book whose
+/// exposures sit on, say, rates and commodity and fx together is stressed by
+/// no entry that moves all three. This joins the pair whose union of shocked
+/// factors is widest and equals no single entry's factor set. Where both
+/// shock one factor the worse reading is kept — the larger magnitude over the
+/// shorter window — so the join is never milder than either parent. The
+/// liquidity multiplier and stressed correlation are the higher of the two
+/// for the same reason. Pairs are walked in library order and a tie keeps the
+/// first, so a replay composes the same event.
+///
+/// `None` when no pair yields a factor set the library lacks, rather than a
+/// copy of an entry that would read as a new test.
+pub fn composed_scenario(library: &[Scenario]) -> Option<Scenario> {
+    let sets: Vec<BTreeSet<&str>> = library.iter().map(factor_set).collect();
+    let mut best: Option<(usize, usize, usize)> = None;
+    for (i, a) in sets.iter().enumerate() {
+        for (j, b) in sets.iter().enumerate().skip(i + 1) {
+            let union: BTreeSet<&str> = a.union(b).copied().collect();
+            if sets.contains(&union) {
+                continue;
+            }
+            if best.is_none_or(|(_, _, width)| union.len() > width) {
+                best = Some((i, j, union.len()));
+            }
+        }
+    }
+    let (i, j, _) = best?;
+    let (a, b) = (&library[i], &library[j]);
+    let mut shocks: BTreeMap<&str, FactorShock> = BTreeMap::new();
+    for shock in a.shocks.iter().chain(&b.shocks) {
+        match shocks.get(shock.factor.as_str()) {
+            Some(held) => {
+                let worse = shock.magnitude.abs() > held.magnitude.abs();
+                let magnitude = if worse {
+                    shock.magnitude
+                } else {
+                    held.magnitude
+                };
+                let over_days = held.over_days.min(shock.over_days);
+                shocks.insert(
+                    shock.factor.as_str(),
+                    FactorShock::new(shock.factor.clone(), magnitude, over_days),
+                );
+            }
+            None => {
+                shocks.insert(shock.factor.as_str(), shock.clone());
+            }
+        }
+    }
+    let scenario = Scenario {
+        name: COMPOSED_SCENARIO.to_string(),
+        description: format!(
+            "Composed, never observed: {} and {} as one event, joining factor sets no library              entry shocks together",
+            a.name, b.name
+        ),
+        shocks: shocks.into_values().collect(),
+        stressed_correlation: match (a.stressed_correlation, b.stressed_correlation) {
+            (Some(x), Some(y)) => Some(x.max(y)),
+            (one, other) => one.or(other),
+        },
+        liquidity_multiplier: a.liquidity_multiplier.max(b.liquidity_multiplier),
+        historical: false,
+    };
+    // A malformed join is no scenario at all, never a silently repaired one.
+    scenario.validate().ok()?;
+    Some(scenario)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -867,5 +955,73 @@ mod tests {
                 .any(|name| (world(&first, name).loss - world(&next, name).loss).abs() > 1e-6),
             "two cycles generated the same worlds"
         );
+    }
+
+    /// R12-RISK-3103: the composed scenario shocks a factor set the library
+    /// holds nowhere, and is never milder than either parent on a shared
+    /// factor. Mutation: return the first library entry unchanged and the
+    /// absence assertion fails; keep the shorter magnitude on a shared factor
+    /// and the severity assertion fails.
+    #[test]
+    fn the_composed_scenario_shocks_a_factor_set_no_library_entry_holds() {
+        let library = qip_simulation_engine::scenario::standard_library();
+        let composed = composed_scenario(&library).expect("the library admits a composition");
+        let set = |scenario: &Scenario| -> BTreeSet<String> {
+            scenario.shocks.iter().map(|s| s.factor.clone()).collect()
+        };
+        let joined = set(&composed);
+        assert!(
+            library.iter().all(|entry| set(entry) != joined),
+            "premise: the composed set {joined:?} must differ from every entry"
+        );
+        assert!(
+            library.iter().any(|entry| set(entry).is_subset(&joined)),
+            "the join must contain whole library entries, not invented factors"
+        );
+        let widest = library.iter().map(|e| set(e).len()).max().unwrap_or(0);
+        assert!(joined.len() > widest, "no wider than a single entry");
+        assert_eq!(composed.name, COMPOSED_SCENARIO);
+        assert!(!composed.historical);
+        assert!(composed.validate().is_ok());
+        // Never milder than a named parent on a factor it shares.
+        let parents: Vec<&Scenario> = library
+            .iter()
+            .filter(|entry| composed.description.contains(&format!("{} ", entry.name)))
+            .collect();
+        assert_eq!(
+            parents.len(),
+            2,
+            "premise: the description names two parents"
+        );
+        for shock in &composed.shocks {
+            for entry in &parents {
+                if let Some(parent) = entry.shocks.iter().find(|s| s.factor == shock.factor) {
+                    assert!(
+                        shock.magnitude.abs() >= parent.magnitude.abs() - 1e-12,
+                        "{} softened against {}",
+                        shock.factor,
+                        entry.name
+                    );
+                }
+            }
+        }
+        assert_eq!(composed_scenario(&library), Some(composed), "no replay");
+    }
+
+    #[test]
+    fn a_library_whose_every_union_already_exists_composes_nothing() {
+        let entry = |name: &str, factor: &str| Scenario {
+            name: name.to_string(),
+            description: "a library entry with stated provenance".to_string(),
+            shocks: vec![FactorShock::new(factor, -0.1, 1.0)],
+            stressed_correlation: None,
+            liquidity_multiplier: 1.0,
+            historical: false,
+        };
+        let mut both = entry("both", "equity");
+        both.shocks.push(FactorShock::new("rates", -0.1, 1.0));
+        let library = [entry("a", "equity"), entry("b", "rates"), both];
+        assert!(composed_scenario(&library).is_none());
+        assert!(composed_scenario(&[]).is_none());
     }
 }

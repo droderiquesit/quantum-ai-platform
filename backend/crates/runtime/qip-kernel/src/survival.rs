@@ -717,6 +717,14 @@ pub struct SurvivalGovernor {
     /// What the gate reads. Set by every construction, successful or not, and
     /// by [`Self::seed`]; see the module doc for why a refusal lowers it.
     ceiling: Option<Decimal>,
+    /// Free cash and the funding-maturity tier of the latest waterfall that
+    /// ran, successful construction or seed, for `LimitKind::MinFundingBuffer`.
+    /// Kept apart from `last` because a seed records no budget, and the buffer
+    /// is wanted from assembly onward rather than from the first thesis. A
+    /// refusal leaves the previous read standing: the ceiling it lowers is what
+    /// stops new gross, and a funding figure that vanished on a refusal would
+    /// read as a book with nothing maturing.
+    funding: Option<(Decimal, Decimal)>,
 }
 
 impl SurvivalGovernor {
@@ -744,6 +752,13 @@ impl SurvivalGovernor {
     /// The last successful construction's budget.
     pub fn last(&self) -> Option<&SizingBudget> {
         self.last.as_ref()
+    }
+
+    /// Free cash and the funding-maturity tier the latest waterfall withheld,
+    /// as `(free_cash, funding_maturity_required)`. `None` before anything was
+    /// sized or seeded.
+    pub fn funding_read(&self) -> Option<(Decimal, Decimal)> {
+        self.funding
     }
 
     /// The gross the survival kernel stands behind, for the risk state the
@@ -782,6 +797,7 @@ impl SurvivalGovernor {
         match self.budget(figures, stress, tolerance, theses, now) {
             Ok(budget) => {
                 self.ceiling = Some(budget.gross_ceiling);
+                self.funding = Some((budget.free_cash, budget.survival.funding_maturity_required));
                 self.last = Some(budget.clone());
                 Ok(budget)
             }
@@ -823,6 +839,7 @@ impl SurvivalGovernor {
         match self.budget(figures, stress, tolerance, &[], now) {
             Ok(budget) => {
                 self.ceiling = Some(budget.gross_ceiling);
+                self.funding = Some((budget.free_cash, budget.survival.funding_maturity_required));
                 Ok(budget.gross_ceiling)
             }
             Err(error) => {
@@ -949,6 +966,7 @@ mod tests {
             hypothesis_id: "h".into(),
             object_id: "obj-AAA".into(),
             regime: MarketRegime::Trending,
+            reliability: None,
         }]
     }
 

@@ -77,11 +77,15 @@ fn replace(original: u64, new: u64, shares: u32, price_ticks: u32) -> Vec<u8> {
 }
 
 fn trading_action(stock: &str, state: u8) -> Vec<u8> {
+    trading_action_for(stock, state, b"    ")
+}
+
+fn trading_action_for(stock: &str, state: u8, reason: &[u8; 4]) -> Vec<u8> {
     let mut out = header(b'H', 250);
     put_stock(&mut out, stock);
     out.push(state);
     out.push(b' ');
-    out.extend_from_slice(b"    ");
+    out.extend_from_slice(reason);
     out
 }
 
@@ -302,6 +306,52 @@ fn a_trading_action_becomes_a_status_change_the_router_can_read() {
         status.accepts_orders() && !matches!(status, VenueStatus::Open),
         "a quotation-only period accepts orders but is not continuous trading"
     );
+}
+
+/// Both halt-class state bytes are crossed with both kinds of reason, so the
+/// reason code is the only thing that differs inside each loop. With breaker
+/// reasons sent under `P` and ordinary ones under `H` a decoder that chose by
+/// state byte alone passed every case, and an ordinary pause (`P`, blank
+/// reason) would have been reported as a breaker that reopens on a clock.
+///
+/// Mutation: in `src/itch.rs` replace the `b'H' | b'P' if reason.starts_with`
+/// arm with `b'P' => VenueStatus::CircuitBreaker` and `b'H' =>
+/// VenueStatus::Halted` — `H` with `LUDP` decodes as `Halted` ("state H
+/// reason LUDP"; `P` with a blank reason would decode as a breaker next).
+/// Mutation: drop `b'H'` from the breaker arm — the same case fails.
+#[test]
+fn a_breaker_reason_on_a_trading_action_decodes_as_a_circuit_breaker_not_an_ordinary_halt() {
+    let mut decoder = decoder();
+    for state in [b'H', b'P'] {
+        for reason in [b"LUDP", b"LUDS", b"MWC1"] {
+            let messages = decoder
+                .decode(&trading_action_for("AAPL", state, reason), at())
+                .expect("decodes");
+            assert_eq!(
+                messages[0].body,
+                MessageBody::StatusChange {
+                    status: VenueStatus::CircuitBreaker
+                },
+                "state {} reason {}",
+                char::from(state),
+                String::from_utf8_lossy(reason)
+            );
+        }
+        for reason in [b"    ", b"T1  "] {
+            let messages = decoder
+                .decode(&trading_action_for("AAPL", state, reason), at())
+                .expect("decodes");
+            assert_eq!(
+                messages[0].body,
+                MessageBody::StatusChange {
+                    status: VenueStatus::Halted
+                },
+                "state {} reason {:?}",
+                char::from(state),
+                String::from_utf8_lossy(reason)
+            );
+        }
+    }
 }
 
 #[test]

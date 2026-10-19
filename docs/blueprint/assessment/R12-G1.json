@@ -54,18 +54,18 @@
       "backend/crates/services/qip-mesh/src/peer.rs",
       "backend/crates/libs/qip-transport/tests/mesh.rs"
     ],
-    "gap": "QUIC transport; deployed/default-on peer link; cross-region proof.",
+    "gap": "Owner decision O07 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a QUIC crate under ADR 0109, after ADR 0112 §4's committed cross-region TCP+TLS versus QUIC measurement. Enables: QUIC for the fabric hop and the peer link. Costs: A new transport crate and its closure; the measurement needs a second region.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "QUIC requires a new dependency (ADR 0002/0009) or an ADR authorising one",
+    "blocked_by": "owner decision O07 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-transport --test mesh",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision O07; gap before it: QUIC transport; deployed/default-on peer link; cross-region proof."
   },
   {
     "id": "R12-FABRIC-8004",
@@ -126,18 +126,18 @@
       "backend/crates/libs/qip-storage/src/provider.rs:379,441 refusal of unimplemented targets",
       "backend/crates/libs/qip-storage/src/gcp/storage.rs:388 CloudStorageBlobStore"
     ],
-    "gap": "Spanner Graph, Bigtable and AlloyDB adapters (blocked on no TLS client without a new ADR), Knowledge Catalog, enable flags with evidence an adapter uses them.",
+    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O02 (design-decisions-2026-10-18)",
     "verification": "terraform plan with enable_* true plus adapter integration tests",
     "work_item": "",
     "size": "XL",
-    "notes": "qip_transport::http has no TLS; provider.rs states https to Google APIs is refused, so GCS/BigQuery adapters need the egress proxy."
+    "notes": "qip_transport::http has no TLS; provider.rs states https to Google APIs is refused, so GCS/BigQuery adapters need the egress proxy. ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner Graph, Bigtable and AlloyDB adapters (blocked on no TLS client without a new ADR), Knowledge Catalog, enable flags with evidence an adapter uses them."
   },
   {
     "id": "R12-LEDGER-8007",
@@ -289,7 +289,7 @@
       "backend/crates/libs/qip-financial/src/manifest.rs:63-78 fields",
       "backend/crates/libs/qip-financial/src/manifest.rs:216,232 refusal tests"
     ],
-    "gap": "Add etag/version, entitlement, cursor, freshness, parser lineage and re-fetch instruction fields with refusal tests.",
+    "gap": "Decided by ADR 0132 (accepted 2026-10-18): One admission header (three times, uncertainty, source hash, entitlement) shared by MarketEvent and every SensedRecord; SourceManifest v2 is additive and v1 stays readable; ticks reach the fabric only as bounded per-pass feature digests. Code left: SourceManifest v2 with the six fields, refusal tests, a round-trip test failing on a dropped field, and a v1 decode test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -300,7 +300,7 @@
     "verification": "cargo test -p qip-financial manifest",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Add etag/version, entitlement, cursor, freshness, parser lineage and re-fetch instruction fields with refusal tests."
   },
   {
     "id": "R12-DATA-8014",
@@ -333,18 +333,18 @@
       "backend/crates/runtime/qip-kernel/src/central/causal.rs",
       "backend/crates/runtime/qip-kernel/src/central/belief.rs"
     ],
-    "gap": "Durable graph store (Spanner Graph adapter), schema with contradiction/confidence fields, test refusing document bodies.",
+    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": true,
     "tested": false,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O02 (design-decisions-2026-10-18)",
     "verification": "integration test against Spanner Graph",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Durable graph store (Spanner Graph adapter), schema with contradiction/confidence fields, test refusing document bodies."
   },
   {
     "id": "R12-DATA-8016",
@@ -491,7 +491,7 @@
       "backend/crates/libs/qip-events/src/event_fabric/envelope.rs::FabricEnvelope::open",
       "backend/crates/runtime/qip-desk-ship/src/lib.rs::FabricEnvelope::open_all"
     ],
-    "gap": "Region and provenance come from reader-supplied FabricContext, not carried by the event on the wire; not every async event (mesh, spine) uses it.",
+    "gap": "Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: broker-stamped region and principal and writer-stamped provenance in the codec, FabricFacts reading them, an old-batch decode test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -502,7 +502,7 @@
     "verification": "cargo test -p qip-events --test event_fabric_codec",
     "work_item": "",
     "size": "M",
-    "notes": "Two FabricEnvelope types exist (qip-events and qip-contracts) — a second source of truth for one contract. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Two FabricEnvelope types exist (qip-events and qip-contracts) — a second source of truth for one contract. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Region and provenance come from reader-supplied FabricContext, not carried by the event on the wire; not every async event (mesh, spine) uses it."
   },
   {
     "id": "R12-FABRIC-8023",
@@ -578,13 +578,15 @@
   {
     "id": "R12-RES-8026",
     "status": "PARTIAL",
-    "current": "Cell::narrowing computes a DegradationState over policy-fed capabilities (beliefs, causal, etc.) with sizing multipliers; ingestion and counterfactual_scoring are not measured by the cell.",
+    "current": "Cell::narrowing now records, beside the payload-fed rows, the dependency rows a cell can measure: Ledger (journal wire), Fabric (derived from what the policy carries), Feed (venues heard vs silent past max_staleness), VenueSession (venues quarantined by venue health) and Clock (venue time vs capture time). Capability::dependencies() has six rows, each with a declared stale and unavailable multiplier (FEED_/SESSION_STALE one because the per-venue gates already act, unavailable zero), and a contract test enumerates that every dependency has one. Ingestion stays per-book: the stale_book gate refuses a book the cell knows is wrong.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:2543 narrowing",
-      "backend/crates/edge/qip-edge/src/telemetry.rs:700 narrowing gauge",
+      "backend/crates/libs/qip-contracts/src/degradation.rs Capability::Feed, Capability::VenueSession, dependency_row_multiplier",
+      "backend/crates/edge/qip-edge/src/cell.rs:2867 narrowing",
+      "backend/crates/libs/qip-contracts/tests/degradation_dependencies.rs every_dependency_declares_what_its_loss_does_to_size",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs a_cell_whose_feed_goes_silent_reads_its_feed_row_stale_then_unavailable; a_cell_reads_its_venue_session_row_from_how_many_venues_are_quarantined",
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:380"
     ],
-    "gap": "Envelopes for every dependency (feed, venue session, fabric, ingestion), enumerated and tested.",
+    "gap": "Ingestion has no table row in the cell (book staleness is judged per book, deliberately stricter), and the Feed, VenueSession and Clock rows are not charted: telemetry.rs publishes only the three policy-fed capabilities, and publishing more changes a documented series count (.claude/rules/domains/observability.md, a protected path).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -592,10 +594,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test degraded",
+    "verification": "cargo test -p qip-contracts --test degradation_dependencies; cargo test -p qip-edge --test venue_failure; cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: Feed and VenueSession rows added and derived by the cell; PARTIAL kept for ingestion and charting. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests."
   },
   {
     "id": "R12-FABRIC-8027",
@@ -651,7 +653,7 @@
       "backend/crates/apps/qip-ledgerd/src/store.rs:352",
       "backend/crates/libs/qip-storage/src/provider.rs:379"
     ],
-    "gap": "Spanner ledger, GCS archive, Bigtable features, plus a single-owner check.",
+    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -660,11 +662,11 @@
     "depends_on": [
       "R12-LEDGER-8007"
     ],
-    "blocked_by": "",
+    "blocked_by": "owner decision O02 (design-decisions-2026-10-18)",
     "verification": "inspection + architecture test",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner ledger, GCS archive, Bigtable features, plus a single-owner check."
   },
   {
     "id": "R12-CICD-8030",
@@ -873,7 +875,7 @@
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:143 Mirroring enum",
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:245"
     ],
-    "gap": "fabric-mirror implementation and multi-region deployment.",
+    "gap": "Already decided by ADR 0119: Cross-region mirroring is decided: an in-tree asynchronous fabric-mirror consumer (ADR 0119, accepted 2026-10-11); the rows' 'C8 refuses mirroring' text is stale and what is left is the build and a second region to deploy into.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -887,7 +889,7 @@
     "verification": "game day",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision E01; gap before it: fabric-mirror implementation and multi-region deployment."
   },
   {
     "id": "R12-FINOPS-8040",
@@ -1132,18 +1134,18 @@
       "infrastructure/terraform/modules/binaryauthorization/main.tf",
       "infrastructure/terraform/modules/gitops-control-plane/main.tf"
     ],
-    "gap": "Separate engineering project; Cloud Build private pool.",
+    "gap": "Owner decision O17 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split scouts and engineering into their own projects before the second region (ADR 0113 §4, ADR 0118). Enables: Project-level isolation for scouts and engineering. Costs: More projects, budgets and IAM; ADR 0118 bootstrap re-run.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O17 (design-decisions-2026-10-18)",
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O17; gap before it: Separate engineering project; Cloud Build private pool."
   },
   {
     "id": "R12-GCP-8052",
@@ -1439,18 +1441,18 @@
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:67,74,84 refusals",
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:352,367 CPUAffinity, LimitMEMLOCK"
     ],
-    "gap": "mlockall (needs a syscall path: libc is a new dependency, or an ADR), IRQ/RPS/XPS, scratch SSD.",
+    "gap": "Owner decision O13 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit libc for mlockall/busy-poll and a local-SSD machine shape. Enables: Memory locking and busy polling on the node. Costs: libc on the allow-list (syscall surface under unsafe_code=forbid); local SSD billing.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "mlockall without libc needs an ADR (ADR 0002)",
+    "blocked_by": "owner decision O13 (design-decisions-2026-10-18)",
     "verification": "inspection of startup template + node boot log",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O13; gap before it: mlockall (needs a syscall path: libc is a new dependency, or an ADR), IRQ/RPS/XPS, scratch SSD."
   },
   {
     "id": "R12-REFLEX-8066",
@@ -1530,7 +1532,7 @@
       "apps/qip-edge-node/tests/standby.rs::a_standby_places_nothing_until_it_promotes_and_the_primary_it_replaced_places_nothing_after",
       "infrastructure/terraform/modules/execution-node/main.tf:724-731"
     ],
-    "gap": "A cross-zone lease store with a conditional write (ADR 0111/0113); Terraform passing the lease, role and name to primary and standby; a real venue-session check.",
+    "gap": "Decided by ADR 0137 (accepted 2026-10-18): A GcsLeaseStore implements LeaseStore over one object whose generation is the version, in a regional bucket created with the nodes; no Spanner instance for a lock. Code left: GcsLeaseStore against the storage test server, lease scheme selection in the node, the bucket and IAM in the execution-node module, and a two-keeper test; a node must be deployed to exercise it.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1541,7 +1543,7 @@
     "verification": "property test over takeover interleavings",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Old note 'no code implements a fencing token' is no longer true. Latent defect: setting standby_enabled=true today boots the standby with the primary's startup template and no lease variable, so it would run unfenced as a second primary; the 'monitors the primary's liveness via a fencing token' comment at modules/execution-node/main.tf:726-727 is still not what the infrastructure does."
+    "notes": "Round-2 independent audit, 2026-10-11: Old note 'no code implements a fencing token' is no longer true. Latent defect: setting standby_enabled=true today boots the standby with the primary's startup template and no lease variable, so it would run unfenced as a second primary; the 'monitors the primary's liveness via a fencing token' comment at modules/execution-node/main.tf:726-727 is still not what the infrastructure does. ADR lane 2026-10-18: gap re-graded against decision D20; gap before it: A cross-zone lease store with a conditional write (ADR 0111/0113); Terraform passing the lease, role and name to primary and standby; a real venue-session check. ADR lane 2026-10-18: gap re-graded against ADR 0137; gap before it: Delegable decision D20 (design-decisions-2026-10-18.json), ADR not yet written: A cross-zone execution lease as a GCS object written under a generation precondition through the existing REST adapter. Needs that ADR, then the code."
   },
   {
     "id": "R12-REFLEX-8070",
@@ -1712,18 +1714,18 @@
       ".github/workflows/ci.yml:94 event-fabric schema-gate",
       "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:318"
     ],
-    "gap": "Protobuf wire schema (blocked) — otherwise registry is per-broker and per-batch class, not per topic body.",
+    "gap": "Owner decision O08 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit prost/protobuf codegen for generated fabric bindings. Enables: Versioned Protobuf descriptors and generated types. Costs: A codegen dependency and build-time tool on the allow-list.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "prost/protobuf requires an ADR (ADR 0002/0009)",
+    "blocked_by": "owner decision O08 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-events --test schema_compat",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O08; gap before it: Protobuf wire schema (blocked) — otherwise registry is per-broker and per-batch class, not per topic body."
   },
   {
     "id": "R12-FABRIC-8078",
@@ -1821,7 +1823,7 @@
       "backend/crates/apps/qip-fabricd/src/telemetry.rs",
       "backend/crates/apps/qip-fabricd/tests/broker.rs:1184 health_and_metrics_keep_answering_and_report_the_outage_when_the_data_plane_stops"
     ],
-    "gap": "Traces; OTel export; a deployed scraper.",
+    "gap": "Traces, OTLP export and a deployed scraper. qip-fabricd records no spans at all (its telemetry is a metrics registry only; the Tracer lives in qip_observability::Telemetry, which the fabric broker does not construct), so an exporter has nothing to drain until append and replay are instrumented at Broker::produce and fetch off the data plane; and the exporter itself waits on the shared drain home and the collector decisions recorded on R12-OBS-9140.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1832,7 +1834,7 @@
     "verification": "cargo test -p qip-fabricd --test broker",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L17 from fabricd's telemetry.rs and main.rs; nothing in the code changed."
   },
   {
     "id": "R12-FABRIC-8083",
@@ -1842,18 +1844,18 @@
       "backend/crates/libs/qip-transport/src/event_fabric/transport.rs:1-10 HttpTransport is the only implementation",
       "backend/crates/libs/qip-transport/src/event_fabric/auth.rs:11 'The fabric runs over plaintext TCP'"
     ],
-    "gap": "TLS behind the FabricTransport seam exists (mTLS, FABRIC-7046). QUIC is admitted only on a committed TCP+TLS vs QUIC measurement on the cross-region peer-mesh hop (ADR 0112 §4, Amendment 1); commit that measurement and an integration test refusing plaintext.",
+    "gap": "Owner decision O07 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a QUIC crate under ADR 0109, after ADR 0112 §4's committed cross-region TCP+TLS versus QUIC measurement. Enables: QUIC for the fabric hop and the peer link. Costs: A new transport crate and its closure; the measurement needs a second region.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O07 (design-decisions-2026-10-18)",
     "verification": "integration test refusing plaintext",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). ADR lane 2026-10-18: gap re-graded against decision O07; gap before it: TLS behind the FabricTransport seam exists (mTLS, FABRIC-7046). QUIC is admitted only on a committed TCP+TLS vs QUIC measurement on the cross-region peer-mesh hop (ADR 0112 §4, Amendment 1); commit that measurement and an integration test refusing plaintext."
   },
   {
     "id": "R12-FABRIC-8084",
@@ -1864,7 +1866,7 @@
       "backend/crates/libs/qip-events/src/event_fabric/crc32c.rs:47",
       "backend/crates/libs/qip-events/tests/event_fabric_codec.rs"
     ],
-    "gap": "Partition field in the header (or ADR stating the route carries it).",
+    "gap": "Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: broker-stamped partition in the codec with an event_fabric_codec.rs round-trip.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1875,37 +1877,34 @@
     "verification": "cargo test -p qip-events --test event_fabric_codec",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Partition field in the header (or ADR stating the route carries it)."
   },
   {
     "id": "R12-FABRIC-8085",
     "status": "PARTIAL",
-    "current": "Records are routed by an explicit key: Broker::produce computes partition::partition_for(key, count) (services/qip-streaming/src/event_fabric/broker.rs:680; partition.rs:109-124, SHA-256 prefix mod count, refuses count 0). A rendezvous (highest-random-weight) leader function exists, partition.rs:140-170 (leader_for), but nothing outside tests calls it: leadership in the shipped binary is a Spanner lease contended by every seated instance (broker.rs:1145-1180 tend_leases, called from apps/qip-fabricd/src/lib.rs:490 and :584), not rendezvous placement. Non-leaders follow the committed managed log onto their own disks (broker.rs:1145-1178 catch_up), only for P0/P1 managed_majority streams and only when QIP_EVENT_FABRIC_MANAGED_LOG=spanner. The deployable is one broker in one zone (infrastructure/terraform/modules/event-fabric-broker/main.tf:14-21; module variables.tf:143-144 refuses more than one address) and null in every environment (infrastructure/terraform/variables.tf:1682-1700); fabricd is outside the image matrix (apps/qip-fabricd/src/lib.rs:38-39).",
+    "current": "Records are routed by an explicit key (partition_for). Leadership is a Spanner lease, and since 2026-10-18 rendezvous chooses who tries: with QIP_EVENT_FABRIC_INSTANCES naming the region's instances, qip-fabricd seats Broker::with_placement, and Broker::tend_leases (called from the lease thread and the pre-serve pass) contends at once only for partitions partition::leader_for names this instance for. For any other it only follows during a settling window of one grace after start, and afterwards takes another holder's lease only once it has been expired for QIP_EVENT_FABRIC_PLACEMENT_GRACE_MS (default a third of the TTL) through ManagedLog::acquire_after_expiry, implemented for the in-memory log and for Spanner (SELECT_LEASE_AFTER_GRACE). Safety still comes from the lease epoch, never from the hash. With the variable unset every instance contends for everything, as before. The deployable is one broker in one zone (event-fabric-broker module refuses more than one address) and null in every environment.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/partition.rs:109",
-      "backend/crates/services/qip-streaming/src/event_fabric/partition.rs:140",
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:680",
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1145",
-      "backend/crates/apps/qip-fabricd/src/lib.rs:30",
-      "backend/crates/apps/qip-fabricd/src/lib.rs:584",
-      "services/qip-streaming/tests/event_fabric_leader.rs",
-      "apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
-      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:143"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs with_placement, ManagedSeat::deferral, tend_leases",
+      "backend/crates/services/qip-streaming/src/event_fabric/managed.rs ManagedLog::acquire_after_expiry",
+      "backend/crates/apps/qip-fabricd/src/spanner.rs acquire_after_expiry",
+      "backend/crates/apps/qip-fabricd/src/config.rs INSTANCES, PLACEMENT_GRACE_MS",
+      "backend/crates/apps/qip-fabricd/src/lib.rs with_placement",
+      "backend/crates/services/qip-streaming/tests/event_fabric_managed.rs a_non_preferred_instance_waits_the_grace_before_contending_a_live_lease"
     ],
-    "gap": "Wire leader_for into lease contention: an instance contends immediately only for partitions it is the rendezvous-preferred leader of, otherwise after expiry plus grace (ADR 0111 Amendment 1); followers in other zones via the broker module. P2-P4 stay RF1 by ADR 0111 §2.",
+    "gap": "No committed deployment sets QIP_EVENT_FABRIC_INSTANCES: the event-fabric-broker module deploys one instance in one zone and refuses a second address, and fabricd is outside the image matrix and null in every environment, so rendezvous placement runs only in tests. The Spanner graced statement (SELECT_LEASE_AFTER_GRACE) is compiled but has not run against a Spanner database or emulator. P2-P4 stay RF1 by ADR 0111 section 2.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-FABRIC-8075"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-streaming --test event_fabric_broker",
+    "verification": "cargo test -p qip-streaming --test event_fabric_managed && cargo test -p qip-fabricd --lib",
     "work_item": "",
     "size": "L",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: leader_for is a tested library function with no production caller; the property 'leader assignment stable under broker list order' is proven of a function the broker never uses. ADR 0111 replaced in-tree replication with a Spanner-lease model for P0/P1; whether lease contention satisfies 'rendezvous leaders' is an owner/register call."
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: passing a zero grace to the log lets the non-preferred instance take a lease expired for 1 ms (a_non_preferred_instance_waits... fails); skipping the settling branch lets the instance that asks first lead a vacant partition; applying the deferral to every instance makes the preferred one wait (two tests fail); dropping the config refusal of a set that omits this instance loads it (config test fails). The closure named qip-fabricd/tests/managed.rs; the test is at the Broker seam in qip-streaming/tests because it needs a manual clock, which the served-process tests cannot advance. Kept PARTIAL: wiring is done, deployment is not."
   },
   {
     "id": "R12-FABRIC-8086",
@@ -2005,13 +2004,14 @@
   {
     "id": "R12-FABRIC-8090",
     "status": "PARTIAL",
-    "current": "CI runs the schema-gate lock diff; broker refuses unregistered schema ids. Runtime registration registers only the per-class batch schema, not per-topic body schemas.",
+    "current": "CI runs the schema-gate lock diff; the broker refuses an unregistered batch schema id. At runtime Service::apply_catalogue now also registers each catalogue stream's body topics (Broker::register_body_topics), and Broker::produce_to refuses with SchemaRefused, before anything is appended, a batch carrying a record whose event topic the stream does not admit or whose body cannot be read. A stream the catalogue declares with no topics admits any, as before.",
     "evidence": [
-      ".github/workflows/ci.yml:94",
-      "backend/crates/apps/qip-cli/src/event_fabric/schema_gate.rs:124 judge",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:870 an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs register_body_topics, require_admitted_topics",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs apply_catalogue",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs a_record_body_under_an_unregistered_topic_schema_is_refused_before_append",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it"
     ],
-    "gap": "Per-topic body schema registration at runtime.",
+    "gap": "The body's schema version and shape per topic are still not registered: the broker admits a topic by name and not by (SchemaId, version), because the service's SchemaRegistry is empty by design (the_schema_registry_is_a_production_caller_in_qip_fabricd asserts len 0) and qip-streaming holds no EventBody descriptors to take a topic's current version and shape from. A stream with an empty topic list in the catalogue is unrestricted.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2022,7 +2022,7 @@
     "verification": "cargo test -p qip-fabricd --test broker",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: skipping the admitted-topic comparison appends the off-topic batch and the fetch returns two batches; the service registering nothing leaves the stream unrestricted. Existing suites pass: qip-streaming, qip-fabricd, qip-ledgerd, qip-edge-node, qip-transport, and the qip-acceptance event_fabric suites run. Kept PARTIAL: topic admission is the half that needs no descriptors; version and shape need the registry populated first."
   },
   {
     "id": "R12-FABRIC-8091",
@@ -2078,7 +2078,7 @@
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:30-31,82"
     ],
-    "gap": "RF3, tiered retention, GCS archive, mirror throttling.",
+    "gap": "Owner decision O11 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Raise P2/P3 replication above RF1 (ADR 0111 §2 waits on a measurement). Enables: RF2/3 for P2/P3, tiered retention, throttled mirroring. Costs: Spanner or Managed Kafka capacity for bulk classes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2087,11 +2087,11 @@
     "depends_on": [
       "R12-FABRIC-8078"
     ],
-    "blocked_by": "",
+    "blocked_by": "owner decision O11 (design-decisions-2026-10-18)",
     "verification": "integration test",
     "work_item": "",
     "size": "L",
-    "notes": "Blueprint asks RF3 regional quorum for P2; code floor is LeaderOnly."
+    "notes": "Blueprint asks RF3 regional quorum for P2; code floor is LeaderOnly. ADR lane 2026-10-18: gap re-graded against decision O11; gap before it: RF3, tiered retention, GCS archive, mirror throttling."
   },
   {
     "id": "R12-FABRIC-8094",
@@ -2101,18 +2101,18 @@
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:32-33",
       "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1067-1074"
     ],
-    "gap": "Configurable RF; consumer scaling.",
+    "gap": "Owner decision O11 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Raise P2/P3 replication above RF1 (ADR 0111 §2 waits on a measurement). Enables: RF2/3 for P2/P3, tiered retention, throttled mirroring. Costs: Spanner or Managed Kafka capacity for bulk classes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O11 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-streaming",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O11; gap before it: Configurable RF; consumer scaling."
   },
   {
     "id": "R12-FABRIC-8095",
@@ -2194,7 +2194,7 @@
       "infrastructure/terraform/modules/event-fabric-broker/main.tf:86-112",
       "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:976 metadata"
     ],
-    "gap": "Partition/broker map; client bootstrap from SRV.",
+    "gap": "Decided by ADR 0135 (accepted 2026-10-18): Fabric clients bootstrap from the broker module's SRV record through an in-tree DNS query in qip-transport, keep the last good answer for a bounded staleness and fall back to configured addresses; the cluster map is a broker request arm. Code left: the SRV query plus a cluster-map broker request arm, with a test that a client follows a leader change.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2207,7 +2207,7 @@
     "verification": "terraform plan + client test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D11; gap before it: Partition/broker map; client bootstrap from SRV."
   },
   {
     "id": "R12-FABRIC-8099",
@@ -2308,13 +2308,16 @@
   {
     "id": "R12-RES-8103",
     "status": "PARTIAL",
-    "current": "Leadership is a lease with epoch fencing (fabricd managed mode, config.rs:59-90), so a broker taken down for upgrade is replaced by a peer after the lease TTL without losing acknowledged P0/P1 records (tests/managed.rs). There is no voluntary drain/lease release, no replica-health check between steps, no rolling-upgrade automation or runbook, and no drill.",
+    "current": "Leadership is a lease with epoch fencing (fabricd managed mode, config.rs:59-90), so a broker taken down for upgrade is replaced by a peer after the lease TTL without losing acknowledged P0/P1 records (tests/managed.rs). Since 2026-10-18 a broker can also be drained: ManagedLog::release lapses the holder's own lease row (Memory and Spanner adapters), Broker::relinquish_leases forgets then releases every led partition, and the lease thread in qip-fabricd/src/lib.rs does so on every pass once Running::drain is called or a DRAIN file appears in the data directory, and never renews again, so the follower leads at once with no database time passing. There is still no replica-health check between steps, no rolling-upgrade automation or runbook, and no drill.",
     "evidence": [
       "backend/crates/apps/qip-fabricd/src/config.rs:59-90",
-      "apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_drained_leader_hands_its_lease_to_the_follower_with_no_acknowledged_record_lost",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_drain_file_hands_the_lease_over_and_the_drained_broker_does_not_take_it_back",
+      "backend/crates/apps/qip-fabricd/src/spanner.rs::tests::a_release_lapses_the_holders_own_lease_and_leaves_a_successors_alone",
       "docs/adr/0111-event-fabric-replication-is-delegated-to-a-managed-consensus-and-not-written-in-tree.md:165-168"
     ],
-    "gap": "Leadership drain (lease release), health verification, one-at-a-time upgrade automation, and a game day showing P0/P1 produce stays available.",
+    "gap": "Replica-health verification between steps (nothing asks a follower whether it is caught up before the leader is drained), one-at-a-time upgrade automation and runbook (nothing creates the DRAIN file or restarts a broker), and a game day showing P0/P1 produce stays available across a drain.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2324,10 +2327,10 @@
       "R12-FABRIC-8086"
     ],
     "blocked_by": "",
-    "verification": "game day",
+    "verification": "cargo test -p qip-fabricd --test managed; cargo test -p qip-fabricd --lib release",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL on the lease-based takeover only; ADR 0111 itself says the upgrade runbook automation is separate work."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL on the lease-based takeover only; ADR 0111 itself says the upgrade runbook automation is separate work. 2026-10-18 lane L17: the voluntary drain landed with mutation-verified tests; kept PARTIAL because verify-replica-health, replace-image and rejoin remain operator procedure with no automation or drill."
   },
   {
     "id": "R12-GCP-8104",
@@ -2508,7 +2511,7 @@
       "infrastructure/terraform/modules/egress-proxy/main.tf",
       "infrastructure/terraform/modules/execution-node/main.tf:202 node service account"
     ],
-    "gap": "Separate scout Cloud Run job with own SA and quotas.",
+    "gap": "Decided by ADR 0144 (accepted 2026-10-18): Research connector polling runs as a scout Cloud Run job in the existing project with its own identity, no trading role, its own proxy routes and immutable records the deep brain only reads. Code left: the scout entry point in qip-deepbrain, the deep brain's bucket reader, the job, schedule, bucket, identity and proxy routes in Terraform, and an acceptance test that the scout identity holds only its listed grants.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2519,7 +2522,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D16; gap before it: Separate scout Cloud Run job with own SA and quotas. ADR lane 2026-10-18: gap re-graded against ADR 0144; gap before it: Delegable decision D16 (design-decisions-2026-10-18.json), ADR not yet written: Connector polling runs as a scout Cloud Run job with its own service account and no trading role, in the environment's existing project (ADR 0024 amendment). Needs that ADR, then the code."
   },
   {
     "id": "R12-API-8113",
@@ -2886,7 +2889,7 @@
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:758 (qip-world-model in READERS)",
       "backend/crates/services/qip-world-model/src"
     ],
-    "gap": "Spanner Graph writer.",
+    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2895,11 +2898,11 @@
     "depends_on": [
       "R12-DATA-8015"
     ],
-    "blocked_by": "",
+    "blocked_by": "owner decision O02 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-acceptance --test architecture",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner Graph writer."
   },
   {
     "id": "R12-DATA-8130",
@@ -2909,18 +2912,18 @@
       "infrastructure/terraform/modules/data/main.tf:268-320",
       "backend/crates/libs/qip-storage/src/provider.rs:379"
     ],
-    "gap": "Adapter (needs Postgres wire + TLS) and workflow schema.",
+    "gap": "Owner decision O01 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a Postgres wire client (crate or in-tree) and an AlloyDB instance for workflow metadata, reversing ADR 0113's refusal of AlloyDB. Enables: AlloyDB adapter behind StorageTarget::AlloyDb and workflow state off the journal. Costs: A new crate or an in-tree wire protocol plus TLS; an AlloyDB cluster billed per vCPU-hour from creation.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O01 (design-decisions-2026-10-18)",
     "verification": "integration test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O01; gap before it: Adapter (needs Postgres wire + TLS) and workflow schema."
   },
   {
     "id": "R12-DATA-8131",
@@ -3151,7 +3154,7 @@
       "backend/crates/apps/qip-ledgerd/tests/store.rs:925,1014",
       "infrastructure/terraform/modules/evidence/main.tf:58"
     ],
-    "gap": "Export job to a locked bucket; reconstruction test from export.",
+    "gap": "The closure as graded contradicts a standing decision: store.rs removed import_state and refuses any restore from an export ('a ledger is restored by replaying the stream it was built from'), so an 'export -> rebuilt balances equal' test has nothing to rebuild with; the honest reconstruction proof is replay (R12-RES-9175) and the export's use is an auditor's comparison. What is missing is (1) an export job: the ledger has no signing-key configuration (record_watermark takes a key nothing supplies; it would be a Secret Manager file read through qip_core::secret), no evidence-bucket or blob-store configuration, and no scheduler in its run loop; (2) a verifier that replays the stream and compares its balances, chain count and watermark chain to a stored export; (3) landing in the locked bucket, which is deploy-dependent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3162,6 +3165,6 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L15 from the code (store.rs module doc 'Balances are a fold of the history', LedgerStateExport 'there is no import'); nothing in the code changed."
   }
 ]
