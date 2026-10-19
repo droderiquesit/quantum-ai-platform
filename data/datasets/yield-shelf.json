@@ -1,0 +1,5 @@
+{
+  "schema": 1,
+  "instruments": [],
+  "note": "Idle cash routing is not armed. ADR 0159 leaves every shelf capacity, every realisation, the share of unreleased capital that may be routed and the ladder horizons to the RISK lane; none is declared here, so nothing is routed. To arm it, list instruments (class: cash | stable_value | short_duration | other, realisation_hours no more than 24) and add a routing block: {\"max_share\": \"<fraction in (0,1]>\", \"ladder_horizons_hours\": [<ascending hours>]}."
+}

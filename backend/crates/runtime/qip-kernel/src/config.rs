@@ -414,6 +414,17 @@ pub struct PlatformConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hedge_candidates: Vec<crate::hedge::HedgeCandidateDeclaration>,
 
+    /// Where idle cash may be parked, declared by an operator in a committed
+    /// file the composition root reads (ADR 0159 decision 4). `None` — every
+    /// process that names no file — means nothing is routed: there is no
+    /// default shelf. Validated by `Platform::new`, which refuses a
+    /// declaration that would not load, so a configuration assembled without
+    /// the loader is held to the same rule. Omitted from the serialised record
+    /// when absent, so a configuration's recorded form and any digest over it
+    /// are unchanged for every deployment that declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yield_shelf: Option<crate::yield_shelf::YieldShelfDeclaration>,
+
     /// How deep a chain observation has to be buried before the platform will
     /// read state derived from it.
     ///
@@ -597,6 +608,7 @@ impl Default for PlatformConfig {
             venue_registrations: Vec::new(),
             hedge_policies: Vec::new(),
             hedge_candidates: Vec::new(),
+            yield_shelf: None,
             chain_confirmations: default_chain_confirmations(),
             reasoning_confidence_bar: default_reasoning_confidence_bar(),
             exploration_share: default_exploration_share(),
@@ -728,6 +740,16 @@ impl PlatformConfig {
         candidates: Vec<crate::hedge::HedgeCandidateDeclaration>,
     ) -> Self {
         self.hedge_candidates = candidates;
+        self
+    }
+
+    /// Commit the operator's yield-shelf declaration. See
+    /// [`PlatformConfig::yield_shelf`].
+    pub fn with_yield_shelf(
+        mut self,
+        declaration: crate::yield_shelf::YieldShelfDeclaration,
+    ) -> Self {
+        self.yield_shelf = Some(declaration);
         self
     }
 
