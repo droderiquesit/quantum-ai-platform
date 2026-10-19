@@ -774,6 +774,56 @@ pub fn sweep_ontology() -> Result<OntologyRegistry> {
     Ok(registry)
 }
 
+/// The asset class a coverage key names, if it names one: a key with no
+/// colon is an asset class (the shape the detector's map had before it had
+/// dimensions) and `asset_class:<value>` is one; `venue:` and `geography:`
+/// keys are other dimensions.
+fn coverage_asset_class(key: &str) -> Option<&str> {
+    match key.split_once(':') {
+        None => Some(key),
+        Some(("asset_class", value)) => Some(value),
+        Some(_) => None,
+    }
+}
+
+/// The event type the coverage detector's observations are filed under: a
+/// universe class with too little history to trade.
+pub const COVERAGE_GAP_EVENT: &str = "coverage_gap";
+
+/// [`sweep_ontology`] plus what the coverage detector reads of `coverage`:
+/// one `Asset` type per asset class the universe holds, and the `Event` type
+/// its observations are. The composition root builds this from the universe
+/// it is about to hand the platform, so an asset class cannot be swept for
+/// coverage that the ontology never named.
+pub fn sweep_ontology_over(
+    coverage: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<OntologyRegistry> {
+    let mut registry = sweep_ontology()?;
+    registry.register(OntologyTypeSpec {
+        family: OntologyTypeFamily::Event,
+        name: COVERAGE_GAP_EVENT.to_string(),
+        version: 1,
+        schema: format!("qip-deepbrain/research:{COVERAGE_GAP_EVENT}"),
+        description: "an asset class whose covered share fell below the coverage floor".to_string(),
+    })?;
+    for class in coverage.keys().filter_map(|key| coverage_asset_class(key)) {
+        if registry
+            .get_latest(OntologyTypeFamily::Asset, class)
+            .is_some()
+        {
+            continue;
+        }
+        registry.register(OntologyTypeSpec {
+            family: OntologyTypeFamily::Asset,
+            name: class.to_string(),
+            version: 1,
+            schema: format!("qip-deepbrain/research:asset_class:{class}"),
+            description: format!("the {class} asset class the coverage detector measures"),
+        })?;
+    }
+    Ok(registry)
+}
+
 /// A launched information request as a scout job: what to find evidence
 /// about, and the rank it was launched at.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1088,7 +1138,7 @@ impl ResearchLoop {
         // that would be woken to do work it cannot do.
         let brains = crate::now::specialist_registry()?;
         let tools = registered_tools_holding(extra_tools)?;
-        let ontology = sweep_ontology()?;
+        let ontology = sweep_ontology_over(&coverage)?;
         Self::check_ontology(&ontology)?;
         let tool_count = tool_count(&tools);
         for specialist in qip_kernel::now_stage::Specialist::ALL {
@@ -1158,6 +1208,41 @@ impl ResearchLoop {
                 return Err(Error::invalid(format!(
                     "the research sweep reads {family:?}.{name}, which the ontology registry \
                      does not hold; register the type before the sweep runs"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Run against `ontology` instead of the one [`sweep_ontology_over`]
+    /// seeded at construction. The composition root builds the registry and
+    /// hands it in, so what the sweep consults is what the process holds;
+    /// refused when it lacks a type the sweep's detectors read. Whether it
+    /// names every asset class in the coverage map is checked at each sweep,
+    /// by [`Self::check_coverage_registered`].
+    pub fn with_ontology(mut self, ontology: OntologyRegistry) -> Result<Self> {
+        Self::check_ontology(&ontology)?;
+        self.ontology = ontology;
+        Ok(self)
+    }
+
+    /// Refuse a coverage map naming an asset class the ontology does not
+    /// hold: the detector would raise a gap about a class nobody registered.
+    fn check_coverage_registered(&self) -> Result<()> {
+        for class in self
+            .coverage
+            .keys()
+            .filter_map(|key| coverage_asset_class(key))
+        {
+            if self
+                .ontology
+                .get_latest(OntologyTypeFamily::Asset, class)
+                .is_none()
+            {
+                return Err(Error::invalid(format!(
+                    "the coverage detector reads the asset class `{class}`, which the ontology \
+                     registry does not hold; register an Asset type of that name before the \
+                     sweep runs"
                 )));
             }
         }
@@ -1324,6 +1409,7 @@ impl ResearchLoop {
         // detector reads: an ontology that lost a type stops the sweep by
         // name rather than letting a detector read an unregistered shape.
         Self::check_ontology(&self.ontology)?;
+        self.check_coverage_registered()?;
         round.registries = RegistryCounts {
             sources: licensed_sources.len(),
             ontology_types: self.ontology.type_count(),

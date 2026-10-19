@@ -380,7 +380,76 @@ pub fn ledger_objectives() -> Vec<CriticalPath> {
     ]
 }
 
-/// Every critical path, then every service objective, evaluated against one
+/// The reflex objectives (R12-OBS-9159), bound to the series the node and its
+/// cell record. Thresholds and targets are `slo::default_slos`' declaration
+/// of service `reflex`, taken by name rather than restated, so the declaration
+/// and the evaluation cannot carry two different ceilings; only the service is
+/// rewritten to [`EDGE_NODE_SERVICE`], because the node is the one process
+/// whose registry holds these series and the deep brain would publish each as
+/// permanently unmeasured.
+///
+/// Decision latency at p99 and p99.9 read the pass meter's histogram; venue
+/// round trip, stale-book age and risk-gate latency read histograms the cell
+/// records where the fact becomes known; dropped feed messages reads the
+/// sequencer's delivered-or-dropped counter.
+pub fn reflex_objectives() -> Vec<CriticalPath> {
+    let declared = crate::slo::default_slos();
+    let bind = |name: &str, source_series, rule| {
+        declared
+            .iter()
+            .find(|slo| slo.name == name && slo.service == REFLEX_SERVICE)
+            .map(|slo| CriticalPath {
+                slo: Slo {
+                    service: EDGE_NODE_SERVICE.to_string(),
+                    ..slo.clone()
+                },
+                source_series,
+                rule,
+            })
+    };
+    [
+        bind(
+            "decision-latency-p99",
+            names::EDGE_DECISION_LATENCY_MS,
+            SourceRule::LatencyUnder,
+        ),
+        bind(
+            "decision-latency-p99.9",
+            names::EDGE_DECISION_LATENCY_MS,
+            SourceRule::LatencyUnder,
+        ),
+        bind(
+            "venue-round-trip-time-p99",
+            names::EDGE_VENUE_ACK_LATENCY_MS,
+            SourceRule::LatencyUnder,
+        ),
+        bind(
+            "stale-book-age-max",
+            names::EDGE_BOOK_AGE_MS,
+            SourceRule::LatencyUnder,
+        ),
+        bind(
+            "risk-gate-latency-p99",
+            names::EDGE_RISK_GATE_LATENCY_MS,
+            SourceRule::LatencyUnder,
+        ),
+        bind(
+            "dropped-feed-messages-zero",
+            names::EDGE_FEED_MESSAGES,
+            SourceRule::CounterOutcome { good: "delivered" },
+        ),
+    ]
+    // A name `default_slos` stopped declaring drops out here and is caught by
+    // the test that holds all six, rather than panicking a node.
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// The service name `slo::default_slos` declares the reflex objectives under.
+pub const REFLEX_SERVICE: &str = "reflex";
+
+/// Every critical path, then every service and reflex objective, evaluated against one
 /// snapshot, in catalogue order.
 pub fn evaluate(snapshot: &Snapshot) -> Vec<SloStatus> {
     evaluate_where(snapshot, |_| true)
@@ -393,6 +462,7 @@ pub fn evaluate_where(snapshot: &Snapshot, keep: impl Fn(&CriticalPath) -> bool)
     critical_path_slos()
         .iter()
         .chain(service_objectives().iter())
+        .chain(reflex_objectives().iter())
         .filter(|path| keep(path))
         .map(|path| {
             let (good, total) = path.counts(snapshot);

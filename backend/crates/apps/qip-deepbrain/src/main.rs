@@ -868,6 +868,11 @@ fn run() -> Result<()> {
     // settings already parsed rather than listed: the classical solver
     // always, the quantum simulator where `compute` attached it, one
     // connector per catalogued source polled above.
+    // The ontology registry the sweep consults, built here from the same
+    // coverage map the detector reads: one Asset type per asset class the
+    // universe holds, beside the types every detector reads. A class the
+    // registry does not name stops the sweep by name.
+    let research_ontology = qip_deepbrain::research::sweep_ontology_over(&research_coverage)?;
     let mut research = qip_deepbrain::research::ResearchLoop::new_for_node(
         research_config,
         research_coverage,
@@ -877,6 +882,7 @@ fn run() -> Result<()> {
             .as_ref()
             .map_or(&[][..], |feed| feed.source_ids.as_slice()),
     )?
+    .with_ontology(research_ontology)?
     .with_package_store(
         config
             .storage

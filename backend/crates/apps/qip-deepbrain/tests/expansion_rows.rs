@@ -877,9 +877,12 @@ fn a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted() 
         )
         .unwrap();
     let held = &round.registries;
+    // The five types every detector reads, plus what the composition root
+    // seeds from the coverage map: the `Equity` Asset type and the
+    // coverage-gap Event type.
     assert_eq!(
         held.ontology_types,
-        qip_deepbrain::research::SWEEP_ONTOLOGY.len(),
+        qip_deepbrain::research::SWEEP_ONTOLOGY.len() + 2,
         "{held:?}"
     );
     assert_eq!(held.sources, 2, "{held:?}");
@@ -1094,6 +1097,72 @@ fn an_ontology_extension_without_an_evaluation_is_refused_and_a_cited_one_versio
             )
             .is_err()
     );
+}
+
+/// R12-EXPAND-6056: the registry `main.rs` builds is seeded from the coverage
+/// map the detector reads - an Asset type per asset class (bare or
+/// `asset_class:`-prefixed keys), the coverage-gap Event type - and not from
+/// the other dimensions' values.
+///
+/// Mutation: skip the Asset registration loop in `sweep_ontology_over` - the
+/// classes are absent and the first assertion fires.
+#[test]
+fn the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds() {
+    use qip_contracts::expansion::OntologyTypeFamily::{Asset, Event};
+    let map = BTreeMap::from([
+        ("Equity".to_string(), BTreeSet::from(["a".to_string()])),
+        (
+            "asset_class:Crypto".to_string(),
+            BTreeSet::from(["b".to_string()]),
+        ),
+        ("venue:XSIM".to_string(), BTreeSet::from(["a".to_string()])),
+    ]);
+    let ontology = qip_deepbrain::research::sweep_ontology_over(&map).unwrap();
+    for class in ["Equity", "Crypto"] {
+        assert!(
+            ontology.get_latest(Asset, class).is_some(),
+            "{class} is not an Asset type"
+        );
+    }
+    assert!(
+        ontology.get_latest(Asset, "XSIM").is_none(),
+        "a venue was registered as an asset class"
+    );
+    assert!(
+        ontology
+            .get_latest(Event, qip_deepbrain::research::COVERAGE_GAP_EVENT)
+            .is_some()
+    );
+}
+
+/// R12-EXPAND-6056: the sweep consults the registry for the asset classes the
+/// coverage detector reads. Handed a registry that does not name one, it
+/// stops by name instead of raising a coverage gap about a class nobody
+/// registered; handed the seeded registry it runs.
+///
+/// Mutation: delete the `check_coverage_registered` call in `sweep_over` - the
+/// unregistered class sweeps and the refusal assertion fires.
+#[test]
+fn a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name() {
+    let platform = platform_over(Universe::new());
+    let map = coverage("Equity", &["obj-A"]);
+    let bare = qip_deepbrain::research::sweep_ontology().unwrap();
+    let mut research = deployed(map.clone()).with_ontology(bare).unwrap();
+    let (licensed, jurisdictions) = deployed_bounds();
+    let refused = research
+        .sweep(&platform, t0(), &licensed, &jurisdictions)
+        .expect_err("a class the ontology never named was swept");
+    assert!(
+        refused.message().contains("`Equity`"),
+        "the refusal does not name the class: {}",
+        refused.message()
+    );
+
+    let seeded = qip_deepbrain::research::sweep_ontology_over(&map).unwrap();
+    let mut research = deployed(map).with_ontology(seeded).unwrap();
+    research
+        .sweep(&platform, t0(), &licensed, &jurisdictions)
+        .expect("the seeded registry names the class and the sweep runs");
 }
 
 /// A stand-in for a hosted model that refuses every second call. No
