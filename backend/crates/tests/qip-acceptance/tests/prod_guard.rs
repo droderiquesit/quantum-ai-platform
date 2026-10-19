@@ -296,12 +296,7 @@ fn prod_is_refused_on_every_trigger_by_deploy_and_infra() {
         // job's own.
         let end = rest
             .match_indices("\n  ")
-            .find(|(at, _)| {
-                rest[at + 3..]
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c != ' ')
-            })
+            .find(|(at, _)| rest[at + 3..].chars().next().is_some_and(|c| c != ' '))
             .map_or(rest.len(), |(at, _)| at);
         let job = &rest[..end];
         assert!(

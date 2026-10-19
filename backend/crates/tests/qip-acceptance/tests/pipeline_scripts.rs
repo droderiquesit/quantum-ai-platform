@@ -580,7 +580,9 @@ fn the_test_job_uploads_the_replay_and_benchmark_output_as_an_artifact() {
         "premise: ci.yml has a `test` job to read"
     );
     assert!(
-        lines.iter().any(|line| line == "- uses: actions/upload-artifact@v4"),
+        lines
+            .iter()
+            .any(|line| line == "- uses: actions/upload-artifact@v4"),
         "premise: the `test` job uploads an artifact at all"
     );
     assert!(
@@ -589,8 +591,9 @@ fn the_test_job_uploads_the_replay_and_benchmark_output_as_an_artifact() {
     );
     assert!(
         lines.iter().any(|line| {
-            line.starts_with("run: cargo test -p qip-acceptance --test tick_replay --test performance")
-                && line.contains("tee replay-bench.txt")
+            line.starts_with(
+                "run: cargo test -p qip-acceptance --test tick_replay --test performance",
+            ) && line.contains("tee replay-bench.txt")
         }),
         "ci.yml's `test` job no longer runs tick_replay and performance into replay-bench.txt"
     );
