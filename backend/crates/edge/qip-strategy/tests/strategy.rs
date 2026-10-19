@@ -1706,14 +1706,14 @@ fn a_compiled_strategy_never_exceeds_its_declared_cost_on_adversarial_inputs() {
 
 #[test]
 fn a_calibrated_model_has_a_different_digest_from_its_uncalibrated_form_and_an_uncalibrated_model_digests_exactly_as_before()
--> Result<()> {
+ {
     // The failure this prevents: appending a calibration part unconditionally
     // would move the digest of every model a manifest or a signed pack already
     // names, and the cell, which compares digests, would refuse them all at
     // once. The literal below was produced by the digest before the field
     // existed; it is the pin, not a value read back from the code under test.
     let legacy = "m|linear|4607182418800017408|4611686018427387904";
-    let plain = DistilledModel::linear("m", 1.0, vec![2.0])?;
+    let plain = DistilledModel::linear("m", 1.0, vec![2.0]).unwrap();
     assert_eq!(
         plain.digest(),
         legacy,
@@ -1735,7 +1735,8 @@ fn a_calibrated_model_has_a_different_digest_from_its_uncalibrated_form_and_an_u
     // calibrated one carries the version tag.
     let calibrated = plain
         .clone()
-        .with_calibration(ModelCalibration::new(0.5, 0.25)?)?;
+        .with_calibration(ModelCalibration::new(0.5, 0.25).unwrap())
+        .unwrap();
     assert_ne!(calibrated.digest(), plain.digest());
     assert!(
         calibrated
@@ -1748,14 +1749,15 @@ fn a_calibrated_model_has_a_different_digest_from_its_uncalibrated_form_and_an_u
     // The legacy digest is a prefix: the part is appended, nothing before it moves.
     assert!(calibrated.digest().starts_with(legacy));
     // Two different calibrations are two different models.
-    let other = plain.with_calibration(ModelCalibration::new(0.5, 0.5)?)?;
+    let other = plain
+        .with_calibration(ModelCalibration::new(0.5, 0.5).unwrap())
+        .unwrap();
     assert_ne!(other.digest(), calibrated.digest());
 
     // The cell evaluates through `evaluate`: the calibration lands after the
     // raw score (1 + 2*3 = 7 -> 0.5*7 + 0.25).
-    let value = calibrated.evaluate(&[3.0])?;
+    let value = calibrated.evaluate(&[3.0]).unwrap();
     assert!(approx_eq(value, 3.75, 1e-12), "calibrated score {value}");
-    Ok(())
 }
 
 #[test]
