@@ -68,6 +68,7 @@ use qip_lifecycle::evidence::{
     LeakageAudit, PaperEvidence, PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence,
     StrategyEvidence,
 };
+use qip_lifecycle::ledger::MAX_LIVE_STRATEGIES;
 use qip_lifecycle::trials::StrategyFamily;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
@@ -8007,4 +8008,61 @@ fn decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant() 
         "a contraction widened a grant"
     );
     Ok(())
+}
+
+/// ADR 0149 decision 15: the live set is bounded, the bound is a refusal, and
+/// retiring makes room without letting the retired id back in.
+///
+/// The failure this prevents: a factory that registered without limit held
+/// every candidate ever proposed, and a bound that evicted to make room would
+/// have dropped the record of a strategy that may hold capital. Mutation:
+/// deleting the live-count refusal in `StrategyFactory::register` admits the
+/// 4,097th candidate and the refusal assertion fails.
+#[test]
+fn a_full_desk_refuses_a_new_candidate_until_one_retires_and_a_retired_id_stays_refused()
+-> Result<()> {
+    let mut plane = plane()?;
+    let ids: Vec<StrategyId> = (0..MAX_LIVE_STRATEGIES)
+        .map(|index| StrategyId::new(format!("live-{index:05}")))
+        .collect();
+    for id in &ids {
+        register(&mut plane, id, "cell-a")?;
+    }
+    // Premise: the desk is exactly full and nothing has been retired.
+    assert_eq!(plane.factory().candidates().count(), MAX_LIVE_STRATEGIES);
+
+    let extra = StrategyId::new("one-too-many");
+    let error = register(&mut plane, &extra, "cell-a").expect_err("a full desk refuses");
+    assert!(error.message().contains("retire one"), "{error:?}");
+    assert!(plane.factory().candidate(&extra).is_none());
+
+    // Retiring makes room: the retired strategy stops counting.
+    plane
+        .factory_mut()
+        .retire(&ids[0], "desk", "the edge is gone", start())?;
+    register(&mut plane, &extra, "cell-a")?;
+
+    // And nothing live was evicted to make it: every other candidate is held.
+    assert!(
+        ids[1..]
+            .iter()
+            .all(|id| plane.factory().candidate(id).is_some())
+    );
+    // The retired id is refused from the record, not re-admitted into the
+    // room it left.
+    let error = register(&mut plane, &ids[0], "cell-a").expect_err("a retired id is refused");
+    assert!(
+        error.message().contains("already registered") || error.message().contains("retire one"),
+        "{error:?}"
+    );
+    assert_eq!(plane.factory().stage_of(&ids[0]), GateStage::Retired);
+    Ok(())
+}
+
+#[test]
+fn the_live_strategy_bound_is_sized_to_the_tournament_registry() {
+    assert_eq!(
+        MAX_LIVE_STRATEGIES,
+        qip_learning_engine::tournament::MAX_FORECASTERS
+    );
 }

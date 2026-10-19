@@ -31,7 +31,7 @@ use qip_lifecycle::demotion::{
 };
 use qip_lifecycle::evidence::{KillCondition, StrategyEvidence};
 use qip_lifecycle::horizon::HorizonAssurance;
-use qip_lifecycle::ledger::{LifecycleLedger, attempt_promotion};
+use qip_lifecycle::ledger::{LifecycleLedger, MAX_LIVE_STRATEGIES, attempt_promotion};
 use qip_lifecycle::trials::{StrategyFamily, TrialAccount, TrialBook};
 use qip_observability::metrics::Metrics;
 pub use qip_optimization_engine::universe::AlphaFamily;
@@ -324,6 +324,23 @@ impl StrategyFactory {
             return Err(Error::denied(format!(
                 "{strategy} is already registered; a revised strategy is a new candidate under a \
                  new identity, so its evidence is re-earned rather than inherited"
+            )));
+        }
+        // The live set is bounded: retired strategies compact to tombstones in
+        // the ledger and do not count, and nothing live is evicted to make
+        // room, so a full desk is told to retire something rather than
+        // silently losing the record of a strategy that may hold capital
+        // (ADR 0149 decision 15).
+        let live = self
+            .candidates
+            .keys()
+            .filter(|id| self.ledger.stage_of(id) != GateStage::Retired)
+            .count();
+        if live >= MAX_LIVE_STRATEGIES {
+            return Err(Error::denied(format!(
+                "{strategy} cannot be registered: {live} strategies are live, the most the ledger \
+                 holds in full ({MAX_LIVE_STRATEGIES}); retire one to make room — a retired \
+                 strategy compacts to a tombstone and stops counting"
             )));
         }
         // Enrolled in its family's trial account at registration, so the
