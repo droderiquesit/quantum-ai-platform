@@ -639,6 +639,9 @@ struct BodyServer {
 }
 
 impl BodyServer {
+    // A helper, not a `#[test]`, so the test-code allowance for `expect` does
+    // not reach it; a panic here is still the failure report.
+    #[allow(clippy::expect_used)]
     fn serving(body: String) -> Self {
         use std::io::{BufRead, BufReader, Read, Write};
         use std::sync::Arc;
@@ -842,7 +845,7 @@ fn a_canary_in_a_rest_narrative_or_alternative_body_is_found_in_no_durable_store
             publication_delay: Duration::ZERO,
             window: Duration::from_mins(5),
             max_records: 100,
-            http: limits.clone(),
+            http: limits,
         },
         vec![RestInstrument::new(
             ObjectId::from_string("OBJ00000000000000000NWSC"),
@@ -864,7 +867,7 @@ fn a_canary_in_a_rest_narrative_or_alternative_body_is_found_in_no_durable_store
             window: Duration::from_mins(30),
             max_records: 100,
             max_document_bytes: 512,
-            http: limits.clone(),
+            http: limits,
         },
         vec![NarrativeSubject::new("ent-northwind", "NWSC")],
         vec!["US.CPI.YOY".to_string()],
