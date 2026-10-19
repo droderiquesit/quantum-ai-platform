@@ -1758,6 +1758,19 @@ const MARGIN_FIGURE: &str = "margin";
 /// source literal, for the reason `LIQUIDITY_FIGURE` is one.
 const CUSTODY_FIGURE: &str = "custody";
 
+/// The most sent-but-unbooked orders the central ledger may trail the cells
+/// by before capital stops moving (R12-RES-10127): above this,
+/// [`Platform::issue_region_shares`] ships no manifest, so cell envelopes
+/// lapse at their expiry, and the transfer gate vetoes every transfer.
+///
+/// Sixteen, and a judgement: a cycle that settles normally books its
+/// outcomes within the cycle, so a backlog past a handful of orders means
+/// the ledger is not keeping up rather than that orders are resting. The
+/// value is deliberately low, since both consequences are the restrictive
+/// direction (a grant not renewed, a transfer not made) and cost nothing but
+/// a delay; it is a committed constant, never read from configuration.
+pub const LEDGER_LAG_THRESHOLD: usize = 16;
+
 /// The exposure buckets one instrument record vouches for.
 ///
 /// Axis names are the ones the default limit set looks up — `sector` and
@@ -6080,6 +6093,12 @@ impl Platform {
     /// is exactly the fact an operator asking why the desk never installs
     /// needs to find. A refusal is not journaled here, because nothing was
     /// shipped; it is returned, naming the entry, for the shipper to log.
+    /// Whether the central ledger trails the cells' outcomes past
+    /// [`LEDGER_LAG_THRESHOLD`].
+    pub fn ledger_lagging(&self) -> bool {
+        self.central.outcome_backlog() > LEDGER_LAG_THRESHOLD
+    }
+
     /// Partition every configured cell's share of its region's grant for the
     /// `capital_grants` slot (ADR 0039), under this platform's own drawdown.
     ///
@@ -6102,6 +6121,18 @@ impl Platform {
         membership: &RegionMembership,
         now: Timestamp,
     ) -> GrantManifests {
+        if self.ledger_lagging() {
+            return GrantManifests::decide(
+                cells,
+                Err(Error::denied(format!(
+                    "the central ledger trails the cells by {} unbooked orders, past the \
+                     committed threshold of {LEDGER_LAG_THRESHOLD}; no share is granted \
+                     against a book that does not yet say what it holds, so envelopes lapse \
+                     at their expiry until the backlog drains",
+                    self.central.outcome_backlog()
+                ))),
+            );
+        }
         let drawdown = self.drawdown();
         self.central
             .grant_manifests(cells, membership, drawdown, now)
@@ -8802,6 +8833,17 @@ impl Platform {
         now: Timestamp,
     ) -> Result<FabricRecord> {
         let at = command.at();
+        // The ledger-lag flag is the platform's own reading, so it is set
+        // here rather than trusted from the caller: a command stating a
+        // clear anomaly flag is assessed, and journaled, as lagging. Only a
+        // clear flag is overwritten; a caller's own raised flag already vetoes.
+        let mut command = command;
+        if let FabricCommand::Gate(gate) = &mut command
+            && self.ledger_lagging()
+            && gate.velocity.anomaly == qip_capital_fabric::gate::AnomalyFlag::Clear
+        {
+            gate.velocity.anomaly = qip_capital_fabric::gate::AnomalyFlag::LedgerLagging;
+        }
         // A gate command *states* the Intelligence layer's ruling on the
         // corridor, and this is the seam where that statement is checked
         // against the layer that makes it. Without this, the caller — an

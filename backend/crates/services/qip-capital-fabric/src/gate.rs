@@ -343,6 +343,14 @@ pub enum AnomalyFlag {
     Clear,
     /// Raised; nothing moves until a human clears it.
     Raised,
+    /// The central ledger is behind the outcomes the cells reported
+    /// (R12-RES-10127): orders sent whose fills are not yet booked exceed the
+    /// committed lag threshold. Capital cannot be moved on a book that does
+    /// not yet say what it holds. Set by the platform from its own backlog
+    /// gauge, never by a caller, and cleared by the backlog draining. Added
+    /// after the first records were journaled; no old record names it, so
+    /// every old record still decodes and replays to its original verdict.
+    LedgerLagging,
 }
 
 /// The velocity breaker and the anomaly detector, together, as the caller
@@ -828,6 +836,15 @@ impl TransferGate {
                 GateCheck::VelocityAndAnomaly,
                 "the anomaly detector has raised a flag; all transfers are vetoed until a \
                  human clears it"
+                    .to_string(),
+            ));
+        }
+
+        if velocity.anomaly == AnomalyFlag::LedgerLagging {
+            return Err(veto(
+                GateCheck::VelocityAndAnomaly,
+                "the central ledger lags the cells' outcomes beyond its threshold; all \
+                 transfers are vetoed until the backlog of sent-but-unbooked orders drains"
                     .to_string(),
             ));
         }
