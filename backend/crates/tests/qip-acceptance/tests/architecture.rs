@@ -3036,14 +3036,16 @@ fn the_capital_brain_decides_and_names_no_type_that_writes_capital_state_or_move
         );
     }
 
-    // Premise two: the matcher fires. The bank module is built on the
-    // capital book, so a scan that finds nothing there finds nothing anywhere.
+    // Premise two: the matcher fires. The bank module holds idle-cash
+    // placements in the reservation ledger (ADR 0159; it was built on
+    // `CapitalBook` until then), so a scan that finds nothing there finds
+    // nothing anywhere.
     let bank = qip_acceptance::read(&format!("{source}/bank.rs"));
     assert!(
         bank.lines()
             .filter_map(capital_state_named_on)
-            .any(|named| named == "CapitalBook"),
-        "the scan does not find CapitalBook in bank.rs, where it is imported and used"
+            .any(|named| named == "ReservationLedger"),
+        "the scan does not find ReservationLedger in bank.rs, where it is imported and used"
     );
 
     let mut violations = Vec::new();
