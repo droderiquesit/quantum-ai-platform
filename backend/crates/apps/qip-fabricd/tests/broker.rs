@@ -29,6 +29,9 @@
 //! serves batches of bytes other processes wrote.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
+#[path = "../../../libs/qip-transport/tests/support/certs.rs"]
+mod certs;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -960,12 +963,16 @@ fn an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it() {
 
 /// A record whose body is an event of `topic`, as a writer builds it.
 fn event_record(topic: qip_events::topic::Topic, tag: &str) -> Record {
+    event_record_at(topic, tag, 1)
+}
+
+fn event_record_at(topic: qip_events::topic::Topic, tag: &str, schema_version: u32) -> Record {
     let payload = serde_json::json!({ "tag": tag });
     let at = qip_core::Timestamp::from_secs(1_790_000_000);
     let event = qip_events::AnyEvent {
         event_id: qip_core::EventId::from_string(tag.to_string()),
         topic,
-        schema_version: 1,
+        schema_version,
         occurred_at: at,
         recorded_at: at,
         sequence: 0,
@@ -1059,6 +1066,240 @@ fn a_record_body_under_an_unregistered_topic_schema_is_refused_before_append() {
         1,
         "only the on-topic batch was appended: {fetched:?}"
     );
+}
+
+/// R12-FABRIC-8090 (ADR 0156 §1.3). Admission is by `(topic, schema_version)`:
+/// a record of an admitted topic at a version the lock does not hold for it
+/// is refused before append, naming the version. The same topic at the
+/// locked version is accepted first, so the refusal is the version's and not
+/// the topic's.
+///
+/// Mutation: `Broker::require_admitted_topics` comparing topic names only and
+/// ignoring the envelope's `schema_version` — the version-99 record is
+/// appended and the `expect_err` below fails.
+#[test]
+fn a_record_at_a_schema_version_the_lock_does_not_hold_for_its_topic_is_refused_before_append() {
+    use qip_events::topic::Topic;
+    let catalogue = catalogue_json(&base_grants(), "archived");
+    let at = catalogue.find(r#""name":"journal.test""#).unwrap();
+    let (head, tail) = catalogue.split_at(at);
+    let catalogue = format!(
+        "{head}{}",
+        tail.replacen(
+            r#""topics":[]"#,
+            r#""topics":["reflex.journal_recorded"]"#,
+            1
+        )
+    );
+    let locked = qip_events::registry::locked_descriptors().unwrap();
+    assert!(
+        locked
+            .iter()
+            .any(|d| d.topic == Topic::ReflexJournalRecorded && d.version == 1)
+            && !locked
+                .iter()
+                .any(|d| d.topic == Topic::ReflexJournalRecorded && d.version == 99),
+        "premise: the lock holds version 1 of the topic and not version 99"
+    );
+    let fabric = Fabric::start_with("body-versions", &catalogue).unwrap();
+    let partition = own_partition(CELL_A);
+    let mut producer = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    producer.init().unwrap();
+    producer
+        .send(batch_of_records(
+            QosClass::P2MarketJournal,
+            vec![event_record_at(Topic::ReflexJournalRecorded, "tick-1", 1)],
+        ))
+        .expect("premise: the topic at the locked version is accepted");
+
+    let wrong_version = producer
+        .send(batch_of_records(
+            QosClass::P2MarketJournal,
+            vec![event_record_at(Topic::ReflexJournalRecorded, "tick-2", 99)],
+        ))
+        .expect_err("a version the lock does not hold for the topic is refused");
+    assert!(
+        wrong_version
+            .to_string()
+            .contains("not compatible with the stream's registered schema"),
+        "{wrong_version}"
+    );
+
+    let fetched = fetch_all(&fabric, AUDITOR, JOURNAL, partition);
+    assert_eq!(
+        fetched.len(),
+        1,
+        "only the locked-version batch was appended: {fetched:?}"
+    );
+}
+
+/// R12-FABRIC-8090 (ADR 0156 §1.4, the half that holds today). A stream that
+/// names a topic the lock holds no row for is refused when the catalogue is
+/// applied, not streamed unchecked.
+///
+/// Mutation: `Service::apply_catalogue` treating an empty version set as
+/// admitted — the catalogue loads and the `expect_err` fails.
+#[test]
+fn a_catalogue_topic_with_no_lock_row_is_refused_when_the_catalogue_is_applied() {
+    let catalogue = catalogue_json(&base_grants(), "archived");
+    let at = catalogue.find(r#""name":"journal.test""#).unwrap();
+    let (head, tail) = catalogue.split_at(at);
+    let locked = qip_events::registry::locked_descriptors().unwrap();
+    let unlocked = qip_events::topic::Topic::ALL
+        .iter()
+        .copied()
+        .find(|t| !t.is_lossy_tolerable() && !locked.iter().any(|d| d.topic == *t))
+        .expect("premise: some topic has no lock row");
+    let ok = format!(
+        "{head}{}",
+        tail.replacen(
+            r#""topics":[]"#,
+            r#""topics":["reflex.journal_recorded"]"#,
+            1
+        )
+    );
+    Fabric::start_with("lock-row-present", &ok).expect("premise: a locked topic loads");
+    let bad = format!(
+        "{head}{}",
+        tail.replacen(
+            r#""topics":[]"#,
+            &format!(r#""topics":["{}"]"#, unlocked.name()),
+            1
+        )
+    );
+    let error = Fabric::start_with("lock-row-absent", &bad)
+        .err()
+        .expect("a topic with no lock row is refused at start-up");
+    assert!(error.to_string().contains("schema lock"), "{error}");
+}
+
+/// R12-FABRIC-8081 (ADR 0156 §4d). Over mutual TLS an admin request is
+/// attributed to the **certificate's name**, read from the server-written
+/// peer-identity header, and authorised against the catalogue's admin grants
+/// under that name. The request body's `operator` field is a check that must
+/// equal it, not a free-text attribution, and the bearer token is not
+/// consulted for an admin request that arrives with a verified certificate.
+///
+/// A matching name is accepted and recorded first. Then, on a partition not
+/// yet isolated: a different name in the body is refused and nothing is
+/// parked; a workload holding no admin grant is refused whatever it names
+/// itself, including the operator's name (the spoof this prevents).
+///
+/// Mutation: make the service take the operator name from the request body
+/// instead of the peer-identity header (`admin` arm of `Service::handle`
+/// choosing `r.operator`). The spoofing request is then authorised as
+/// `operator`, accepted, and the assertion that it is refused fails.
+#[test]
+fn an_isolate_request_over_mutual_tls_is_attributed_to_the_certificate_name_and_refused_when_operator_differs()
+ {
+    use qip_transport::tls::{LinkSecurity, WorkloadIdentity};
+
+    const OUTSIDER: &str = "ledgerd-test";
+    let ca = certs::authority("fabric pool");
+    let server = certs::leaf(&ca, 2, "localhost");
+    let operator_leaf = certs::leaf(&ca, 3, OPERATOR);
+    let outsider_leaf = certs::leaf(&ca, 4, OUTSIDER);
+    let pki = std::env::temp_dir().join(format!("qip-fabricd-mtls-pki-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&pki);
+    std::fs::create_dir_all(&pki).unwrap();
+    let write = |name: &str, text: String| {
+        let path = pki.join(name);
+        std::fs::write(&path, text).unwrap();
+        path.display().to_string()
+    };
+    let chain = write("chain.pem", server.certificate_pem());
+    let key = write("key.pem", server.key_pem());
+    let roots = write("roots.pem", ca.certificate_pem());
+    let peers = format!("{OPERATOR},{OUTSIDER}");
+
+    let fabric = Fabric::start_configured(
+        "mtls-admin",
+        &catalogue_json(&base_grants(), "archived"),
+        &[
+            (qip_transport::tls::TLS_MODE_VARIABLE, "mtls"),
+            (qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE, &chain),
+            (qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE, &key),
+            (qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE, &roots),
+            (qip_fabricd::config::ADMITTED_PEERS, &peers),
+        ],
+    )
+    .expect("a broker with a mutual-TLS listener starts");
+    let port = fabric
+        .running()
+        .address()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let call = |leaf: &certs::Minted, request: Request| {
+        let identity = WorkloadIdentity::from_pem(
+            leaf.certificate_pem().as_bytes(),
+            leaf.key_pem().as_bytes(),
+            ca.certificate_pem().as_bytes(),
+        )
+        .expect("minted material loads");
+        // The bearer token is a *different* identity's: an admin request with
+        // a verified certificate must not be authenticated by it.
+        HttpTransport::over(
+            &LinkSecurity::MutualTls(Arc::new(identity)),
+            &format!("localhost:{port}"),
+            BearerToken::new(token(fabric.number, CELL_A)).unwrap(),
+        )
+        .expect("a transport over the link")
+        .call(request, timeouts())
+    };
+    let isolate = |partition: u32, operator: &str| {
+        Request::AdminIsolate(AdminIsolateRequest {
+            stream: JOURNAL.to_string(),
+            partition,
+            operator: operator.to_string(),
+            reason: "mtls drill".to_string(),
+        })
+    };
+    let (parked, untouched) = (0u32, 1u32);
+    let broker = fabric.running().service().broker().clone();
+
+    // 1. The certificate's own name, matching the body: accepted, recorded.
+    match call(&operator_leaf, isolate(parked, OPERATOR)) {
+        Ok(Response::AdminIsolate(_)) => {}
+        other => panic!("premise: a matching name must be accepted, got {other:?}"),
+    }
+    let log = broker.admin_log().unwrap();
+    assert_eq!(
+        log.iter()
+            .map(|entry| (entry.action.as_str(), entry.operator.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("isolate", OPERATOR)],
+        "the action is recorded under the certificate's name"
+    );
+
+    // 2. The operator's certificate naming someone else in the body.
+    let differs = call(&operator_leaf, isolate(untouched, "someone-else"));
+    assert!(
+        differs.is_err(),
+        "a body naming a different operator was accepted: {differs:?}"
+    );
+    // 3. A workload holding no admin grant, naming the operator: the spoof.
+    let spoof = call(&outsider_leaf, isolate(untouched, OPERATOR));
+    assert!(
+        !matches!(spoof, Ok(Response::AdminIsolate(_))),
+        "a certificate without an admin grant isolated a partition by naming the operator: \
+         {spoof:?}"
+    );
+    // 4. The same workload naming itself: no grant.
+    let own = call(&outsider_leaf, isolate(untouched, OUTSIDER));
+    assert!(
+        matches!(own, Ok(Response::Refused(Refusal::AclDenied))),
+        "{own:?}"
+    );
+    assert_eq!(
+        broker.isolation(JOURNAL, untouched).unwrap(),
+        None,
+        "nothing was parked by a refused request"
+    );
+    assert_eq!(broker.admin_log().unwrap().len(), 1);
+    let _ = std::fs::remove_dir_all(&pki);
 }
 
 // --- FABRIC-028 -----------------------------------------------------------------
@@ -1769,29 +2010,53 @@ fn an_agent_identity_publishes_research_and_telemetry_and_is_refused_control_and
     );
 }
 
+/// R12-FABRIC-8090 / FABRIC-022. The service's registry is populated by the
+/// composition root from the lock embedded in `qip-events`, not left empty:
+/// it holds exactly the lock's rows, and a row the lock does not have is not
+/// there. The earlier form asserted `len() == 0`, which is true of a registry
+/// nothing ever fills; this one is strictly stronger because it fails for
+/// that registry.
+///
+/// Mutation: `Service::apply_catalogue` skipping `admit_all` — the registry
+/// is empty and the first assertion fails.
 #[test]
 fn the_schema_registry_is_a_production_caller_in_qip_fabricd() {
     let fabric = Fabric::start("schema_registry_production_caller");
-
-    // FABRIC-022: The service instantiates a schema registry holding every
-    // registered fabric contract's descriptor (immutable IDs, production
-    // caller). The service is a composition root: this is where SchemaRegistry
-    // becomes a production component, ready to register contracts.
     let service = fabric.running().service();
     let registry = service.schema_registry();
-
-    // Verify the registry is accessible and initialized (readlock succeeds).
     let registry_guard = registry.read().unwrap_or_else(|e| e.into_inner());
 
-    // The registry starts empty: until EventBody types are defined for all
-    // streams and registered, it holds no entries. It is a production caller
-    // by instantiation: the code path to create the service exercises
-    // SchemaRegistry::new in production, not tests only.
+    let locked = qip_events::registry::locked_descriptors().expect("the embedded lock parses");
+    assert!(
+        !locked.is_empty(),
+        "premise: the lock holds rows, so an empty registry is a failure"
+    );
+    let topics: std::collections::BTreeSet<_> = locked.iter().map(|d| d.topic).collect();
     assert_eq!(
         registry_guard.len(),
-        0,
-        "schema registry is initialized as empty in composition root"
+        topics.len(),
+        "the registry holds one descriptor per locked topic"
     );
+    for descriptor in registry_guard.iter() {
+        let highest = locked
+            .iter()
+            .filter(|d| d.topic == descriptor.topic)
+            .map(|d| d.version)
+            .max();
+        assert_eq!(
+            Some(descriptor.version),
+            highest,
+            "{} is registered at the lock's highest version",
+            descriptor.topic
+        );
+        assert!(
+            locked
+                .iter()
+                .any(|d| d.topic == descriptor.topic && d.schema_id == descriptor.schema_id),
+            "{} carries the lock's schema id",
+            descriptor.topic
+        );
+    }
 }
 
 /// Send `head` and then `body` on a fresh connection to `address`, and

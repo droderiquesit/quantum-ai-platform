@@ -268,16 +268,42 @@ fn prod_is_refused_on_every_trigger_by_deploy_and_infra() {
     let gate_job = deploy
         .split("\n  gate:\n")
         .nth(1)
-        .and_then(|rest| rest.split("\n  images:\n").next())
-        .expect("deploy.yml has a `gate` job followed by an `images` job");
+        .and_then(|rest| rest.split("\n  simulation-gate:\n").next())
+        .expect("deploy.yml has a `gate` job followed by a `simulation-gate` job");
     assert!(
         gate_job.contains("refuse a production deployment on every trigger"),
         "the prod refusal is not inside the `gate` job"
     );
+    // R12-CICD-7116/7120: `images` waits on the named simulation and paper
+    // gates as well, each of which itself needs `gate`. Dropping any of the
+    // three from the list lets an image build past the claim it names.
+    let images_job = deploy
+        .split("\n  images:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  deploy:\n").next())
+        .expect("deploy.yml has an `images` job followed by a `deploy` job");
     assert!(
-        deploy.contains("    needs: gate\n"),
-        "`images` no longer needs `gate`"
+        images_job.contains("    needs: [gate, simulation-gate, paper-gate]\n"),
+        "`images` no longer needs `gate`, `simulation-gate` and `paper-gate`"
     );
+    for named in ["simulation-gate", "paper-gate"] {
+        let rest = deploy
+            .split(&format!("\n  {named}:\n"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("deploy.yml has no `{named}` job"));
+        // Ends at the next line indented exactly two spaces (a sibling job or
+        // a comment above one), so a neighbour's `needs:` is not read as this
+        // job's own.
+        let end = rest
+            .match_indices("\n  ")
+            .find(|(at, _)| rest[at + 3..].chars().next().is_some_and(|c| c != ' '))
+            .map_or(rest.len(), |(at, _)| at);
+        let job = &rest[..end];
+        assert!(
+            job.contains("    needs: gate\n"),
+            "`{named}` no longer needs `gate`, so it can run on a commit the gate refused"
+        );
+    }
     assert!(
         deploy.contains("    needs: images\n"),
         "`deploy` no longer needs `images`"

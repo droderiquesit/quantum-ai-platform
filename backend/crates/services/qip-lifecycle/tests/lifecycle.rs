@@ -3288,3 +3288,78 @@ fn the_strategy_ladder_is_strictly_ordered_one_rung_at_a_time_and_only_pilot_and
     let holding: Vec<GateStage> = rungs.into_iter().filter(GateStage::holds_capital).collect();
     assert_eq!(holding, vec![GateStage::Pilot, GateStage::Scaled]);
 }
+
+// --- ADR 0149 decision 15: a retired strategy compacts to a tombstone -------
+
+#[test]
+fn a_thousand_strategies_promote_and_retire_through_the_ledger_with_the_live_set_bounded_and_a_retired_id_still_refused()
+-> Result<()> {
+    // The failure this prevents: the ledger kept every move of every strategy
+    // ever moved, so a desk that retired a thousand a week held all of them
+    // for life. Compaction must not buy the bound by forgetting a retirement:
+    // a forgotten id registers again and the retired strategy is resurrected
+    // with a clean record.
+    let mut ledger = ledger()?;
+    let walked = walk_to_scaled(&mut ledger)?;
+    let full_path = ledger.path(&strategy());
+    assert_eq!(full_path.len(), 6, "premise: a full walk to scaled");
+    let live_before = ledger.live_count();
+    assert_eq!(live_before, 1, "premise: one strategy is live");
+
+    for index in 0..1_000 {
+        let id = StrategyId::new(format!("churn-{index:04}"));
+        ledger.retire(&id, "monitor", format!("edge {index} is gone"), walked)?;
+    }
+    ledger.retire(
+        &strategy(),
+        "portfolio-committee",
+        "the edge is gone",
+        walked,
+    )?;
+
+    // The live set is what is left in full; every retirement is a tombstone.
+    assert_eq!(
+        ledger.live_count(),
+        0,
+        "retired strategies are not held in full"
+    );
+    assert_eq!(ledger.strategies().count(), 1_001);
+    let tombstone = ledger
+        .tombstone(&strategy())
+        .ok_or_else(|| Error::not_found("the retired strategy left no tombstone"))?;
+    assert_eq!(tombstone.reason, "portfolio-committee: the edge is gone");
+    assert_eq!(tombstone.history_digest.len(), 64);
+    assert_ne!(
+        tombstone.history_digest,
+        ledger
+            .tombstone(&StrategyId::new("churn-0000"))
+            .map(|t| t.history_digest.clone())
+            .unwrap_or_default()
+    );
+
+    // What has a live consumer survives compaction.
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Retired);
+    let mut expected = full_path;
+    expected.push(GateStage::Retired);
+    assert_eq!(ledger.path(&strategy()), expected);
+    assert!(ledger.reached(&strategy(), GateStage::Scaled));
+    // Only the retirement itself is still read as history; the five rungs
+    // below it are compacted away.
+    let remaining = ledger.history(&strategy());
+    assert_eq!(remaining.len(), 1, "{remaining:?}");
+    assert_eq!(remaining[0].promotion.to, GateStage::Retired);
+
+    // And a retired id is still refused, from the tombstone alone.
+    let error = ledger
+        .retire(&strategy(), "someone", "again", walked)
+        .expect_err("already retired");
+    assert!(error.message().contains("already retired"), "{error:?}");
+    let evidence = charged(full_evidence(start(), start())?)?;
+    let promotion = AuthorisedPromotion::advance(GateStage::Candidate, None, start())?;
+    let admission = HoldoutGate::default().admit(&strategy(), &evidence, start());
+    let error = ledger
+        .record_promotion(&strategy(), promotion, admission, "trying again")
+        .expect_err("a retired strategy cannot be walked back up");
+    assert!(error.message().contains("re-proposed"), "{error:?}");
+    Ok(())
+}

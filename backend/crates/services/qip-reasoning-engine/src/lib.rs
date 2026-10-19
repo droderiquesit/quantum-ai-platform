@@ -46,7 +46,7 @@ pub mod temporal;
 pub mod trust_score;
 
 pub use bayes::{BaseRate, BeliefUpdate, EvidenceStrength};
-pub use belief::BeliefState;
+pub use belief::BeliefClock;
 pub use contradiction::{ContradictionResolution, ResolutionMethod};
 pub use engine::{ReasoningEngine, ReasoningOutcome, SynthesisInput};
 pub use evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};

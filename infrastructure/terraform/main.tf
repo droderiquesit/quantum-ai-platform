@@ -107,6 +107,10 @@ locals {
     platform    = "qip"
     environment = var.environment
     managed_by  = "terraform"
+    # Who answers for it and where it runs (R12-FINOPS-10134): the two keys a
+    # cost query most often groups by and no other label carried.
+    owner  = var.owner
+    region = var.region
     # Whether this environment is permitted to reach a real venue. Labelled so
     # a query can answer "which of our deployments can trade" without reading
     # application configuration.

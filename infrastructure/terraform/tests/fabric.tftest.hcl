@@ -42,6 +42,7 @@ variables {
   project_id        = "fabric-plan-harness"
   project_number    = 123456789012
   environment       = "dev"
+  owner             = "platform"
   github_repository = "example/example"
 
   trust_zones = {

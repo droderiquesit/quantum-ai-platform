@@ -292,6 +292,7 @@ pub struct StorageProvider {
     root: std::path::PathBuf,
     clock: std::sync::Arc<dyn qip_core::Clock>,
     managed: crate::managed::ManagedSettings,
+    classes: &'static [crate::classes::StorageClass],
 }
 
 impl StorageProvider {
@@ -307,7 +308,18 @@ impl StorageProvider {
             root: root.into(),
             clock: std::sync::Arc::new(qip_core::SystemClock),
             managed: crate::managed::ManagedSettings::none(),
+            classes: crate::classes::DECLARED,
         }
+    }
+
+    /// Check blob namespaces against `classes` instead of the committed list.
+    ///
+    /// For a test of the guard itself: the empty list, which must refuse
+    /// every store. A composition root never calls it, because the committed
+    /// list is the answer to where this platform may write.
+    pub fn with_classes(mut self, classes: &'static [crate::classes::StorageClass]) -> Self {
+        self.classes = classes;
+        self
     }
 
     /// Build stores against an injected clock. Required for deterministic
@@ -387,7 +399,12 @@ impl StorageProvider {
     }
 
     /// Build a blob store, with the same failure semantics.
+    ///
+    /// Refuses a namespace the declared storage classes do not name
+    /// ([`crate::classes`]), before the target is consulted: where the
+    /// platform may write does not depend on where it is deployed.
     pub fn blobs(&self, namespace: &str) -> Result<std::sync::Arc<dyn crate::BlobStore>> {
+        crate::classes::blob_class(self.classes, namespace)?;
         match self.target {
             StorageTarget::Memory => Ok(std::sync::Arc::new(crate::MemoryBlobStore::new())),
             // Blobs are whole files either way: the engine's log buys nothing

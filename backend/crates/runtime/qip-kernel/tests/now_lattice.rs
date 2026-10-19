@@ -440,7 +440,10 @@ fn every_issued_forecast_is_journaled_with_its_control_plane_state_and_a_dropped
         assert_eq!(state.target, forecast.target);
         assert_eq!(state.horizon, forecast.horizon);
         assert_eq!(state.expires_at, forecast.expires_at);
-        assert_eq!(state.confidence_bp, forecast.regime_confidence_bp);
+        assert_eq!(
+            qip_contracts::forecast::Stated::Value(state.confidence_bp),
+            forecast.regime_confidence_bp
+        );
     }
 
     let journaled = serde_json::to_value(&review).unwrap();

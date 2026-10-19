@@ -46,6 +46,7 @@ variables {
   project_id        = "kms-protection-harness"
   project_number    = 123456789012
   environment       = "dev"
+  owner             = "platform"
   github_repository = "example/example"
 
   # The four zones dev declares. The catalogue refuses a workload whose zone

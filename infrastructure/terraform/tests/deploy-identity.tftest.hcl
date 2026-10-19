@@ -90,6 +90,7 @@ variables {
   project_id     = "deploy-identity-harness"
   project_number = 123456789012
   environment    = "dev"
+  owner          = "platform"
 
   # The four zones dev declares. The catalogue refuses a workload whose zone
   # this environment did not declare, so a harness with no zones would fail on

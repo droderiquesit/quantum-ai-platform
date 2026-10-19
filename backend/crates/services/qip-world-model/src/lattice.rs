@@ -42,8 +42,8 @@
 //! refuses anything else.
 
 use qip_contracts::forecast::{
-    Calibration, Forecast, ForecastFields, OutcomeDistribution, QuantilePoint, TailMass, TailSide,
-    UncertaintyDecomposition,
+    Calibration, Forecast, ForecastFields, OutcomeDistribution, QuantilePoint, Stated, TailMass,
+    TailSide, UncertaintyDecomposition,
 };
 use qip_contracts::validated::Contract;
 use qip_core::error::{Error, Result};
@@ -674,8 +674,8 @@ pub fn issue(
         },
         models_consulted,
         model_disagreement: decimal(disagreement, "model disagreement")?,
-        regime_confidence_bp: input.regime_confidence_bp,
-        expected_impact: decimal(expected_impact, "expected impact")?,
+        regime_confidence_bp: Stated::Value(input.regime_confidence_bp),
+        expected_impact: Stated::Value(decimal(expected_impact, "expected impact")?),
         calibration,
         evidence_lineage: input.evidence.clone(),
         expires_at: issued_at.saturating_add(horizon.refresh()),

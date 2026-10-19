@@ -21,9 +21,10 @@ use qip_contracts::control::{
 };
 use qip_contracts::forecast::{
     Calibration, Forecast, ForecastFields, ForecastState, ForecastStateFields, OutcomeDistribution,
-    OutcomeMass, QuantilePoint, TailMass, TailSide, UncertaintyDecomposition,
+    OutcomeMass, QuantilePoint, Stated, TailMass, TailSide, UncertaintyDecomposition,
 };
 use qip_contracts::signal::StrategyId;
+use qip_contracts::validated::Contract as _;
 use qip_contracts::venue::VenueId;
 use qip_contracts::world_model::{BranchParent, CausalEdge, WorldBranch, WorldBranchFields};
 use qip_core::error::Result;
@@ -86,8 +87,8 @@ fn forecast() -> ForecastFields {
         },
         models_consulted: 3,
         model_disagreement: dec!("0.4"),
-        regime_confidence_bp: 7_500,
-        expected_impact: dec!("-1250.00"),
+        regime_confidence_bp: Stated::Value(7_500),
+        expected_impact: Stated::Value(dec!("-1250.00")),
         calibration: Calibration::Measured {
             method: s("crps"),
             score: dec!("0.31"),
@@ -287,7 +288,7 @@ fn a_forecast_refuses_each_broken_invariant() {
             ),
             (
                 "regime confidence above one",
-                Box::new(|f| f.regime_confidence_bp = 10_001),
+                Box::new(|f| f.regime_confidence_bp = Stated::Value(10_001)),
             ),
             (
                 "calibration with no method",
@@ -872,4 +873,132 @@ fn a_forecast_consensus_refuses_each_broken_invariant() {
             ),
         ],
     );
+}
+
+// ---- Forecast: the stated-unmeasurable arm (ADR 0159 decision 22) ----------
+
+fn unmeasurable(reason: &str) -> Stated<u32> {
+    Stated::Unmeasurable {
+        unmeasurable: reason.to_string(),
+    }
+}
+
+#[test]
+fn a_forecast_states_regime_and_impact_unmeasurable_with_a_reason_and_a_version_one_record_still_decodes()
+-> Result<()> {
+    // A current record that states both figures unmeasurable round-trips, and
+    // is written at the version that has the arm.
+    let stated = ForecastFields {
+        schema_version: ForecastFields::SCHEMA_VERSION,
+        regime_confidence_bp: unmeasurable("a demand forecast states no regime"),
+        expected_impact: Stated::Unmeasurable {
+            unmeasurable: s("a demand forecast has no profit and loss of its own"),
+        },
+        ..forecast()
+    };
+    assert_eq!(
+        ForecastFields::SCHEMA_VERSION,
+        2,
+        "premise: the arm needed a bump"
+    );
+    round_trips(stated.clone())?;
+    let forecast_with_arm = Forecast::new(stated)?;
+
+    // The wire shape: a measured figure is the bare number a version-1 record
+    // carried, an unmeasurable one is an object naming why.
+    let wire: serde_json::Value = serde_json::from_slice(&forecast_with_arm.encode()?).unwrap();
+    assert_eq!(
+        wire["regime_confidence_bp"]["unmeasurable"],
+        "a demand forecast states no regime"
+    );
+    let measured: serde_json::Value =
+        serde_json::from_slice(&Forecast::new(forecast())?.encode()?).unwrap();
+    assert_eq!(measured["regime_confidence_bp"], 7_500);
+
+    // Version 1: bare numbers, written before the arm existed. It still decodes,
+    // as measured, and encodes back to the same bytes.
+    let old_bytes = serde_json::to_vec(&forecast())?;
+    assert_eq!(
+        forecast().schema_version,
+        1,
+        "premise: the fixture is a version-1 record"
+    );
+    let old = Forecast::decode(&old_bytes)?;
+    assert_eq!(old.regime_confidence_bp, Stated::Value(7_500));
+    assert_eq!(old.encode()?, old_bytes);
+
+    // But a version-1 record cannot claim an arm it predates, a version this
+    // build does not read is still refused, and an arm with no reason is not a
+    // statement.
+    let old_with_arm = ForecastFields {
+        regime_confidence_bp: unmeasurable("claimed at v1"),
+        ..forecast()
+    };
+    assert!(Forecast::new(old_with_arm).is_err());
+    assert!(
+        Forecast::new(ForecastFields {
+            schema_version: 3,
+            ..forecast()
+        })
+        .is_err()
+    );
+    for blank in ["", "   "] {
+        assert!(
+            Forecast::new(ForecastFields {
+                schema_version: 2,
+                regime_confidence_bp: unmeasurable(blank),
+                ..forecast()
+            })
+            .is_err(),
+            "a blank reason for regime was admitted"
+        );
+        assert!(
+            Forecast::new(ForecastFields {
+                schema_version: 2,
+                expected_impact: Stated::Unmeasurable {
+                    unmeasurable: blank.to_string()
+                },
+                ..forecast()
+            })
+            .is_err(),
+            "a blank reason for impact was admitted"
+        );
+    }
+    // And a stated figure is still held to its own bound.
+    assert!(
+        Forecast::new(ForecastFields {
+            schema_version: 2,
+            regime_confidence_bp: Stated::Value(10_001),
+            ..forecast()
+        })
+        .is_err()
+    );
+
+    // A consumer is refused, naming the field, rather than handed a number.
+    let refusal = forecast_with_arm.state().unwrap_err().to_string();
+    assert!(refusal.contains("regime_confidence_bp"), "{refusal}");
+    assert!(
+        refusal.contains("a demand forecast states no regime"),
+        "{refusal}"
+    );
+    Ok(())
+}
+
+#[test]
+fn only_the_regime_and_the_impact_have_an_unmeasurable_arm() {
+    // The split, the tail and the distribution do not: a producer that cannot
+    // state them produces no Forecast. Substituting the object for any of them
+    // is refused at decode.
+    let mut value = serde_json::to_value(forecast()).unwrap();
+    for field in ["uncertainty", "tail", "distribution", "model_disagreement"] {
+        let mut edited = value.clone();
+        edited[field] = serde_json::json!({"unmeasurable": "no"});
+        assert!(
+            serde_json::from_value::<Forecast>(edited).is_err(),
+            "`{field}` admitted an unmeasurable arm"
+        );
+    }
+    // A stated arm with an unknown sibling is not one either.
+    value["regime_confidence_bp"] = serde_json::json!({"unmeasurable": "x", "extra": 1});
+    assert!(serde_json::from_value::<Forecast>(value).is_err());
 }

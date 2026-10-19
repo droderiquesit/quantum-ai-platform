@@ -59,6 +59,7 @@
 pub mod archive_names;
 pub mod blob;
 pub mod chain;
+pub mod classes;
 pub mod compaction;
 pub mod engine;
 mod fsio;

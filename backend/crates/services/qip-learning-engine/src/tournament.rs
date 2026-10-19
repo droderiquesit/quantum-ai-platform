@@ -82,6 +82,10 @@ pub const PROBABILITY_FLOOR: f64 = 1e-6;
 /// Bins the calibration error is computed over.
 const CALIBRATION_BINS: usize = 10;
 
+/// The influence factor of a quantity nobody measured: the median entrant's,
+/// neither the best nor the worst (ADR 0149 decision 13).
+const NEUTRAL_FACTOR: f64 = 0.5;
+
 /// The horizon bands of the Temporal Forecast Lattice (§9.7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -243,8 +247,10 @@ pub struct Scorecard {
     pub quantile_loss: Measure,
     /// Mean log-score gain the forecaster added over the aggregate without it.
     pub information_value: Measure,
-    pub mean_cost: f64,
-    pub mean_latency_ms: f64,
+    /// `None` where no forecast in the record was metered, not `0.0`: an
+    /// unmetered entrant is not a free one (ADR 0149 decision 13).
+    pub mean_cost: Option<f64>,
+    pub mean_latency_ms: Option<f64>,
 }
 
 /// A forecast as the tournament scores it.
@@ -260,15 +266,23 @@ pub struct TournamentForecast {
     /// `(quantile, value)` in increasing quantile order, where it stated a
     /// distribution over the realised value.
     pub quantiles: Option<Vec<(f64, f64)>>,
-    /// Compute units the forecast cost to produce.
-    pub cost: f64,
-    pub latency: Duration,
+    /// Compute units the forecast cost to produce, or `None` where nothing
+    /// measured it. `None` is not `0.0`: a zero reads as free, and the
+    /// influence arithmetic would pay it for a cost nobody computed (ADR 0149
+    /// decision 13).
+    pub cost: Option<f64>,
+    /// As [`Self::cost`]: `None` where no replayable reading exists.
+    pub latency: Option<Duration>,
 }
 
 impl TournamentForecast {
     /// Read a §9.14 [`Forecast`] contract. The contract is already validated,
     /// so the distribution's masses sum to one and its quantiles increase.
-    pub fn from_contract(forecast: &Forecast, cost: f64, latency: Duration) -> Self {
+    pub fn from_contract(
+        forecast: &Forecast,
+        cost: Option<f64>,
+        latency: Option<Duration>,
+    ) -> Self {
         let (probabilities_bp, quantiles) = match &forecast.distribution {
             OutcomeDistribution::Categorical { outcomes } => (
                 Some(
@@ -376,8 +390,12 @@ pub struct ScoredForecast {
     /// `(stated probability, whether it happened)` for every outcome, for
     /// the calibration error.
     pub calibration_points: Vec<(f64, bool)>,
-    pub cost: f64,
-    pub latency_ms: f64,
+    /// `None` for an unmetered forecast; an older record that stored a
+    /// number reads as `Some`.
+    #[serde(default)]
+    pub cost: Option<f64>,
+    #[serde(default)]
+    pub latency_ms: Option<f64>,
 }
 
 /// Material disagreement, preserved as a research signal (R12-MODEL-3091).
@@ -841,10 +859,12 @@ impl Tournament {
                 )));
             }
         }
-        if !(forecast.cost.is_finite() && forecast.cost >= 0.0) {
+        if let Some(cost) = forecast.cost
+            && !(cost.is_finite() && cost >= 0.0)
+        {
             return Err(Error::invalid(format!(
-                "{} states a cost of {}; give a non-negative one",
-                forecast.forecast_id, forecast.cost
+                "{} states a cost of {cost}; give a non-negative one, or none",
+                forecast.forecast_id
             )));
         }
         if open.forecasts.contains_key(&forecast.forecaster) {
@@ -1150,7 +1170,7 @@ impl Tournament {
                 information_value,
                 calibration_points,
                 cost: forecast.cost,
-                latency_ms: forecast.latency.as_millis() as f64,
+                latency_ms: forecast.latency.map(|l| l.as_millis() as f64),
             });
         }
 
@@ -1325,15 +1345,19 @@ impl Tournament {
                 &collect(|s| s.information_value),
                 "no aggregate existed to measure against",
             ),
-            mean_cost: Measure::mean(&scores.iter().map(|s| s.cost).collect::<Vec<_>>(), "")
-                .value()
-                .unwrap_or(0.0),
-            mean_latency_ms: Measure::mean(
-                &scores.iter().map(|s| s.latency_ms).collect::<Vec<_>>(),
+            mean_cost: Measure::mean(
+                &scores.iter().filter_map(|s| s.cost).collect::<Vec<_>>(),
                 "",
             )
-            .value()
-            .unwrap_or(0.0),
+            .value(),
+            mean_latency_ms: Measure::mean(
+                &scores
+                    .iter()
+                    .filter_map(|s| s.latency_ms)
+                    .collect::<Vec<_>>(),
+                "",
+            )
+            .value(),
         }
     }
 
@@ -1359,8 +1383,11 @@ impl Tournament {
     ///   already say reads one half, one that adds information approaches
     ///   one, one that subtracts it approaches zero;
     /// * **cost** and **latency** — `m / (m + x)` where `x` is its mean and
-    ///   `m` the median across those weighed, so the median forecaster reads
-    ///   one half and the cheapest approach one;
+    ///   `m` the median across those weighed *that were metered*, so the
+    ///   median forecaster reads one half and the cheapest approach one. A
+    ///   forecaster with no metered forecast reads one half — the neutral
+    ///   factor, not the best — and does not enter the median (ADR 0149
+    ///   decision 13);
     /// * **regime survival** — one minus the meta-model's predicted failure
     ///   probability in `regime`.
     ///
@@ -1383,21 +1410,33 @@ impl Tournament {
             .filter_map(|f| self.market.balance(&f.spec.id))
             .map(SyntheticCredits::as_f64)
             .fold(0.0, f64::max);
-        let mean = |f: &Forecaster, field: fn(&ScoredForecast) -> f64| -> f64 {
-            let values: Vec<f64> = f.all_scores().map(field).collect();
-            Measure::mean(&values, "").value().unwrap_or(0.0)
+        // `None` where the forecaster has scored forecasts and none was
+        // metered. One with no scored forecast yet reads zero, as it always
+        // has: there is no evidence either way, and every cold entrant ties.
+        let mean = |f: &Forecaster, field: fn(&ScoredForecast) -> Option<f64>| -> Option<f64> {
+            if f.all_scores().next().is_none() {
+                return Some(0.0);
+            }
+            let values: Vec<f64> = f.all_scores().filter_map(field).collect();
+            Measure::mean(&values, "").value()
         };
         let median = |values: &mut Vec<f64>| -> f64 {
             values.sort_by(f64::total_cmp);
             values.get(values.len() / 2).copied().unwrap_or(0.0)
         };
-        let mut costs: Vec<f64> = active.iter().map(|f| mean(f, |s| s.cost)).collect();
-        let mut latencies: Vec<f64> = active.iter().map(|f| mean(f, |s| s.latency_ms)).collect();
+        let mut costs: Vec<f64> = active.iter().filter_map(|f| mean(f, |s| s.cost)).collect();
+        let mut latencies: Vec<f64> = active
+            .iter()
+            .filter_map(|f| mean(f, |s| s.latency_ms))
+            .collect();
         let cost_median = median(&mut costs);
         let latency_median = median(&mut latencies);
-        let relative = |x: f64, m: f64| -> f64 {
+        let relative = |x: Option<f64>, m: f64| -> f64 {
+            let Some(x) = x else {
+                return NEUTRAL_FACTOR;
+            };
             if m <= 0.0 {
-                if x <= 0.0 { 1.0 } else { 0.5 }
+                if x <= 0.0 { 1.0 } else { NEUTRAL_FACTOR }
             } else {
                 m / (m + x)
             }
@@ -1623,8 +1662,8 @@ mod tests {
                 ("not_up".to_string(), 10_000 - up_bp),
             ])),
             quantiles: None,
-            cost: 1.0,
-            latency: Duration::from_millis(10),
+            cost: Some(1.0),
+            latency: Some(Duration::from_millis(10)),
         }
     }
 
@@ -2205,8 +2244,8 @@ mod tests {
             t.open(question(&id, "quiet", day), at(day))?;
             t.submit(&id, forecast("cheap", &id, 7_000, day), at(day))?;
             let mut dear = forecast("dear", &id, 7_000, day);
-            dear.cost = 50.0;
-            dear.latency = Duration::from_millis(5_000);
+            dear.cost = Some(50.0);
+            dear.latency = Some(Duration::from_millis(5_000));
             t.submit(&id, dear, at(day))?;
             t.resolve(&id, resolution("up", 30.0, day + 1), at(day + 1))?;
         }
@@ -2215,6 +2254,56 @@ mod tests {
         assert!(influence["cheap"].cost > influence["dear"].cost);
         assert!(influence["cheap"].latency > influence["dear"].latency);
         assert!(influence["cheap"].weight > influence["dear"].weight);
+        Ok(())
+    }
+
+    /// R12-MODEL-3090 (ADR 0149 decision 13). The failure this prevents: the
+    /// kernel's detector was stamped `cost: 0.0` and a zero latency, which the
+    /// influence arithmetic read as free and instant, so an entrant nobody
+    /// metered out-weighed every metered analyst on two of the six factors.
+    /// Mutation: restoring `Some(0.0)` for the unmetered entrant makes it win
+    /// both factors and the neutral-factor assertions fail.
+    #[test]
+    fn an_unmetered_detector_is_not_credited_with_zero_cost_or_zero_latency_and_earns_the_neutral_factor()
+    -> Result<()> {
+        let mut t = Tournament::new();
+        for name in ["cheap", "dear", "detector"] {
+            t.admit(spec(name), at(0))?;
+        }
+        for i in 0..PROMOTION_SAMPLE as i64 {
+            let day = 2 * i;
+            let id = format!("u-{day}");
+            t.open(question(&id, "quiet", day), at(day))?;
+            t.submit(&id, forecast("cheap", &id, 7_000, day), at(day))?;
+            let mut dear = forecast("dear", &id, 7_000, day);
+            dear.cost = Some(50.0);
+            dear.latency = Some(Duration::from_millis(5_000));
+            t.submit(&id, dear, at(day))?;
+            let mut unmetered = forecast("detector", &id, 7_000, day);
+            unmetered.cost = None;
+            unmetered.latency = None;
+            t.submit(&id, unmetered, at(day))?;
+            t.resolve(&id, resolution("up", 30.0, day + 1), at(day + 1))?;
+        }
+        t.review_promotions(&BTreeMap::new());
+        let influence = t.influence("quiet");
+        // Premise: all three were weighed together.
+        assert_eq!(influence.len(), 3, "{influence:?}");
+        let detector = &influence["detector"];
+        assert!(
+            (detector.cost - NEUTRAL_FACTOR).abs() < 1e-12,
+            "an unmetered cost reads neutral, not best: {}",
+            detector.cost
+        );
+        assert!(
+            (detector.latency - NEUTRAL_FACTOR).abs() < 1e-12,
+            "an unmetered latency reads neutral, not best: {}",
+            detector.latency
+        );
+        // It neither beats the metered cheap entrant nor drags the median:
+        // the cheap one still reads above neutral.
+        assert!(influence["cheap"].cost > detector.cost);
+        assert!(influence["cheap"].latency > detector.latency);
         Ok(())
     }
 

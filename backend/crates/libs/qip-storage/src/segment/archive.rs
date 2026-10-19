@@ -81,13 +81,34 @@ fn segment_label(start_offset: u64) -> String {
     format!("segment.{start_offset:020}")
 }
 
+/// The prefix every sealed-segment object is written under, below whatever
+/// prefix the archive's store is opened with.
+pub const ARCHIVE_SEGMENT_PREFIX: &str = "segments/sha256/";
+
+/// The prefix every indexed manifest is written under
+/// (see [`manifest_index_prefix`]).
+pub const ARCHIVE_MANIFEST_PREFIX: &str = "manifests/";
+
+/// Whether `key` is an archive object: a sealed segment or a manifest row,
+/// at the root of the store or below a configured prefix.
+///
+/// Matched at a path-segment boundary, so `lake/segments/sha256x/..` is not
+/// caught and `fabric/segments/sha256/..` is. The archive's objects are the
+/// unit of evidence (ADR 0156 §2.1): anything that would re-encode or merge
+/// them asks this first.
+pub fn is_archive_key(key: &str) -> bool {
+    [ARCHIVE_SEGMENT_PREFIX, ARCHIVE_MANIFEST_PREFIX]
+        .iter()
+        .any(|prefix| key.starts_with(prefix) || key.contains(&format!("/{prefix}")))
+}
+
 /// Where a sealed segment's bytes live in the blob store: the hex SHA-256 of
 /// its own bytes, and nothing else. See the module documentation's "Content
 /// addressing, not offset addressing".
 fn blob_key(hash: &ContentHash) -> Result<String> {
     match hash {
         ContentHash::Sha256(digest) => Ok(format!(
-            "segments/sha256/{}",
+            "{ARCHIVE_SEGMENT_PREFIX}{}",
             qip_core::hash::to_hex(digest)
         )),
         ContentHash::Blake3(_) => Err(Error::invalid(
@@ -349,7 +370,9 @@ pub fn manifest_index_prefix(stream: &str, partition: u32) -> Result<String> {
              contain no '/'"
         )));
     }
-    Ok(format!("manifests/{stream}/{partition:010}/"))
+    Ok(format!(
+        "{ARCHIVE_MANIFEST_PREFIX}{stream}/{partition:010}/"
+    ))
 }
 
 fn manifest_index_key(stream: &str, partition: u32, base_offset: u64) -> Result<String> {

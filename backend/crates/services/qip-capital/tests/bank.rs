@@ -11,14 +11,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_capital::bank::{
-    CurrencyBook, InstrumentClass, PostingBook, PostingState, ReleaseConfirmation, YieldInstrument,
-    route_idle_cash, yield_entry_id,
+    CurrencyBook, IdleCash, InstrumentClass, PostingBook, PostingState, ReleaseConfirmation,
+    RoutingTerms, Shelf, YieldInstrument, route_idle_cash, yield_entry_id,
 };
 use qip_capital::collateral::{
     CollateralAsset, CollateralGraph, MarginDomain, MarginRegime, Rehypothecation,
 };
-use qip_capital::dated_ladder::DatedLadder;
-use qip_capital::treasury::{CapitalBook, Use};
+use qip_capital::dated_ladder::{DatedLadder, EntryKind, LadderEntry, RedemptionNotice};
+use qip_capital::reservation::ReservationLedger;
+use qip_capital::survival::{CapitalSurvivalState, SurvivalReport};
 use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
 use qip_core::rng::{Rng, Xoshiro256};
@@ -366,83 +367,144 @@ fn a_conversion_larger_than_the_balance_is_refused_whole_and_moves_neither_curre
 
 // --- idle cash, against a simulated custodian's shelf ------------------------
 
+fn hours(n: i64) -> Duration {
+    Duration::from_hours(n)
+}
+
 fn day(n: i64) -> Duration {
     Duration::from_days(n)
 }
 
-/// What a simulated custodian offers. The best yield on the shelf is in a
-/// class idle cash may not go into, which is the temptation the rule exists
-/// to refuse.
-fn shelf() -> Vec<YieldInstrument> {
-    let offer = |id: &str, class, days, capacity: &str, rate: &str| YieldInstrument {
+fn instrument(
+    id: &str,
+    class: InstrumentClass,
+    realisation: Duration,
+    capacity: &str,
+    rate: &str,
+) -> YieldInstrument {
+    YieldInstrument {
         id: id.to_owned(),
         class,
-        realisation: day(days),
+        realisation,
         capacity: Decimal::parse(capacity).expect("a literal capacity"),
         yield_rate: Decimal::parse(rate).expect("a literal rate"),
-    };
-    vec![
-        offer("overnight", InstrumentClass::Cash, 1, "2000", "0.030"),
-        offer(
+    }
+}
+
+/// What a simulated custodian offers. The best yield on the shelf is in a
+/// class idle cash may not go into, which is the temptation the rule exists
+/// to refuse. Every routable instrument is realised within the day a
+/// reservation may hold capital (ADR 0159); the longer ones the blueprint
+/// names are the cost that decision accepted and
+/// `a_shelf_instrument_realised_past_the_reservation_ceiling_is_refused_at_load`
+/// pins.
+fn shelf() -> Shelf {
+    Shelf::new(vec![
+        instrument(
+            "overnight",
+            InstrumentClass::Cash,
+            hours(6),
+            "2000",
+            "0.030",
+        ),
+        instrument(
             "stable-fund",
             InstrumentClass::StableValue,
-            2,
+            hours(12),
             "1500",
             "0.041",
         ),
-        offer(
-            "bills-30d",
+        instrument(
+            "bills-1d",
             InstrumentClass::ShortDuration,
-            30,
+            hours(24),
             "1000",
             "0.048",
         ),
-        offer(
+        instrument(
             "high-yield-credit",
             InstrumentClass::Other,
-            5,
+            day(5),
             "100000",
             "0.090",
         ),
-    ]
+    ])
+    .expect("a valid shelf")
+}
+
+fn terms(share: &str) -> RoutingTerms {
+    RoutingTerms::new(
+        Decimal::parse(share).expect("a literal share"),
+        vec![hours(24), day(7), day(30)],
+    )
+    .expect("valid terms")
+}
+
+/// A waterfall that leaves `opportunity` over: equity 10,000 less a 2,000
+/// emergency reserve and whatever is held.
+fn waterfall(opportunity: Decimal) -> SurvivalReport {
+    let withheld = dec!("10000") - dec!("2000") - opportunity;
+    CapitalSurvivalState::new(dec!("10000"))
+        .unwrap()
+        .with_nav_floor(dec!("2000"))
+        .unwrap()
+        .with_reserved_cash(withheld)
+        .unwrap()
+        .report()
+        .unwrap()
 }
 
 #[test]
-fn idle_cash_above_the_floor_goes_only_into_permitted_classes_and_each_amount_is_dated_at_its_realisation_horizon()
+fn idle_cash_goes_only_into_permitted_classes_is_held_in_the_ledger_and_each_amount_is_dated_at_its_realisation_horizon()
 -> Result<()> {
     let now = t(0);
-    let mut book = CapitalBook::new(dec!("10000"), dec!("2000"))?;
-    book.commit("grant-1", Use::Grant, dec!("4000"))?;
-    let mut ladder = DatedLadder::new(now, &[day(1), day(7), day(30), day(90)])?;
-    // Premise: 4000 is idle above the floor, nothing is routed, and the shelf
-    // really does offer a class that must be refused.
-    assert_eq!(book.uncommitted() - book.floor(), dec!("4000"));
-    assert_eq!(book.assigned_to(Use::Yield), Decimal::ZERO);
-    assert!(shelf().iter().any(|i| !i.class.takes_idle_cash()));
+    let mut reservations = ReservationLedger::new(dec!("10000"))?;
+    let mut ladder = DatedLadder::new(now, &[hours(24), day(7), day(30)])?;
+    let report = waterfall(dec!("4000"));
+    // Premise: 4000 is left over, nothing is routed, and the shelf really
+    // does offer a class that must be refused.
+    assert_eq!(report.opportunity_capital, dec!("4000"));
+    assert_eq!(reservations.reserved_total(), Decimal::ZERO);
+    assert!(
+        shelf()
+            .instruments()
+            .iter()
+            .any(|i| !i.class.takes_idle_cash())
+    );
 
-    let placements = route_idle_cash(&mut book, &mut ladder, &shelf(), now)?;
+    let idle = IdleCash::from_waterfall(&report, Decimal::ZERO)?;
+    let outcome = route_idle_cash(
+        idle,
+        &shelf(),
+        &terms("1"),
+        &mut reservations,
+        &mut ladder,
+        now,
+    )?;
 
     // Only the three named classes, best yield first, and never the fourth.
-    let routed: Vec<(&str, Decimal)> = placements
+    let routed: Vec<(&str, Decimal)> = outcome
+        .placements
         .iter()
         .map(|p| (p.instrument.as_str(), p.amount))
         .collect();
     assert_eq!(
         routed,
         vec![
-            ("bills-30d", dec!("1000")),
+            ("bills-1d", dec!("1000")),
             ("stable-fund", dec!("1500")),
             ("overnight", dec!("1500")),
         ]
     );
-    // All the idle cash went, and the floor did not.
-    assert_eq!(book.assigned_to(Use::Yield), dec!("4000"));
-    assert_eq!(book.uncommitted(), book.floor());
+    // All the idle cash went, as holds the ledger now carries.
+    assert_eq!(reservations.reserved_total(), dec!("4000"));
+    assert_eq!(reservations.free(now), dec!("6000"));
 
     // Each amount sits on the ladder at the instant it can be had back.
-    let instruments = shelf();
-    for placement in &placements {
-        let instrument = instruments
+    let shelf = shelf();
+    for placement in &outcome.placements {
+        let instrument = shelf
+            .instruments()
             .iter()
             .find(|i| i.id == placement.instrument)
             .expect("a placement names an instrument on the shelf");
@@ -452,26 +514,353 @@ fn idle_cash_above_the_floor_goes_only_into_permitted_classes_and_each_amount_is
         assert_eq!(entry.amount, placement.amount);
         assert_eq!(entry.at, now.saturating_add(instrument.realisation));
         assert_eq!(placement.available_at, entry.at);
+        // And the hold lapses at the same instant, so the ledger and the
+        // ladder cannot disagree about when the cash is back.
+        let hold = reservations
+            .reservation(&yield_entry_id(&placement.instrument))
+            .expect("every placement is held");
+        assert_eq!(hold.expires_at, entry.at);
     }
-    // So the thirty-day bills are not liquidity a week from now.
     assert_eq!(
-        ladder.available_by(now.saturating_add(day(7))),
-        dec!("3000")
+        ladder.available_by(now.saturating_add(hours(24))),
+        dec!("4000")
     );
     assert_eq!(
-        ladder.available_by(now.saturating_add(day(30))),
-        dec!("4000")
+        ladder.available_by(now.saturating_add(hours(6))),
+        Decimal::ZERO
     );
     Ok(())
 }
 
 #[test]
-fn a_book_at_its_floor_routes_nothing() -> Result<()> {
+fn nothing_left_unreleased_routes_nothing() -> Result<()> {
     let now = t(0);
-    let mut book = CapitalBook::new(dec!("1000"), dec!("1000"))?;
-    let mut ladder = DatedLadder::new(now, &[day(1)])?;
-    assert!(route_idle_cash(&mut book, &mut ladder, &shelf(), now)?.is_empty());
-    assert_eq!(book.uncommitted(), dec!("1000"));
+    let mut reservations = ReservationLedger::new(dec!("10000"))?;
+    let mut ladder = DatedLadder::new(now, &[hours(24)])?;
+    // Premise: the cycle released everything the waterfall left.
+    let report = waterfall(dec!("3000"));
+    let idle = IdleCash::from_waterfall(&report, dec!("3000"))?;
+    assert_eq!(idle.amount(), Decimal::ZERO);
+    let outcome = route_idle_cash(
+        idle,
+        &shelf(),
+        &terms("1"),
+        &mut reservations,
+        &mut ladder,
+        now,
+    )?;
+    assert!(outcome.placements.is_empty());
+    assert_eq!(reservations.reserved_total(), Decimal::ZERO);
     assert_eq!(ladder.total(), Decimal::ZERO);
+    Ok(())
+}
+
+#[test]
+fn an_empty_shelf_routes_nothing_whatever_is_idle() -> Result<()> {
+    let now = t(0);
+    let mut reservations = ReservationLedger::new(dec!("10000"))?;
+    let mut ladder = DatedLadder::new(now, &[hours(24)])?;
+    let idle = IdleCash::from_waterfall(&waterfall(dec!("4000")), Decimal::ZERO)?;
+    // Premise: there is idle cash to route.
+    assert_eq!(idle.amount(), dec!("4000"));
+    let outcome = route_idle_cash(
+        idle,
+        &Shelf::empty(),
+        &terms("1"),
+        &mut reservations,
+        &mut ladder,
+        now,
+    )?;
+    assert!(outcome.placements.is_empty());
+    assert_eq!(reservations.reserved_total(), Decimal::ZERO);
+    Ok(())
+}
+
+#[test]
+fn only_the_declared_share_of_the_unreleased_capital_is_routed() -> Result<()> {
+    let now = t(0);
+    let mut reservations = ReservationLedger::new(dec!("10000"))?;
+    let mut ladder = DatedLadder::new(now, &[hours(24)])?;
+    let idle = IdleCash::from_waterfall(&waterfall(dec!("4000")), Decimal::ZERO)?;
+    let outcome = route_idle_cash(
+        idle,
+        &shelf(),
+        &terms("0.25"),
+        &mut reservations,
+        &mut ladder,
+        now,
+    )?;
+    // A quarter of 4000 is 1000, taken by the best yield; the rest stays free.
+    let routed: Vec<(&str, Decimal)> = outcome
+        .placements
+        .iter()
+        .map(|p| (p.instrument.as_str(), p.amount))
+        .collect();
+    assert_eq!(routed, vec![("bills-1d", dec!("1000"))]);
+    assert_eq!(reservations.reserved_total(), dec!("1000"));
+    Ok(())
+}
+
+#[test]
+fn idle_cash_cannot_be_built_from_a_release_the_waterfall_did_not_leave() {
+    let report = waterfall(dec!("4000"));
+    assert!(IdleCash::from_waterfall(&report, dec!("4000.01")).is_err());
+    assert!(IdleCash::from_waterfall(&report, dec!("-1")).is_err());
+    assert_eq!(
+        IdleCash::from_waterfall(&report, dec!("1500"))
+            .unwrap()
+            .amount(),
+        dec!("2500")
+    );
+}
+
+#[test]
+fn a_shelf_instrument_realised_past_the_reservation_ceiling_is_refused_at_load() {
+    let refused = Shelf::new(vec![instrument(
+        "bills-30d",
+        InstrumentClass::ShortDuration,
+        day(30),
+        "1000",
+        "0.048",
+    )]);
+    let message = refused.unwrap_err().to_string();
+    assert!(message.contains("bills-30d"), "{message}");
+    assert!(message.contains("24.0"), "names the ceiling: {message}");
+    // Exactly the ceiling is admitted: the boundary is the day, not before it.
+    assert!(
+        Shelf::new(vec![instrument(
+            "bills-1d",
+            InstrumentClass::ShortDuration,
+            hours(24),
+            "1",
+            "0.01"
+        )])
+        .is_ok()
+    );
+    // A class that is never routed may be listed with any realisation.
+    assert!(
+        Shelf::new(vec![instrument(
+            "credit",
+            InstrumentClass::Other,
+            day(30),
+            "1",
+            "0.09"
+        )])
+        .is_ok()
+    );
+}
+
+#[test]
+fn a_shelf_refuses_a_duplicate_id_a_blank_id_a_zero_capacity_and_a_negative_yield() {
+    let good = || instrument("a", InstrumentClass::Cash, hours(1), "10", "0.01");
+    assert!(Shelf::new(vec![good(), good()]).is_err());
+    let mut blank = good();
+    blank.id = " ".into();
+    assert!(Shelf::new(vec![blank]).is_err());
+    let mut nothing = good();
+    nothing.capacity = Decimal::ZERO;
+    assert!(Shelf::new(vec![nothing]).is_err());
+    let mut negative = good();
+    negative.yield_rate = dec!("-0.01");
+    assert!(Shelf::new(vec![negative]).is_err());
+    let mut instant = good();
+    instant.realisation = Duration::from_nanos(0);
+    assert!(Shelf::new(vec![instant]).is_err());
+}
+
+#[test]
+fn routing_terms_refuse_a_share_outside_zero_to_one_and_unordered_horizons() {
+    assert!(RoutingTerms::new(Decimal::ZERO, vec![hours(1)]).is_err());
+    assert!(RoutingTerms::new(dec!("1.01"), vec![hours(1)]).is_err());
+    assert!(RoutingTerms::new(dec!("0.5"), vec![]).is_err());
+    assert!(RoutingTerms::new(dec!("0.5"), vec![day(2), day(1)]).is_err());
+    assert!(RoutingTerms::new(dec!("1"), vec![hours(1)]).is_ok());
+}
+
+#[test]
+fn a_declared_outflow_before_an_instruments_availability_refuses_the_placement_while_a_later_one_does_not()
+-> Result<()> {
+    let now = t(0);
+    let notice = |id: &str, hours_out: i64| {
+        RedemptionNotice::new(
+            id,
+            dec!("500"),
+            now.saturating_add(hours(hours_out)),
+            "operator-1",
+            now,
+        )
+    };
+    let route = |outflow_in_hours: i64| -> Result<_> {
+        let mut reservations = ReservationLedger::new(dec!("10000"))?;
+        let mut ladder = DatedLadder::new(now, &[hours(24), day(7)])?;
+        ladder.place(notice("n-1", outflow_in_hours)?.as_outflow())?;
+        let idle = IdleCash::from_waterfall(&waterfall(dec!("4000")), Decimal::ZERO)?;
+        let outcome = route_idle_cash(
+            idle,
+            &shelf(),
+            &terms("1"),
+            &mut reservations,
+            &mut ladder,
+            now,
+        )?;
+        Ok((outcome, reservations))
+    };
+
+    // Premise: with no outflow all three routable instruments are placed.
+    let mut reservations = ReservationLedger::new(dec!("10000"))?;
+    let mut ladder = DatedLadder::new(now, &[hours(24), day(7)])?;
+    let idle = IdleCash::from_waterfall(&waterfall(dec!("4000")), Decimal::ZERO)?;
+    let clear = route_idle_cash(
+        idle,
+        &shelf(),
+        &terms("1"),
+        &mut reservations,
+        &mut ladder,
+        now,
+    )?;
+    assert_eq!(clear.placements.len(), 3);
+
+    // An outflow in 8 hours: the 6-hour instrument can be had back first; the
+    // 12- and 24-hour ones cannot, and the refusal names the notice.
+    let (early, held) = route(8)?;
+    let placed: Vec<&str> = early
+        .placements
+        .iter()
+        .map(|p| p.instrument.as_str())
+        .collect();
+    assert_eq!(placed, vec!["overnight"]);
+    assert_eq!(early.refused.len(), 2);
+    assert!(
+        early
+            .refused
+            .iter()
+            .all(|r| r.reason.contains("notice:n-1")),
+        "{:?}",
+        early.refused
+    );
+    assert_eq!(
+        held.reserved_total(),
+        dec!("2000"),
+        "a refused instrument holds nothing"
+    );
+
+    // The same notice a day and a half out refuses nothing.
+    let (late, _) = route(36)?;
+    assert_eq!(late.placements.len(), 3);
+    assert!(late.refused.is_empty());
+    Ok(())
+}
+
+#[test]
+fn an_instrument_still_held_from_an_earlier_pass_is_skipped_not_topped_up() -> Result<()> {
+    let now = t(0);
+    let mut reservations = ReservationLedger::new(dec!("10000"))?;
+    let mut ladder = DatedLadder::new(now, &[hours(24)])?;
+    let idle = || IdleCash::from_waterfall(&waterfall(dec!("4000")), Decimal::ZERO);
+    let first = route_idle_cash(
+        idle()?,
+        &shelf(),
+        &terms("1"),
+        &mut reservations,
+        &mut ladder,
+        now,
+    )?;
+    assert_eq!(first.placements.len(), 3);
+    let held = reservations.reserved_total();
+    let mut again = DatedLadder::new(now, &[hours(24)])?;
+    let second = route_idle_cash(
+        idle()?,
+        &shelf(),
+        &terms("1"),
+        &mut reservations,
+        &mut again,
+        now,
+    )?;
+    assert!(second.placements.is_empty());
+    assert_eq!(second.refused.len(), 3);
+    assert_eq!(reservations.reserved_total(), held);
+    // Once the holds lapse the instruments are routable again.
+    let later = now.saturating_add(hours(25));
+    let mut fresh = DatedLadder::new(later, &[hours(24)])?;
+    let third = route_idle_cash(
+        idle()?,
+        &shelf(),
+        &terms("1"),
+        &mut reservations,
+        &mut fresh,
+        later,
+    )?;
+    assert_eq!(third.placements.len(), 3);
+    Ok(())
+}
+
+#[test]
+fn the_earliest_outflow_is_the_earliest_by_instant_then_id_and_ignores_other_kinds() -> Result<()> {
+    let now = t(0);
+    let entry = |id: &str, kind, at: i64| LadderEntry {
+        id: id.to_owned(),
+        kind,
+        amount: dec!("1"),
+        at: now.saturating_add(hours(at)),
+    };
+    let mut ladder = DatedLadder::new(now, &[hours(24)])?;
+    assert!(ladder.earliest_outflow().is_none());
+    ladder.place(entry("balance-early", EntryKind::Balance, 1))?;
+    assert!(ladder.earliest_outflow().is_none(), "a balance is not owed");
+    ladder.place(entry("b", EntryKind::Outflow, 5))?;
+    ladder.place(entry("a", EntryKind::Outflow, 5))?;
+    ladder.place(entry("late", EntryKind::Outflow, 9))?;
+    assert_eq!(ladder.earliest_outflow().map(|e| e.id.as_str()), Some("a"));
+    Ok(())
+}
+
+#[test]
+fn a_redemption_notice_refuses_a_back_dated_blank_or_non_positive_declaration() {
+    let at = t(0);
+    let ok = RedemptionNotice::new("n-1", dec!("1"), at, "operator-1", at);
+    assert!(ok.is_ok());
+    assert_eq!(ok.unwrap().entry_id(), "notice:n-1");
+    assert!(RedemptionNotice::new("n 1", dec!("1"), at, "operator-1", at).is_err());
+    assert!(RedemptionNotice::new("", dec!("1"), at, "operator-1", at).is_err());
+    assert!(RedemptionNotice::new("n-1", Decimal::ZERO, at, "operator-1", at).is_err());
+    assert!(RedemptionNotice::new("n-1", dec!("1"), at, " ", at).is_err());
+    assert!(
+        RedemptionNotice::new(
+            "n-1",
+            dec!("1"),
+            at,
+            "operator-1",
+            at.saturating_add(hours(1))
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn a_ladder_rebuilt_from_the_same_facts_is_the_same_ladder() -> Result<()> {
+    let now = t(0);
+    let facts = || {
+        vec![
+            LadderEntry {
+                id: "b".into(),
+                kind: EntryKind::Balance,
+                amount: dec!("2"),
+                at: now.saturating_add(hours(3)),
+            },
+            LadderEntry {
+                id: "a".into(),
+                kind: EntryKind::Outflow,
+                amount: dec!("1"),
+                at: now.saturating_add(hours(5)),
+            },
+        ]
+    };
+    let one = DatedLadder::rebuilt(now, &[hours(24)], facts())?;
+    let two = DatedLadder::rebuilt(now, &[hours(24)], facts().into_iter().rev())?;
+    assert_eq!(one.buckets(), two.buckets());
+    // A duplicate fact is refused, as `place` refuses it.
+    let mut doubled = facts();
+    doubled.extend(facts());
+    assert!(DatedLadder::rebuilt(now, &[hours(24)], doubled).is_err());
     Ok(())
 }

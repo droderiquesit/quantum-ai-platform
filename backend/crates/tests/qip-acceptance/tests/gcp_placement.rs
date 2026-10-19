@@ -531,6 +531,47 @@ fn no_shared_vpc_is_declared_so_no_host_project_lends_a_subnet_across_a_folder()
     }
 }
 
+/// R12-GCP-8053 (ADR 0156 §6c), the half that holds today: nothing joins the
+/// reflex, fabric and service networks, because ADR 0035 runs one execution
+/// node in one region and a hub would carry nothing. No Network Connectivity
+/// hub, spoke or group and no VPC peering is declared anywhere under
+/// `infrastructure/`.
+///
+/// When the record superseding ADR 0035's "one" arrives, the rule is spokes
+/// only, route export deny-by-default per pair, only a control-fabric subnet
+/// exported and only to other regions' control-fabric spokes, the reflex and
+/// service VPCs never. This test is then replaced by one that checks that
+/// rule; until then the refusal is the form of it that can be held. The hub,
+/// its attachments and its data transfer are billed and are the owner's.
+///
+/// Mutation: add a `google_network_connectivity_hub` resource to the network
+/// module. The scan names it.
+#[test]
+fn no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region() {
+    let all = resources();
+    let networks: Vec<&Resource> = all
+        .iter()
+        .filter(|r| r.kind == "google_compute_network" && r.file.contains("modules/network/"))
+        .collect();
+    assert!(
+        networks.len() >= 3,
+        "the network module declares its VPCs (reflex, fabric and service at least); found {} \
+         — the walk is not reaching it",
+        networks.len()
+    );
+    for resource in &all {
+        assert!(
+            !resource.kind.starts_with("google_network_connectivity_")
+                && !resource.kind.starts_with("google_compute_network_peering"),
+            "{} joins networks. ADR 0035 runs one execution node in one region, so there is \
+             nothing to join; the hub waits for the record that supersedes it, and then only \
+             control-fabric subnets are exported, to other regions' fabric spokes (ADR 0156 \
+             6c). The hub and its transfer are billed and the owner's",
+            resource.at()
+        );
+    }
+}
+
 #[test]
 fn every_backend_bucket_is_served_through_cloud_cdn_with_an_explicit_cache_mode_and_no_backend_service_is()
  {

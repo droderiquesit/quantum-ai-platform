@@ -53,20 +53,42 @@ struct Fabric {
 
 impl Fabric {
     fn start(test: &'static str) -> Self {
+        Self::start_granting(test, false)
+    }
+
+    /// [`Self::start`], optionally with the operator also granted `consume`
+    /// on the journal stream. The committed catalogue grants the operator
+    /// `admin` only, and a fetch needs `consume`; widening the committed
+    /// grants is an access decision, so a replay test makes the grant in its
+    /// own copy of the catalogue and the committed file stays as it is.
+    fn start_granting(test: &'static str, operator_may_consume: bool) -> Self {
         let root = std::env::temp_dir().join(format!(
             "qip-cli-event-fabric-admin-{}-{test}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let catalogue = Catalogue::parse(
+        let mut committed: serde_json::Value = serde_json::from_slice(
             &std::fs::read(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../../../infrastructure/event-fabric/streams.local.json"),
             )
             .expect("the committed local catalogue is readable"),
         )
-        .expect("the committed local catalogue parses");
+        .expect("the committed local catalogue is JSON");
+        if operator_may_consume {
+            committed["grants"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "identity": OPERATOR,
+                    "stream": JOURNAL,
+                    "permission": "consume",
+                    "key_scope": "any"
+                }));
+        }
+        let catalogue = Catalogue::parse(&serde_json::to_vec(&committed).unwrap())
+            .expect("the committed local catalogue parses");
         let identities = IdentityTable::parse(
             &[CELL, OPERATOR]
                 .iter()
@@ -96,8 +118,12 @@ impl Fabric {
         let server = Server::bind(
             "127.0.0.1:0",
             Arc::new(move |request: &Request| {
-                let handled =
-                    service.handle(request.header(auth::HEADER), &request.path, &request.body);
+                let handled = service.handle(
+                    request.header(auth::HEADER),
+                    None,
+                    &request.path,
+                    &request.body,
+                );
                 Response::new(handled.status, "application/json", handled.body)
             }),
             ServerLimits::default(),
@@ -457,5 +483,225 @@ fn the_lag_command_reports_a_groups_committed_offset_against_the_high_watermark(
     assert!(
         never.to_string().contains("never committed"),
         "the refusal says why: {never}"
+    );
+}
+
+/// A transport that answers as a broker predating the isolation field would:
+/// every metadata answer comes back without it.
+struct OmitsIsolation(Box<dyn qip_transport::event_fabric::transport::FabricTransport + Send>);
+
+impl qip_transport::event_fabric::transport::FabricTransport for OmitsIsolation {
+    fn call(
+        &mut self,
+        request: qip_transport::event_fabric::protocol::Request,
+        timeouts: Timeouts,
+    ) -> qip_core::error::Result<qip_transport::event_fabric::protocol::Response> {
+        use qip_transport::event_fabric::protocol::{Metadata, Response};
+        Ok(match self.0.call(request, timeouts)? {
+            Response::Metadata(m) => Response::Metadata(Metadata::new(
+                m.stream(),
+                m.partition(),
+                m.leader_epoch(),
+                m.high_watermark(),
+                m.archived_through(),
+            )?),
+            other => other,
+        })
+    }
+}
+
+impl Fabric {
+    fn inspect_arguments(&self, view: &str) -> Vec<String> {
+        let partition = own_partition().to_string();
+        [
+            view,
+            "--peer",
+            self.address.as_str(),
+            "--stream",
+            JOURNAL,
+            "--partition",
+            partition.as_str(),
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    }
+
+    fn environment_omitting_isolation(&self, identity: &str) -> Environment {
+        let path = self.root.join("omits.token");
+        std::fs::write(&path, token(self.test, identity)).unwrap();
+        let variables: BTreeMap<String, String> =
+            [(format!("{TOKEN_VARIABLE}_FILE"), path.display().to_string())].into();
+        Environment::new(
+            Box::new(move |name| variables.get(name).cloned()),
+            Arc::new(SystemClock),
+            Arc::new(ThreadSleeper),
+            Box::new(|peer, identity| {
+                Box::new(OmitsIsolation(grant::http_transport(peer, identity)))
+            }),
+        )
+    }
+}
+
+/// R12-FABRIC-7042 (ADR 0156 §4b). `qip event-fabric health` prints the
+/// isolation the broker computed, and refuses a response that omits it.
+///
+/// The failure this prevents: a health view that read a missing isolation
+/// field as "not isolated" prints a parked partition as healthy whenever the
+/// broker predates the field, or the field is dropped on the way.
+///
+/// A healthy partition is read first (exit 0, "not isolated"), so the
+/// ISOLATED line after the isolation is the isolation's and not a view that
+/// always says so.
+///
+/// Mutation: drop the isolation from the metadata answer (the service sets
+/// `with_isolation`; remove that call). The health command then refuses, and
+/// the first assertion fails because it cannot print the healthy line.
+#[test]
+fn the_health_command_reports_isolation_and_refuses_a_response_that_omits_it() {
+    let fabric = Fabric::start("health");
+    fabric.producer().send(batch("before")).unwrap();
+
+    let healthy = dispatch(
+        &fabric.inspect_arguments("health"),
+        &fabric.environment(OPERATOR),
+    )
+    .expect("the operator reads the partition's health");
+    assert_eq!(healthy.code, 0, "{:?}", healthy.lines);
+    assert!(
+        healthy.lines[0].contains("not isolated")
+            && healthy.lines[0].contains("high watermark 1")
+            && healthy.lines[0].contains("leader epoch"),
+        "{:?}",
+        healthy.lines
+    );
+
+    dispatch(
+        &fabric.arguments("isolate", OPERATOR, Some("suspect feed")),
+        &fabric.environment(OPERATOR),
+    )
+    .expect("the operator isolates the partition");
+    let parked = dispatch(
+        &fabric.inspect_arguments("health"),
+        &fabric.environment(OPERATOR),
+    )
+    .expect("the operator reads the partition's health");
+    assert_eq!(parked.code, 3, "{:?}", parked.lines);
+    assert!(
+        parked.lines[0].contains("ISOLATED by operator: suspect feed"),
+        "the print does not name the isolation: {:?}",
+        parked.lines
+    );
+
+    let error = dispatch(
+        &fabric.inspect_arguments("health"),
+        &fabric.environment_omitting_isolation(OPERATOR),
+    )
+    .expect_err("an answer without the isolation field is refused, not printed as healthy");
+    assert!(
+        error.to_string().contains("carries no isolation field"),
+        "{error}"
+    );
+}
+
+/// R12-FABRIC-7042. `qip event-fabric replay` fetches a partition, verifies
+/// the batch chain and says AGREES; a partition whose chain is broken says
+/// DIFFERS and exits 3. A partition with nothing at the offset is refused,
+/// because nothing verified is not agreement.
+///
+/// The broken chain is made the only way a reader can meet one: the fetch
+/// response is rewritten in transit to swap two batches, so the second no
+/// longer follows the one before it.
+///
+/// Mutation: in `inspect::replay`, skip the `previous_batch_hash` comparison.
+/// The swapped fetch is then reported AGREES and the DIFFERS assertion fails.
+#[test]
+fn the_replay_command_agrees_on_an_intact_chain_and_differs_on_a_broken_one() {
+    let fabric = Fabric::start_granting("replay", true);
+    let mut producer = fabric.producer();
+    for tag in ["first", "second", "third"] {
+        producer.send(batch(tag)).unwrap();
+    }
+
+    let intact = dispatch(
+        &fabric.inspect_arguments("replay"),
+        &fabric.environment(OPERATOR),
+    )
+    .expect("the operator replays the partition");
+    assert_eq!(intact.code, 0, "{:?}", intact.lines);
+    assert!(
+        intact.lines[0].starts_with("AGREES ")
+            && intact.lines[0].contains("3 batch(es) from offset 0")
+            && intact.lines[0].contains("anchored at the partition's first batch"),
+        "{:?}",
+        intact.lines
+    );
+
+    struct Swaps(Box<dyn qip_transport::event_fabric::transport::FabricTransport + Send>);
+    impl qip_transport::event_fabric::transport::FabricTransport for Swaps {
+        fn call(
+            &mut self,
+            request: qip_transport::event_fabric::protocol::Request,
+            timeouts: Timeouts,
+        ) -> qip_core::error::Result<qip_transport::event_fabric::protocol::Response> {
+            use qip_events::event_fabric::codec::{Batch, PrefixDecodeOutcome};
+            use qip_transport::event_fabric::protocol::{FetchResponse, Response};
+            Ok(match self.0.call(request, timeouts)? {
+                Response::Fetch(f) if !f.batches().is_empty() => {
+                    let bytes = qip_core::hash::from_hex(f.batches())
+                        .ok_or_else(|| qip_core::error::Error::invalid("not hex"))?;
+                    let mut frames = Vec::new();
+                    let mut cursor = &bytes[..];
+                    while !cursor.is_empty() {
+                        let PrefixDecodeOutcome::Complete { consumed, .. } =
+                            Batch::decode_prefix(cursor)?
+                        else {
+                            return Err(qip_core::error::Error::invalid("a torn frame"));
+                        };
+                        frames.push(cursor[..consumed].to_vec());
+                        cursor = &cursor[consumed..];
+                    }
+                    frames.swap(1, 2);
+                    Response::Fetch(
+                        FetchResponse::new(
+                            f.stream(),
+                            f.partition(),
+                            f.high_watermark(),
+                            f.archived_through(),
+                            qip_core::hash::to_hex(&frames.concat()),
+                        )
+                        .unwrap(),
+                    )
+                }
+                other => other,
+            })
+        }
+    }
+    let path = fabric.root.join("swaps.token");
+    std::fs::write(&path, token(fabric.test, OPERATOR)).unwrap();
+    let variables: BTreeMap<String, String> =
+        [(format!("{TOKEN_VARIABLE}_FILE"), path.display().to_string())].into();
+    let swapping = Environment::new(
+        Box::new(move |name| variables.get(name).cloned()),
+        Arc::new(SystemClock),
+        Arc::new(ThreadSleeper),
+        Box::new(|peer, identity| Box::new(Swaps(grant::http_transport(peer, identity)))),
+    );
+    let broken = dispatch(&fabric.inspect_arguments("replay"), &swapping)
+        .expect("a broken chain is a verdict, not an error");
+    assert_eq!(broken.code, 3, "{:?}", broken.lines);
+    assert!(
+        broken.lines[0].starts_with("DIFFERS ") && broken.lines[0].contains("does not chain"),
+        "{:?}",
+        broken.lines
+    );
+
+    let mut beyond = fabric.inspect_arguments("replay");
+    beyond.extend(["--from".to_string(), "99".to_string()]);
+    let error = dispatch(&beyond, &fabric.environment(OPERATOR))
+        .expect_err("nothing at the offset is refused, not reported as agreement");
+    assert!(
+        error.to_string().contains("Nothing was verified"),
+        "{error}"
     );
 }

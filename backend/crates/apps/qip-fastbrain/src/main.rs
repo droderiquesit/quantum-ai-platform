@@ -219,6 +219,11 @@ fn run() -> Result<()> {
     let platform_config = platform_config.with_hedge_candidates(
         qip_kernel::config::paper_hedge_candidates(&catalogue.universe),
     );
+    // Where idle cash may rest, if an operator declared a shelf (ADR 0159).
+    let platform_config = match load_yield_shelf()? {
+        Some(shelf) => platform_config.with_yield_shelf(shelf),
+        None => platform_config,
+    };
     let mut platform = Platform::new(
         platform_config,
         context,
@@ -454,6 +459,20 @@ fn run() -> Result<()> {
     )?;
     println!("  shutdown:         {}", flushed.describe());
     Ok(())
+}
+
+/// The operator's yield-shelf declaration, from the file `QIP_YIELD_SHELF_PATH`
+/// names (ADR 0159 decision 4). Unset is the answer that routes nothing: there
+/// is no default shelf. Set and unreadable or invalid stops the process — see
+/// `qip_kernel::yield_shelf::load_file`.
+fn load_yield_shelf() -> Result<Option<qip_kernel::yield_shelf::YieldShelfDeclaration>> {
+    let Some(path) = std::env::var(qip_kernel::yield_shelf::PATH_VARIABLE)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    qip_kernel::yield_shelf::load_file(&path).map(Some)
 }
 
 /// What this process will do, before it does any of it.

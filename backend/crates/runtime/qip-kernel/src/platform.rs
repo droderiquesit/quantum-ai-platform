@@ -73,6 +73,10 @@ use qip_ai::memory::{
 };
 use qip_ai::retrieval::SearchIndex;
 use qip_ai::serving::{ModelProvider, NoProvider};
+use qip_capital::bank::{IdleCash, RoutingOutcome, RoutingTerms, Shelf, route_idle_cash};
+use qip_capital::dated_ladder::{
+    DatedLadder, EntryKind, LadderEntry as DatedEntry, RedemptionNotice,
+};
 use qip_capital::ledger::{
     AttributedFill, Capability, DecidedBy, EligibilityDecision, EligibilityRecord,
     EligibilityRegistry, Entitlement, InvestmentDecision, InvestmentOutcome, InvestmentRequest,
@@ -566,6 +570,17 @@ pub struct Platform {
     /// log at assembly, so a restarted process still refuses what it
     /// withdrew; a caller cannot put a name here.
     withdrawn_venues: BTreeSet<String>,
+    /// The operator's declared shelf of places idle cash may rest (ADR 0159).
+    /// Empty — every process that names no declaration — routes nothing; there
+    /// is no default shelf. Set once at assembly from the configuration.
+    yield_shelf: Shelf,
+    /// The share and ladder horizons that arm routing. `None` is not armed and
+    /// the router is not called, whatever the shelf holds.
+    routing_terms: Option<RoutingTerms>,
+    /// Declared redemption notices by id. Moved only by
+    /// [`Self::declare_redemption_notice`], which journals before adopting, and
+    /// resumed from the log at assembly.
+    redemption_notices: BTreeMap<String, RedemptionNotice>,
     /// Blueprint §34.4: where each venue stands on the promotion ladder.
     ///
     /// Empty today and honestly so — `PlatformConfig` carries no venue
@@ -1532,6 +1547,29 @@ fn require_countersignature_rationale(act: &str, rationale: &str) -> Result<()> 
 /// each replay passes over the others' records rather than refusing them as
 /// undecodable.
 const REGISTRATION_ORIGIN: &str = "kernel/registration";
+
+/// The producer on every redemption-notice record (ADR 0159 decision 9), told
+/// apart from the other records that share [`Topic::ComplianceEvaluated`].
+const REDEMPTION_NOTICE_ORIGIN: &str = "kernel/redemption-notice";
+
+/// The producer on every idle-cash routing record.
+const YIELD_ROUTING_ORIGIN: &str = "kernel/yield-routing";
+
+/// How recently an operator must have authenticated to declare a redemption
+/// notice: the window `AutonomyController::request_change` takes, named once
+/// with the other credential windows.
+const REDEMPTION_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
+
+/// The most redemption notices the platform holds at once. A resource bound on
+/// the working set (a notice supersedes by id, so the count is the number of
+/// distinct claims), not a financial limit: past it a declaration is refused,
+/// naming the bound, rather than evicting an older claim the router still
+/// reads.
+const MAXIMUM_REDEMPTION_NOTICES: usize = 256;
+
+/// The id prefix every yield placement's reservation hold carries, and so the
+/// way the kernel tells a parked hold from a proposal's.
+const YIELD_HOLD_PREFIX: &str = "yield:";
 
 /// The producer every product-offering record in the event log carries, and
 /// the one [`Platform::replay_products`] selects on. Distinct from the
@@ -4004,6 +4042,57 @@ impl EventBody for RegistrationEntry {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// An operator's declaration that a claim is expected to fall due (ADR 0159
+/// decision 9). It records an expectation and moves nothing: the platform
+/// never processes a withdrawal (ADR 0021). Journalled before it is adopted,
+/// so [`Platform::replay_redemption_notices`] rebuilds the held set from the
+/// log alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedemptionNoticeEntry {
+    pub notice: RedemptionNotice,
+    /// The notice this one replaced, when the id was already declared. Kept so
+    /// a supersession is visible in the record and not inferred from two
+    /// entries sharing an id.
+    #[serde(default)]
+    pub supersedes: Option<RedemptionNotice>,
+}
+
+impl EventBody for RedemptionNoticeEntry {
+    /// A decision about what the book is told it owes, in the Decide group the
+    /// log never evicts; told apart from its neighbours by
+    /// [`REDEMPTION_NOTICE_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// One pass of the idle-cash router, as a labelled paper record (ADR 0159
+/// decision 7). A placement is a hold in the reservation ledger and an entry
+/// on a ladder: not a venue order and not a custodian call.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct YieldRoutingEntry {
+    pub cycle: u64,
+    /// The opportunity capital the cycle did not release: the router's whole
+    /// input.
+    pub unreleased: Decimal,
+    /// The share of it the operator allowed to be routed.
+    pub max_share: Decimal,
+    pub outcome: RoutingOutcome,
+    /// Always the same sentence, so a reader of the log cannot take the record
+    /// for an instruction to a custodian.
+    pub label: String,
+}
+
+impl EventBody for YieldRoutingEntry {
+    /// A decision about where unreleased capital rests, in the Decide group
+    /// the log never evicts; told apart by [`YIELD_ROUTING_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The label every [`YieldRoutingEntry`] carries.
+pub const YIELD_ROUTING_LABEL: &str =
+    "paper hold in the reservation ledger; not an order and not a custodian call";
+
 /// One operator's signature on a promotion to a capital-holding rung.
 ///
 /// Journalled whether it is the first signature, the countersignature, or a
@@ -4840,6 +4929,17 @@ impl Platform {
         // here, so the chain continues from the last record on disk instead of
         // beginning again at sequence one.
         let event_log = config.event_log.open()?;
+        // The yield shelf, validated here and not trusted from the loader: a
+        // configuration assembled without it is held to the same rule, and one
+        // that would not load stops assembly. Absent is an empty shelf and
+        // routing not armed — there is no default shelf (ADR 0159 decision 4).
+        let declared_shelf = match &config.yield_shelf {
+            Some(declaration) => declaration.validate()?,
+            None => crate::yield_shelf::DeclaredShelf {
+                shelf: Shelf::empty(),
+                terms: None,
+            },
+        };
         // The last sequence this process did not write.
         //
         // Taken here, between opening the log and appending anything to it,
@@ -5342,6 +5442,9 @@ impl Platform {
             fill_calibration: qip_twin::calibration::FillCalibration::default(),
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
+            yield_shelf: declared_shelf.shelf,
+            routing_terms: declared_shelf.terms,
+            redemption_notices: Self::resume_redemption_notices(&event_log)?,
             venue_ladder: qip_lifecycle::venue_ladder::VenueLadder::new(),
             pending_reinstatements: BTreeMap::new(),
             sizing_caps_armed: BTreeSet::new(),
@@ -6283,7 +6386,7 @@ impl Platform {
     /// The priors are the open drafts REASON has formed and LEARN has not yet
     /// resolved — `pending_episodes`, keyed by the instrument each claim is
     /// about — gated on the reasoning engine's own
-    /// `BeliefState::last_updated`, which is the same fact
+    /// `BeliefClock::last_updated`, which is the same fact
     /// [`Self::central_degradation`] reads for the centre's §6.2 row 4. The
     /// two must agree: a centre reading row 4 unavailable while shipping a
     /// cell a row 4 that is fresh would be two claims about one capability,
@@ -6303,7 +6406,7 @@ impl Platform {
     pub fn issue_belief_priors(&mut self, now: Timestamp) -> Result<BeliefIssue> {
         let issue = BeliefIssue::derive(
             self.pending_episodes.iter(),
-            self.reasoning.beliefs().last_updated(),
+            self.reasoning.belief_clock().last_updated(),
             now,
         )?;
         let correlation_id = self
@@ -8665,6 +8768,237 @@ impl Platform {
             .map(|(approval, _)| approval.at)
     }
 
+    // --- idle cash and redemption notices (ADR 0159) -------------------------
+
+    /// The part of the reservation ledger's holds that is parked in a yield
+    /// instrument at `now`. A lapsed hold is not parked: it has already
+    /// returned to the free balance.
+    fn yield_parked(&self, now: Timestamp) -> Decimal {
+        self.reservations
+            .holds()
+            .filter(|(id, hold)| id.starts_with(YIELD_HOLD_PREFIX) && !hold.is_expired(now))
+            .fold(Decimal::ZERO, |sum, (_, hold)| sum + hold.amount)
+    }
+
+    /// The dated ladder as a view, rebuilt from the facts that date it: the
+    /// active yield holds, each at the instant it lapses, and every declared
+    /// redemption notice as an outflow (ADR 0159 decision 6). Never stored, so
+    /// a replay builds the same ladder from the same facts.
+    fn yield_ladder(&self, terms: &RoutingTerms, now: Timestamp) -> Result<DatedLadder> {
+        let holds = self
+            .reservations
+            .holds()
+            .filter(|(id, hold)| id.starts_with(YIELD_HOLD_PREFIX) && !hold.is_expired(now))
+            .map(|(id, hold)| DatedEntry {
+                id: id.to_string(),
+                kind: EntryKind::Balance,
+                amount: hold.amount,
+                at: hold.expires_at,
+            });
+        let notices = self
+            .redemption_notices
+            .values()
+            .map(RedemptionNotice::as_outflow);
+        DatedLadder::rebuilt(now, terms.horizons(), holds.chain(notices))
+    }
+
+    /// Route the capital this cycle declined to release into the declared
+    /// shelf, as paper holds. Returns the DECIDE sentence, when there is one to
+    /// say, and the problems met.
+    ///
+    /// Nothing happens unless a shelf with instruments is declared **and**
+    /// routing is armed **and** this cycle built a budget: the router's input
+    /// is derived from that budget's waterfall and nothing else, so it can
+    /// move only what the confidence governor held back. `released` is never
+    /// read here.
+    fn route_idle_capital(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        let Some(terms) = self.routing_terms.clone() else {
+            return (None, Vec::new());
+        };
+        if self.yield_shelf.is_empty() {
+            return (None, Vec::new());
+        }
+        let Some(budget) = self
+            .governor
+            .last()
+            .filter(|budget| budget.at == now)
+            .cloned()
+        else {
+            return (None, Vec::new());
+        };
+        let idle = match IdleCash::from_waterfall(&budget.survival, budget.released) {
+            Ok(idle) => idle,
+            Err(error) => {
+                return (
+                    None,
+                    vec![format!("idle cash was not routed: {}", error.message())],
+                );
+            }
+        };
+        if !idle.amount().is_positive() {
+            return (None, Vec::new());
+        }
+        let mut ladder = match self.yield_ladder(&terms, now) {
+            Ok(ladder) => ladder,
+            Err(error) => {
+                return (
+                    None,
+                    vec![format!(
+                        "idle cash was not routed because the dated ladder could not be \
+                         built: {}",
+                        error.message()
+                    )],
+                );
+            }
+        };
+        let outcome = match route_idle_cash(
+            idle,
+            &self.yield_shelf,
+            &terms,
+            &mut self.reservations,
+            &mut ladder,
+            now,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return (
+                    None,
+                    vec![format!("idle cash was not routed: {}", error.message())],
+                );
+            }
+        };
+        if outcome.placements.is_empty() && outcome.refused.is_empty() {
+            return (None, Vec::new());
+        }
+        let routed = outcome
+            .placements
+            .iter()
+            .fold(Decimal::ZERO, |sum, placement| sum + placement.amount);
+        let line = format!(
+            "{} placement(s) of idle cash, {routed} held as paper in the reservation ledger, \
+             {} instrument(s) refused",
+            outcome.placements.len(),
+            outcome.refused.len()
+        );
+        let mut problems = Vec::new();
+        let entry = YieldRoutingEntry {
+            cycle: self.cycle,
+            unreleased: idle.amount(),
+            max_share: terms.max_share(),
+            outcome,
+            label: YIELD_ROUTING_LABEL.to_string(),
+        };
+        if let Err(error) = self.journal_record(entry, YIELD_ROUTING_ORIGIN, now) {
+            problems.push(format!(
+                "idle cash was held and the routing was not journalled: {}",
+                error.message()
+            ));
+        }
+        (Some(line), problems)
+    }
+
+    /// Declare that a claim is expected to fall due (ADR 0159 decision 9).
+    ///
+    /// The declaring operator must have authenticated within
+    /// [`REDEMPTION_CREDENTIAL_AGE`], the way an autonomy change requires: a
+    /// notice is the only evidence the claim exists, and it is never an
+    /// agent's, a model's or a configuration's to make. A later declaration
+    /// under the same id supersedes the earlier one and says so in the record;
+    /// nothing is inferred or aged out. Journalled before it is adopted.
+    ///
+    /// A notice moves nothing and is not an instruction. Its one consumer is
+    /// the idle-cash router, which refuses to park cash where it cannot be had
+    /// back before the earliest declared outflow; it does not feed the
+    /// survival reserve (decision 11).
+    pub fn declare_redemption_notice(
+        &mut self,
+        id: &str,
+        amount: Decimal,
+        effective: Timestamp,
+        operator: &OperatorIdentity,
+        now: Timestamp,
+    ) -> Result<RedemptionNotice> {
+        if !operator.is_fresh(now, REDEMPTION_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to declare a \
+                 redemption notice",
+                operator.subject(),
+                REDEMPTION_CREDENTIAL_AGE
+            )));
+        }
+        let notice = RedemptionNotice::new(id, amount, effective, operator.subject(), now)?;
+        let supersedes = self.redemption_notices.get(id).cloned();
+        if supersedes.is_none() && self.redemption_notices.len() >= MAXIMUM_REDEMPTION_NOTICES {
+            return Err(Error::denied(format!(
+                "{MAXIMUM_REDEMPTION_NOTICES} redemption notices are already held; declare \
+                 under an existing id to supersede one, because a claim is not evicted to \
+                 make room for another"
+            )));
+        }
+        self.journal_record(
+            RedemptionNoticeEntry {
+                notice: notice.clone(),
+                supersedes,
+            },
+            REDEMPTION_NOTICE_ORIGIN,
+            now,
+        )?;
+        self.redemption_notices
+            .insert(notice.id.clone(), notice.clone());
+        Ok(notice)
+    }
+
+    /// The declared redemption notices, by id.
+    pub fn redemption_notices(&self) -> &BTreeMap<String, RedemptionNotice> {
+        &self.redemption_notices
+    }
+
+    /// Rebuild the held notices from the event log alone: what the log says
+    /// stands, for a caller to compare with [`Self::redemption_notices`].
+    pub fn replay_redemption_notices(&self) -> Result<BTreeMap<String, RedemptionNotice>> {
+        Self::resume_redemption_notices(&self.event_log)
+    }
+
+    fn resume_redemption_notices(log: &EventLog) -> Result<BTreeMap<String, RedemptionNotice>> {
+        let mut notices = BTreeMap::new();
+        for event in log.events() {
+            if event.topic == RedemptionNoticeEntry::TOPIC
+                && event.lineage.producer == REDEMPTION_NOTICE_ORIGIN
+            {
+                let entry = StreamEnvelope::from_frame(event)
+                    .and_then(|envelope| envelope.decode::<RedemptionNoticeEntry>())?
+                    .body;
+                // Validated again: a record that decodes is not thereby a
+                // notice, and the router reads these.
+                let notice = entry.notice.validated()?;
+                notices.insert(notice.id.clone(), notice);
+            }
+        }
+        Ok(notices)
+    }
+
+    /// Every idle-cash routing pass the log holds, in order.
+    pub fn replay_yield_routing(&self) -> Result<Vec<YieldRoutingEntry>> {
+        let mut entries = Vec::new();
+        for event in self.event_log.events() {
+            if event.topic == YieldRoutingEntry::TOPIC
+                && event.lineage.producer == YIELD_ROUTING_ORIGIN
+            {
+                entries.push(
+                    StreamEnvelope::from_frame(event)
+                        .and_then(|envelope| envelope.decode::<YieldRoutingEntry>())?
+                        .body,
+                );
+            }
+        }
+        Ok(entries)
+    }
+
+    /// The part of the reservation ledger parked in yield instruments now.
+    pub fn parked_capital(&self, now: Timestamp) -> Decimal {
+        self.yield_parked(now)
+    }
+
     /// Journal a registration and adopt it — in that order, and only after
     /// the registry has been shown to accept it.
     ///
@@ -10084,6 +10418,7 @@ impl Platform {
         crate::survival::LedgerFigures {
             equity: self.capital.equity(),
             held: self.reservations.reserved_total(),
+            parked: self.yield_parked(now),
             obligations: self.commitments.unfunded_total(now)?,
             deployable,
             gross: RiskState::from_figures(&self.aggregates).gross_exposure,
@@ -14657,7 +14992,7 @@ impl Platform {
     /// `CausalGraph::last_updated` against [`CAUSAL_GRAPH_HORIZON`]: a graph
     /// that has never absorbed a claim reads unavailable and one whose
     /// newest claim is older than a quarter reads stale. Row 4, the belief
-    /// state, from the reasoning engine's `BeliefState::last_updated`
+    /// state, from the reasoning engine's `BeliefClock::last_updated`
     /// against [`BELIEF_HORIZON`]: before the first belief is formed in a
     /// process it reads unavailable, and one formed more than a session ago
     /// reads stale. Each narrows by its own multiplier, and every reading
@@ -14708,8 +15043,11 @@ impl Platform {
             now,
         )?;
         state.observe(Capability::CausalGraph, causal.freshness());
-        let belief =
-            BeliefFreshness::assess(self.reasoning.beliefs().last_updated(), BELIEF_HORIZON, now)?;
+        let belief = BeliefFreshness::assess(
+            self.reasoning.belief_clock().last_updated(),
+            BELIEF_HORIZON,
+            now,
+        )?;
         state.observe(Capability::BeliefState, belief.freshness());
         Ok(state)
     }
@@ -16454,7 +16792,10 @@ impl Platform {
                     // in, rather than keeping a release no proposal holds.
                     self.governor.release_nothing(
                         RiskState::from_figures(&self.aggregates).gross_exposure,
-                        self.reservations.reserved_total(),
+                        self.reservations
+                            .reserved_total()
+                            .checked_sub(self.yield_parked(now))
+                            .unwrap_or(Decimal::ZERO),
                     );
                     self.constructor.nothing_to_do(
                         ProposalId::from_string(format!("prop-{}", self.cycle)),
@@ -16491,8 +16832,18 @@ impl Platform {
                 .iter()
                 .map(|forecast| forecast.interval().lower())
                 .fold(Decimal::ZERO, |sum, lower| sum + lower);
+            // How many of those lanes the contract will take as a `Forecast`:
+            // one with a measured uncertainty split and a tail that is its
+            // coverage's own (ADR 0159 decision 21). A lane with one reading,
+            // or a band cut off at zero, cannot state them and is not
+            // converted rather than converted with invented figures.
+            let stated = forecasts
+                .iter()
+                .filter(|forecast| forecast.to_forecast().is_ok())
+                .count();
             format!(
-                "; {} funding lane(s) forecast, at least {confident} needed within {:.0} day(s)",
+                "; {} funding lane(s) forecast, at least {confident} needed within {:.0} day(s), \
+                 {stated} of them stated as contract forecast(s) with a measured uncertainty split",
                 forecasts.len(),
                 CAPITAL_HORIZON.as_days_f64()
             )
@@ -16542,7 +16893,23 @@ impl Platform {
         // withheld. A plan and a sentence; see `crate::hedge`.
         let brain = self.run_hedge_brain(now);
         detail.push_str(&format!("; {}", brain.summary()));
+        // Where the capital this cycle declined to release may rest, once, at
+        // the end of DECIDE and from the budget just built (ADR 0159 decision
+        // 7). Skipped when this cycle's construction was refused: a budget
+        // that sized nothing released nothing, and routing the remainder of a
+        // release no proposal took would read a refusal as spare cash.
+        let (routing_line, routing_problems) = if refusal.is_none() {
+            self.route_idle_capital(now)
+        } else {
+            (None, Vec::new())
+        };
+        if let Some(line) = routing_line {
+            detail.push_str(&format!("; {line}"));
+        }
         let mut outcome = StageOutcome::ran(Stage::Decide, legs, detail);
+        for problem in routing_problems {
+            outcome = outcome.with_problem(problem);
+        }
         // R12-GOV-6121: the five versions this DECIDE ran under, on the
         // chain beside its decisions (`crate::decision_record`).
         //
@@ -31949,5 +32316,96 @@ mod second_order_exposure_tests {
             journal.edges_considered, 1,
             "and the record names what the clean verdict rests on"
         );
+    }
+}
+
+#[cfg(test)]
+mod idle_routing_tests {
+    //! The one branch of the idle-cash router a whole cycle cannot reach: a
+    //! DECIDE that built no budget while the governor still holds an earlier
+    //! cycle's. A real cycle over a tape that forms a thesis forms it again
+    //! the next time, so `tests/capital.rs` cannot stage the quiet cycle, and
+    //! the commonest cycle in production is exactly that one.
+
+    use super::*;
+    use qip_core::dec;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let declaration = crate::yield_shelf::load(
+            r#"{"schema": 1,
+                "instruments": [
+                    {"id": "overnight", "class": "cash", "realisation_hours": 6,
+                     "capacity": "10000000", "yield_rate": "0.03"}
+                ],
+                "routing": {"max_share": "0.5", "ladder_horizons_hours": [24]}}"#,
+        )
+        .expect("a valid declaration");
+        let config = PlatformConfig::default().with_yield_shelf(declaration);
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        // A poor calibration, so the governor holds half of what it could release.
+        platform
+            .governor
+            .signals_mut()
+            .observe_calibration(0.28, 50, []);
+        platform
+    }
+
+    /// Size a budget at `at` exactly as `construct_from` does, with no thesis.
+    fn sized_at(platform: &mut Platform, at: Timestamp) -> crate::survival::SizingBudget {
+        let free = platform.deployable_capital(at).expect("capital is free");
+        let figures = platform.survival_figures(free, at).expect("figures read");
+        platform
+            .governor
+            .size(figures, None, STRESS_LOSS_TOLERANCE, &[], at)
+            .expect("the waterfall releases")
+    }
+
+    /// Mutation: drop the `budget.at == now` filter in `route_idle_capital`
+    /// and the second assertion block fails, because the quiet cycle routes
+    /// from the earlier cycle's budget.
+    #[test]
+    fn a_cycle_that_built_no_budget_routes_nothing_from_an_earlier_cycles() {
+        let mut platform = platform();
+        let budget = sized_at(&mut platform, start());
+        let unreleased = budget.survival.opportunity_capital - budget.released;
+        assert_eq!(unreleased, budget.released, "premise: half was held back");
+        assert!(unreleased.is_positive(), "premise: there is idle cash");
+
+        // The cycle that sized it routes.
+        let (line, problems) = platform.route_idle_capital(start());
+        assert!(line.is_some(), "premise: the sizing cycle routes");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(platform.parked_capital(start()), unreleased * dec!("0.5"));
+
+        // A later cycle that sized nothing holds the same budget and routes
+        // nothing: its holds have lapsed and the old budget is not its own.
+        let later = start().saturating_add(Duration::from_hours(25));
+        assert_eq!(
+            platform.parked_capital(later),
+            Decimal::ZERO,
+            "premise: lapsed"
+        );
+        assert_eq!(
+            platform.governor.last().map(|held| held.at),
+            Some(start()),
+            "premise: the governor still holds the first cycle's budget"
+        );
+        let (line, problems) = platform.route_idle_capital(later);
+        assert_eq!((line, problems), (None, Vec::new()));
+        assert_eq!(platform.parked_capital(later), Decimal::ZERO);
     }
 }

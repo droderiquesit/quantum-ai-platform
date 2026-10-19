@@ -152,6 +152,17 @@ impl ReservationLedger {
         self.reservations.get(id)
     }
 
+    /// Every hold still recorded, lapsed or not, in id order.
+    ///
+    /// For a reader that builds a view over the holds (the dated ladder dates
+    /// a yield placement at the instant its hold lapses). It cannot change a
+    /// hold; [`Self::expire_due`] is the only sweep.
+    pub fn holds(&self) -> impl Iterator<Item = (&str, &Reservation)> {
+        self.reservations
+            .iter()
+            .map(|(id, reservation)| (id.as_str(), reservation))
+    }
+
     /// Return every lapsed hold to the free balance.
     ///
     /// Called from every entry point that takes a timestamp, so the caller

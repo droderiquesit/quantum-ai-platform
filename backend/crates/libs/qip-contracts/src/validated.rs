@@ -19,7 +19,9 @@
 //! * **Unknown fields are refused** (`deny_unknown_fields` on every record),
 //!   so a producer one schema ahead is told so rather than silently truncated.
 //! * **Every record carries `schema_version`** and is refused at any version
-//!   other than the one this build reads; a migration is explicit or absent.
+//!   other than the one this build writes, unless its contract names an older
+//!   version it still decodes through [`Contract::reads`]; a migration is
+//!   explicit or absent.
 //!
 //! The field records have public fields on purpose: they are the builder.
 //! Named fields rather than long positional constructors, because several
@@ -42,8 +44,16 @@ pub const MAX_BP: u32 = 10_000;
 pub trait Contract {
     /// The contract's name as the blueprint gives it, used in every refusal.
     const NAME: &'static str;
-    /// The only `schema_version` this build reads or writes.
+    /// The `schema_version` this build writes.
     const SCHEMA_VERSION: u32;
+
+    /// Whether this build reads a record claiming `version`. The default is the
+    /// one version it writes, and a contract widens it only by naming the older
+    /// version it still decodes — an explicit migration, checked by
+    /// [`Self::check`], never a silent acceptance of whatever arrives.
+    fn reads(version: u32) -> bool {
+        version == Self::SCHEMA_VERSION
+    }
 
     /// The version the record claims.
     fn schema_version(&self) -> u32;
@@ -62,10 +72,10 @@ impl<T: Contract> Validated<T> {
     /// Admit `fields`, refusing a foreign schema version first and then
     /// whatever [`Contract::check`] refuses.
     pub fn new(fields: T) -> Result<Self> {
-        if fields.schema_version() != T::SCHEMA_VERSION {
+        if !T::reads(fields.schema_version()) {
             return Err(Error::schema(format!(
-                "{} schema version {} is not {}; migrate the record explicitly rather than \
-                 reading it as this version",
+                "{} schema version {} is not one this build reads (it writes {}); migrate the \
+                 record explicitly rather than reading it as this version",
                 T::NAME,
                 fields.schema_version(),
                 T::SCHEMA_VERSION

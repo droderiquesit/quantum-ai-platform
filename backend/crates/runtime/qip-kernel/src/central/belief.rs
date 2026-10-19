@@ -9,7 +9,7 @@
 //! holding when LEARN began moving resolved theses into memory, and
 //! [`super::episodic`] became slot 4's producer. The belief third held on a
 //! narrower and correct argument, which that audit stated as a requirement
-//! rather than as an impossibility: `BeliefState` records *when* a belief was
+//! rather than as an impossibility: `BeliefClock` records *when* a belief was
 //! last formed and how many have been, never the beliefs themselves, so
 //! "what would have to exist is a belief the centre holds **per subject a
 //! cell trades**, retained past the cycle that formed it."

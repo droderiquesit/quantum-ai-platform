@@ -1039,7 +1039,7 @@ fn an_implemented_cloud_storage_target_is_still_refused_when_the_deployment_conf
     assert!(StorageTarget::CloudStorage.is_implemented());
 
     let provider = StorageProvider::new(StorageTarget::CloudStorage, std::env::temp_dir());
-    let refused = provider.blobs("archive");
+    let refused = provider.blobs(qip_storage::classes::MODEL_ARTIFACTS_NAMESPACE);
 
     let message = match refused {
         Err(Error::Unavailable(message)) => message,
@@ -1070,7 +1070,7 @@ fn the_cloud_storage_key_value_refusal_names_the_blob_store_rather_than_a_missin
 fn the_bigquery_blob_refusal_names_the_warehouse_rather_than_a_missing_adapter() {
     let provider = StorageProvider::new(StorageTarget::BigQuery, std::env::temp_dir());
 
-    let message = match provider.blobs("anything") {
+    let message = match provider.blobs(qip_storage::classes::MODEL_ARTIFACTS_NAMESPACE) {
         Err(error) => error.to_string(),
         Ok(_) => panic!("a warehouse holds rows, not objects"),
     };

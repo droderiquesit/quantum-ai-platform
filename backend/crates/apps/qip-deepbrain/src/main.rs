@@ -235,6 +235,11 @@ fn run() -> Result<()> {
     let platform_config = platform_config.with_hedge_candidates(
         qip_kernel::config::paper_hedge_candidates(&catalogue.universe),
     );
+    // Where idle cash may rest, if an operator declared a shelf (ADR 0159).
+    let platform_config = match load_yield_shelf()? {
+        Some(shelf) => platform_config.with_yield_shelf(shelf),
+        None => platform_config,
+    };
     // The language model the organisation narrates through (ADR 0037): the
     // hosted adapter first when the configuration names one *and* the
     // preconditions in `language.rs` are met — a provider pinned, its terms
@@ -1307,6 +1312,20 @@ fn with_compute_settings(
 ) -> Result<(PlatformConfig, ComputeSettings)> {
     let compute = ComputeSettings::from_lookup(lookup)?;
     Ok((compute.apply(base), compute))
+}
+
+/// The operator's yield-shelf declaration, from the file `QIP_YIELD_SHELF_PATH`
+/// names (ADR 0159 decision 4). Unset is the answer that routes nothing: there
+/// is no default shelf. Set and unreadable or invalid stops the process — see
+/// `qip_kernel::yield_shelf::load_file`.
+fn load_yield_shelf() -> Result<Option<qip_kernel::yield_shelf::YieldShelfDeclaration>> {
+    let Some(path) = std::env::var(qip_kernel::yield_shelf::PATH_VARIABLE)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    qip_kernel::yield_shelf::load_file(&path).map(Some)
 }
 
 /// What this process will do, before it does any of it.

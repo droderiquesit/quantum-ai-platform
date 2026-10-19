@@ -140,9 +140,12 @@ struct DataPlane(Arc<Service>);
 
 impl Handler for DataPlane {
     fn handle(&self, request: &Request) -> Response {
-        let handled = self
-            .0
-            .handle(request.header(auth::HEADER), &request.path, &request.body);
+        let handled = self.0.handle(
+            request.header(auth::HEADER),
+            None,
+            &request.path,
+            &request.body,
+        );
         Response::new(handled.status, "application/json", handled.body)
     }
 }
