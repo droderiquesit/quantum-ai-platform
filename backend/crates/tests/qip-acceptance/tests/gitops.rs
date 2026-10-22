@@ -2791,9 +2791,8 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
                         // The slot name is not repeated: the gate reads it as a
                         // secret logged in clear (ADR 0117), and `{file_name}`
                         // with `{describe}` already names the one mount this is.
-                        "{describe} projects `{file_name}` with mode {:?} rather than 256 \
-                         (0400): readable by the process and nobody else",
-                        text_at(item, &["mode"])
+                        "{describe} projects `{file_name}` with a mode other than 256 \
+                         (0400): readable by the process and nobody else"
                     );
                 }
                 secrets_checked += 1;
