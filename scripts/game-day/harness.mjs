@@ -108,7 +108,31 @@ export function checkScenario(scenario) {
   for (const field of ["hold_ms", "timeout_ms"]) {
     if (!Number.isFinite(scenario?.[field]) || scenario[field] <= 0) problems.push(`${field} must be a positive number`);
   }
+  for (const [name, ceiling] of Object.entries(scenario?.memory_ceiling_kib ?? {})) {
+    if (!names.has(name)) problems.push(`memory_ceiling_kib names ${name}, which is not a declared process`);
+    if (!Number.isFinite(ceiling) || ceiling <= 0) problems.push(`memory_ceiling_kib.${name} must be a positive number of KiB`);
+  }
   return problems;
+}
+
+/**
+ * The peak resident set of a process, in KiB, from the kernel's own high
+ * water mark (`VmHWM` in `/proc/<pid>/status`). The kernel keeps the peak, so
+ * one read at the end of a drill sees a spike that a poll between two samples
+ * would have missed. Null when the process is gone or the platform has no
+ * such file: an unreadable peak is reported as unreadable, never as zero,
+ * because a zero would read as a broker that used no memory.
+ */
+export function readPeakRssKib(pid, procRoot = "/proc") {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  let status;
+  try {
+    status = readFileSync(join(procRoot, String(pid), "status"), "utf8");
+  } catch {
+    return null;
+  }
+  const match = /^VmHWM:\s+(\d+)\s+kB$/m.exec(status);
+  return match ? Number(match[1]) : null;
 }
 
 /** Read and validate a scenario file. Throws with every problem named. */
@@ -262,7 +286,7 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
   const context = { work, repo, ports };
   const checks = [];
   const notes = [];
-  const measurements = { detected_ms: null, outage_ms: null, rto_ms: null, rpo_records: null };
+  const measurements = { detected_ms: null, outage_ms: null, rto_ms: null, rpo_records: null, peak_rss_kib: {} };
   const running = new Map();
   const binaries = {};
   const record = (phase, name, outcome) => {
@@ -289,7 +313,12 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
     }
     return true;
   };
-  const verdict = (v) => ({
+  // The peak of each process as it stands now. A process killed and restarted
+  // reports the restarted instance's peak: the first one's died with it.
+  const samplePeaks = () => {
+    for (const [name, handle] of running) measurements.peak_rss_kib[name] = readPeakRssKib(handle.pid);
+  };
+  const verdict = (v) => (samplePeaks(), {
     schema: RESULT_SCHEMA,
     scenario: scenario.name,
     drill: scenario.drill,
@@ -436,6 +465,14 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
       }
     }
 
+    samplePeaks();
+    for (const [name, ceiling] of Object.entries(scenario.memory_ceiling_kib ?? {})) {
+      const peak = measurements.peak_rss_kib[name];
+      record("memory", `${name} stayed under ${ceiling} KiB resident`, peak === null || peak === undefined
+        ? { passed: false, detail: "its peak resident size could not be read, so the ceiling is unproven" }
+        : { passed: peak <= ceiling, detail: `peak ${peak} KiB` });
+    }
+
     const objectivesMet =
       measurements.rto_ms <= scenario.objectives.rto_ms &&
       (!scenario.rpo || (measurements.rpo_records !== null && measurements.rpo_records <= scenario.objectives.rpo_records));
@@ -455,7 +492,7 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
 }
 
 /** Start a process with exactly `env` (nothing inherited but PATH), logging to a file. */
-function defaultLaunch(binary, args, env, logPath) {
+export function defaultLaunch(binary, args, env, logPath) {
   if (!existsSync(binary)) throw new Error(`${binary} does not exist; build it first (cargo build -p ${basename(binary)})`);
   const child = spawn(binary, args, { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const chunks = [];
@@ -466,6 +503,7 @@ function defaultLaunch(binary, args, env, logPath) {
     r();
   }));
   return {
+    pid: child.pid,
     signal: (name) => {
       try {
         child.kill(name);
@@ -489,6 +527,10 @@ export function validateResult(result) {
   const m = result?.measurements ?? {};
   for (const field of ["detected_ms", "outage_ms", "rto_ms", "rpo_records"]) {
     if (!(field in m) || (m[field] !== null && !(Number.isFinite(m[field]) && m[field] >= 0))) problems.push(`measurements.${field} must be null or a non-negative number`);
+  }
+  // Optional: results recorded before the sampler existed carry none.
+  for (const [name, peak] of Object.entries(m.peak_rss_kib ?? {})) {
+    if (peak !== null && !(Number.isFinite(peak) && peak >= 0)) problems.push(`measurements.peak_rss_kib.${name} must be null or a non-negative number`);
   }
   if (!Number.isFinite(result?.objectives?.rto_ms)) problems.push("objectives.rto_ms must be a number");
   if (!Array.isArray(result?.checks)) problems.push("checks must be a list");

@@ -3436,14 +3436,15 @@
   {
     "id": "R12-RES-10153",
     "status": "PARTIAL",
-    "current": "Stream quotas and lag limits refuse a producer while a checkpointed group trails its lag limit (services/qip-streaming/tests/event_fabric_quota.rs:159) and sink failures are isolated (tests/qip-acceptance/tests/event_fabric_scaling.rs:596). The game-day harness has four scenarios (broker-loss, ledgerd-loss, region-isolation, stale-policy; scripts/game-day/scenarios/) and none freezes a sink or measures broker memory.",
+    "current": "Stream quotas and lag limits refuse a producer while a checkpointed group trails its lag limit (services/qip-streaming/tests/event_fabric_quota.rs:159) and sink failures are isolated (tests/qip-acceptance/tests/event_fabric_scaling.rs:596). The game-day harness has four scenarios (broker-loss, ledgerd-loss, region-isolation, stale-policy; scripts/game-day/scenarios/) and now measures memory: each result records every process's peak resident set (VmHWM from /proc/<pid>/status) and a scenario may state memory_ceiling_kib per process, a breach or an unreadable peak failing the drill. No scenario freezes a sink yet.",
     "evidence": [
       "services/qip-streaming/tests/event_fabric_quota.rs::a_refuse_producer_stream_stops_accepting_while_a_checkpointed_group_trails_its_lag_limit",
       "tests/qip-acceptance/tests/event_fabric_scaling.rs::fabric_097_each_sink_failure_and_backpressure_isolated_from_others",
-      "scripts/game-day/harness.mjs",
+      "scripts/game-day/harness.mjs readPeakRssKib, memory_ceiling_kib",
+      "scripts/game-day/harness.test.mjs (peak resident size tests)",
       "docs/ops/game-days/README.md"
     ],
-    "gap": "Three things are missing and the first two are code: the harness has no memory measurement (no /proc/<pid>/status sampling), no process that drives producers past a lag limit (there is no standalone producer binary; the cell produces outcomes only when it fires orders, which a local drill cannot make it do — see R12-RES-10154), and a scenario file. The sink freeze itself is available as the existing 'pause' fault (SIGSTOP on qip-ledgerd).",
+    "gap": "2026-10-24: the RSS sampler is built and tested (harness.test.mjs). Two things remain, both needing more than the harness: a process that drives producers past a stream's lag limit (no standalone producer binary exists; the cell produces outcomes only when it fires orders, see R12-RES-10154), and a frozen-sink.json scenario using the existing 'pause' fault (SIGSTOP on qip-ledgerd) with a memory_ceiling_kib on qip-fabricd, run once and its result committed under docs/ops/game-days/results. Until the drill has run, the row is code without a recorded drill.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3453,10 +3454,10 @@
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "game-day",
+    "verification": "node --test scripts/game-day/harness.test.mjs; then the frozen-sink game-day",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L17 from harness.mjs's fault kinds and the scenarios directory; nothing in the code changed."
+    "notes": "Gap corrected 2026-10-18 by lane L17 from harness.mjs's fault kinds and the scenarios directory; nothing in the code changed. 2026-10-24 N2-FABRIC-DATA: split step (1) done. Mutations that fired, each restored byte for byte: VmHWM read as VmRSS (the /proc test fails), ceiling comparison inverted (the ceiling test fails), an unreadable peak counted as passed (the fail-closed test fails). Kept PARTIAL."
   },
   {
     "id": "R12-RES-10154",
