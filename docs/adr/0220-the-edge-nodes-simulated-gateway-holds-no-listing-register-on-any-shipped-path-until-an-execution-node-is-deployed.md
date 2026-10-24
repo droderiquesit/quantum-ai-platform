@@ -1,10 +1,16 @@
 # ADR 0220: The edge node's simulated gateway holds no listing register on any shipped path until an execution node is deployed
 
-- **Status**: **Proposed**, 2026-10-24, by lane L7-5107 of the wave580
-  blueprint drive. Nothing here is accepted on the owner's behalf. It records
-  the default the code already has and why this lane did not change it; the
-  owner may accept it, or reject it in favour of the opt-in register
-  described under "What would make this wrong".
+- **Status**: **Accepted**, 2026-10-24, on delegated authority. The wave580
+  parent session relayed on 2026-10-24 that the owner has delegated every
+  remaining decision ("Make all decisions for me, I want the end result to
+  have a full system", recorded by the parent in
+  `docs/blueprint/owner-decisions-2026-10-24.md`), and assigned this item's
+  choice — wire an opt-in register, or record the fail-closed default — to
+  lane L7-5107. That record was not on any branch this lane could read when
+  this was written; the acceptance rests on the parent's relay of it, and an
+  owner who reads the delegation differently may reverse this record by the
+  route under "What would make this wrong". It decides no instrument's
+  permissions and no deployment.
 - **Date**: 2026-10-24
 - **Requirement**: R12-COVERAGE-5107 — "Created markets/instruments are
   supported only where venue, product and legal governance support them."
