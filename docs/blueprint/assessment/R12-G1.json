@@ -696,13 +696,13 @@
   },
   {
     "id": "R12-CICD-8031",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "CI runs scripts/check-secrets.sh over tree and history; an acceptance test refuses secret values in Terraform.",
     "evidence": [
       ".github/workflows/ci.yml:455-456 check-secrets.sh and --history",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:49 no_secret_value_appears_in_the_terraform"
     ],
-    "gap": "None.",
+    "gap": "2026-10-24: The requirement is that committing a key fixture fails CI. The row names a scan that prints 'nothing found' on a clean tree and a Terraform-only test; neither can fail when the scanner is weakened. The tests that plant a fixture are pipeline_scripts.rs (a_secret_committed_and_then_deleted..., 9 tests) and security.rs. Closing: name those in evidence and verification.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -713,7 +713,7 @@
     "verification": "./scripts/check-secrets.sh --history",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " AUDIT-4: 2026-10-24 regraded, the named checks (a scan that prints 'nothing found' on a clean tree, and a Terraform-only test) pass with the scanner's AKIA pattern deleted; only pipeline_scripts.rs and security.rs, which plant a key fixture and which the row does not name, fail."
   },
   {
     "id": "R12-CICD-8032",
@@ -2628,13 +2628,13 @@
   },
   {
     "id": "R12-CICD-8117",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "ADR 0114 refuses both halves of the clause as written: the baseline is reconciled by Config Connector (not Config Sync) and progressive delivery is Cloud Run's per-service instance and concurrency bounds (R12 CICD-9113 mapped to R12-GCP-8116), not Argo Rollouts. gitops.rs::the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names refuses a Rollout, RootSync or RepoSync document and any bootstrap component with an overlay outside the five ADR 0114 admits.",
     "evidence": [
       "docs/adr/0114-the-gke-control-plane-stays-controllers-only-and-external-action-surfaces-stay-refused.md",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names"
     ],
-    "gap": "",
+    "gap": "2026-10-24: The requirement says Config Sync, Argo CD, Kargo and Argo Rollouts must each be installed and own its layer. The row withdraws two of the four by ADR 0114 (Config Connector instead of Config Sync; Cloud Run bounds instead of Argo Rollouts), and the requirement does not allow withdrawing a clause. Closing: install the two controllers, or an owner decision narrows R12-CICD-8117 to ADR 0114's controller set.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2645,7 +2645,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a Rollout document appended to bootstrap/kargo/upstream/install.yaml failed the test naming Argo Rollouts and ADR 0114."
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a Rollout document appended to bootstrap/kargo/upstream/install.yaml failed the test naming Argo Rollouts and ADR 0114. AUDIT-4: 2026-10-24 regraded, the requirement names four controllers (Config Sync, Argo CD, Kargo, Argo Rollouts) and the row withdraws two by ADR 0114; the requirement does not allow withdrawing a clause."
   },
   {
     "id": "R12-SEC-8118",

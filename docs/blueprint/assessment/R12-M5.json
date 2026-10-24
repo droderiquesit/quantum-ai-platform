@@ -2102,14 +2102,14 @@
   },
   {
     "id": "R12-COMMERCE-5091",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "scout emits one typed candidate per kind (price gap, auction, liquidation, wholesale, supply shock) and none for a quiet market; DISCOVER runs it every cycle from qip-deepbrain's breadth plan, asserted through install.",
     "evidence": [
       "backend/crates/libs/qip-financial/tests/commerce.rs:45",
       "backend/crates/libs/qip-financial/tests/commerce.rs:668",
       "backend/crates/apps/qip-deepbrain/tests/commerce.rs::a_commerce_plan_file_discovers_buys_receives_lists_and_sells_on_paper_into_the_inventory_ledger"
     ],
-    "gap": "None for the requirement; not deployed.",
+    "gap": "2026-10-24: scout() is a real, mutation-checked function but DISCOVER runs it only under a breadth plan no committed environment supplies. Closing: a committed environment (or default plan) sets QIP_DEEPBRAIN_BREADTH_PLAN to a committed commerce plan, or the row is narrowed to the library function.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2120,7 +2120,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, DISCOVER runs scout() only under QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets, so the Product Scout runs on no default or deployed path."
   },
   {
     "id": "R12-COMMERCE-5092",
