@@ -2338,6 +2338,39 @@ fn what_worked_for_one_audience_is_not_recommended_for_another_and_the_delay_is_
     );
 }
 
+#[test]
+fn three_measured_outcomes_at_zero_attribution_confidence_recommend_nothing_however_positive_their_mean()
+ {
+    // The failure this prevents (ADR 0145): the ambient door files its
+    // measured outcomes at confidence zero, so before the filter the only
+    // records `recommend_for` could read on the running path were unidentified
+    // ones, and a subject whose reading happened to rise after three drafts
+    // yielded `Some(..)`. The only guard was the door's discretion.
+    let at_confidence = |tenths_of: i128| {
+        let mut memory = ActionOutcomeMemory::with_capacity(16).unwrap();
+        for _ in 0..3 {
+            let mut o = outcome("calm", 10, 4);
+            o.attribution_confidence = Some(tenths(tenths_of));
+            memory.record(o).unwrap();
+        }
+        memory
+    };
+    assert!(
+        at_confidence(7)
+            .recommend_for("calm", None, 3)
+            .unwrap()
+            .is_some(),
+        "premise: the same three at confidence 0.7 recommend the action"
+    );
+    let unidentified = at_confidence(0);
+    assert_eq!(unidentified.len(), 3, "the records are kept regardless");
+    assert_eq!(
+        unidentified.recommend_for("calm", None, 3).unwrap(),
+        None,
+        "and none of them is evidence a recommendation may rest on"
+    );
+}
+
 // ---- R12-AGENCY-1056..1069 / 6091 / GOV-6123 / 6124 / 6127: the guard -------
 
 #[test]
