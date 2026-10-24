@@ -2531,7 +2531,7 @@
       "infrastructure/terraform/modules/binaryauthorization/main.tf:199-232",
       "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs:74 the_binary_authorization_default_rule_requires_a_named_attestation_and_blocks"
     ],
-    "gap": "A deployed refusal proof.",
+    "gap": "A deployed refusal proof. Corrected 2026-10-24: policy tests pass (security_controls 12 passed); the proof is an attempted deploy of an unattested digest to dev, a deployment run.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2815,7 +2815,7 @@
       "infrastructure/terraform/security.tf:17 pam_on; :55 google_privileged_access_manager_entitlement",
       "infrastructure/environments/*/terraform.tfvars: no pam_entitlements"
     ],
-    "gap": "Enable in an environment with a plan.",
+    "gap": "Enable in an environment with a plan. Corrected 2026-10-24: pam_entitlements is empty in every environment; setting it is a protected-path tfvars change and needs named principals, which are a person's decision.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2967,7 +2967,7 @@
       "infrastructure/terraform/modules/public-edge/main.tf:68,98,109,130",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs:27,453"
     ],
-    "gap": "Enable and deploy.",
+    "gap": "Enable and deploy. Corrected 2026-10-24: Cloud Armor tests pass (security_controls 12 passed); no public edge is enabled and enabling is a protected-path tfvars change plus a deployment.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3014,7 +3014,7 @@
       "infrastructure/terraform/modules/scc/main.tf:41,80,114",
       "infrastructure/environments/dev/terraform.tfvars:294"
     ],
-    "gap": "Enable; org activation.",
+    "gap": "Enable; org activation. Corrected 2026-10-24: enable_security_command_center=false in dev (protected tfvars); organisation-level SCC activation is an organisation-managed setting outside this repository.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -3035,7 +3035,7 @@
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs:70",
       "infrastructure/terraform/modules/binaryauthorization/main.tf:199"
     ],
-    "gap": "Live proof.",
+    "gap": "Live proof. Corrected 2026-10-24: container-scanning and BinAuthz tests pass (security_controls 12 passed); proof against a live revision needs a deployed Cloud Run revision.",
     "implemented": true,
     "tested": true,
     "integrated": false,

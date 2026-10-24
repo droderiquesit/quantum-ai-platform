@@ -358,7 +358,7 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:569 every_cloud_run_service_is_internal_and_mounts_secrets_as_files_never_as_environment",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:7040 the_portals_front_door_is_an_iap_edge_and_the_public_edge_is_still_shut"
     ],
-    "gap": "Public edge not opened; nothing deployed behind it.",
+    "gap": "Public edge not opened and nothing deployed behind it. Corrected 2026-10-24: the shut-edge assertion passes (infrastructure the_portals_front_door_is_an_iap_edge_and_the_public_edge_is_still_shut, 1 passed); opening it is a protected-path tfvars change (infrastructure/environments/**) plus a deployment, and no in-repo slice remains.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -402,7 +402,7 @@
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs:27 every_internet_facing_cloud_armor_policy_enables_layer_7_adaptive_protection",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs every_internet_facing_cloud_armor_policy_bans_a_client_over_its_rate_with_429_counted_per_address"
     ],
-    "gap": "Not deployed in any environment.",
+    "gap": "Not deployed in any environment. Corrected 2026-10-24: security_controls passes (12 passed); the public edge it protects is shut by design and opening it is a protected-path tfvars change plus a deployment.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2629,7 +2629,7 @@
       "backend/crates/tests/qip-acceptance/tests/gitops.rs:1959 the_kargo_stages_chain_dev_to_test_to_stage_to_prod_from_one_warehouse",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs:1823 the_warehouse_subscribes_to_every_catalogue_binary_and_never_selects_by_semver"
     ],
-    "gap": "Promotion beyond dev never exercised.",
+    "gap": "Promotion beyond dev never exercised. Corrected 2026-10-24: gitops suite passes (47 passed) and proves the chain's shape; exercising dev->test->stage needs a Kargo run on the GitOps control plane, which is deployment evidence, not code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2650,7 +2650,7 @@
       "backend/crates/tests/qip-acceptance/tests/slo.rs:67 every_row_of_section_49_1_is_declared_as_an_objective_with_its_own_target",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs the_proving_hook_waits_for_convergence_and_reports_what_cloud_run_says"
     ],
-    "gap": "Rollback automation driven by SLO evaluation.",
+    "gap": "Rollback automation driven by SLO evaluation. Corrected 2026-10-24: size L and the closure edits .github/workflows/deploy.yml (protected) and infrastructure/gitops; it is provable only by promoting a degraded candidate in stage, which needs a deployed stage. gitops suite passes (47 passed) for the convergence hook; the rollback step is unwritten.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3024,7 +3024,7 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4589 cost_anomalies_are_not_yet_journaled_to_fabric_tasks (documents FINOPS-009 missing)"
     ],
-    "gap": "Billing export.",
+    "gap": "Billing export. Corrected 2026-10-24: the export itself is configured on the billing account (console or API; the google provider ~6.12 has no resource for it) into a BigQuery dataset that bills storage and needs a billing-admin grant. Nothing in-repo can prove it; closing needs the owner to create the dataset and enable the export, then a plan or dataset-presence check.",
     "implemented": false,
     "tested": false,
     "integrated": false,
