@@ -24987,8 +24987,10 @@ mod decide_tests {
             let mut platform = small_book_platform();
             feed_history(&mut platform, "AAPL", 30);
             feed_history(&mut platform, "MSFT", 30);
-            platform.pending_theses.push(thesis("AAPL", 0.6));
-            platform.pending_theses.push(thesis("MSFT", -0.4));
+            platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+            platform
+                .pending_theses
+                .push(justified(thesis("MSFT", -0.4)));
             if let Some((issued, expires)) = slot {
                 platform
                     .lattice
