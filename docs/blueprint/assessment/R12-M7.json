@@ -1456,7 +1456,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L06 and 2026-10-24 lane T6-MODEL-AGENTS: not implemented. The rename touches the kernel's lineage API and every caller; the CLI verbs need the per-person signing credentials ADR 0110 and 0121 reserve for the release. Test the closure names: an_unsigned_draft_pack_written_at_promotion_is_refused_by_admit_model_packs_and_a_cli_signed_pack_over_the_same_bytes_is_admitted (qip-kernel/tests/release_packs.rs). Kept PARTIAL."
+    "notes": "2026-10-18 lane L06 and 2026-10-24 lane T6-MODEL-AGENTS: not implemented. The rename touches the kernel's lineage API and every caller; the CLI verbs need the per-person signing credentials ADR 0110 and 0121 reserve for the release. Test the closure names: an_unsigned_draft_pack_written_at_promotion_is_refused_by_admit_model_packs_and_a_cli_signed_pack_over_the_same_bytes_is_admitted (qip-kernel/tests/release_packs.rs). Kept PARTIAL. 2026-10-24 lane L5-EDGE: read against the requirement text (bar part 4) rather than the row's ADR 0149 restatement: the typed fields and the missing-field decode refusal exist (section27_partial_contracts.rs), but bar part 2 fails on its own: ModelManifest.packs is skipped from the wire while empty and packs load only from QIP_MODEL_PACKS_PATH (qip-api signing.rs MODEL_PACKS_VARIABLE), which no committed environment sets (grep of infrastructure finds nothing), so no pack travels between brains on a default path. Kept PARTIAL."
   },
   {
     "id": "R12-CONTRACT-7065",

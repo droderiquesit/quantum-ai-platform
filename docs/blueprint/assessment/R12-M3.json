@@ -667,7 +667,7 @@
     "evidence": [
       "backend/crates/services/qip-agency/src/conduct_brain.rs pre-release gate only"
     ],
-    "gap": "Entire capability.",
+    "gap": "Entire capability. Lane L5-EDGE 2026-10-24: the agency is shadow-only (conduct_brain.rs module doc: no live channel anywhere), so nothing is published to monitor; the journal's VoiceReleased record keeps only a fingerprint of a released draft (guard.rs Voice), not its content, so even a post-release re-check of shadow releases on qip-cli agency resume has nothing to re-read. Building it needs the released content journaled (an additive AgencyRecord field) and a re-check against the conduct gate on resume that journals a finding; it would still read 'published' as a shadow release, which the owner should accept or reject.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -678,7 +678,7 @@
     "verification": "new test in qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L5-EDGE: left MISSING; facts above read from qip-agency guard.rs and journal.rs."
   },
   {
     "id": "R12-GOV-3031",
