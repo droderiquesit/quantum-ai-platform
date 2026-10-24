@@ -28,6 +28,9 @@ use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::testing::Property;
 use qip_core::time::Timestamp;
 use qip_core::{Decimal, dec};
+use qip_execution_engine::creation::{
+    CreationAction, CreationAdmission, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::order::Side;
 
 fn now() -> Timestamp {
@@ -47,7 +50,7 @@ fn order(label: &str) -> OrderId {
 /// its book is opened, which the simulated exchange does when it lists it.
 fn opened() -> qip_core::error::Result<MatchingEngine> {
     let mut engine = MatchingEngine::new();
-    engine.open(&object())?;
+    engine.open(&object(), &admitted(CreationAction::List, &object()))?;
     Ok(engine)
 }
 
@@ -487,6 +490,7 @@ fn depth_reports_what_is_left_to_trade_not_what_was_sent() {
             dec!("100"),
             Decimal::from_int(10),
             now(),
+            &admitted(CreationAction::Seed, &object()),
         )
         .expect("seeding a positive quantity at a positive price");
     engine
@@ -517,7 +521,14 @@ fn seeding_refuses_a_non_positive_size_or_price() {
     let mut engine = opened().expect("a fresh engine opens a book");
     assert_eq!(
         engine
-            .seed(&object(), Side::Sell, dec!("100"), Decimal::ZERO, now())
+            .seed(
+                &object(),
+                Side::Sell,
+                dec!("100"),
+                Decimal::ZERO,
+                now(),
+                &admitted(CreationAction::Seed, &object())
+            )
             .expect_err("zero size")
             .code(),
         "invalid"
@@ -529,7 +540,8 @@ fn seeding_refuses_a_non_positive_size_or_price() {
                 Side::Sell,
                 Decimal::ZERO,
                 Decimal::from_int(1),
-                now()
+                now(),
+                &admitted(CreationAction::Seed, &object())
             )
             .expect_err("zero price")
             .code(),
@@ -546,7 +558,9 @@ fn cancelling_something_that_is_not_there_names_what_is_missing() {
         .expect_err("no book at all");
     assert_eq!(error.code(), "not_found");
 
-    engine.open(&object()).expect("the book opens");
+    engine
+        .open(&object(), &admitted(CreationAction::List, &object()))
+        .expect("the book opens");
     engine
         .seed(
             &object(),
@@ -554,6 +568,7 @@ fn cancelling_something_that_is_not_there_names_what_is_missing() {
             dec!("99"),
             Decimal::from_int(1),
             now(),
+            &admitted(CreationAction::Seed, &object()),
         )
         .expect("seed");
     let error = engine
@@ -593,6 +608,7 @@ fn an_instrument_whose_book_was_never_opened_is_neither_seeded_nor_traded() {
             dec!("100"),
             Decimal::from_int(5),
             now(),
+            &admitted(CreationAction::Seed, &object()),
         )
         .expect_err("liquidity was seeded into a book nobody opened");
     assert_eq!(refused.code(), "not_found", "{}", refused.message());
@@ -625,7 +641,9 @@ fn an_instrument_whose_book_was_never_opened_is_neither_seeded_nor_traded() {
 
     // Contrast: once the book is open the same two calls are taken, so the
     // refusals above were the missing book and not the arguments.
-    engine.open(&object()).expect("the book opens");
+    engine
+        .open(&object(), &admitted(CreationAction::List, &object()))
+        .expect("the book opens");
     engine
         .seed(
             &object(),
@@ -633,6 +651,7 @@ fn an_instrument_whose_book_was_never_opened_is_neither_seeded_nor_traded() {
             dec!("100"),
             Decimal::from_int(5),
             now(),
+            &admitted(CreationAction::Seed, &object()),
         )
         .expect("seeded into an open book");
     let outcome = engine
@@ -652,7 +671,7 @@ fn an_instrument_whose_book_was_never_opened_is_neither_seeded_nor_traded() {
     // And a book is opened once: a second open is refused rather than
     // allowed to replace the book and everything resting in it.
     let refused = engine
-        .open(&object())
+        .open(&object(), &admitted(CreationAction::List, &object()))
         .expect_err("an open book was opened again");
     assert_eq!(refused.code(), "invalid", "{}", refused.message());
     assert_eq!(
@@ -660,4 +679,92 @@ fn an_instrument_whose_book_was_never_opened_is_neither_seeded_nor_traded() {
         2,
         "reopening the book discarded what rested in it"
     );
+}
+
+/// An admission to `action` `object`, minted the one way there is. The
+/// engine opens and seeds a book only under one (R12-EXEC-5079); its venue
+/// is the exchange's to check, so any venue name serves here.
+fn admitted(action: CreationAction, object: &ObjectId) -> CreationAdmission {
+    let request = CreationRequest::new(action, "XSIM", object.as_str(), "paper");
+    let mut permissions = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        if let Err(error) = permissions.record(authority, &request, "test fixture") {
+            panic!("a fixture permission with a reference is refused: {error}");
+        }
+    }
+    permissions
+        .admit(&request)
+        .unwrap_or_else(|error| panic!("all three authorities are recorded: {error}"))
+}
+
+/// R12-EXEC-5079: the engine is public, so its own entry points demand the
+/// admission rather than trusting that only the exchange calls them. A book
+/// opens only under an admission to list exactly this instrument, and rests
+/// venue liquidity only under one to seed it.
+///
+/// Mutations: delete `admitted(admission, CreationAction::List, object_id)?;`
+/// from `MatchingEngine::open`, or the `Seed` one from `MatchingEngine::seed`.
+#[test]
+fn the_engine_opens_and_seeds_a_book_only_under_an_admission_for_that_instrument() {
+    let other = ObjectId::from_string("obj-OTHER");
+    let mut engine = MatchingEngine::new();
+    for (label, admission) in [
+        (
+            "a seeding admission",
+            admitted(CreationAction::Seed, &object()),
+        ),
+        (
+            "another instrument's listing",
+            admitted(CreationAction::List, &other),
+        ),
+    ] {
+        assert!(
+            engine.open(&object(), &admission).is_err(),
+            "{label} opened a book"
+        );
+        assert!(!engine.is_open(&object()), "{label} left a book open");
+    }
+    engine
+        .open(&object(), &admitted(CreationAction::List, &object()))
+        .unwrap_or_else(|error| panic!("the admitted listing opens the book: {error}"));
+
+    for (label, admission) in [
+        (
+            "a listing admission",
+            admitted(CreationAction::List, &object()),
+        ),
+        (
+            "another instrument's seeding",
+            admitted(CreationAction::Seed, &other),
+        ),
+    ] {
+        assert!(
+            engine
+                .seed(
+                    &object(),
+                    Side::Sell,
+                    dec!("100"),
+                    dec!("5"),
+                    now(),
+                    &admission
+                )
+                .is_err(),
+            "{label} seeded the book"
+        );
+        assert!(
+            engine.depth(&object(), Side::Sell).is_empty(),
+            "{label} left liquidity behind"
+        );
+    }
+    engine
+        .seed(
+            &object(),
+            Side::Sell,
+            dec!("100"),
+            dec!("5"),
+            now(),
+            &admitted(CreationAction::Seed, &object()),
+        )
+        .unwrap_or_else(|error| panic!("the admitted seed rests: {error}"));
+    assert_eq!(engine.depth(&object(), Side::Sell).len(), 1);
 }

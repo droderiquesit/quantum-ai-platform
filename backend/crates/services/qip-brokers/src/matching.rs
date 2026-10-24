@@ -21,6 +21,7 @@ use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, OrderId};
 use qip_core::time::Timestamp;
+use qip_execution_engine::creation::{CreationAction, CreationAdmission};
 use qip_execution_engine::order::Side;
 use qip_market::book::BookLevel;
 use serde::{Deserialize, Serialize};
@@ -151,6 +152,28 @@ pub struct MatchingEngine {
     sequence: u64,
 }
 
+/// Refuse `admission` unless it is to `action` exactly `object_id`.
+fn admitted(
+    admission: &CreationAdmission,
+    action: CreationAction,
+    object_id: &ObjectId,
+) -> Result<()> {
+    let request = admission.request();
+    if request.action != action || request.product != object_id.as_str() {
+        return Err(Error::denied(format!(
+            "the matching engine will not {} {}: the admission offered is to {} {} at {}, and \
+             this needs an admission to {} exactly this instrument",
+            action.as_str(),
+            object_id.as_str(),
+            request.action.as_str(),
+            request.product,
+            request.venue,
+            action.as_str()
+        )));
+    }
+    Ok(())
+}
+
 impl MatchingEngine {
     /// An engine with no books, under which every seed and every order is
     /// refused until [`Self::open`] opens the instrument's book.
@@ -173,7 +196,15 @@ impl MatchingEngine {
     /// Refuses a book that is already open. Opening it again would be a
     /// second listing of the same id, and must never quietly discard what
     /// rests in the first.
-    pub fn open(&mut self, object_id: &ObjectId) -> Result<()> {
+    ///
+    /// **Demands an admission to list exactly this instrument.** The engine
+    /// is public and re-exported, so "the exchange opens a book only when it
+    /// lists" held for the exchange and not for any other caller: anyone
+    /// could build an engine, open a book and seed it with no permission
+    /// recorded anywhere (R12-EXEC-5079). The venue the admission names is
+    /// the exchange's to check — this engine has no venue of its own.
+    pub fn open(&mut self, object_id: &ObjectId, admission: &CreationAdmission) -> Result<()> {
+        admitted(admission, CreationAction::List, object_id)?;
         if self.books.contains_key(object_id.as_str()) {
             return Err(Error::invalid(format!(
                 "the book for {} is already open, and opening it again would discard what rests \
@@ -208,6 +239,10 @@ impl MatchingEngine {
     /// How a simulated venue gets a market to trade against without pretending
     /// the client is trading with itself. Refused for an instrument whose book
     /// is not open, before a queue sequence is spent.
+    ///
+    /// **Demands an admission to seed exactly this instrument**
+    /// (R12-EXEC-5079): seeding is one of the three governed actions, and a
+    /// listing admission is not a seeding one.
     pub fn seed(
         &mut self,
         object_id: &ObjectId,
@@ -215,7 +250,9 @@ impl MatchingEngine {
         price: Decimal,
         quantity: Decimal,
         at: Timestamp,
+        admission: &CreationAdmission,
     ) -> Result<()> {
+        admitted(admission, CreationAction::Seed, object_id)?;
         if quantity <= Decimal::ZERO {
             return Err(Error::invalid("seeded liquidity needs a positive quantity"));
         }
