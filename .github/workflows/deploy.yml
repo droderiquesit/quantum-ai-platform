@@ -281,6 +281,16 @@ jobs:
           runs=$(gh api \
             "repos/${THIS_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${DEPLOY_SHA}&status=success&event=push" \
             --jq '.total_count')
+          # A count that is not a number is a refusal, not a pass: `[ "" -lt 1 ]`
+          # and `[ null -lt 1 ]` are bash errors, an `if` condition is exempt
+          # from `set -e`, and the step used to fall through to "ci succeeded"
+          # on either (R12 CICD-9106, AUDIT-3 2026-10-24).
+          case "$runs" in
+            ''|*[!0-9]*)
+              echo "ci's run count for ${DEPLOY_SHA} is not a number ('${runs}'); nothing is deployed." >&2
+              exit 1
+              ;;
+          esac
           if [ "$runs" -lt 1 ]; then
             echo "no successful ci run for ${DEPLOY_SHA}; nothing is deployed." >&2
             exit 1

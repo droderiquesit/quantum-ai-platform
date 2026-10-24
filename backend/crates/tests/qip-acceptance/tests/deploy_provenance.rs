@@ -382,14 +382,15 @@ fn a_deployment_whose_ci_run_did_not_succeed_is_refused_on_both_paths() {
         "a commit with a successful push-event ci run was refused, so the manual path \
          refuses everything"
     );
-    // Not yet asserted: an empty or `null` count. `[ "" -lt 1 ]` is a bash
-    // error, an `if` condition is exempt from `set -e`, so the step falls
-    // through to "ci succeeded" and admits the dispatch. The fail-closed
-    // check and the two cases are `docs/blueprint/lanes/cicd-9106-protected.patch`,
-    // which needs a person's review because `.github/**` is protected.
+    // An empty or `null` count is a bash error in `[ "$runs" -lt 1 ]`, and
+    // an `if` condition is exempt from `set -e`: before the step checked the
+    // count was a number, either fell through to "ci succeeded".
     for (case, count, fail) in [
         ("no successful ci run", "0", "0"),
         ("an unreachable API", "", "1"),
+        ("an empty answer", "", "0"),
+        ("a null answer", "null", "0"),
+        ("a non-numeric answer", "1; true", "0"),
     ] {
         assert_ne!(
             manual(count, fail),
