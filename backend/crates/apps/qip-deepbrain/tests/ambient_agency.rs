@@ -519,9 +519,9 @@ fn the_memory_is_asked_before_every_offer_and_its_answer_is_on_the_cycle_line() 
             round.asked,
             round.recommended_draft + round.recommended_nothing
         );
-        // Three measured outcomes are needed before the memory has an
-        // opinion, and the draft's effect is held at zero: it never
-        // recommends drafting on this run.
+        // Every outcome this door files is at attribution confidence zero,
+        // which the memory does not read (ADR 0145): it never recommends
+        // drafting on this run, however the readings moved.
         assert_eq!(round.recommended_draft, 0, "{round:?}");
     }
 }
