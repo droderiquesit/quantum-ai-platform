@@ -109,6 +109,11 @@ pub enum Trigger {
     /// (its detector, its analysts) are right: the weakest of them, read at
     /// sizing. Only a component with a graded record has one.
     Reliability,
+    /// The twin's replay of fills at the strategy's venue diverged from the
+    /// venue past `crate::replay_divergence`'s threshold, and no
+    /// re-promotion has been recorded since (R12-RES-7104). Read only for a
+    /// capital grant, on the strategy the grant is for.
+    ReplayDivergence,
 }
 
 impl Trigger {
@@ -120,6 +125,7 @@ impl Trigger {
             Self::RegimeMismatch => "regime_mismatch",
             Self::EvidenceFreshness => "evidence_freshness",
             Self::Reliability => "reliability",
+            Self::ReplayDivergence => "replay_divergence",
         }
     }
 }
