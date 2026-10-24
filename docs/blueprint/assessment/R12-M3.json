@@ -2429,14 +2429,14 @@
   },
   {
     "id": "R12-AMBIENT-3106",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Urgency is derived from the gap's deadline in production: ResearchLoop::admit computes urgency_bp(now, signal expiry, signal_ttl) — half scale with the whole window ahead (URGENCY_FLOOR_BP), full scale at the deadline, linear between — and passes it to cheapest_viable, so a gap the router deferred ranks ahead of the same gap raised this instant; the information request's deadline is the signal's expiry rather than now + ttl. The pending map keeps each routed signal's expiry for that purpose. rank_acquisitions' product then reads significance x uncertainty x urgency x (1 - cost) with every factor measured.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/research.rs:136-157 URGENCY_FLOOR_BP and urgency_bp",
       "backend/crates/apps/qip-deepbrain/src/research.rs:1515-1524 admit derives urgency from the deadline and passes it",
       "backend/crates/apps/qip-deepbrain/src/research.rs:2431 two_gaps_equal_in_every_other_factor_rank_the_nearer_deadline_first (mutation: urgency_bp ignores the deadline; the test fails)"
     ],
-    "gap": "",
+    "gap": "2026-10-24: The named test calls urgency_bp directly, so it proves the helper but not that admit passes the gap's deadline through to the ranking. Closing: a test that admits a deferred gap and a fresh one through ResearchLoop::admit and asserts the deferred one ranks first (it must fail the line-2176 mutation); also state the monotone-in-each-factor and zero-factor property test the requirement asks for.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2449,7 +2449,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib two_gaps_equal_in_every_other_factor_rank_the_nearer_deadline_first",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L03: closed. The (1 - cost) form is a register wording note, not a defect. The desk's research queue is still ordered by the curriculum; that is the queue's own ranking, not the acquisition rank this row checks."
+    "notes": "2026-10-18 lane L03: closed. The (1 - cost) form is a register wording note, not a defect. The desk's research queue is still ordered by the curriculum; that is the queue's own ranking, not the acquisition rank this row checks. AUDIT-4: 2026-10-24 regraded, the named test calls urgency_bp directly; replacing ResearchLoop::admit's urgency with the floor leaves it and the whole qip-deepbrain suite green, so the production derivation from the gap's deadline is unproved."
   },
   {
     "id": "R12-AMBIENT-3107",
