@@ -2938,9 +2938,10 @@
       "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:350",
       "backend/crates/apps/qip-deepbrain/src/node.rs:189 gate_strategic_service, called at node.rs:467",
       "backend/crates/apps/qip-deepbrain/src/node.rs:882 a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs",
-      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs:339 with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs"
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs:339 with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs",
+      "backend/crates/apps/qip-deepbrain/src/node.rs::a_node_halted_when_its_loop_runs_queues_strategic_questions_and_runs_every_stage"
     ],
-    "gap": "2026-10-24: Closes when a test drives the run loop (or its step) with a halted or stalled NodeStatus and asserts the lattice backlog queues, failing when node.rs:490 is removed, and the outage test runs through DecisionLoop::turn.",
+    "gap": "2026-10-24 (lane L6): the deep-brain half now runs through the shipped loop: node.rs::a_node_halted_when_its_loop_runs_queues_strategic_questions_and_runs_every_stage drives run() for one cycle with a NodeStatus whose last record is halted, over a platform with two instruments and a month of bars, and asserts every stage ran, the strategic service is down and the lattice's backlog is non-empty, against a healthy run of the same platform whose backlog is zero; deleting the gate_strategic_service call in run_with fails it. Still open, the edge half (as REFLEX-5029): reasoning_outage.rs drives MeshLink::exchange, which the shipped node never calls; the identical-trading check needs two DecisionLoops (MeshWorker to an answering centre and to one that stops) compared pass for pass through DecisionLoop::turn.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2948,10 +2949,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test reasoning_outage; cargo test -p qip-deepbrain --lib a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs; cargo test -p qip-kernel --test now_lattice with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs",
+    "verification": "cargo test -p qip-deepbrain --lib a_node_halted_when_its_loop_runs_queues_strategic_questions_and_runs_every_stage; cargo test -p qip-edge-node --test reasoning_outage",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice. AUDIT-4 2026-10-24: regraded, the deep-brain half is proven only on the function (gate_strategic_service called directly in node.rs tests); deleting its one call in the shipped run loop (node.rs:490) fails no test, so a running deep brain could keep the strategic service up through an outage unnoticed. The edge-node half repeats REFLEX-5029: reasoning_outage drives MeshLink::exchange, which the shipped node never calls."
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice. AUDIT-4 2026-10-24: regraded, the deep-brain half is proven only on the function (gate_strategic_service called directly in node.rs tests); deleting its one call in the shipped run loop (node.rs:490) fails no test, so a running deep brain could keep the strategic service up through an outage unnoticed. The edge-node half repeats REFLEX-5029: reasoning_outage drives MeshLink::exchange, which the shipped node never calls. 2026-10-24 lane L6: mutation deleting the gate_strategic_service call in run_with failed the new test at node.rs:1142 ('the run loop left the strategic service up through a halt'); restored by cp and cmp, it passes. qip-deepbrain --no-fail-fast: 15 result lines, 317 passed, 0 failed. Stays PARTIAL for the edge half."
   },
   {
     "id": "R12-RES-10131",
