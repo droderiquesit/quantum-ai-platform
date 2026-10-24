@@ -426,6 +426,34 @@ impl FabricEnvelope {
                 event.event_id, event.topic, event.schema_version
             )));
         }
+        // R12-CONTRACT-7089: the trace id and the idempotency key are two of
+        // the contract's required fields, so an envelope without either is
+        // refused here — built or decoded — rather than carried with a hole.
+        // A trace nobody stamped joins nothing, and a record with no
+        // idempotency key cannot be told from its own redelivery downstream.
+        if event
+            .lineage
+            .trace_id
+            .as_ref()
+            .is_none_or(|trace| trace.as_str().trim().is_empty())
+        {
+            return Err(Error::invalid(format!(
+                "event {} carries no trace id; a fabric envelope's trace id is required, and the \
+                 writer stamps it",
+                event.event_id
+            )));
+        }
+        if event
+            .idempotency_key
+            .as_deref()
+            .is_none_or(|key| key.trim().is_empty())
+        {
+            return Err(Error::invalid(format!(
+                "event {} carries no idempotency key; a fabric envelope's idempotency key is \
+                 required, and the writer stamps it",
+                event.event_id
+            )));
+        }
         Ok(Self {
             event,
             stream: require_non_empty(facts.stream, "stream namespace")?,

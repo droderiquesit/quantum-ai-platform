@@ -126,9 +126,9 @@ pub fn fabric_record(outcome: &DeskOutcome) -> Result<Record> {
         // lineage is not the id its body derives. The cycle that placed the
         // order stays on [`DeskOutcome::correlation_id`].
         lineage: Lineage {
+            trace_id: Some(qip_core::TraceId::new(chain.as_str())),
             correlation_id: chain,
             causation_id: None,
-            trace_id: None,
             producer: PRODUCER.to_string(),
         },
         idempotency_key: Some(id),
@@ -160,7 +160,7 @@ pub fn operation_record(operation: &LedgerOperation) -> Result<Record> {
         lineage: Lineage {
             correlation_id: qip_core::CorrelationId::from_string(id.clone()),
             causation_id: None,
-            trace_id: None,
+            trace_id: Some(qip_core::TraceId::new(id.as_str())),
             producer: PRODUCER.to_string(),
         },
         idempotency_key: Some(id),

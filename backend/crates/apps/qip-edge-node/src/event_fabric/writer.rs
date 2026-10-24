@@ -946,10 +946,13 @@ impl<S: Spool> SpoolWriter<S> {
             occurred_at,
             recorded_at,
             sequence: 0,
+            // The trace is the correlation the record already joins on — the
+            // order's chain, or the session's — so a fabric envelope carries
+            // the one trace id it requires (R12-CONTRACT-7089).
             lineage: Lineage {
+                trace_id: Some(qip_core::TraceId::new(correlation.as_str())),
                 correlation_id: correlation,
                 causation_id: None,
-                trace_id: None,
                 producer: PRODUCER.to_string(),
             },
             idempotency_key: Some(id),
