@@ -14659,3 +14659,394 @@ fn no_terraform_source_grants_a_human_or_public_principal_a_standing_role() {
         );
     }
 }
+
+// --- R12-GCP-8114: no elevation reaches the venue credential ----------------
+
+/// The impersonation and IAM-administration roles `pam_entitlements` refuses
+/// by exact id, case-folded. Kept in step with the validation in
+/// `infrastructure/terraform/variables.tf` by the test below, which fails if
+/// one of these stops appearing there.
+const PAM_REFUSED_ROLES: [&str; 11] = [
+    "roles/iam.serviceAccountTokenCreator",
+    "roles/iam.serviceAccountOpenIdTokenCreator",
+    "roles/iam.serviceAccountUser",
+    "roles/iam.serviceAccountAdmin",
+    "roles/iam.serviceAccountKeyAdmin",
+    "roles/iam.workloadIdentityUser",
+    "roles/iam.workloadIdentityPoolAdmin",
+    "roles/iam.securityAdmin",
+    "roles/iam.roleAdmin",
+    "roles/resourcemanager.projectIamAdmin",
+    "roles/privilegedaccessmanager.admin",
+];
+
+/// The text of the braced block that opens at the first `{` at or after
+/// `at`, braces included, or the rest of the text if it never closes.
+fn braced_block_from(text: &str, at: usize) -> &str {
+    let Some(open) = text[at..].find('{').map(|offset| at + offset) else {
+        return "";
+    };
+    let mut depth = 0i64;
+    for (offset, c) in text[open..].char_indices() {
+        depth += match c {
+            '{' => 1,
+            '}' => -1,
+            _ => 0,
+        };
+        if depth == 0 {
+            return &text[open..=open + offset];
+        }
+    }
+    &text[open..]
+}
+
+/// Every double-quoted literal in `text`, unescaped as far as `\"` and `\\`.
+fn quoted_literals(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        let mut literal = String::new();
+        while let Some(inner) = chars.next() {
+            match inner {
+                '\\' => {
+                    if let Some(escaped) = chars.next() {
+                        literal.push(escaped);
+                    }
+                }
+                '"' => break,
+                other => literal.push(other),
+            }
+        }
+        found.push(literal);
+    }
+    found
+}
+
+/// Why `pam_entitlements` would refuse this literal from an entitlement, or
+/// `None`. The same four rules the variable's validations hold — a service
+/// account on either side, a Secret Manager role, an impersonation or
+/// IAM-administration role, a custom role — matched by prefix or exact id,
+/// case-folded, never by substring: `roles/iam.serviceAccountViewer` shares
+/// a prefix with two refused ids and is not one of them.
+fn pam_refusal(literal: &str) -> Option<&'static str> {
+    let folded = literal.to_ascii_lowercase();
+    if folded.starts_with("serviceaccount:") {
+        return Some("a service account as requester or approver");
+    }
+    if folded.starts_with("roles/secretmanager.") {
+        return Some("a Secret Manager role, which reads the venue credential at project scope");
+    }
+    if PAM_REFUSED_ROLES
+        .iter()
+        .any(|role| role.eq_ignore_ascii_case(literal))
+    {
+        return Some("an impersonation or IAM-administration role");
+    }
+    if (folded.starts_with("projects/") || folded.starts_with("organizations/"))
+        && folded.contains("/roles/")
+    {
+        return Some("a custom role, whose permissions no rule can read at plan");
+    }
+    None
+}
+
+/// Every `pam_entitlements = { … }` assignment in a tfvars text, comments
+/// gone, each as the literals it holds paired with the refusal each earns.
+fn pam_entitlement_refusals(tfvars: &str) -> (usize, Vec<(String, &'static str)>) {
+    let text = without_comments(tfvars);
+    let mut blocks = 0usize;
+    let mut refused = Vec::new();
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        let assigned = line
+            .trim_start()
+            .strip_prefix("pam_entitlements")
+            .is_some_and(|rest| rest.trim_start().starts_with('='));
+        if assigned {
+            blocks += 1;
+            for literal in quoted_literals(braced_block_from(&text, offset)) {
+                if let Some(reason) = pam_refusal(&literal) {
+                    refused.push((literal, reason));
+                }
+            }
+        }
+        offset += line.len();
+    }
+    (blocks, refused)
+}
+
+/// R12-GCP-8114: no committed variable file names a Privileged Access
+/// Manager entitlement that a workload account may request or approve, or
+/// that grants a role reaching the venue credential — a Secret Manager role,
+/// an impersonation or IAM-administration role, or a custom role.
+///
+/// The plan harness (`infrastructure/terraform/tests/pam.tftest.hcl`) proves
+/// the variable's validations refuse each of those and admit the near
+/// misses. This proves two things it cannot: that the four environments'
+/// committed files hold no such entitlement today, read without a plan, and
+/// that every role id this list refuses is still named in the validation —
+/// so deleting one from `variables.tf` fails here as well as there.
+///
+/// `pam_entitlements` admitted a `serviceAccount:` requester until
+/// 2026-10-24, so a Cloud Run workload's own account could be made eligible
+/// for `roles/secretmanager.secretAccessor` at project scope behind one
+/// approval, and no grant scanner here saw it: an entitlement is not a
+/// binding until somebody asks.
+///
+/// Mutation: plant an entitlement with a `serviceAccount:` requester in a
+/// `.tfvars` under `infrastructure/`, and the scan names it; delete
+/// `"roles/iam.serviceAccountUser",` from the validation in `variables.tf`,
+/// and the in-step assertion names it.
+#[test]
+fn no_committed_pam_entitlement_admits_a_service_account_or_a_role_that_reaches_a_secret() {
+    // The detector, on text whose answer is known, before the tree: a scan
+    // that matched nothing would pass every environment for ever.
+    let planted = "pam_entitlements = {\n  ops = {\n    roles = [\"roles/run.admin\", \
+                   \"roles/secretmanager.secretAccessor\", \"roles/iam.ServiceAccountUser\", \
+                   \"projects/p/roles/venueReader\", \"roles/iam.serviceAccountViewer\"]\n    \
+                   requesters = [\"serviceAccount:qip-dev-api@p.iam.gserviceaccount.com\", \
+                   \"group:ops@example.com\"]\n    approvers = [\"user:a@example.com\"]\n  }\n}\n";
+    let (blocks, refused) = pam_entitlement_refusals(planted);
+    let literals: Vec<&str> = refused
+        .iter()
+        .map(|(literal, _)| literal.as_str())
+        .collect();
+    assert_eq!(blocks, 1, "premise: the planted assignment was not found");
+    assert_eq!(
+        literals,
+        [
+            "roles/secretmanager.secretAccessor",
+            "roles/iam.ServiceAccountUser",
+            "projects/p/roles/venueReader",
+            "serviceAccount:qip-dev-api@p.iam.gserviceaccount.com",
+        ],
+        "premise: the detector refused the wrong literals of a planted entitlement — it must \
+         refuse the secret role, the case-varied impersonation role, the custom role and the \
+         service-account requester, and admit run.admin, serviceAccountViewer, the group and \
+         the user"
+    );
+    assert_eq!(
+        pam_entitlement_refusals(
+            "# pam_entitlements = { x = { requesters = [\"serviceAccount:a@b\"] } }\n"
+        ),
+        (0, Vec::new()),
+        "premise: a commented-out entitlement is not an assignment"
+    );
+
+    // The tree: every variable file under infrastructure/, which includes the
+    // four environments' and the templates an environment is copied from.
+    let files = files_with_extension("infrastructure", "tfvars");
+    for environment in ["dev", "test", "stage", "prod"] {
+        let expected = repository_root()
+            .join("infrastructure/environments")
+            .join(environment)
+            .join("terraform.tfvars");
+        assert!(
+            files.contains(&expected),
+            "premise: {} was not among the variable files scanned",
+            expected.display()
+        );
+    }
+    let mut findings = Vec::new();
+    for path in &files {
+        let (_, refused) =
+            pam_entitlement_refusals(&std::fs::read_to_string(path).expect("readable"));
+        for (literal, reason) in refused {
+            findings.push(format!("{}: `{literal}` is {reason}", path.display()));
+        }
+    }
+    assert!(
+        findings.is_empty(),
+        "a committed PAM entitlement reaches the venue credential or is a workload's to \
+         request or approve. Requesters and approvers are people (user: or group:); roles are \
+         predefined and neither read a secret nor act as another identity. A workload that \
+         needs a role is granted it in its own module:\n{}",
+        findings.join("\n")
+    );
+
+    // In step with the validation: every id refused here is refused there,
+    // and so are the prefix and the principal allow-list.
+    let variables = without_comments(&read("infrastructure/terraform/variables.tf"));
+    let at = variables
+        .find("variable \"pam_entitlements\"")
+        .expect("variables.tf declares pam_entitlements");
+    let (_, validations) = without_validation_blocks(braced_block_from(&variables, at));
+    assert!(
+        validations.matches("validation {").count() >= 9,
+        "premise: the pam_entitlements validations were not read"
+    );
+    for role in PAM_REFUSED_ROLES {
+        assert!(
+            validations.contains(&format!("\"{role}\",")),
+            "pam_entitlements in variables.tf no longer refuses {role}; it reaches the venue \
+             credential by acting as the account that may read it"
+        );
+    }
+    assert!(
+        validations.contains("!startswith(lower(r), \"roles/secretmanager.\")"),
+        "pam_entitlements in variables.tf no longer refuses roles/secretmanager.* by prefix"
+    );
+    assert!(
+        validations.contains("can(regex(\"^(user|group):[^,\\\\s]+@[^,\\\\s]+$\", p))"),
+        "pam_entitlements in variables.tf no longer admits only user: and group: as requester \
+         and approver"
+    );
+}
+
+/// Why Terraform or OpenTofu would load `relative` (a repository-relative
+/// path) as configuration or variables that the text walkers in this suite
+/// do not read, or `None`.
+///
+/// Every walker here reads `.tf`, `.tfvars` or `.tftest.hcl` as text. JSON
+/// syntax (`*.tf.json`, `*.tfvars.json`, `*.tftest.json`), OpenTofu's own
+/// extension (`*.tofu`, `*.tofu.json`, which OpenTofu prefers over a `.tf` of
+/// the same name), an override file (`override.tf`, `*_override.tf`, whose
+/// blocks are merged *over* the reviewed ones after every walker has judged
+/// them), and a variable file Terraform loads without being asked
+/// (`*.auto.tfvars`, or `terraform.tfvars` inside the configuration) are
+/// each read by the tool and by nothing that judges it.
+fn configuration_the_walkers_cannot_read(relative: &str) -> Option<&'static str> {
+    let name = relative.rsplit('/').next().unwrap_or(relative);
+    let folded = name.to_ascii_lowercase();
+    if folded.ends_with(".tf.json") || folded.ends_with(".tftest.json") {
+        return Some("Terraform JSON syntax");
+    }
+    if folded.ends_with(".tfvars.json") {
+        return Some("a JSON variable file");
+    }
+    if folded.ends_with(".tofu") || folded.ends_with(".tofu.json") {
+        return Some("an OpenTofu file, preferred over the reviewed .tf of the same name");
+    }
+    if folded == "override.tf" || folded.ends_with("_override.tf") {
+        return Some("an override file, merged over the reviewed blocks after every walker ran");
+    }
+    if folded.ends_with(".auto.tfvars") {
+        return Some("a variable file Terraform loads without being passed it");
+    }
+    if folded == "terraform.tfvars" && relative.starts_with("infrastructure/terraform/") {
+        return Some("a variable file the root loads on every plan, beside the reviewed var-file");
+    }
+    None
+}
+
+/// Every file under `infrastructure/`, repository-relative with `/`
+/// separators, skipping `.terraform/` — the provider and module cache a
+/// local `init` writes, which is git-ignored and not configuration anyone
+/// reviews.
+fn every_infrastructure_file() -> Vec<String> {
+    let root = repository_root();
+    let mut found = Vec::new();
+    let mut stack = vec![root.join("infrastructure")];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if entry.file_name() != ".terraform" {
+                    stack.push(path);
+                }
+                continue;
+            }
+            let relative = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("/");
+            found.push(relative);
+        }
+    }
+    found.sort();
+    found
+}
+
+/// R12-GCP-8114, LOW: every Rust walker in this suite reads Terraform as
+/// `.tf`, `.tfvars` and `.tftest.hcl` text, and is blind to every other form
+/// the tool loads. A `main_override.tf` re-declaring a Cloud Run account's
+/// grant, or a `grants.tf.json` adding one, would plan and apply while every
+/// grant scanner here reported the reviewed `.tf` clean. So no such file may
+/// exist under `infrastructure/`.
+///
+/// Mutation: create `infrastructure/terraform/zz_override.tf` (or any name
+/// the classifier refuses); the walk names it and the test fails.
+#[test]
+fn no_file_under_infrastructure_is_terraform_the_text_walkers_cannot_read() {
+    // The classifier, on names whose answer is known.
+    for refused in [
+        "infrastructure/terraform/grants.tf.json",
+        "infrastructure/terraform/override.tf",
+        "infrastructure/terraform/override.tf.json",
+        "infrastructure/terraform/modules/cloudrun/main_override.tf",
+        "infrastructure/terraform/main_override.tf.json",
+        "infrastructure/terraform/main.tofu",
+        "infrastructure/terraform/main.tofu.json",
+        "infrastructure/terraform/override.tofu",
+        "infrastructure/environments/dev/terraform.tfvars.json",
+        "infrastructure/terraform/extra.auto.tfvars",
+        "infrastructure/terraform/terraform.tfvars",
+        "infrastructure/terraform/tests/pam.tftest.json",
+        "infrastructure/terraform/Main_Override.TF",
+    ] {
+        assert!(
+            configuration_the_walkers_cannot_read(refused).is_some(),
+            "premise: the classifier admits {refused}"
+        );
+    }
+    for admitted in [
+        "infrastructure/terraform/main.tf",
+        "infrastructure/terraform/overrides.tf",
+        "infrastructure/terraform/tests/pam.tftest.hcl",
+        "infrastructure/environments/dev/terraform.tfvars",
+        "infrastructure/foundation/terraform.tfvars",
+        "infrastructure/terraform/tests/fixtures/harness-bundle.json",
+        "infrastructure/workload-register.json",
+    ] {
+        assert_eq!(
+            configuration_the_walkers_cannot_read(admitted),
+            None,
+            "premise: the classifier refuses {admitted}, which the walkers read or Terraform \
+             does not load"
+        );
+    }
+
+    // The walk visits the configuration the walkers do read, or its silence
+    // would mean it looked nowhere.
+    let files = every_infrastructure_file();
+    let terraform = files.iter().filter(|path| path.ends_with(".tf")).count();
+    assert!(
+        terraform > 20
+            && files
+                .iter()
+                .any(|path| path == "infrastructure/terraform/main.tf"),
+        "premise: the walk under infrastructure/ visited {terraform} .tf file(s) and \
+         {} file(s) in all; it is not reading the configuration",
+        files.len()
+    );
+    assert!(
+        files
+            .iter()
+            .any(|path| path == "infrastructure/environments/dev/terraform.tfvars"),
+        "premise: the walk did not visit dev's variable file"
+    );
+
+    let unread: Vec<String> = files
+        .iter()
+        .filter_map(|path| {
+            configuration_the_walkers_cannot_read(path).map(|why| format!("{path}: {why}"))
+        })
+        .collect();
+    assert!(
+        unread.is_empty(),
+        "Terraform or OpenTofu would load a file under infrastructure/ that no text walker in \
+         this suite reads, so every grant and refusal it judges could be overridden past it. \
+         Write the change as HCL in the reviewed .tf or the environment's terraform.tfvars \
+         instead:\n{}",
+        unread.join("\n")
+    );
+}
