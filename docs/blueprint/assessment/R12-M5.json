@@ -198,13 +198,13 @@
     "status": "PARTIAL",
     "current": "Account::Collateral and Account::Margin with pledge and margin OperationKinds post through LedgerOperation into the global journal; tested per kind.",
     "evidence": [
-      "backend/crates/services/qip-capital/src/collateral.rs:163 Pledge",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::review_cross_margin",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs::review_cross_margin_posts_no_ledger_operation_from_the_default_margin_model",
+      "backend/crates/tests/qip-acceptance/tests/ledger_declined_kinds.rs::no_source_outside_the_contract_builds_an_assumed_margin_pledge_or_tax_operation",
       "backend/crates/services/qip-capital/src/margin.rs:60 MarginRequirement",
-      "backend/crates/libs/qip-contracts/src/ledger.rs:67 no collateral/margin account",
-      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::OperationKind::MarginRequirement"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for pledges or margin or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "2026-10-24: no venue states a margin requirement, so no production producer exists by decision (ADR 0153 d3); modelled margin is advice and is never booked. Margin and pledge post only from a venue-stated requirement line, which no simulated venue publishes yet.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -212,10 +212,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
+    "verification": "cargo test -p qip-kernel --test collateral review_cross_margin_posts; cargo test -p qip-acceptance --test ledger_declined_kinds",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane T4-LEDGER 2026-10-24: refusal proven twice. Mutation 1: queueing a MarginRequirement per called venue inside review_cross_margin made the kernel test fail ('a modelled margin figure was queued for the ledger'). Mutation 2: a matches! on OperationKind::TaxCharge appended to qip-kernel platform.rs made the acceptance scan fail (the same scan guards MarginRequirement and CollateralPledge). Kept PARTIAL: no producer by decision until a venue states a requirement."
   },
   {
     "id": "R12-LEDGER-5010",
@@ -442,10 +442,10 @@
     "current": "Account::Tax (separate from Account::Fees) and a tax OperationKind post into the global journal; tested per kind.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs:73 Account::Fees",
-      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::OperationKind::TaxCharge",
+      "backend/crates/tests/qip-acceptance/tests/ledger_declined_kinds.rs::no_source_outside_the_contract_builds_an_assumed_margin_pledge_or_tax_operation"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for taxes or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "2026-10-24: no TaxCharge producer by decision (ADR 0153 d7): tax method, rate and jurisdiction are facts the repository was never shown and a paper platform realises nothing taxable. The kind stays bookable and tested in qip-contracts. A test now proves no source outside the contract names OperationKind::TaxCharge.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -453,10 +453,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd plus a subledger test",
+    "verification": "cargo test -p qip-acceptance --test ledger_declined_kinds",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane T4-LEDGER 2026-10-24: decision restated and its refusal proven. Mutation: a matches! on OperationKind::TaxCharge appended to qip-kernel platform.rs made the test fail naming platform.rs:32414. Kept PARTIAL: no producer by decision."
   },
   {
     "id": "R12-LEDGER-5020",

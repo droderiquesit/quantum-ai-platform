@@ -2231,7 +2231,7 @@
       "backend/crates/services/qip-capital-fabric/src/gate.rs:273",
       "backend/crates/services/qip-capital-fabric/src/corridor.rs:615"
     ],
-    "gap": "2026-10-19: nobody asserts custody unavailable, by decision (ADR 0159 E): on a paper platform the venue is the custodian (ADR 0130 decision 4), so there is no third party to be down, and the only honest source is the freshness of the position statement the simulated venue publishes, read by the node (which hosts the gateway) and handed to the cell as a Capability::Custody observation that narrows only. ADR 0130's statement slice does not exist, so Custody stays unobserved and contributes one to dependency_multiplier. TransferGate::assess takes no custody input and none is added: an argument with no producer is a gate that always passes. Platform::survival_figures already withholds unsettled sale proceeds. Needs the venue position-statement record and a freshness threshold (RISK).",
+    "gap": "2026-10-24 (ADR 0159 E): no custody-availability signal exists and none is asserted by an operator: the venue is the custodian (ADR 0130 decision 4) and custody unavailability can only be read from the staleness of its position statement, whose record does not exist. Capability::Custody has no producer and stays unobserved, contributing to dependency_multiplier. TransferGate::assess takes no custody input and none is added, since an input with no producer always passes. Needs the venue position-statement record and a freshness threshold (RISK).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2242,7 +2242,7 @@
     "verification": "capital-fabric integration test",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: TransferGate::assess is veto-only and takes every input from its caller; adding a CustodyAvailability argument with no producer would be a gate input that is always 'available', the always-passing shape this repository refuses. Kept PARTIAL. Lane W8-159 2026-10-19 (ADR 0159). Gap restated; no grade change."
+    "notes": "Lane W8-159 2026-10-19 (ADR 0159). Lane T4-LEDGER 2026-10-24: grep finds Capability::Custody only in qip-contracts degradation.rs and its tests, no producer; no code change, no grade change."
   },
   {
     "id": "R12-RES-7100",

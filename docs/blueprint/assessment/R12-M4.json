@@ -1934,7 +1934,7 @@
       "backend/crates/runtime/qip-kernel/src/survival.rs::CombinedObligations",
       "backend/crates/services/qip-capital/src/obligations.rs::LedgerObligations"
     ],
-    "gap": "2026-10-19: the emergency reserve is a policy fraction of equity derived by the waterfall (SurvivalPolicy::emergency_reserve_fraction), by decision (ADR 0159 D): a reserve nobody moved is not an observed fact and the ledger books only observed facts, so it is not a ledger account and will not become one. What the ledger contributes is what it observes, margin, collateral and settlement through LedgerObligations. What remains is the obligations route: no binary calls Platform::observe_ledger_obligations, so collateral and ledger settlement read zero in production. That wiring belongs to R12-CAPITAL-4086, not to this row.",
+    "gap": "2026-10-24 (ADR 0159 D): The emergency reserve is a derived policy fraction of equity by decision, not a ledger account (a reserve nobody moved is not an observed fact, and the ledger books only observed facts, ADR 0153). Collateral and settlement read zero in production until a binary feeds Platform::observe_ledger_obligations (grep finds no non-test caller in any binary); that wiring belongs to the obligations-route row R12-CAPITAL-4086, and collateral additionally has no producer because no venue states a margin requirement (ADR 0153 d3).",
     "implemented": false,
     "tested": true,
     "integrated": true,
@@ -1945,7 +1945,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: depends on the ledgerd obligations route in R12-CAPITAL-4086. Kept PARTIAL. Lane W8-159 2026-10-19 (ADR 0159). Gap restated; no grade change."
+    "notes": "Lane W8-159 2026-10-19 (ADR 0159). Lane T4-LEDGER 2026-10-24: re-read against the code, gap re-dated and the missing margin producer named; no code change, no grade change."
   },
   {
     "id": "R12-CAPITAL-4088",
