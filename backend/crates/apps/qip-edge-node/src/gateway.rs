@@ -54,6 +54,7 @@ use qip_brokers::credential::{
 use qip_brokers::exchange::{ExchangeSettings, SimulatedDepth, SimulatedExchange};
 use qip_brokers::rest::{RestOrderEntryAdapter, RestOrderStats};
 use qip_contracts::message::BookSide;
+use qip_contracts::replay::ReplayAssumptions;
 use qip_contracts::venue::VenueId;
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -211,7 +212,35 @@ impl SimulatedGateway {
     /// secret material, which is all a simulated venue authenticates against
     /// and all this binary is permitted to hold.
     pub fn new(venue: VenueId, seed: u64, at: Timestamp) -> Result<Self> {
-        Self::with_settings(venue, ExchangeSettings::orderly(), seed, at)
+        Self::with_settings(venue, Self::default_settings(), seed, at)
+    }
+
+    /// The settings [`Self::new`] builds the venue with — one function so the
+    /// node's configuration digest and the venue it runs cannot name two
+    /// different fill models (ADR 0155 section 16).
+    pub fn default_settings() -> ExchangeSettings {
+        ExchangeSettings::orderly()
+    }
+
+    /// The assumptions a replay manifest states for this gateway, rendered
+    /// from the settings it was built with and never written as prose.
+    pub fn replay_assumptions(&self) -> ReplayAssumptions {
+        assumptions_of(&self.exchange.settings())
+    }
+
+    /// The model versions a replay manifest names for this gateway, by
+    /// component.
+    pub fn replay_model_versions() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (
+                "fill".to_string(),
+                "qip_brokers::exchange::SimulatedExchange".to_string(),
+            ),
+            (
+                "latency".to_string(),
+                "seeded base plus uniform jitter".to_string(),
+            ),
+        ])
     }
 
     /// The same, with a venue that refuses a share of orders for no stated
@@ -1334,4 +1363,59 @@ impl Placer for NodeGateway {
             Self::Live(gateway) => gateway.required_configuration(),
         }
     }
+}
+
+/// Render [`ReplayAssumptions`] from the settings a simulated venue was built
+/// with (ADR 0155 section 16). "None" is stated where a setting is zero, and
+/// a changed setting changes the text, which is what makes the manifest a
+/// statement about the run and not about the binary.
+pub fn assumptions_of(settings: &ExchangeSettings) -> ReplayAssumptions {
+    let latency = if settings.latency == Duration::ZERO && settings.latency_jitter == Duration::ZERO
+    {
+        "none: acknowledgements arrive with no round trip".to_string()
+    } else if settings.latency_jitter == Duration::ZERO {
+        format!(
+            "a fixed round trip of {} ms and no jitter",
+            settings.latency.as_millis()
+        )
+    } else {
+        format!(
+            "a base round trip of {} ms plus uniform jitter up to {} ms drawn from the seed",
+            settings.latency.as_millis(),
+            settings.latency_jitter.as_millis()
+        )
+    };
+    let rejection = if settings.rejection_probability == 0.0 {
+        "no order is refused for no stated reason".to_string()
+    } else {
+        format!(
+            "{} of orders are refused for no stated reason, drawn from the seed",
+            settings.rejection_probability
+        )
+    };
+    ReplayAssumptions {
+        clock: "none read: pass instants are handed in by the node loop, so a replay sees the \
+                instants the run was given"
+            .to_string(),
+        latency,
+        queue: "orders queue behind each other at a price in arrival order on the venue's own \
+                matching engine; an amendment that adds size loses its place"
+            .to_string(),
+        fill: format!(
+            "matched against the venue's own simulated book across levels, a market order that \
+             outruns the book has its remainder cancelled; {rejection}; fees {:?}",
+            settings.fees
+        ),
+        impact: "none beyond consuming the displayed levels of the simulated book; no \
+                 market-impact model"
+            .to_string(),
+    }
+}
+
+/// The node's configuration digest widened to cover the gateway's settings,
+/// so a manifest built under different settings refuses on a digest mismatch
+/// instead of reproducing under a fill model nobody can name (ADR 0155
+/// section 16). A value, not a schema: the pass marker is untouched.
+pub fn widen_config_digest(cell_digest: &str, settings: &ExchangeSettings) -> String {
+    qip_core::sha256_hex(format!("{cell_digest}|gateway:{settings:?}").as_bytes())
 }
