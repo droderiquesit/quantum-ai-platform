@@ -2313,9 +2313,11 @@
       "backend/crates/edge/qip-edge/src/cell.rs:1467,3685,3908,3927 SnapshotRequest / sequence gap tracking",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:689,810 a gap or crossed book marks exactly the affected books unreliable; snapshot request until gap closes",
       "backend/crates/apps/qip-edge-node/tests/feed_recovery.rs",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:526"
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:526",
+      "backend/crates/services/qip-training/src/microstructure.rs build_examples (refused_unreliable)",
+      "backend/crates/services/qip-training/tests/microstructure.rs::no_example_is_built_across_a_span_the_replay_flagged_unreliable"
     ],
-    "gap": "Feature quarantine and training-set exclusion.",
+    "gap": "2026-10-24 (lane L6, gap corrected): training-set exclusion is built and tested, not missing: qip-training microstructure::build_examples refuses every example whose trailing window or label horizon touches a span the tick replay flagged unreliable and counts it in refused_unreliable, and the deep brain's tick desk (tick_desk.rs) is its one caller. What remains: (1) that desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no committed environment does, so the exclusion is not on a shipped binary's default path (bar part 2); (2) 'derived features quarantined' has no mechanism of its own: nothing marks a feature computed from an unreliable book as quarantined in the feature store or the world model; (3) 'until integrity is restored' for replay is the outbox gap's refusal of the window, which does not lift when a later snapshot rebuilds the book.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2326,7 +2328,7 @@
     "verification": "cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: mutation removing the unreliable-observation and flagged-span conditions from build_examples' refusal failed no_example_is_built_across_a_span_the_replay_flagged_unreliable (tests/microstructure.rs:140, '7 passed; 1 failed'); restored by cp and cmp, 9 'test result: ok' lines. No code change. Stays PARTIAL."
   },
   {
     "id": "R12-RES-7103",
