@@ -1529,13 +1529,12 @@
     "status": "PARTIAL",
     "current": "qip-cli composes the guard mandatorily (qip-cli/src/agency.rs::Session::open builds ActionGuard::from_policy from the operator's --policy, refuses a policy registering no tool, refuses a request carrying its own `guards`, and lends the guard to run_governed); engine::execute refuses with no guard and runs guard.preflight before guard.authorise(step).and_then(adapter.call). The only adapter is Unwired, which refuses every call (ADR 0114). Deceptive methods are refused at plan time: Method::is_deceptive makes a plan with a deceptive tool edge anywhere in it infeasible whatever its estimate. Deceptive content is the mandatory no_false_claims phrase list (FALSE_CLAIM_PHRASES), and since 2026-10-18 the before-adapter guard test carries a `no_false_claims` case: a promissory quote draft is withheld with Act failed and zero adapter calls, in shadow and at narrow-reversible alike (tests/agency.rs:1648-1653).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:101-116 (FALSE_CLAIM_PHRASES)",
-      "backend/crates/libs/qip-contracts/src/action.rs:59-61 (Method::is_deceptive)",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:390 check_factual_support_resolving",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:236 FALSE_CLAIM_PHRASES",
       "backend/crates/services/qip-agency/tests/agency.rs:1648-1653 (case `no_false_claims`)",
-      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
-      "backend/crates/services/qip-agency/tests/agency.rs::a_plan_with_a_deceptive_step_anywhere_in_it_is_infeasible_whatever_its_expected_effect"
+      "backend/crates/services/qip-agency/tests/conduct_brain.rs::an_honest_action_description_with_a_resolving_cited_claim_is_released_and_an_unresolved_or_mismatched_claim_is_refused"
     ],
-    "gap": "The before-adapter no_false_claims case exists and its mutation fired. With R12-AGENCY-1056's resolver now attached on the shadow binary a citation's claim must equal its recorded statement, but a draft's prose is not tied to its citations: a draft can cite a true claim and still say 'guaranteed' in its content, so FALSE_CLAIM_PHRASES remains the only detector of promissory language. Remaining: bind each assertion sentence in the content to a citation claim (sentence-level), which needs a rule separating assertions from action descriptions such as 'Quote 20 lots'; a tool's Method is declared by operator policy by design.",
+    "gap": "Sentence-level binding of a draft's content to its citations is not built, by decision (ADR 0146 decision 5): an assertion is the claim an EvidenceCitation carries, checked against the record by check_factual_support_resolving; content is not segmented into assertion and action sentences. Promissory language in content is a phrase floor (FALSE_CLAIM_PHRASES) with a named paraphrase miss. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1543,10 +1542,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency each_guard_check_alone",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test conduct_brain an_honest_action_description; cargo +1.94.1 test -p qip-agency --test agency each_guard_check_alone",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 (lane L10): the missing before-adapter case exists and its mutation fired (replacing `guaranteed` in FALSE_CLAIM_PHRASES makes the case Execute). The evidence resolver (R12-AGENCY-1056) landed the same day, which is the prerequisite for the structural half; the sentence-to-claim binding is not built. Held PARTIAL."
+    "notes": "Re-graded 2026-10-18 (lane L10): before-adapter case exists and its mutation fired. 2026-10-24 lane N3-MODEL-EDGE-INFRA: added the test pinning the decision from both sides (honest 'Quote 20 lots on venue-a ...' released on a resolving equal claim; mismatched or unresolved claim refused with factual_support alone failing). Mutation fired: failing content that holds no citation claim as a substring refuses the honest draft and the release assertion fails. Held PARTIAL: the clause (sentence binding) is declined by ADR 0146, not met."
   },
   {
     "id": "R12-AGENCY-1066",
@@ -1627,12 +1626,12 @@
       "backend/crates/apps/qip-cli/src/agency.rs:339-347",
       "backend/crates/services/qip-agency/src/engine.rs:316-349",
       "backend/crates/services/qip-agency/src/guard.rs:264-336",
-      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
-      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
-      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:141-160"
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:474 check_provenance_resolving",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:141-160",
+      "backend/crates/services/qip-agency/tests/conduct_brain.rs::a_claim_whose_evidence_id_resolves_to_no_record_or_whose_source_is_unauthorised_is_refused_as_rumour_while_an_uncited_action_phrase_alone_is_not_parsed",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses"
     ],
-    "gap": "Phrase list only for rumour: 'per people close to the matter', 'reportedly', 'chatter suggests' pass unless listed. The evidence resolver (R12-AGENCY-1056) now exists, but the structural rule the closure asks for (an assertion sentence with no resolving citation is rumour) needs a binding of sentences to citations, and without it every uncited sentence of an ordinary action description ('Quote 20 lots on venue-a') would be refused as rumour. Remaining: that binding, then the rule.",
+    "gap": "Rumour is structural by decision (ADR 0146 decision 5): a claim with no recorded counterpart, or recorded under an unauthorised source whatever source the citation declares, is refused by check_provenance_resolving / check_factual_support_resolving; no sentence-to-citation binding is built. RUMOUR_PHRASES stays a vocabulary floor with a named paraphrase miss ('reportedly', 'chatter suggests' pass unless listed). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1640,10 +1639,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test conduct_brain a_claim_whose_evidence_id; cargo +1.94.1 test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: guard case 'no_rumour_engineering' and the CLI rumour test do refuse before the adapter, and the binary composes it. Re-read 2026-10-18 (lane L10) after R12-AGENCY-1056 landed: the resolver is the prerequisite and is in place; the sentence-level rule is not, and building it on whole-draft citations would refuse honest drafts. Held PARTIAL."
+    "notes": "Round-2 independent audit, 2026-10-11: guard case 'no_rumour_engineering' and the CLI rumour test refuse before the adapter, and the binary composes it. 2026-10-24 lane N3-MODEL-EDGE-INFRA: verification corrected (it named a qip-edge pricing test unrelated to this row); added the test for the structural rule. Mutation fired: comparing the citation's declared source instead of the recorded one releases the forged-provenance draft and the test fails. Held PARTIAL: the sentence binding the row asks for is declined by ADR 0146."
   },
   {
     "id": "R12-ARCH-1070",

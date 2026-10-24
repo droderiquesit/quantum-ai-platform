@@ -4241,7 +4241,7 @@
     "verification": "cargo test -p qip-storage",
     "work_item": "",
     "size": "S",
-    "notes": "Gap corrected 2026-10-18 by lane L17 from the code (archive.rs blob_key/hydrate, compaction.rs compact/merge_objects); nothing in the code changed. Lane W8-156, 2026-10-19 (ADR 0156) §2.1-2.3. Mutations fired and restored: the archive-key refusal disabled (the archive objects merge and the untouched assertion fails); the min_object_size condition dropped (the 8-byte object is merged and reported)."
+    "notes": "Re-read 2026-10-24: compacting_the_archive_prefix_is_refused_and_leaves_every_object_and_manifest_untouched exists (qip-storage/tests/compaction.rs:38). The remaining clause is a production caller for Compactor, which waits on a lake that produces tiny objects; no code change in this lane."
   },
   {
     "id": "R12-FINOPS-9188",
