@@ -1412,14 +1412,16 @@
   },
   {
     "id": "R12-CONTRACT-7063",
-    "status": "PARTIAL",
-    "current": "The contract BeliefState is now constructed in production: the central plane states each open belief as one and uses its expiry and validation as the gate for what is shipped to cells.",
+    "status": "COMPLETE",
+    "current": "The contract BeliefState (six fields) is constructed in production by central/belief.rs::belief_state and gates what ships to cells. The reasoning engine's freshness type is now qip_reasoning_engine::BeliefClock (belief.rs, accessor ReasoningEngine::belief_clock, read by platform.rs for Capability::BeliefState), so the contract owns the name. No wire carries either name; what crosses to cells stays ADR 0088's Beliefs slot beside BeliefPriors.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:274 a_belief_state_missing_any_of_its_six_fields_is_refused_on_decode",
-      "backend/crates/services/qip-reasoning-engine/src/engine.rs:17 production imports the reasoning-engine type",
-      "backend/crates/runtime/qip-kernel/src/central/belief.rs::belief_state"
+      "backend/crates/services/qip-reasoning-engine/src/belief.rs::BeliefClock",
+      "backend/crates/services/qip-reasoning-engine/src/engine.rs::ReasoningEngine::belief_clock",
+      "backend/crates/runtime/qip-kernel/src/platform.rs reasoning.belief_clock().last_updated()",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_does",
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:274 a_belief_state_missing_any_of_its_six_fields_is_refused_on_decode"
     ],
-    "gap": "Two different things share the name. qip-reasoning-engine's BeliefState (belief.rs, 70 lines) is a freshness clock - when a belief was last formed, read for Capability::BeliefState - and carries no probability, TTL or uncertainty, so a TryFrom to the contract's six-field BeliefState has nothing to convert. The contract BeliefState is built where it belongs, from episodes, in central/belief.rs and gates what ships to cells; what crosses to cells is still BeliefPriors slots. Closing needs either renaming the engine type (e.g. BeliefClock) so the contract owns the name, and a receiver that reads BeliefState rather than priors.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1427,10 +1429,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning forming_a_hypothesis_moves; cargo test -p qip-contracts --test section27_partial_contracts",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L23: not implemented; a conversion at engine.rs:17 would have invented the fields."
+    "notes": "Rename landed in 4c1fe46a (ADR 0149 d19); regraded 2026-10-24 lane T6-MODEL-AGENTS after re-running the test. Mutation re-fired: last_updated() returning Some(1ms) before any hypothesis formed failed the test at reasoning.rs:1551 (left Some(1970-01-01T00:00:00.001Z), right None); restored byte for byte, passes."
   },
   {
     "id": "R12-CONTRACT-7064",

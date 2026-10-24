@@ -1243,23 +1243,26 @@
   },
   {
     "id": "R12-GCP-8056",
-    "status": "MISSING",
-    "current": "No google_network_connectivity_* resource in the tree.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/ncc declares google_network_connectivity_hub and a VPC spoke per plane; the root instantiates it with enabled = false and spokes for the reflex, fabric, service, data and engineering networks. Nothing is planned or enabled.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf (no NCC)"
+      "infrastructure/terraform/modules/ncc/main.tf",
+      "infrastructure/terraform/main.tf module \"ncc\"",
+      "infrastructure/terraform/modules/ncc/tests/ncc.tftest.hcl",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_ncc_hub_and_every_spoke_are_gated_on_a_flag_the_root_leaves_false"
     ],
-    "gap": "NCC hub/spoke module.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24: no terraform binary in the lane's session, so ncc.tftest.hcl and terraform validate have not run; networkconnectivity.googleapis.com is not in modules/services; enabling needs a plan shown to a person, and each VPC spoke bills for inter-spoke data.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure the_ncc; terraform test in infrastructure/terraform/modules/ncc",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 (T5-MESH-INFRA): Mutation: removed the enabled gate from the vpc spoke's for_each, set the root's enabled = true, set the hub count = 1; the test failed each time at the matching assertion; restored byte-for-byte."
   },
   {
     "id": "R12-GCP-8057",
@@ -1402,7 +1405,7 @@
       "infrastructure/terraform/modules/execution-node/main.tf:411,424 GVNIC/TIER_1",
       "infrastructure/terraform/modules/execution-node/variables.tf:138-150"
     ],
-    "gap": "No plan showing a node; no shard-sizing record; gVNIC/Tier-1 benefit not benchmarked.",
+    "gap": "2026-10-24: no node is enabled, so no plan shows one; shard sizing and gVNIC/Tier-1 benchmark need a deployed node.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1924,13 +1927,15 @@
       "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:547",
       "backend/crates/apps/qip-fabricd/src/config.rs:252",
       "infrastructure/event-fabric/streams.local.json:12",
+      "infrastructure/event-fabric/streams.managed.json:9",
+      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs::the_committed_managed_catalogue_claims_rf3_for_p0_and_p1_only_and_binds_what_the_local_one_does",
       "apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
       "apps/qip-fabricd/tests/managed.rs::a_managed_majority_producer_refuses_an_acknowledgement_from_a_local_broker",
       "apps/qip-fabricd/tests/managed.rs::a_seated_broker_refuses_a_local_p1_stream_and_a_local_broker_refuses_a_managed_one",
       "apps/qip-fabricd/tests/chaos.rs::seeded_kills_and_partitions_lose_no_acknowledged_record_and_never_split_an_epoch",
       "docs/adr/0111-event-fabric-replication-is-delegated-to-a-managed-consensus-and-not-written-in-tree.md"
     ],
-    "gap": "Steps still needed: (1) A committed catalogue that declares P0/P1 managed_majority at RF3. (2) A deployed fabricd seated on Spanner, with enable_spanner on. (3) Evidence that Spanner's majority commit stands in for 'RF3 across zones' (ADR 0111 leaves this to the register). (4) An asynchronous cross-region mirror, which is refused today (C8/ADR 0113).",
+    "gap": "Steps still needed: (2) A deployed fabricd seated on Spanner with enable_spanner on and a managed-log database applied; fabricd is not deployed and enable_spanner=false in every tfvars. (3) Evidence that Spanner's majority commit stands in for 'RF3 across zones' (ADR 0111 leaves this to the register); the kill tests run on MemoryManagedLog and the Spanner adapter on a fake transport, so no Spanner replica was ever killed. (4) An asynchronous cross-region mirror, refused today (C8/ADR 0113, ADR 0120). Step (1) closed 2026-10-24: infrastructure/event-fabric/streams.managed.json declares the P0 and P1 streams managed_majority at RF3. Nothing selects that file in a deployment yet, because no deployment seats fabricd. Corrected 2026-10-24.",
     "implemented": false,
     "tested": true,
     "integrated": false,

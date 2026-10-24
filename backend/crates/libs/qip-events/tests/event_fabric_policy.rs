@@ -836,6 +836,63 @@ fn the_committed_local_catalogue_parses_and_claims_no_replication() {
     }
 }
 
+/// FABRIC-8086 step 1. The local catalogue claims no replication, which is
+/// right for a broker with no managed log; a fabricd seated on Spanner
+/// (ADR 0111) needs a committed catalogue that declares what it delivers,
+/// or the managed path has no stream to run and "managed_majority" stays a
+/// spelling the tree parses and no file uses. The managed catalogue must
+/// differ from the local one in exactly the P0 and P1 replication claim: same
+/// stream names and topics, so choosing one is a deployment decision and not
+/// a re-binding, and P2 to P4 still RF1 because no mechanism honours more.
+///
+/// Mutation: set `reflex-journal.local` to `managed_majority` at RF3 in
+/// `streams.managed.json` — the parse is refused (ADR 0111 §2) and this
+/// fires. Mutation: put `control.local` back to `archived` at RF1 — the
+/// managed-count premise fires.
+#[test]
+fn the_committed_managed_catalogue_claims_rf3_for_p0_and_p1_only_and_binds_what_the_local_one_does()
+{
+    let read = |name: &str| {
+        let path = format!(
+            "{}/../../../../infrastructure/event-fabric/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let bytes = std::fs::read(&path).expect("premise: the committed catalogue is readable");
+        Catalogue::parse(&bytes).expect("the committed catalogue parses")
+    };
+    let local = read("streams.local.json");
+    let managed = read("streams.managed.json");
+    assert_eq!(
+        managed.streams().keys().collect::<Vec<_>>(),
+        local.streams().keys().collect::<Vec<_>>(),
+        "the two catalogues declare different streams"
+    );
+    let mut replicated = Vec::new();
+    for (name, declaration) in managed.streams() {
+        let class = declaration.policy.qos_class();
+        let durable = matches!(class, QosClass::P0Control | QosClass::P1Outcomes);
+        assert_eq!(declaration.policy.is_managed(), durable, "{name}");
+        assert_eq!(
+            declaration.policy.replication_factor(),
+            if durable { 3 } else { 1 },
+            "{name}"
+        );
+        assert_eq!(
+            declaration.topics,
+            local.stream(name).expect("same stream").topics,
+            "{name} binds different topics"
+        );
+        if durable {
+            replicated.push(name.as_str());
+        }
+    }
+    assert_eq!(
+        replicated.len(),
+        2,
+        "premise: one P0 and one P1 stream are replicated: {replicated:?}"
+    );
+}
+
 /// FABRIC-7056: a P0 or P1 stream can never be declared sheddable, and only
 /// P4 telemetry may shed at all. Before this, `StreamPolicy::new` accepted a
 /// P1 outcomes stream declared `sample_or_shed`, and the broker would have
