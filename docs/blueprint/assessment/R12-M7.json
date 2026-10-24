@@ -3687,14 +3687,14 @@
   },
   {
     "id": "R12-COVERAGE-7163",
-    "status": "PARTIAL",
-    "current": "An asset class registry exists in qip-kernel asset_class_registry.rs registering equity, fixed income, credit, rates, derivative, prediction, commodity, private, real asset, physical product.",
+    "status": "COMPLETE",
+    "current": "AssetClassRegistry::shipped holds all 15 AssetClass variants. Platform::new assembles over one instrument of each of the ten classes that need no maturity record, and over a FixedIncome bond, a Credit loan and a Derivative option built with the maturity or extension record their types require (test inputs, not catalogue data). Prediction and PhysicalProduct have no InstrumentType by decision (ADR 0155 section 18): physical goods are commerce units and a prediction market is VenueClass::PredictionMarket.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/universe.rs",
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs",
-      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs::the_shipped_registry_holds_a_record_for_every_asset_class_the_object_model_names, ::an_instrument_of_each_constructible_class_assembles_through_platform_new"
+      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs::an_instrument_of_each_dated_class_assembles_through_platform_new_with_a_stated_maturity",
+      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs::an_instrument_of_each_constructible_class_assembles_through_platform_new",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs::AssetClassRegistry::shipped"
     ],
-    "gap": "The acceptance suite exists (2026-10-18): AssetClassRegistry::shipped holds a record for all 15 AssetClass variants including DigitalAsset (tokenized representations resolve into it), and Platform::new assembles over one instrument of each of the ten classes that can be built without a maturity record. Still PARTIAL as a composite: FixedIncome, Credit and Derivative are not assembled by the suite (every instrument type of theirs needs a maturity or extension record), Prediction and PhysicalProduct have no InstrumentType so no instrument can be in them, and constituent rows R12-COVERAGE-5099..5106 remain PARTIAL on trading-path integration.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3702,10 +3702,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-acceptance --test asset_class_registry",
+    "verification": "cargo test -p qip-acceptance --test asset_class_registry",
     "work_item": "",
     "size": "XL",
-    "notes": "Mutation 2026-10-18: deleting the DigitalAsset record from AssetClassRegistry::shipped failed all four tests; restored."
+    "notes": "2026-10-24 ADR 0155 section 18. Mutation fired: deleting the FixedIncome record from AssetClassRegistry::shipped made the dated-class assembly test fail (premise: the fixtures build with their maturity records). Constituent rows R12-COVERAGE-5099..5106 stay PARTIAL on trading-path integration; this composite closes on what is constructible."
   },
   {
     "id": "R12-COVERAGE-7164",

@@ -2373,7 +2373,7 @@
       "backend/crates/services/qip-brokers/src/dex.rs",
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs::AssetClassRegistry::shipped"
     ],
-    "gap": "Bridges, on-chain settlement and the DEX simulator are not on the kernel's production path; no tokenized-representation or crypto derivative trades in a test.",
+    "gap": "By decision (ADR 0155 section 17, 2026-10-24) DexVenue stays a feasibility and cost model: DexVenue::feasibility_model feeds the cell feasibility seam (VenueClass::DecentralisedExchange with a mandatory gas floor), a digital-asset order uses the same simulated gateway as every class, and qip-kernel takes no qip-brokers dependency. No on-chain order path, bridge or settlement simulator is built, and none will be without a new ADR; any simulated chain finality depth is an operator declaration. No tokenized-representation or crypto derivative trades in a test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2384,7 +2384,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-24 ADR 0155 section 17: gap restated, PARTIAL kept; no code. DigitalAsset is registered with exchange T+0 settlement and a crypto spot fills on the simulated broker."
   },
   {
     "id": "R12-COVERAGE-5104",

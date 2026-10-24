@@ -14,8 +14,13 @@ use qip_core::error::{Error, Result};
 use qip_core::{Context, ObjectId, Timestamp, dec};
 use qip_financial::asset_class::{AssetClass, InstrumentType, Sector};
 use qip_financial::costs::LiquidityProfile;
+use qip_financial::extensions::{
+    BondDetails, CouponFrequency, CreditRating, DayCount, ExerciseStyle, Extension, LoanDetails,
+    OptionDetails, OptionType, Seniority, SettlementStyle,
+};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
+use qip_financial::risk_profile::Greeks;
 use qip_financial::universe::Universe;
 use qip_kernel::asset_class_registry::{AssetClassRegistry, LifecycleEngine};
 use qip_kernel::{Platform, PlatformConfig};
@@ -223,5 +228,137 @@ fn every_asset_class_resolves_its_lifecycle_engine_and_an_unregistered_class_is_
         "{}",
         refused.message()
     );
+    Ok(())
+}
+
+/// One instrument of each dated class, built with the maturity or extension
+/// record its type requires (ADR 0155 section 18). They are test inputs, not
+/// catalogue data: the committed universe holds only common stock.
+fn dated_instruments() -> Result<Vec<(AssetClass, FinancialObject)>> {
+    let liquidity = LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0);
+    let maturity = Timestamp::from_civil(2034, 8, 15);
+    let provenance = || Provenance::synthetic("asset-class-registry", start());
+
+    let bond = FinancialObject::builder(
+        ObjectId::from_string("obj-bond"),
+        "T4.25-34",
+        InstrumentType::GovernmentBond,
+        liquidity.clone(),
+    )
+    .venue("XNYS")
+    .price(dec!("100"))
+    .provenance(provenance())
+    .extension(Extension::Bond(BondDetails {
+        issuer: "US Treasury".into(),
+        coupon_rate: 0.0425,
+        coupon_frequency: CouponFrequency::SemiAnnual,
+        maturity,
+        issue_date: Timestamp::from_civil(2024, 8, 15),
+        face_value: qip_core::Decimal::from_int(100),
+        day_count: DayCount::ActualActual,
+        seniority: Seniority::SeniorUnsecured,
+        credit_rating: Some(CreditRating::Aaa),
+        yield_to_maturity: 0.0431,
+        modified_duration: 6.8,
+        convexity: 58.0,
+        option_adjusted_spread_bps: 0.0,
+        callable: false,
+        puttable: false,
+        inflation_index: None,
+    }))
+    .build(start())?;
+
+    let loan = FinancialObject::builder(
+        ObjectId::from_string("obj-loan"),
+        "LOAN",
+        InstrumentType::Loan,
+        liquidity.clone(),
+    )
+    .venue("OTC")
+    .price(dec!("98"))
+    .provenance(provenance())
+    .extension(Extension::Loan(LoanDetails {
+        borrower: "Borrower Ltd".into(),
+        maturity,
+        commitment: dec!("50000000"),
+        drawn: dec!("50000000"),
+        spread_bps: 525.0,
+        benchmark: "SOFR".into(),
+        seniority: Seniority::SecuredFirstLien,
+        modified_duration: 0.25,
+        covenant_lite: false,
+        net_debt_to_ebitda: 3.0,
+        leverage_covenant: Some(5.0),
+        is_amortising: false,
+    }))
+    .build(start())?;
+
+    let underlying = ObjectId::from_string("obj-underlying");
+    let option = FinancialObject::builder(
+        ObjectId::from_string("obj-option"),
+        "ACME270115C00200000",
+        InstrumentType::Option,
+        liquidity,
+    )
+    .venue("OPRA")
+    .price(dec!("5.25"))
+    .underlying(underlying.clone())
+    .provenance(provenance())
+    .extension(Extension::Option(OptionDetails {
+        underlying_object_id: underlying.as_str().to_string(),
+        strike: dec!("200"),
+        expiry: Timestamp::from_civil(2027, 1, 15),
+        option_type: OptionType::Call,
+        exercise_style: ExerciseStyle::American,
+        contract_multiplier: qip_core::Decimal::from_int(100),
+        settlement: SettlementStyle::Physical,
+        implied_volatility: 0.28,
+        greeks: Greeks {
+            delta: 0.45,
+            gamma: 0.02,
+            vega: 0.31,
+            theta: -0.05,
+            ..Greeks::default()
+        },
+        open_interest: 12_000,
+    }))
+    .build(start())?;
+
+    Ok(vec![
+        (AssetClass::FixedIncome, bond),
+        (AssetClass::Credit, loan),
+        (AssetClass::Derivative, option),
+    ])
+}
+
+#[test]
+fn an_instrument_of_each_dated_class_assembles_through_platform_new_with_a_stated_maturity()
+-> Result<()> {
+    let dated = dated_instruments()?;
+    let mut universe = Universe::new();
+    for (class, object) in dated {
+        // Premises: the fixture is in the class it stands for and carries the
+        // dated record its type requires, so the assembly below is not
+        // passing on an object that skipped the check.
+        assert_eq!(object.asset_class, class);
+        assert!(
+            object.maturity().is_some() || class == AssetClass::Derivative,
+            "{} was built without the maturity its type requires",
+            class.as_str()
+        );
+        universe.insert(object)?;
+    }
+    let platform = assemble(universe)?;
+    for class in [
+        AssetClass::FixedIncome,
+        AssetClass::Credit,
+        AssetClass::Derivative,
+    ] {
+        assert!(
+            platform.asset_class_registry().is_registered(class),
+            "{} has no record in the registry Platform::new assembled over",
+            class.as_str()
+        );
+    }
     Ok(())
 }
