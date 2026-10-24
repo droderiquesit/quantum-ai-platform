@@ -76,26 +76,26 @@
   },
   {
     "id": "R12-REASON-1004",
-    "status": "PARTIAL",
-    "current": "qip-reasoning-engine has rules, temporal, constraint, contradiction, bayes and trust_score modules; the kernel uses only engine/evidence/hypothesis. No proof-trace type exists anywhere in the workspace.",
+    "status": "COMPLETE",
+    "current": "The kernel's REASON stage runs the symbolic reasoners over every formed hypothesis (symbolic_stage::derive: rule pack, temporal order, Bayesian posterior, constraint answer, lifecycle, abduction, intervention) and journals a SymbolicDerivation that replay re-derives and verifies, so executable proof traces exist. Under ADR 0125 decision 2 the rule pack vetoes: a hypothesis review approved and the pack refuses on a hard stop (tripped kill switch, live ceiling, one lot over the position budget, cash short of one lot) forms no proposal, and the stage reports the cause beside the journaled derivation.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/rules.rs:30",
-      "backend/crates/services/qip-reasoning-engine/src/temporal.rs:29",
-      "backend/crates/services/qip-reasoning-engine/src/constraint.rs:38",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:179 kernel imports reasoning engine/hypothesis only"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs::SymbolicDerivation::veto",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::reason_symbolically (returns the veto) and its caller's DecisionTaken::NotSizeable arm",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:442 rule_pack",
+      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs::a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal"
     ],
-    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the veto arm in reason_symbolically's caller (derive moved before approval) and a kernel test that a rule-refused hypothesis forms no proposal.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel (new: a neural proposal rejected by a symbolic rule)",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test valuation_seam a_hypothesis_review_approved; cargo +1.94.1 test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Wire rules/temporal/constraint into the kernel's REASON stage as a verifier of neural proposals; add executable proof traces."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D01. Closed 2026-10-24 by lane N3-MODEL-EDGE-INFRA. Scope stated plainly: the veto is the pack's hard stops only. The first cut vetoed on every ineligible approval and broke 20 kernel tests, because r10-eligible also withholds on confidence under 5000 bp and on contested evidence, and a contested thesis is held small and scored by design (ADR 0150 decision 14; Hypothesis::confidence_for_sizing only narrows). Vetoing on those two would reverse that decision, so they stay sizing inputs; the kernel suite then ran with 1035 passed, 0 failed. The ADR's wording (agrees_with_review = false) is broader than what is built, and the narrowing is flagged for the owner. A pack that refused its input (Step::Refused) is never a veto. Mutation fired: SymbolicDerivation::veto never returning a reason queues the thesis ('sized on conviction') and the vetoed-half assertion fails; restored, valuation_seam test result: ok. 8 passed. The module and call-site documents that said 'advisory, never acted on' are corrected to name ADR 0125."
   },
   {
     "id": "R12-AMBIENT-1005",
@@ -404,7 +404,7 @@
       "backend/crates/services/qip-mesh/src/peer.rs:314 PeerMessage",
       "backend/crates/apps/qip-edge-node/src/mesh.rs:317 exchange with centre only"
     ],
-    "gap": "Peer link on by default or set by committed deployment.",
+    "gap": "Corrected 2026-10-24. The node spawns the peer mesh when QIP_PEER_MESH_LISTEN / QIP_PEER_MESH_PEERS are set and announces that it coordinates with no other cell directly when they are unset; a committed deployment cannot set them yet because a peer is another execution node: execution_nodes = {} in test, stage and prod, and dev declares one node (newyork-1) with execution_nodes_enabled = false, so there is no peer address to name and no peer workload certificate to admit. manifest_wiring.rs::THE_PEER_MESH_HAS_NO_DEPLOYED_PEER records exactly this and must change together with the first two-node deployment. Making the mesh default-on would invent a peer, so it is not done.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -417,7 +417,7 @@
     "verification": "cargo test -p qip-mesh",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). 2026-10-24 lane N3-MODEL-EDGE-INFRA: gap restated with the deployment facts (grep -rn execution_nodes infrastructure/environments/*/terraform.tfvars); no code changed. Held PARTIAL on deployment evidence."
   },
   {
     "id": "R12-QUANT-1019",

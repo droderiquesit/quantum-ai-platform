@@ -45,21 +45,26 @@
   },
   {
     "id": "R12-SEC-10003",
-    "status": "MISSING",
-    "current": "No privileged_access_manager resource anywhere in infrastructure/terraform.",
-    "evidence": [],
-    "gap": "Declare PAM entitlements for owner/infra roles and remove standing human grants.",
-    "implemented": false,
-    "tested": false,
+    "status": "PARTIAL",
+    "current": "The root declares google_privileged_access_manager_entitlement.this (security.tf, SEC-9123) from var.pam_entitlements, which refuses an entitlement with no approver, a basic role, self-approval, a duration over eight hours and non-IAM principals; security.tftest.hcl plans one with mocked providers. No Terraform source grants a human or public principal a role of its own, and an acceptance test now enforces it (principals only inside pam_entitlements). pam_entitlements is empty in every environment, so no entitlement exists and the API is not enabled.",
+    "evidence": [
+      "infrastructure/terraform/security.tf:94 google_privileged_access_manager_entitlement.this",
+      "infrastructure/terraform/variables.tf:1820 pam_entitlements and its validations",
+      "infrastructure/terraform/tests/security.tftest.hcl:96",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::no_terraform_source_grants_a_human_or_public_principal_a_standing_role"
+    ],
+    "gap": "Corrected 2026-10-24. In-repo parts are done (resource, refusals, mock-plan test, the standing-human-binding scan). Remaining, none doable from a lane: (1) the owner's real requester and approver groups written into pam_entitlements in infrastructure/environments/*/terraform.tfvars (a protected path, and an account identifier that must not be invented); (2) a plan showing the entitlement against the real project (not run: no plan against a real project, and no terraform binary in this session); (3) removing any standing human grant that exists in the live project, which this repository cannot see.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan showing google_privileged_access_manager_entitlement and an acceptance test refusing standing human admin bindings",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure no_terraform_source_grants; terraform test in infrastructure/terraform (security.tftest.hcl)",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane N3-MODEL-EDGE-INFRA: the MISSING grade was stale (SEC-9123 landed the resource). Added the acceptance scan. Mutation fired twice: a literal user: member added to modules/cicd/main.tf and a group: literal added to dev tfvars outside pam_entitlements each fail the scan naming the file; both restored. terraform test not run: the binary is not installed here."
   },
   {
     "id": "R12-GOV-10004",
@@ -983,23 +988,27 @@
   },
   {
     "id": "R12-CICD-10045",
-    "status": "MISSING",
-    "current": "Images are built on GitHub-hosted ubuntu-latest runners in deploy.yml; no Cloud Build worker pool exists.",
+    "status": "PARTIAL",
+    "current": "modules/build-pool creates google_cloudbuild_worker_pool.pool peered into the Engineering VPC with a CMEK-encrypted staging bucket and the CI identity granted use of it (R12 CICD-9097); build-pool.tf gates it on cloud_build_private_pool_enabled, refused outside the build environment; deploy.yml's images job submits builds to the pool (gcloud builds submit --worker-pool) when the committed tfvars turn it on. It is off in every environment, so the images job still builds on a GitHub-hosted runner today.",
     "evidence": [
-      ".github/workflows/deploy.yml:93 runs-on: ubuntu-latest"
+      "infrastructure/terraform/modules/build-pool/main.tf:60 google_cloudbuild_worker_pool.pool",
+      "infrastructure/terraform/build-pool.tf module build_pool gated on cloud_build_private_pool_enabled",
+      "infrastructure/terraform/tests/build-pool.tftest.hcl",
+      "infrastructure/environments/dev/terraform.tfvars:303 cloud_build_private_pool_enabled = false",
+      ".github/workflows/deploy.yml:837 gcloud builds submit --worker-pool"
     ],
-    "gap": "Private pool and workflow migration.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Corrected 2026-10-24. The pool and the workflow migration are written and mock-plan tested; what is missing is turning it on: cloud_build_private_pool_enabled = true in the dev tfvars (a protected path), a plan read by the owner, an apply, and the first deploy.yml run that submits to the pool. The pool bills per build minute and holds a private-service-access peering, so enabling is the owner's act; this lane did not plan or apply (no terraform binary, and no plan against a real project).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan shows google_cloudbuild_worker_pool; deploy.yml submits to it",
+    "verification": "terraform test in infrastructure/terraform (build-pool.tftest.hcl) and a deploy.yml run whose images job logs the worker pool id",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane N3-MODEL-EDGE-INFRA: the MISSING grade was stale. No code changed; the row stays PARTIAL on deployment evidence. terraform test not run: binary not installed in this session."
   },
   {
     "id": "R12-CICD-10046",
@@ -1437,7 +1446,7 @@
     "status": "MISSING",
     "current": "No TPU rung or benchmark memory for accelerators.",
     "evidence": [],
-    "gap": "Accelerator rungs with benchmark gating.",
+    "gap": "Corrected 2026-10-24. The ladder (qip-cost-router tier.rs IntelligenceTier::LADDER) has nine rungs and none is an accelerator; no TPU or GPU is provisioned in any environment. Adding a rung reorders a ladder whose derived Ord is the cost order (a behaviour change for every router caller) and needs an ADR, a billed accelerator the owner provisions, and a measured benchmark per size before the router may choose it; a rung with no provider would be a rung that can never be chosen. The solver benchmark memory the quantum path publishes (keyed by family and size) is the nearest existing gate.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1448,7 +1457,7 @@
     "verification": "cargo test -p qip-cost-router",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane N3-MODEL-EDGE-INFRA: re-read against tier.rs; no code changed, nothing launched."
   },
   {
     "id": "R12-QUANT-10067",

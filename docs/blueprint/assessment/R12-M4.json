@@ -76,7 +76,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:3317-3353 check_models_promoted",
       "backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs:38-120 one toy tree evaluated under five purpose names"
     ],
-    "gap": "No model trained for order-book state, fill probability, adverse selection, short-horizon signal or opportunity scoring; no plan in the deployed path carries one.",
+    "gap": "Corrected 2026-10-24. No model trained for order-book state, fill probability, adverse selection, short-horizon signal or opportunity scoring exists, and no plan in the deployed path carries one (R12-MODEL-4024: no compiled plan carries a model, no node deployed). The in-tree LocalTrainer, distillation and manifest path are free to run, but the only data a purpose model could be fitted on today is the paper simulator's own fills, so the fit would measure the simulator and not a venue; that is a data decision (an ADR and a licensed venue record), not a lane's. model_reflex_evaluation.rs still evaluates one toy tree under five purpose names and constructs two forms; its title overstates it and its assertions pass with every purpose model absent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -89,7 +89,7 @@
     "verification": "cargo test -p qip-edge with a purpose model deployed through the manifest",
     "work_item": "",
     "size": "L",
-    "notes": "model_reflex_evaluation.rs claims to verify 'trained models for each of five named purposes' and 'three forms tree, linear and ensemble'; it evaluates one toy tree renamed per purpose and constructs only two forms, so its assertions would pass with every purpose model absent."
+    "notes": "model_reflex_evaluation.rs claims to verify 'trained models for each of five named purposes' and 'three forms tree, linear and ensemble'; it evaluates one toy tree renamed per purpose and constructs only two forms, so its assertions would pass with every purpose model absent. 2026-10-24 lane N3-MODEL-EDGE-INFRA: gap restated; no training job launched, no code changed."
   },
   {
     "id": "R12-MODEL-4005",
