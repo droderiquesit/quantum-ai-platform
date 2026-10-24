@@ -1320,21 +1320,25 @@
   },
   {
     "id": "R12-GCP-10060",
-    "status": "MISSING",
-    "current": "No connectivity test resources.",
-    "evidence": [],
-    "gap": "Declare tests.",
-    "implemented": false,
-    "tested": false,
+    "status": "PARTIAL",
+    "current": "modules/connectivity-tests declares google_network_management_connectivity_test per named path (source and destination by instance or IP, protocol, port) with its intent (reachable | unreachable) as a label, and refuses at plan a test with no intent, a malformed protocol or port, a test missing an endpoint, and a suite with no forbidden path. tests/connectivity_tests.tftest.hcl plans it against mocks.",
+    "evidence": [
+      "infrastructure/terraform/modules/connectivity-tests/main.tf",
+      "infrastructure/terraform/modules/connectivity-tests/variables.tf",
+      "infrastructure/terraform/modules/connectivity-tests/tests/connectivity_tests.tftest.hcl"
+    ],
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the module exists and is tested but is not instantiated from the root (a root variable is a change to infrastructure/terraform/variables.tf, protected) and no environment names a path; the key paths (execution node to venue and to the internet, API to ledger, broker to archive) need the deployed instances' self-links, which do not exist while no node or broker is deployed. No real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/connectivity-tests && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: terraform 1.9.8 in a scratch copy 'Success! 4 passed, 0 failed.' Mutation: the at-least-one-forbidden-path validation weakened to `length(var.tests) >= 0` failed a_suite_of_only_intended_paths_is_refused ('Missing expected failure'); restored by cp and cmp, 4 passed."
   },
   {
     "id": "R12-ARCH-10061",
@@ -2943,7 +2947,7 @@
       "backend/crates/apps/qip-deepbrain/src/node.rs::a_node_halted_when_its_loop_runs_queues_strategic_questions_and_runs_every_stage",
       "backend/crates/apps/qip-edge-node/tests/reasoning_outage_loop.rs::a_node_driven_by_its_decision_loop_trades_the_same_passes_orders_and_refusals_when_the_centre_stops_part_way"
     ],
-    "gap": "2026-10-24 (lane L6): both halves now run through the shipped loops. Deep brain: node.rs::a_node_halted_when_its_loop_runs_queues_strategic_questions_and_runs_every_stage drives run() with a halted status and asserts the lattice backlog queues while every stage runs. Edge: qip-edge-node tests/reasoning_outage_loop.rs::a_node_driven_by_its_decision_loop_trades_the_same_passes_orders_and_refusals_when_the_centre_stops_part_way builds the node as main.rs does (assemble with the journal wire, outbox, MeshWorker on a real loopback centre) and works seven DecisionLoop::turn calls twice, once with the centre answering and once with it dropped before turn 3, and compares turn records, orders, refusals and the whole shipped journal pass for pass. Pending an independent skeptic's verdict. Known limit, stated in the test: a mutation that makes the turn block on the worker would slow the loop, not change its passes, so it is covered by decision_loop.rs::a_silent_centre_a_silent_peer_and_a_stalled_journal_store_together_hold_no_turn rather than this test.",
+    "gap": "2026-10-24 (lane L6): both shipped loops now carry tests (deep brain run() under a halted status queues the lattice's strategic backlog while every stage runs; edge DecisionLoop::turn with a MeshWorker trades identically when the centre is dropped), each mutation-verified. An independent skeptic REFUTED promotion on the requirement's text: (1) 'AI/agent platform is lost' is simulated by a proxy — the deep brain's own kill-switch status and an edge centre that publishes nothing, so the healthy run receives no cognition either; (2) 'no new cognitive/model output is produced' has no proof and the code contradicts it: the gate only holds the lattice's strategic rows (lattice_stage.rs:519); REASON, shorter horizons, research, tick and evolution loops keep producing; (3) 'existing packages continue' is unproven: the edge test deploys a strategy directly (deploy_with_pricing) and installs no package through StrategyInstaller, and no package test drops the centre; (4) the edge centre exists only behind QIP_MESH_PEER, which no committed environment sets (as REFLEX-5029); (5) whether the lattice's strategic backlog is the 'research backlog' is undecided, and the research loop is not gated. Closing needs: an outage simulated as provider/agent loss with a test that no new model or agent output is journaled during it and resumes after; a package installed via StrategyInstaller with a centre that publishes policy, held across the drop; a default-path decision on the mesh; and an owner's reading of 'research backlog'.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2954,7 +2958,7 @@
     "verification": "cargo test -p qip-deepbrain --lib a_node_halted_when_its_loop_runs_queues_strategic_questions_and_runs_every_stage; cargo test -p qip-edge-node --test reasoning_outage_loop",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice. AUDIT-4 2026-10-24: regraded, the deep-brain half is proven only on the function (gate_strategic_service called directly in node.rs tests); deleting its one call in the shipped run loop (node.rs:490) fails no test, so a running deep brain could keep the strategic service up through an outage unnoticed. The edge-node half repeats REFLEX-5029: reasoning_outage drives MeshLink::exchange, which the shipped node never calls. 2026-10-24 lane L6: mutation deleting the gate_strategic_service call in run_with failed the new test at node.rs:1142 ('the run loop left the strategic service up through a halt'); restored by cp and cmp, it passes. qip-deepbrain --no-fail-fast: 15 result lines, 317 passed, 0 failed. Stays PARTIAL for the edge half. 2026-10-24 lane L6 (edge half): mutation making DecisionLoop::turn skip its pass on a turn whose mesh tick carried a poll error failed reasoning_outage_loop.rs:747 ('turn 3 differs with the centre stopped before turn 3'); restored by cp and cmp, it passes (three consecutive runs ok). qip-edge-node --no-fail-fast: 41 result lines, 285 passed, 0 failed."
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice. AUDIT-4 2026-10-24: regraded, the deep-brain half is proven only on the function (gate_strategic_service called directly in node.rs tests); deleting its one call in the shipped run loop (node.rs:490) fails no test, so a running deep brain could keep the strategic service up through an outage unnoticed. The edge-node half repeats REFLEX-5029: reasoning_outage drives MeshLink::exchange, which the shipped node never calls. 2026-10-24 lane L6: mutation deleting the gate_strategic_service call in run_with failed the new test at node.rs:1142 ('the run loop left the strategic service up through a halt'); restored by cp and cmp, it passes. qip-deepbrain --no-fail-fast: 15 result lines, 317 passed, 0 failed. Stays PARTIAL for the edge half. 2026-10-24 lane L6 (edge half): mutation making DecisionLoop::turn skip its pass on a turn whose mesh tick carried a poll error failed reasoning_outage_loop.rs:747 ('turn 3 differs with the centre stopped before turn 3'); restored by cp and cmp, it passes (three consecutive runs ok). qip-edge-node --no-fail-fast: 41 result lines, 285 passed, 0 failed. 2026-10-24 lane L6: skeptic (code-reviewer, read-only) verdict REFUTED; findings above. Stays PARTIAL."
   },
   {
     "id": "R12-RES-10131",
