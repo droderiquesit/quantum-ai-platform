@@ -265,3 +265,137 @@ fn a_high_or_critical_finding_stops_an_image_before_it_is_signed_on_every_path()
         "ci's filesystem scan no longer stops on the same high and critical bar"
     );
 }
+
+/// The text of the `gate` job: from its key to the next job's key.
+fn gate_job(workflow: &str) -> &str {
+    let at = workflow
+        .find("\n  gate:\n")
+        .unwrap_or_else(|| panic!("{DEPLOY} has no `gate` job"));
+    let rest = &workflow[at + 1..];
+    let end = rest[1..]
+        .lines()
+        .scan(1usize, |offset, line| {
+            let start = *offset;
+            *offset += line.len() + 1;
+            Some((start, line))
+        })
+        .find(|(_, line)| {
+            line.starts_with("  ")
+                && !line.starts_with("   ")
+                && !line.trim_start().starts_with('#')
+                && line.trim_end().ends_with(':')
+        })
+        .map_or(rest.len(), |(start, _)| start);
+    &rest[..end]
+}
+
+#[test]
+fn a_deployment_whose_ci_run_did_not_succeed_is_refused_on_both_paths() {
+    // R12-CICD-9106: the deploy gates on ci. `deploy.yml` holds that in two
+    // steps of its `gate` job, one per trigger. Until 2026-10-24 either
+    // could be deleted and no acceptance suite failed. AUDIT-3 found it:
+    // the row was COMPLETE on a test that reads neither workflow. Each
+    // script is extracted from the committed workflow and run under bash,
+    // admitting case first, because a script that exits 1 on every input
+    // passes every refusal below.
+    let workflow = read(DEPLOY);
+    let gate = gate_job(&workflow);
+
+    // The automatic path: the conclusion of the ci run that triggered this.
+    let step = "the triggering ci run succeeded";
+    assert!(
+        gate.contains(&format!(
+            "      - name: {step}\n        if: github.event_name == 'workflow_run'\n"
+        )),
+        "step {step:?} is not in the gate job bound to the workflow_run path it guards"
+    );
+    assert!(
+        step_text(&workflow, step)
+            .contains("CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}"),
+        "step {step:?} no longer reads the triggering run's conclusion"
+    );
+    let script = step_script(&workflow, step);
+    assert_eq!(
+        run(&script, &[("CI_CONCLUSION", "success")]),
+        0,
+        "a successful ci run was refused, so the automatic path refuses everything"
+    );
+    for conclusion in [
+        "failure",
+        "cancelled",
+        "timed_out",
+        "skipped",
+        "neutral",
+        "action_required",
+        "stale",
+        "startup_failure",
+        "",
+    ] {
+        assert_ne!(
+            run(&script, &[("CI_CONCLUSION", conclusion)]),
+            0,
+            "a ci run that concluded {conclusion:?} started a deployment"
+        );
+    }
+
+    // The manual path: the commit's own push-event ci history, through `gh`.
+    // A stand-in `gh` on PATH answers the `--jq '.total_count'` query with a
+    // fixed count, or fails the way an unreachable API does.
+    let step = "ci succeeded for this commit";
+    assert!(
+        gate.contains(&format!(
+            "      - name: {step}\n        if: github.event_name == 'workflow_dispatch'\n"
+        )),
+        "step {step:?} is not in the gate job bound to the workflow_dispatch path it guards"
+    );
+    let script = step_script(&workflow, step);
+    let bin = std::env::temp_dir().join(format!("qip-deploy-gate-gh-{}", std::process::id()));
+    std::fs::create_dir_all(&bin).unwrap_or_else(|error| panic!("{bin:?}: {error}"));
+    let gh = bin.join("gh");
+    std::fs::write(
+        &gh,
+        "#!/bin/bash\n[ \"$FAKE_GH_FAIL\" = 1 ] && exit 1\necho \"$FAKE_GH_COUNT\"\n",
+    )
+    .unwrap_or_else(|error| panic!("{gh:?}: {error}"));
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|error| panic!("{gh:?}: {error}"));
+    }
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let manual = |count: &str, fail: &str| {
+        run(
+            &script,
+            &[
+                ("PATH", path.as_str()),
+                ("FAKE_GH_COUNT", count),
+                ("FAKE_GH_FAIL", fail),
+                ("GH_TOKEN", "unused"),
+                ("THIS_REPOSITORY", "droderiquesit/quantum-ai-platform"),
+                ("DEPLOY_SHA", "0123456789abcdef0123456789abcdef01234567"),
+            ],
+        )
+    };
+    assert_eq!(
+        manual("1", "0"),
+        0,
+        "a commit with a successful push-event ci run was refused, so the manual path \
+         refuses everything"
+    );
+    // Not yet asserted: an empty or `null` count. `[ "" -lt 1 ]` is a bash
+    // error, an `if` condition is exempt from `set -e`, so the step falls
+    // through to "ci succeeded" and admits the dispatch. The fail-closed
+    // check and the two cases are `docs/blueprint/lanes/cicd-9106-protected.patch`,
+    // which needs a person's review because `.github/**` is protected.
+    for (case, count, fail) in [
+        ("no successful ci run", "0", "0"),
+        ("an unreachable API", "", "1"),
+    ] {
+        assert_ne!(
+            manual(count, fail),
+            0,
+            "a dispatch with {case} for its commit started a deployment"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&bin);
+}
