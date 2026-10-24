@@ -373,13 +373,35 @@ fn a_plan_naming_a_product_that_already_rests_on_the_venue_is_refused_and_leaves
         3,
         dec!("0.05"),
     )?;
+    // The foreign book reaches the venue the only way a resting book can: listed
+    // empty under a listing admission, then seeded under its own seeding
+    // admission (R12-EXEC-5079 refuses a listing that arrives with levels).
     let foreign = rule.book(RESTING, VENUE, start())?;
-    let request = CreationRequest::new(CreationAction::List, VENUE, RESTING, "GB");
     let mut register = CreationPermissions::new();
-    for authority in CreationAuthority::ALL {
-        register.record(authority, &request, "resting before the plan")?;
+    for action in [CreationAction::List, CreationAction::Seed] {
+        let request = CreationRequest::new(action, VENUE, RESTING, "GB");
+        for authority in CreationAuthority::ALL {
+            register.record(authority, &request, "resting before the plan")?;
+        }
     }
-    broker.list_book(foreign, &register.admit(&request)?)?;
+    broker.list_book(
+        qip_market::book::OrderBook::new(qip_core::ObjectId::from_string(RESTING), VENUE, start()),
+        &register.admit(&CreationRequest::new(
+            CreationAction::List,
+            VENUE,
+            RESTING,
+            "GB",
+        ))?,
+    )?;
+    broker.list_book(
+        foreign,
+        &register.admit(&CreationRequest::new(
+            CreationAction::Seed,
+            VENUE,
+            RESTING,
+            "GB",
+        ))?,
+    )?;
     let depth = broker
         .listed_book(RESTING)
         .map(|book| book.total_depth())
