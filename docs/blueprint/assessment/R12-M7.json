@@ -493,7 +493,7 @@
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127,154,178 reflex node compile set; no fast-lane crate depends on a slower lane",
       "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11,40 edge node has no compile-time dependency on cognitive crates; separate binaries"
     ],
-    "gap": "",
+    "gap": "2026-10-24 (L4): the requirement has two halves. The first, world-model services that are long-running and versioned with domain-specific stores, is unmet: the world model runs in-process inside qip-kernel's cycle, and no world-model service or store is deployed (billing paused, nothing applied). Only the second half, no single model on the reflex critical path, is proven, by lane_placement and arch_001_independent_reflex. Closing it needs a deployed, versioned world-model service with its own store: a deploy and an ADR, not code in this lane.",
     "implemented": true,
     "tested": true,
     "integrated": true,

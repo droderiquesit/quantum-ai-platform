@@ -798,7 +798,7 @@
       "backend/crates/libs/qip-quantum/src/foundry.rs:178 research family not built",
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112 baseline always computed"
     ],
-    "gap": "Decided by ADR 0134 (accepted 2026-10-18): The hybrid solver router is qip-optimization-engine's compute router: hedge and hypothesis searches submit to it asynchronously, the classical answer is always computed, a hedge result carries an unwind plan, and the next quantum research family is feature-subset selection on the simulated provider. Code left: a FeatureEnsembleSelection FamilyDeclaration with its QUBO encoding and greedy baseline, and a solvers.rs test asserting the experiment record and the baseline.",
+    "gap": "Decided by ADR 0134 (accepted 2026-10-18): The hybrid solver router is qip-optimization-engine's compute router: hedge and hypothesis searches submit to it asynchronously, the classical answer is always computed, a hedge result carries an unwind plan, and the next quantum research family is feature-subset selection on the simulated provider. Code left: a FeatureEnsembleSelection FamilyDeclaration with its QUBO encoding and greedy baseline, and a solvers.rs test asserting the experiment record and the baseline. 2026-10-24 (L4): blocked by ADR 0150 decision A2, accepted 2026-10-19: a new family's encoding, baseline and benchmark may be written only after a committed note shows the sizes the platform actually poses lie above the exact-enumeration limit and at or below the provider's qubit ceiling. A2 also keeps FeatureEnsembleSelection not built on purpose. No such note exists. For this row the parked patch holds a QuantumExperiment/Benchmark record (FamilyExperiment, QmlExperiment) that validates on construction and carries a problem digest as lineage. The code is written and parked unlanded in docs/blueprint/lanes/L4-quant-research-families-adr0150.patch: the graph-search, feature-selection and scenario-selection QUBO families and the kernel and reservoir QML families, each with a greedy or in-sample-chosen classical baseline, a validated experiment record with a problem digest, and registration in Foundry::platform with a required benchmark field. It applied cleanly to 09ccd529, and its tests and mutations ran green there (qip-quantum --test families 7 passed, --test qml 5 passed, --test foundry 11 passed). The remaining step is an owner or ADR decision that supersedes A2, or the benefit note A2 asks for; then apply the patch. Even then the families run in no binary, so bar part 2 also needs a deep-brain research sweep to run them.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -809,7 +809,7 @@
     "verification": "cargo test (crate producing QuantumExperiment / Benchmark)",
     "work_item": "",
     "size": "XL",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Research families and QuantumExperiment artifact."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Research families and QuantumExperiment artifact. 2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it."
   },
   {
     "id": "R12-EXPAND-6037",
