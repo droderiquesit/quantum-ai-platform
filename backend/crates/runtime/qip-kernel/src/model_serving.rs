@@ -991,15 +991,19 @@ impl Platform {
             permitted_locations,
             at: now,
         };
+        // The cards the promotion moves, journaled before the record that
+        // moves them (R12-MODEL-9003). Written after it, a process that died
+        // between the two left a promoted version with no card anywhere on
+        // the log; written before it, a death between the two leaves cards
+        // that claim a promotion the log does not hold, which a restart
+        // reconciles against the promotion records. And nothing fallible
+        // follows the record, so a promotion the log holds is never reported
+        // as refused.
+        self.journal_model_registry(&scratch, now)?;
         self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
         *registry = scratch;
         self.succeed_model_pack(&record);
         apply_promotion(&mut self.model_promotions, record);
-        // The cards the promotion moved, in the step that moved them
-        // (R12-MODEL-9003): left to the caller's next journal, a process that
-        // died between the two left the log saying one model was promoted
-        // and its cards saying another was in production.
-        self.journal_model_registry(registry, now)?;
         Ok(published)
     }
 
@@ -1082,12 +1086,13 @@ impl Platform {
                 at: now,
                 ..original.clone()
             };
+            // As in a promotion: the moved cards first, nothing fallible
+            // after the record.
+            self.journal_model_registry(&scratch, now)?;
             self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
             *registry = scratch;
             self.succeed_model_pack(&record);
             apply_promotion(&mut self.model_promotions, record);
-            // As in a promotion: the moved cards in the same step.
-            self.journal_model_registry(registry, now)?;
             return Ok(predecessor.clone());
         }
         Err(Error::not_found(format!(

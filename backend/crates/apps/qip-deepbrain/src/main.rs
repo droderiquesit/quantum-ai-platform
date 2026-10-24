@@ -986,6 +986,7 @@ fn run() -> Result<()> {
     // A restarted desk rescores its restored incumbents by the artifacts
     // their promotion records name (R12-MODEL-9003). One that cannot be
     // fetched is printed, and its incumbent blocks promotion by name.
+    evolution = evolution.with_model_artifact_store(model_artifacts.clone());
     let (restored_artifacts, missing_artifacts) = evolution
         .restore_model_artifacts(&platform, |digest| {
             read_model_artifact(model_artifacts.as_ref(), digest)
