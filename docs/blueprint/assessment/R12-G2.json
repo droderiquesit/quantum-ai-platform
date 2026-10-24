@@ -624,13 +624,13 @@
   },
   {
     "id": "R12-WORLD-9027",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Lattice Calibrator freezes ensemble weights at the last safe set when unavailable; kernel marks it unavailable when the lattice review fails to journal.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/lattice.rs::Calibrator::refresh_weights",
       "backend/crates/runtime/qip-kernel/src/platform.rs::understand_now"
     ],
-    "gap": "None for the requirement; not deployed.",
+    "gap": "2026-10-24: Closes when a kernel test makes the lattice review journal fail (a failing journal sink or full spool) and asserts the next review reports WeightUpdate::Frozen, failing when platform.rs:12848 is mutated to pass true.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -643,7 +643,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "M",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4 2026-10-24: regraded, the freeze rule is proven, but the only production path that makes the calibrator unavailable is platform.rs:12848 (from the lattice review failing to journal) and no test drives that: the kernel freeze test calls set_calibrator_available(false) by hand, so the line can be made always-true and every test in qip-kernel still passes"
   },
   {
     "id": "R12-ARCH-9028",
