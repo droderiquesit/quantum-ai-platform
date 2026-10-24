@@ -563,6 +563,14 @@ pub struct Platform {
     /// error was charted and read by nothing, so a twin that was wrong about
     /// a venue stayed wrong by the same amount for ever.
     fill_calibration: qip_twin::calibration::FillCalibration,
+    /// Strategies whose capital grants are narrowed because the twin's replay
+    /// of fills at their venue diverged from the venue (R12-RES-7104), each
+    /// until a re-promotion recorded after it. Resumed from the log, so a
+    /// restart does not hand a held strategy back its full size.
+    replay_divergence_holds: BTreeMap<StrategyId, crate::replay_divergence::DivergenceHold>,
+    /// Where each released strategy's divergence evidence starts again: the
+    /// instant of the re-promotion that released it. Resumed with the holds.
+    replay_divergence_windows: BTreeMap<StrategyId, Timestamp>,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -5617,6 +5625,7 @@ impl Platform {
         // under — while it is still borrowed rather than moved, so a
         // resumed proposal is re-validated against the real rule it names.
         let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
+        let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
         // One activity row per limit, before the set moves into the checker
         // and the monitor: the dormancy finding is about the rules that
         // never fire, and a table that gained rows on the first fire would
@@ -5676,6 +5685,8 @@ impl Platform {
             filled: Vec::new(),
             fill_scores: Vec::new(),
             fill_calibration: qip_twin::calibration::FillCalibration::default(),
+            replay_divergence_holds: replay_divergence_resumed.0,
+            replay_divergence_windows: replay_divergence_resumed.1,
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
@@ -9042,7 +9053,12 @@ impl Platform {
                 // than skipped when a measurement it reads is malformed — a
                 // grant signed past a governor that could not decide is a
                 // grant the governor never saw.
-                let narrowing = self.grant_narrowing(now);
+                // And, for this strategy alone, the twin's divergence at its
+                // venue (R12-RES-7104): a hold narrows every grant signed
+                // while it stands, and only a re-promotion releases it.
+                let narrowing = self
+                    .grant_narrowing(now)
+                    .and_then(|decision| self.narrow_for_replay_divergence(strategy, decision));
                 let outcome = narrowing.and_then(|narrowing| {
                     self.central
                         .issue_narrowed(
@@ -18586,6 +18602,19 @@ impl Platform {
         for problem in problems {
             outcome = outcome.with_problem(problem);
         }
+        // R12-RES-7104: what the same fill errors say about the replays the
+        // strategies at each venue were promoted on. After `score_filled`, so
+        // this cycle's errors are read, and beside `review_sizing` rather than
+        // inside it because that narrows an instrument on the desk and this
+        // narrows a strategy's grant at the centre. It withdraws no venue.
+        let (reviewed, problems) = self.review_replay_divergence(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
         // §15.2's third question, after `score_filled` so the twin's per-fill
         // error exists to read. Until this call the fill error was charted per
         // venue and nothing ever asked whether a venue's fills were getting
@@ -22736,6 +22765,174 @@ impl Platform {
     #[doc(hidden)]
     pub fn fill_calibration_mut(&mut self) -> &mut qip_twin::calibration::FillCalibration {
         &mut self.fill_calibration
+    }
+
+    /// The strategies held to a narrowed grant because the twin diverged at
+    /// their venue, and the measurement behind each (R12-RES-7104).
+    pub fn replay_divergence_holds(
+        &self,
+    ) -> &BTreeMap<StrategyId, crate::replay_divergence::DivergenceHold> {
+        &self.replay_divergence_holds
+    }
+
+    /// The fraction of its allocation a grant to `strategy` is held to by the
+    /// twin's divergence at its venue: one where nothing holds it, and
+    /// [`crate::replay_divergence::REPLAY_DIVERGENCE_MULTIPLIER`] where a hold
+    /// stands. Never above one.
+    pub fn replay_divergence_multiplier(&self, strategy: &StrategyId) -> Decimal {
+        self.replay_divergence_holds
+            .get(strategy)
+            .map_or(Decimal::ONE, |hold| hold.multiplier)
+    }
+
+    /// `decision` further narrowed for `strategy`'s replay-divergence hold,
+    /// named as its own contraction so the grant record says why it is
+    /// smaller. Unchanged where no hold stands.
+    fn narrow_for_replay_divergence(
+        &self,
+        strategy: &StrategyId,
+        mut decision: crate::confidence::ConfidenceDecision,
+    ) -> Result<crate::confidence::ConfidenceDecision> {
+        let Some(hold) = self.replay_divergence_holds.get(strategy) else {
+            return Ok(decision);
+        };
+        decision.multiplier = decision
+            .multiplier
+            .checked_mul(hold.multiplier)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "narrowing {strategy}'s grant by its replay-divergence hold overflows"
+                ))
+            })?;
+        decision.contractions.push(crate::confidence::Contraction {
+            trigger: crate::confidence::Trigger::ReplayDivergence,
+            subject: Some(strategy.as_str().to_string()),
+            multiplier: hold.multiplier,
+            reason: format!(
+                "the twin's replay of fills at {} diverged from the venue by a mean {:.1} bps \
+                 over {} fills, past the {} bps threshold, at {}; {strategy}'s grant is held to \
+                 {} until it is promoted again",
+                hold.venue,
+                hold.mean_abs_error_bps,
+                hold.sample,
+                crate::replay_divergence::REPLAY_DIVERGENCE_THRESHOLD_BPS,
+                hold.raised_at.to_rfc3339(),
+                hold.multiplier
+            ),
+        });
+        Ok(decision)
+    }
+
+    /// The LEARN pass for R12-RES-7104: release every hold a re-promotion
+    /// has answered, then hold every registered strategy whose venue the
+    /// twin now diverges from. Each change is journaled before the state
+    /// moves, so a hold the platform acts on is a hold the log carries.
+    ///
+    /// Releases first: a strategy re-promoted since its hold is measured on
+    /// the fills after its re-promotion in the same pass, so a twin still
+    /// diverging re-holds it on new evidence rather than on the evidence the
+    /// re-promotion answered.
+    fn review_replay_divergence(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        use crate::replay_divergence::{
+            DivergenceHold, REPLAY_DIVERGENCE_ORIGIN, ReplayDivergenceEntry, measure,
+            repromotion_after,
+        };
+        let mut problems = Vec::new();
+        let mut restored = 0usize;
+        let mut reduced = 0usize;
+
+        let held: Vec<DivergenceHold> = self.replay_divergence_holds.values().cloned().collect();
+        for hold in held {
+            let Some(repromotion) = repromotion_after(
+                self.central.factory().ledger().history(&hold.strategy),
+                hold.raised_at,
+            )
+            .cloned() else {
+                continue;
+            };
+            let entry = ReplayDivergenceEntry::restored(&hold, &repromotion, now);
+            if let Err(error) = self.journal_record(entry, REPLAY_DIVERGENCE_ORIGIN, now) {
+                problems.push(format!(
+                    "{}'s replay-divergence hold was answered by a re-promotion and stays in \
+                     force because the release could not be journaled: {}",
+                    hold.strategy,
+                    error.message()
+                ));
+                continue;
+            }
+            self.replay_divergence_holds.remove(&hold.strategy);
+            self.replay_divergence_windows
+                .insert(hold.strategy.clone(), repromotion.promotion.at);
+            restored += 1;
+        }
+
+        let dependents: Vec<(StrategyId, String)> = self
+            .central
+            .factory()
+            .candidates()
+            .filter(|candidate| {
+                !self
+                    .replay_divergence_holds
+                    .contains_key(candidate.strategy())
+                    && self.central.factory().stage_of(candidate.strategy())
+                        != qip_contracts::gate::GateStage::Retired
+            })
+            .map(|candidate| {
+                (
+                    candidate.strategy().clone(),
+                    candidate.venue().as_str().to_string(),
+                )
+            })
+            .collect();
+        for (strategy, venue) in dependents {
+            let since = self.replay_divergence_windows.get(&strategy).copied();
+            let divergence = match measure(&self.fill_scores, &venue, since) {
+                Ok(Some(divergence)) if divergence.exceeds_threshold() => divergence,
+                Ok(_) => continue,
+                Err(error) => {
+                    problems.push(format!("replay divergence: {}", error.message()));
+                    continue;
+                }
+            };
+            let hold = DivergenceHold {
+                strategy: strategy.clone(),
+                venue: venue.clone(),
+                raised_at: now,
+                sample: divergence.sample,
+                mean_abs_error_bps: divergence.mean_abs_error_bps,
+                multiplier: crate::replay_divergence::REPLAY_DIVERGENCE_MULTIPLIER,
+                calibration_observations: self
+                    .fill_calibration
+                    .venue(&venue)
+                    .map_or(0, |calibration| calibration.observations),
+            };
+            if let Err(error) = self.journal_record(
+                ReplayDivergenceEntry::reduced(&hold),
+                REPLAY_DIVERGENCE_ORIGIN,
+                now,
+            ) {
+                problems.push(format!(
+                    "{strategy} could not be held for the twin's divergence at {venue} because \
+                     the hold could not be journaled: {}",
+                    error.message()
+                ));
+                continue;
+            }
+            self.replay_divergence_holds.insert(strategy, hold);
+            reduced += 1;
+        }
+
+        if reduced == 0 && restored == 0 && self.replay_divergence_holds.is_empty() {
+            return (None, problems);
+        }
+        (
+            Some(format!(
+                "replay divergence: {reduced} strategy grant(s) reduced, {restored} restored by \
+                 re-promotion, {} held",
+                self.replay_divergence_holds.len()
+            )),
+            problems,
+        )
     }
 
     /// The twin's per-venue fill calibration, as the scored fills have moved

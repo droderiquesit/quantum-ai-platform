@@ -25,11 +25,12 @@
   {
     "id": "R12-GCP-7002",
     "status": "PARTIAL",
-    "current": "execution-node module validates machine_type to C3 highcpu sizes and runs qip-edge-node under systemd.",
+    "current": "execution-node module validates machine_type to the C4/C4D high-CPU class (ADR 0211 reads it as the requirement's C3/C3D-class equivalent) and runs qip-edge-node under systemd.",
     "evidence": [
-      "infrastructure/terraform/modules/execution-node/variables.tf:118-142 machine_type validated to c3-highcpu-8..22",
+      "infrastructure/terraform/modules/execution-node/variables.tf machine_type validation (c4-highcpu-8/16, c4d-highcpu-8/16; every other family refused)",
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:67-85 refuses boot without isolcpus and preallocated huge pages; :352 CPUAffinity",
-      "infrastructure/environments/dev/terraform.tfvars:234 execution_nodes = {} (same in stage:49, test:49, prod:51)"
+      "infrastructure/environments/dev/terraform.tfvars:234 execution_nodes = {} (same in stage:49, test:49, prod:51)",
+      "docs/adr/0211-the-execution-planes-c3-class-is-the-c4-and-c4d-high-cpu-shapes-and-every-other-family-is-refused-at-plan.md"
     ],
     "gap": "No node is declared in any environment (execution_nodes = {} in stage/test/prod; dev declares newyork-1 with execution_nodes_enabled = false) and there is no plan showing a node rendered. Needs infrastructure/environments/** and execution-nodes-enabled.tf, both protected, and a real plan.",
     "implemented": true,
@@ -42,7 +43,7 @@
     "verification": "terraform plan with execution_nodes naming one region",
     "work_item": "",
     "size": "S",
-    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL. 2026-10-24 lane L6: a conflict for the owner, not a code gap: modules/execution-node/variables.tf's machine_type validation admits only c4-highcpu-8/16 and c4d-highcpu-8/16 and refuses C3 and C3D, following R12-REFLEX-8002 (GCP v3.0 §1, 'a C3 or N2 shape must be refused at plan'), while this row's check asks that 'a non-C3 machine_type is refused'. The requirement's own text allows 'C3/C3D-class (or equivalent)', which C4/C4D can be read to meet; the check's literal wording cannot be met without breaking REFLEX-8002. Recorded, not changed."
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL. 2026-10-24 lane L6: a conflict for the owner, not a code gap: modules/execution-node/variables.tf's machine_type validation admits only c4-highcpu-8/16 and c4d-highcpu-8/16 and refuses C3 and C3D, following R12-REFLEX-8002 (GCP v3.0 §1, 'a C3 or N2 shape must be refused at plan'), while this row's check asks that 'a non-C3 machine_type is refused'. The requirement's own text allows 'C3/C3D-class (or equivalent)', which C4/C4D can be read to meet; the check's literal wording cannot be met without breaking REFLEX-8002. Recorded, not changed. 2026-10-24 lane L6: ADR 0211 (Accepted under the owner's 2026-10-24 delegation) resolves the C3-versus-C4 conflict: the check reads as refusing every shape outside the C4/C4D high-CPU class, which variables.tf already does. The row stays PARTIAL only on the deploy gap: no node declared, protected tfvars, no real plan (billing paused)."
   },
   {
     "id": "R12-REFLEX-7003",
@@ -2384,23 +2385,27 @@
   {
     "id": "R12-RES-7104",
     "status": "PARTIAL",
-    "current": "venue fill error histogram recorded (diagnostic only, decides nothing); no recalibration or capital reduction.",
+    "current": "LEARN measures, per registered strategy, the twin's mean absolute fill error at the strategy's venue since its last re-promotion; past REPLAY_DIVERGENCE_THRESHOLD_BPS (100) on at least REPLAY_DIVERGENCE_MIN_SAMPLE (10) fills it journals a ReplayDivergenceEntry `reduced` (kernel/replay-divergence, carrying the twin's calibration count and the benchmark rerun as required) and holds the strategy; Platform::issue_capital applies REPLAY_DIVERGENCE_MULTIPLIER (0.5) beside the confidence governor's contraction. Only a lifecycle escalation recorded after the hold releases it (a `restored` record); holds resume from the log.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/tests/learning.rs:935 a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue",
-      "backend/crates/services/qip-twin/src/asof.rs"
+      "backend/crates/services/qip-twin/src/asof.rs",
+      "backend/crates/runtime/qip-kernel/src/replay_divergence.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs replay_divergence_holds, issue_capital",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_twin_that_diverges_from_a_venue_halves_the_grant_of_the_strategy_trading_there_until_it_is_promoted_again",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_twin_that_agrees_with_the_venue_holds_no_strategy_trading_there"
     ],
-    "gap": "Divergence → capital reduction → recalibration → re-promotion.",
+    "gap": "2026-10-24 (lane L6): two steps remain. (1) Platform::issue_capital is not reached on a shipped binary's default path past Principal::presence, so the narrowed grant is proven in the kernel test, not in a running binary (AUDIT-5 part 2). (2) The twin scores only the desk's fills, so a strategy trading at a cell's venue is never held; scoring cell fills is the remaining wire. The 100 bps threshold, 10-fill minimum and 0.5 multiplier are agent-chosen constants that can only narrow a grant; they need the owner's calibration review, since financial risk limits are not this lane's to set.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "kernel learning test",
+    "verification": "cd backend && cargo test -p qip-kernel --test central a_twin && cargo test -p qip-kernel replay_divergence",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6 (implemented by a delegated agent, integrated here): cargo test -p qip-kernel --no-fail-fast passed 1062, failed 0. Mutation reproduced here: replacing replay_divergence_holds.insert(strategy, hold) with a no-op failed the divergence test at 'a twin past the threshold at the strategy's venue did not hold its grant' (left 1, right 0.5); restored, cmp clean, 2 passed. The agent also reported seven further mutations each failing its named test (unnarrowed governor decision, escalation check dropped, release never removing the hold, threshold always true, signed error, window bound, multiplier of one). It withdraws no venue (learning.rs's never-withdraws test untouched and passing) and touches no paper-trading layer. Kept PARTIAL on the gap above."
   },
   {
     "id": "R12-RES-7105",

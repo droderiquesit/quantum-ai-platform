@@ -22,7 +22,7 @@
 
 use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
 use qip_agency::plan::ActingIdentity;
-use qip_agents::tools::{ToolKind, ToolPermission, ToolRegistry};
+use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
 use qip_ai::registry::ModelRegistry;
 use qip_contracts::action::Method;
 use qip_contracts::expansion::{Effect, EffectAttribution, HorizonObservation, Identification};
@@ -89,7 +89,7 @@ fn every_authority_widening_path_refuses_without_a_measured_value_record() {
     // Seam 2: a blank evaluation. The tool stays read-only afterwards.
     let mut tools = ToolRegistry::new();
     tools
-        .register("fetch", ToolKind::Connector)
+        .register(ToolName::parse("fetch").unwrap(), ToolKind::Connector)
         .expect("a tool registers read-only");
     assert!(
         tools.authorise("fetch", ToolPermission::Read).is_ok(),

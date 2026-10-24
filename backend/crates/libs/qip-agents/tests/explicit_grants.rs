@@ -10,7 +10,7 @@
 //! wrote down. The strategy ladder and the edge cell's capital envelope hold
 //! execution authority by other mechanisms and are not covered here.
 
-use qip_agents::tools::{ToolKind, ToolPermission, ToolRegistry};
+use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
 use qip_agents::{Capability, CapabilitySet};
 use std::collections::BTreeSet;
 
@@ -99,7 +99,9 @@ fn what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_p
     // permission; granting it again, or registering more tools, widens nothing.
     for round in 0..200 {
         let mut tools = ToolRegistry::new();
-        tools.register("subject", ToolKind::Connector).unwrap();
+        tools
+            .register(ToolName::parse("subject").unwrap(), ToolKind::Connector)
+            .unwrap();
         let mut granted = BTreeSet::from([ToolPermission::Read]);
         for step in 0..(rng.next() % 4) {
             let grant = [
@@ -110,7 +112,10 @@ fn what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_p
             tools.promote("subject", grant, "evaluation").unwrap();
             granted.insert(grant);
             tools
-                .register(&format!("bystander-{round}-{step}"), ToolKind::Parser)
+                .register(
+                    ToolName::parse(&format!("bystander-{round}-{step}")).unwrap(),
+                    ToolKind::Parser,
+                )
                 .unwrap();
         }
         for permission in [

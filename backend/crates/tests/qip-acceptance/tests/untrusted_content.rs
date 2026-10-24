@@ -16,6 +16,22 @@
 //!   key to whatever host asked for it. The only secret reads are at connect
 //!   time, before any response exists, from the reference the operator's
 //!   manifest names.
+//!
+//! And, since ADR 0158 decisions 16-19 were built, the finer net beside the
+//! graph: what a fetch hands back is `qip_core::untrusted::Untrusted<_>`, so
+//! fetched bytes reach a typed value only through `validate` or a visible
+//! `inspect`.
+//!
+//! * **Every fetch returns `Untrusted`.** Each `HttpClient::send` in a
+//!   fetching crate sits in a function whose return type is `Untrusted<_>`,
+//!   or a response type whose `body` field is. A source scan, the weaker kind
+//!   of test, so it is paired with the type: once the return type is
+//!   `Untrusted`, the compiler holds every caller.
+//! * **No fetching crate opens a socket of its own**, so `send` is the
+//!   whole of what the first check has to find.
+//! * **`inspect()` is called only from an allow-list** of files that display,
+//!   hash or store fetched content, so a new place reading untrusted text
+//!   directly is a change to this file that a reviewer sees.
 #![allow(clippy::panic_in_result_fn)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -203,4 +219,233 @@ fn a_credential_is_chosen_by_the_operators_manifest_and_read_before_any_response
         "the connected transport keeps a secret resolver, so code handling a response could \
          read a credential a response named"
     );
+}
+
+/// The production sources of the crates whose functions read bytes a
+/// stranger chose. `qip-transport` is the client they read through, not a
+/// reader of content, and its response type is shared with trusted peers
+/// (KMS, storage, the mesh); the wrapping happens where a fetching crate
+/// takes the bytes.
+const FETCHING_SOURCES: [&str; 2] = [
+    "backend/crates/services/qip-market-ingestion/src",
+    "backend/crates/services/qip-data-finder/src",
+];
+
+/// The call through which a fetching crate reads from outside:
+/// `qip_transport::HttpClient::send`.
+const FETCH_CALL: &str = ".send(";
+
+/// Each production Rust file under `relative`, as (path from the repository
+/// root, production text).
+fn production_files(relative: &str) -> Vec<(String, String)> {
+    let root = repository_root();
+    qip_acceptance::files_with_extension(relative, "rs")
+        .into_iter()
+        .map(|path| {
+            let shown = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            let text = production_text(
+                &std::fs::read_to_string(&path)
+                    .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display())),
+            );
+            (shown, text)
+        })
+        .collect()
+}
+
+/// One place a fetching crate calls `send`, with the function it sits in.
+#[derive(Debug)]
+struct FetchSite {
+    file: String,
+    function: String,
+    returns: String,
+}
+
+/// The signature of the last function declared in `before`: its name and
+/// its return type (`()` where it declares none).
+fn enclosing_function(before: &str) -> Option<(String, String)> {
+    let start = before.lines().rev().find_map(|line| {
+        let trimmed = line.trim_start();
+        let declaration = ["fn ", "pub fn ", "pub(crate) fn ", "pub(super) fn "]
+            .iter()
+            .find_map(|prefix| trimmed.strip_prefix(prefix))?;
+        let name: String = declaration
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        (!name.is_empty()).then_some((name, line))
+    })?;
+    let (name, line) = start;
+    let at = before.rfind(line)?;
+    let signature = before[at..].split('{').next().unwrap_or("");
+    let returns = signature
+        .split_once("->")
+        .map_or("()", |(_, returns)| {
+            returns.split(" where").next().unwrap_or("")
+        })
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some((name, returns))
+}
+
+fn fetch_sites() -> Vec<FetchSite> {
+    let mut sites = Vec::new();
+    for crate_source in FETCHING_SOURCES {
+        for (file, text) in production_files(crate_source) {
+            for (at, _) in text.match_indices(FETCH_CALL) {
+                let (function, returns) = enclosing_function(&text[..at])
+                    .unwrap_or_else(|| panic!("{file}: a fetch outside any function"));
+                sites.push(FetchSite {
+                    file: file.clone(),
+                    function,
+                    returns,
+                });
+            }
+        }
+    }
+    sites
+}
+
+/// The fields of `struct name` declared anywhere in `crate_source`, or
+/// `None` where the crate declares no such struct.
+fn struct_fields(crate_source: &str, name: &str) -> Option<String> {
+    let declaration = format!("struct {name} {{");
+    production_files(crate_source)
+        .into_iter()
+        .find_map(|(_, text)| {
+            let at = text.find(&declaration)?;
+            let body = &text[at + declaration.len()..];
+            Some(body.split("\n}").next().unwrap_or("").to_string())
+        })
+}
+
+#[test]
+fn every_fetch_in_a_fetching_crate_hands_back_untrusted_content() {
+    let sites = fetch_sites();
+    // Premise: the scan finds the fetches it is about. The connector
+    // transport and the data finder's probe are each one; an empty list would
+    // make every assertion below true of nothing.
+    for expected in [
+        "qip-market-ingestion/src/connector/transport.rs",
+        "qip-data-finder/src/probe.rs",
+    ] {
+        assert!(
+            sites.iter().any(|site| site.file.ends_with(expected)),
+            "premise: no `{FETCH_CALL}` was found in {expected}; sites found: {sites:?}"
+        );
+    }
+    let mut plain = Vec::new();
+    for site in &sites {
+        if site.returns.contains("Untrusted<") {
+            continue;
+        }
+        // A response type is admitted when its body is the untrusted part:
+        // `Result<SourceResponse>` with `pub body: Untrusted<String>`.
+        let named = site
+            .returns
+            .trim_start_matches("Result<")
+            .trim_end_matches('>')
+            .trim();
+        let crate_source = FETCHING_SOURCES
+            .iter()
+            .find(|source| site.file.starts_with(*source))
+            .unwrap_or_else(|| panic!("{} is outside the fetching crates", site.file));
+        let wrapped = named.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && struct_fields(crate_source, named)
+                .is_some_and(|fields| fields.contains("pub body: Untrusted<"));
+        if !wrapped {
+            plain.push(format!(
+                "{}::{} returns `{}`",
+                site.file, site.function, site.returns
+            ));
+        }
+    }
+    assert!(
+        plain.is_empty(),
+        "these fetches hand fetched bytes back as something other than Untrusted<_>, so the \
+         content can reach a tool argument, a brief or a record without `validate` or \
+         `inspect`: {plain:#?}"
+    );
+}
+
+#[test]
+fn no_fetching_crate_opens_a_socket_of_its_own() {
+    // The scan above finds fetches by `HttpClient::send`. A crate that opened
+    // a `TcpStream` would fetch without calling it and walk round the scan.
+    let mut checked = 0;
+    for crate_source in FETCHING_SOURCES {
+        for (file, text) in production_files(crate_source) {
+            checked += 1;
+            for socket in ["TcpStream", "UdpSocket", "TcpListener", "ToSocketAddrs"] {
+                assert!(
+                    !text.contains(socket),
+                    "{file} names {socket}; a fetching crate reads through \
+                     qip_transport::HttpClient so its fetches can be found and wrapped"
+                );
+            }
+        }
+    }
+    assert!(checked > 10, "premise: only {checked} files were scanned");
+}
+
+/// The files that may read untrusted content directly, and why each one
+/// needs to. Everything else goes through `validate`.
+const INSPECT_ALLOWED: [(&str, &str); 3] = [
+    (
+        "backend/crates/services/qip-market-ingestion/src/connector/transport.rs",
+        "SourceResponse::body_excerpt: a bounded excerpt for an operator's health detail and \
+         quarantine record",
+    ),
+    (
+        "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs",
+        "the fetch digest hashes and measures the bytes as served, for the reference ledger",
+    ),
+    (
+        "backend/crates/services/qip-market-ingestion/src/fetched.rs",
+        "the bounded excerpt a vendor-adapter refusal quotes to the operator",
+    ),
+];
+
+#[test]
+fn untrusted_content_is_inspected_only_where_it_is_displayed_hashed_or_stored() {
+    let mut found: BTreeMap<String, usize> = BTreeMap::new();
+    for (file, text) in production_files("backend/crates") {
+        // Integration tests and fixtures may look at what they built.
+        if file.contains("/tests/") || file.contains("/benches/") || file.contains("/examples/") {
+            continue;
+        }
+        // The method takes no argument, which is what tells it apart from
+        // `Iterator::inspect` and `Option::inspect`; the qualified form is
+        // counted too, so `Untrusted::inspect(&x)` is no side door. Not every
+        // `::inspect(` — `ManipulationRisk::inspect` is a different function.
+        let calls =
+            text.matches(".inspect()").count() + text.matches("Untrusted::inspect(").count();
+        if calls > 0 {
+            found.insert(file, calls);
+        }
+    }
+    let allowed: BTreeSet<&str> = INSPECT_ALLOWED.iter().map(|(file, _)| *file).collect();
+    let outside: Vec<_> = found
+        .iter()
+        .filter(|(file, _)| !allowed.contains(file.as_str()))
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "untrusted content is read directly outside the allow-list; validate it into a narrower \
+         type instead, or add the file to INSPECT_ALLOWED with the reason it must display, hash \
+         or store the content: {outside:?}"
+    );
+    // And the allow-list does not rot: a file listed and no longer inspecting
+    // is a permission nobody uses, waiting for somebody to use it.
+    for file in allowed {
+        assert!(
+            found.contains_key(file),
+            "{file} is allow-listed to inspect untrusted content and no longer does; remove it \
+             from INSPECT_ALLOWED"
+        );
+    }
 }
