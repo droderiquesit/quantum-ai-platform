@@ -126,7 +126,7 @@
   },
   {
     "id": "R12-LEDGER-5006",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Platform::new (every binary's composition root) queues, for each private commitment its universe holds, one journalled PrivateCommitmentMade operation on Topic::LedgerOperationRecorded, booked as OperationKind::Commitment { stage: Commit }, id <chain>:commitment:<commitment id>, counterparty the fund's object id, amount the whole commitment. recorded_at is the first assembly's, read back from the journal on every restart, so a restart re-sends the same bytes and the ledger sees one digest per id. qip-desk-ship ships the queue.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::queue_private_commitments",
@@ -134,7 +134,7 @@
       "backend/crates/runtime/qip-kernel/tests/capital_calls.rs::a_private_asset_commitment_is_booked_once_as_a_commit_stage_operation_and_a_restart_does_not_book_it_again",
       "backend/crates/libs/qip-contracts/src/ledger_operation.rs::OperationKind::Commitment"
     ],
-    "gap": "",
+    "gap": "2026-10-24: the commitment reaches ledger state only if a catalogue holds a private asset and QIP_FABRIC_URL ships the desk queue; no committed catalogue has a PrivateAsset record and no committed deployment sets QIP_FABRIC_URL, so no ledger event is produced by any default composition",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -145,7 +145,7 @@
     "verification": "cargo test -p qip-kernel --test capital_calls a_private_asset_commitment_is_booked_once",
     "work_item": "",
     "size": "M",
-    "notes": "Lane T4-LEDGER 2026-10-24 (ADR 0153 decision 2). Mutation that fired: ignoring the journalled record on restart (rebuilding the operation at the restart's clock) made the test fail on 'the restart must re-send the operation as written' with recorded_at 2025-10-12 against 2025-10-09. The producer runs on the assembly path of every binary; it books nothing until the operator's catalogue carries a PrivateAsset record, and no committed catalogue does."
+    "notes": "Lane T4-LEDGER 2026-10-24 (ADR 0153 decision 2). Mutation that fired: ignoring the journalled record on restart (rebuilding the operation at the restart's clock) made the test fail on 'the restart must re-send the operation as written' with recorded_at 2025-10-12 against 2025-10-09. The producer runs on the assembly path of every binary; it books nothing until the operator's catalogue carries a PrivateAsset record, and no committed catalogue does. AUDIT-2 2026-10-24: regraded, the commitment reaches ledger state only if a catalogue holds a private asset and QIP_FABRIC_URL ships the desk queue; no committed catalogue has a PrivateAsset record and no committed deployment sets QIP_FABRIC_URL, so no ledger event is produced by any default composition"
   },
   {
     "id": "R12-LEDGER-5007",
@@ -680,13 +680,13 @@
   },
   {
     "id": "R12-REFLEX-5030",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "No cell code reads a belief value or an opportunity definition content: grep -rn belief_priors backend/crates/edge/qip-edge/src backend/crates/apps/qip-edge-node/src prints nothing, and the cell consumes the slots as freshness only (PolicyItem::capability to Capability::BeliefState). A test now pins it: two cells whose payloads differ only in belief_priors and opportunity_definitions size the same order with the same conviction.",
     "evidence": [
       "backend/crates/edge/qip-edge/tests/policy_rollback.rs::belief_is_freshness_only::a_cell_sizes_identically_whatever_belief_priors_and_opportunity_definitions_its_policy_carries",
       "backend/crates/edge/qip-edge/src/cell.rs::Cell::intent_for"
     ],
-    "gap": "",
+    "gap": "2026-10-24: requirement is a package whose every slot (beliefs and opportunity definitions included) is consumed by the cell; the cell reads no belief prior or opportunity definition value (freshness only, by decision), and the named test asserts the absence of use, so removing the freshness consumption itself passes",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -697,7 +697,7 @@
     "verification": "cargo test -p qip-edge --test policy_rollback",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 section 11. Mutation fired: multiplying the pass multiplier by the applied belief prior sized 0.5 against 9.5 and the equality assertion failed (premise: both payloads applied and both cells traded). The only admissible future use is a (0,1] narrowing multiplier under its own ADR once ADR 0088 is built and scored; which detector an opportunity id names is ADR 0149."
+    "notes": "2026-10-24 ADR 0155 section 11. Mutation fired: multiplying the pass multiplier by the applied belief prior sized 0.5 against 9.5 and the equality assertion failed (premise: both payloads applied and both cells traded). The only admissible future use is a (0,1] narrowing multiplier under its own ADR once ADR 0088 is built and scored; which detector an opportunity id names is ADR 0149. AUDIT-2 2026-10-24: regraded, requirement is a package whose every slot (beliefs and opportunity definitions included) is consumed by the cell; the cell reads no belief prior or opportunity definition value (freshness only, by decision), and the named test asserts the absence of use, so removing the freshness consumption itself passes"
   },
   {
     "id": "R12-REFLEX-5031",
@@ -1011,7 +1011,7 @@
   },
   {
     "id": "R12-RISK-5044",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "GATE_NET_EDGE (backend/crates/edge/qip-edge/src/cell.rs, Cell::net_edge_refusal, called at the end of Cell::intent_for) compares a signal-stated expected edge with feasibility::fixed_cost_fraction plus a configured margin, for Enter signals only, after the intent exists and before it joins a net, releasing the region hold. It is CellConfig-armed by with_net_edge_margin_bp, which has no default and refuses a negative value; unarmed the gate is not built and behaviour is as before. It is a cell gate outside qip_contracts::feasibility::EDGE_GATES, so it cannot feed the window a venue is withdrawn on. Edgeless directional signals pass and are counted (WorkReport::edgeless_signals and qip_edge_edgeless_signals, present only on a cell that built the gate); with_edgeless_signals_refused is the separate switch that refuses them.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs::Cell::net_edge_refusal",
@@ -1019,7 +1019,7 @@
       "backend/crates/edge/qip-edge/src/telemetry.rs::EDGE_EDGELESS_SIGNALS",
       "backend/crates/edge/qip-edge/tests/feasibility.rs::a_signal_whose_stated_edge_is_below_its_fixed_cost_plus_margin_is_refused_before_netting_while_a_signal_stating_none_and_an_unarmed_cell_pass"
     ],
-    "gap": "",
+    "gap": "2026-10-24: the expected-edge-after-costs clause is enforced by a gate no binary arms: CellConfig::with_net_edge_margin_bp has no non-test caller and the margin has no committed value (ADR 0155 s8), and no committed strategy declares an expected edge; the gate also ignores slippage and impact",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1030,7 +1030,7 @@
     "verification": "cargo test -p qip-edge --test feasibility",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 lane. Mutations fired: zeroing the cost term let the thin 12 bp edge through (refusal count 0, expected 1); removing the gauge write left qip_edge_edgeless_signals absent (None, expected Some(1.0)). The gate is unarmed on every binary because the margin is a risk value nobody has set (ADR 0155 section 8), and no shipped rule declares an edge, so deployed behaviour is unchanged. The gate is optimistic: it subtracts the fixed fee and gas floors only, never slippage or impact. qip-edge-node does not yet read a margin from configuration."
+    "notes": "2026-10-24 ADR 0155 lane. Mutations fired: zeroing the cost term let the thin 12 bp edge through (refusal count 0, expected 1); removing the gauge write left qip_edge_edgeless_signals absent (None, expected Some(1.0)). The gate is unarmed on every binary because the margin is a risk value nobody has set (ADR 0155 section 8), and no shipped rule declares an edge, so deployed behaviour is unchanged. The gate is optimistic: it subtracts the fixed fee and gas floors only, never slippage or impact. qip-edge-node does not yet read a margin from configuration. AUDIT-2 2026-10-24: regraded, the expected-edge-after-costs clause is enforced by a gate no binary arms: CellConfig::with_net_edge_margin_bp has no non-test caller and the margin has no committed value (ADR 0155 s8), and no committed strategy declares an expected edge; the gate also ignores slippage and impact"
   },
   {
     "id": "R12-EXEC-5045",

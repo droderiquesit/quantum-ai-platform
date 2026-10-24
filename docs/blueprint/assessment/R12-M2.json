@@ -255,7 +255,7 @@
   },
   {
     "id": "R12-DATA-2012",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Connector polls run an evidence check before release and forward evidence into the world model fabric (Platform::absorb_evidence) in production. A claim that changes what the fabric believes leaves one validated KnowledgeDelta in the log (the world-model change path, Topic::WorldModelUpdated) and each admitted claim is journaled to evidence.admitted. Restated per ADR 0152 d8: an acquired claim is not an episode, because episodes are resolved outcomes; typed facts update the world model through the delta, which is the path built.",
     "evidence": [
       "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs:45 every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
@@ -263,7 +263,7 @@
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::absorb_evidence",
       "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs:575 an_unchecked_claim_under_a_forged_admissible_verdict_is_held_inadmissible_and_weighs_nothing"
     ],
-    "gap": "",
+    "gap": "2026-10-24: the connector acquisition path is not enabled in any committed deployment (deepbrain_connector / market_data_connector null in every environment tfvars), so no deployed process fetches, checks and distils a source into a knowledge delta",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -276,7 +276,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_runtime && cargo test -p qip-kernel --test evidence_intake",
     "work_item": "",
     "size": "L",
-    "notes": "Regraded 2026-10-24 to the ADR 0152 d8 wording after running both verification commands (45 and 10 passed). Mutation on the production caller: taking zero deltas in the journalling loop of Platform::absorb_evidence fails a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys (knowledge_deltas 0, expected 2)."
+    "notes": "Regraded 2026-10-24 to the ADR 0152 d8 wording after running both verification commands (45 and 10 passed). Mutation on the production caller: taking zero deltas in the journalling loop of Platform::absorb_evidence fails a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys (knowledge_deltas 0, expected 2). AUDIT-2 2026-10-24: regraded, the connector acquisition path is not enabled in any committed deployment (deepbrain_connector / market_data_connector null in every environment tfvars), so no deployed process fetches, checks and distils a source into a knowledge delta"
   },
   {
     "id": "R12-DATA-2013",
@@ -733,7 +733,7 @@
   },
   {
     "id": "R12-EVID-2032",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Every claim the world fabric admits is journaled to the new evidence.admitted topic (Topic::EvidenceAdmitted, DerivedState) by Platform::absorb_evidence as the record, its document hash and the admission instant (ADR 0152 section 2). Links, contests and resolutions are derived, not journaled: Platform::journaled_evidence reads the claims back in log order and EvidenceFabric::rebuild re-admits them at their recorded instants into an empty fabric configured like the writer's. A fabric rebuilt from the journal equals the live one in held claims, verdicts, provenance edges, contests, resolutions, source records and version. rebuild refuses a non-empty fabric and a journal the fabric refuses. Since 2026-10-18 the relation is also recorded on both claims in memory.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::absorb_evidence",
@@ -743,7 +743,7 @@
       "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_fabric_rebuilt_from_the_journaled_claims_holds_the_same_links_contests_and_resolutions",
       "backend/crates/services/qip-world-model/tests/evidence_fabric.rs::a_rebuild_refuses_a_fabric_that_holds_claims_and_a_journal_the_fabric_refuses"
     ],
-    "gap": "",
+    "gap": "2026-10-24: requirement is that links survive replay; EvidenceFabric::rebuild is never called outside tests (a restarted process begins with an empty fabric) and the claim journal is fed only by the connector arm that no committed deployment enables",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -756,7 +756,7 @@
     "verification": "cargo test -p qip-kernel --test evidence_intake a_fabric_rebuilt && cargo test -p qip-world-model --test evidence_fabric a_rebuild_refuses",
     "work_item": "",
     "size": "M",
-    "notes": "Closed 2026-10-24 to ADR 0152 section 2. Mutations that fired: rebuild iterating in reverse fails the state comparison; skipping the journal loop in absorb_evidence fails claims_journaled == 3; deleting the emptiness refusal and swallowing the per-claim error in rebuild each fail a_rebuild_refuses. Not claimed: no composition root calls rebuild at start-up yet, so a restarted process still begins with an empty fabric and the journal is the evidence a caller can rebuild from; retention is DerivedState, so the rebuilt window is what the journal retains. ADR 0152 item 4 (a full all-contested fabric refuses) is separate and not built here."
+    "notes": "Closed 2026-10-24 to ADR 0152 section 2. Mutations that fired: rebuild iterating in reverse fails the state comparison; skipping the journal loop in absorb_evidence fails claims_journaled == 3; deleting the emptiness refusal and swallowing the per-claim error in rebuild each fail a_rebuild_refuses. Not claimed: no composition root calls rebuild at start-up yet, so a restarted process still begins with an empty fabric and the journal is the evidence a caller can rebuild from; retention is DerivedState, so the rebuilt window is what the journal retains. ADR 0152 item 4 (a full all-contested fabric refuses) is separate and not built here. AUDIT-2 2026-10-24: regraded, requirement is that links survive replay; EvidenceFabric::rebuild is never called outside tests (a restarted process begins with an empty fabric) and the claim journal is fed only by the connector arm that no committed deployment enables"
   },
   {
     "id": "R12-EVID-2033",
@@ -862,7 +862,7 @@
   },
   {
     "id": "R12-EVID-2037",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "A claim carries a geo:lat,lon location only where the publisher's own payload states coordinates: NwsStationObservationsConnector::published_location copies the station point verbatim into the event body and SourceConnector::location_of hands it to evidence_of (connector/runtime.rs check_evidence), so check_geographic_consistency now has a parseable position to compare on the shipped NWS source (reached from qip-deepbrain evolution). Every other source carries no location; the manifest region moved to the `region` metadata key. Coordinates from free text are refused (ADR 0157 d9).",
     "evidence": [
       "backend/crates/services/qip-market-ingestion/src/connectors/nws_station_observations.rs::published_location",
@@ -870,7 +870,7 @@
       "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs::evidence_of",
       "backend/crates/services/qip-market-ingestion/tests/connector_contract.rs::a_weather_reading_carries_the_stations_published_coordinates_as_its_claim_location_and_a_rate_reading_carries_none"
     ],
-    "gap": "",
+    "gap": "2026-10-24: the geographic consistency check can only bite on the NWS station source, and no committed deployment polls it (connector arm null in every tfvars); no other source carries a location",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -883,7 +883,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_contract a_weather_reading_carries_the_stations_published_coordinates",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0157 d9. Mutations fired: restoring with_location(region string) fails the rate-reading absence assertion (left: Some(\"region:NorthAmerica\")); writing a None location in the NWS decode fails the weather assertion (left: None). Only sources whose payload states coordinates can make the check bite; no free-text extractor is built or wanted."
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0157 d9. Mutations fired: restoring with_location(region string) fails the rate-reading absence assertion (left: Some(\"region:NorthAmerica\")); writing a None location in the NWS decode fails the weather assertion (left: None). Only sources whose payload states coordinates can make the check bite; no free-text extractor is built or wanted. AUDIT-2 2026-10-24: regraded, the geographic consistency check can only bite on the NWS station source, and no committed deployment polls it (connector arm null in every tfvars); no other source carries a location"
   },
   {
     "id": "R12-EVID-2038",
@@ -1194,7 +1194,7 @@
   },
   {
     "id": "R12-TICK-2051",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Decided by ADR 0151 decision 9: the central Tick states event time (at) and capture time (capture_time) and claims no normalised time or uncertainty, because the centre has no clock discipline to certify either; Tick's documentation says so. Normalised time, uncertainty and the ClockCorrection lineage are edge-lake facts, written by drain.rs tick_line from the disciplined clock (decision_loop test).",
     "evidence": [
       "backend/crates/libs/qip-market/src/quote.rs::Tick (documentation states the decision)",
@@ -1202,7 +1202,7 @@
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:708 tick_line writes the clock block",
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock"
     ],
-    "gap": "",
+    "gap": "2026-10-24: the uncertainty half of the requirement is unproven: every lake line the test drains has uncertainty 0 (76 of 76), so overwriting uncertainty_ns with the constant 0 passes; needs a test whose clock discipline yields a non-zero uncertainty and asserts it reaches the lake line. The exchange and capture times on the lake line are not asserted by the node test either",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1213,7 +1213,7 @@
     "verification": "cargo test -p qip-market --test tick_time_fields; cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L09: edge half closed (lake line). Central Tick not changed in this lane. 2026-10-24 lane T7-KERNEL, closing by ADR 0151 decision 9: no field is added to the central Tick. A guard test pins that its serialised keys name no normalised or uncertainty token. Mutation: #[serde(rename = \"normalized_time_ns\")] on Tick::capture_time - the new test failed on the capture_time premise; restored, passes."
+    "notes": "Re-graded 2026-10-18 by lane L09: edge half closed (lake line). Central Tick not changed in this lane. 2026-10-24 lane T7-KERNEL, closing by ADR 0151 decision 9: no field is added to the central Tick. A guard test pins that its serialised keys name no normalised or uncertainty token. Mutation: #[serde(rename = \"normalized_time_ns\")] on Tick::capture_time - the new test failed on the capture_time premise; restored, passes. AUDIT-2 2026-10-24: regraded, the uncertainty half of the requirement is unproven: every lake line the test drains has uncertainty 0 (76 of 76), so overwriting uncertainty_ns with the constant 0 passes; needs a test whose clock discipline yields a non-zero uncertainty and asserts it reaches the lake line. The exchange and capture times on the lake line are not asserted by the node test either"
   },
   {
     "id": "R12-TICK-2052",
