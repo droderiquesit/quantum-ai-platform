@@ -1908,7 +1908,7 @@ fn independent_rank_correlation(x: &[f64], y: &[f64]) -> f64 {
             .iter()
             .map(|v| {
                 let below = values.iter().filter(|w| *w < v).count() as f64;
-                let equal = values.iter().filter(|w| *w == v).count() as f64;
+                let equal = values.iter().filter(|w| w.total_cmp(v).is_eq()).count() as f64;
                 below + (equal + 1.0) / 2.0
             })
             .collect()
