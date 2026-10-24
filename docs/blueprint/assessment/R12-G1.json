@@ -582,15 +582,21 @@
   {
     "id": "R12-RES-8026",
     "status": "PARTIAL",
-    "current": "Cell::narrowing now records, beside the payload-fed rows, the dependency rows a cell can measure: Ledger (journal wire), Fabric (derived from what the policy carries), Feed (venues heard vs silent past max_staleness), VenueSession (venues quarantined by venue health) and Clock (venue time vs capture time). Capability::dependencies() has six rows, each with a declared stale and unavailable multiplier (FEED_/SESSION_STALE one because the per-venue gates already act, unavailable zero), and a contract test enumerates that every dependency has one. Ingestion stays per-book: the stale_book gate refuses a book the cell knows is wrong.",
+    "current": "qip_edge::degradation::DegradationEnvelope is built by Cell::new from the cell's configuration: one row per input the cell reads, each with a freshness bound (payload slot TTLs, max_staleness, max_clock_skew, the venue-health quarantine, the journal wire) and stale/unavailable multipliers read from qip-contracts' own sizing functions. Assembly refuses a table missing any input's row (naming it), a row for an input the cell does not read, a zero bound, and a multiplier above 1, below 0, or with unavailable > stale; ingestion has an explicit PerBook row (covered by the stale_book gate) and is refused as a cell-wide age. The pass takes the clock multiplier from the envelope, and qip_edge_capability_freshness now also charts feed, venue_session and clock, each once observed.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/degradation.rs Capability::Feed, Capability::VenueSession, dependency_row_multiplier",
       "backend/crates/edge/qip-edge/src/cell.rs:2867 narrowing",
       "backend/crates/libs/qip-contracts/tests/degradation_dependencies.rs every_dependency_declares_what_its_loss_does_to_size",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs a_cell_whose_feed_goes_silent_reads_its_feed_row_stale_then_unavailable; a_cell_reads_its_venue_session_row_from_how_many_venues_are_quarantined",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:380"
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs:380",
+      "backend/crates/edge/qip-edge/src/degradation.rs DegradationEnvelope",
+      "backend/crates/edge/qip-edge/tests/degradation_envelope.rs (8 tests)",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs::a_venue_feed_going_silent_moves_the_feed_row_from_fresh_to_unavailable",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs::a_venue_clock_running_ahead_of_the_cell_moves_the_clock_row",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs::a_venue_quarantined_for_rejecting_orders_moves_the_venue_session_row",
+      "docs/blueprint/lanes/l6-res-8026-observability-rule.patch"
     ],
-    "gap": "Ingestion has no table row in the cell (book staleness is judged per book, deliberately stricter), and the Feed, VenueSession and Clock rows are not charted: telemetry.rs publishes only the three policy-fed capabilities, and publishing more changes a documented series count (.claude/rules/domains/observability.md, a protected path).",
+    "gap": "2026-10-24 (lane L6): built and tested on the cell's assembly path. Open: (1) .claude/rules/domains/observability.md documents the series list and is protected; the change is docs/blueprint/lanes/l6-res-8026-observability-rule.patch; (2) a multiplier and bound are declared from configuration and contract values, not measured; (3) nothing scrapes qip-edge-node (NOT-SCRAPED.md) and no node is deployed. Pending an independent skeptic before any promotion.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -598,10 +604,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test degradation_dependencies; cargo test -p qip-edge --test venue_failure; cargo test -p qip-edge-node --test degraded",
+    "verification": "cd backend && cargo test -p qip-edge --test degradation_envelope --test telemetry --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: Feed and VenueSession rows added and derived by the cell; PARTIAL kept for ingestion and charting. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests."
+    "notes": "Lane L11, 2026-10-18: Feed and VenueSession rows added and derived by the cell; PARTIAL kept for ingestion and charting. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests. 2026-10-24 lane L6 (delegated agent, merged and gated here): agent reported 13 mutations each failing a named assertion (e.g. the missing-row check made always-true failed degradation_envelope.rs:118; the pass ignoring the clock row failed venue_failure.rs:1711, 3.75 vs 2.8125). On this branch: clippy --workspace --all-targets -D warnings exit 0; qip-edge + qip-edge-node + qip-acceptance --no-fail-fast 197 result lines, 1341 passed, 5 failed: the blueprint-view test (expected, matrix not committed), gcp_placement's no-NCC-hub test (caused by this lane's NCC module, since reverted), and three debug-profile performance scaling tests run in parallel under load, which passed twice alone with --test-threads=1 ('ok. 36 passed')."
   },
   {
     "id": "R12-FABRIC-8027",
@@ -1287,7 +1293,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6 (later): a modules/ncc declaring the latency mesh and service star hubs was committed and then reverted, because it contradicts accepted ADR 0035 and ADR 0156 6c: there is one execution region, so no hub is declared until the record superseding ADR 0035 arrives, and then only control-fabric subnets are exported between regions' fabric spokes. qip-acceptance gcp_placement.rs::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region failed on the module and caught it. The row stays MISSING; closing it needs that superseding record (an owner/ADR decision), not code."
   },
   {
     "id": "R12-GCP-8058",
@@ -1309,7 +1315,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6 (later): a modules/ncc declaring the latency mesh and service star hubs was committed and then reverted, because it contradicts accepted ADR 0035 and ADR 0156 6c: there is one execution region, so no hub is declared until the record superseding ADR 0035 arrives, and then only control-fabric subnets are exported between regions' fabric spokes. qip-acceptance gcp_placement.rs::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region failed on the module and caught it. The row stays MISSING; closing it needs that superseding record (an owner/ADR decision), not code."
   },
   {
     "id": "R12-GCP-8059",
