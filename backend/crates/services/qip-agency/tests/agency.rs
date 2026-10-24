@@ -3513,3 +3513,175 @@ fn authority_is_used_only_over_a_plan_every_competing_model_agrees_helps() {
         shadow.outcome
     );
 }
+
+/// R12-EXPAND-6071, ADR 0141: evidence and rollback requirements scale with
+/// authority, read from one table. Every level past narrow-reversible refuses
+/// the lesser evidence by name, item by item; full evidence for a declared
+/// level is still refused because no record grants it, naming ADR 0141; and
+/// external action and capital are refused naming the records that prohibit
+/// them, before any evidence is read.
+///
+/// Mutations, each firing at its own assertion: delete the clean-days check
+/// in `widen_to` (step 1 reports the compensation instead); delete the
+/// compensation check (step 2 reports the approvers); count approvers by
+/// signature rather than by distinct name (step 4 passes to the grant
+/// refusal); delete the `Ungranted` refusal (step 5 widens); delete the
+/// `Refused` check (External reports a level mismatch, not ADR 0114 D8);
+/// delete the kill-path check (the broad step reports the level, not the
+/// kill path).
+#[test]
+fn each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_refuses_it() {
+    use qip_agency::autonomy::{AttributionNeed, Grant, SCHEDULE, WideningEvidence};
+
+    // The table, as data a reader can check against ADR 0141.
+    let levels: Vec<Authority> = SCHEDULE.iter().map(|r| r.level).collect();
+    assert_eq!(
+        levels,
+        [
+            Authority::Shadow,
+            Authority::NarrowReversible,
+            Authority::NarrowCompensable,
+            Authority::BroadInternal,
+            Authority::External,
+            Authority::Capital,
+        ]
+    );
+    assert_eq!(
+        Authority::NarrowReversible.requirement().grant,
+        Grant::Granted
+    );
+    for level in [Authority::NarrowCompensable, Authority::BroadInternal] {
+        assert_eq!(
+            level.requirement().grant,
+            Grant::Ungranted {
+                declared_by: "ADR 0141"
+            }
+        );
+        assert_eq!(level.requirement().approvers, 2);
+        assert!(level.requirement().compensation);
+    }
+    assert_eq!(
+        Authority::BroadInternal.requirement().attribution,
+        AttributionNeed::EveryClass
+    );
+    assert!(Authority::BroadInternal.requirement().kill_path);
+
+    let second = ActingIdentity {
+        name: "second-approver".into(),
+        authorities: BTreeSet::from([WIDEN_AUTHORITY.to_string()]),
+    };
+    let market = identified(Method::Market);
+    let compensated = |e: &mut WideningEvidence<'_>| {
+        e.compensations
+            .push((Method::Market, "re-widen quotes; drill 2026-10-01".into()));
+    };
+
+    let mut policy = narrow();
+    assert_eq!(policy.authority(), Authority::NarrowReversible, "premise");
+    let refuse = |policy: &mut ActionPolicy,
+                  evidence: &WideningEvidence<'_>,
+                  approvers: &[&ActingIdentity],
+                  expected: &str| {
+        let err = policy
+            .widen_to(Authority::NarrowCompensable, evidence, approvers)
+            .unwrap_err();
+        assert!(err.to_string().contains(expected), "{expected}: {err}");
+        assert_eq!(policy.authority(), Authority::NarrowReversible);
+    };
+
+    // 1. The first step's evidence is short of the second's: no clean period.
+    let mut evidence = WideningEvidence::attribution(&market);
+    refuse(
+        &mut policy,
+        &evidence,
+        &[&operator(), &second],
+        "day(s) at NarrowReversible without drift",
+    );
+    // 2. A clean period, and no compensating step.
+    evidence.clean_days = 30;
+    refuse(
+        &mut policy,
+        &evidence,
+        &[&operator(), &second],
+        "compensating step for Market",
+    );
+    // 3. Compensation, one approver: evidence does not stand in for one.
+    compensated(&mut evidence);
+    refuse(
+        &mut policy,
+        &evidence,
+        &[&operator()],
+        "2 distinct approver(s)",
+    );
+    // 4. One approver named twice is still one.
+    refuse(
+        &mut policy,
+        &evidence,
+        &[&operator(), &operator()],
+        "2 distinct approver(s)",
+    );
+    // 5. Everything the row asks for, and still no grant.
+    refuse(
+        &mut policy,
+        &evidence,
+        &[&operator(), &second],
+        "declared by ADR 0141 and granted by no record",
+    );
+    // Evidence for another class widens nothing.
+    let research = identified(Method::Research);
+    let mut other = WideningEvidence::attribution(&research);
+    other.clean_days = 30;
+    compensated(&mut other);
+    refuse(
+        &mut policy,
+        &other,
+        &[&operator(), &second],
+        "widens no other",
+    );
+
+    // The broad level wants an attribution per class, a compensation per
+    // class and a kill path, before it says the level is out of reach.
+    let mut broad = WideningEvidence::attribution(&market);
+    broad.classes = BTreeSet::from([Method::Market, Method::Research]);
+    broad.clean_days = 30;
+    let widen_broad = |policy: &mut ActionPolicy, e: &WideningEvidence<'_>| {
+        policy
+            .widen_to(Authority::BroadInternal, e, &[&operator(), &second])
+            .unwrap_err()
+            .to_string()
+    };
+    assert!(widen_broad(&mut policy, &broad).contains("attribution for Research"));
+    broad.attributions.push(&research);
+    compensated(&mut broad);
+    assert!(widen_broad(&mut policy, &broad).contains("compensating step for Research"));
+    broad
+        .compensations
+        .push((Method::Research, "retract note; drill 2026-10-02".into()));
+    assert!(widen_broad(&mut policy, &broad).contains("kill path"));
+    broad.kill_path = Some("agency:halt-all returns every class to shadow".into());
+    let level = widen_broad(&mut policy, &broad);
+    assert!(
+        level.contains("reached only from NarrowCompensable"),
+        "{level}"
+    );
+
+    // Prohibited levels refuse by their own records, whatever is offered.
+    for (target, record) in [
+        (Authority::External, "refused by ADR 0114 D8"),
+        (Authority::Capital, "refused by ADR 0003, 0021 and 0108"),
+    ] {
+        for holder in [&mut narrow(), &mut fresh_market_policy()] {
+            let err = holder
+                .widen_to(target, &broad, &[&operator(), &second])
+                .unwrap_err();
+            assert!(err.to_string().contains(record), "{target:?}: {err}");
+        }
+    }
+
+    // Drift still returns a policy to shadow from the level it holds.
+    assert_eq!(policy.observe(d(50), &[]), Authority::Shadow);
+}
+
+fn fresh_market_policy() -> ActionPolicy {
+    ActionPolicy::new(Method::Market, d(1), d(5), BTreeSet::new()).unwrap()
+}
