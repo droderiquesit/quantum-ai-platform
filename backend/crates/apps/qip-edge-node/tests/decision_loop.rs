@@ -1765,3 +1765,170 @@ fn permitting_to_seed(
     }
     gateway.with_listing_permissions(permissions, "paper")
 }
+
+/// R12-TICK-1201: what the node's passes applied goes through the drain's
+/// lake sink as sealed segments, and the lake alone is enough to rebuild the
+/// book the venue published. The segments are pinned and read back through
+/// `qip_storage::lake_history` (the reader every replay job uses, checksums
+/// verified), replayed with `qip_orderbook::replay`, and the rebuilt ladder
+/// must equal the simulated venue's own depth after the last pass: an
+/// independent truth, not a second copy of the feed.
+///
+/// Mutations: `LakeSink::deliver` skips every even-sequenced tick — the
+/// drain wait fails ("only 37 of 73 ticks reached the lake"), bounded by
+/// `PATIENCE`; the feed captures each level a tick above the price it
+/// published — the bids rebuilt from the lake differ from the venue's.
+#[test]
+fn the_lake_alone_rebuilds_the_book_the_venue_published() -> Result<()> {
+    use qip_contracts::venue::VenueStatus;
+    use qip_orderbook::venue::VenueState;
+    use qip_storage::lake::Lake;
+    use qip_storage::lake_history::HistoryQuery;
+    use std::collections::BTreeSet;
+
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 1_024)?;
+    let lake: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::new());
+    let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        CELL,
+        qip_edge_node::event_fabric::drain::default_retention(),
+        qip_storage::lake_codec::SegmentCodec::Identity,
+    )?)];
+    let mut drain = Drain::open(
+        Arc::clone(&rig.spool),
+        sinks,
+        rig.drain_publisher
+            .take()
+            .expect("the publisher is handed once"),
+        Arc::clone(&rig.telemetry),
+        DrainConfig::new(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+            64,
+        )?,
+    )?;
+
+    // Thirty turns, the touch moving every turn and a second level coming
+    // and going, so the book the lake must rebuild is not the first one.
+    let mut captured = 0usize;
+    for second in 10..40 {
+        let simulated = rig
+            .decisions
+            .gateway_mut()
+            .simulated_mut()
+            .expect("the rig's gateway is simulated");
+        let bid = dec!("99") - Decimal::from(second % 3);
+        simulated.seed_touch(&object(), Side::Buy, bid, dec!("500"), t(second))?;
+        if second % 4 == 0 {
+            simulated.seed_touch(&object(), Side::Sell, dec!("101"), dec!("300"), t(second))?;
+        }
+        captured += rig.decisions.turn(t(second))?.captured;
+    }
+    assert!(
+        captured > 10,
+        "premise: the passes applied ticks ({captured})"
+    );
+
+    let waited = std::time::Instant::now();
+    loop {
+        drain.step()?;
+        let lines: usize = lake
+            .list("lake/class=market/")?
+            .iter()
+            .map(|key| {
+                lake.get(key).ok().flatten().map_or(0, |body| {
+                    body.split(|byte| *byte == b'\n')
+                        .filter(|l| !l.is_empty())
+                        .count()
+                })
+            })
+            .sum();
+        if lines >= captured {
+            break;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "only {lines} of {captured} ticks reached the lake"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    let granted: BTreeSet<String> =
+        BTreeSet::from([qip_edge_node::feed::SIMULATED_DATASET.to_string()]);
+    let reader = Lake::new(lake.as_ref());
+    let listing = reader.pin_market_history(
+        "tick-1201",
+        &HistoryQuery {
+            from_date: "2000-01-01".to_string(),
+            to_date: "2100-01-01".to_string(),
+            venues: BTreeSet::new(),
+            instruments: BTreeSet::new(),
+            granted: granted.clone(),
+            max_segments: 10_000,
+            max_ticks: 100_000,
+        },
+    )?;
+    assert!(
+        !listing.segments.is_empty(),
+        "premise: segments were pinned"
+    );
+    let history = reader.read_market_history("tick-1201", &granted, 100_000)?;
+    assert_eq!(history.unparsed, 0);
+    assert_eq!(
+        history.ticks.len(),
+        captured,
+        "the lake does not hold every tick the passes applied"
+    );
+
+    let mut messages: Vec<_> = history
+        .ticks
+        .into_iter()
+        .filter(|tick| tick.message.object_id == object())
+        .map(|tick| tick.message)
+        .collect();
+    messages.sort_by_key(|message| message.origin.sequence);
+    let mut rebuilt = VenueState::aggregated(object(), VenueId::new(VENUE), VenueStatus::Open);
+    let output = qip_orderbook::replay::replay(&mut rebuilt, &messages)?;
+    assert!(
+        output.is_clean(),
+        "the lake's sequence has a hole: {:?}",
+        output.periods
+    );
+
+    let venue = rig
+        .decisions
+        .gateway_mut()
+        .simulated_mut()
+        .expect("the rig's gateway is simulated")
+        .quotes()
+        .into_iter()
+        .find(|depth| depth.object_id == object())
+        .expect("the venue quotes the instrument");
+    let book = rebuilt.snapshot().book;
+    let ladder = |levels: &[qip_orderbook::view::Level]| -> Vec<(Decimal, Decimal)> {
+        levels
+            .iter()
+            .map(|level| (level.price, level.size))
+            .collect()
+    };
+    assert!(!venue.bids.is_empty(), "premise: the venue holds bids");
+    assert_eq!(
+        ladder(&book.bids),
+        venue
+            .bids
+            .iter()
+            .map(|level| (level.price, level.size))
+            .collect::<Vec<_>>(),
+        "bids rebuilt from the lake"
+    );
+    assert_eq!(
+        ladder(&book.asks),
+        venue
+            .asks
+            .iter()
+            .map(|level| (level.price, level.size))
+            .collect::<Vec<_>>(),
+        "asks rebuilt from the lake"
+    );
+    Ok(())
+}
