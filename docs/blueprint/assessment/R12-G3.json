@@ -897,14 +897,15 @@
   {
     "id": "R12-LEDGER-10041",
     "status": "PARTIAL",
-    "current": "Terraform declares a multi-region Spanner instance (nam-eur-asea, 100 PU, no edition set) and a 'positions' database with CMEK, gated off everywhere. qip-ledgerd keeps the ledger in a local WAL store; no Spanner client exists in the workspace.",
+    "current": "Terraform declares a multi-region Spanner instance (ENTERPRISE_PLUS, nam-eur-asea) and a 'positions' database with CMEK, gated off everywhere (enable_spanner = false in dev, test, stage, prod). qip-storage carries a Spanner REST client (gcp/spanner.rs, ADR 0113), and qip-ledgerd has a SpannerBackend that commits each delivery's batch in one transaction, fences a second writer, and refuses to start a deployed ledger on a database it cannot reach.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:380 google_spanner_instance global",
-      "infrastructure/terraform/modules/data/main.tf:397 database positions",
-      "backend/crates/apps/qip-ledgerd/src/store.rs:1-20 local durable store",
-      "infrastructure/environments/dev/terraform.tfvars:284 enable_spanner = false"
+      "backend/crates/libs/qip-storage/src/gcp/spanner.rs",
+      "backend/crates/apps/qip-ledgerd/src/config.rs::LedgerStorage::Spanner",
+      "backend/crates/apps/qip-ledgerd/tests/spanner.rs",
+      "infrastructure/terraform/modules/data/main.tf:580 google_spanner_instance, edition ENTERPRISE_PLUS",
+      "infrastructure/environments/dev/terraform.tfvars:344 enable_spanner = false"
     ],
-    "gap": "Spanner client, Enterprise Plus edition, ledger writer against Spanner.",
+    "gap": "2026-10-24: the text before this date said no Spanner client existed; one does, and so do the Enterprise Plus edition and the ledger writer. What is missing is billed and outside the code: a provisioned Spanner instance (enable_spanner is false in every committed environment, a protected path, and Enterprise Plus multi-region is a recurring cost) and a first run against a real instance, because the tests drive an in-process REST double that its own header says does not prove Google answers as modelled.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -912,10 +913,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "Spanner client requires a gRPC/TLS dependency refused by ADR 0002/0009 without a new ADR",
-    "verification": "cargo test -p qip-ledgerd against a Spanner emulator",
+    "verification": "cargo test -p qip-ledgerd --test spanner (in-process double); real-instance evidence not produced",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Lane T4-LEDGER 2026-10-24: gap corrected after reading the tree; ran cargo test -p qip-ledgerd --test spanner, 3 passed. Kept PARTIAL: BILLED/DEPLOY_DEPENDENT. No code changed."
   },
   {
     "id": "R12-WORLD-10042",
@@ -2134,7 +2135,7 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/forecast.rs::ForecastState"
     ],
-    "gap": "2026-10-19: no capital, risk or hedge consumer, by decision (ADR 0159 F). No mapping from panel beliefs to a distribution over stress worlds is built: a belief is a point-confidence claim about an instrument, a StressReport world is a scenario with a shock and no probability, and relating them would be assigning confidence (ADR 0005). A forecast may influence capital only if Calibration::Measured over at least a stated number of resolved forecasts (the number has no default and is RISK's; unset means no forecast influences anything, which is today's behaviour) and only through a committed world-to-forecast binding table. Three direction rules bind any consumer and each is a test with a mutation that slice must add: the set of worlds a hedge must survive is never reduced by a weight; a calibrated forecast may only add a forecast-derived world to the stress report, so worst_world can only worsen, and never reweights the worst-world rule or lowers the stressed-liquidity reserve; weights may reorder plans that each already protect every world and change nothing else. Nothing is built now.",
+    "gap": "2026-10-24 (ADR 0159 F): ForecastState is produced and journalled advisorily by the lattice stage and has no capital, risk or hedge consumer, by decision: a panel belief does not map to a distribution over stress worlds, and a calibrated forecast may only add worlds or reorder plans that already protect every world; it never reduces the protected set or lowers a reserve. A consumer needs Calibration::Measured over a stated sample count owned by RISK (unset = nothing influences anything) and a committed world-to-forecast binding table; each of the three direction rules is a test with a mutation that slice must add. Nothing is built.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2147,7 +2148,7 @@
     "verification": "unit tests",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane W8-159 2026-10-19 (ADR 0159). Gap restated; no grade change."
+    "notes": "Lane W8-159 2026-10-19 (ADR 0159). Lane T4-LEDGER 2026-10-24: grep of ForecastState finds only qip-contracts and qip-kernel's lattice_stage.rs, no consumer, as the decision says; no code change, no grade change."
   },
   {
     "id": "R12-CAPITAL-10098",

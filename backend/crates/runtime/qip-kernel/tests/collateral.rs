@@ -353,6 +353,50 @@ fn a_thin_statement_is_a_margin_call_naming_its_own_venue_rather_than_an_unread_
     Ok(())
 }
 
+/// A margin call is advice, and advice is not a booked obligation.
+///
+/// `review_cross_margin` runs `MarginModel::default`, whose own comment says
+/// this repository has never been shown a margin agreement. Queueing the
+/// figures it produces as a `MarginRequirement` would turn a guess into an
+/// obligation the ledger presents as fact, which `LedgerObligations` and the
+/// survival governor then read back as truth (ADR 0153 decision 3). The
+/// premise is asserted first: a call really was raised this cycle, so an
+/// unchanged queue is the finding and not a read that found nothing.
+#[test]
+fn review_cross_margin_posts_no_ledger_operation_from_the_default_margin_model() -> Result<()> {
+    let (mut platform, counterparty) = traded()?;
+    platform.observe_statement(counterparty.clone(), "USD", dec!("1"), dec!("1"), start())?;
+    let queued_before = platform.pending_desk_operations().len();
+
+    let report = platform.run_cycle(start());
+    let called = report.problems().into_iter().any(|(stage, problem)| {
+        stage == Stage::Learn && problem.contains("below the maintenance its own exposure requires")
+    });
+    assert!(
+        called,
+        "premise: the default model raised a margin call this cycle"
+    );
+
+    let queued = platform.pending_desk_operations();
+    for operation in queued {
+        assert!(
+            !matches!(
+                operation.kind,
+                qip_contracts::ledger_operation::OperationKind::MarginRequirement { .. }
+                    | qip_contracts::ledger_operation::OperationKind::CollateralPledge { .. }
+            ),
+            "a modelled margin figure was queued for the ledger: {:?}",
+            operation.kind
+        );
+    }
+    assert_eq!(
+        queued.len(),
+        queued_before,
+        "the cycle that raised the call queued a ledger operation it had no observed fact for"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_book_that_has_traded_nowhere_says_nothing_about_collateral_rather_than_a_reassuring_zero()
 -> Result<()> {

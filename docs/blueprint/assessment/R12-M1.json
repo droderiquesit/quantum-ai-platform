@@ -3738,7 +3738,7 @@
       "backend/crates/apps/qip-ledgerd/src/main.rs:1",
       "backend/crates/tests/qip-acceptance/tests/arch_035_ledger_consistency.rs"
     ],
-    "gap": "Depends on three rows that are not done: tax lots (R12-LEDGER-5008, tried and dropped 2026-10-18 for three coupled reasons), margin, collateral, commitments and inventory (R12-COVERAGE-7164: operations are bookable and read back, no production producer), and settlement state (ADR 5011). Fees are booked from the fill's reported fee; accruals post through operations with no production producer.",
+    "gap": "2026-10-24: closes only on three things ADR 0153 settles separately and none is a missing wire: private commitments (decision 2, decided, producer not yet built: R12-LEDGER-5006/5020), margin and collateral (decision 3: rule only, no venue states one; modelled margin is never booked, proven by a test), and tax (decision 7: not built, proven by a test). Tax lots (R12-LEDGER-5008) and settlement state (ADR 0130) remain open. Fees are booked from the fill's reported fee; accruals post through operations with no production producer.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3749,7 +3749,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": "Gap corrected 2026-10-18 by lane L15; nothing in the code changed."
+    "notes": "Gap corrected 2026-10-18 by lane L15. Lane T4-LEDGER 2026-10-24: blockers restated to ADR 0153's decisions; no code change, no grade change."
   },
   {
     "id": "R12-REFLEX-1165",
