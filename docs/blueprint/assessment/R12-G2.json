@@ -1135,13 +1135,14 @@
   {
     "id": "R12-RISK-9049",
     "status": "PARTIAL",
-    "current": "qip-risk hedge_search scores candidates world by world over ForecastWorlds, returns cheapest single/pair portfolio meeting the survival floor, refuses candidates not unwindable within horizon; called from kernel hedge::plan.",
+    "current": "qip-risk hedge_search scores candidates world by world over ForecastWorlds, returns cheapest single/pair portfolio meeting the survival floor, refuses candidates not unwindable within horizon; called from kernel hedge::plan. Since 2026-10-24 every leg of a plan carries an unwind schedule (UnwindStage per day, whole lots, each day within the stressed-volume capacity, summing exactly to the leg), and a size no whole-lot schedule fits inside the horizon is refused as UnwindInfeasible.",
     "evidence": [
       "backend/crates/libs/qip-observability/src/metrics.rs:729,749 HEDGE_PROPOSALS/HEDGE_REFUSALS",
       "backend/crates/libs/qip-risk/src/hedge_search.rs::search",
-      "backend/crates/runtime/qip-kernel/src/hedge.rs::plan"
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::plan",
+      "backend/crates/libs/qip-risk/src/hedge_search.rs unwind_schedule, Leg::unwind; test a_plan_carries_an_unwind_schedule_that_sums_to_each_leg_within_daily_capacity"
     ],
-    "gap": "Decided by ADR 0134 (accepted 2026-10-18): The hybrid solver router is qip-optimization-engine's compute router: hedge and hypothesis searches submit to it asynchronously, the classical answer is always computed, a hedge result carries an unwind plan, and the next quantum research family is feature-subset selection on the simulated provider. Code left: UnwindPlan in hedge_search.rs (stages sum to the position) and hedge jobs through ComputeRouter, with tests.",
+    "gap": "2026-10-24 (lane L1-MONEY): the unit check's unwind half is built and proven — a plan is evaluated across every forecast world and each leg now includes its unwind plan. What remains is ADR 0134's other half and the requirement's 'using the hybrid solver router': hedge searches are not submitted to qip-optimization-engine's ComputeRouter (kernel hedge::plan calls qip_risk::hedge_search::search directly), which needs the hedge portfolio choice formulated as a router problem with the classical answer always computed. The KUBERNETES tag (a hedge-brain service) is a deployment matter.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -1149,10 +1150,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "cargo +1.94.1 test -p qip-risk --lib hedge_search",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Does not use the hybrid solver router; produces an unwind-feasibility flag and liquidity-decay days, not an unwind plan."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Does not use the hybrid solver router; produces an unwind-feasibility flag and liquidity-decay days, not an unwind plan. 2026-10-24 lane L1-MONEY: unwind schedule added. Mutations: dropping .min(quantity) in unwind_schedule made the last stage 60 (stages summed to 240) and the test failed; scheduling the whole leg on day one gave [(1, 200)] and the test failed; restored with cp+cmp. qip-risk + qip-kernel --no-fail-fast: 1231 passed, 0 failed over 73 binaries. Kept PARTIAL (router half), so no skeptic was run for promotion."
   },
   {
     "id": "R12-RISK-9050",

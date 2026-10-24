@@ -3849,11 +3849,14 @@
   {
     "id": "R12-EXEC-1169",
     "status": "PARTIAL",
-    "current": "Permission register refuses unpermitted creation; no Market Factory consumes admissions.",
+    "current": "Create/list/seed only where permitted is structural (R12-EXEC-5079, COMPLETE 2026-10-24): every listing and seeding primitive demands a CreationAdmission minted only under recorded venue, product and jurisdiction permissions. Bootstrapping liquidity and risk-managing it are MarketFactory::seed, which rests the pricing rule's ladder only on a LadderAdmission from OrderManager::admit_ladder (the desk's limit check over both sides), and the factory's validity monitor in SIMULATE; the kernel's market-factory stage drives both from qip-deepbrain's breadth plan.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/market_creation.rs:12"
+      "backend/crates/tests/qip-acceptance/tests/market_creation.rs:12",
+      "backend/crates/services/qip-execution-engine/src/market_creation.rs MarketFactory::list, ::seed (LadderAdmission)",
+      "backend/crates/apps/qip-deepbrain/src/breadth.rs PLAN_VARIABLE QIP_DEEPBRAIN_BREADTH_PLAN",
+      "R12-EXEC-5079 evidence (admission on every primitive)"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Corrected 2026-10-24 (lane L1-MONEY): the 'no Market Factory consumes admissions' text was stale; the factory and the guarded primitives exist and are tested. What remains is bar part 2 for the bootstrap and risk-manage items: the factory runs only when qip-deepbrain is started with QIP_DEEPBRAIN_BREADTH_PLAN naming a plan file, and no committed environment sets it (grep of infrastructure finds none), so no default path creates, seeds or risk-manages a market. Closes when a committed deployment sets the breadth plan, or an owner accepts the guarded-but-off factory as the scope's delivery. Deployment/owner step, not code.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3864,7 +3867,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " 2026-10-24 lane L1-MONEY: gap corrected; no code changed for this row."
   },
   {
     "id": "R12-EVENT-1170",

@@ -2169,13 +2169,16 @@
   {
     "id": "R12-RISK-4097",
     "status": "PARTIAL",
-    "current": "MaxCounterpartyExposure on the counterparty axis, MaxVenueExposure, venue credit lines, settlement reservation gate at the edge. No custody or bridge exposure.",
+    "current": "MaxCounterpartyExposure on the counterparty axis, MaxVenueExposure, venue credit lines, settlement reservation gate at the edge. Custody: Platform::with_custody_exposure sums the venue/custodian statements qip-api's statement route hands Platform::observe_statement onto the custodian axis, and the shipped conservative_default custodian-concentration MaxAxisWeight cap reads it. No bridge exposure.",
     "evidence": [
       "backend/crates/libs/qip-risk/src/limits.rs:185,196",
       "backend/crates/libs/qip-risk/tests/venue_credit_lines.rs",
-      "backend/crates/edge/qip-edge/src/settlement.rs:54 GATE_SETTLEMENT"
+      "backend/crates/edge/qip-edge/src/settlement.rs:54 GATE_SETTLEMENT",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::with_custody_exposure; tests the_custodian_limit_can_actually_fire, a_book_spread_across_custodians_inside_the_bound_is_admitted, a_debit_balance_is_not_custody",
+      "backend/crates/libs/qip-risk/src/limits.rs CUSTODIAN_AXIS and the custodian-concentration default limit",
+      "backend/crates/apps/qip-api/src/statement.rs -> Platform::observe_statement"
     ],
-    "gap": "Custody and bridge exposure.",
+    "gap": "Corrected 2026-10-24 (lane L1-MONEY): the custody half is no longer missing — custody concentration is measured from observed statements and limited by a shipped cap, with in-module tests that it fires and admits. The bridge half remains unmet, and by the kernel's own stated reasoning (with_custody_exposure's doc): this process instructs no transfer (ADR 0021), the only in-flight quantity is the wallet view's in_flight, which reconcile_wallet books as zero, and the kernel's BridgeLedger is fed only by tests, so a bridge axis would be present and always empty — a limit that cannot fire. Closing it needs an owner decision: either an observed source of bridge in-flight value (a bridge's own statement) to measure, or the requirement narrowed to exclude bridges while ADR 0021 forbids transfers.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2186,7 +2189,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " 2026-10-24 lane L1-MONEY: gap corrected (custody half exists and is tested; bridge half declined in-tree). No code changed for this row."
   },
   {
     "id": "R12-RISK-4098",

@@ -514,9 +514,11 @@
       "backend/crates/edge/qip-edge/src/dropcopy.rs:276 reconcile",
       "backend/crates/edge/qip-edge/src/cell.rs:1960 require_reconciliation_before_resuming",
       "backend/crates/apps/qip-edge-node/src/main.rs:725 drop-copy endpoint awaiting",
-      "backend/crates/edge/qip-edge/tests/fills.rs"
+      "backend/crates/edge/qip-edge/tests/fills.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::reconcile_wallet (capital book vs venue/custodian statements, every LEARN)",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else"
     ],
-    "gap": "Continuous reconciliation of the ledger (not only the cell) against an independent venue channel.",
+    "gap": "Continuous reconciliation of the ledger (not only the cell) against an independent venue channel. Added 2026-10-24 (lane L1-MONEY): a second reconciliation exists centrally — Platform::reconcile_wallet compares the kernel's capital book with venue/custodian statements each LEARN, journals the outcome and halts orders into a broken venue-asset (tested, mutation-checked). It does not close this row: its statement feed (QIP_WALLET_STATEMENT_PATH) is null in every committed environment, the statement is a dated file rather than a continuous venue channel, and the book compared is the kernel's, not qip-ledgerd's. See R12-LEDGER-5025's gap for the same finding from its skeptic.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -527,7 +529,7 @@
     "verification": "reconciliation test with a seeded break",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " 2026-10-24 lane L1-MONEY: gap extended with the central wallet reconciliation; no code changed."
   },
   {
     "id": "R12-LEDGER-5023",
@@ -567,23 +569,26 @@
   },
   {
     "id": "R12-LEDGER-5025",
-    "status": "MISSING",
-    "current": "qip-chain models on-chain state (backend/crates/services/qip-chain/src/lib.rs) but nothing reconciles ledger balances against wallet balances.",
+    "status": "PARTIAL",
+    "current": "qip-kernel Platform::reconcile_wallet runs in every LEARN stage: it assembles a wallet from the custodian/venue holding statements handed to Platform::observe_statement (qip-api's statement feed, statement.rs) against ledger views of the kernel's capital book (cash, reservations, positions), reconciles through qip-capital-fabric wallet.rs (delta against a per-asset tolerance), journals each outcome through decide_fabric, and a Halt refuses orders into that venue-asset on submit_order's path (wallet_halt_for / refuse_for_wallet_halt).",
     "evidence": [
-      "backend/crates/services/qip-chain/src/lib.rs chain state, no ledger reconciliation"
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::reconcile_wallet, wallet_halt_for, refuse_for_wallet_halt",
+      "backend/crates/services/qip-capital-fabric/src/wallet.rs reconcile (delta/tolerance block)",
+      "backend/crates/apps/qip-api/src/statement.rs (QIP_WALLET_STATEMENT_PATH feed)",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else"
     ],
-    "gap": "Wallet balance reconciliation against ledger.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Corrected 2026-10-24 (lane L1-MONEY; skeptic REFUTED promotion): the reconciliation is built, tested and mutation-checked, but (1) its only production input, qip-api's statement feed, runs only when QIP_WALLET_STATEMENT_PATH is set, and terraform sets it only from wallet_statement_file, null in dev, stage and prod — so no default path compares a balance; (2) it compares against the kernel's capital book, not qip-ledgerd, the repository's authoritative double-entry ledger; (3) a hand-supplied, dated custodian statement file re-read on change is not a wallet's own record polled continuously; (4) no test asserts the break lands in the replayable log, only in fabric state. Closes with a statement/wallet feed on in a committed deployment (deploy/owner), reconciliation against qip-ledgerd balances or an owner ruling that the capital book suffices, and a test reading the break back from the replayed log.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "reconciliation test with a seeded break",
+    "verification": "cargo +1.94.1 test -p qip-kernel --test ledger a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L1-MONEY: MISSING was wrong (the row's current said nothing reconciles). Mutation: wallet.rs delta computed as observed - observed (comparison disabled) FAILED the kernel test at 'premise: the desk's cash is halted' (ledger.rs:3944); restored with cp+cmp, passes. Independent security-engineer skeptic: REFUTED for promotion on the four points in gap; confirmed the halt acts on submit_order and that dropping the record also drops the halt."
   },
   {
     "id": "R12-LEDGER-5026",
@@ -1825,14 +1830,20 @@
   },
   {
     "id": "R12-EXEC-5079",
-    "status": "PARTIAL",
-    "current": "CreationPermissions/CreationAuthority::ALL and admit (backend/crates/services/qip-execution-engine/src/creation.rs:46, :223); acceptance market_creation.rs:97, :177. No production consumer (the suite's own doc says so).",
+    "status": "COMPLETE",
+    "current": "CreationAdmission has one mint (CreationPermissions::admit, which refuses unless venue, product and jurisdiction permissions are all recorded with references), private fields and no Deserialize. Every primitive that lists, opens or seeds a book demands one for exactly that action, venue and instrument: SimulatedExchange::list/list_synthetic/seed_liquidity, MatchingEngine::open (List) and seed (Seed), SimulatedBroker::list_book (List only for an empty, not-yet-listed book; Seed only over a listed one); venue flow never rests through execute, replace refuses venue-owned orders, and the engine cannot be decoded. Production holders: the edge node's gateway (refuses by default, no register supplied) and the kernel's market-factory stage, whose permissions come only from the operator plan file (re-read, fail-closed revocation in qip-deepbrain).",
     "evidence": [
       "backend/crates/services/qip-execution-engine/src/creation.rs:223",
       "backend/crates/tests/qip-acceptance/tests/market_creation.rs:97",
-      "backend/crates/tests/qip-acceptance/tests/market_creation.rs:177"
+      "backend/crates/tests/qip-acceptance/tests/market_creation.rs:177",
+      "backend/crates/services/qip-execution-engine/src/creation.rs tests any_two_of_the_three_permissions_are_not_enough",
+      "backend/crates/services/qip-brokers/tests/exchange.rs::seeding_needs_an_admission_to_seed_exactly_this_instrument_at_exactly_this_venue",
+      "backend/crates/services/qip-brokers/tests/matching.rs::the_engine_opens_and_seeds_a_book_only_under_an_admission_for_that_instrument",
+      "backend/crates/services/qip-brokers/tests/matching.rs::venue_flow_never_rests_and_venue_liquidity_is_never_amended",
+      "backend/crates/services/qip-execution-engine/src/broker.rs listing_tests::a_listing_rests_an_empty_book_once_and_a_seed_rests_only_over_a_listed_one",
+      "backend/crates/tests/qip-acceptance/tests/order_placement_paths.rs::every_seeding_and_book_opening_primitive_demands_a_creation_admission"
     ],
-    "gap": "A production workflow consuming CreationAdmission (corrected 2026-10-24): qip-execution-engine market_creation.rs takes the admission but no app or kernel caller constructs one, and the consumer belongs to the execution engine, outside the edge, arbitrage and peer territory of this lane.",
+    "gap": "None for the requirement's check. Residual notes from the third skeptic, not refutations: CreationPermissions::record and market_factory_stage::register are public, so new production code could build its own register (today the only production callers read the operator plan file); a standalone MatchingEngine checks no venue (its only production user, SimulatedExchange, checks the venue first).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1840,10 +1851,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test market_creation",
+    "verification": "cargo +1.94.1 test -p qip-acceptance --test market_creation && cargo +1.94.1 test -p qip-brokers --test exchange --test matching && cargo +1.94.1 test -p qip-execution-engine --lib && cargo +1.94.1 test -p qip-acceptance --test order_placement_paths every_seeding_and_book_opening_primitive_demands_a_creation_admission",
     "work_item": "",
     "size": "M",
-    "notes": "Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
+    "notes": "Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE. 2026-10-24 lane L1-MONEY: three skeptic rounds. Round 1 (on c266eb7a) REFUTED: seed_liquidity and MatchingEngine::open/seed took no admission. Fixed in b9d94bc1; mutations fired: Seed admits line removed from seed_liquidity, List guard removed from open ('a seeding admission opened a book'), Seed guard removed from seed ('a listing admission seeded the book'), seed_liquidity parameter renamed (signature pin fails). Round 2 (on b9d94bc1) REFUTED: execute rested venue-owned remainders, replace could enlarge venue orders, SimulatedBroker::list_book took List or Seed alike, MatchingEngine derived Deserialize. Fixed in 7581d3c8; mutations fired: execute resting arm without owner.is_client() ('venue flow rested'), replace's venue refusal disabled ('a seeded venue order was enlarged'), refuse_unlike_its_action removed ('a listing admission rested a populated book'), Deserialize restored ('can be decoded'). All restored with cp+cmp. Round 3 (on 7581d3c8, independent security-engineer, default refuted): HOLDS — no production route lists, opens or seeds without the matching admission; external-market models (event plane, arbitrage liquidity views, qip-chain pools) create no venue book."
   },
   {
     "id": "R12-EXEC-5080",

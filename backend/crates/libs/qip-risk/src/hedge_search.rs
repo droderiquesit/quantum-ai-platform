@@ -423,6 +423,85 @@ pub struct Leg {
     pub quantity: Decimal,
     pub capital: Decimal,
     pub measures: HedgeMeasures,
+    /// How the leg comes off: day by day, each day no more than the volume
+    /// share of a stressed day's volume allows, in whole lots, summing
+    /// exactly to `quantity` (R12-RISK-9049, ADR 0134). Defaulted so a plan
+    /// journaled before the schedule existed still reads.
+    #[serde(default)]
+    pub unwind: Vec<UnwindStage>,
+}
+
+/// One day of a leg's unwind.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnwindStage {
+    /// Days after the decision to unwind, from one.
+    pub day: u32,
+    /// Contracts taken off that day: whole lots, positive.
+    pub quantity: Decimal,
+}
+
+/// The schedule that takes `quantity` of `candidate` off inside `objective`'s
+/// horizon, or a refusal when it cannot.
+///
+/// Each day's ceiling is the cumulative stressed-volume capacity floored to
+/// whole lots, so a candidate that can shed half a lot a day sheds one lot
+/// every second day rather than none, and the stages sum to `quantity`
+/// exactly — the last stage is the remainder, never a recomputation. The
+/// capacity is a statistic (`f64`, a share of a volume); it crosses into
+/// `Decimal` once per day here, as whole lots.
+///
+/// Refused rather than truncated when the horizon ends with contracts still
+/// on: a schedule that stopped short would state an unwind that leaves a
+/// position nobody planned to hold.
+fn unwind_schedule(
+    candidate: &HedgeCandidate,
+    quantity: Decimal,
+    objective: &HedgeObjective,
+) -> Result<Vec<UnwindStage>> {
+    let per_day = candidate.unwindable_units(objective.max_volume_share, 1.0);
+    let lot = candidate.lot_size;
+    let lot_f = lot.to_f64();
+    let last_day = objective.max_unwind_days.ceil();
+    if !(per_day.is_finite() && per_day > 0.0 && lot_f > 0.0 && last_day.is_finite()) {
+        return Err(Error::invalid(format!(
+            "{} has no unwind capacity to schedule against ({per_day} units a day, lot {lot})",
+            candidate.symbol
+        )));
+    }
+    let mut stages = Vec::new();
+    let mut taken = Decimal::ZERO;
+    let mut day: u32 = 0;
+    while taken < quantity {
+        day = day.saturating_add(1);
+        if f64::from(day) > last_day {
+            return Err(Error::denied(format!(
+                "{} of {} cannot be unwound inside {} days at {per_day:.2} units a day; {} \
+                 would still be on",
+                quantity,
+                candidate.symbol,
+                objective.max_unwind_days,
+                quantity - taken
+            )));
+        }
+        let lots = (f64::from(day) * per_day / lot_f).floor();
+        let ceiling = Decimal::from_f64(lots)
+            .and_then(|lots| lots.checked_mul(lot))
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "the unwind capacity of {} overflows",
+                    candidate.symbol
+                ))
+            })?;
+        let today = ceiling.min(quantity) - taken;
+        if today.is_positive() {
+            stages.push(UnwindStage {
+                day,
+                quantity: today,
+            });
+            taken += today;
+        }
+    }
+    Ok(stages)
 }
 
 impl Leg {
@@ -753,6 +832,19 @@ pub fn search(
             let quantity = Decimal::from_f64(units.abs()).ok_or_else(|| {
                 Error::numeric(format!("{units} units of {} overflow", candidate.symbol))
             })?;
+            // A size the measures called unwindable but no whole-lot
+            // schedule fits is refused like any other unwind failure, not
+            // allowed to abort the search for every other portfolio.
+            let Ok(unwind) = unwind_schedule(candidate, quantity, objective) else {
+                if record {
+                    refusals.push(SearchRefusal::UnwindInfeasible {
+                        symbol: candidate.symbol.clone(),
+                        days: measures.liquidity_decay_days,
+                        horizon: objective.max_unwind_days,
+                    });
+                }
+                return Ok(());
+            };
             built.push(Leg {
                 object_id: candidate.object_id.clone(),
                 symbol: candidate.symbol.clone(),
@@ -766,6 +858,7 @@ pub fn search(
                 quantity,
                 capital: used,
                 measures,
+                unwind,
             });
         }
         if built.is_empty() {
@@ -974,6 +1067,59 @@ mod tests {
         assert!(m.liquidity_decay_days > 0.0);
         assert!(m.unwind_feasible);
         assert!(m.counterparty_risk.abs() < 1e-12);
+    }
+
+    /// R12-RISK-9049's unit check, its second half: a hedge plan includes an
+    /// unwind plan. 200 contracts of an instrument whose stressed tenth of
+    /// volume is 60 a day come off 60, 60, 60 and then the remaining 20 —
+    /// whole lots, inside the five-day horizon, summing exactly to the leg.
+    /// The plan is also evaluated across worlds (every world's hedged P&L is
+    /// stated), the first half the earlier tests prove.
+    ///
+    /// Mutations: drop the `.min(quantity)` in `unwind_schedule` (the last
+    /// stage overshoots to 60 and the sum is 240); or schedule the whole leg
+    /// on day one (the first stage exceeds the day's capacity).
+    #[test]
+    fn a_plan_carries_an_unwind_schedule_that_sums_to_each_leg_within_daily_capacity() {
+        let mut steady = future("STEADY", -0.20, 0.5);
+        steady.average_daily_volume = dec!("1200");
+        let result = search(&worlds(), &[steady], &objective(dec!("10000000"))).unwrap();
+        let plan = result.plan.expect("a plan exists");
+        assert_eq!(plan.legs.len(), 1, "premise: one leg");
+        let leg = &plan.legs[0];
+        assert_eq!(leg.quantity, dec!("200"), "premise: the crash needs 200");
+        assert_eq!(
+            plan.hedged_pnl.keys().cloned().collect::<Vec<_>>(),
+            vec![
+                "calm".to_string(),
+                "crash".to_string(),
+                "squeeze".to_string()
+            ],
+            "the plan is stated in every world"
+        );
+        let stages: Vec<(u32, Decimal)> = leg
+            .unwind
+            .iter()
+            .map(|stage| (stage.day, stage.quantity))
+            .collect();
+        assert_eq!(
+            stages,
+            vec![
+                (1, dec!("60")),
+                (2, dec!("60")),
+                (3, dec!("60")),
+                (4, dec!("20"))
+            ]
+        );
+        let total = leg
+            .unwind
+            .iter()
+            .fold(Decimal::ZERO, |sum, stage| sum + stage.quantity);
+        assert_eq!(total, leg.quantity, "the unwind does not sum to the leg");
+        assert!(
+            leg.unwind.iter().all(|stage| stage.quantity <= dec!("60")),
+            "a stage exceeds a day's capacity"
+        );
     }
 
     /// Mutation: drop the `unwind_feasible` refusal in `consider` and the

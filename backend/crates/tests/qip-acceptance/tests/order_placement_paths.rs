@@ -1696,4 +1696,19 @@ fn every_seeding_and_book_opening_primitive_demands_a_creation_admission() {
         1,
         "a book is constructed somewhere other than `MatchingEngine::open`: {constructed:?}"
     );
+    // Nor decoded: an engine read back from bytes would hold open, seeded
+    // books no admission ever opened. The derive above each type is read.
+    for type_line in ["pub struct MatchingEngine {", "struct InstrumentBook {"] {
+        let at = matching
+            .find(type_line)
+            .unwrap_or_else(|| panic!("premise: matching.rs declares `{type_line}`"));
+        let derive = matching[..at]
+            .rfind("#[derive(")
+            .map(|start| &matching[start..at])
+            .unwrap_or_else(|| panic!("premise: `{type_line}` carries a derive"));
+        assert!(
+            !derive.contains("Deserialize"),
+            "`{type_line}` can be decoded, and a decoded engine holds books no admission opened"
+        );
+    }
 }
