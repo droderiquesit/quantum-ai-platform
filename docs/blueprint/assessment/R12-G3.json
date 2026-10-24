@@ -173,15 +173,14 @@
   },
   {
     "id": "R12-GCP-10009",
-    "status": "PARTIAL",
-    "current": "modules/ncc declares the hub and VPC spokes for the five planes, gated off (R12-GCP-8056). Hybrid spokes exist as interconnect_spokes, empty because no attachment is ordered.",
+    "status": "MISSING",
+    "current": "No google_network_connectivity_* resource in Terraform; a gated-off declaration is refused by gcp_placement.rs.",
     "evidence": [
-      "infrastructure/terraform/modules/ncc/main.tf google_network_connectivity_spoke.interconnect",
-      "infrastructure/terraform/main.tf module \"ncc\""
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region"
     ],
-    "gap": "2026-10-24: interconnect_spokes is empty until a partner circuit exists (modules/connectivity/NOT-ORDERED.md); no plan has been shown; terraform not installed in the lane session.",
-    "implemented": true,
-    "tested": true,
+    "gap": "2026-10-24: blocked by ADR 0035 (one node, one region) and its guard in gcp_placement.rs; hybrid spokes also need interconnect attachments that are out of band (modules/connectivity/NOT-ORDERED.md). Needs an ADR superseding 0035.",
+    "implemented": false,
+    "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -189,7 +188,7 @@
       "R12-GCP-10008"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure the_ncc",
+    "verification": "terraform plan shows google_network_connectivity_hub/spoke",
     "work_item": "",
     "size": "M",
     "notes": ""
