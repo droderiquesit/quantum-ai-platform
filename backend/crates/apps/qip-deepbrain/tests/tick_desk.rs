@@ -740,3 +740,114 @@ fn a_window_captured_under_a_degraded_clock_is_not_labelled_or_trained_on() -> R
     );
     Ok(())
 }
+
+/// An order the platform sent, as the kernel's order manager holds it.
+fn platform_order(
+    id: &str,
+    order_type: qip_execution_engine::order::OrderType,
+    created_ms: i64,
+    filled_at: Option<f64>,
+) -> qip_execution_engine::order::Order {
+    use qip_execution_engine::order::{Fill, Order, Side};
+    let mut order = Order::new(
+        OrderId::from_string(id),
+        ObjectId::from_string("obj-ACME"),
+        Side::Buy,
+        d(5.0),
+        order_type,
+        d(100.0),
+        "proposal-1",
+        vec!["hypothesis-1".to_string()],
+        "desk",
+        at(created_ms),
+    );
+    if let Some(price) = filled_at {
+        order.fills.push(Fill {
+            fill_id: qip_core::ids::FillId::from_string(format!("fill-{id}")),
+            order_id: OrderId::from_string(id),
+            at: at(created_ms + 10),
+            quantity: d(5.0),
+            price: d(price),
+            costs: Decimal::ZERO,
+            venue: "XLON".to_string(),
+            simulated: true,
+        });
+    }
+    order
+}
+
+/// R12-TICK-2073: the round the run loop calls replays the platform's own
+/// orders against the recorded market and records, per order, the replayed
+/// fill beside the venue's. A scheduled algorithm the replay cannot express
+/// is counted, not replayed as a market order nobody sent, and an order
+/// from outside the window is not replayed at all. Mutation: hand
+/// `round_with_fills` `Vec::new()` in `maybe_round_with_orders` again — no
+/// order row is recorded and the first assertion fails.
+#[test]
+fn a_tick_round_replays_the_platforms_own_orders_and_records_fill_versus_assumption_rows()
+-> Result<()> {
+    use qip_execution_engine::order::OrderType;
+    let lake = Arc::new(MemoryBlobStore::new());
+    seal_session(&lake, "vendor-depth")?;
+    let outputs = Arc::new(MemoryBlobStore::new());
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::clone(&outputs) as Arc<dyn BlobStore>,
+    );
+    let now = at(400_000);
+    let orders = vec![
+        platform_order("market-1", OrderType::Market, 150_000, Some(100.02)),
+        platform_order(
+            "limit-1",
+            OrderType::Limit { price: d(99.0) },
+            160_000,
+            None,
+        ),
+        platform_order(
+            "twap-1",
+            OrderType::TimeWeighted { minutes: 5 },
+            170_000,
+            None,
+        ),
+        // Two days before `now`: outside the desk's one-day lookback.
+        platform_order("stale-1", OrderType::Market, -172_800_000, Some(100.0)),
+    ];
+
+    let round = desk
+        .maybe_round_with_orders(&graph()?, 1, now, &orders, &[])?
+        .expect("cadence 1 runs every cycle");
+
+    let ids: Vec<&str> = round
+        .order_rows
+        .iter()
+        .map(|row| row.order_id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["market-1", "limit-1"],
+        "the replay did not take the platform's own orders: {:?}",
+        round.order_rows
+    );
+    assert_eq!(
+        round.unreplayable_orders, 1,
+        "the scheduled algorithm is counted"
+    );
+    let market = &round.order_rows[0];
+    assert!(
+        market.replayed_price.is_some(),
+        "the recorded market filled the buy"
+    );
+    assert_eq!(market.actual_price, Some(d(100.02)));
+    assert!(
+        market.gap_bps.is_some_and(f64::is_finite),
+        "the replayed fill sits beside the venue's: {market:?}"
+    );
+    let limit = &round.order_rows[1];
+    assert_eq!(
+        limit.actual_price, None,
+        "an unfilled order has no actual price"
+    );
+    assert_eq!(limit.gap_bps, None);
+    Ok(())
+}
