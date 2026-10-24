@@ -51,16 +51,13 @@ fn d(v: f64) -> Decimal {
 }
 
 /// One tick in the edge node's lake line shape.
-fn line(sequence: u64, ms: i64, body: MessageBody, dataset: &str) -> Result<String> {
-    stamped_line(sequence, ms, 3, body, dataset)
-}
-
 /// One tick received `received_after_ms` after the venue stamped it — a
 /// negative value is a tick the platform says it knew before it happened.
 fn stamped_line(
     sequence: u64,
     ms: i64,
     received_after_ms: i64,
+    uncertainty: Duration,
     body: MessageBody,
     dataset: &str,
 ) -> Result<String> {
@@ -77,7 +74,7 @@ fn stamped_line(
         at(ms),
         at(ms + received_after_ms),
         at(ms + received_after_ms),
-        Duration::ZERO,
+        uncertainty,
         hash,
         Licence::Granted {
             dataset: dataset.into(),
@@ -100,6 +97,15 @@ fn stamped_line(
 /// second later a print through the bid after a thin bid or at the ask after
 /// a thick one.
 fn seal_session(store: &MemoryBlobStore, dataset: &str) -> Result<usize> {
+    seal_session_uncertain(store, dataset, Duration::ZERO)
+}
+
+/// [`seal_session`], every tick captured with `uncertainty` of clock doubt.
+fn seal_session_uncertain(
+    store: &MemoryBlobStore,
+    dataset: &str,
+    uncertainty: Duration,
+) -> Result<usize> {
     let mut lines = Vec::new();
     let mut mid = 100.0;
     let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -112,9 +118,11 @@ fn seal_session(store: &MemoryBlobStore, dataset: &str) -> Result<usize> {
         let (bid_size, ask_size) = if thin { (2.0, 8.0) } else { (8.0, 2.0) };
         let t = i * 1_000;
         sequence += 1;
-        lines.push(line(
+        lines.push(stamped_line(
             sequence,
             t,
+            3,
+            uncertainty,
             MessageBody::Quote {
                 bid: Some((d(mid - 0.01), d(bid_size))),
                 ask: Some((d(mid + 0.01), d(ask_size))),
@@ -122,9 +130,11 @@ fn seal_session(store: &MemoryBlobStore, dataset: &str) -> Result<usize> {
             dataset,
         )?);
         sequence += 1;
-        lines.push(line(
+        lines.push(stamped_line(
             sequence,
             t + 500,
+            3,
+            uncertainty,
             MessageBody::Trade {
                 price: d(if thin { mid - 0.02 } else { mid + 0.01 }),
                 quantity: d(1.0),
@@ -528,6 +538,7 @@ fn a_tick_received_before_it_happened_is_excluded_from_replay_and_counted() -> R
         10_000,
         200_000,
         -2_000,
+        Duration::ZERO,
         MessageBody::Trade {
             price: d(100.0),
             quantity: d(1.0),
@@ -679,6 +690,53 @@ fn a_mispriced_fill_becomes_a_microstructure_training_row() -> Result<()> {
         round.describe().contains("1 of 3 venue fill(s) joined"),
         "{}",
         round.describe()
+    );
+    Ok(())
+}
+
+/// R12-RES-7103: a window captured under a clock too imprecise for the
+/// shortest label horizon is refused whole by name, and nothing is labelled
+/// or trained from it. The same session captured exactly is labelled (the
+/// premise).
+///
+/// Mutation: admit every window in `TickDesk::round_with_fills`.
+#[test]
+fn a_window_captured_under_a_degraded_clock_is_not_labelled_or_trained_on() -> Result<()> {
+    let exact = Arc::new(MemoryBlobStore::new());
+    seal_session(&exact, "vendor-depth")?;
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&exact) as Arc<dyn BlobStore>,
+        Arc::new(MemoryBlobStore::new()),
+    );
+    let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+    assert!(round.examples > 100, "premise: an exact window is labelled");
+
+    let doubtful = Arc::new(MemoryBlobStore::new());
+    let ticks = seal_session_uncertain(&doubtful, "vendor-depth", Duration::from_secs(2))?;
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&doubtful) as Arc<dyn BlobStore>,
+        Arc::new(MemoryBlobStore::new()),
+    );
+    let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+    assert_eq!(round.ticks, ticks, "premise: the history was read");
+    assert_eq!(
+        round.examples, 0,
+        "a window with two seconds of clock doubt was labelled"
+    );
+    assert!(round.labelled.is_empty());
+    assert!(
+        round.fill_model.is_none(),
+        "a model was trained on an imprecise window"
+    );
+    assert!(
+        round
+            .training_refused
+            .iter()
+            .any(|r| r.starts_with("labels: ") && r.contains(&round.manifest)),
+        "the refusal does not name the window: {:?}",
+        round.training_refused
     );
     Ok(())
 }
