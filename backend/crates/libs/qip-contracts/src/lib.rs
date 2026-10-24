@@ -83,8 +83,8 @@ pub mod validated;
 pub mod world_model;
 
 pub use capital::{
-    AuthorityBreach, CapitalAdmission, CapitalEnvelope, CapitalGrant, ExposureBounds,
-    ExposureBreach, Utilisation,
+    AuthorityBreach, CapitalAdmission, CapitalEnvelope, CapitalGrant, DrawdownBounds,
+    ExposureBounds, ExposureBreach, Utilisation,
 };
 pub use challenge::{ChallengeRequest, VerificationResult};
 pub use control::{ComputePlan, ForecastConsensus, HedgePlan, InformationRequest, ModelVote};

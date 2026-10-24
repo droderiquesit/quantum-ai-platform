@@ -701,6 +701,43 @@ pub struct GrantManifest {
     pub live_grants: Vec<String>,
 }
 
+/// What form a holding takes at one end of a conversion (R12-MESH-5053): the
+/// asset itself, a wrapper, a token or a custodial receipt. A graph node is
+/// (asset, venue, representation, settlement stage, region), and two
+/// holdings of one asset in two forms are two nodes the desk may not join
+/// at zero cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldingRepresentation {
+    #[default]
+    Native,
+    Wrapped,
+    Tokenized,
+    Receipt,
+}
+
+/// Where a holding stands in settlement at one end of a conversion
+/// (R12-MESH-5053): free to trade again, awaiting settlement, or moving.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldingSettlement {
+    #[default]
+    Settled,
+    Pending,
+    InTransit,
+}
+
+/// The representation and settlement stage of the holding at one end of a
+/// conversion, as the centre states them. Both required once the block is
+/// present, so a half-stated holding is refused at decode rather than read
+/// as native and settled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HoldingTerms {
+    pub representation: HoldingRepresentation,
+    pub settlement: HoldingSettlement,
+}
+
 /// One conversion the centre permits a cell's arbitrage desk to price: a
 /// trade edge of blueprint §30's graph, as the whitelist (§41.5 item 8) can
 /// carry it.
@@ -745,6 +782,16 @@ pub struct WhitelistedConversion {
     /// conversion was priced before; present, every figure is stated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub costs: Option<WhitelistedCosts>,
+    /// The representation and settlement stage of the holding before the
+    /// conversion (R12-MESH-5053), when the centre states them. Additive
+    /// like `costs`: absent is "none stated", which the desk places as a
+    /// native, settled holding — what every node was before this field — so
+    /// a payload signed before it keeps its digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_terms: Option<HoldingTerms>,
+    /// The same for the holding after the conversion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_terms: Option<HoldingTerms>,
 }
 
 /// Per-conversion costs as the centre ships them. Every field is required

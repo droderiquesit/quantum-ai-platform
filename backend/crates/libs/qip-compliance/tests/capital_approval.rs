@@ -40,6 +40,7 @@ fn request(gross: Decimal) -> CapitalRequest {
         expires_at: now().saturating_add(Duration::from_days(1)),
         requested_by: "r.mensah".to_string(),
         exposure: None,
+        drawdown: None,
     }
 }
 

@@ -184,9 +184,11 @@ fn fabric_037_one_flipped_payload_byte_is_refused_rather_than_decoded_as_differe
 #[test]
 fn fabric_038_a_frame_declaring_an_unknown_format_version_is_refused() {
     let encoded = one_record_batch("evt-38", b"{}").encode().expect("encodes");
+    // A batch carrying neither field ADR 0129 added keeps version 1's
+    // layout; one past the newest version this build reads is still unknown.
     assert_eq!(
         u16::from_le_bytes([encoded[4], encoded[5]]),
-        FORMAT_VERSION,
+        qip_events::event_fabric::codec::FORMAT_VERSION_WITHOUT_ORIGIN,
         "premise: the version sits at bytes 4..6"
     );
     let mut future = encoded;

@@ -455,6 +455,49 @@ mod belief_is_freshness_only {
         Ok(())
     }
 
+    /// R12-REFLEX-5030, ADR 0155 section 11: the cell consumes the belief
+    /// slot — by its freshness, which is the only way any cell reads it. A
+    /// payload whose belief slot is unproduced sizes the same signal smaller
+    /// than one whose slot is fresh, so the slot is read and its absence
+    /// narrows; and the fresh slot's *value* still moves nothing (the test
+    /// above). The audit found the equality test alone survives removing the
+    /// freshness reading; this one does not. Mutation: map
+    /// `PolicyItem::BeliefPriors` to no capability in `PolicyItem::capability`
+    /// and the two sizes are equal.
+    #[test]
+    fn a_cell_reads_the_belief_slot_by_its_freshness_and_its_absence_narrows_the_size() -> Result<()>
+    {
+        let fresh = payload(0.5, "digest")?;
+        let mut stale = fresh.payload().clone();
+        stale.belief_priors = Slot::unproduced();
+        stale.signature = String::new();
+        let stale = VerifiedPolicy::verify(stale.signed(KEY)?, KEY, CELL, t(5))?;
+        // Premise: the two payloads differ in the belief slot alone.
+        assert!(stale.payload().belief_priors.value().is_none());
+        assert!(fresh.payload().belief_priors.value().is_some());
+
+        let (with, _) = pass(fresh)?;
+        let (without, _) = pass(stale)?;
+        assert_eq!(
+            with.orders.len(),
+            1,
+            "premise: the fresh cell trades: {with:?}"
+        );
+        assert_eq!(
+            without.orders.len(),
+            1,
+            "premise: the narrowed cell still trades: {without:?}"
+        );
+        assert!(
+            without.orders[0].quantity < with.orders[0].quantity,
+            "an unproduced belief slot sized {} against the fresh slot's {}; the cell does not \
+             read the slot",
+            without.orders[0].quantity,
+            with.orders[0].quantity
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_cell_whose_build_is_absent_from_a_produced_build_set_takes_no_new_exposure_while_an_unproduced_set_changes_nothing()
     -> Result<()> {

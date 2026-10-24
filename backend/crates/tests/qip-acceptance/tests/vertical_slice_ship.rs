@@ -220,7 +220,14 @@ impl Fabric {
         }
         let identities = IdentityTable::parse(&table).unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let broker = Arc::new(Broker::open(root.join("broker"), clock.clone()).unwrap());
+        // ADR 0129: the broker stamps its region, and the ledger reads it
+        // off the batch rather than supplying its own.
+        let broker = Arc::new(
+            Broker::open(root.join("broker"), clock.clone())
+                .unwrap()
+                .with_region("europe-west2")
+                .unwrap(),
+        );
         let segments: SegmentConfigFor = Arc::new(move |policy: &StreamPolicy| {
             SegmentLogConfig::new(clock.clone()).with_archive_required(policy.archive_required())
         });

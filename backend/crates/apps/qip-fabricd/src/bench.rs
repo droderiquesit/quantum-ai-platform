@@ -239,7 +239,8 @@ fn measure(address: &str, spec: BenchSpec) -> Result<BenchReport> {
             BATCH_SCHEMA_VERSION,
             PayloadCodec::CanonicalJson,
             records,
-        )?;
+        )?
+        .with_provenance(qip_events::event_fabric::codec::Provenance::Fabricd);
         let started = Instant::now();
         producer.send(batch)?;
         produce.push(micros(started));

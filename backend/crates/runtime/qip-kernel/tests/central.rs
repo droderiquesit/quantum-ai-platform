@@ -1491,6 +1491,7 @@ fn approved_grant_outside_the_plane(
         expires_at: envelope.expires_at(),
         requested_by: "research.desk".to_string(),
         exposure: envelope.exposure().cloned(),
+        drawdown: envelope.drawdown().cloned(),
     };
     let mut chain = ApprovalChain::new(Decimal::ZERO, key.clone())?;
     let approved = chain.grant(&request, &approval, &credentials(now)?, now)?;
@@ -1571,6 +1572,8 @@ fn arbitrage_policy(venues: &[&str]) -> ArbitragePolicy {
                 base: "AAA".to_string(),
                 quote: "USD".to_string(),
                 costs: None,
+                base_terms: None,
+                quote_terms: None,
             })
             .collect(),
         start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
@@ -2219,6 +2222,8 @@ fn a_market_at_an_undescribed_venue_is_refused_when_the_plane_assembles() -> Res
         base: "AAA".to_string(),
         quote: "USD".to_string(),
         costs: None,
+        base_terms: None,
+        quote_terms: None,
     });
     let Err(error) = plane_with_arbitrage(policy) else {
         panic!("a market at an undescribed venue should not assemble");
@@ -6856,6 +6861,7 @@ fn two_operators_present_together_issue_a_grant_through_the_platforms_intent_and
         expires_at: envelope.expires_at(),
         requested_by: grant.requested_by.clone(),
         exposure: envelope.exposure().cloned(),
+        drawdown: envelope.drawdown().cloned(),
     };
     assert_eq!(grant.subject, request.subject());
     assert_eq!(

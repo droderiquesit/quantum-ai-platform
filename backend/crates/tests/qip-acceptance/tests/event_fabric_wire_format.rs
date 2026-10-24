@@ -192,12 +192,20 @@ fn every_fabric_socket_write_carries_bytes_from_the_versioned_encoders() {
     let magic = codec
         .find("out.extend_from_slice(&BATCH_MAGIC);")
         .expect("the encoder writes the magic");
+    // Since ADR 0129 the encoder writes one of two versions — version 1's
+    // layout for a batch carrying neither of the fields version 2 added —
+    // and the decoder reads exactly those two and refuses every other.
     let version = codec
-        .find("out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());")
+        .find("out.extend_from_slice(&version.to_le_bytes());")
         .expect("the encoder writes the format version");
     assert!(magic < version, "magic, then version, before anything else");
     assert!(
-        codec.contains("if version != FORMAT_VERSION {"),
+        codec.contains("let version = self.format_version();"),
+        "the version written is the batch's own layout, not a constant beside it"
+    );
+    assert!(
+        codec
+            .contains("if version != FORMAT_VERSION && version != FORMAT_VERSION_WITHOUT_ORIGIN {"),
         "the decoder refuses a version it was not built for"
     );
 

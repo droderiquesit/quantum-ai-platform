@@ -1164,7 +1164,7 @@ pub struct Platform {
     /// so an approved thesis — however good — could never become a trade. A
     /// thesis is queued once and drained once; re-expressing it every cycle
     /// would pyramid the same idea until the mandate cap alone stopped it.
-    pending_theses: Vec<qip_portfolio_engine::construction::ApprovedThesis>,
+    pending_theses: Vec<JustifiedThesis>,
     /// Beliefs from outside the opportunity, by subject. REASON may only be
     /// narrowed by them (ADR 0151 decision 3); empty unless a producer sets it.
     outside_priors: BTreeMap<String, crate::fusion::OutsidePrior>,
@@ -4591,33 +4591,36 @@ fn capital_grant_of(
     use qip_contracts::capital::{CapitalGrantFields, CollateralClass, GrantMode};
     use qip_contracts::validated::{Contract, MAX_BP};
     let capital = envelope.gross_limit();
-    // The loss limit as a share of the capital, in basis points — exact or
+    // ADR 0126 decision 3: the drawdown stop, the reserve and the ADV share
+    // are read from the envelope's drawdown block when it states them, and
+    // only written — the stop as the loss limit, a zero reserve, the whole
+    // ADV — when it does not. An envelope from before the block existed is
+    // the only one that reaches the written arm.
+    let block = envelope.drawdown();
+    let stop = block.map_or(envelope.loss_limit(), |block| block.max_drawdown);
+    // The stop as a share of the capital, in basis points — exact or
     // refused. `Decimal::ONE.raw()` is one unit at the decimal's scale.
     let one = Decimal::ONE.raw();
-    let scaled = envelope
-        .loss_limit()
+    let scaled = stop
         .checked_mul(Decimal::from_int(i64::from(MAX_BP)))
         .and_then(|scaled| scaled.checked_div(capital))
         .ok_or_else(|| {
             Error::numeric(format!(
-                "the loss limit {} over the capital {capital} of {}'s grant does not compute in \
-                 basis points",
-                envelope.loss_limit(),
+                "the drawdown stop {stop} over the capital {capital} of {}'s grant does not \
+                 compute in basis points",
                 envelope.strategy()
             ))
         })?;
     if scaled.raw() % one != 0 {
         return Err(Error::invalid(format!(
-            "the loss limit {} is not a whole number of basis points of the capital {capital} \
-             of {}'s grant; the funding record cannot state the drawdown stop exactly",
-            envelope.loss_limit(),
+            "the drawdown stop {stop} is not a whole number of basis points of the capital \
+             {capital} of {}'s grant; the funding record cannot state it exactly",
             envelope.strategy()
         )));
     }
     let max_drawdown_bp = u32::try_from(scaled.raw() / one).map_err(|_| {
         Error::invalid(format!(
-            "the loss limit {} of {}'s grant is not within its capital {capital}",
-            envelope.loss_limit(),
+            "the drawdown stop {stop} of {}'s grant is not within its capital {capital}",
             envelope.strategy()
         ))
     })?;
@@ -4644,8 +4647,12 @@ fn capital_grant_of(
         max_leverage,
         risk_budget: envelope.loss_limit(),
         max_drawdown_bp,
-        liquidity_reserve: Decimal::ZERO,
-        max_adv_share_bp: MAX_BP,
+        liquidity_reserve: block
+            .and_then(|block| block.liquidity_reserve)
+            .unwrap_or(Decimal::ZERO),
+        max_adv_share_bp: block
+            .and_then(|block| block.max_adv_share_bp)
+            .unwrap_or(MAX_BP),
         granted_at: envelope.granted_at(),
         expires_at: envelope.expires_at(),
     })
@@ -14583,9 +14590,9 @@ impl Platform {
                     // justified: a thesis whose only ground is the return it
                     // expects never reaches DECIDE, so no intent is formed on
                     // profit alone (R12-GOV-6127). `thesis_from` takes the
-                    // proof by value and only `justify_thesis` can mint one,
-                    // so this check cannot be dropped without the queue's
-                    // only constructor failing to compile.
+                    // proof by value and the queue holds it beside the
+                    // thesis; nothing but `Justification::of` makes one, and
+                    // it makes none for profit-only grounds.
                     match justify_thesis(&reasoned.hypothesis.evidence) {
                         Err(refusal) => {
                             // Recorded under its own words, because "could not
@@ -14611,13 +14618,13 @@ impl Platform {
                                 // narrowing an operator can see the size of.
                                 outcome.detail.push_str(&format!(
                                     "; sized on conviction {:.3}",
-                                    thesis.conviction.abs()
+                                    thesis.thesis().conviction.abs()
                                 ));
                                 // R12-RISK-4112: how split the panel was on
                                 // the thesis now queued, for DECIDE's
                                 // confidence governor to size against.
                                 self.governor.signals_mut().observe_dissent(
-                                    &thesis.hypothesis_id,
+                                    &thesis.thesis().hypothesis_id,
                                     reasoned.dissenters.len(),
                                     report.runs.len(),
                                 );
@@ -16301,16 +16308,14 @@ impl Platform {
         Ok((outcome, unsizeable, capped))
     }
 
-    /// `_justified` is the proof [`justification::justify_thesis`] mints and
-    /// nothing else can: the queue's only constructor will not build a
-    /// thesis from a hypothesis nobody showed was justified by more than
-    /// the return it expects (R12-GOV-6127).
+    /// `justification` is the proof the thesis stands on more than the
+    /// return it expects (R12-GOV-6127), carried into the queue with it.
     fn thesis_from(
         &self,
         opportunity: &Opportunity,
         reasoned: &qip_reasoning_engine::engine::ReasoningOutcome,
-        _justified: justification::Justified,
-    ) -> Result<qip_portfolio_engine::construction::ApprovedThesis> {
+        justification: qip_contracts::action::Justification,
+    ) -> Result<JustifiedThesis> {
         let object_id = opportunity
             .affected_objects
             .first()
@@ -16336,30 +16341,33 @@ impl Platform {
             .anomalies
             .first()
             .ok_or_else(|| Error::invalid("the opportunity carries no anomaly to measure"))?;
-        Ok(qip_portfolio_engine::construction::ApprovedThesis {
-            hypothesis_id: reasoned.hypothesis.hypothesis_id.to_string(),
-            object_id: object_id.clone(),
-            // The sizing number rather than the admission number. Both are
-            // the hypothesis's own confidence; this one is additionally
-            // narrowed where the evidence contradicts itself, so that a
-            // thesis whose support is answered by an equal dissent commits
-            // less capital than one nothing argued against. Without it a
-            // conflict of evidence and an absence of evidence arrived here as
-            // the same figure and were sized identically, with nothing in the
-            // record to say which had happened.
-            conviction: sign * reasoned.hypothesis.confidence_for_sizing(),
-            // The reversion of what was measured: the anomaly observed a
-            // displacement from expectation, and the thesis is that it closes.
-            // Bounded to the mandate-scale range construction validates, so an
-            // extreme print proposes a large-but-finite return rather than an
-            // absurd one.
-            expected_return: (anomaly.expected - anomaly.observed).clamp(-0.5, 0.5),
-            price: Decimal::from_f64(price).ok_or_else(|| {
-                Error::numeric(format!(
-                    "{object_id}'s last close {price} is not representable as a Decimal"
-                ))
-            })?,
-        })
+        Ok(JustifiedThesis::new(
+            qip_portfolio_engine::construction::ApprovedThesis {
+                hypothesis_id: reasoned.hypothesis.hypothesis_id.to_string(),
+                object_id: object_id.clone(),
+                // The sizing number rather than the admission number. Both are
+                // the hypothesis's own confidence; this one is additionally
+                // narrowed where the evidence contradicts itself, so that a
+                // thesis whose support is answered by an equal dissent commits
+                // less capital than one nothing argued against. Without it a
+                // conflict of evidence and an absence of evidence arrived here as
+                // the same figure and were sized identically, with nothing in the
+                // record to say which had happened.
+                conviction: sign * reasoned.hypothesis.confidence_for_sizing(),
+                // The reversion of what was measured: the anomaly observed a
+                // displacement from expectation, and the thesis is that it closes.
+                // Bounded to the mandate-scale range construction validates, so an
+                // extreme print proposes a large-but-finite return rather than an
+                // absurd one.
+                expected_return: (anomaly.expected - anomaly.observed).clamp(-0.5, 0.5),
+                price: Decimal::from_f64(price).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "{object_id}'s last close {price} is not representable as a Decimal"
+                    ))
+                })?,
+            },
+            justification,
+        ))
     }
 
     /// Turn an opportunity and the organisation's findings into a reviewed
@@ -17307,7 +17315,11 @@ impl Platform {
         // Theses are drained, not read: a thesis expresses once. Re-expressing
         // the queue every cycle would pyramid the same idea until the mandate
         // cap alone stopped it.
-        let theses = std::mem::take(&mut self.pending_theses);
+        let theses: Vec<qip_portfolio_engine::construction::ApprovedThesis> =
+            std::mem::take(&mut self.pending_theses)
+                .into_iter()
+                .map(JustifiedThesis::into_thesis)
+                .collect();
         let approved = theses.len();
         // The refusal, kept so the stage itself carries it. A construction
         // that was attempted and refused is not a quiet cycle, and until this
@@ -24634,16 +24646,48 @@ fn listed_test_universe(symbols: &[&str]) -> Universe {
 /// was a branch beside `thesis_from` that deleting compiled and no cycle
 /// test could notice, because `synthesise` always supplies a supporting item.
 mod justification {
+    use qip_contracts::action::Justification;
     use qip_core::error::Result;
+    use qip_portfolio_engine::construction::ApprovedThesis;
 
-    /// Proof that a thesis stands on more than its expected profit.
-    #[derive(Debug)]
-    pub(super) struct Justified(());
+    /// A thesis and the proof it stands on more than its expected profit
+    /// (R12-GOV-6127). The queue DECIDE drains holds only these, and the
+    /// fields are private to this module, so a thesis reaches sizing only
+    /// beside a [`Justification`] — which [`Justification::of`] alone makes,
+    /// and only for grounds naming independent evidence. The proof travels
+    /// with the thesis rather than guarding one push site beside it.
+    #[derive(Clone, Debug)]
+    pub(super) struct JustifiedThesis {
+        thesis: ApprovedThesis,
+        justification: Justification,
+    }
+
+    impl JustifiedThesis {
+        pub(super) fn new(thesis: ApprovedThesis, justification: Justification) -> Self {
+            Self {
+                thesis,
+                justification,
+            }
+        }
+
+        pub(super) fn thesis(&self) -> &ApprovedThesis {
+            &self.thesis
+        }
+
+        #[allow(dead_code)] // read by the tests beside the queue
+        pub(super) fn justification(&self) -> &Justification {
+            &self.justification
+        }
+
+        pub(super) fn into_thesis(self) -> ApprovedThesis {
+            self.thesis
+        }
+    }
 
     pub(super) fn justify_thesis(
         evidence: &qip_reasoning_engine::evidence::EvidenceSet,
-    ) -> Result<Justified> {
-        use qip_contracts::action::{Ground, check_justification};
+    ) -> Result<Justification> {
+        use qip_contracts::action::Ground;
         use qip_reasoning_engine::evidence::Stance;
         let mut grounds = vec![Ground::ExpectedProfit];
         grounds.extend(
@@ -24652,11 +24696,87 @@ mod justification {
                 .into_iter()
                 .map(|item| Ground::Evidence(item.record_id.clone())),
         );
-        check_justification(&grounds)?;
-        Ok(Justified(()))
+        Justification::of(grounds)
     }
 }
-use justification::justify_thesis;
+use justification::{JustifiedThesis, justify_thesis};
+
+/// A test thesis queued as REASON would queue it: beside a justification
+/// naming independent evidence, the only kind [`Justification::of`] makes.
+///
+/// [`Justification::of`]: qip_contracts::action::Justification::of
+#[cfg(test)]
+fn justified(thesis: qip_portfolio_engine::construction::ApprovedThesis) -> JustifiedThesis {
+    use qip_contracts::action::{Ground, Justification};
+    JustifiedThesis::new(
+        thesis,
+        Justification::of(vec![
+            Ground::ExpectedProfit,
+            Ground::Evidence("test-evidence".to_string()),
+        ])
+        .expect("an evidence ground justifies"),
+    )
+}
+
+#[cfg(test)]
+mod capital_grant_tests {
+    //! ADR 0126 decision 3 (R12-CONTRACT-7066): the grant the ledger books
+    //! reads the drawdown stop, reserve and ADV share the envelope states,
+    //! and writes them only for an envelope that states none.
+
+    use super::*;
+    use qip_contracts::DrawdownBounds;
+    use qip_contracts::signal::StrategyId;
+
+    fn envelope() -> qip_contracts::CapitalEnvelope {
+        qip_contracts::CapitalEnvelope::new(
+            StrategyId::new("alpha"),
+            "london-1",
+            Decimal::from_int(1_000_000),
+            Decimal::from_int(100_000),
+            Decimal::from_int(20_000),
+            vec![VenueId::new("XLON")],
+            Timestamp::from_secs(1_760_000_000),
+            Timestamp::from_secs(1_760_003_600),
+            "alice",
+            "",
+        )
+        .expect("a valid envelope")
+    }
+
+    #[test]
+    fn the_funded_grant_reads_the_envelopes_drawdown_block_and_writes_only_what_it_does_not_state()
+    {
+        let venue = VenueId::new("XLON");
+        // Premise: without the block the grant writes the loss limit as the
+        // stop (200 bp of the capital), no reserve and the whole ADV, so the
+        // three readings below differ from what is written.
+        let written = capital_grant_of(&envelope(), &venue, "europe-west2".to_string())
+            .expect("a grant from an unblocked envelope");
+        assert_eq!(written.max_drawdown_bp, 200);
+        assert_eq!(written.liquidity_reserve, Decimal::ZERO);
+        assert_eq!(written.max_adv_share_bp, qip_contracts::validated::MAX_BP);
+
+        let blocked = envelope()
+            .with_drawdown(
+                DrawdownBounds::bounded(
+                    Decimal::from_int(10_000),
+                    Some(Decimal::from_int(5_000)),
+                    Some(2_500),
+                )
+                .expect("valid bounds"),
+            )
+            .expect("a stop under the loss limit");
+        let read = capital_grant_of(&blocked, &venue, "europe-west2".to_string())
+            .expect("a grant from a blocked envelope");
+        assert_eq!(
+            read.max_drawdown_bp, 100,
+            "the stop was not read from the block"
+        );
+        assert_eq!(read.liquidity_reserve, Decimal::from_int(5_000));
+        assert_eq!(read.max_adv_share_bp, 2_500);
+    }
+}
 
 #[cfg(test)]
 mod decide_tests {
@@ -24931,8 +25051,10 @@ mod decide_tests {
         let mut platform = gridded_small_book_platform(lot);
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -26137,8 +26259,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -26207,8 +26331,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         // Not `std::env::temp_dir()`, for the reason
         // `dormancy_boot_log_path` gives.
@@ -26281,8 +26407,10 @@ mod decide_tests {
         let mut platform = over_limit_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         let correlation = CorrelationId::from_string("corr-refused");
@@ -26331,8 +26459,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -26355,8 +26485,10 @@ mod decide_tests {
         // proposal id is derived from it and the reservation is keyed by the
         // proposal id.
         platform.cycle += 1;
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
         platform.stage_decide(Timestamp::from_secs(1_760_000_160));
         let second = platform
             .proposals
@@ -26403,8 +26535,8 @@ mod decide_tests {
         let mut placed = small_book_platform();
         feed_history(&mut placed, "AAPL", 30);
         feed_history(&mut placed, "MSFT", 30);
-        placed.pending_theses.push(thesis("AAPL", 0.6));
-        placed.pending_theses.push(thesis("MSFT", -0.4));
+        placed.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        placed.pending_theses.push(justified(thesis("MSFT", -0.4)));
         placed.stage_decide(now);
         let notional = placed
             .proposals
@@ -26428,8 +26560,8 @@ mod decide_tests {
         let mut refused = over_limit_book_platform();
         feed_history(&mut refused, "AAPL", 30);
         feed_history(&mut refused, "MSFT", 30);
-        refused.pending_theses.push(thesis("AAPL", 0.6));
-        refused.pending_theses.push(thesis("MSFT", -0.4));
+        refused.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        refused.pending_theses.push(justified(thesis("MSFT", -0.4)));
         refused.stage_decide(now);
         let sized = refused.proposals.last().expect("a proposal");
         assert!(
@@ -26468,8 +26600,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         let correlation = CorrelationId::from_string("corr-twice");
@@ -26496,8 +26630,10 @@ mod decide_tests {
         let mut platform = platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         // The premise: before this change, stage_decide constructed the empty
         // proposal unconditionally — the audit's first-ranked finding. If this
@@ -26525,7 +26661,7 @@ mod decide_tests {
     fn too_little_shared_history_is_a_named_refusal_and_not_a_guessed_covariance() {
         let mut platform = platform();
         feed_history(&mut platform, "AAPL", 5);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -26578,8 +26714,8 @@ mod decide_tests {
         let mut funded = small_book_platform();
         feed_history(&mut funded, "AAPL", 30);
         feed_history(&mut funded, "MSFT", 30);
-        funded.pending_theses.push(thesis("AAPL", 0.6));
-        funded.pending_theses.push(thesis("MSFT", -0.4));
+        funded.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        funded.pending_theses.push(justified(thesis("MSFT", -0.4)));
         let funded_decide = funded
             .run_cycle(now)
             .stage(Stage::Decide)
@@ -26624,8 +26760,8 @@ mod decide_tests {
         held.reservations
             .reserve("standing-hold", equity, now, Duration::from_hours(24))
             .expect("the whole equity is free to hold");
-        held.pending_theses.push(thesis("AAPL", 0.6));
-        held.pending_theses.push(thesis("MSFT", -0.4));
+        held.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        held.pending_theses.push(justified(thesis("MSFT", -0.4)));
 
         let report = held.run_cycle(now);
         let decide = report.stage(Stage::Decide).expect("DECIDE ran");
@@ -26834,8 +26970,8 @@ mod decide_tests {
         let mut platform = gridded_small_book_platform(Decimal::from_int(1));
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", 0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform.pending_theses.push(justified(thesis("MSFT", 0.4)));
 
         let before = platform.telemetry().metrics.snapshot();
         assert!(
@@ -28068,8 +28204,10 @@ mod central_sizing_tests {
     fn size(platform: &mut Platform, now: Timestamp) -> (Decimal, Decimal) {
         feed_history(platform, "AAPL", 30);
         feed_history(platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
         platform.stage_decide(now);
         let proposal = platform.proposals.last().expect("a proposal is recorded");
         (proposal.equity.amount, proposal.traded_notional())
@@ -30157,8 +30295,10 @@ mod unsizeable_thesis_tests {
     /// Push both theses and run DECIDE, returning the stage's own outcome and
     /// the proposal it recorded.
     fn decide(platform: &mut Platform, now: Timestamp) -> (StageOutcome, Proposal) {
-        platform.pending_theses.push(thesis(LIQUID, 0.6));
-        platform.pending_theses.push(thesis(PRIVATE, 0.5));
+        platform.pending_theses.push(justified(thesis(LIQUID, 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis(PRIVATE, 0.5)));
         assert_eq!(
             platform.pending_theses.len(),
             2,

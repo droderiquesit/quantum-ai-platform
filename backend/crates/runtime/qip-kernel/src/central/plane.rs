@@ -96,6 +96,7 @@ pub fn capital_subject(strategy: &StrategyId, cell: &str) -> String {
         expires_at: Timestamp::from_secs(0),
         requested_by: String::new(),
         exposure: None,
+        drawdown: None,
     }
     .subject()
 }
@@ -2057,6 +2058,7 @@ impl CentralPlane {
             // the same liquidity and leverage the cell will enforce and the
             // payload comparison below covers them (R12-CAPITAL-4088).
             exposure: envelope.exposure().cloned(),
+            drawdown: envelope.drawdown().cloned(),
         };
         let approved =
             self.compliance
@@ -3148,6 +3150,8 @@ mod tests {
             base: "AAA".to_string(),
             quote: "USD".to_string(),
             costs: None,
+            base_terms: None,
+            quote_terms: None,
         };
         let config = CentralConfig {
             arbitrage: Some(ArbitragePolicy {
@@ -3300,6 +3304,8 @@ mod tests {
             base: "AAA".to_string(),
             quote: "USD".to_string(),
             costs: None,
+            base_terms: None,
+            quote_terms: None,
         };
         let config = CentralConfig {
             arbitrage: Some(ArbitragePolicy {
