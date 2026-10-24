@@ -31,22 +31,24 @@ fn a_tool_proposed_or_registered_without_a_name_is_refused_and_nothing_is_regist
     let mut registry = ToolRegistry::new();
     // Premise: the same call with a name is admitted, so what follows is a
     // refusal of the missing field and not of the kind or the registry.
-    registry.register("solver-a", ToolKind::Solver).unwrap();
+    registry
+        .register(ToolName::parse("solver-a").unwrap(), ToolKind::Solver)
+        .unwrap();
     assert_eq!(registry.by_kind(ToolKind::Solver).len(), 1);
 
-    for blank in ["", "   ", "\t\n"] {
-        let proposed = registry.propose(blank, ToolKind::Solver).unwrap_err();
+    // Since R12-SEC-9065 `propose` and `register` take a `ToolName`, so a
+    // blank name is refused where a name is made, before any registry is
+    // reached: no blank can be passed to either at all.
+    let empty = ToolName::parse("").unwrap_err();
+    assert!(empty.to_string().contains("a tool needs a name"), "{empty}");
+    for blank in ["   ", "\t\n"] {
         assert!(
-            proposed.to_string().contains("a tool needs a name"),
-            "{proposed}"
-        );
-        let registered = registry.register(blank, ToolKind::Solver).unwrap_err();
-        assert!(
-            registered.to_string().contains("a tool needs a name"),
-            "{registered}"
+            ToolName::parse(blank).is_err(),
+            "a whitespace-only name {blank:?} became a ToolName"
         );
         assert!(registry.get(blank).is_none());
     }
+    assert!(registry.get("").is_none());
     assert_eq!(registry.by_kind(ToolKind::Solver).len(), 1);
 }
 
