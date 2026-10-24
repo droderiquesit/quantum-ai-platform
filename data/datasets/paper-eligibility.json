@@ -1,0 +1,350 @@
+[
+  {
+    "subject": {
+      "kind": "jurisdiction",
+      "id": "paper"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "venue",
+      "id": "XLON"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "venue",
+      "id": "XNYS"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "venue",
+      "id": "XPAR"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "equity"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "fixed_income"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "credit"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "rates"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "foreign_exchange"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "commodity"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "derivative"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "prediction"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "digital_asset"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "fund"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "private_market"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "real_asset"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "cash"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "structured_product"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "product",
+      "id": "physical_product"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "strategy",
+      "id": "market_making"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "strategy",
+      "id": "arbitrage"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "strategy",
+      "id": "microstructure"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "strategy",
+      "id": "short_horizon_reversion"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "strategy",
+      "id": "momentum_and_trend"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "strategy",
+      "id": "statistical_arbitrage"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "strategy",
+      "id": "carry"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "strategy",
+      "id": "event_driven"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "strategy",
+      "id": "volatility"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  },
+  {
+    "subject": {
+      "kind": "strategy",
+      "id": "execution_alpha"
+    },
+    "jurisdictions": [
+      "paper"
+    ],
+    "granted_by": "ADR 0155 section 24 (owner approval, 2026-10-19): simulated subjects, paper jurisdiction only",
+    "granted_at": "2026-10-19T00:00:00Z",
+    "expires_at": "2027-10-19T00:00:00Z"
+  }
+]
