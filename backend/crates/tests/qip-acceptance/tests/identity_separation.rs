@@ -179,7 +179,6 @@ const WORKLOAD_IDENTITIES: &[&str] = &[
     "google_service_account.fabricd",
     "google_service_account.console",
     "google_service_account.landing",
-    "var.venue_credential_reader",
     "var.training_service_account",
     "console_service_account_email",
 ];
@@ -422,18 +421,15 @@ fn no_development_or_agent_identity_holds_a_grant_on_any_secret() {
          read the capital envelope key can mint the envelopes it is meant to verify (ADR 0110)"
     );
 
-    for (expected_file, expected_name) in [
-        ("modules/execution-node/main.tf", "venue_credential"),
-        ("modules/secrets/main.tf", "venue_credential"),
-    ] {
-        assert!(
-            manager_grants
-                .iter()
-                .any(|(file, _, name, _)| file.ends_with(expected_file) && name == expected_name),
-            "premise: the capital-moving secret grant {expected_file} {expected_name} was not \
-             found, so its reader cannot be checked"
-        );
-    }
+    // Premise: the one capital-moving grant left (R12-GCP-8114 removed the
+    // fast brain's from `modules/secrets`) is found, so its reader is checked.
+    assert!(
+        manager_grants.iter().any(|(file, _, name, _)| {
+            file.ends_with("modules/execution-node/main.tf") && name == "venue_credential"
+        }),
+        "premise: the capital-moving secret grant modules/execution-node/main.tf \
+         venue_credential was not found, so its reader cannot be checked"
+    );
 
     for (file, kind, name, body) in &manager_grants {
         for principal in principals(body) {

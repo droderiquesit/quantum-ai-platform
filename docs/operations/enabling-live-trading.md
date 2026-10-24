@@ -39,17 +39,21 @@ That is layer 1, and it is the earliest of the three.
 What the configuration *would* do if that validation did not exist, so a
 reader can see what it guards (`infrastructure/terraform/main.tf`):
 
-* Create the IAM binding that lets the fast brain read the venue credential
-  (`main.tf:228-260`; the predicate is `ceiling_reaches_a_venue` at `:99`, a
-  membership test over the three live rungs and never `!= "paper_trading"`).
-  Until then the binding does not exist, so the credential is unreadable
-  regardless of what the application does.
-* Label every resource `live_capable = "true"` (`main.tf:103-117`) and change
-  the `live_capable` output (`outputs.tf:45-57`), so a query can answer "which
-  of our environments can trade" from the infrastructure.
-* Still bind nothing to an execution node. The node's own binding additionally
-  requires `shadow_mode = false`, a literal at `main.tf:492`
-  (`modules/execution-node/main.tf:100-104`).
+* Make the venue credential readable in principle, through the predicate
+  `ceiling_reaches_a_venue` (`grep -n 'ceiling_reaches_a_venue =' infrastructure/terraform/main.tf`),
+  a membership test over the three live rungs and never `!= "paper_trading"`.
+  It grants nothing to any Cloud Run workload: until 2026-10-24
+  `modules/secrets` bound the credential to the fast brain's Cloud Run
+  identity behind this predicate, and that grant was removed (R12-GCP-8114,
+  ADR 0108 E3) because no Cloud Run service may read a venue credential.
+* Label every resource `live_capable = "true"` (`grep -n 'live_capable' infrastructure/terraform/main.tf infrastructure/terraform/outputs.tf`)
+  and change the `live_capable` output, so a query can answer "which of our
+  environments can trade" from the infrastructure.
+* Still bind nothing to an execution node. The node's grant is the only one
+  on the credential, and it additionally requires `shadow_mode = false`
+  (`venue_credential_bound` in `modules/execution-node/main.tf`). Until both
+  hold the binding does not exist, so the credential is unreadable regardless
+  of what the application does.
 
 ## 2. The ceiling every workload reads
 
