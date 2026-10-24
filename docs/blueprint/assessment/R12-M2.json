@@ -968,9 +968,11 @@
     "current": "Lane-placement keeps replay/training/twin/world-model out of qip-edge-node. qip_contracts::market_state::MarketStatePack (book/flow/liquidity/regime/embedding with integrity flags) exists but no cognitive-layer consumer.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:151 replay_training_and_world_model_crates_are_lane_three_and_absent_from_the_reflex_node",
-      "backend/crates/libs/qip-contracts/src/market_state.rs::MarketStatePack"
+      "backend/crates/libs/qip-contracts/src/market_state.rs::MarketStatePack",
+      "backend/crates/tests/qip-acceptance/tests/cognitive_no_raw_ticks.rs::no_cognitive_crate_takes_a_raw_tick_type",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs::replay_training_and_world_model_crates_are_lane_three_and_absent_from_the_reflex_node"
     ],
-    "gap": "Cognitive layer does not consume MarketStatePack; no test that it lacks a raw-tick input type.",
+    "gap": "2026-10-24 (skeptic-refuted promotion): the reflex half holds (lane_placement.rs) and a name guard now refuses venue-message, lake, replay and capture tick types (MarketMessage, RecordedTick, ReplayTick, CapturedMarketEvent, TickLakeWriter, market_event::MarketEvent, qip_protocols::) in qip-kernel, qip-world-model, qip-reasoning-engine, qip-opportunity-engine, qip-learning-engine, qip-agents and qip-investment-agents. Not met: the kernel takes a raw tick on its default path today - Platform::observe(Vec<SensedRecord>) and absorb_records' SensedRecord::Tick arm write qip_market::quote::Tick prices into the world model's feature store - and qip_market::quote::Tick, Trade, Quote and SensedRecord::Tick are not on the refused list, so a fn taking Vec<qip_market::quote::Tick> would pass the guard. The guard is a name scan (an alias or re-export evades it), the cognitive crate set is an unargued allow-list (qip-deepbrain tick_desk reads RecordedTick and ReplayTick and feeds fusion; its fuse boundary - MarketTrace/TracePoint only - is not pinned), and MarketStatePack (ADR 0151 decision 2) has no cognitive consumer. Remaining: decide (owner/ADR, given ADR 0151 decision 9 keeps the central Tick) whether the central Tick print is a raw tick; if so remove or route the SensedRecord::Tick arm through time-aligned state and add Tick/SensedRecord::Tick to the refused list; pin the tick desk's fusion boundary; wire MarketStatePack or record its clause as withdrawn.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -978,10 +980,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test lane_placement",
+    "verification": "cargo test -p qip-acceptance --test cognitive_no_raw_ticks; cargo test -p qip-acceptance --test lane_placement replay_training",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: cognitive_no_raw_ticks.rs added (commit 6b224f94). Mutations fired, restored by cp + cmp: observe_ticks(Vec<MarketMessage>) on impl Platform fails it naming platform.rs; qip-training added to qip-edge-node's dependencies fails lane_placement ('qip-edge-node links qip-training'). Independent skeptic (security-engineer) verdict REFUTED: the kernel already consumes qip_market::quote::Tick via SensedRecord::Tick; reasons and remaining steps in gap. Kept PARTIAL."
   },
   {
     "id": "R12-TICK-2042",
