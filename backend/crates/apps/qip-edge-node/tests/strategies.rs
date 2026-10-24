@@ -249,6 +249,7 @@ fn a_fresh_payload_naming_the_plan_deploys_it_and_the_next_pass_sends_an_order_t
     );
 
     // The pass, against a two-sided book: the intent rests at the mid.
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let mut stats = PassStats::default();
@@ -622,4 +623,25 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
         }
     }
     gateway.with_listing_permissions(permissions, "paper")
+}
+
+/// Permit `gateway` to seed each of `objects` as well as to list it, in
+/// place, where it is about to be seeded (R12-COVERAGE-5107: permission to
+/// list is not permission to seed). Called only there, so a test here that
+/// seeds nothing runs under `List` alone. It replaces the register
+/// `permitting` installed, so `objects` names every instrument the gateway
+/// lists, not only the one seeded. A fixture; the refusals without either
+/// permission are proven in qip-edge-node's tests/gateway.rs.
+fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Result<()> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
+        }
+    }
+    gateway.permit_listings(permissions, "paper")
 }

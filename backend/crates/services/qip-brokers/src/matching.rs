@@ -143,6 +143,8 @@ impl InstrumentBook {
 /// Books for every listed instrument.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MatchingEngine {
+    /// One entry per instrument [`MatchingEngine::open`] opened, and no
+    /// other: nothing here creates a book on demand.
     books: BTreeMap<String, InstrumentBook>,
     /// Monotonic queue sequence, shared across instruments so an ordering is
     /// total and a replay is unambiguous.
@@ -150,14 +152,62 @@ pub struct MatchingEngine {
 }
 
 impl MatchingEngine {
+    /// An engine with no books, under which every seed and every order is
+    /// refused until [`Self::open`] opens the instrument's book.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Open an empty book for `object_id`, so it can be seeded and traded.
+    ///
+    /// **The only way a book comes to exist here.** [`Self::seed`] and
+    /// [`Self::execute`] used to create one on demand
+    /// (`entry().or_default()`) for whatever object id they were handed, so a
+    /// book for an instrument the venue never listed could be conjured by
+    /// seeding liquidity into it — a market brought into existence by a call
+    /// that never asked whether anybody had permitted it (R12-COVERAGE-5107).
+    /// Both now refuse an instrument whose book is not open, and the
+    /// simulated exchange opens a book at one place only: when it lists the
+    /// instrument, which it does only under a creation admission.
+    ///
+    /// Refuses a book that is already open. Opening it again would be a
+    /// second listing of the same id, and must never quietly discard what
+    /// rests in the first.
+    pub fn open(&mut self, object_id: &ObjectId) -> Result<()> {
+        if self.books.contains_key(object_id.as_str()) {
+            return Err(Error::invalid(format!(
+                "the book for {} is already open, and opening it again would discard what rests \
+                 in it; trade the open book, or clear it before reopening",
+                object_id.as_str()
+            )));
+        }
+        self.books
+            .insert(object_id.as_str().to_string(), InstrumentBook::default());
+        Ok(())
+    }
+
+    /// Whether `object_id` has a book open.
+    pub fn is_open(&self, object_id: &ObjectId) -> bool {
+        self.books.contains_key(object_id.as_str())
+    }
+
+    /// The open book for `object_id`, or a refusal naming what to do.
+    fn opened(&mut self, object_id: &ObjectId) -> Result<&mut InstrumentBook> {
+        self.books.get_mut(object_id.as_str()).ok_or_else(|| {
+            Error::not_found(format!(
+                "no book is open for {}, and this engine seeds and matches only an instrument \
+                 whose book was opened; the venue opens one when it lists the instrument, so \
+                 list it first",
+                object_id.as_str()
+            ))
+        })
     }
 
     /// Add resting interest that belongs to somebody else.
     ///
     /// How a simulated venue gets a market to trade against without pretending
-    /// the client is trading with itself.
+    /// the client is trading with itself. Refused for an instrument whose book
+    /// is not open, before a queue sequence is spent.
     pub fn seed(
         &mut self,
         object_id: &ObjectId,
@@ -172,28 +222,25 @@ impl MatchingEngine {
         if price <= Decimal::ZERO {
             return Err(Error::invalid("seeded liquidity needs a positive price"));
         }
-        self.sequence = self.sequence.saturating_add(1);
+        let sequence = self.sequence.saturating_add(1);
         let order_id = OrderId::from_string(format!(
             "venue-liquidity-{}-{}",
             object_id.as_str(),
-            self.sequence
+            sequence
         ));
-        let resting = Resting {
+        let book = self.opened(object_id)?;
+        book.side_mut(side).push(Resting {
             order_id,
             side,
             price,
             quantity,
             filled: Decimal::ZERO,
-            sequence: self.sequence,
+            sequence,
             rested_at: at,
             owner: Participant::Venue,
-        };
-        let book = self
-            .books
-            .entry(object_id.as_str().to_string())
-            .or_default();
-        book.side_mut(side).push(resting);
+        });
         book.sort(side);
+        self.sequence = sequence;
         Ok(())
     }
 
@@ -202,6 +249,10 @@ impl MatchingEngine {
     /// `limit` of `None` is an order that takes any price and never rests: what
     /// it cannot fill immediately is cancelled, because a market order that
     /// rested would become a limit order at a price nobody chose.
+    ///
+    /// Refused, with nothing matched and nothing rested, for an instrument
+    /// whose book is not open: an order that rested would otherwise open a
+    /// book nobody listed.
     pub fn execute(
         &mut self,
         object_id: &ObjectId,
@@ -211,11 +262,8 @@ impl MatchingEngine {
         limit: Option<Decimal>,
         at: Timestamp,
         owner: Participant,
-    ) -> ExecutionOutcome {
-        let book = self
-            .books
-            .entry(object_id.as_str().to_string())
-            .or_default();
+    ) -> Result<ExecutionOutcome> {
+        let book = self.opened(object_id)?;
         let mut remaining = quantity;
         let mut trades = Vec::new();
 
@@ -259,12 +307,8 @@ impl MatchingEngine {
         let filled = quantity - remaining;
         match limit {
             Some(price) if remaining > Decimal::ZERO => {
-                self.sequence = self.sequence.saturating_add(1);
-                let sequence = self.sequence;
-                let book = self
-                    .books
-                    .entry(object_id.as_str().to_string())
-                    .or_default();
+                let sequence = self.sequence.saturating_add(1);
+                let book = self.opened(object_id)?;
                 book.side_mut(side).push(Resting {
                     order_id: order_id.clone(),
                     side,
@@ -279,19 +323,20 @@ impl MatchingEngine {
                     owner,
                 });
                 book.sort(side);
-                ExecutionOutcome {
+                self.sequence = sequence;
+                Ok(ExecutionOutcome {
                     trades,
                     filled,
                     cancelled: Decimal::ZERO,
                     resting: true,
-                }
+                })
             }
-            _ => ExecutionOutcome {
+            _ => Ok(ExecutionOutcome {
                 trades,
                 filled,
                 cancelled: remaining,
                 resting: false,
-            },
+            }),
         }
     }
 
@@ -435,7 +480,9 @@ impl MatchingEngine {
             .sum()
     }
 
-    /// Drop an instrument's book, for a venue that delists or reopens.
+    /// Drop an instrument's book, for a venue that delists or reopens. The
+    /// instrument is then refused by [`Self::seed`] and [`Self::execute`]
+    /// until it is opened again.
     pub fn clear(&mut self, object_id: &ObjectId) {
         self.books.remove(object_id.as_str());
     }

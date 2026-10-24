@@ -54,7 +54,8 @@ fn a_cells_offered_quote_is_the_touch_its_book_shows() -> Result<()> {
         RegionCapital::read(Some("1000000"))?,
         None,
     )?;
-    let mut gateway = permitting(SimulatedGateway::new(venue.clone(), 7, at(0))?, &[&object])?;
+    let mut gateway =
+        permitting_to_seed(SimulatedGateway::new(venue.clone(), 7, at(0))?, &[&object])?;
     let mut feed = SimulatedFeed::new(venue);
     feed.attach(&mut node.cell)?;
     assert!(
@@ -109,7 +110,8 @@ fn priced_cell(venues: &[(&str, usize)], allocation: &str) -> Result<qip_edge_no
             .map(|i| ObjectId::from_string(format!("obj-{i:03}")))
             .collect();
         let listed: Vec<&ObjectId> = objects.iter().collect();
-        let mut gateway = permitting(SimulatedGateway::new(venue.clone(), 7, at(0))?, &listed)?;
+        let mut gateway =
+            permitting_to_seed(SimulatedGateway::new(venue.clone(), 7, at(0))?, &listed)?;
         let mut feed = SimulatedFeed::new(venue);
         feed.attach(&mut node.cell)?;
         for (i, object) in objects.iter().enumerate() {
@@ -192,22 +194,24 @@ fn a_cell_with_more_books_than_an_edge_state_carries_keeps_the_largest_and_count
     Ok(())
 }
 
-/// `gateway`, permitted to list each of `objects` on demand: a recorded
-/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
-/// A fixture; the refusal without one is proven in qip-edge-node's
-/// tests/gateway.rs.
-fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+/// `gateway`, permitted to list each of `objects` on demand and to seed
+/// liquidity into it: a recorded venue, product and jurisdiction permission
+/// for each action on each instrument (R12-COVERAGE-5107). `Seed` as well as
+/// `List`, because the tests here seed the touch they trade against and
+/// permission to list is not permission to seed. A fixture; the refusals
+/// without either are proven in qip-edge-node's tests/gateway.rs.
+fn permitting_to_seed(
+    gateway: SimulatedGateway,
+    objects: &[&ObjectId],
+) -> Result<SimulatedGateway> {
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        let request = CreationRequest::new(
-            CreationAction::List,
-            venue.as_str(),
-            object.as_str(),
-            "paper",
-        );
-        for authority in CreationAuthority::ALL {
-            permissions.record(authority, &request, "test fixture")?;
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
         }
     }
     gateway.with_listing_permissions(permissions, "paper")

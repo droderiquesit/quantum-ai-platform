@@ -136,6 +136,26 @@ impl SyntheticVenueConfig {
     }
 }
 
+/// The id of the market [`demo_market`] builds, and so of the one market a
+/// [`SyntheticPredictionVenue`] holds.
+///
+/// Public so a composition root can ask its creation register about the
+/// market *before* building the venue that holds it (R12-COVERAGE-5107):
+/// until 2026-10-24 the only way to learn this id was to construct the
+/// venue, so the market existed before anything had admitted it.
+pub const DEMO_MARKET_ID: &str = "SYNTH-PREDICT-MARKET";
+
+/// The instrument each outcome of [`demo_market`] trades as, in outcome
+/// order — cut, hold, hike. The venue quotes a book for each, so each is an
+/// instrument the venue lists, and each needs its own creation admission.
+/// `demo_market` reads its outcomes' instruments from here, so the list a
+/// register is asked about and the list the venue quotes cannot diverge.
+pub const DEMO_OUTCOME_INSTRUMENTS: [&str; 3] = [
+    "SYNTH-PREDICT-CUT",
+    "SYNTH-PREDICT-HOLD",
+    "SYNTH-PREDICT-HIKE",
+];
+
 /// A three-way categorical market on a policy decision, for tests and demos.
 ///
 /// The criteria are structured: a program decides which outcome won by reading
@@ -154,7 +174,7 @@ pub fn demo_market(
         Outcome::new(
             OutcomeId::new("cut"),
             "a cut of at least 25bp",
-            ObjectId::from_string("SYNTH-PREDICT-CUT"),
+            ObjectId::from_string(DEMO_OUTCOME_INSTRUMENTS[0]),
             ResolutionCriteria::Threshold {
                 metric: "policy_rate_change_bp".to_string(),
                 comparison: Comparison::AtMost,
@@ -164,7 +184,7 @@ pub fn demo_market(
         Outcome::new(
             OutcomeId::new("hold"),
             "no change",
-            ObjectId::from_string("SYNTH-PREDICT-HOLD"),
+            ObjectId::from_string(DEMO_OUTCOME_INSTRUMENTS[1]),
             ResolutionCriteria::Within {
                 metric: "policy_rate_change_bp".to_string(),
                 lower: Some(Decimal::from_int(-24)),
@@ -174,7 +194,7 @@ pub fn demo_market(
         Outcome::new(
             OutcomeId::new("hike"),
             "a hike of at least 25bp",
-            ObjectId::from_string("SYNTH-PREDICT-HIKE"),
+            ObjectId::from_string(DEMO_OUTCOME_INSTRUMENTS[2]),
             ResolutionCriteria::Threshold {
                 metric: "policy_rate_change_bp".to_string(),
                 comparison: Comparison::AtLeast,
@@ -191,7 +211,7 @@ pub fn demo_market(
         Duration::from_hours(24),
     )?;
     EventMarket::new(
-        ObjectId::from_string("SYNTH-PREDICT-MARKET"),
+        ObjectId::from_string(DEMO_MARKET_ID),
         venue,
         VenueClass::PredictionMarket,
         proposition,

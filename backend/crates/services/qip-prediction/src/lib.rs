@@ -44,8 +44,9 @@ pub mod resolution;
 pub mod scoring;
 
 pub use adapter::{
-    PredictionAdapter, PredictionSource, PredictionUpdate, SyntheticPredictionVenue,
-    SyntheticVenueConfig, VenueApiAdapter, VenueApiConfig, demo_market,
+    DEMO_MARKET_ID, DEMO_OUTCOME_INSTRUMENTS, PredictionAdapter, PredictionSource,
+    PredictionUpdate, SyntheticPredictionVenue, SyntheticVenueConfig, VenueApiAdapter,
+    VenueApiConfig, demo_market,
 };
 pub use arbitrage::{SetArbitrage, SetArbitrageKind, implied_sum, set_arbitrage};
 pub use cross::{CrossMarketPair, CrossVenueArbitrage};

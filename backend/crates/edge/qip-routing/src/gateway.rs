@@ -281,11 +281,31 @@ impl WorkingOrder {
 }
 
 /// A venue that fills orders without touching a market.
+///
+/// **It has no public way to rest a book, and so outside this module's own
+/// tests it trades nothing: every child is answered `does not trade`.**
+/// Resting a book at a venue is listing an instrument there, and listing is
+/// one of the three governed actions (R12-COVERAGE-5107): it needs a
+/// `CreationAdmission` from `qip_execution_engine::creation`, whose one mint
+/// refuses unless the venue, the product rules and the jurisdiction have each
+/// recorded a permission. This crate cannot name that type — it expresses
+/// strategies, and `qip-acceptance`'s `architecture.rs`
+/// (`no_crate_that_expresses_a_strategy_can_reach_a_facility_that_sends_an_order`)
+/// refuses any edge from it to `qip-execution-engine` — so it cannot check
+/// one either. Until 2026-10-24 it had `set_book` and `with_book`, which took
+/// a bare book from any caller: an instrument nobody had permitted could be
+/// made tradeable here by whoever held the gateway, with no record of
+/// anybody's permission. They had no production caller, and they are gone
+/// rather than left as an ungated door for the next one. The simulated venue
+/// that does list instruments is `qip_brokers::exchange::SimulatedExchange`,
+/// and it demands the admission.
 #[derive(Debug)]
 pub struct SimulatedGateway {
     venue: VenueId,
     settings: GatewaySettings,
     rng: Xoshiro256,
+    /// Written only by this module's tests, for the reason the type's own
+    /// documentation gives.
     books: BTreeMap<ObjectId, OrderBook>,
     live: BTreeMap<String, WorkingOrder>,
     events: Vec<GatewayEvent>,
@@ -306,16 +326,6 @@ impl SimulatedGateway {
             sent: 0,
             rejected: 0,
         }
-    }
-
-    /// Supply the book orders are filled against.
-    pub fn set_book(&mut self, book: OrderBook) {
-        self.books.insert(book.object_id.clone(), book);
-    }
-
-    pub fn with_book(mut self, book: OrderBook) -> Self {
-        self.set_book(book);
-        self
     }
 
     pub fn sent_count(&self) -> u64 {
@@ -741,5 +751,198 @@ impl Gateway for NativeGateway {
             self.config.account,
             parts.join("; and ")
         )
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod tests {
+    //! The simulator's matching behaviour against a book, which needs a book
+    //! to rest. These three lived in `tests/routing.rs` and moved here,
+    //! unchanged in what they assert, when the public `with_book` that gave
+    //! them one was removed (R12-COVERAGE-5107): a book written into the
+    //! private map from inside the module is the only kind there now is, and
+    //! no caller outside it can write one.
+
+    use super::*;
+    use qip_core::ids::OrderId;
+    use qip_market::book::BookLevel;
+
+    fn at() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn d(value: &str) -> Decimal {
+        Decimal::parse(value).unwrap_or(Decimal::ZERO)
+    }
+
+    fn object() -> ObjectId {
+        ObjectId::from_string("TKN")
+    }
+
+    fn venue(name: &str) -> VenueId {
+        VenueId::new(name)
+    }
+
+    fn parent_id() -> OrderId {
+        OrderId::from_string("ord-parent")
+    }
+
+    fn book(venue_name: &str, bids: &[(&str, &str)], asks: &[(&str, &str)]) -> OrderBook {
+        OrderBook::from_levels(
+            object(),
+            venue_name,
+            at(),
+            bids.iter()
+                .map(|(price, size)| BookLevel::new(d(price), d(size)))
+                .collect(),
+            asks.iter()
+                .map(|(price, size)| BookLevel::new(d(price), d(size)))
+                .collect(),
+        )
+    }
+
+    /// `gateway`, holding `book`. Test-only, and inside the module, for the
+    /// reason the type's documentation gives.
+    fn holding(mut gateway: SimulatedGateway, book: OrderBook) -> SimulatedGateway {
+        gateway.books.insert(book.object_id.clone(), book);
+        gateway
+    }
+
+    #[test]
+    fn the_simulated_gateway_marks_every_acknowledgement_as_simulated() -> Result<()> {
+        let mut gateway = holding(
+            SimulatedGateway::new(venue("SIM"), GatewaySettings::frictionless(), 7),
+            book("SIM", &[("99.90", "1000")], &[("100.00", "1000")]),
+        );
+        let child = ChildOrder::new(
+            "c1",
+            parent_id(),
+            venue("SIM"),
+            object(),
+            BookSide::Ask,
+            d("10"),
+            RoutedOrderType::Market,
+        )?;
+        let ack = gateway.send(&child, at())?;
+        assert!(ack.simulated);
+        assert_eq!(ack.venue, venue("SIM"));
+
+        let events = gateway.drain();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, GatewayEvent::Accepted { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, GatewayEvent::Filled { .. }))
+        );
+        assert!(gateway.drain().is_empty(), "events are taken, not copied");
+        Ok(())
+    }
+
+    #[test]
+    fn a_fill_or_kill_the_book_cannot_do_in_full_is_killed() -> Result<()> {
+        let mut gateway = holding(
+            SimulatedGateway::new(venue("SIM"), GatewaySettings::frictionless(), 11),
+            book("SIM", &[("99.90", "1000")], &[("100.00", "5")]),
+        );
+        let child = ChildOrder::new(
+            "c1",
+            parent_id(),
+            venue("SIM"),
+            object(),
+            BookSide::Ask,
+            d("50"),
+            RoutedOrderType::FillOrKill { limit: d("100.00") },
+        )?;
+        gateway.send(&child, at())?;
+
+        let events = gateway.drain();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, GatewayEvent::Filled { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, GatewayEvent::Cancelled { .. })),
+            "all or none means none"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_resting_order_stays_working_rather_than_being_assumed_filled() -> Result<()> {
+        let mut gateway = holding(
+            SimulatedGateway::new(venue("SIM"), GatewaySettings::frictionless(), 13),
+            book("SIM", &[("99.90", "1000")], &[("100.00", "1000")]),
+        );
+        let child = ChildOrder::new(
+            "c1",
+            parent_id(),
+            venue("SIM"),
+            object(),
+            BookSide::Ask,
+            d("50"),
+            RoutedOrderType::Limit { price: d("99.00") },
+        )?;
+        gateway.send(&child, at())?;
+
+        assert_eq!(gateway.working_count(), 1);
+        let working = gateway
+            .working()
+            .get("c1")
+            .ok_or_else(|| Error::not_found("it is resting"))?;
+        assert_eq!(working.remaining(), d("50"));
+
+        gateway.replace("c1", d("30"), Some(d("99.50")), at())?;
+        assert_eq!(
+            gateway.working().get("c1").map(|order| order.quantity),
+            Some(d("30"))
+        );
+        gateway.cancel("c1", at())?;
+        assert_eq!(gateway.working_count(), 0);
+        assert!(gateway.cancel("c1", at()).is_err(), "and only once");
+        Ok(())
+    }
+
+    /// The other half of the removal: with no way in for a book, a child
+    /// for any instrument is answered as one this venue does not trade,
+    /// rather than filled against depth somebody supplied without a
+    /// permission. Asserts the premise that the send itself was accepted
+    /// onto the wire, so the rejection is the venue's answer.
+    #[test]
+    fn with_no_admitted_listing_the_simulated_gateway_trades_nothing() -> Result<()> {
+        let mut gateway = SimulatedGateway::new(venue("SIM"), GatewaySettings::frictionless(), 17);
+        let child = ChildOrder::new(
+            "c1",
+            parent_id(),
+            venue("SIM"),
+            object(),
+            BookSide::Ask,
+            d("10"),
+            RoutedOrderType::Market,
+        )?;
+        let ack = gateway.send(&child, at())?;
+        assert!(ack.simulated, "premise: the instruction left for the venue");
+        let events = gateway.drain();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                GatewayEvent::Rejected { reason, .. } if reason == "SIM does not trade TKN"
+            )),
+            "an instrument nobody listed was not refused: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, GatewayEvent::Filled { .. })),
+            "an instrument nobody listed filled: {events:?}"
+        );
+        Ok(())
     }
 }

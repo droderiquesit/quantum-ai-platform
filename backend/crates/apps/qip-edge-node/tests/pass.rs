@@ -214,6 +214,7 @@ fn a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move() ->
     // book: the resting half of the proof. The marketable half is below.
     let (mut node, mut gateway, mut feed) =
         node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     // Depth resting at the venue, on both sides, so the venue's own book is
     // what the cell will price off: a mid of 100 between 99 and 101.
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
@@ -366,6 +367,7 @@ fn a_resting_order_the_venue_fills_on_a_later_pass_is_confirmed_and_the_node_kee
     // pass that sent the order, and no later pass ever ran.
     let (mut node, mut gateway, mut feed) =
         node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let mut stats = PassStats::default();
@@ -495,6 +497,7 @@ fn a_marketable_order_fills_on_the_pass_it_is_sent_once_the_venue_has_a_touch_to
     // rather than rests; once an offer exists the next pass takes it, and
     // the fill is confirmed, matched and counted on that same pass.
     let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     let mut stats = PassStats::default();
 
@@ -630,6 +633,7 @@ fn a_halted_node_runs_no_pass() -> Result<()> {
     // path — the venue's own submitted count is the witness the registry
     // cannot fake.
     let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     node.cell
@@ -727,6 +731,7 @@ fn a_partial_fill_on_an_order_that_later_expires_is_counted_once() -> Result<()>
     // fill is still in the cumulative record when the withdrawal runs.
     let (mut node, mut gateway, mut feed) =
         node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(5))?)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let mut stats = PassStats::default();
@@ -846,6 +851,7 @@ fn rest_one_order(
     requoter: &mut Requoter,
     stats: &mut PassStats,
 ) -> Result<PlacedOrder> {
+    permit_seeding(gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let first = run_pass(&mut node.cell, gateway, feed, Some(requoter), stats, t(10))?;
@@ -1453,6 +1459,7 @@ fn unfunded_node_for(
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
     let mut gateway = permitting(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let feed = SimulatedFeed::new(venue());
@@ -1494,6 +1501,7 @@ fn one_pass(
 /// half a spread. The probe asserts they agree rather than returning both.
 fn spent_by_one_marketable_pass() -> Result<Decimal> {
     let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let report = one_pass(
@@ -1540,6 +1548,7 @@ fn an_unfunded_node_sends_nothing_until_its_first_share_arrives_and_then_sends_w
     // and its health body says why — from the order count alone an
     // unfunded node reads exactly like a quiet market.
     let (mut node, mut gateway, mut feed) = unfunded_node_with_feed(PricingPolicy::Marketable)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     assert_eq!(
@@ -1751,6 +1760,7 @@ fn a_replayed_lower_sequence_payload_leaves_the_nodes_table_unchanged() -> Resul
     // reaches; the table must stay where sequence 6 left it, the health
     // body must say so, and the next pass must still refuse.
     let (mut node, mut gateway, mut feed) = unfunded_node_with_feed(PricingPolicy::Marketable)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let named = grant()?.signature().to_string();
@@ -1829,6 +1839,7 @@ fn a_node_that_restarted_reconciles_with_its_venue_before_it_forms_an_order() ->
     // then does the cell form anything. Asserted on the chain rather than on
     // the report, because the chain is what an incident review reads.
     let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     node.cell.require_reconciliation_before_resuming(
@@ -1904,6 +1915,7 @@ fn a_restarted_node_whose_second_venue_cannot_answer_keeps_refusing_rather_than_
     let named = grant()?.signature().to_string();
     node.cell
         .apply_policy(share_policy(CELL, 1, t(5), vec![named])?, t(5))?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
 
@@ -1984,6 +1996,7 @@ fn the_account_the_node_hands_the_cell_is_the_venues_own_record_of_what_rests() 
     // own remaining quantity in it.
     let (mut node, mut gateway, mut feed) =
         node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let mut stats = PassStats::default();
@@ -2064,6 +2077,7 @@ fn budgeted_node(
     let named = grant()?.signature().to_string();
     node.cell
         .apply_policy(share_policy(CELL, 1, t(5), vec![named])?, t(5))?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let requoter = requoter(&node)?;
@@ -2468,6 +2482,7 @@ fn a_cell_cut_off_from_the_centre_keeps_deciding_from_local_artifacts_within_the
     // without being a flaky micro-benchmark.
     const PASS_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
     let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let mut link = qip_edge_node::mesh::MeshLink::connect_with(
@@ -2603,6 +2618,7 @@ fn three_passes(
     mut before: impl FnMut(&mut NodeAssembly, &WorkReport, Timestamp),
 ) -> Result<(NodeAssembly, Vec<Decided>)> {
     let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let mut stats = PassStats::default();
@@ -2758,6 +2774,7 @@ fn node_under_stated_limits(
     let named = grant()?.signature().to_string();
     node.cell
         .apply_policy(share_policy(CELL, 1, t(5), vec![named])?, t(5))?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     assert_eq!(
@@ -3089,6 +3106,7 @@ fn with_the_journal_store_and_the_centre_unreachable_a_node_still_sends_cancels_
     assert_eq!(batches(durable.as_ref())?.len(), 1, "the premise failed");
 
     store.down.store(true, Ordering::SeqCst);
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
 
@@ -3333,6 +3351,7 @@ fn requote_storm_through(
         node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
     let mut requoter = requoter(&node)?;
     let mut stats = PassStats::default();
+    permit_seeding(&mut gateway, &[&object()])?;
     // A wide book, so the bid has a hundred whole units to walk through
     // before it reaches the offer.
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
@@ -3799,6 +3818,7 @@ fn a_scrape_client_that_connects_and_never_speaks_holds_the_health_thread_and_no
     const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let (mut node, mut gateway, mut feed) =
         node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let metrics = Arc::clone(node.scrape_registry());
@@ -4074,6 +4094,7 @@ fn reflex_observations_after(passes: i64) -> Result<(ReflexReadings, ReflexReadi
         "dropped-feed-messages-zero",
     ];
     let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let registry = Arc::clone(node.scrape_registry());
@@ -4184,4 +4205,25 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
         }
     }
     gateway.with_listing_permissions(permissions, "paper")
+}
+
+/// Permit `gateway` to seed each of `objects` as well as to list it, in
+/// place, where it is about to be seeded (R12-COVERAGE-5107: permission to
+/// list is not permission to seed). Called only there, so a test here that
+/// seeds nothing runs under `List` alone. It replaces the register
+/// `permitting` installed, so `objects` names every instrument the gateway
+/// lists, not only the one seeded. A fixture; the refusals without either
+/// permission are proven in qip-edge-node's tests/gateway.rs.
+fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Result<()> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
+        }
+    }
+    gateway.permit_listings(permissions, "paper")
 }

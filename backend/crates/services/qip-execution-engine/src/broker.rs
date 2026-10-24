@@ -13,6 +13,7 @@
 //! live trading fails at start-up with a legible message rather than at the
 //! first order with a confusing one.
 
+use crate::creation::{CreationAction, CreationAdmission};
 use crate::observation::{DeclaredVenueProfile, ObservedVenueFacts, VenueObservation};
 use crate::order::{Fill, Order, OrderType, Side};
 use qip_core::Decimal;
@@ -114,8 +115,20 @@ pub trait ListingVenue: fmt::Debug {
     fn is_simulated(&self) -> bool;
     /// The book resting for an instrument, if one is listed.
     fn listed_book(&self, object_id: &str) -> Option<&OrderBook>;
-    /// List or replace the book for an instrument.
-    fn list_book(&mut self, book: OrderBook);
+    /// Rest `book` for its instrument, listing it or replacing what rests,
+    /// under an admission to list or seed exactly that instrument at exactly
+    /// this venue.
+    ///
+    /// The admission is on the primitive and not only on the factory above
+    /// it (R12-COVERAGE-5107). Until 2026-10-24 this took a bare book, and
+    /// [`Broker::listing_venue`] hands this surface to any holder of a
+    /// broker, so a new caller could have rested a book for any instrument
+    /// with no permission recorded anywhere and no test would have noticed.
+    /// An implementor refuses, before anything is written, an admission
+    /// whose action is not [`CreationAction::List`] or
+    /// [`CreationAction::Seed`], whose venue is not [`Self::venue_name`], or
+    /// whose product is not the book's instrument.
+    fn list_book(&mut self, book: OrderBook, admission: &CreationAdmission) -> Result<()>;
     /// Withdraw an instrument's book, returning what rested.
     fn withdraw_book(&mut self, object_id: &str) -> Option<OrderBook>;
 }
@@ -313,7 +326,14 @@ impl<'de> Deserialize<'de> for SimulationSettings {
 pub struct SimulatedBroker {
     settings: SimulationSettings,
     rng: Xoshiro256,
-    /// Current books by instrument, when the caller supplies them.
+    /// Current books by instrument, written only by
+    /// [`ListingVenue::list_book`] under a creation admission.
+    ///
+    /// There used to be a public `set_book` beside it taking a bare book, so
+    /// the admission the factory demanded could be stepped around by any
+    /// holder of the broker. It is gone: a book rests here because the
+    /// register admitted listing or seeding that instrument at this venue,
+    /// or it does not rest here at all.
     books: std::collections::BTreeMap<String, OrderBook>,
     /// Recent daily volume by instrument, for the impact model.
     daily_volumes: std::collections::BTreeMap<String, f64>,
@@ -366,11 +386,6 @@ impl SimulatedBroker {
 
     pub fn settings(&self) -> &SimulationSettings {
         &self.settings
-    }
-
-    /// Supply the book for an instrument, so fills price against real depth.
-    pub fn set_book(&mut self, book: OrderBook) {
-        self.books.insert(book.object_id.as_str().to_string(), book);
     }
 
     /// Supply liquidity statistics for the impact model.
@@ -511,6 +526,35 @@ impl SimulatedBroker {
     }
 }
 
+/// Refuse `admission` unless it is to list or seed exactly `book`'s
+/// instrument at exactly `venue`.
+///
+/// The three exact comparisons `qip_brokers::exchange::SimulatedExchange`
+/// makes before it lists, with no normalisation, and with one difference that
+/// is the reason this surface exists: the factory seeds by replacing the
+/// listed empty book with the rule's ladder, so an admission to seed rests a
+/// book here as well as one to list. An admission to create does not — create
+/// records a market and its rule and rests nothing, so a create admission
+/// that reached a venue would be a market listed on the strength of a
+/// permission nobody gave for listing it.
+fn admits_book(venue: &str, book: &OrderBook, admission: &CreationAdmission) -> Result<()> {
+    let request = admission.request();
+    let rests_a_book = matches!(request.action, CreationAction::List | CreationAction::Seed);
+    if !rests_a_book || request.venue != venue || request.product != book.object_id.as_str() {
+        return Err(Error::denied(format!(
+            "no book for {} was rested at {venue}: the admission offered is to {} {} at {}, and \
+             a book rests only under an admission to list or seed exactly this instrument at \
+             exactly this venue; admit that request through CreationPermissions::admit and \
+             offer it instead",
+            book.object_id.as_str(),
+            request.action.as_str(),
+            request.product,
+            request.venue
+        )));
+    }
+    Ok(())
+}
+
 impl ListingVenue for SimulatedBroker {
     fn venue_name(&self) -> &str {
         Broker::name(self)
@@ -524,8 +568,10 @@ impl ListingVenue for SimulatedBroker {
         self.books.get(object_id)
     }
 
-    fn list_book(&mut self, book: OrderBook) {
-        self.set_book(book);
+    fn list_book(&mut self, book: OrderBook, admission: &CreationAdmission) -> Result<()> {
+        admits_book(Broker::name(self), &book, admission)?;
+        self.books.insert(book.object_id.as_str().to_string(), book);
+        Ok(())
     }
 
     fn withdraw_book(&mut self, object_id: &str) -> Option<OrderBook> {
@@ -951,5 +997,119 @@ mod ledger_exact_tests {
             "{}",
             error.message()
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod listing_tests {
+    //! The admission on the listing primitive itself (R12-COVERAGE-5107).
+    //!
+    //! Every admission offered below is genuine — minted by a register
+    //! holding all three authorities' permissions — so a refusal is the
+    //! venue's own comparison and never the register's. Each test then
+    //! reaches the venue the way any new production holder would, through
+    //! `Broker::listing_venue`, rather than through the factory, whose own
+    //! checks would otherwise answer first and hide a hole in this one.
+
+    use super::*;
+    use crate::creation::{CreationAuthority, CreationPermissions, CreationRequest};
+    use qip_core::ids::ObjectId;
+
+    const VENUE: &str = "simulated-venue";
+    const PRODUCT: &str = "TEST/USD";
+    const REFUSAL: &str = "a book rests only under an admission to list or seed exactly this \
+                           instrument at exactly this venue";
+
+    fn at() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn admitted(action: CreationAction, venue: &str, product: &str) -> Result<CreationAdmission> {
+        let request = CreationRequest::new(action, venue, product, "paper");
+        let mut permissions = CreationPermissions::new();
+        for authority in CreationAuthority::ALL {
+            permissions.record(authority, &request, "listing test fixture")?;
+        }
+        permissions.admit(&request)
+    }
+
+    fn empty_book(product: &str) -> OrderBook {
+        OrderBook::new(ObjectId::from_string(product), VENUE, at())
+    }
+
+    /// Offer `admission` with a book for `product` through the port, and
+    /// return what the venue answered and whether anything now rests.
+    fn offer(admission: &CreationAdmission, product: &str) -> Result<(Result<()>, bool)> {
+        let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 3);
+        let venue = broker
+            .listing_venue()
+            .ok_or_else(|| Error::invalid("the simulated broker offers no listing venue"))?;
+        // Premise: the surface under test is the one the factory is handed.
+        assert_eq!(venue.venue_name(), VENUE);
+        assert!(venue.listed_book(product).is_none());
+        let answer = venue.list_book(empty_book(product), admission);
+        let rests = venue.listed_book(product).is_some();
+        Ok((answer, rests))
+    }
+
+    fn assert_refused(answer: Result<()>, rests: bool, case: &str) {
+        let refusal = answer.expect_err(case);
+        assert_eq!(refusal.code(), "denied", "{case}: {}", refusal.message());
+        assert!(
+            refusal.message().contains(REFUSAL),
+            "{case} was refused for another reason: {}",
+            refusal.message()
+        );
+        assert!(!rests, "{case} was refused and a book rests anyway");
+    }
+
+    /// The contrast the three refusals below are read against: an admission
+    /// to list, and one to seed, each rest the book they are for. Without
+    /// it a venue that refused everything would pass all three.
+    #[test]
+    fn an_admission_to_list_or_to_seed_this_instrument_here_rests_its_book() -> Result<()> {
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let (answer, rests) = offer(&admitted(action, VENUE, PRODUCT)?, PRODUCT)?;
+            answer?;
+            assert!(rests, "an admission to {} rested nothing", action.as_str());
+        }
+        Ok(())
+    }
+
+    /// Create records a market and its rule and rests nothing; an admission
+    /// to create is not one to list. Mutation: drop `!rests_a_book ||` from
+    /// `admits_book` and the create admission rests a book.
+    #[test]
+    fn an_admission_to_create_rests_no_book() -> Result<()> {
+        let (answer, rests) = offer(&admitted(CreationAction::Create, VENUE, PRODUCT)?, PRODUCT)?;
+        assert_refused(answer, rests, "an admission to create rested a book");
+        Ok(())
+    }
+
+    /// Permission to list at one venue is not permission to list at this
+    /// one. Mutation: drop `request.venue != venue ||` from `admits_book` and
+    /// the admission for XOTHER rests a book at the simulator.
+    #[test]
+    fn an_admission_for_another_venue_rests_no_book() -> Result<()> {
+        let (answer, rests) = offer(&admitted(CreationAction::List, "XOTHER", PRODUCT)?, PRODUCT)?;
+        assert_refused(answer, rests, "an admission for XOTHER rested a book here");
+        Ok(())
+    }
+
+    /// Permission for one instrument is not permission for another. The
+    /// failure this prevents is the one the finding named: a holder of
+    /// `listing_venue` resting a book for any object id it liked under
+    /// whatever admission it happened to hold. Mutation: drop
+    /// `request.product != book.object_id.as_str()` from `admits_book` and
+    /// the book for OTHER/USD rests.
+    #[test]
+    fn an_admission_for_another_instrument_rests_no_book() -> Result<()> {
+        let (answer, rests) = offer(
+            &admitted(CreationAction::List, VENUE, PRODUCT)?,
+            "OTHER/USD",
+        )?;
+        assert_refused(answer, rests, "an admission for TEST/USD rested OTHER/USD");
+        Ok(())
     }
 }

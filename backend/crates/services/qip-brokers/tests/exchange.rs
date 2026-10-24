@@ -35,7 +35,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Currency, Decimal, dec};
 use qip_execution_engine::broker::Broker;
 use qip_execution_engine::creation::{
-    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+    CreationAction, CreationAdmission, CreationAuthority, CreationPermissions, CreationRequest,
 };
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::InstrumentType;
@@ -362,7 +362,7 @@ fn replay(fills: &[BookableFill], opening: Decimal) -> Result<AccountLedger> {
         MarginPolicy::default(),
         start(),
     );
-    ledger.register(instrument());
+    ledger.register(instrument())?;
     for bookable in fills {
         ledger.apply(&bookable.object_id, &bookable.fill, bookable.side)?;
     }
@@ -621,7 +621,7 @@ fn margin_excludes_a_position_it_cannot_price_and_says_so() -> Result<()> {
         MarginPolicy::cash_account(),
         start(),
     );
-    ledger.register(instrument());
+    ledger.register(instrument())?;
     // A position registered but never traded and never marked has no mark, and
     // must be reported rather than treated as free.
     assert!(ledger.margin(start()).unpriced.is_empty());
@@ -1278,15 +1278,147 @@ fn list_admitted(
     venue: &str,
     object: FinancialObject,
 ) -> Result<()> {
-    let request = CreationRequest::new(
-        CreationAction::List,
-        venue,
-        object.object_id.as_str(),
-        "paper",
-    );
+    let admission = admission_to_list(venue, &object.object_id)?;
+    exchange.list(object, &admission)
+}
+
+/// An admission to list `object` at `venue`, all three permissions recorded.
+fn admission_to_list(venue: &str, object: &ObjectId) -> Result<CreationAdmission> {
+    let request = CreationRequest::new(CreationAction::List, venue, object.as_str(), "paper");
     let mut permissions = CreationPermissions::new();
     for authority in CreationAuthority::ALL {
         permissions.record(authority, &request, "test fixture")?;
     }
-    exchange.list(object, &permissions.admit(&request)?)
+    permissions.admit(&request)
+}
+
+/// A second listing of an instrument already listed is refused and changes
+/// nothing — not the listing, not the book resting against it, not the
+/// clearing ledger's record of the instrument. Until 2026-10-24 it replaced
+/// all three, under live orders: a relisting on another grid moved the lot
+/// and the tick out from under orders priced on the old one, and the fills
+/// already booked were marked against a listing they never traded under.
+///
+/// Both listing paths are tried, each under a genuine admission to list
+/// exactly this instrument here, so the refusal is the relisting check and
+/// not the admission's.
+///
+/// Mutation: delete the already-listed refusal from `register_listing` and
+/// the engine's own already-open refusal answers instead, so the `denied`
+/// code and the message naming the standing listing both fail.
+#[test]
+fn listing_an_instrument_that_is_already_listed_is_refused_and_changes_nothing() -> Result<()> {
+    let mut exchange = live_venue(ExchangeSettings::orderly(), 1)?;
+    let resting = exchange.resting_count();
+    assert!(
+        resting > 0,
+        "premise: liquidity rests against the standing listing"
+    );
+    let replacement = FinancialObject::builder(
+        object(),
+        "AAA2",
+        InstrumentType::CommonStock,
+        fixture_liquidity(),
+    )
+    .venue(VENUE)
+    .price(dec!("50"))
+    .lot_size(Decimal::from_int(10))
+    .tick_size(dec!("0.05"))
+    .provenance(Provenance::synthetic("qip-brokers test", start()))
+    .build(start())?;
+
+    let refused = list_admitted(&mut exchange, VENUE, replacement)
+        .expect_err("a standing listing was replaced");
+    assert_eq!(refused.code(), "denied", "{}", refused.message());
+    assert!(
+        refused
+            .message()
+            .contains("is already listed at XSIM as AAA, lot 1 and tick 0.01"),
+        "the refusal does not name the standing listing: {}",
+        refused.message()
+    );
+    let refused = exchange
+        .list_synthetic(
+            object(),
+            "AAA3",
+            dec!("50"),
+            Decimal::from_int(10),
+            dec!("0.05"),
+            fixture_liquidity(),
+            start(),
+            &admission_to_list(VENUE, &object())?,
+        )
+        .expect_err("a standing listing was replaced synthetically");
+    assert_eq!(refused.code(), "denied", "{}", refused.message());
+    assert!(
+        refused
+            .message()
+            .contains("is already listed at XSIM as AAA"),
+        "the refusal does not name the standing listing: {}",
+        refused.message()
+    );
+
+    let listing = exchange.listing(&object()).expect("still listed");
+    assert_eq!(
+        (listing.symbol.as_str(), listing.tick_size),
+        ("AAA", dec!("0.01")),
+        "the standing listing was rewritten"
+    );
+    assert_eq!(
+        exchange
+            .ledger()
+            .instrument(&object())
+            .map(|known| known.symbol.as_str()),
+        Some("AAA"),
+        "the clearing ledger's record of the instrument was rewritten"
+    );
+    assert_eq!(
+        exchange.resting_count(),
+        resting,
+        "the book resting against the standing listing was reopened"
+    );
+    Ok(())
+}
+
+/// A ledger registers an instrument once and refuses a second record of it.
+///
+/// `AccountLedger::register` used to overwrite, so positions booked against
+/// one record of an instrument were read against another. Found by the
+/// R12-COVERAGE-5107 desk-primitive lane. Mutation: drop the already-known
+/// check in `register`, and the second record replaces the first.
+#[test]
+fn a_ledger_refuses_a_second_record_of_an_instrument_it_already_books() -> Result<()> {
+    let mut ledger = AccountLedger::new(
+        "twice",
+        Currency::USD,
+        Decimal::from_int(1_000),
+        MarginPolicy::cash_account(),
+        start(),
+    );
+    ledger.register(instrument())?;
+    let mut replacement = instrument();
+    replacement.lot_size = dec!("100");
+    assert_ne!(
+        replacement.lot_size,
+        instrument().lot_size,
+        "the premise failed: the replacement does not differ from the record it would replace"
+    );
+    let refusal = ledger
+        .register(replacement)
+        .expect_err("a second record of an instrument replaced the first");
+    assert!(
+        refusal
+            .message()
+            .contains("is registered once rather than replaced"),
+        "refused for another reason: {}",
+        refusal.message()
+    );
+    assert_eq!(
+        ledger
+            .instrument(&instrument().object_id)
+            .map(|o| o.lot_size),
+        Some(instrument().lot_size),
+        "the refused record changed the one that stands"
+    );
+    Ok(())
 }

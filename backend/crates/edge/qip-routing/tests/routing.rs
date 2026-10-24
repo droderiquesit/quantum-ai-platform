@@ -22,7 +22,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_market::book::{BookLevel, OrderBook};
 use qip_routing::children::{ChildOrder, ChildState, ParentOrder};
 use qip_routing::gateway::{
-    Gateway, GatewayEvent, GatewaySettings, NativeGateway, NativeGatewayConfig, SimulatedGateway,
+    Gateway, GatewaySettings, NativeGateway, NativeGatewayConfig, SimulatedGateway,
 };
 use qip_routing::health::{HealthPolicy, HealthTracker, HealthVerdict};
 use qip_routing::ordertype::{OrderTypeKind, RoutedOrderType, Touch, Urgency, select_order_type};
@@ -851,97 +851,15 @@ fn the_native_gateway_refuses_to_send_and_says_exactly_what_is_missing() -> Resu
     Ok(())
 }
 
-#[test]
-fn the_simulated_gateway_marks_every_acknowledgement_as_simulated() -> Result<()> {
-    let mut gateway = SimulatedGateway::new(venue("SIM"), GatewaySettings::frictionless(), 7)
-        .with_book(book("SIM", &[("99.90", "1000")], &[("100.00", "1000")]));
-    let child = ChildOrder::new(
-        "c1",
-        parent_id(),
-        venue("SIM"),
-        object(),
-        BookSide::Ask,
-        d("10"),
-        RoutedOrderType::Market,
-    )?;
-    let ack = gateway.send(&child, at())?;
-    assert!(ack.simulated);
-    assert_eq!(ack.venue, venue("SIM"));
-
-    let events = gateway.drain();
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, GatewayEvent::Accepted { .. }))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, GatewayEvent::Filled { .. }))
-    );
-    assert!(gateway.drain().is_empty(), "events are taken, not copied");
-    Ok(())
-}
-
-#[test]
-fn a_fill_or_kill_the_book_cannot_do_in_full_is_killed() -> Result<()> {
-    let mut gateway = SimulatedGateway::new(venue("SIM"), GatewaySettings::frictionless(), 11)
-        .with_book(book("SIM", &[("99.90", "1000")], &[("100.00", "5")]));
-    let child = ChildOrder::new(
-        "c1",
-        parent_id(),
-        venue("SIM"),
-        object(),
-        BookSide::Ask,
-        d("50"),
-        RoutedOrderType::FillOrKill { limit: d("100.00") },
-    )?;
-    gateway.send(&child, at())?;
-
-    let events = gateway.drain();
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, GatewayEvent::Filled { .. }))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, GatewayEvent::Cancelled { .. })),
-        "all or none means none"
-    );
-    Ok(())
-}
-
-#[test]
-fn a_resting_order_stays_working_rather_than_being_assumed_filled() -> Result<()> {
-    let mut gateway = SimulatedGateway::new(venue("SIM"), GatewaySettings::frictionless(), 13)
-        .with_book(book("SIM", &[("99.90", "1000")], &[("100.00", "1000")]));
-    let child = ChildOrder::new(
-        "c1",
-        parent_id(),
-        venue("SIM"),
-        object(),
-        BookSide::Ask,
-        d("50"),
-        RoutedOrderType::Limit { price: d("99.00") },
-    )?;
-    gateway.send(&child, at())?;
-
-    assert_eq!(gateway.working_count(), 1);
-    let working = gateway.working().get("c1").expect("it is resting");
-    assert_eq!(working.remaining(), d("50"));
-
-    gateway.replace("c1", d("30"), Some(d("99.50")), at())?;
-    assert_eq!(
-        gateway.working().get("c1").map(|order| order.quantity),
-        Some(d("30"))
-    );
-    gateway.cancel("c1", at())?;
-    assert_eq!(gateway.working_count(), 0);
-    assert!(gateway.cancel("c1", at()).is_err(), "and only once");
-    Ok(())
-}
+// The three tests that matched a child against a simulated gateway's book —
+// `the_simulated_gateway_marks_every_acknowledgement_as_simulated`,
+// `a_fill_or_kill_the_book_cannot_do_in_full_is_killed` and
+// `a_resting_order_stays_working_rather_than_being_assumed_filled` — moved,
+// unchanged in what they assert, into `src/gateway.rs`'s own test module on
+// 2026-10-24. They need a book, and since R12-COVERAGE-5107 no caller outside
+// that module can rest one: the public `with_book` took a bare book from
+// anybody, and resting a book is listing an instrument, which needs a
+// creation admission this crate cannot name.
 
 #[test]
 fn a_tiered_fee_schedule_charges_the_tier_the_volume_earns() -> Result<()> {
