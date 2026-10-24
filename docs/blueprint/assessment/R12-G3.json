@@ -6,9 +6,11 @@
     "evidence": [
       "infrastructure/environments/dev/terraform.tfvars:1 project_id algorik-platform-dev",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5009 every_environment_names_a_project_of_its_own",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10696 dev_secrets_cannot_be_a_production_secret_because_no_two_environments_share_a_project"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10696 dev_secrets_cannot_be_a_production_secret_because_no_two_environments_share_a_project",
+      "infrastructure/terraform/modules/resource-hierarchy/main.tf",
+      "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl"
     ],
-    "gap": "No folders or per-plane project split; one project per environment holds every plane.",
+    "gap": "2026-10-24 (lane L6): the folder and per-plane project split now exists as an uninstantiated module (resource-hierarchy: a folder per environment, a project per plane, ids distinct across environments by construction and refused at plan if two planes collide); it outputs nothing a binary reads, so the hierarchy is not a runtime dependency. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -19,7 +21,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure every_environment_names_a_project_of_its_own",
     "work_item": "",
     "size": "M",
-    "notes": "Blueprint wants per-plane blast-radius isolation; the repo isolates per environment only."
+    "notes": "Blueprint wants per-plane blast-radius isolation; the repo isolates per environment only. 2026-10-24 lane L6: Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
   },
   {
     "id": "R12-SEC-10002",
