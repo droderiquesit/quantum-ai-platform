@@ -1899,6 +1899,147 @@ fn the_desks_treasury_funding_reaches_the_ledger_once_across_restarts() {
     ledger.stop();
 }
 
+/// A user's mandate funding reaches the authoritative ledger as a posting to
+/// that mandate's own subledger, once, and a restart that re-sends it books it
+/// no second time (ADR 0153 decision 4, R12-LEDGER-5021).
+///
+/// The failure this prevents: ownership of funded capital living only in the
+/// kernel's `UserLedger`, a side table the double-entry journal cannot see, so
+/// the ledger's trial balance closes while saying nothing about whose capital
+/// the treasury released. The mandate account is a subledger of the one
+/// journal: its balance is a fold of postings, the treasury leg is its exact
+/// counterpart, and a top-up queues nothing, so the account states what the
+/// mandate first put to work and not a running total.
+///
+/// Mutation: stop `subscribe_mandate` queueing the operation onto
+/// `desk_operations` — the premise that funding queued a subscription fails.
+/// Mutation: stop the restart re-queueing the logged subscription — the
+/// "restart re-queued" premise fails. Mutation: drop the already-subscribed
+/// check — the top-up queues a second operation under the same id with a
+/// different amount and the "noted no refusal" assertion fails.
+#[test]
+fn a_funded_mandate_posts_to_its_own_subledger_once_across_restarts() {
+    use qip_capital::ledger::{
+        DecidedBy, Eligibility, EligibilityTerms, Jurisdiction, Mandate, MandateId, MandateTerms,
+        PermittedFamilies, UserId,
+    };
+    use qip_kernel::config::{UserEligibility, UserMandate};
+
+    let enrolment = || -> Result<(UserMandate, UserEligibility)> {
+        Ok((
+            UserMandate {
+                user: UserId::new("alice")?,
+                id: MandateId::new("mandate-alice")?,
+                mandate: Mandate::new(MandateTerms {
+                    capital: dec!("1000"),
+                    currency: qip_core::Currency::USD,
+                    risk_tolerance: Decimal::ONE,
+                    permitted_families: PermittedFamilies::Any,
+                    liquidity_floor: Decimal::ZERO,
+                    exploration_share: Decimal::ZERO,
+                    jurisdiction: Jurisdiction::new("GB")?,
+                })?,
+            },
+            UserEligibility {
+                user: UserId::new("alice")?,
+                eligibility: Eligibility::new(EligibilityTerms {
+                    verified_at: start_time(),
+                    can_invest: true,
+                    jurisdiction: Jurisdiction::new("GB")?,
+                    expires_at: start_time().saturating_add(Duration::from_days(365)),
+                })?,
+                decided_by: DecidedBy::operator("ops-carol", "oidc")?,
+            },
+        ))
+    };
+    let config = |path: &Path| -> Result<PlatformConfig> {
+        let (mandate, eligibility) = enrolment()?;
+        Ok(PlatformConfig::default()
+            .with_event_log_file(path)
+            .with_user_mandates(vec![mandate])
+            .with_user_eligibilities(vec![eligibility]))
+    };
+    let mandate_account = Account::Mandate {
+        mandate: "mandate-alice".to_string(),
+    };
+    let treasury = Account::Treasury {
+        treasury: qip_kernel::platform::CENTRAL_TREASURY.to_string(),
+    };
+
+    let fabric = Fabric::start();
+    let path = log_file("mandate-subledger");
+    let ledger = fabric.start_ledger(&temp_dir("ledger-mandate"));
+    let equity = {
+        let mut platform = warm_platform_with(config(&path).unwrap()).unwrap();
+        let alice = UserId::new("alice").unwrap();
+        let strategy = StrategyId::new("alpha");
+        platform
+            .fund_user(&alice, &strategy, dec!("100"), start_time())
+            .unwrap();
+        assert!(
+            platform
+                .pending_desk_operations()
+                .iter()
+                .any(|operation| matches!(
+                    operation.kind,
+                    OperationKind::MandateSubscription { .. }
+                )),
+            "premise: funding the mandate queued a subscription for the ledger"
+        );
+        // A top-up must add nothing to the mandate's account.
+        platform
+            .fund_user(&alice, &strategy, dec!("50"), start_time())
+            .unwrap();
+        let mut shipper = fabric.shipper();
+        ship_all(&mut shipper, &mut platform);
+        assert!(platform.pending_desk_operations().is_empty());
+        platform.config().initial_equity
+    };
+    wait_until("the ledger booked the mandate's subscription", || {
+        ledger.store().balance(&mandate_account, "USD").unwrap() == dec!("-100")
+    });
+    assert_eq!(
+        ledger.store().balance(&treasury, "USD").unwrap(),
+        dec!("100") - equity,
+        "the treasury leg is the mandate leg's exact counterpart"
+    );
+
+    // A restart, an hour later, re-queues the subscription from the log as
+    // written and sends it again; the ledger must answer with a duplicate.
+    let mut resumed = warm_platform_assembled_at(
+        config(&path).unwrap(),
+        start_time().saturating_add(Duration::from_hours(1)),
+    )
+    .unwrap();
+    assert!(
+        resumed
+            .pending_desk_operations()
+            .iter()
+            .any(|operation| matches!(operation.kind, OperationKind::MandateSubscription { .. })),
+        "premise: the restart re-queued the subscription"
+    );
+    let mut shipper = fabric.shipper();
+    ship_all(&mut shipper, &mut resumed);
+    std::thread::sleep(StdDuration::from_millis(300));
+    assert_eq!(
+        ledger.store().balance(&mandate_account, "USD").unwrap(),
+        dec!("-100"),
+        "the restart subscribed the mandate twice"
+    );
+    assert!(
+        !ledger
+            .store()
+            .journal()
+            .unwrap()
+            .iter()
+            .any(|note| note.event == "operation_refused"),
+        "the resend was refused as a conflict: the subscription's digest changed across a restart"
+    );
+    let trial = ledger.store().trial_balance().unwrap();
+    assert!(trial.values().all(|total| total.is_zero()), "{trial:?}");
+    ledger.stop();
+}
+
 /// An operation from another desk's chain is held back, not shipped under
 /// this producer's id.
 ///
