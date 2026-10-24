@@ -1719,12 +1719,14 @@
   {
     "id": "R12-DATA-10079",
     "status": "PARTIAL",
-    "current": "fabricd's archiver runs off the commit path and archives sealed segments, but to a FileBlobStore; fabricd is not deployed.",
+    "current": "Re-read 2026-10-24: the Cloud Storage wiring exists. qip-fabricd selects its archive target in config.rs (ArchiveTarget::Directory or ArchiveTarget::CloudStorage, which needs an endpoint and one lasting credential) and lib.rs builds a CloudStorageBlobStore with GcpAccess for the bucket target, refusing to start when the bucket cannot be reached. The archiver runs off the commit path and archives sealed segments. The config parse is tested (config.rs::a_bucket_archive_is_accepted_with_an_endpoint_and_one_lasting_credential_and_refused_otherwise); the broker tests archive to a directory, and no fabricd test archives a sealed segment through a bucket store. fabricd is not deployed and event_fabric_broker is null in every environment.",
     "evidence": [
       "backend/crates/apps/qip-fabricd/src/archiver.rs:1-20",
+      "backend/crates/apps/qip-fabricd/src/config.rs::ArchiveTarget",
+      "backend/crates/apps/qip-fabricd/src/lib.rs::open_archive",
       "backend/crates/apps/qip-fabricd/tests/broker.rs"
     ],
-    "gap": "GCS blob store wiring; deployment.",
+    "gap": "(1) A fabricd test that seals a segment and finds it in a Cloud Storage target served by a local fake bucket, so the bucket path is exercised end to end and not only parsed. (2) The landing bucket and lifecycle copy in Terraform (R12-FABRIC-8101) and an environment that enables the broker module. (3) Deployment of fabricd. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1737,7 +1739,7 @@
     "verification": "cargo test -p qip-fabricd --test broker",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "The earlier gap 'GCS blob store wiring' described a tree before ArchiveTarget::CloudStorage; the wiring is code-complete and unexercised end to end."
   },
   {
     "id": "R12-DATA-10080",
