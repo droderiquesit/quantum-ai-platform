@@ -261,3 +261,43 @@ fn a_restarted_platform_rebuilds_every_promoted_version_with_its_evaluation_and_
     let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }
+
+/// R12-MODEL-9003: a registered card is journaled when it is new and again
+/// when something the registry must keep changes, and not for a drift
+/// reading alone. The deep brain re-measures drift on every earlier fit of a
+/// subject each round, so a record per reading would grow the never-evicted
+/// Learn group with the square of the rounds. Mutation: compare whole cards
+/// in `Platform::journal_model_registry` (drop `same_but_drift`) — the drift
+/// change is written and the second count fails.
+#[test]
+fn a_card_is_journaled_when_registered_and_on_a_kept_change_but_not_on_drift_alone() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let reference = registered(&mut registry, &teacher("journal-a", "0.1.0", 1e-6)?)?;
+    assert_eq!(platform.journal_model_registry(&registry, start())?, 1);
+    assert_eq!(
+        platform.journal_model_registry(&registry, start())?,
+        0,
+        "premise: an unchanged card is not written twice"
+    );
+
+    registry.record_drift(&reference, 0.42)?;
+    assert_eq!(
+        platform.journal_model_registry(&registry, start())?,
+        0,
+        "a drift reading alone was journaled"
+    );
+
+    registry.retire(&reference, start())?;
+    assert_eq!(
+        platform.journal_model_registry(&registry, start())?,
+        1,
+        "a stage move was not journaled"
+    );
+    let card = platform
+        .registered_model_cards()
+        .find(|card| card.reference() == reference)
+        .ok_or_else(|| Error::not_found("the journaled card"))?;
+    assert_eq!(card.stage, qip_ai::registry::ModelStage::Retired);
+    Ok(())
+}

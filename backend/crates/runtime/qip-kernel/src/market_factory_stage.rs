@@ -177,6 +177,51 @@ impl FactoryStage {
         let permissions = register(&plan.permissions)?;
         let mut factory = MarketFactory::for_venue(venue)?;
         let mut mark_sources = BTreeMap::new();
+        // Every book this installation put on the venue, so a refusal part
+        // way through takes them all back off it. The venue is the desk
+        // broker's and outlives a refused plan: until 2026-10-24 a second
+        // market refused at its seed left the first one listed and seeded
+        // there, resting a ladder for a plan whose caller was told it was
+        // refused, under a factory that was then dropped and so could
+        // neither review nor withdraw it.
+        let mut placed: Vec<String> = Vec::new();
+        let installed = Self::take_through(
+            plan,
+            &permissions,
+            &mut factory,
+            &mut mark_sources,
+            &mut placed,
+            venue,
+            ladders,
+            now,
+        );
+        if let Err(error) = installed {
+            for product in &placed {
+                venue.withdraw_book(product);
+            }
+            return Err(error);
+        }
+        Ok(Self {
+            factory,
+            permissions,
+            mark_sources,
+        })
+    }
+
+    /// Create, list and seed every planned market, recording in `placed`
+    /// each product whose book reached the venue before the step that
+    /// might fail after it.
+    #[allow(clippy::too_many_arguments)]
+    fn take_through(
+        plan: &FactoryPlan,
+        permissions: &CreationPermissions,
+        factory: &mut MarketFactory,
+        mark_sources: &mut BTreeMap<String, String>,
+        placed: &mut Vec<String>,
+        venue: &mut dyn ListingVenue,
+        ladders: &mut dyn FnMut(&str, &str, &PricingRule) -> Result<LadderAdmission>,
+        now: Timestamp,
+    ) -> Result<()> {
         for market in &plan.markets {
             let step = |action: CreationAction| {
                 permissions.admit(&CreationRequest::new(
@@ -202,6 +247,17 @@ impl FactoryStage {
                     error.message()
                 ))
             };
+            // A book already resting under this product is not this
+            // installation's to replace, and not its to withdraw on a
+            // refusal either; refused before anything is written, so the
+            // rollback above only ever removes what this plan put there.
+            if venue.listed_book(market.product.as_str()).is_some() {
+                return Err(named(Error::denied(format!(
+                    "{} already rests a book for {}, and a planned market is listed only where                      nothing rests; withdraw it first, or plan the market under an id of its own",
+                    venue.venue_name(),
+                    market.product
+                ))));
+            }
             factory
                 .create(
                     &step(CreationAction::Create).map_err(named)?,
@@ -209,9 +265,9 @@ impl FactoryStage {
                     now,
                 )
                 .map_err(named)?;
-            factory
-                .list(&step(CreationAction::List).map_err(named)?, venue, now)
-                .map_err(named)?;
+            let listing = step(CreationAction::List).map_err(named)?;
+            placed.push(market.product.clone());
+            factory.list(&listing, venue, now).map_err(named)?;
             let ladder =
                 ladders(market.product.as_str(), market.venue.as_str(), &rule).map_err(named)?;
             factory
@@ -225,11 +281,7 @@ impl FactoryStage {
                 .map_err(named)?;
             mark_sources.insert(market.product.clone(), market.mark_source.clone());
         }
-        Ok(Self {
-            factory,
-            permissions,
-            mark_sources,
-        })
+        Ok(())
     }
 
     pub fn factory(&self) -> &MarketFactory {

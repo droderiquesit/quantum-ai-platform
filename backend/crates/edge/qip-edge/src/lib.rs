@@ -40,6 +40,8 @@ pub mod cell;
 pub mod conduct;
 /// §32.1's size decomposition: what a cycle does after a leg fills short.
 pub mod decomposition;
+/// The degradation envelope every input of a cell must have (R12-RES-8026).
+pub mod degradation;
 pub mod dispersion;
 pub mod dropcopy;
 pub mod envelope;

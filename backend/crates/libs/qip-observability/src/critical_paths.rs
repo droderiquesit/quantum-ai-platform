@@ -35,11 +35,34 @@ pub enum SourceRule {
     /// requests and errors, whose failures are a separate series rather
     /// than an outcome label on the first.
     TotalLessCounter { bad: &'static str },
+    /// [`Self::TotalLessCounter`], except that only the `bad` series' counts
+    /// whose `label` is one of `values` are failures. For a rate whose
+    /// failures are one reason among several on a shared refusal counter:
+    /// the fabric's schema rejections are `reason="schema_refused"` on the
+    /// same series that counts quota, ACL and fencing refusals, and reading
+    /// the whole series would charge the schema objective for every one.
+    TotalLessLabelled {
+        bad: &'static str,
+        label: &'static str,
+        values: &'static [&'static str],
+    },
     /// The series is a gauge or an unlabelled counter that carries no
     /// good/total split. Evaluates unmeasured, and says so, rather than
     /// inventing a denominator.
     NotCountable,
+    /// No series exists to read because the thing the objective measures is
+    /// not built, and `why` says what is missing. Evaluates unmeasured
+    /// whatever the registry holds. Distinct from [`Self::NotCountable`],
+    /// which names a real series that carries no split: an objective here
+    /// names [`NO_SOURCE_SERIES`], because naming a series nothing records
+    /// would read, to anyone grepping for its writer, as a recording site
+    /// somebody deleted.
+    Unbuilt { why: &'static str },
 }
+
+/// The `source_series` of an objective whose rule is [`SourceRule::Unbuilt`]:
+/// there is no series, and this says so rather than inventing one.
+pub const NO_SOURCE_SERIES: &str = "";
 
 /// An objective for one critical path, with the series that feeds it. A path
 /// whose series nothing records evaluates with zero observations and so reads
@@ -99,7 +122,25 @@ impl CriticalPath {
                 let total = snapshot.counter_total(self.source_series);
                 (total.saturating_sub(snapshot.counter_total(bad)), total)
             }
-            SourceRule::NotCountable => (0, 0),
+            SourceRule::TotalLessLabelled { bad, label, values } => {
+                let total = snapshot.counter_total(self.source_series);
+                let failed: u64 = snapshot
+                    .series
+                    .iter()
+                    .filter(|s| s.name == bad)
+                    .filter(|s| {
+                        s.labels
+                            .get(label)
+                            .is_some_and(|value| values.contains(&value.as_str()))
+                    })
+                    .filter_map(|s| match &s.value {
+                        crate::metrics::MetricValue::Counter(v) => Some(*v),
+                        _ => None,
+                    })
+                    .sum();
+                (total.saturating_sub(failed), total)
+            }
+            SourceRule::NotCountable | SourceRule::Unbuilt { .. } => (0, 0),
         }
     }
 }
@@ -380,6 +421,171 @@ pub fn ledger_objectives() -> Vec<CriticalPath> {
     ]
 }
 
+/// The service name the fabric's objectives are declared under, as
+/// [`crate::slo::fabric_archive_backlog`] already declares its own.
+pub const FABRIC_SERVICE: &str = "fabric";
+/// The name of the publish-quorum p99 objective.
+pub const FABRIC_PUBLISH_QUORUM_OBJECTIVE: &str = "fabric-publish-quorum-p99";
+/// The name of the broker availability objective.
+pub const FABRIC_BROKER_AVAILABILITY_OBJECTIVE: &str = "fabric-broker-availability";
+/// The name of the partition under-replication objective.
+pub const FABRIC_UNDER_REPLICATION_OBJECTIVE: &str = "fabric-partition-under-replication";
+/// The name of the consumer lag objective.
+pub const FABRIC_CONSUMER_LAG_OBJECTIVE: &str = "fabric-consumer-lag";
+/// The name of the cross-region mirror lag objective.
+pub const FABRIC_MIRROR_LAG_OBJECTIVE: &str = "fabric-mirror-lag";
+/// The name of the schema reject rate objective.
+pub const FABRIC_SCHEMA_REJECT_OBJECTIVE: &str = "fabric-schema-reject-rate";
+/// The longest a P0/P1 publish may wait for its quorum acknowledgement, in
+/// milliseconds, at a reading that still counts as good. A declared figure,
+/// like [`LEDGER_LAG_CEILING_RECORDS`]: nothing here has timed a Spanner
+/// commit in a deployment. 100 is a bound of `Histogram::latency_ms`, so the
+/// conservative straddling rule of [`SourceRule::LatencyUnder`] judges the
+/// figure as written rather than the next bucket down.
+pub const FABRIC_PUBLISH_QUORUM_THRESHOLD_MS: f64 = 100.0;
+/// The most records a consumer group may trail a partition's high watermark
+/// by at a reading that still counts as keeping up. Declared, as the
+/// ledger's is, and the same figure: the ledger is the fabric's first
+/// consumer group, and two ceilings for one lag would disagree about it.
+pub const FABRIC_CONSUMER_LAG_CEILING_RECORDS: f64 = 1000.0;
+
+/// Why partition under-replication is declared and not measured.
+pub const FABRIC_UNDER_REPLICATION_UNBUILT: &str = "the broker holds no replica set to count: by default it is one broker on one \
+     disk at replication factor one (ADR 0100 §3), which cannot be under-replicated, and a \
+     managed_majority stream's copies are the regional Spanner instance's (ADR 0111 §1), \
+     whose replica health no commit answer reports to the broker";
+/// Why mirror lag is declared and not measured.
+pub const FABRIC_MIRROR_LAG_UNBUILT: &str = "no fabric mirror runs: ADR 0119 is accepted and \
+     `qip_streaming::event_fabric::mirror` holds its copy plan, but no binary runs it, \
+     `StreamPolicy` still refuses every mirroring policy but none (C8), and nothing records \
+     the mirror-lag series ADR 0119 §2 names";
+
+/// The fabric's objectives (R12-OBS-9160): publish quorum p99, broker
+/// availability, partition under-replication, consumer lag, mirror lag,
+/// archive lag and schema reject rate, each with its target and the series
+/// `qip-fabricd` records for it. Declared beside the critical paths and not
+/// among them, like [`ledger_objectives`], and evaluated only by
+/// `qip-fabricd`, whose registry is the one that holds these series; the
+/// deep brain would publish each as permanently unmeasured.
+///
+/// Two of the seven cannot be measured by anything in the tree and are
+/// declared [`SourceRule::Unbuilt`] with the reason, so the requirement's
+/// list is visible in full and those two publish zero observations and no
+/// budget until what they measure exists.
+///
+/// Targets and ceilings are declared, not measured against a healthy
+/// fabric: nothing has run long enough to say what one looks like.
+pub fn fabric_objectives() -> Vec<CriticalPath> {
+    let p = |slo, source_series, rule| CriticalPath {
+        slo,
+        source_series,
+        rule,
+    };
+    vec![
+        // The managed log's answer to a P0/P1 commit, timed per commit by
+        // `qip-fabricd`'s managed-log decorator (ADR 0111 Amendment 1). Every
+        // answer is an observation, a fence or a conflict included: the
+        // producer waited that long for the quorum to say anything. A broker
+        // with no managed log has no quorum, records nothing, and publishes
+        // this with zero observations and no budget.
+        p(
+            Slo::latency(
+                FABRIC_PUBLISH_QUORUM_OBJECTIVE,
+                FABRIC_SERVICE,
+                0.99,
+                FABRIC_PUBLISH_QUORUM_THRESHOLD_MS,
+                SloWindow::Day,
+            ),
+            names::EVENT_FABRIC_QUORUM_ACK_MS,
+            SourceRule::LatencyUnder,
+        ),
+        // Each evaluation reads the listener's `serving` gauge once and
+        // counts the reading; a gauge alone keeps only its last value.
+        p(
+            Slo::availability(
+                FABRIC_BROKER_AVAILABILITY_OBJECTIVE,
+                FABRIC_SERVICE,
+                0.999,
+                SloWindow::Day,
+            ),
+            names::EVENT_FABRIC_SERVING_CHECKS,
+            SourceRule::CounterOutcome { good: "serving" },
+        ),
+        p(
+            Slo {
+                description: "fraction of readings at which no partition held fewer replicas \
+                              than its policy declares"
+                    .into(),
+                ..Slo::availability(
+                    FABRIC_UNDER_REPLICATION_OBJECTIVE,
+                    FABRIC_SERVICE,
+                    0.999,
+                    SloWindow::Day,
+                )
+            },
+            NO_SOURCE_SERIES,
+            SourceRule::Unbuilt {
+                why: FABRIC_UNDER_REPLICATION_UNBUILT,
+            },
+        ),
+        // Each group-lag reading, judged against the ceiling where the lag
+        // becomes known: a group commit or a lag query.
+        p(
+            Slo::backlog_at_most(
+                FABRIC_CONSUMER_LAG_OBJECTIVE,
+                FABRIC_SERVICE,
+                FABRIC_CONSUMER_LAG_CEILING_RECORDS,
+                0.99,
+                SloWindow::Hour,
+            ),
+            names::EVENT_FABRIC_GROUP_LAG_CHECKS,
+            SourceRule::CounterOutcome { good: "within" },
+        ),
+        // ADR 0119 §2 bounds mirror lag by each stream's committed bound and
+        // states no single figure, so no ceiling is invented here.
+        p(
+            Slo {
+                description: "fraction of mirror-lag readings within the mirrored stream's \
+                              committed bound (ADR 0119 §2)"
+                    .into(),
+                ..Slo::availability(
+                    FABRIC_MIRROR_LAG_OBJECTIVE,
+                    FABRIC_SERVICE,
+                    0.99,
+                    SloWindow::Hour,
+                )
+            },
+            NO_SOURCE_SERIES,
+            SourceRule::Unbuilt {
+                why: FABRIC_MIRROR_LAG_UNBUILT,
+            },
+        ),
+        // The objective `qip-fabricd` has evaluated since R12-OBS-9157, from
+        // the one constructor, so its ceiling is stated once.
+        p(
+            crate::slo::fabric_archive_backlog(),
+            names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS,
+            SourceRule::CounterOutcome { good: "within" },
+        ),
+        // Produces the broker refused as `schema_refused`, out of every
+        // produce: a batch whose schema the stream does not carry. Other
+        // refusals on the same series are not this objective's.
+        p(
+            Slo::availability(
+                FABRIC_SCHEMA_REJECT_OBJECTIVE,
+                FABRIC_SERVICE,
+                0.999,
+                SloWindow::Day,
+            ),
+            names::EVENT_FABRIC_APPEND,
+            SourceRule::TotalLessLabelled {
+                bad: names::EVENT_FABRIC_REFUSALS,
+                label: "reason",
+                values: &["schema_refused"],
+            },
+        ),
+    ]
+}
 /// The reflex objectives (R12-OBS-9159), bound to the series the node and its
 /// cell record. Thresholds and targets are `slo::default_slos`' declaration
 /// of service `reflex`, taken by name rather than restated, so the declaration

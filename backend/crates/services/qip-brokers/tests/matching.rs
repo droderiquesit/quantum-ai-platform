@@ -72,6 +72,11 @@ fn generated_book(rng: &mut Xoshiro256) -> (Vec<Maker>, Decimal) {
 }
 
 /// Rest every maker, in insertion order, on the ask side of an empty book.
+///
+/// As client orders: since R12-EXEC-5079 venue-owned flow never rests through
+/// `execute` (venue liquidity rests only through an admitted `seed`), and
+/// who owns a maker is not what these properties are about — price-time
+/// priority and conservation hold whoever rests the order.
 fn rest_makers(engine: &mut MatchingEngine, makers: &[Maker]) -> Result<(), String> {
     for (index, price, quantity) in makers {
         let outcome = engine
@@ -82,7 +87,7 @@ fn rest_makers(engine: &mut MatchingEngine, makers: &[Maker]) -> Result<(), Stri
                 *quantity,
                 Some(*price),
                 now(),
-                Participant::Venue,
+                Participant::Client,
             )
             .map_err(|error| error.message().to_string())?;
         if !outcome.resting || !outcome.trades.is_empty() {
@@ -767,4 +772,70 @@ fn the_engine_opens_and_seeds_a_book_only_under_an_admission_for_that_instrument
         )
         .unwrap_or_else(|error| panic!("the admitted seed rests: {error}"));
     assert_eq!(engine.depth(&object(), Side::Sell).len(), 1);
+}
+
+/// R12-EXEC-5079: venue liquidity rests only through `seed`. Flow owned by
+/// the venue takes and never rests, whatever its limit, and a resting venue
+/// order cannot be amended — either would rest or enlarge venue liquidity
+/// with no seeding admission.
+///
+/// Mutations: drop `&& owner.is_client()` from `execute`'s resting arm (the
+/// venue's limit remainder rests); drop the venue-owner refusal from
+/// `replace` (the seeded order is enlarged).
+#[test]
+fn venue_flow_never_rests_and_venue_liquidity_is_never_amended() {
+    let mut engine = MatchingEngine::new();
+    engine
+        .open(&object(), &admitted(CreationAction::List, &object()))
+        .unwrap_or_else(|error| panic!("the admitted listing opens the book: {error}"));
+    let outcome = engine
+        .execute(
+            &object(),
+            &order("venue-flow"),
+            Side::Buy,
+            dec!("5"),
+            Some(dec!("100")),
+            now(),
+            Participant::Venue,
+        )
+        .unwrap_or_else(|error| panic!("venue flow into an open book executes: {error}"));
+    assert_eq!(
+        outcome.filled,
+        Decimal::ZERO,
+        "premise: nothing rested to trade with"
+    );
+    assert!(!outcome.resting, "venue flow rested");
+    assert_eq!(outcome.cancelled, dec!("5"));
+    assert!(
+        engine.depth(&object(), Side::Buy).is_empty(),
+        "venue flow left liquidity behind"
+    );
+
+    engine
+        .seed(
+            &object(),
+            Side::Sell,
+            dec!("101"),
+            dec!("5"),
+            now(),
+            &admitted(CreationAction::Seed, &object()),
+        )
+        .unwrap_or_else(|error| panic!("the admitted seed rests: {error}"));
+    let seeded = engine.depth(&object(), Side::Sell);
+    assert_eq!(seeded.len(), 1, "premise: one seeded level");
+    // The engine names seeded liquidity by instrument and queue sequence,
+    // and the seed above is the first sequence this engine spent.
+    let seeded_id = OrderId::from_string(format!("venue-liquidity-{}-1", object().as_str()));
+    assert!(
+        engine.resting(&object(), &seeded_id).is_some(),
+        "premise: the seeded order rests under {}",
+        seeded_id.as_str()
+    );
+    assert!(
+        engine
+            .replace(&object(), &seeded_id, dec!("500"), None, now())
+            .is_err(),
+        "a seeded venue order was enlarged"
+    );
+    assert_eq!(engine.depth(&object(), Side::Sell)[0].size, dec!("5"));
 }

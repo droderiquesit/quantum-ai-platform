@@ -60,9 +60,9 @@ use qip_storage::lake::Lake;
 use qip_storage::lake_codec::{CompressionReport, SegmentCodec, measure_partitions};
 use qip_storage::lake_history::{HistoryQuery, MARKET_PREFIX};
 use qip_training::microstructure::{
-    BenchmarkReport, BookObservation, FillModel, FillResidualObservation, LabelPlan, MicroExample,
-    ResidualExample, TradeObservation, VolatilityModel, benchmark_fill_model, build_examples,
-    join_fill_residuals, split_in_time, train_fill_model, train_volatility_model,
+    BenchmarkReport, BookObservation, FillModel, FillResidualObservation, LabelPlan, LabelledSet,
+    MicroExample, ResidualExample, TradeObservation, VolatilityModel, benchmark_fill_model,
+    build_examples, join_fill_residuals, split_in_time, train_fill_model, train_volatility_model,
 };
 use qip_twin::futures::{FutureTree, ObservedMoves, TreeConfig, TwinState, WorldDriver};
 use qip_world_model::graph::KnowledgeGraph;
@@ -573,6 +573,15 @@ impl TickDesk {
         // its origin, so every training row can name it (R12-TICK-1051).
         let mut ticks: Vec<ReplayTick> = Vec::new();
         let mut lineage: BTreeMap<(String, String, u32, u64), String> = BTreeMap::new();
+        // Each present tick's capture-clock doubt, for the precision the
+        // labels below need (R12-RES-7103). Taken before the loop consumes
+        // the history, over the same ticks the loop keeps.
+        let precision_events: Vec<(Timestamp, Duration)> = history
+            .ticks
+            .iter()
+            .filter(|tick| tick.knowable_at <= now)
+            .map(|tick| (tick.knowable_at, tick.clock_uncertainty))
+            .collect();
         for tick in history.ticks {
             if tick.knowable_at > now {
                 continue;
@@ -662,7 +671,23 @@ impl TickDesk {
             trailing: 5,
             volatile_above_bps: 5.0,
         };
-        let labelled = build_examples(&observations, &trades, &plan)?;
+        // A window captured under a clock less precise than the shortest
+        // label horizon needs is not labelled at all (R12-RES-7103): an
+        // ordering the clock cannot vouch for would become a label a model
+        // learns from as if it were exact. Refused whole and recorded, so
+        // nothing below trains or promotes from it.
+        let labelled = match plan
+            .clock_precision()?
+            .admit(&round.manifest, precision_events)
+        {
+            Ok(_) => build_examples(&observations, &trades, &plan)?,
+            Err(imprecise) => {
+                round
+                    .training_refused
+                    .push(format!("labels: {}", Error::from(imprecise).message()));
+                LabelledSet::default()
+            }
+        };
         round.examples = labelled.examples.len();
         round.refused_unreliable = labelled.refused_unreliable;
         round.refused_uncovered = labelled.refused_uncovered;

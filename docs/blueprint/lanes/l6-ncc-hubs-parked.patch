@@ -1,0 +1,284 @@
+# Parked 2026-10-24 by the parent session, after the wave580 merge.
+# L6's b759808b declared these two hubs. qip-acceptance's
+# gcp_placement::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region
+# refuses any google_network_connectivity_* resource while ADR 0035 runs one
+# execution node in one region: 'the hub waits for the record that supersedes
+# it, and then only control-fabric subnets are exported, to other regions'
+# fabric spokes (ADR 0156 6c). The hub and its transfer are billed and the
+# owner's.' Landing it needs that superseding record and the owner's cost
+# decision. Apply from the repository root with: git apply docs/blueprint/lanes/l6-ncc-hubs-parked.patch
+
+diff --git a/infrastructure/terraform/modules/ncc/main.tf b/infrastructure/terraform/modules/ncc/main.tf
+new file mode 100644
+index 00000000..7f0008ce
+--- /dev/null
++++ b/infrastructure/terraform/modules/ncc/main.tf
+@@ -0,0 +1,61 @@
++# Network Connectivity Center hubs (R12-GCP-8057, R12-GCP-8058).
++#
++# Two hubs because the two kinds of traffic want opposite things. Reflex and
++# Fabric mirror traffic between regions is latency-bound and must be narrow:
++# a mesh hub joining only the peer endpoints and broker ports, nothing else
++# of each VPC. Service, data, AI and management traffic is not latency-bound
++# and must be inspected: a star hub whose edge spokes reach one another only
++# through the centre. Each hub is declared only when spokes are named for it;
++# no environment names any yet.
++
++resource "google_network_connectivity_hub" "latency" {
++  count = length(var.latency_spokes) > 0 ? 1 : 0
++
++  project         = var.project_id
++  name            = "qip-${var.environment}-latency"
++  description     = "Reflex/Fabric peer endpoints and broker ports only, mesh topology."
++  preset_topology = "MESH"
++  labels          = var.labels
++}
++
++resource "google_network_connectivity_spoke" "latency" {
++  for_each = var.latency_spokes
++
++  project  = var.project_id
++  name     = "qip-${var.environment}-latency-${each.key}"
++  location = "global"
++  hub      = google_network_connectivity_hub.latency[0].id
++  labels   = var.labels
++
++  linked_vpc_network {
++    uri                   = each.value.network_uri
++    include_export_ranges = each.value.export
++  }
++}
++
++resource "google_network_connectivity_hub" "services" {
++  count = length(var.star_spokes) > 0 ? 1 : 0
++
++  project         = var.project_id
++  name            = "qip-${var.environment}-services"
++  description     = "Service, data, AI and management networks, star topology with central inspection."
++  preset_topology = "STAR"
++  labels          = var.labels
++}
++
++resource "google_network_connectivity_spoke" "services" {
++  for_each = var.star_spokes
++
++  project  = var.project_id
++  name     = "qip-${var.environment}-services-${each.key}"
++  location = "global"
++  hub      = google_network_connectivity_hub.services[0].id
++  # The hub's path is known before it exists, so the group is named from it
++  # rather than from the hub's computed id.
++  group  = "projects/${var.project_id}/locations/global/hubs/qip-${var.environment}-services/groups/${each.value.group}"
++  labels = var.labels
++
++  linked_vpc_network {
++    uri = each.value.network_uri
++  }
++}
+diff --git a/infrastructure/terraform/modules/ncc/outputs.tf b/infrastructure/terraform/modules/ncc/outputs.tf
+new file mode 100644
+index 00000000..4293f427
+--- /dev/null
++++ b/infrastructure/terraform/modules/ncc/outputs.tf
+@@ -0,0 +1,9 @@
++output "latency_hub_id" {
++  description = "The mesh-topology hub's id, or null when no latency spoke is named."
++  value       = length(google_network_connectivity_hub.latency) > 0 ? google_network_connectivity_hub.latency[0].id : null
++}
++
++output "services_hub_id" {
++  description = "The star-topology hub's id, or null when no star spoke is named."
++  value       = length(google_network_connectivity_hub.services) > 0 ? google_network_connectivity_hub.services[0].id : null
++}
+diff --git a/infrastructure/terraform/modules/ncc/tests/hubs.tftest.hcl b/infrastructure/terraform/modules/ncc/tests/hubs.tftest.hcl
+new file mode 100644
+index 00000000..2fab3b96
+--- /dev/null
++++ b/infrastructure/terraform/modules/ncc/tests/hubs.tftest.hcl
+@@ -0,0 +1,85 @@
++# NCC hubs (R12-GCP-8057, R12-GCP-8058), planned against mocks: no
++# credential, no project, `command = plan` throughout.
++
++mock_provider "google" {}
++
++variables {
++  project_id  = "ncc-harness"
++  environment = "dev"
++}
++
++run "no_hub_is_declared_by_default" {
++  command = plan
++
++  assert {
++    condition     = length(google_network_connectivity_hub.latency) == 0 && length(google_network_connectivity_hub.services) == 0
++    error_message = "a hub was declared with no spokes named"
++  }
++}
++
++run "the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes" {
++  command = plan
++
++  variables {
++    latency_spokes = {
++      newyork = { network_uri = "projects/p/global/networks/reflex-us", export = ["10.10.0.0/28"] }
++      london  = { network_uri = "projects/p/global/networks/reflex-eu", export = ["10.20.0.0/28", "10.20.1.0/29"] }
++    }
++  }
++
++  assert {
++    condition     = google_network_connectivity_hub.latency[0].preset_topology == "MESH"
++    error_message = "the latency hub is not a mesh"
++  }
++
++  assert {
++    condition     = google_network_connectivity_spoke.latency["london"].linked_vpc_network[0].include_export_ranges == tolist(["10.20.0.0/28", "10.20.1.0/29"])
++    error_message = "a latency spoke exports something other than its named prefixes"
++  }
++}
++
++run "a_latency_spoke_exporting_a_wide_prefix_is_refused" {
++  command = plan
++
++  variables {
++    latency_spokes = {
++      newyork = { network_uri = "projects/p/global/networks/reflex-us", export = ["10.10.0.0/16"] }
++    }
++  }
++
++  expect_failures = [var.latency_spokes]
++}
++
++run "the_service_hub_is_a_star_with_center_and_edge_groups" {
++  command = plan
++
++  variables {
++    star_spokes = {
++      inspection = { network_uri = "projects/p/global/networks/mgmt", group = "center" }
++      data       = { network_uri = "projects/p/global/networks/data", group = "edge" }
++    }
++  }
++
++  assert {
++    condition     = google_network_connectivity_hub.services[0].preset_topology == "STAR"
++    error_message = "the service hub is not a star"
++  }
++
++  assert {
++    condition     = endswith(google_network_connectivity_spoke.services["inspection"].group, "/groups/center") && endswith(google_network_connectivity_spoke.services["data"].group, "/groups/edge")
++    error_message = "a star spoke is not in its group"
++  }
++}
++
++run "a_star_with_no_center_is_refused" {
++  command = plan
++
++  variables {
++    star_spokes = {
++      data = { network_uri = "projects/p/global/networks/data", group = "edge" }
++      ai   = { network_uri = "projects/p/global/networks/ai", group = "edge" }
++    }
++  }
++
++  expect_failures = [var.star_spokes]
++}
+diff --git a/infrastructure/terraform/modules/ncc/variables.tf b/infrastructure/terraform/modules/ncc/variables.tf
+new file mode 100644
+index 00000000..a424c280
+--- /dev/null
++++ b/infrastructure/terraform/modules/ncc/variables.tf
+@@ -0,0 +1,67 @@
++variable "project_id" {
++  type = string
++}
++
++variable "environment" {
++  type = string
++}
++
++variable "labels" {
++  type    = map(string)
++  default = {}
++}
++
++# The latency mesh (R12-GCP-8057): one VPC spoke per region's Reflex/Fabric
++# network, each exporting only the narrow prefixes its peer endpoints and
++# broker ports live on. Empty declares no hub.
++variable "latency_spokes" {
++  description = "Reflex/Fabric VPC spokes of the mesh-topology hub, by name: the VPC network URI and the narrow prefixes it may export."
++  type = map(object({
++    network_uri = string
++    export      = list(string)
++  }))
++  default  = {}
++  nullable = false
++
++  validation {
++    condition     = alltrue([for s in values(var.latency_spokes) : length(s.export) > 0])
++    error_message = "Every latency spoke names the prefixes it exports; a spoke exporting everything would carry the whole VPC across regions."
++  }
++
++  validation {
++    # Narrow means narrow: the peer endpoints and broker ports of one
++    # region fit in a /24. A wider prefix is a subnet's worth of machines
++    # reachable across the mesh, which is exactly what the hub exists not to
++    # carry.
++    condition = alltrue(flatten([for s in values(var.latency_spokes) : [
++      for p in s.export : can(cidrnetmask(p)) && tonumber(split("/", p)[1]) >= 24
++    ]]))
++    error_message = "A latency spoke exports only /24 or narrower IPv4 prefixes."
++  }
++}
++
++# The service/data star (R12-GCP-8058): centre spokes (the inspection and
++# management VPCs) and edge spokes (GKE, data, AI). Edge spokes reach each
++# other only through the centre.
++variable "star_spokes" {
++  description = "Spokes of the star-topology hub, by name: the VPC network URI and its group, center or edge."
++  type = map(object({
++    network_uri = string
++    group       = string
++  }))
++  default  = {}
++  nullable = false
++
++  validation {
++    condition     = alltrue([for s in values(var.star_spokes) : contains(["center", "edge"], s.group)])
++    error_message = "A star spoke's group is center or edge."
++  }
++
++  validation {
++    condition = length(var.star_spokes) == 0 || (
++      anytrue([for s in values(var.star_spokes) : s.group == "center"]) &&
++      anytrue([for s in values(var.star_spokes) : s.group == "edge"])
++    )
++    error_message = "A star hub needs at least one center spoke, where inspection happens, and one edge spoke; without a center every edge reaches every other directly."
++  }
++}
+diff --git a/infrastructure/terraform/modules/ncc/versions.tf b/infrastructure/terraform/modules/ncc/versions.tf
+new file mode 100644
+index 00000000..fda7a722
+--- /dev/null
++++ b/infrastructure/terraform/modules/ncc/versions.tf
+@@ -0,0 +1,22 @@
++# The provider this module is planned against.
++#
++# Declared here, as in `modules/connectivity` and `modules/network` and for the
++# same reason: this module carries a `tests/*.tftest.hcl` harness, so it is
++# one of the modules `terraform init` is run in directly, by `ci.yml`'s
++# "plan the gates" step. Without this the harness resolved whatever the
++# registry published — google 8.6.0 on 2026-10-07, two majors above the
++# `~> 6.12` the root pins and applies with — and a gate proven against
++# another major's schema is a gate proven against somebody else's resources.
++# It was not hypothetical: `retention_policy.retention_period` is a number in
++# 6.x and a string in 8.x, so `modules/data`'s retention assertion failed on
++# a type the module never sees when the root plans it.
++terraform {
++  required_version = ">= 1.9.0"
++
++  required_providers {
++    google = {
++      source  = "hashicorp/google"
++      version = "~> 6.12"
++    }
++  }
++}

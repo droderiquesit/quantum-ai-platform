@@ -43,6 +43,7 @@ pub mod bench;
 pub mod config;
 pub mod health;
 pub mod openobserve;
+pub mod quorum;
 pub mod spanner;
 pub mod telemetry;
 
@@ -76,6 +77,7 @@ use qip_transport::tls::{PeerNames, TlsServer, TlsSource, WorkloadIdentity};
 
 use crate::config::{ArchiveTarget, Config, ManagedBackend, ManagedConfig};
 use crate::health::Health;
+use crate::quorum::{StreamClasses, TimedManagedLog};
 use crate::telemetry::FabricdTelemetry;
 
 /// The largest catalogue read. The committed one is a few kilobytes; a file
@@ -486,6 +488,7 @@ fn segment_config(clock: Arc<dyn Clock>, segment_bytes: Option<u64>) -> SegmentC
 fn reload_catalogue(
     config: &Config,
     service: &Service,
+    classes: &StreamClasses,
     applied_catalogue: &mut Vec<u8>,
 ) -> Result<()> {
     let bytes = read_bounded(
@@ -498,6 +501,9 @@ fn reload_catalogue(
     }
     let catalogue = parse_catalogue(&config.catalogue, &bytes)?;
     service.apply_catalogue(&catalogue, &qip_events::registry::locked_descriptors()?)?;
+    // Only once the broker has taken it: a refused catalogue changes no
+    // label, as it changes no grant.
+    classes.replace(&catalogue);
     *applied_catalogue = bytes;
     Ok(())
 }
@@ -593,6 +599,22 @@ fn start_composed(
         Some(store) => store,
         None => open_archive(&config.archive, clock.clone())?,
     };
+    // The registry is built before the broker, and holds nothing yet: the
+    // managed log the broker is seated at is wrapped in the quorum timer
+    // below, which records into it. Building it opens nothing, so storage
+    // is still proven before anything is bound or reported healthy.
+    let observability = Telemetry::foreground("qip-fabricd", clock.clone());
+    let metrics = observability.metrics.clone();
+    let telemetry = Arc::new(FabricdTelemetry::new(metrics.clone()));
+    let classes = StreamClasses::from_catalogue(&catalogue);
+    let timed = |log: Arc<dyn ManagedLog>| -> Arc<dyn ManagedLog> {
+        Arc::new(TimedManagedLog::new(
+            log,
+            telemetry.clone(),
+            classes.clone(),
+            clock.clone(),
+        ))
+    };
     // Every broker reads its archive back (FABRIC-8079): an offset whose
     // local segment is gone hydrates from the archive, verified, rather than
     // reading as the end of the partition.
@@ -603,9 +625,9 @@ fn start_composed(
         None => broker,
     };
     let broker = match (&config.managed, managed) {
-        (Some(settings), Some(log)) => broker.with_managed_log(log, &settings.instance)?,
+        (Some(settings), Some(log)) => broker.with_managed_log(timed(log), &settings.instance)?,
         (Some(settings), None) => broker.with_managed_log(
-            open_managed_log(settings, clock.clone())?,
+            timed(open_managed_log(settings, clock.clone())?),
             &settings.instance,
         )?,
         (None, Some(_)) => {
@@ -645,9 +667,6 @@ fn start_composed(
         }
     }
 
-    let observability = Telemetry::foreground("qip-fabricd", clock.clone());
-    let metrics = observability.metrics.clone();
-    let telemetry = Arc::new(FabricdTelemetry::new(metrics.clone()));
     telemetry.leader_epoch(broker.leader_epoch());
     let health = Arc::new(Health::new(broker.leader_epoch()));
     health.storage_proven();
@@ -830,12 +849,14 @@ fn start_composed(
         let service = service.clone();
         let health = health.clone();
         let stop = stop_housekeeping.clone();
+        let classes = classes.clone();
         let mut applied_catalogue = catalogue_bytes;
         std::thread::spawn(move || {
             while !stop.load(Ordering::SeqCst) {
                 health.catalogue_check(&reload_catalogue(
                     &config,
                     &service,
+                    &classes,
                     &mut applied_catalogue,
                 ));
                 std::thread::sleep(interval);

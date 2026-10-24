@@ -358,12 +358,14 @@
   {
     "id": "R12-OBS-7017",
     "status": "PARTIAL",
-    "current": "Prometheus exposition from Telemetry registries; OpenObserve module/secret plumbing exists but is gated on a vendored image digest; no OTel export.",
+    "current": "Every central binary (qip-api, qip-fastbrain, qip-deepbrain, qip-fabricd) carries an OpenObserve drain (qip-telemetry-drain) that exports the metrics snapshot as OTLP (Snapshot::to_otlp_metrics) and spans as OTLP/JSON (Tracer::export); Prometheus exposition is also served. The drain is configured by QIP_OPENOBSERVE_URL, unset in every deployment; the OpenObserve module is gated on a vendored image digest.",
     "evidence": [
       "backend/crates/libs/qip-observability/src/lib.rs",
-      "infrastructure/terraform/main.tf:311-314,1039 openobserve secrets and moved block"
+      "infrastructure/terraform/main.tf:311-314,1039 openobserve secrets and moved block",
+      "backend/crates/services/qip-telemetry-drain/src/lib.rs",
+      "backend/crates/services/qip-telemetry-drain/tests/credential.rs"
     ],
-    "gap": "No OTel protocol export; no proof of ingestion.",
+    "gap": "2026-10-24 (lane L6, current corrected: it said no OTel export): OTLP export is built and off by default (QIP_OPENOBSERVE_URL unset until a collector is vendored and attested, ADR 0156 §5.4); no OpenObserve instance runs and nothing has been shown to ingest a series or span. Collection, not emission, is what is missing.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -374,7 +376,7 @@
     "verification": "scrape of /metrics ingested by collector",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: read-only correction; no code change."
   },
   {
     "id": "R12-OBS-7018",
@@ -428,7 +430,7 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/tick_hot_replay_indexes.rs"
     ],
-    "gap": "No replay worker placement.",
+    "gap": "2026-10-24 (re-read against the tree): No replay worker pool is provisioned separately from serving: no Terraform module, instance group or Cloud Run service/job in infrastructure/terraform is dedicated to replay; hot replay indexes exist only in-process (qip-acceptance tests/tick_hot_replay_indexes.rs, qip-edge-node replay.rs). Needs an owner cost decision (ADR 0101 C11), a Terraform placement plus per-env tfvar, and a plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -439,7 +441,7 @@
     "verification": "terraform plan with replay pool",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-7021",
@@ -2346,9 +2348,15 @@
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:1516 a_venue_stamping_its_messages_ahead_of_the_cell_gets_no_order_until_a_batch_shows_it_level_again; :1597 a_cell_with_one_skewed_venue_reads_its_clock_stale_and_pauses_cross_venue_ordering; :1673 a_pass_sizes_down_by_the_clock_row_once_any_venue_is_skewed",
       "backend/crates/edge/qip-edge/tests/arbitrage.rs the_desk_opens_no_cycle_while_a_venues_clock_cannot_be_placed_against_the_cells",
       "backend/crates/apps/qip-edge-node/src/feed.rs::SimulatedFeed::capture (uncertainty = venue_time.since(now), floored at zero)",
-      "backend/crates/apps/qip-edge-node/tests/capture_uncertainty.rs a_venue_stamping_ahead_of_the_cell_is_captured_with_that_lead_as_its_clock_uncertainty; a_venue_stamping_behind_the_cell_is_captured_without_inventing_doubt"
+      "backend/crates/apps/qip-edge-node/tests/capture_uncertainty.rs a_venue_stamping_ahead_of_the_cell_is_captured_with_that_lead_as_its_clock_uncertainty; a_venue_stamping_behind_the_cell_is_captured_without_inventing_doubt",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::clock_uncertainty",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs::a_degraded_clock_row_widens_the_uncertainty_of_events_from_venues_the_cell_never_measured",
+      "backend/crates/libs/qip-storage/tests/lake_history.rs::a_tick_captured_under_a_degraded_clock_reads_back_with_its_widened_uncertainty",
+      "backend/crates/services/qip-training/src/clock_precision.rs ClockPrecision::admit",
+      "backend/crates/services/qip-training/tests/clock_precision.rs",
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_window_captured_under_a_degraded_clock_is_not_labelled_or_trained_on"
     ],
-    "gap": "One half of the clause is not done: precision-sensitive labels and replay are not blocked from promotion by the widened uncertainty (a centre and research-lane control; nothing in qip-kernel or qip-edge reads CapturedMarketEvent.uncertainty to refuse a label). The cell-side widening is the lead only, a lower bound; it does not yet use the cell's Clock row (fresh/stale/unavailable) to widen events from venues it has not measured, and the capture path in qip-sequencing (CaptureStream, which derives uncertainty from ClockDiscipline) is a different producer that this does not touch.",
+    "gap": "2026-10-24 (lane L6): (a) the cell's Clock row now widens a captured event's clock uncertainty for venues it has not measured (Cell::clock_uncertainty, never narrower than the venue's own lead), and the Tick Lake reader keeps the field (lake_history.rs RecordedTick.clock_uncertainty, which it used to drop); (b) precision-sensitive labels are blocked from promotion: qip-training ClockPrecision (derived from the label plan's shortest horizon, /10, a house default) refuses a whole window whose events are less precise, and the deep brain's tick desk applies it before labelling, so an imprecise window yields no labels and no model, with the refusal naming the window. Open: (1) Cell::clock_uncertainty has no production caller: qip-edge-node's SimulatedFeed::capture still stores the venue lead alone (wiring needs the cell threaded into capture), and qip-sequencing's CaptureStream is untouched; (2) the tick desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no environment does (bar part 2); (3) 'strategies needing precise cross-venue ordering disabled' was already the cell-side clock sizing; replay promotion outside the tick desk is not gated.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2356,10 +2364,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test venue_failure --test arbitrage; cargo test -p qip-edge-node --test capture_uncertainty",
+    "verification": "cd backend && cargo test -p qip-deepbrain --test tick_desk a_window_captured_under_a_degraded_clock_is_not_labelled_or_trained_on; cargo test -p qip-training --test clock_precision; cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: the cell-side disable closed on the default path, PARTIAL kept for uncertainty widening and label promotion. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests. Lane M1-KERNEL-EDGE, 2026-10-24: uncertainty widening closed for the simulated feed; PARTIAL kept for label/replay promotion. Mutations (each fired, restored): storing ZERO fails the ahead test; reversing the subtraction (now.since(venue_time)) fails both tests."
+    "notes": "Lane L11, 2026-10-18: the cell-side disable closed on the default path, PARTIAL kept for uncertainty widening and label promotion. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests. Lane M1-KERNEL-EDGE, 2026-10-24: uncertainty widening closed for the simulated feed; PARTIAL kept for label/replay promotion. Mutations (each fired, restored): storing ZERO fails the ahead test; reversing the subtraction (now.since(venue_time)) fails both tests. 2026-10-24 lane L6: library half by a delegated agent (8 mutations reported, each failing its named assertion); re-verified here: dropping the precision bound in admit failed clock_precision.rs:63. Tick desk wiring added in this lane: admitting every window failed tick_desk.rs:724 ('a window with two seconds of clock doubt was labelled'); restored by cp and cmp, 8 passed. clippy --workspace -D warnings exit 0; qip-edge + qip-storage + qip-training + qip-deepbrain --no-fail-fast 1115 passed, 0 failed (before the wiring); qip-deepbrain --no-fail-fast after it: 15 result lines, 318 passed, 0 failed. Stays PARTIAL."
   },
   {
     "id": "R12-RES-7104",
@@ -3328,7 +3336,7 @@
       "backend/crates/tests/qip-acceptance/tests/market_creation.rs",
       "backend/crates/libs/qip-financial/src/commerce.rs"
     ],
-    "gap": "Logistics adapters; regulated wagering isolation not assessed.",
+    "gap": "2026-10-24 (re-read against the tree): Event markets (qip-prediction plus kernel event_markets.rs), market creation (market_factory_stage.rs, qip-acceptance tests/market_creation.rs) and paper physical commerce (qip-financial commerce.rs, kernel commerce_research.rs) exist and are tested; no logistics adapter exists - qip-financial commerce.rs LogisticsPlan is a planner with no carrier port and no simulated or real carrier adapter anywhere in backend/crates. A simulated carrier adapter is plain code; any real carrier is BLOCKED by ADR 0021/0099; the commerce plane is itself behind QIP_DEEPBRAIN_BREADTH_PLAN, unset in every committed env.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3339,7 +3347,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'regulated wagering isolation not assessed' is stale: qip-prediction src/access.rs isolates VenueKind::Wagering, tested by qip-prediction tests/access.rs and qip-kernel tests/breadth.rs."
   },
   {
     "id": "R12-AMBIENT-7146",

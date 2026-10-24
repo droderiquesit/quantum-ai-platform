@@ -1776,6 +1776,10 @@ pub struct Cell {
     /// What each venue has done with the orders sent to it, when the
     /// composition root armed the quarantine. `None` records nothing.
     venue_health: Option<HealthTracker>,
+    /// What each input this cell reads does to its size as it ages or is
+    /// lost, validated at assembly so no input goes without one
+    /// (R12-RES-8026). The pass reads the clock row's multiplier from it.
+    degradation: crate::degradation::DegradationEnvelope,
     /// The venues currently journaled as quarantined, and until when — the
     /// same once-only bookkeeping as `feed_silent`.
     quarantined: BTreeMap<VenueId, Timestamp>,
@@ -1833,6 +1837,10 @@ impl Cell {
     /// unexamined, so no input could make assembly refuse.
     pub fn new(config: CellConfig, features: FeatureEngine) -> Result<Self> {
         config.validate()?;
+        // Before anything is built from the configuration: a cell that reads
+        // an input whose loss nobody decided is refused here, by name, not
+        // discovered at the pass where that input first goes quiet.
+        let degradation = crate::degradation::DegradationEnvelope::for_cell(&config)?;
         // Both are built from the validated venue list, so the bucket set
         // and the fill-time history are exactly the venues this cell may
         // reach: neither can be grown by an admission naming a venue the
@@ -1907,6 +1915,7 @@ impl Cell {
             feed_silent: BTreeMap::new(),
             feed_loss_handled: BTreeSet::new(),
             venue_health,
+            degradation,
             quarantined: BTreeMap::new(),
             unwithdrawable: BTreeSet::new(),
             open_gaps: BTreeMap::new(),
@@ -1918,6 +1927,13 @@ impl Cell {
 
     pub fn config(&self) -> &CellConfig {
         &self.config
+    }
+
+    /// The degradation envelope this cell was assembled with: one row per
+    /// input it reads, each with a freshness bound and its stale and
+    /// unavailable multipliers.
+    pub fn degradation_envelope(&self) -> &crate::degradation::DegradationEnvelope {
+        &self.degradation
     }
 
     /// Get access to the funding state for inspection.
@@ -3043,13 +3059,8 @@ impl Cell {
                 Freshness::Unavailable
             }
         };
-        if !self.clock_lead.is_empty() {
-            let skewed = self
-                .clock_lead
-                .keys()
-                .filter(|venue| self.clock_skewed(venue))
-                .count();
-            state.observe(Capability::Clock, share(skewed, self.clock_lead.len()));
+        if let Some(clock) = self.clock_row() {
+            state.observe(Capability::Clock, clock);
         }
         if !self.feed_heard.is_empty() {
             let silent = self
@@ -4215,6 +4226,87 @@ impl Cell {
         }
     }
 
+    /// The [`Capability::Clock`] row as this cell measures it: fresh while
+    /// every measured venue is within [`CellConfig::max_clock_skew`], stale
+    /// while some are not, unavailable while all are, and `None` before any
+    /// venue has been measured.
+    ///
+    /// One function for [`Self::narrowing`] and [`Self::clock_uncertainty`]
+    /// so the row the pass sizes against and the row a captured event's
+    /// uncertainty is widened by cannot disagree about the same clock.
+    fn clock_row(&self) -> Option<Freshness> {
+        if self.clock_lead.is_empty() {
+            return None;
+        }
+        let skewed = self
+            .clock_lead
+            .keys()
+            .filter(|venue| self.clock_skewed(venue))
+            .count();
+        Some(if skewed == 0 {
+            Freshness::Fresh
+        } else if skewed < self.clock_lead.len() {
+            Freshness::Stale
+        } else {
+            Freshness::Unavailable
+        })
+    }
+
+    /// The clock uncertainty — a half-width — an event captured from `venue`
+    /// must be stored with, given the `lead` its own venue stamp showed over
+    /// this cell's receive instant (R12-RES-7103).
+    ///
+    /// Never narrower than `lead`, and wider where the cell knows more:
+    ///
+    /// * A venue the cell has measured carries at least the largest lead its
+    ///   last batch showed. Clock error belongs to the pair of clocks, not to
+    ///   one message: a batch whose worst message led by two seconds proves
+    ///   the pair is out by two seconds for the level message beside it too.
+    /// * A venue the cell has **not** measured, while the clock row is stale
+    ///   or unavailable, carries at least the widest lead any measured venue
+    ///   shows. From one venue the cell cannot tell which of the two clocks
+    ///   is wrong; once some venue proves a skew past the tolerance the
+    ///   cell's own clock is a suspect, and an event from a venue nobody
+    ///   measured, stored with only its own lead, is a precision-sensitive
+    ///   label written down as exact beside a clock the cell has already
+    ///   stopped trading against.
+    ///
+    /// A fresh or unobserved row widens nothing for an unmeasured venue: no
+    /// venue has shown a skew, and widening on a number nobody computed is
+    /// the failure [`DegradationState::pauses_cross_venue_ordering`] refuses
+    /// for the pause.
+    ///
+    /// A negative `lead` is refused, not floored: it is a subtraction that
+    /// ran the wrong way. A caller whose stamp trails receipt — which proves
+    /// nothing about the clock — floors it at zero itself, where the reason
+    /// is visible.
+    pub fn clock_uncertainty(&self, venue: &VenueId, lead: Duration) -> Result<Duration> {
+        if lead < Duration::ZERO {
+            return Err(Error::invalid(format!(
+                "a negative clock lead ({} ns) was offered for an event from {}; a lead is the \
+                 venue stamp's distance ahead of receipt, and the caller floors it at zero \
+                 where the stamp trails",
+                lead.as_nanos(),
+                venue.as_str()
+            )));
+        }
+        if let Some(measured) = self.clock_lead.get(venue) {
+            return Ok(lead.max(*measured));
+        }
+        match self.clock_row() {
+            Some(Freshness::Stale | Freshness::Unavailable) => {
+                let widest = self
+                    .clock_lead
+                    .values()
+                    .copied()
+                    .max()
+                    .unwrap_or(Duration::ZERO);
+                Ok(lead.max(widest))
+            }
+            Some(Freshness::Fresh) | None => Ok(lead),
+        }
+    }
+
     /// Whether any venue's last batch stamped messages ahead of this cell's
     /// clock by more than the bound.
     fn clock_skewed(&self, venue: &VenueId) -> bool {
@@ -5109,7 +5201,10 @@ impl Cell {
             .sizing_multiplier()
             .checked_mul(self.journal_sizing_multiplier())
             .and_then(|size| {
-                size.checked_mul(narrowing.dependency_row_multiplier(Capability::Clock))
+                size.checked_mul(
+                    self.degradation
+                        .multiplier(Capability::Clock, narrowing.observed(Capability::Clock)),
+                )
             })
             .unwrap_or(Decimal::ZERO);
         // Freshness is a function of `now`, so this is the instant it becomes

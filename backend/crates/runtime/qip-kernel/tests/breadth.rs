@@ -27,7 +27,7 @@ use qip_kernel::commerce_research::{
     AccountEntry, CommercePlan, CommerceSimulated, LogisticsEntry, ResaleEntry,
     SYNTHETIC_COUNTERFEIT_SELLER, SyntheticCommerceFeed,
 };
-use qip_kernel::event_markets::{EventMarketPlane, EventMarketsSimulated};
+use qip_kernel::event_markets::{EventMarketPlane, EventMarketsDiscovered, EventMarketsSimulated};
 use qip_kernel::market_factory_stage::{
     FactoryPlan, MarketEntry, MarketFactoryRecorded, PermissionEntry,
 };
@@ -275,6 +275,75 @@ fn a_plan_missing_a_permission_is_refused_whole_and_creates_nothing() -> Result<
     Ok(())
 }
 
+/// R12-COVERAGE-5107: installation is all or nothing on the shared venue.
+/// The plan's first market is fully permitted and installs on its own; its
+/// second is fully permitted and listed, and then refused at its seed for
+/// inventory that cannot cover the ask side. The failure this prevents is
+/// the first market's ladder left resting on the desk broker's venue — and
+/// the second's empty book beside it — for a plan the caller was told was
+/// refused, under a factory that was dropped with the refusal and so could
+/// never review or withdraw either.
+///
+/// Mutation: drop the `venue.withdraw_book(product)` loop from
+/// `FactoryStage::install` and the first market's book still rests.
+#[test]
+fn a_plan_refused_part_way_through_leaves_nothing_listed_on_the_venue() -> Result<()> {
+    const SECOND: &str = "obj-SECOND";
+    // Premise: the first market on its own installs and rests a book.
+    let mut premise = platform()?;
+    premise.install_breadth(
+        &BreadthPlan {
+            market_factory: Some(factory_plan("obj-NEVER-OBSERVED")),
+            ..BreadthPlan::default()
+        },
+        start(),
+    )?;
+    assert!(premise.listed_book(PRODUCT).is_some());
+
+    let mut plan = factory_plan("obj-NEVER-OBSERVED");
+    let seconded: Vec<PermissionEntry> = plan
+        .permissions
+        .iter()
+        .map(|entry| PermissionEntry {
+            product: SECOND.to_string(),
+            ..entry.clone()
+        })
+        .collect();
+    plan.permissions.extend(seconded);
+    let mut second = plan.markets[0].clone();
+    second.product = SECOND.to_string();
+    second.inventory = dec!("1");
+    plan.markets.push(second);
+
+    let mut platform = platform()?;
+    let refused = platform
+        .install_breadth(
+            &BreadthPlan {
+                market_factory: Some(plan),
+                ..BreadthPlan::default()
+            },
+            start(),
+        )
+        .expect_err("a plan whose second market cannot be seeded installed");
+    assert!(
+        refused.message().contains("market obj-SECOND")
+            && refused.message().contains("cannot cover"),
+        "refused for another reason: {}",
+        refused.message()
+    );
+    assert!(
+        platform.listed_book(PRODUCT).is_none(),
+        "the first market's book still rests on the venue after the plan was refused"
+    );
+    assert!(
+        platform.listed_book(SECOND).is_none(),
+        "the second market's empty book still rests on the venue"
+    );
+    assert!(platform.market_factory().is_none());
+    assert!(factory_records(&platform)?.is_empty());
+    Ok(())
+}
+
 /// The event plane's own market and the instrument each of its outcomes
 /// trades as: everything the synthetic venue brings into existence, so
 /// everything that needs a creation admission.
@@ -284,21 +353,24 @@ fn event_instruments() -> Vec<&'static str> {
         .collect()
 }
 
-/// `create` from all three authorities for every event instrument, at the
-/// event venue in GB — the register a plan that installs the event plane
-/// has to record.
+/// `create`, `list` and `seed` from all three authorities for every event
+/// instrument, at the event venue in GB — the register a plan that installs
+/// the event plane, takes its listing in and rests paper quotes on it has to
+/// record (R12-COVERAGE-5107: each act asks for the action it performs).
 fn event_permissions() -> Vec<PermissionEntry> {
     let mut permissions = Vec::new();
     for product in event_instruments() {
-        for authority in ["venue", "product", "jurisdiction"] {
-            permissions.push(PermissionEntry {
-                authority: authority.to_string(),
-                action: "create".to_string(),
-                venue: EVENT_VENUE.to_string(),
-                product: product.to_string(),
-                jurisdiction: "GB".to_string(),
-                reference: format!("{authority} approval for {product}"),
-            });
+        for action in ["create", "list", "seed"] {
+            for authority in ["venue", "product", "jurisdiction"] {
+                permissions.push(PermissionEntry {
+                    authority: authority.to_string(),
+                    action: action.to_string(),
+                    venue: EVENT_VENUE.to_string(),
+                    product: product.to_string(),
+                    jurisdiction: "GB".to_string(),
+                    reference: format!("{authority} approval for {product}"),
+                });
+            }
         }
     }
     permissions
@@ -662,6 +734,8 @@ fn a_real_event_source_without_a_licensing_evaluation_is_refused_before_it_is_po
         AccessBook::new(),
         "desk",
         OracleIdentity::new("o", OracleKind::Optimistic, Duration::from_hours(2), 0.9)?,
+        CreationPermissions::new(),
+        "GB",
     )
     .expect_err("an unevaluated real source opened");
     assert!(
@@ -1024,6 +1098,211 @@ fn an_overround_book_set_is_normalised_into_a_distribution_proportional_to_its_m
         assert!(
             (fair - expected).abs() < tolerance,
             "{id}: {fair} is not {twelfths}/12 of the unit payoff"
+        );
+    }
+    Ok(())
+}
+
+/// The event plane's quotes and listings after one installed cycle, under
+/// the full register less every `(authority, action, product)` in `revoked`.
+fn event_cycle_without(
+    revoked: &[(&str, &str, &str)],
+) -> Result<(Platform, EventMarketsSimulated)> {
+    let mut plan = event_plan(eligible()?, VenueKind::Event)?;
+    plan.permissions.retain(|entry| {
+        !revoked.contains(&(
+            entry.authority.as_str(),
+            entry.action.as_str(),
+            entry.product.as_str(),
+        ))
+    });
+    let mut platform = platform()?;
+    platform.install_breadth(
+        &BreadthPlan {
+            event_markets: Some(plan),
+            ..BreadthPlan::default()
+        },
+        start(),
+    )?;
+    platform.run_cycle(start());
+    let record = simulated_event_records(&platform)?
+        .pop()
+        .expect("SIMULATE journaled the event markets");
+    Ok((platform, record))
+}
+
+/// R12-COVERAGE-5107: each act the event plane performs asks the creation
+/// register for the action it is. Until 2026-10-24 the plane asked only for
+/// `create`, once, at install, and then took the venue's listing in and
+/// rested paper quotes on every outcome under no permission to list or to
+/// seed — so a register that permitted a market to be built had, without
+/// anybody recording it, permitted it to be listed and quoted.
+///
+/// With `create` alone the plan installs (the market is built) and nothing
+/// is taken in; with `create` and `list` the market is listed and priced and
+/// no quote rests; one outcome missing its `seed` loses that outcome's quote
+/// alone.
+///
+/// Mutations: (1) make the `list` refusal in `EventMarketPlane::discover`'s
+/// `MarketListed` arm never fire (`if false`) and the create-only run lists
+/// the market; (2) admit the quote under `CreationAction::List` instead of
+/// `Seed` in `simulate` and the no-seed run quotes.
+#[test]
+fn the_event_plane_lists_only_under_list_and_quotes_only_under_seed() -> Result<()> {
+    let every = |action: &'static str| -> Vec<(&'static str, &'static str, &'static str)> {
+        event_instruments()
+            .into_iter()
+            .flat_map(|product| {
+                ["venue", "product", "jurisdiction"].map(|authority| (authority, action, product))
+            })
+            .collect()
+    };
+    // Premise: the full register lists, prices and quotes every outcome.
+    let (full, quoted) = event_cycle_without(&[])?;
+    assert_eq!(
+        full.event_markets().map(|plane| plane.markets().count()),
+        Some(1)
+    );
+    assert_eq!(quoted.quotes.len(), 3, "{quoted:?}");
+
+    let mut create_only = every("list");
+    create_only.extend(every("seed"));
+    let (platform, run) = event_cycle_without(&create_only)?;
+    let plane = platform
+        .event_markets()
+        .expect("create alone installs the plane");
+    assert_eq!(
+        plane.markets().count(),
+        0,
+        "a market was listed under create alone"
+    );
+    assert!(
+        run.valuations.is_empty() && run.quotes.is_empty(),
+        "{run:?}"
+    );
+
+    let (platform, run) = event_cycle_without(&every("seed"))?;
+    assert_eq!(
+        platform
+            .event_markets()
+            .map(|plane| plane.markets().count()),
+        Some(1),
+        "premise: create and list take the market in"
+    );
+    assert_eq!(
+        run.valuations.len(),
+        1,
+        "the listed market is priced: {run:?}"
+    );
+    assert!(
+        run.quotes.is_empty(),
+        "a quote rested with no permission to seed: {run:?}"
+    );
+    assert_eq!(
+        run.refusals
+            .iter()
+            .filter(
+                |reason| reason.contains("to seed") && reason.contains("no market may be created")
+            )
+            .count(),
+        3,
+        "each outcome's quote is refused for its seed permission: {:?}",
+        run.refusals
+    );
+
+    let (_, run) = event_cycle_without(&[("jurisdiction", "seed", "SYNTH-PREDICT-HIKE")])?;
+    let outcomes: BTreeSet<String> = run
+        .quotes
+        .iter()
+        .map(|quote| quote.outcome.to_string())
+        .collect();
+    assert_eq!(
+        outcomes,
+        BTreeSet::from(["cut".to_string(), "hold".to_string()]),
+        "only the outcome missing its seed permission lost its quote"
+    );
+    Ok(())
+}
+
+/// R12-COVERAGE-5107: a permission revoked from a running event plane stops
+/// it. Until 2026-10-24 the event plane's register was read at install only,
+/// and `PermissionWatch` re-read the factory's alone, so an operator who
+/// deleted the legal opinion an event market was listed under left it
+/// priced, quoted and traded for as long as the process ran.
+///
+/// Revoking one outcome instrument's `list` permission withdraws the whole
+/// market at the next cycle — a complete set with a leg the plane may not
+/// hold is not a market it may make — and the withdrawal is journaled with
+/// the refusal. Revoking everything does the same through the fail-closed
+/// path.
+///
+/// Mutations: (1) make `withdraw_lapsed` keep every market (`if true {
+/// continue; }`) and the revoked market is still quoted; (2) make
+/// `revise_event_market_permissions` skip `set_creation_permissions` and
+/// the revocation never reaches the plane.
+#[test]
+fn a_revoked_event_permission_withdraws_the_market_at_the_next_cycle() -> Result<()> {
+    for revoke_all in [false, true] {
+        let (mut platform, first) = run_event_cycle(eligible()?, VenueKind::Event)?;
+        // Premise: the fully permitted market is quoted on every outcome.
+        assert_eq!(first.quotes.len(), 3, "{first:?}");
+        if revoke_all {
+            platform.revoke_event_market_permissions();
+        } else {
+            let entries: Vec<PermissionEntry> = event_permissions()
+                .into_iter()
+                .filter(|entry| {
+                    !(entry.action == "list"
+                        && entry.authority == "jurisdiction"
+                        && entry.product == "SYNTH-PREDICT-CUT")
+                })
+                .collect();
+            assert_eq!(
+                platform.revise_event_market_permissions(&entries)?,
+                event_permissions().len() - 1
+            );
+        }
+        let later = start().saturating_add(Duration::from_hours(1));
+        platform.run_cycle(later);
+        let after = simulated_event_records(&platform)?
+            .pop()
+            .expect("SIMULATE journaled the event markets");
+        assert!(
+            after.quotes.is_empty() && after.fills.is_empty() && after.valuations.is_empty(),
+            "revoke_all={revoke_all}: a revoked market was still priced or quoted: {after:?}"
+        );
+        let plane = platform.event_markets().expect("installed");
+        assert!(
+            plane.is_withdrawn(&qip_core::ObjectId::from_string(EVENT_MARKET)),
+            "revoke_all={revoke_all}: the market was not withdrawn"
+        );
+        let discovered: Vec<EventMarketsDiscovered> = platform
+            .event_log()
+            .by_topic(Topic::OpportunityDetected)
+            .into_iter()
+            .filter_map(|event| {
+                StreamEnvelope::from_frame(event)
+                    .ok()?
+                    .decode::<EventMarketsDiscovered>()
+                    .ok()
+                    .map(|decoded| decoded.body)
+            })
+            .collect();
+        let withdrawn: Vec<&String> = discovered
+            .iter()
+            .flat_map(|record| record.withdrawn.iter())
+            .collect();
+        assert_eq!(withdrawn.len(), 1, "revoke_all={revoke_all}: {withdrawn:?}");
+        let cut = if revoke_all {
+            "SYNTH-PREDICT-MARKET"
+        } else {
+            "SYNTH-PREDICT-CUT"
+        };
+        assert!(
+            withdrawn[0].contains(EVENT_MARKET)
+                && withdrawn[0].contains(&format!("{cut}: no market may be created")),
+            "revoke_all={revoke_all}: the withdrawal does not carry the refusal: {}",
+            withdrawn[0]
         );
     }
     Ok(())

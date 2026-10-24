@@ -98,7 +98,9 @@ pub enum ComponentKind {
     /// aggregate, charged when the proposition or question they combined on
     /// resolves (R12-MODEL-6016). Scored apart from the members it combines,
     /// because an ensemble can be worse than its best member and that is
-    /// only visible if the ensemble has a record of its own.
+    /// only visible if the ensemble has a record of its own. Not an origin
+    /// factor either, for the same reason as [`Self::WorldModel`], so it is
+    /// kept out of [`SelfModel::sample_facts`].
     Ensemble,
 }
 
@@ -605,10 +607,23 @@ impl SelfModel {
     /// that originate and size a thesis are measured, and counting it here
     /// let a federation's resolutions read the self-model fresh and lift the
     /// sizing bound the self-model's staleness holds (R12-MODEL-6016).
+    ///
+    /// Ensembles are left out for the same reason. When
+    /// [`ComponentKind::Ensemble`] arrived, the federation's arbitrated
+    /// probability was charged on every resolution, and the filter named
+    /// only world-model members. So the same resolutions reached this table
+    /// a second way: on the fast brain's demonstration tape the self-model
+    /// read fresh before LEARN had graded anything, and the budget DECIDE
+    /// handed the optimiser was the whole book instead of half of it.
     pub fn sample_facts(&self) -> impl Iterator<Item = (String, usize, Option<Timestamp>)> + '_ {
         self.components
             .iter()
-            .filter(|(key, _)| key.kind != ComponentKind::WorldModel)
+            .filter(|(key, _)| {
+                !matches!(
+                    key.kind,
+                    ComponentKind::WorldModel | ComponentKind::Ensemble
+                )
+            })
             .map(|(key, estimate)| {
                 (
                     key.to_string(),

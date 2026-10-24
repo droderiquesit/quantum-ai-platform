@@ -555,6 +555,37 @@ fn admits_book(venue: &str, book: &OrderBook, admission: &CreationAdmission) -> 
     Ok(())
 }
 
+/// Refuse a book its admission's action does not cover (R12-EXEC-5079).
+///
+/// `admits_book` takes List or Seed alike, and until 2026-10-24 that was the
+/// whole check, so either admission did the other's work: a List admission
+/// rested a populated book — seeding with no seeding permission recorded —
+/// and a Seed admission listed an instrument nobody had listed. Listing
+/// rests an empty book once; seeding replaces the book of an instrument
+/// already listed, which is the factory's sequence and the only one.
+fn refuse_unlike_its_action(
+    book: &OrderBook,
+    admission: &CreationAdmission,
+    listed: bool,
+) -> Result<()> {
+    let product = book.object_id.as_str();
+    match admission.request().action {
+        CreationAction::List if listed => Err(Error::denied(format!(
+            "{product} is already listed here, and a listing is made once rather than replaced; \
+             seed the listed book under a seeding admission instead"
+        ))),
+        CreationAction::List if !book.is_empty() => Err(Error::denied(format!(
+            "a listing of {product} offered a book with resting levels; listing rests an \
+                 empty book, and resting liquidity is seeding, which needs its own admission"
+        ))),
+        CreationAction::Seed if !listed => Err(Error::denied(format!(
+            "{product} is not listed here, so there is no book to seed; list it first under a \
+             listing admission"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 impl ListingVenue for SimulatedBroker {
     fn venue_name(&self) -> &str {
         Broker::name(self)
@@ -570,6 +601,8 @@ impl ListingVenue for SimulatedBroker {
 
     fn list_book(&mut self, book: OrderBook, admission: &CreationAdmission) -> Result<()> {
         admits_book(Broker::name(self), &book, admission)?;
+        let listed = self.books.contains_key(book.object_id.as_str());
+        refuse_unlike_its_action(&book, admission, listed)?;
         self.books.insert(book.object_id.as_str().to_string(), book);
         Ok(())
     }
@@ -1064,16 +1097,113 @@ mod listing_tests {
         assert!(!rests, "{case} was refused and a book rests anyway");
     }
 
-    /// The contrast the three refusals below are read against: an admission
-    /// to list, and one to seed, each rest the book they are for. Without
-    /// it a venue that refused everything would pass all three.
+    /// The contrast the refusals below are read against: an admission to
+    /// list rests the empty book it is for, and one to seed then rests the
+    /// populated book over it. Without it a venue that refused everything
+    /// would pass every refusal. Since 2026-10-24 the seed is offered over a
+    /// listed book, because a seeding admission no longer lists one
+    /// (R12-EXEC-5079).
     #[test]
     fn an_admission_to_list_or_to_seed_this_instrument_here_rests_its_book() -> Result<()> {
-        for action in [CreationAction::List, CreationAction::Seed] {
-            let (answer, rests) = offer(&admitted(action, VENUE, PRODUCT)?, PRODUCT)?;
-            answer?;
-            assert!(rests, "an admission to {} rested nothing", action.as_str());
-        }
+        let (answer, rests) = offer(&admitted(CreationAction::List, VENUE, PRODUCT)?, PRODUCT)?;
+        answer?;
+        assert!(rests, "an admission to list rested nothing");
+
+        let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 3);
+        let venue = broker
+            .listing_venue()
+            .ok_or_else(|| Error::invalid("the simulated broker offers no listing venue"))?;
+        venue.list_book(
+            empty_book(PRODUCT),
+            &admitted(CreationAction::List, VENUE, PRODUCT)?,
+        )?;
+        venue.list_book(
+            seeded_book(PRODUCT),
+            &admitted(CreationAction::Seed, VENUE, PRODUCT)?,
+        )?;
+        assert!(
+            venue
+                .listed_book(PRODUCT)
+                .is_some_and(|book| !book.is_empty()),
+            "an admission to seed rested nothing over the listed book"
+        );
+        Ok(())
+    }
+
+    fn seeded_book(product: &str) -> OrderBook {
+        let mut book = empty_book(product);
+        book.asks.push(qip_market::book::BookLevel {
+            price: Decimal::from_int(100),
+            size: Decimal::from_int(10),
+            order_count: 1,
+        });
+        book
+    }
+
+    /// R12-EXEC-5079: either admission used to do the other's work, because
+    /// `admits_book` takes List or Seed alike. A listing admission rested a
+    /// populated book — seeding with no seeding permission — and a seeding
+    /// admission listed an instrument nobody had listed; a second listing
+    /// replaced a live one. Each is refused, and nothing rests.
+    ///
+    /// Mutation: make `refuse_unlike_its_action` return `Ok(())` for every
+    /// action — all three cases rest a book.
+    #[test]
+    fn a_listing_rests_an_empty_book_once_and_a_seed_rests_only_over_a_listed_one() -> Result<()> {
+        let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 3);
+        let venue = broker
+            .listing_venue()
+            .ok_or_else(|| Error::invalid("the simulated broker offers no listing venue"))?;
+
+        let seeded_under_list = venue
+            .list_book(
+                seeded_book(PRODUCT),
+                &admitted(CreationAction::List, VENUE, PRODUCT)?,
+            )
+            .expect_err("a listing admission rested a populated book");
+        assert!(
+            seeded_under_list
+                .message()
+                .contains("resting liquidity is seeding"),
+            "{}",
+            seeded_under_list.message()
+        );
+        assert!(
+            venue.listed_book(PRODUCT).is_none(),
+            "the populated book rests anyway"
+        );
+
+        let seed_unlisted = venue
+            .list_book(
+                seeded_book(PRODUCT),
+                &admitted(CreationAction::Seed, VENUE, PRODUCT)?,
+            )
+            .expect_err("a seeding admission listed an instrument nobody listed");
+        assert!(
+            seed_unlisted.message().contains("is not listed here"),
+            "{}",
+            seed_unlisted.message()
+        );
+        assert!(
+            venue.listed_book(PRODUCT).is_none(),
+            "the unlisted seed rests anyway"
+        );
+
+        venue.list_book(
+            empty_book(PRODUCT),
+            &admitted(CreationAction::List, VENUE, PRODUCT)?,
+        )?;
+        let relisted = venue
+            .list_book(
+                empty_book(PRODUCT),
+                &admitted(CreationAction::List, VENUE, PRODUCT)?,
+            )
+            .expect_err("a second listing replaced the first");
+        assert!(
+            relisted.message().contains("already listed"),
+            "{}",
+            relisted.message()
+        );
         Ok(())
     }
 
