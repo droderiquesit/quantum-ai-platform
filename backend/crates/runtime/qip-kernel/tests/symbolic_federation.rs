@@ -149,7 +149,18 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    assert_eq!(first.population.len(), 10, "{:?}", first.population);
+    // Ten members plus the one domain member the platform now declares for
+    // the universe's single asset class (MODEL-4009): the composition names
+    // the classes itself, so a deployed cycle carries the member too.
+    assert_eq!(first.population.len(), 11, "{:?}", first.population);
+    assert!(
+        first
+            .population
+            .iter()
+            .any(|m| m.id == federation_stage::FederationStage::domain_member("equity")),
+        "no domain member for the universe's asset class: {:?}",
+        first.population
+    );
     for family in REQUIRED_FAMILIES {
         assert!(
             !first.uncovered.contains(&family.to_string()),
@@ -166,7 +177,7 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
         .collect();
     assert_eq!(instrument.len(), 2, "one proposition per instrument");
     for a in &instrument {
-        assert_eq!(a.disagreement.views.len(), 8, "{a:?}");
+        assert_eq!(a.disagreement.views.len(), 9, "{a:?}");
         // Unscored members cannot be weighed, and the record says so rather
         // than averaging them.
         assert!(matches!(a.decision, Decision::RequestMoreInformation(_)));
@@ -474,7 +485,7 @@ fn competing_world_models_are_scored_against_reality_and_a_material_disagreement
             .iter()
             .filter(|v| v.lineage.parents.is_empty())
             .count();
-        assert_eq!(roots, 8, "{a:?}");
+        assert_eq!(roots, 9, "{a:?}");
         for v in &a.disagreement.views {
             assert!(v.evidence_fit.is_finite() && v.causal_coherence.is_finite());
             assert!(v.uncertainty.is_finite() && v.composite.is_some(), "{v:?}");
@@ -1060,6 +1071,50 @@ fn a_material_federation_disagreement_narrows_the_instruments_bound_and_an_agree
             .iter()
             .all(|(_, multiplier)| *multiplier > 0.0 && *multiplier < 1.0)
     );
+    Ok(())
+}
+
+#[test]
+fn a_federation_narrowing_multiplies_into_the_cap_once_per_instrument_and_an_agreeing_one_leaves_it_at_one()
+-> Result<()> {
+    // The failure this guards: the sibling test reads DECIDE's detail line, and
+    // `narrow` pushes that line whether or not it multiplied, so a narrowing
+    // that was named and never applied passed it. The cap is the number the
+    // constructor reads, so it is asserted here directly (ADR 0125 decisions 4
+    // and 6).
+    let (narrowing, spread) = federation_stage::Narrowing::of_spread(
+        qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD,
+    )
+    .map(|n| (n, qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD))
+    .expect("premise: the material spread earns a narrowing");
+    assert!(narrowing.multiplier() < 1.0, "premise: it narrows");
+    let narrowings =
+        std::collections::BTreeMap::from([("obj-AAA".to_string(), (narrowing, spread))]);
+    let objects = || ["obj-AAA", "obj-AAA", "obj-BBB"].map(String::from);
+
+    // A disagreeing instrument compounds with an existing cap, once however
+    // many theses name it; an instrument with no arbitration is untouched.
+    let mut caps = std::collections::BTreeMap::from([("obj-AAA".to_string(), 0.8)]);
+    let mut notes = Vec::new();
+    federation_stage::narrow(&mut caps, &mut notes, objects(), &narrowings);
+    assert!(
+        (caps["obj-AAA"] - 0.8 * narrowing.multiplier()).abs() < 1e-12,
+        "narrowed once, not squared: {}",
+        caps["obj-AAA"]
+    );
+    assert!(!caps.contains_key("obj-BBB"), "absence is not disagreement");
+    assert_eq!(notes.len(), 1, "one note per instrument: {notes:?}");
+
+    // An agreeing population leaves every cap where it was.
+    let mut caps = std::collections::BTreeMap::new();
+    let mut notes = Vec::new();
+    federation_stage::narrow(
+        &mut caps,
+        &mut notes,
+        objects(),
+        &std::collections::BTreeMap::new(),
+    );
+    assert!(caps.is_empty() && notes.is_empty());
     Ok(())
 }
 

@@ -60,7 +60,7 @@ use crate::local::TrainedTeacher;
 use qip_core::error::{Error, Result};
 use qip_numerics::Matrix;
 use qip_numerics::stats;
-use qip_strategy::model::{DistilledModel, TreeNode};
+use qip_strategy::model::{DistilledModel, ModelCalibration, TreeNode};
 use serde::{Deserialize, Serialize};
 
 /// The shape the student takes.
@@ -367,8 +367,21 @@ pub fn distil(
     // Soft targets: the teacher's own outputs, not the observed labels. This
     // is what distillation is; fitting the student to the labels again would
     // just be training a second, worse model.
+    //
+    // A teacher carrying a calibration is copied as raw score plus that
+    // calibration (ADR 0149 decision 17): the student fits the raw scores and
+    // wears the teacher's calibration, which the cell applies after the raw
+    // score, so the pair evaluates to the teacher's calibrated output. An
+    // identity calibration is not carried, so a student of an uncalibrated
+    // teacher digests exactly as it did before the field existed.
     let soft_targets = teacher.predict_all(probe)?;
-    let relabelled = probe.with_targets(soft_targets.clone())?;
+    let teacher_calibration = teacher.calibration();
+    let fit_targets = if teacher_calibration.is_identity() {
+        soft_targets.clone()
+    } else {
+        teacher.raw_predict_all(probe)
+    };
+    let relabelled = probe.with_targets(fit_targets)?;
 
     let name = format!("{}#{}", teacher.reference(), form.as_str());
     let student = match form {
@@ -384,6 +397,15 @@ pub fn distil(
             min_samples_leaf,
             candidate_splits,
         )?,
+    };
+
+    let student = if teacher_calibration.is_identity() {
+        student
+    } else {
+        student.with_calibration(ModelCalibration::new(
+            teacher_calibration.scale,
+            teacher_calibration.offset,
+        )?)?
     };
 
     let student_outputs: Vec<f64> = probe

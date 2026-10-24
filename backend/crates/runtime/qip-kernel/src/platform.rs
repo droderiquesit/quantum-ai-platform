@@ -4787,6 +4787,24 @@ impl TrackedCapital {
             .fold(self.cash, |sum, lot| sum + lot.quantity * lot.average_price)
     }
 
+    /// What each open position has at stake, unsigned, at cost.
+    ///
+    /// At cost for the reason [`Self::position_weights`] gives. A position
+    /// whose notional cannot be represented is left out rather than clamped:
+    /// the federation then asks nothing about it, and a question not asked
+    /// is the safe direction for an information request.
+    fn exposure_at_cost(&self) -> BTreeMap<String, Decimal> {
+        self.positions
+            .iter()
+            .filter_map(|(object, lot)| {
+                lot.quantity
+                    .abs()
+                    .checked_mul(lot.average_price.abs())
+                    .map(|notional| (object.clone(), notional))
+            })
+            .collect()
+    }
+
     /// Open positions as signed weights of the given equity, at cost.
     ///
     /// At cost rather than at market, consistently with everything here:
@@ -5428,7 +5446,20 @@ impl Platform {
             evaluations: Vec::new(),
             last_calibration: None,
             self_model: SelfModel::new(),
-            federation: crate::federation_stage::FederationStage::new(),
+            // The universe's asset classes are named here, at the one place
+            // they are known, so the domain members (MODEL-4009) are declared
+            // by the first pass of every deployed cycle and not only in the
+            // stage's own tests.
+            federation: {
+                let mut stage = crate::federation_stage::FederationStage::new();
+                stage.set_asset_classes(
+                    asset_classes
+                        .iter()
+                        .map(|(subject, class)| (subject.clone(), class.as_str().to_string()))
+                        .collect(),
+                );
+                stage
+            },
             now_brain: crate::now_stage::NowStage::new()?,
             lattice: crate::lattice_stage::LatticeStage::new()?,
             research: qip_learning_engine::research::ResearchLedger::new(),
@@ -12730,6 +12761,11 @@ impl Platform {
                 confirmed_trades: view.state().trades(),
             }),
         };
+        // State what rides on each instrument before the pass (AMBIENT-10093),
+        // so a material disagreement on a held name issues the contract
+        // information request and one on a name nothing is at stake in does
+        // not.
+        self.federation.set_stakes(self.capital.exposure_at_cost());
         let review = self.federation.run(&inputs, now);
         // What this review's disagreements earn each instrument in DECIDE
         // (ADR 0125 decision 4), replaced wholesale so a disagreement that
@@ -32372,6 +32408,59 @@ mod idle_routing_tests {
             .governor
             .size(figures, None, STRESS_LOSS_TOLERANCE, &[], at)
             .expect("the waterfall releases")
+    }
+
+    /// The federation is told what rides on each instrument at the start of
+    /// every UNDERSTAND pass (AMBIENT-10093, CONTRACT-6111). Before the call
+    /// existed `FederationStage::stakes` stayed empty in every deployed
+    /// cycle, so the exposure gate on the contract `InformationRequest` could
+    /// never open and a million held on a split verdict asked nothing.
+    ///
+    /// Mutation: delete the `set_stakes` line in `understand_federation` and
+    /// the first assertion fails with `None`.
+    #[test]
+    fn the_federation_pass_is_told_what_each_held_instrument_has_at_stake_and_forgets_it_when_flat()
+    {
+        let mut platform = platform();
+        let at = start();
+        platform.capital.apply_fill(
+            "AAA",
+            Side::Buy,
+            Decimal::from_int(100),
+            Decimal::from_int(3),
+            Decimal::ZERO,
+            at,
+        );
+        assert_eq!(
+            platform.federation.stake_of("AAA"),
+            None,
+            "premise: nothing stated before a pass"
+        );
+        let _ = platform.understand_federation(at);
+        assert_eq!(
+            platform.federation.stake_of("AAA"),
+            Some(Decimal::from_int(300))
+        );
+        assert_eq!(
+            platform.federation.stake_of("BBB"),
+            None,
+            "an unheld name has nothing at stake"
+        );
+
+        platform.capital.apply_fill(
+            "AAA",
+            Side::Sell,
+            Decimal::from_int(100),
+            Decimal::from_int(3),
+            Decimal::ZERO,
+            at,
+        );
+        let _ = platform.understand_federation(at.saturating_add(Duration::from_mins(5)));
+        assert_eq!(
+            platform.federation.stake_of("AAA"),
+            None,
+            "a closed position stakes nothing"
+        );
     }
 
     /// Mutation: drop the `budget.at == now` filter in `route_idle_capital`
