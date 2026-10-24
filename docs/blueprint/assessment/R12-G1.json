@@ -284,12 +284,15 @@
   {
     "id": "R12-DATA-8013",
     "status": "PARTIAL",
-    "current": "SourceManifest holds source, locator, byte length, sha256 and retrieved_at, refusing empty inputs. Missing version/etag, entitlement, cursor, freshness, parser lineage and re-fetch instructions (entitlement/freshness live separately in qip-data-finder).",
+    "current": "SourceManifest holds source, locator, byte length, sha256 and retrieved_at, and since 2026-10-24 an additive version 2 (SourceManifest::with_v2 + ManifestV2) carrying etag, entitlement, cursor, fresh_until, parser name/version and a typed Refetch. A sealed v1 record decodes with the six as not recorded (None, not empty) and re-encodes to its sealed bytes.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/manifest.rs:63-78 fields",
-      "backend/crates/libs/qip-financial/src/manifest.rs:216,232 refusal tests"
+      "backend/crates/libs/qip-financial/src/manifest.rs::SourceManifest::with_v2",
+      "backend/crates/libs/qip-financial/src/manifest.rs::ManifestV2::new",
+      "backend/crates/libs/qip-financial/src/manifest.rs::tests::a_version_two_manifest_round_trips_with_every_one_of_its_six_fields",
+      "backend/crates/libs/qip-financial/src/manifest.rs::tests::a_sealed_version_one_manifest_still_decodes_reads_the_six_as_not_recorded_and_re_encodes_identically",
+      "backend/crates/libs/qip-financial/src/manifest.rs::tests::a_version_two_field_that_would_read_as_recorded_and_say_nothing_is_refused"
     ],
-    "gap": "Decided by ADR 0132 (accepted 2026-10-18): One admission header (three times, uncertainty, source hash, entitlement) shared by MarketEvent and every SensedRecord; SourceManifest v2 is additive and v1 stays readable; ticks reach the fabric only as bounded per-pass feature digests. Code left: SourceManifest v2 with the six fields, refusal tests, a round-trip test failing on a dropped field, and a v1 decode test.",
+    "gap": "2026-10-24: ADR 0132 decision 3's code slice is built and mutation-verified, but no production caller attaches version 2: qip-market-ingestion's narrative adapter and the deep brain still build v1 via SourceManifest::of, and the connector plane keeps its own connector::manifest::SourceManifest. Left: have one real producer (the narrative adapter) call with_v2 with its entitlement, parser and freshness, which changes the bytes of the sealed NewsItem manifest and needs its absorption and no_copied_documents tests re-baselined. The shared admission header (TICK-2053) that ADR 0132 says supplies the Entitlement type does not exist yet; ManifestV2 uses qip_contracts::governance::Entitlement, which Entitlement now derives Eq for.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -297,10 +300,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial manifest",
+    "verification": "cargo test -p qip-financial --lib manifest",
     "work_item": "",
     "size": "S",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Add etag/version, entitlement, cursor, freshness, parser lineage and re-fetch instruction fields with refusal tests."
+    "notes": "Lane T4-LEDGER 2026-10-24: v2 built; mutations that fired: #[serde(skip)] on cursor (round-trip test failed 'cursor dropped'), FromCursor refusal disabled (refusal test failed). Kept PARTIAL: no production producer."
   },
   {
     "id": "R12-DATA-8014",
@@ -1477,13 +1480,13 @@
   },
   {
     "id": "R12-REFLEX-8067",
-    "status": "PARTIAL",
-    "current": "Cell state is in memory; journal batches go through spool/drain; delivery to a fabric partition is configuration-dependent and untested.",
+    "status": "COMPLETE",
+    "current": "qip-edge-node main pushes a FabricSink when QIP_FABRIC_URL is set (apps/qip-edge-node/src/main.rs:1094); the binary run against an in-process fabricd broker ships journal entries to the P2 journal stream and outcomes to P1 while it keeps deciding.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:809 fabric sink optional",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs:489 ticks reach the lake (not the fabric)"
+      "backend/crates/apps/qip-edge-node/src/main.rs:1094 fabric sink pushed",
+      "backend/crates/apps/qip-edge-node/tests/fabric_wiring.rs:193 a_node_given_a_fabric_endpoint_ships_its_journal_to_p2_and_its_chain_to_p1"
     ],
-    "gap": "A test that journal batches reach a fabric partition without blocking a pass.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1493,10 +1496,10 @@
       "R12-FABRIC-8004"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
+    "verification": "cargo test -p qip-edge-node --test fabric_wiring",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Writer/drain now constructed in main; fabric leg unproven."
+    "notes": "Closed 2026-10-24 by lane T1-EDGE. Mutation: main.rs:1094 sinks.push( -> drop( made the test fail with empty journal and outcome topics (timed out waiting for the node to ship to the fabric); restored, test result: ok. 1 passed."
   },
   {
     "id": "R12-EXEC-8068",

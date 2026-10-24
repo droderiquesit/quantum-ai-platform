@@ -1306,7 +1306,7 @@
       "qip-edge-node/tests/writer_placement.rs::a_pinned_thread_is_allowed_one_core_and_runs_on_it_and_its_parent_is_not_moved",
       "qip-edge-node/tests/writer_placement.rs::a_core_the_process_may_not_run_on_is_refused_before_anything_is_spawned"
     ],
-    "gap": "Set QIP_SPOOL_WRITER_CPU (to an isolated core) in the execution node's node.env/startup template so a deployed node pins; no node is deployed (execution_nodes = {}).",
+    "gap": "Setting QIP_SPOOL_WRITER_CPU is not a template-only change (corrected 2026-10-24): placement.rs::pin_current_thread refuses a core outside the process's allowed set, and the unit sets CPUAffinity=2 alone (startup.sh.tftpl:407, main.tf first_isolated_cpu), so the only value the node would accept is 2, the decision thread's own core, and any other isolated core stops the node. Closing it needs the unit to allow a second isolated core, the binary to pin the decision thread to the first (no such call exists), then the variable set to the second; and no node is deployed (execution_nodes = {}).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1317,7 +1317,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The old gap 'no affinity call exists' is closed in code."
+    "notes": "Round-2 independent audit, 2026-10-11: The old gap 'no affinity call exists' is closed in code. Lane T1-EDGE 2026-10-24 re-read the template and placement.rs and kept PARTIAL with the gap corrected; no code changed."
   },
   {
     "id": "R12-REFLEX-7059",
@@ -1412,14 +1412,16 @@
   },
   {
     "id": "R12-CONTRACT-7063",
-    "status": "PARTIAL",
-    "current": "The contract BeliefState is now constructed in production: the central plane states each open belief as one and uses its expiry and validation as the gate for what is shipped to cells.",
+    "status": "COMPLETE",
+    "current": "The contract BeliefState (six fields) is constructed in production by central/belief.rs::belief_state and gates what ships to cells. The reasoning engine's freshness type is now qip_reasoning_engine::BeliefClock (belief.rs, accessor ReasoningEngine::belief_clock, read by platform.rs for Capability::BeliefState), so the contract owns the name. No wire carries either name; what crosses to cells stays ADR 0088's Beliefs slot beside BeliefPriors.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:274 a_belief_state_missing_any_of_its_six_fields_is_refused_on_decode",
-      "backend/crates/services/qip-reasoning-engine/src/engine.rs:17 production imports the reasoning-engine type",
-      "backend/crates/runtime/qip-kernel/src/central/belief.rs::belief_state"
+      "backend/crates/services/qip-reasoning-engine/src/belief.rs::BeliefClock",
+      "backend/crates/services/qip-reasoning-engine/src/engine.rs::ReasoningEngine::belief_clock",
+      "backend/crates/runtime/qip-kernel/src/platform.rs reasoning.belief_clock().last_updated()",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_does",
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:274 a_belief_state_missing_any_of_its_six_fields_is_refused_on_decode"
     ],
-    "gap": "Two different things share the name. qip-reasoning-engine's BeliefState (belief.rs, 70 lines) is a freshness clock - when a belief was last formed, read for Capability::BeliefState - and carries no probability, TTL or uncertainty, so a TryFrom to the contract's six-field BeliefState has nothing to convert. The contract BeliefState is built where it belongs, from episodes, in central/belief.rs and gates what ships to cells; what crosses to cells is still BeliefPriors slots. Closing needs either renaming the engine type (e.g. BeliefClock) so the contract owns the name, and a receiver that reads BeliefState rather than priors.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1427,10 +1429,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning forming_a_hypothesis_moves; cargo test -p qip-contracts --test section27_partial_contracts",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L23: not implemented; a conversion at engine.rs:17 would have invented the fields."
+    "notes": "Rename landed in 4c1fe46a (ADR 0149 d19); regraded 2026-10-24 lane T6-MODEL-AGENTS after re-running the test. Mutation re-fired: last_updated() returning Some(1ms) before any hypothesis formed failed the test at reasoning.rs:1551 (left Some(1970-01-01T00:00:00.001Z), right None); restored byte for byte, passes."
   },
   {
     "id": "R12-CONTRACT-7064",
@@ -1530,7 +1532,7 @@
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:319 an_opportunity_token_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:337 an_opportunity_token_refuses_each_broken_invariant"
     ],
-    "gap": "The Lane 1 frame carries no contract body: qip_peer::PeerMessage::Token holds only an OpportunityEpoch (qip-peer lib.rs:457), and qip-mesh has no seam that raises a multi-leg opportunity (the arbitrage desk that does is in qip-arbitrage and qip-edge-node). Carrying the contract OpportunityToken as the frame body is a wire change to the peer protocol under ADR 0116 (and MESH-013 forbids reflex crates from naming qip-peer), plus a construction site in the desk that knows legs, size, edge and reservations.",
+    "gap": "The Lane 1 frame carries an epoch by decision (ADR 0154 d7, accepted): qip_peer::PeerMessage::Token stays an OpportunityEpoch and the receiver re-derives legs from its own whitelist; the contract OpportunityToken is the origin desk's own record. Not built: the desk-side construction of that record from legs, size, edge and reservations in qip-arbitrage / qip-edge-node. Restated 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1541,7 +1543,7 @@
     "verification": "cargo test -p qip-mesh",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure placed construction in qip-mesh, which does not hold the fields (legs, size, reservations, unwind policy). Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure placed construction in qip-mesh, which does not hold the fields. Lane T1-EDGE 2026-10-24: wire change dropped by ADR 0154 d7; no code changed, kept PARTIAL."
   },
   {
     "id": "R12-CONTRACT-7069",
@@ -2384,13 +2386,15 @@
   },
   {
     "id": "R12-RES-7106",
-    "status": "PARTIAL",
-    "current": "Agency plans with prohibited methods are infeasible; expansion has a Contradiction gap class; no symbolic derivation trace.",
+    "status": "COMPLETE",
+    "current": "Contradiction narrows the confidence a position is sized on and is deliberately not folded into the action bar (Hypothesis::confidence_for_sizing, read at platform.rs where the proposal's conviction is built); a contested thesis is held small and scored, not blocked. Agency plans with prohibited methods are infeasible; expansion has a Contradiction gap class. ContradictionResolution has one consumer (trust_score).",
     "evidence": [
-      "backend/crates/services/qip-agency/tests/agency.rs:280",
-      "backend/crates/services/qip-expansion/src/gap.rs:20"
+      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs::Hypothesis::confidence_for_sizing",
+      "backend/crates/runtime/qip-kernel/src/platform.rs conviction: sign * reasoned.hypothesis.confidence_for_sizing()",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs::the_reason_stage_names_the_evidence_posture_so_a_small_size_can_be_told_from_an_absent_one"
     ],
-    "gap": "ContradictionResolution (contradiction.rs) has one consumer, trust_score.rs, and no running path: nothing in the cycle builds one. The closure's last clause (an unresolved contradiction marks the dependent proposal infeasible and blocks money movement) contradicts a standing design: Hypothesis::confidence_for_sizing narrows size on conflicting evidence and its doc says it is deliberately not folded into the action bar, so a contested thesis is held small and scored rather than refused. Blocking would be a reversal needing an ADR. Buildable without it: a derivation trace and an alternates search over ResolutionMethod on ContradictionResolution, fed from evidence the fabric already contests.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2400,10 +2404,10 @@
       "R12-CONTRACT-7077"
     ],
     "blocked_by": "",
-    "verification": "reasoning test",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning contradiction_only_ever; cargo test -p qip-kernel --test kernel the_reason_stage_names",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L23: not implemented; see gap for the design conflict."
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed by ADR 0150 d14: the closure clause that an unresolved contradiction blocks a proposal is withdrawn; a ContradictionResolution trace is advisory and waits for a named consumer. Mutation fired: confidence_for_sizing multiplying by (2.0 - dissent) instead of dissent failed contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on at reasoning.rs:1086; restored, it passed."
   },
   {
     "id": "R12-RES-7107",

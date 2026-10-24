@@ -2062,13 +2062,14 @@
   },
   {
     "id": "R12-AMBIENT-10094",
-    "status": "PARTIAL",
-    "current": "qip-expansion MetaIntelligence::allocate grants CPU/GPU/TPU/QPU units by marginal value per cost, each ComputeAllocation with expected-value rationale; QPU grants carry ComputePlan; called from deepbrain sweep.",
+    "status": "COMPLETE",
+    "current": "The research loop bids only the desk's items (Question, Simulation, DataSource, Model); a grant starts the item, is measured next sweep, and agent compute is bounded by agent_budgets in the market and the manifest Budget in the run. No agent bid exists and no grant raises a ceiling, by decision (ADR 0158 decisions 1-2).",
     "evidence": [
-      "backend/crates/services/qip-cost-router/src/router.rs:161-168 rationale",
-      "backend/crates/services/qip-cost-router/tests/cost_router.rs"
+      "backend/crates/apps/qip-deepbrain/src/research.rs::work_kind",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::tests::the_bids_the_research_loop_makes_are_only_of_kinds_that_change_a_named_budget",
+      "backend/crates/services/qip-expansion/src/meta.rs::MetaIntelligence::allocate_within"
     ],
-    "gap": "No agent bids: a granted agent bid has no consumer. Agent budgets live in qip-agents BudgetLedger instances constructed inside each agent run (runtime.rs) and the cost router's per-decision ledger, neither reachable from ResearchLoop, so a grant could raise nothing; today agent compute is bounded by ResearchConfig.agent_budgets (R12-AMBIENT-9034), a ceiling and not a bid. TPU budget zero is a deployment fact.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2076,10 +2077,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-cost-router",
+    "verification": "cargo test -p qip-deepbrain --lib the_bids_the_research_loop",
     "work_item": "",
     "size": "L",
-    "notes": "Checked 2026-10-18. WorkKind::Agent exists in the market and allocate_within accepts such a bid; the missing half is what a grant does."
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed per ADR 0158 d1-2 (test-only). Mutation fired: mapping TaskKind::Experiment to WorkKind::Agent in work_kind failed the test (bid set {Question, Agent, Simulation, DataSource} != the four named-budget kinds). The TPU budget is the literal zero and is the owner's."
   },
   {
     "id": "R12-QUANT-10095",
