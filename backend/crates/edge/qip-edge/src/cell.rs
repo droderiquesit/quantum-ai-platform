@@ -421,6 +421,19 @@ pub const GATE_NET_EDGE: &str = "net_edge";
 /// survives every comparison a cell would make of it.
 pub const GATE_SIGNAL_EDGE: &str = "signal_edge";
 
+/// The gate a pass is refused under when the applied policy's produced
+/// `acceptable_builds` set does not name this cell's build (ADR 0155 section
+/// 14). Named apart from `policy_halt` because the release is different: a
+/// fresh payload whose set names the build, not a halt barrier.
+pub const GATE_DEPLOYMENT_HALT: &str = "deployment_halt";
+
+/// The gate an order is refused under when the instrument's product class is
+/// not one the envelope's authority bounds name, or the instrument has no
+/// class at all (ADR 0155 section 2). Leverage and regulated-function
+/// refusals ride the existing envelope gates, and each reason names which
+/// bound refused.
+pub const GATE_ENVELOPE_PRODUCT: &str = "envelope_product";
+
 /// The gate an order is refused under when its venue's feed has said nothing
 /// for longer than [`CellConfig::max_staleness`].
 ///
@@ -617,6 +630,20 @@ pub struct CellConfig {
     /// chaos and e2e suites and the legacy node mode on a spool nobody
     /// writes. Only [`Self::with_journal_wire`] turns it on.
     pub journal_wire: bool,
+    /// This build's own identity (ADR 0155 section 14), or `None` on a cell
+    /// built without the wire. Armed only by [`Self::with_build_identity`];
+    /// a cell with no identity has no deployment halt to report.
+    pub build_identity: Option<String>,
+    /// The product class of each instrument the cell may trade, as
+    /// `AssetClass::as_str` spells it (ADR 0155 section 2). The cell holds
+    /// strings and takes no `qip-financial` edge: the composition root builds
+    /// the map from the committed catalogue.
+    pub product_classes: BTreeMap<ObjectId, String>,
+    /// Whether an envelope's authority bounds are enforced and an envelope
+    /// without them refused (ADR 0155 section 6). Off in the library; arming
+    /// it before the issuer signs the block into every envelope is the
+    /// refuse-everything failure.
+    pub authority_bounds_required: bool,
     /// Whether this cell's journal drops what it has shipped to a mirror.
     ///
     /// Off by default: every reader of `Cell::journal().entries()` written
@@ -705,6 +732,9 @@ impl CellConfig {
             cross_source_tolerance: DEFAULT_CROSS_SOURCE_TOLERANCE,
             feed_loss_playbook: FeedLossPlaybook::Hedge,
             journal_wire: false,
+            build_identity: None,
+            product_classes: BTreeMap::new(),
+            authority_bounds_required: false,
             journal_trimmed_on_ship: false,
             venue_health: None,
             exposure_bounds_required: false,
@@ -762,6 +792,40 @@ impl CellConfig {
     pub fn with_journal_trimmed_on_ship(mut self) -> Self {
         self.journal_trimmed_on_ship = true;
         self
+    }
+
+    /// Declare the product class of an instrument (ADR 0155 section 2). An
+    /// armed cell refuses an instrument with no entry rather than reading it
+    /// as the first class on a list.
+    #[must_use]
+    pub fn with_product_class(mut self, object: ObjectId, class: impl Into<String>) -> Self {
+        self.product_classes.insert(object, class.into());
+        self
+    }
+
+    /// Enforce authority bounds and refuse an envelope without them (ADR
+    /// 0155 section 6). Armed by a composition root only once the issuer
+    /// states the block in every envelope it signs and the root can name a
+    /// class for every instrument the cell may trade.
+    #[must_use]
+    pub fn with_authority_bounds_required(mut self) -> Self {
+        self.authority_bounds_required = true;
+        self
+    }
+
+    /// Arm the deployment-identity wire (ADR 0155 section 14): the cell takes
+    /// no new exposure when a produced `acceptable_builds` set does not name
+    /// `identity`. Refused when blank, because a blank identity would match
+    /// nothing and halt the cell on the first produced set.
+    pub fn with_build_identity(mut self, identity: impl Into<String>) -> Result<Self> {
+        let identity = identity.into();
+        if identity.trim().is_empty() {
+            return Err(Error::invalid(
+                "the build identity is blank; state the identity this build was started under",
+            ));
+        }
+        self.build_identity = Some(identity);
+        Ok(self)
     }
 
     /// Arm the journal-pressure wire (ADR 0100 §6).
@@ -2492,6 +2556,9 @@ impl Cell {
             self.polled_halt.is_some(),
             self.journal_pressure.map(JournalPressure::halts),
         );
+        if self.config.build_identity.is_some() {
+            self.metrics.deployment_halt(self.deployment_halted());
+        }
     }
 
     pub fn protocols_mut(&mut self) -> &mut ProtocolRegistry {
@@ -2689,6 +2756,27 @@ impl Cell {
         self.autonomy.kill_switch().is_globally_tripped()
             || self.policy_halted
             || self.polled_halt.is_some()
+            || self.deployment_halted()
+    }
+
+    /// Whether the applied policy's produced `acceptable_builds` set omits
+    /// this cell's build (ADR 0155 section 14). Computed from the payload the
+    /// cell serves rather than latched, so it can never disagree with it; an
+    /// unproduced set, or a cell with no identity, is not a halt.
+    fn deployment_halted(&self) -> bool {
+        self.policy
+            .as_ref()
+            .is_some_and(|policy| self.excludes_build(policy.payload()))
+    }
+
+    fn excludes_build(&self, payload: &qip_contracts::policy::PolicyPayload) -> bool {
+        match (
+            &self.config.build_identity,
+            payload.acceptable_builds.value(),
+        ) {
+            (Some(identity), Some(set)) => !set.builds.contains(identity),
+            _ => false,
+        }
     }
 
     fn journal_exhausted(&self) -> bool {
@@ -3245,6 +3333,13 @@ impl Cell {
         if previous.halted() {
             return Err(Error::denied(
                 "the previous payload is a halt; a rollback cannot halt the cell",
+            ));
+        }
+        if self.deployment_halted() || self.excludes_build(previous.payload()) {
+            return Err(Error::denied(
+                "a rollback cannot release or impose a deployment halt: this build is absent \
+                 from an acceptable-builds set, and only a fresh payload naming it can say \
+                 otherwise",
             ));
         }
         let payload = previous.payload();
@@ -4902,6 +4997,8 @@ impl Cell {
                 "policy_halt"
             } else if self.polled_halt.is_some() {
                 "polled_halt"
+            } else if self.deployment_halted() {
+                GATE_DEPLOYMENT_HALT
             } else {
                 GATE_JOURNAL_PRESSURE
             };
@@ -5728,6 +5825,26 @@ impl Cell {
             )
         });
         if let Some((gate, reason)) = verdict {
+            self.refuse(report, gate, &reason, now);
+            return Ok(None);
+        }
+
+        // ADR 0155: the envelope's authority bounds, with the order's own
+        // product class, regulated function and the one leverage measure
+        // `check_exposure` computes. A net is sent as order taking, so that is
+        // the function this order performs.
+        let authority = self.deployed.get(&key).and_then(|deployed| {
+            authority_verdict(
+                self.config.authority_bounds_required,
+                &self.config.product_classes,
+                &deployed.envelope,
+                &signal.object_id,
+                quantity.checked_mul(price),
+                &deployed.utilisation,
+                qip_execution_engine::modes::ExecutionMode::OrderTaking,
+            )
+        });
+        if let Some((gate, reason)) = authority {
             self.refuse(report, gate, &reason, now);
             return Ok(None);
         }
@@ -11394,6 +11511,65 @@ fn exposure_verdict(
         Err(qip_contracts::ExposureBreach::Leverage(reason)) => {
             Some((GATE_ENVELOPE_LEVERAGE, reason))
         }
+    }
+}
+
+/// The envelope's authority bounds against one order (ADR 0155 section 2 to
+/// 4): `None` admits it. Unarmed and unbounded admits, because the library
+/// default must not refuse every envelope minted before the block existed;
+/// bounds an envelope *does* carry are enforced whatever the switch says.
+fn authority_verdict(
+    required: bool,
+    classes: &BTreeMap<ObjectId, String>,
+    envelope: &VerifiedEnvelope,
+    object: &ObjectId,
+    notional: Option<Decimal>,
+    used: &Utilisation,
+    mode: qip_execution_engine::modes::ExecutionMode,
+) -> Option<(&'static str, String)> {
+    if !envelope.has_authority_bounds() && !required {
+        return None;
+    }
+    let Some(class) = classes.get(object) else {
+        return Some((
+            GATE_ENVELOPE_PRODUCT,
+            format!(
+                "{} has no product class on this cell, so its authority bounds cannot be \
+                 checked; declare one rather than have it read as the first class listed",
+                object.as_str()
+            ),
+        ));
+    };
+    // The one leverage measure: gross committed after the order over capital
+    // less realised loss, as `check_exposure` computes it.
+    let leverage = envelope.exposure().and_then(|bounds| {
+        let equity = bounds
+            .capital
+            .checked_sub(used.realised_loss)
+            .filter(|equity| equity.is_positive())?;
+        let gross_after = used.gross_committed.checked_add(notional?)?;
+        gross_after.checked_div(equity)
+    });
+    let Some(leverage) = leverage else {
+        return Some((
+            GATE_ENVELOPE_LEVERAGE,
+            "the order's leverage cannot be measured against the envelope's authority bounds \
+             (no exposure bounds, no equity, or an unrepresentable notional)"
+                .to_string(),
+        ));
+    };
+    match envelope.check_authority(class, leverage, Some(mode.as_str())) {
+        Ok(()) => None,
+        Err(qip_contracts::AuthorityBreach::Product(reason)) => {
+            Some((GATE_ENVELOPE_PRODUCT, reason))
+        }
+        Err(qip_contracts::AuthorityBreach::Leverage(reason)) => {
+            Some((GATE_ENVELOPE_LEVERAGE, reason))
+        }
+        Err(
+            qip_contracts::AuthorityBreach::Function(reason)
+            | qip_contracts::AuthorityBreach::Unbounded(reason),
+        ) => Some((GATE_ENVELOPE_UNBOUNDED, reason)),
     }
 }
 

@@ -13,7 +13,7 @@
 //! most [`TURN`], so a cell that offers nothing still has its peers' frames
 //! read and its epochs expired on time.
 
-use crate::boundary::{EdgeQuote, MAX_QUOTES, Offer, ReflexPort, StatusCells};
+use crate::boundary::{EdgeQuote, MAX_QUOTES, Offer, RebalanceTask, ReflexPort, StatusCells};
 use crate::saga::{Saga, SagaStep};
 use crate::wire::{PeerSession, PeerSettings, PeerTurn};
 use qip_core::error::{Error, Result};
@@ -22,12 +22,18 @@ use qip_peer::ExecutableEdge;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 
 /// Publishes the port holds before it counts a drop. Small on purpose: an
 /// edge state is a snapshot and the newest supersedes the rest, so a deep
 /// queue would only carry stale touches to peers.
 const PORT_QUEUE: usize = 4;
+
+/// Rebalancing tasks the port holds until its status is read. Bounded
+/// because the decision loop may not read for a while and the session
+/// thread may not grow without limit on its account; a task past this is
+/// counted in `PeerStatus::rebalance_dropped`.
+const TASK_QUEUE: usize = 64;
 
 /// The longest the session thread goes without reading its peers or expiring
 /// an epoch when the cell offers nothing.
@@ -51,11 +57,13 @@ pub fn spawn(settings: &PeerSettings, clock: Arc<dyn Clock>) -> Result<(ReflexPo
     let session = PeerSession::with_clock(settings, Arc::clone(&clock))?;
     let local = session.link().local_addr();
     let (sender, offers) = sync_channel::<Offer>(PORT_QUEUE);
+    let (task_sender, tasks) = sync_channel::<RebalanceTask>(TASK_QUEUE);
     let cells = Arc::new(StatusCells::default());
     let started = clock.now();
     let host = Host {
         session,
         offers,
+        tasks: task_sender,
         cells: Arc::clone(&cells),
         clock,
         saga: Saga::new(started),
@@ -65,7 +73,7 @@ pub fn spawn(settings: &PeerSettings, clock: Arc<dyn Clock>) -> Result<(ReflexPo
         .name("qip-peer-session".to_string())
         .spawn(move || host.run())
         .map_err(|error| Error::io(format!("cannot start the peer session: {error}")))?;
-    Ok((ReflexPort::new(sender, cells), local))
+    Ok((ReflexPort::new(sender, tasks, cells), local))
 }
 
 /// The value of a quote for choosing which to publish when there are more
@@ -127,6 +135,7 @@ fn edges(quotes: Vec<EdgeQuote>) -> (Vec<ExecutableEdge>, u64, u64) {
 struct Host {
     session: PeerSession,
     offers: Receiver<Offer>,
+    tasks: SyncSender<RebalanceTask>,
     cells: Arc<StatusCells>,
     clock: Arc<dyn Clock>,
     saga: Saga,
@@ -191,6 +200,15 @@ impl Host {
                 self.last_probe = Some(now);
             }
             let step = self.saga.step(&mut self.session, now);
+            for task in self.saga.take_rebalance_tasks() {
+                match self.tasks.try_send(task) {
+                    Ok(()) => &self.cells.rebalance_tasks,
+                    Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                        &self.cells.rebalance_dropped
+                    }
+                }
+                .fetch_add(1, Ordering::Relaxed);
+            }
             self.record(&turn, &step, now);
         }
     }
@@ -245,6 +263,7 @@ impl Host {
             (&cells.fills, step.fills),
             (&cells.unwinds, step.unwinds),
             (&cells.cycles_rejected, step.rejected),
+            (&cells.cycles_closed, step.closed),
         ] {
             cell.fetch_add(add, Ordering::Relaxed);
         }

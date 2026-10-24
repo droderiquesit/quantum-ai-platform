@@ -125,3 +125,29 @@ fn a_pack_missing_its_time_bounds_lineage_or_horizon_is_refused() -> Result<()> 
     );
     Ok(())
 }
+
+/// ADR 0151 decision 2: a pack is never built over zero events. Without the
+/// refusal an interval in which nothing was drained yields a pack with no
+/// integrity flag, which a consumer reads as a clean tape that nobody read.
+///
+/// Mutation: delete the `events.is_empty()` refusal in `MarketStatePack::new`
+/// — the empty pack builds with no flag and the last assertion fails.
+#[test]
+fn a_pack_over_no_events_is_refused_rather_than_reported_as_a_clean_tape() -> Result<()> {
+    let one = [event("itch-a", 1, t(10))?];
+    let clean = pack(&one)?;
+    assert!(
+        clean.integrity().is_empty(),
+        "premise: a pack over one in-order event is clean"
+    );
+    let empty = pack(&[]);
+    let Err(refusal) = empty else {
+        panic!("a pack over zero events was admitted");
+    };
+    assert!(
+        refusal.message().contains("at least one event"),
+        "the refusal names the missing events: {}",
+        refusal.message()
+    );
+    Ok(())
+}

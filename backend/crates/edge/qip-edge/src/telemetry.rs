@@ -712,6 +712,17 @@ impl CellMetrics {
         }
     }
 
+    /// The deployment-identity halt (ADR 0155 section 14), charted under its
+    /// own `source` like the journal wire: written only by a cell built with
+    /// an identity, and absent — not zero — on every other.
+    pub fn deployment_halt(&self, halted: bool) {
+        self.metrics.gauge(
+            names::EDGE_HALTED,
+            self.with("source", "deployment"),
+            f64::from(u8::from(halted)),
+        );
+    }
+
     /// How many of the regions this cell mirrors into are dark, by source.
     ///
     /// Both arms are written on every call for the reason [`Self::halt`]

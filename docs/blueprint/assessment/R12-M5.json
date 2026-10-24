@@ -198,13 +198,13 @@
     "status": "PARTIAL",
     "current": "Account::Collateral and Account::Margin with pledge and margin OperationKinds post through LedgerOperation into the global journal; tested per kind.",
     "evidence": [
-      "backend/crates/services/qip-capital/src/collateral.rs:163 Pledge",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::review_cross_margin",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs::review_cross_margin_posts_no_ledger_operation_from_the_default_margin_model",
+      "backend/crates/tests/qip-acceptance/tests/ledger_declined_kinds.rs::no_source_outside_the_contract_builds_an_assumed_margin_pledge_or_tax_operation",
       "backend/crates/services/qip-capital/src/margin.rs:60 MarginRequirement",
-      "backend/crates/libs/qip-contracts/src/ledger.rs:67 no collateral/margin account",
-      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::OperationKind::MarginRequirement"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for pledges or margin or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "2026-10-24: no venue states a margin requirement, so no production producer exists by decision (ADR 0153 d3); modelled margin is advice and is never booked. Margin and pledge post only from a venue-stated requirement line, which no simulated venue publishes yet.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -212,10 +212,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
+    "verification": "cargo test -p qip-kernel --test collateral review_cross_margin_posts; cargo test -p qip-acceptance --test ledger_declined_kinds",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane T4-LEDGER 2026-10-24: refusal proven twice. Mutation 1: queueing a MarginRequirement per called venue inside review_cross_margin made the kernel test fail ('a modelled margin figure was queued for the ledger'). Mutation 2: a matches! on OperationKind::TaxCharge appended to qip-kernel platform.rs made the acceptance scan fail (the same scan guards MarginRequirement and CollateralPledge). Kept PARTIAL: no producer by decision until a venue states a requirement."
   },
   {
     "id": "R12-LEDGER-5010",
@@ -248,7 +248,7 @@
       "backend/crates/libs/qip-contracts/src/ledger.rs:42 Settlement::Simulated only",
       "backend/crates/libs/qip-contracts/tests/ledger_event.rs:6 settlement_has_no_variant_but_simulated"
     ],
-    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: the in_settlement account, the fill posting change, and Decision::Settled from the simulated gateway, with a test that cash is unavailable before the settlement date.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18) and not started; it spans three crates, so it is larger than the M this row carries. Slices: (1) qip-contracts: an in_settlement Account and a Decision::Settled outcome, both additive with serde defaults so old records decode and no digest moves; (2) qip-ledgerd store.rs: the Decision::Filled arm posts the cash leg to in_settlement:<cell>/<strategy> when the venue has SettlementTerms, to cash when it has none; (3) qip-edge-node gateway.rs: the simulated gateway emits Decision::Settled when its settlement clock passes a fill's date; (4) the test that cash is unavailable before the settlement date. Slice 3 is the only producer of the fact, and without it slice 2 would leave cash pending for ever. Re-graded 2026-10-24, no code changed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -442,10 +442,10 @@
     "current": "Account::Tax (separate from Account::Fees) and a tax OperationKind post into the global journal; tested per kind.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs:73 Account::Fees",
-      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::OperationKind::TaxCharge",
+      "backend/crates/tests/qip-acceptance/tests/ledger_declined_kinds.rs::no_source_outside_the_contract_builds_an_assumed_margin_pledge_or_tax_operation"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for taxes or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "2026-10-24: no TaxCharge producer by decision (ADR 0153 d7): tax method, rate and jurisdiction are facts the repository was never shown and a paper platform realises nothing taxable. The kind stays bookable and tested in qip-contracts. A test now proves no source outside the contract names OperationKind::TaxCharge.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -453,10 +453,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd plus a subledger test",
+    "verification": "cargo test -p qip-acceptance --test ledger_declined_kinds",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane T4-LEDGER 2026-10-24: decision restated and its refusal proven. Mutation: a matches! on OperationKind::TaxCharge appended to qip-kernel platform.rs made the test fail naming platform.rs:32414. Kept PARTIAL: no producer by decision."
   },
   {
     "id": "R12-LEDGER-5020",
@@ -1542,23 +1542,25 @@
   {
     "id": "R12-CAPITAL-5067",
     "status": "PARTIAL",
-    "current": "qip_mesh::rebalance::rebalancing_tasks (backend/crates/services/qip-mesh/src/rebalance.rs:27); tests rebalance.rs:40, :59. Called from no kernel/app.",
+    "current": "rebalancing_tasks and RebalanceTask now live in qip_peer::rebalance (libs/qip-peer/src/rebalance.rs); qip-mesh re-exports them. qip-peer-link's Saga::close raises one task per drifting node/venue/instrument place when every leg fill of a fired cycle is known, and the host carries them to ReflexPort, read as PeerStatus::rebalance_new. Nothing in qip-edge-node reads rebalance_new yet.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/rebalance.rs:27",
-      "backend/crates/services/qip-mesh/tests/rebalance.rs:40"
+      "backend/crates/libs/qip-peer/src/rebalance.rs:rebalancing_tasks",
+      "backend/crates/edge/qip-peer-link/src/saga.rs::Saga::close (called from Saga::step)",
+      "backend/crates/edge/qip-peer-link/src/host.rs task hand-off to the port",
+      "backend/crates/edge/qip-peer-link/tests/saga.rs::a_closed_epoch_with_drift_raises_one_rebalance_task_per_drifting_place_through_the_port"
     ],
-    "gap": "Consumer in the saga: the only non-mesh holder of OpportunityEpoch is qip-peer-link's saga (Lane 1), which does not depend on qip-mesh, where rebalancing_tasks lives (a service). Wiring it needs either the function moved into the pure qip-peer library or a qip-peer-link dependency on qip-mesh, an architecture call the mesh_lane and lane_placement suites constrain, plus a journal record for the tasks.",
+    "gap": "The node side of ADR 0154 decision 6 (corrected 2026-10-24): qip-edge-node reads PeerStatus::rebalance_new from no caller that keeps it (scheduler.rs reads port.status() twice a turn for telemetry and health, so the field is consumed unread), and the P2 journal record for a task does not exist: Decision is a hash-chained enum in qip-contracts and a new topic needs qip-events schemas.lock.json and consumers.lock.json entries and the fabric catalogue, which is its own change. The ReflexPort stays at two methods (mesh_lane::the_reflex_port_declares_only_its_two_methods_and_none_can_wait), so tasks travel in the status report.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test rebalance",
+    "verification": "cargo test -p qip-peer-link --test saga; cargo test -p qip-mesh --test rebalance; cargo test -p qip-acceptance --test mesh_lane",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: the closure (saga.rs calls rebalancing_tasks) is blocked by the crate graph; not attempted."
+    "notes": "Lane L09 2026-10-18: closure blocked by the crate graph. Lane T1-EDGE 2026-10-24: function moved to qip-peer, saga calls it at epoch close, reported through the port. Mutations fired: dropping self.close() in Saga::step times out the drift test; capping nothing (filled instead of filled.min(least)) drops the americas task; removing closed.insert repeats the pair every step. Kept PARTIAL for the node consumer and the journal record."
   },
   {
     "id": "R12-MESH-5068",
