@@ -928,6 +928,50 @@ fn a_corridor_funding_a_strategy_that_holds_no_capital_is_suspended_and_the_gate
     Ok(())
 }
 
+/// R12-RES-10127. Mutation: delete the override in `decide_fabric`, or make
+/// `ledger_lagging` always false.
+#[test]
+fn a_gate_command_is_assessed_as_lagging_once_the_ledger_trails_the_cells_past_the_threshold()
+-> Result<()> {
+    use qip_capital_fabric::gate::AnomalyFlag;
+    let mut platform = platform(PlatformConfig::default())?;
+    let (corridor, now) = active_corridor(&mut platform)?;
+    platform.declare_corridors(vec![subject("alpha-1")?], start())?;
+    let funding = platform.corridor_funding(&corridor)?;
+    let anomaly_of = |record: &qip_capital_fabric::journal::FabricRecord| match &record.command {
+        FabricCommand::Gate(gate) => gate.velocity.anomaly,
+        other => panic!("not a gate command: {other:?}"),
+    };
+
+    // Premise: a caught-up ledger leaves the stated flag as it was.
+    let calm =
+        platform.decide_fabric(gate_command(corridor.clone(), funding.clone(), now)?, now)?;
+    assert_eq!(anomaly_of(&calm), AnomalyFlag::Clear);
+
+    let orders = (0..=qip_kernel::platform::LEDGER_LAG_THRESHOLD)
+        .map(|n| DeltaOrder {
+            order_id: format!("lag-{n}"),
+            strategy: StrategyId::new("alpha"),
+            object_id: ObjectId::from_string(INSTRUMENT),
+            venue: VenueId::new("XNYS"),
+            side: BookSide::Bid,
+            quantity: dec!("1"),
+            price: dec!("100"),
+            simulated: true,
+            contributors: vec![Contributor {
+                strategy: StrategyId::new("alpha"),
+                signed_size: dec!("1"),
+                inputs: vec![("alpha-feature".to_string(), 1)],
+            }],
+        })
+        .collect();
+    platform.ingest_cell_report(CellReport::new("cell-lon-1", now).with_orders(orders), now)?;
+    assert!(platform.ledger_lagging());
+    let lagging = platform.decide_fabric(gate_command(corridor, funding, now)?, now)?;
+    assert_eq!(anomaly_of(&lagging), AnomalyFlag::LedgerLagging);
+    Ok(())
+}
+
 #[test]
 fn a_gate_command_stating_a_ruling_the_policy_did_not_derive_is_refused_before_the_gate_sees_it()
 -> Result<()> {
@@ -3992,6 +4036,146 @@ fn a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else() -> 
     assert!(
         !away.orders().fills().is_empty(),
         "a break at another venue stopped the desk's own buy"
+    );
+    Ok(())
+}
+
+fn subscriptions(platform: &Platform) -> Vec<qip_contracts::ledger_operation::LedgerOperation> {
+    platform
+        .pending_desk_operations()
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.kind,
+                qip_contracts::ledger_operation::OperationKind::MandateSubscription { .. }
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+/// A user's first funding is a mandate subscription at the ledger, once.
+///
+/// Mandate funding is not a transfer: a transfer is a movement between
+/// books, venues and custodies, and the ledger's mandate account would be
+/// wrong in kind if a funding landed there as one (ADR 0153 decision 4). The
+/// failure a queue-on-every-call producer invites is the same funding booked
+/// again at each top-up, so the premise is a first funding that queues
+/// exactly one, and the assertion is that a second funding of that mandate,
+/// into the same strategy and into another, queues none, while a different
+/// mandate's first funding queues its own.
+#[test]
+fn funding_a_users_mandate_queues_one_mandate_subscription_and_a_second_funding_queues_none()
+-> Result<()> {
+    use qip_contracts::ledger_operation::{OperationKind, Phase};
+
+    let alice = UserId::new("alice")?;
+    let bob = UserId::new("bob")?;
+    let alpha = StrategyId::new("alpha");
+    let beta = StrategyId::new("beta");
+    let config = PlatformConfig::default()
+        .with_user_mandates(vec![
+            enrolment("alice", dec!("1000"))?,
+            enrolment("bob", dec!("1000"))?,
+        ])
+        .with_user_eligibilities(vec![
+            cleared_for_a_year("alice")?,
+            cleared_for_a_year("bob")?,
+        ]);
+    let mut platform = platform(config)?;
+    assert!(
+        subscriptions(&platform).is_empty(),
+        "premise: nothing is subscribed before anyone funds"
+    );
+
+    platform.fund_user(&alice, &alpha, dec!("100"), start())?;
+    let first = subscriptions(&platform);
+    assert_eq!(first.len(), 1, "the first funding of a mandate queues one");
+    let OperationKind::MandateSubscription {
+        mandate,
+        treasury,
+        unit,
+        amount,
+        phase,
+    } = &first[0].kind
+    else {
+        unreachable!("filtered to subscriptions above");
+    };
+    assert_eq!(
+        mandate, "mandate-alice",
+        "the mandate's own id, not the user's"
+    );
+    assert_eq!(treasury, "central");
+    assert_eq!(unit, "USD");
+    assert_eq!(*amount, dec!("100"));
+    assert_eq!(*phase, Phase::Establish);
+
+    platform.fund_user(&alice, &alpha, dec!("50"), start())?;
+    platform.fund_user(&alice, &beta, dec!("25"), start())?;
+    assert_eq!(
+        subscriptions(&platform),
+        first,
+        "later fundings of the same mandate, in any strategy, queue nothing"
+    );
+
+    platform.fund_user(&bob, &alpha, dec!("200"), start())?;
+    assert_eq!(
+        subscriptions(&platform).len(),
+        2,
+        "a different mandate's first funding queues its own"
+    );
+    Ok(())
+}
+
+/// A restart re-sends the subscription as written and still counts the
+/// mandate as subscribed.
+///
+/// Without the second half a restarted process would queue a second
+/// subscription for the next top-up, under the same id, from another instant.
+#[test]
+fn a_restart_resends_a_mandate_subscription_as_written_and_does_not_subscribe_the_mandate_again()
+-> Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-mandate-subscription-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let alice = UserId::new("alice")?;
+    let alpha = StrategyId::new("alpha");
+    let make = || -> Result<Platform> {
+        platform(
+            PlatformConfig::default()
+                .with_event_log_file(&path)
+                .with_user_mandates(vec![enrolment("alice", dec!("1000"))?])
+                .with_user_eligibilities(vec![cleared_for_a_year("alice")?]),
+        )
+    };
+
+    let first = {
+        let mut platform = make()?;
+        platform.fund_user(&alice, &alpha, dec!("100"), start())?;
+        subscriptions(&platform)
+    };
+    assert_eq!(first.len(), 1, "premise: the first process queued one");
+
+    let mut restarted = make()?;
+    assert_eq!(
+        subscriptions(&restarted),
+        first,
+        "the restart must re-send the operation as written"
+    );
+    restarted.fund_user(
+        &alice,
+        &alpha,
+        dec!("50"),
+        start().saturating_add(Duration::from_days(1)),
+    )?;
+    assert_eq!(
+        subscriptions(&restarted),
+        first,
+        "a top-up after a restart must not subscribe the mandate a second time"
     );
     Ok(())
 }

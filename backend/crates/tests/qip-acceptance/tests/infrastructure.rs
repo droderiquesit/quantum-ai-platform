@@ -14138,3 +14138,104 @@ fn a_workload_with_a_zero_instance_floor_states_what_a_cold_start_costs_its_call
         assert_eq!(floor, "1", "{name} must keep its warm instance");
     }
 }
+
+/// The human or public principals a Terraform source names as literals, in the
+/// forms IAM accepts them (`user:`, `group:`, `domain:`, `allUsers`,
+/// `allAuthenticatedUsers`), as the opening of a double-quoted string. A
+/// principal written inside a longer string (a `gcloud` command in an output,
+/// a comment) is documentation and is not matched. `pam_entitlements` is cut
+/// out first: its requesters and approvers are human by design, and the grant
+/// it makes is time-boxed and approved.
+fn human_principal_literals(content: &str) -> Vec<String> {
+    let mut rest = content.to_string();
+    if let Some(at) = rest.find("pam_entitlements") {
+        let tail = &rest[at..];
+        if let Some(open) = tail.find('{') {
+            let mut depth = 0i64;
+            let mut end = tail.len();
+            for (i, c) in tail[open..].char_indices() {
+                depth += match c {
+                    '{' => 1,
+                    '}' => -1,
+                    _ => 0,
+                };
+                if depth == 0 {
+                    end = open + i + 1;
+                    break;
+                }
+            }
+            rest = format!("{}{}", &rest[..at], &tail[end..]);
+        }
+    }
+    let mut found = Vec::new();
+    for prefix in [
+        "\"user:",
+        "\"group:",
+        "\"domain:",
+        "\"allUsers\"",
+        "\"allAuthenticatedUsers\"",
+    ] {
+        for (at, _) in rest.match_indices(prefix) {
+            let literal: String = rest[at..].chars().take_while(|c| *c != '\n').collect();
+            found.push(literal);
+        }
+    }
+    found
+}
+
+/// R12-SEC-10003: no source grants a human or public principal a role of its
+/// own. The only route from a person to a privilege is a
+/// `pam_entitlements` entry, which is approved, justified and expires.
+/// Without this a standing `user:` binding committed in a module or an
+/// environment's tfvars reads, in review, like any other member line.
+///
+/// Mutation: add `member = "user:someone@example.com"` to any module's `.tf`,
+/// or a `user:` literal to a tfvars outside `pam_entitlements`; the scan
+/// names the file and the test fails.
+#[test]
+fn no_terraform_source_grants_a_human_or_public_principal_a_standing_role() {
+    // The detector fires on a standing grant and spares an entitlement, or the
+    // scan below would pass on a detector that matches nothing.
+    assert_eq!(
+        human_principal_literals("member = \"user:a@example.com\"\n").len(),
+        1,
+        "premise: a literal user member is detected"
+    );
+    assert_eq!(
+        human_principal_literals("member = \"allUsers\"\n").len(),
+        1,
+        "premise: a public member is detected"
+    );
+    assert!(
+        human_principal_literals(
+            "pam_entitlements = {\n  ops = {\n    requesters = [\"group:ops@example.com\"]\n  }\n}\n"
+        )
+        .is_empty(),
+        "premise: an entitlement's requesters are not a standing grant"
+    );
+    assert!(
+        human_principal_literals("--member='user:YOU@example.com'\n").is_empty(),
+        "premise: a principal inside a longer string is documentation"
+    );
+
+    let mut sources = files_with_extension("infrastructure/terraform", "tf");
+    sources.extend(files_with_extension(
+        "infrastructure/environments",
+        "tfvars",
+    ));
+    assert!(
+        sources.len() > 20,
+        "premise: the scan read the Terraform sources, got {}",
+        sources.len()
+    );
+    for path in sources {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        let (content, _validations) = without_validation_blocks(&content);
+        let standing = human_principal_literals(&content);
+        assert!(
+            standing.is_empty(),
+            "{} grants a human or public principal outside a PAM entitlement: {standing:?}",
+            path.display()
+        );
+    }
+}

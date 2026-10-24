@@ -255,3 +255,157 @@ fn a_subject_whose_regime_turns_becomes_the_regime_boundary_probe_the_desk_funds
     );
     Ok(())
 }
+
+/// `y = 0.5 a − 0.25 b + c` with a small residual: a fit that clears the skill
+/// bar honestly, so any refusal below is about the market and not the model.
+fn teacher(name: &str) -> Result<qip_training::local::TrainedTeacher> {
+    use qip_training::dataset::TrainingDataset;
+    use qip_training::job::TrainingSpec;
+    use qip_training::local::{LocalTrainer, ModelFamily};
+    let mut rows = Vec::new();
+    let mut targets = Vec::new();
+    let mut times = Vec::new();
+    for i in 0..200usize {
+        let a = (i as f64 * 0.37).sin();
+        let b = (i as f64 * 0.11).cos();
+        let residual = ((i * 7919) % 13) as f64 / 13.0 * 0.02 - 0.01;
+        rows.push(vec![a, b]);
+        targets.push(0.5 * a - 0.25 * b + 0.1 + residual);
+        times.push(start().saturating_add(Duration::from_mins(i as i64)));
+    }
+    let data = TrainingDataset::new(
+        format!("{name}-data"),
+        vec!["a".to_string(), "b".to_string()],
+        rows,
+        targets,
+        times,
+    )?;
+    let spec = TrainingSpec::new(
+        name,
+        "0.1.0",
+        "regime-tests",
+        data.name(),
+        ModelFamily::Linear { ridge: 1e-6 },
+    )
+    .with_holdout(0.25);
+    LocalTrainer::new().fit(&spec, &data, start())
+}
+
+/// A serving platform whose subject `obj-BBB` has had an edge written under a
+/// tight regime; with `crossed`, its quoted spread then blows out and the
+/// cycle that sees it marks the crossing at `start() + 60s`.
+fn serving_platform_after(crossed: bool) -> Result<Platform> {
+    let count = 120;
+    let cause_returns = noise(11, count, 0.02);
+    let mut effect_returns = vec![0.0; count];
+    let effect_noise = noise(22, count, 0.004);
+    for t in 1..count {
+        effect_returns[t] = 0.8 * cause_returns[t - 1] + effect_noise[t];
+    }
+    let config = PlatformConfig::default().with_exploration_share(dec!("0.05"));
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new_serving(
+        config,
+        context,
+        Telemetry::silent(),
+        universe(&["AAA", "BBB"]),
+        LimitSet::new("regime-boundary-test").with(
+            Limit::new("max-leverage", LimitKind::MaxLeverage { limit: 2.0 })
+                .with_rationale("gross exposure is capped at 2x equity"),
+        ),
+        Box::new(qip_training::serve::InTreeProvider),
+    )?;
+    platform.name_model_desk("regime-tests/model-desk")?;
+    platform.observe(bars_from_returns("AAA", &cause_returns, count));
+    platform.observe(bars_from_returns("BBB", &effect_returns, count));
+    for day in 0..3 {
+        platform.observe(vec![quote(
+            "BBB",
+            start().saturating_sub(Duration::from_days(3 - day)),
+            10.0,
+        )]);
+    }
+    platform.run_cycle(start());
+    if crossed {
+        let settled = platform.regime_context("obj-BBB");
+        platform.observe(vec![quote("BBB", start(), 300.0)]);
+        platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+        assert_ne!(
+            settled,
+            platform.regime_context("obj-BBB"),
+            "premise: the subject's regime key changed, so a crossing was marked"
+        );
+    }
+    Ok(platform)
+}
+
+/// R12-TICK-2071, ADR 0149 decision on regime drift: the platform measures a
+/// regime change as an event (`Platform::latest_regime_crossing`) that the
+/// verifier society reads when a model is promoted, not as a second drift
+/// column over the same prices. A model last evaluated before the market
+/// crossed a boundary was evaluated in a market that no longer exists and is
+/// refused by the structural-break critic; the same model with no crossing
+/// since, or evaluated after it, is promoted. A gate that refused every
+/// promotion would also pass the first half, so both halves are asserted.
+///
+/// Mutation: make `Platform::latest_regime_crossing` return `None` — the model
+/// evaluated before the crossing is promoted and the refusal assertion fails.
+#[test]
+fn a_model_evaluated_before_the_market_crossed_a_regime_boundary_is_refused_promotion() -> Result<()>
+{
+    use qip_ai::registry::ModelRegistry;
+    use qip_kernel::central::models::register_fit;
+    use qip_training::local::SkillPolicy;
+    use qip_training::serve::InTreeProvider;
+
+    let teacher = teacher("regime-linear")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let promote = |crossed: bool, evaluated: Timestamp, at: Timestamp| -> Result<Result<()>> {
+        let mut platform = serving_platform_after(crossed)?;
+        let mut registry = ModelRegistry::new();
+        let registration = register_fit(
+            &mut registry,
+            &teacher,
+            &SkillPolicy::default(),
+            "regime-tests",
+            evaluated,
+        )?;
+        assert!(
+            registration.passed,
+            "premise: the fit cleared the skill bar"
+        );
+        Ok(platform
+            .promote_model(&mut registry, &artifact, None, &[], at)
+            .map(|_| ()))
+    };
+
+    let quiet = promote(
+        false,
+        start(),
+        start().saturating_add(Duration::from_secs(120)),
+    )?;
+    assert!(
+        quiet.is_ok(),
+        "premise: with no crossing the model promotes: {quiet:?}"
+    );
+
+    let refused = promote(
+        true,
+        start(),
+        start().saturating_add(Duration::from_secs(120)),
+    )?
+    .expect_err("a model evaluated before a regime crossing was promoted");
+    assert!(
+        refused.message().contains("structural_break"),
+        "refused for another reason: {}",
+        refused.message()
+    );
+
+    let after = start().saturating_add(Duration::from_secs(3_600));
+    let reevaluated = promote(true, after, after.saturating_add(Duration::from_secs(60)))?;
+    assert!(
+        reevaluated.is_ok(),
+        "a model evaluated after the crossing was still refused: {reevaluated:?}"
+    );
+    Ok(())
+}

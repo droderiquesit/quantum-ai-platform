@@ -891,6 +891,20 @@ fn a_paper_book_failing_the_multi_market_shock_world_withholds_a_reserve_named_f
     )
 }
 
+/// R12-RISK-4116. Mutation: delete the regime-flip push in `tail.rs`.
+#[test]
+fn a_paper_book_failing_the_regime_flip_world_withholds_a_reserve_named_for_it() -> Result<()> {
+    a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(qip_kernel::tail::REGIME_FLIP)
+}
+
+/// R12-RISK-4102. Mutation: delete the contagion-cascade push in `tail.rs`.
+#[test]
+fn a_paper_book_failing_the_contagion_world_withholds_a_reserve_named_for_it() -> Result<()> {
+    a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(
+        qip_kernel::tail::CONTAGION_CASCADE,
+    )
+}
+
 // --- a distribution shift the cycle measured narrows the sizing budget -----
 
 /// A platform that has run one cycle over 300 daily returns each: AAA calm

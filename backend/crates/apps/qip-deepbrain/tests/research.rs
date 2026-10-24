@@ -1591,3 +1591,280 @@ fn a_gap_admitted_by_the_research_loop_is_queued_at_the_urgency_its_deadline_giv
         "queued at urgency {urgency}, not the floor {floor}"
     );
 }
+
+// --- the federation's questions reach the sweep (R12-AMBIENT-10093) ----------
+
+/// A platform whose desk holds AAA, over bars the world models disagree on
+/// materially, so its federation pass issues a request.
+fn platform_holding_a_disputed_instrument() -> Platform {
+    use qip_execution_engine::order::Side;
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_reasoning_engine::redteam::ReviewPolicy;
+    use qip_risk::limits::{Limit, LimitKind};
+
+    let object = ObjectId::from_string("obj-AAA");
+    let mut universe = Universe::new();
+    universe
+        .insert(
+            FinancialObject::builder(
+                object.clone(),
+                "AAA",
+                InstrumentType::CommonStock,
+                qip_financial::costs::LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+            )
+            .venue("XNYS")
+            .sector(Sector::InformationTechnology)
+            .price(Decimal::from_int(100))
+            .provenance(Provenance::synthetic("test", start()))
+            .build(start())
+            .unwrap_or_else(|e| panic!("a valid object: {e}")),
+        )
+        .unwrap_or_else(|e| panic!("insertable: {e}"));
+    let limits = LimitSet::new("research-test")
+        .with(Limit::new(
+            "max-position-weight",
+            LimitKind::MaxPositionWeight { limit: 0.10 },
+        ))
+        .with(Limit::new(
+            "max-leverage",
+            LimitKind::MaxLeverage { limit: 2.0 },
+        ));
+    let config = PlatformConfig {
+        review: ReviewPolicy {
+            minimum_surviving_confidence: 0.10,
+            ..ReviewPolicy::default()
+        },
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe, limits)
+        .unwrap_or_else(|e| panic!("the platform assembles: {e}"));
+    // The same series the kernel's federation tests feed: noise with one jump.
+    let mut price = 100.0_f64;
+    let records: Vec<SensedRecord> = (0..120usize)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            let jump = if i == 80 { 0.09 } else { 0.0 };
+            price *= 1.0 + noise + jump;
+            let at = start().saturating_sub(Duration::from_days((120 - i) as i64));
+            bar("obj-AAA", at, price)
+        })
+        .collect();
+    platform.observe(records);
+    let order = platform.order_from(
+        object,
+        Side::Buy,
+        Decimal::from_int(100),
+        Decimal::from_int(100),
+        "prop-book",
+        vec!["hyp-book".to_string()],
+        start(),
+    );
+    platform
+        .submit_order(order, start())
+        .unwrap_or_else(|e| panic!("the paper venue takes the order: {e}"));
+    platform
+}
+
+/// The failure this guards: the federation priced a disagreement over capital
+/// at stake and the request went nowhere, because nothing in the deep brain
+/// read it — so the question sat on the review and no sweep ever ranked it.
+/// Mutation: drop the `admit_federation_requests` call in `sweep_over` — no
+/// request launches and the `info_launched` assertion fails.
+#[test]
+fn a_federation_request_on_a_held_instrument_is_launched_by_the_sweep_and_one_with_no_licensed_source_is_not()
+ {
+    let mut platform = platform_holding_a_disputed_instrument();
+    assert!(
+        platform.positions_at_cost().contains_key("obj-AAA"),
+        "premise: the desk holds AAA"
+    );
+    let _ = platform.run_cycle(start());
+    let requests = platform.federation_information_requests().to_vec();
+    assert_eq!(requests.len(), 1, "premise: the pass issued a request");
+    let sources = &requests[0].0.allowed_sources;
+    assert!(!sources.is_empty(), "premise: it names a source");
+
+    let mut unlicensed = research(coverage(&[]));
+    let round = unlicensed
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        unlicensed
+            .info_requests()
+            .all(|r| !r.id().starts_with("fed-")),
+        "no source is licensed, so nothing is asked: {round:?}"
+    );
+
+    let licensed: BTreeSet<String> = sources.iter().cloned().collect();
+    let mut licensed_loop = research(coverage(&[]));
+    let round = licensed_loop
+        .sweep(&platform, start(), &licensed, &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let federation: Vec<_> = licensed_loop
+        .info_requests()
+        .filter(|r| r.id().starts_with("fed-"))
+        .collect();
+    assert_eq!(federation.len(), 1, "{round:?}");
+    assert!(round.info_launched >= 1, "{round:?}");
+}
+
+/// R12-AMBIENT-3113, ADR 0158 decisions 7-8: the sweep weights a belief
+/// class's residual by that class's own exposure, so a class whose hit rate is
+/// poor but which holds no instrument of its own proposes no specialist, and
+/// one that does hold a position on an open thesis of its own does. Before
+/// this every class was weighted by the whole book's equity, so both proposed.
+///
+/// The book is a real cycle's: a position in `obj-AAA` under an open
+/// `price_move` thesis. `momentum` has twelve resolved misses and no position.
+/// Mutation: put `platform.equity().abs()` back as every class's exposure in
+/// `ResearchLoop::sweep_over` — `momentum` proposes too and the count of two
+/// fails the assertion of one.
+#[test]
+fn a_class_with_no_attributed_exposure_proposes_no_specialist() {
+    use qip_financial::asset_class::InstrumentType;
+    use qip_financial::costs::LiquidityProfile;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_learning_engine::evaluation::{Outcome, ThesisClaim};
+    use qip_reasoning_engine::redteam::ReviewPolicy;
+
+    let config = PlatformConfig {
+        review: ReviewPolicy {
+            minimum_surviving_confidence: 0.10,
+            ..ReviewPolicy::default()
+        },
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut universe = Universe::new();
+    universe
+        .insert(
+            FinancialObject::builder(
+                ObjectId::from_string("obj-AAA".to_string()),
+                "AAA",
+                InstrumentType::CommonStock,
+                LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+            )
+            .venue("XNYS")
+            .geography("US")
+            .sector(qip_financial::asset_class::Sector::InformationTechnology)
+            .price(Decimal::from_int(100))
+            .provenance(Provenance::synthetic("test", start()))
+            .build(start())
+            .unwrap_or_else(|e| panic!("{e}")),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        LimitSet::new("research-test").with(
+            qip_risk::limits::Limit::new(
+                "max-leverage",
+                qip_risk::limits::LimitKind::MaxLeverage { limit: 2.0 },
+            )
+            .with_rationale("gross exposure is capped at 2x equity"),
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    // A quiet tape that drops nine percent on its last bar, as the kernel's
+    // valuation-seam suite feeds: the cycle approves a long and sizes it.
+    let mut price = 100.0_f64;
+    let records: Vec<SensedRecord> = (0..120usize)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            let drop = if i == 119 { -0.09 } else { 0.0 };
+            let open = price;
+            price *= 1.0 + noise + drop;
+            let at = start().saturating_sub(Duration::from_days((120 - i) as i64));
+            let mut record = bar("obj-AAA", at, price);
+            if let SensedRecord::Bar(b) = &mut record {
+                b.open = Decimal::from_f64(open).unwrap_or_else(|| panic!("a price"));
+            }
+            record
+        })
+        .collect();
+    platform.observe(records);
+    platform.run_cycle(start());
+    assert!(
+        platform.positions_at_cost().contains_key("obj-AAA"),
+        "premise: the cycle opened a position in obj-AAA"
+    );
+    let own = platform.class_exposure();
+    assert_eq!(
+        own.by_class.len(),
+        1,
+        "premise: exactly one class holds an open thesis on the book: {own:?}"
+    );
+    let held_class = own.by_class.keys().next().cloned().unwrap_or_default();
+    assert!(
+        own.by_class[&held_class] > Decimal::from_int(1_000),
+        "premise: the held class's exposure clears the specialist threshold: {own:?}"
+    );
+
+    // Twelve resolved, wrong theses per class: a hit rate of zero for the
+    // class that holds the book and for one that holds nothing.
+    let long_ago = start().saturating_sub(Duration::from_days(30));
+    let resolved = start().saturating_sub(Duration::from_days(20));
+    let mut claims = Vec::new();
+    let mut outcomes = Vec::new();
+    for class in [held_class.as_str(), "momentum"] {
+        for n in 0..12 {
+            let id = format!("hist-{class}-{n}");
+            claims.push(ThesisClaim {
+                hypothesis_id: id.clone(),
+                class: class.to_string(),
+                subject: "obj-ZZZ".to_string(),
+                formed_at: long_ago,
+                resolves_at: resolved,
+                direction: 1.0,
+                expected_move_bps: 100.0,
+                confidence: 0.8,
+                falsifiers: Vec::new(),
+                contributors: Vec::new(),
+            });
+            outcomes.push(Outcome {
+                hypothesis_id: id,
+                observed_at: resolved,
+                realised_move_bps: -100.0,
+                realised_pnl: -1.0,
+                falsifiers_triggered: Vec::new(),
+                mechanism_confirmed: Some(false),
+            });
+        }
+    }
+    platform
+        .learn_from(&claims, &outcomes, start())
+        .unwrap_or_else(|e| panic!("{e}"));
+    let calibration = platform
+        .calibration()
+        .unwrap_or_else(|| panic!("premise: the platform holds a calibration"));
+    assert!(
+        calibration.evaluated >= 20,
+        "premise: enough evaluations for the sweep to read: {}",
+        calibration.evaluated
+    );
+    for class in [held_class.as_str(), "momentum"] {
+        assert!(
+            calibration
+                .hit_rate_by_class
+                .get(class)
+                .is_some_and(|rate| *rate < 0.5),
+            "premise: {class} has a hit rate under the floor: {:?}",
+            calibration.hit_rate_by_class
+        );
+    }
+
+    let mut loop_ = research(BTreeMap::new());
+    let round = loop_
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        round.specialists_proposed, 1,
+        "only the class with money on its own thesis proposes a specialist: {round:?}"
+    );
+}

@@ -4,6 +4,7 @@
 // In a test the assertion is the deliverable; the workspace denies
 // `panic_in_result_fn` for production code, where it would be a bug.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::policy::Slot;
 use qip_contracts::policy::{Dispositions, PolicyPayload};
@@ -240,4 +241,271 @@ fn a_regional_copy_that_diverged_from_global_knowledge_is_resolved_to_the_global
         ))
     );
     Ok(())
+}
+
+// --- ADR 0155 §11: a belief prior does not enter a cell's confidence --------
+
+mod belief_is_freshness_only {
+    use super::{CELL, KEY, t};
+    use qip_contracts::capital::CapitalEnvelope;
+    use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
+    use qip_contracts::policy::{
+        BeliefPriors, CausalDigest, EpisodicDigest, OpportunityManifest, PolicyPayload, Slot,
+    };
+    use qip_contracts::signal::{SignalKind, StrategyId};
+    use qip_contracts::venue::{Origin, VenueId, VenueStatus};
+    use qip_core::error::Result;
+    use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
+    use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
+    use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+    use qip_edge::policy::VerifiedPolicy;
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+    use qip_orderbook::venue::VenueState;
+    use qip_strategy::catalogue::FeatureCatalogue;
+    use qip_strategy::compile::StrategyCompiler;
+    use qip_strategy::ir::{Expr, Rule, StrategySpec};
+    use std::collections::BTreeMap;
+
+    const ENVELOPE_KEY: &[u8] = b"a-cell-envelope-key-for-tests";
+
+    fn object() -> ObjectId {
+        ObjectId::from_string("obj-ACME")
+    }
+
+    #[derive(Debug, Default)]
+    struct PaperGateway;
+
+    impl Placer for PaperGateway {
+        fn is_simulated(&self) -> bool {
+            true
+        }
+
+        fn place(
+            &mut self,
+            _order_id: &str,
+            _object_id: &ObjectId,
+            _venue: &VenueId,
+            _side: BookSide,
+            _quantity: Decimal,
+            _price: Decimal,
+            _at: Timestamp,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A payload every capability slot of which is produced and fresh, so the
+    /// degradation table is at its widest, carrying the given knowledge.
+    fn payload(prior: f64, definition: &str) -> Result<VerifiedPolicy> {
+        let at = t(5);
+        let mut payload = PolicyPayload::unproduced(1, CELL, at);
+        payload.belief_priors = Slot::produced(
+            BeliefPriors {
+                priors: BTreeMap::from([("rates".to_string(), prior)]),
+            },
+            at,
+        );
+        payload.opportunity_definitions = Slot::produced(
+            OpportunityManifest {
+                opportunities: BTreeMap::from([("opp-1".to_string(), definition.to_string())]),
+            },
+            at,
+        );
+        payload.causal_digest = Slot::produced(
+            CausalDigest {
+                active_edges: Vec::new(),
+            },
+            at,
+        );
+        payload.episodic_digest = Slot::produced(
+            EpisodicDigest {
+                digest: "d".to_string(),
+                episodes: 0,
+            },
+            at,
+        );
+        VerifiedPolicy::verify(payload.signed(KEY)?, KEY, CELL, at)
+    }
+
+    fn pass(policy: VerifiedPolicy) -> Result<(WorkReport, Cell)> {
+        let (report, cell, _) = pass_as(policy, None)?;
+        Ok((report, cell))
+    }
+
+    /// [`payload`] carrying an `acceptable_builds` set naming `builds`.
+    fn payload_naming(builds: &[&str]) -> Result<VerifiedPolicy> {
+        let at = t(5);
+        let mut payload = payload(0.5, "digest")?.payload().clone();
+        payload.acceptable_builds = Slot::produced(
+            qip_contracts::policy::BuildSet {
+                builds: builds.iter().map(|b| (*b).to_string()).collect(),
+            },
+            at,
+        );
+        payload.signature = String::new();
+        VerifiedPolicy::verify(payload.signed(KEY)?, KEY, CELL, at)
+    }
+
+    fn pass_as(
+        policy: VerifiedPolicy,
+        identity: Option<&str>,
+    ) -> Result<(
+        WorkReport,
+        Cell,
+        std::sync::Arc<qip_observability::metrics::Metrics>,
+    )> {
+        let venue = VenueId::new("XLON");
+        let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+        let mut config = CellConfig::new(CELL, "europe-west2").with_venue(venue.clone());
+        if let Some(identity) = identity {
+            config = config.with_build_identity(identity)?;
+        }
+        let metrics =
+            std::sync::Arc::new(qip_observability::metrics::Metrics::new("qip-edge-node"));
+        let mut cell = Cell::new(config, features)?.with_metrics(std::sync::Arc::clone(&metrics));
+        cell.apply_policy(policy, t(5))?;
+
+        let mut book = VenueState::aggregated(object(), venue.clone(), VenueStatus::Open);
+        for (index, (side, price, size)) in
+            [(BookSide::Bid, "99", "500"), (BookSide::Ask, "101", "400")]
+                .iter()
+                .enumerate()
+        {
+            let when = t(index as i64);
+            book.apply(&MarketMessage::new(
+                object(),
+                Origin::new(venue.clone(), "feed-a", 0, index as u64),
+                MessageBody::LevelSet {
+                    side: *side,
+                    price: Decimal::parse(price).expect("a decimal literal"),
+                    quantity: Decimal::parse(size).expect("a decimal literal"),
+                    order_count: None,
+                },
+                when,
+                when,
+            ))?;
+        }
+        cell.track(book);
+
+        let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
+        let spec = StrategySpec::new(StrategyId::new("alpha"), object(), Duration::from_secs(30))
+            .with_rule(Rule::new(
+                "always",
+                SignalKind::Enter,
+                Expr::Flag(true),
+                Expr::Exact(dec!("10")),
+                Expr::Statistic(0.5),
+                10,
+            ));
+        let compiled = compiler.compile(&spec)?;
+        let program = compiler.into_program();
+        let build = |signature: &str| {
+            CapitalEnvelope::new(
+                StrategyId::new("alpha"),
+                CELL,
+                dec!("1000000"),
+                dec!("100000"),
+                dec!("50000"),
+                vec![venue.clone()],
+                t(0),
+                t(3600),
+                "alice@example.com",
+                signature,
+            )
+        };
+        let unsigned = build("unsigned")?;
+        let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+        let envelope = VerifiedEnvelope::verify(build(&signature)?, ENVELOPE_KEY, CELL, t(1))?;
+        cell.deploy_with_pricing(compiled, program, envelope, PricingPolicy::Marketable)?;
+
+        let report = cell.work(t(10), &mut PaperGateway)?;
+        Ok((report, cell, metrics))
+    }
+
+    #[test]
+    fn a_cell_sizes_identically_whatever_belief_priors_and_opportunity_definitions_its_policy_carries()
+    -> Result<()> {
+        // The failure this prevents: a blend of a centre prior into a cell's
+        // conviction or its pass multiplier is arithmetic ADR 0005 says is
+        // never assigned, and ADR 0088's belief slot is not built or scored.
+        // Two cells whose payloads differ only in those two slots must size
+        // the same order.
+        let (low, low_cell) = pass(payload(0.05, "digest-a")?)?;
+        let (high, high_cell) = pass(payload(0.95, "digest-b")?)?;
+
+        // Premises: both payloads verified and applied, both cells traded, and
+        // the slots really do differ, or the equality below proves nothing.
+        assert_eq!(low_cell.policy_sequence(), Some(1));
+        assert_eq!(high_cell.policy_sequence(), Some(1));
+        assert_ne!(
+            payload(0.05, "digest-a")?.payload().belief_priors,
+            payload(0.95, "digest-b")?.payload().belief_priors
+        );
+        assert_eq!(low.orders.len(), 1, "premise: the cell trades: {low:?}");
+        assert_eq!(high.orders.len(), 1, "premise: the cell trades: {high:?}");
+
+        assert_eq!(low.orders[0].quantity, high.orders[0].quantity);
+        assert_eq!(low.orders[0].price, high.orders[0].price);
+        assert_eq!(low.signals.len(), high.signals.len());
+        assert_eq!(
+            low.signals[0].conviction, high.signals[0].conviction,
+            "a belief prior reached the conviction the cell journals and sizes on"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_cell_whose_build_is_absent_from_a_produced_build_set_takes_no_new_exposure_while_an_unproduced_set_changes_nothing()
+    -> Result<()> {
+        // The failure this prevents: a cell left running a build the centre
+        // has stopped accepting keeps sizing new positions until somebody
+        // notices. The halt narrows only: it is derived from the applied
+        // payload, so a fresh payload naming the build is the release.
+        let halted_source = |metrics: &qip_observability::metrics::Metrics| {
+            metrics.snapshot().gauge(
+                qip_observability::metrics::names::EDGE_HALTED,
+                &qip_observability::metrics::labels([
+                    ("cell", CELL),
+                    ("region", "europe-west2"),
+                    ("source", "deployment"),
+                ]),
+            )
+        };
+
+        // Premises: with no set produced the cell trades and reports zero,
+        // and a set naming its build changes nothing.
+        let (unproduced, _, metrics) = pass_as(payload(0.5, "digest")?, Some("build-a"))?;
+        assert_eq!(unproduced.orders.len(), 1, "premise: {unproduced:?}");
+        assert!(!unproduced.halted);
+        assert_eq!(halted_source(&metrics), Some(0.0));
+        let (named, _, _) = pass_as(payload_naming(&["build-a", "build-b"])?, Some("build-a"))?;
+        assert_eq!(
+            named.orders.len(),
+            1,
+            "premise: a matching build sizes normally"
+        );
+        assert_eq!(named.orders[0].quantity, unproduced.orders[0].quantity);
+
+        // Absent from the produced set: halted, nothing sent, refused under
+        // its own gate, and charted under source=deployment.
+        let (stopped, _, metrics) = pass_as(payload_naming(&["build-b"])?, Some("build-a"))?;
+        assert!(stopped.halted, "{stopped:?}");
+        assert!(stopped.orders.is_empty());
+        assert!(
+            stopped
+                .refusals
+                .iter()
+                .any(|(gate, _)| gate == "deployment_halt"),
+            "{stopped:?}"
+        );
+        assert_eq!(halted_source(&metrics), Some(1.0));
+
+        // A cell built without the wire is not halted by the same set and
+        // reports no deployment series at all: absent, not zero.
+        let (wireless, _, metrics) = pass_as(payload_naming(&["build-b"])?, None)?;
+        assert_eq!(wireless.orders.len(), 1, "{wireless:?}");
+        assert_eq!(halted_source(&metrics), None);
+        Ok(())
+    }
 }

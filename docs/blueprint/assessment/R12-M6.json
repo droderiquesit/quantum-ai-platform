@@ -266,7 +266,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:4076 episodes(): four of six kinds recorded",
       "backend/crates/libs/qip-contracts/src/regional_episode.rs:68 RegionalEpisode"
     ],
-    "gap": "Three separate pieces, none a one-lane change. (1) Transport: the centre receives a cell only as a qip_mesh::delta::CellStanding folded by qip-api mesh.rs::report_from into central::plane::CellReport; Cell::episodes is on neither. Carrying episodes is a change to the mesh delta wire (ADR 0079 decision two took pains to add the region to the centre without a new wire field), so it needs a decision and likely its own ADR rather than a field added in passing. (2) Recording: EpisodeKind::Microstructure and VenueBehaviour have no recording seam in the cell, so there is nothing yet to ship under them; a book-anomaly or venue-health episode needs a stated trigger and bound, not a reuse of Anomaly. (3) Storage: the central plane has no episode store to ingest into. Missed fills and queue behaviour are separate and unmeasured.",
+    "gap": "Unchanged in substance (corrected 2026-10-24): carrying Cell::episodes to the centre is a mesh delta wire change that needs its own ADR, Microstructure and VenueBehaviour have no recording seam (cell.rs doc at the episodes accessor says so), and the central plane has no episode store.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -277,7 +277,7 @@
     "verification": "cargo test -p qip-edge && cargo test -p qip-kernel (new: ingested episode reaches central store)",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Nothing is deployed (execution_nodes = {} in every tfvars), so nothing is demonstrated end to end. The triage closure (carry Cell::episodes on the report and store them in CentralPlane::ingest) is the wire change in (1)."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Nothing is deployed (execution_nodes = {} in every tfvars), so nothing is demonstrated end to end. The triage closure (carry Cell::episodes on the report and store them in CentralPlane::ingest) is the wire change in (1). Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
   },
   {
     "id": "R12-WORLD-6013",
@@ -464,7 +464,7 @@
   },
   {
     "id": "R12-MODEL-6021",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Real marked P&L is joined to the forecaster (Model) keys stamped at order acceptance and split pro rata (qip-learning-engine keyed_attribution; Platform::attribute in LEARN). attribution::by_forecaster returns each forecaster's share and feeds the tournament's cumulative attributed P&L each LEARN. In a cycle: a hypothesis REASON formed, an order citing it filling and LEARN marking the position up credits the detector that raised it a positive share, and the shares sum to the position's marked P&L.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/attribution.rs::by_forecaster",
@@ -472,7 +472,7 @@
       "runtime/qip-kernel/tests/model_tournament.rs::each_forecaster_a_cycle_credited_is_attributed_a_share_of_the_marked_pnl_that_sums_to_the_position",
       "runtime/qip-kernel/tests/model_tournament.rs::an_order_citing_a_hypothesis_a_cycle_formed_is_attributed_its_model_and_evidence_source"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when downstream capital impact is attributed to each forecaster as well as P&L: a per-forecaster figure for the capital (grant, allocation or risk usage) its forecasts informed, journaled beside by_forecaster's P&L share; or an ADR narrows the requirement to P&L.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -485,7 +485,7 @@
     "verification": "cd backend && cargo test -p qip-kernel --test model_tournament",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: closed (same cycle fixture as R12-MODEL-6003). Mutations: by_forecaster reading Dimension::Belief -> credited map keyed by the hypothesis id, 'detector that raised the hypothesis is not among the credited'; dropping the note_hypothesis call -> credited map {unattributed}; both restored (model_tournament: 10 passed). Downstream capital impact per forecaster is not attributed separately and remains a later clause."
+    "notes": "Lane L07, 2026-10-18: closed (same cycle fixture as R12-MODEL-6003). Mutations: by_forecaster reading Dimension::Belief -> credited map keyed by the hypothesis id, 'detector that raised the hypothesis is not among the credited'; dropping the note_hypothesis call -> credited map {unattributed}; both restored (model_tournament: 10 passed). Downstream capital impact per forecaster is not attributed separately and remains a later clause. AUDIT-4 2026-10-24: regraded, the requirement attributes economic contribution and downstream capital impact to each forecaster; by_forecaster attributes marked P&L only, and the row's own notes say capital impact 'is not attributed separately and remains a later clause'. The P&L half is real: reading Dimension::Belief instead of Model fails model_tournament.rs:408."
   },
   {
     "id": "R12-MODEL-6022",
@@ -1269,23 +1269,25 @@
   {
     "id": "R12-EXPAND-6057",
     "status": "PARTIAL",
-    "current": "MemoryEntry/RetentionPolicy/ValuePolicy contract validated; no registry store.",
+    "current": "qip-agents MemoryRegistry values every resolved analyst episode by calibration surprise |outcome - conviction| against a positive threshold (refused at 0, negative, >1, non-finite): below it the episode is counted into a per-analyst CompressedSummary, never dropped. Platform::write_research_memory consults it for every stance LEARN charges and still records the episode in ResearchMemory, so hit_rate is computed over all resolved episodes (ADR 0152 d8).",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs:549",
-      "backend/crates/libs/qip-contracts/tests/memory_registry.rs:4"
+      "backend/crates/libs/qip-agents/src/memory.rs::MemoryRegistry",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::write_research_memory",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs::memory_registry::a_below_threshold_episode_is_kept_compressed_and_still_counts_in_the_hit_rate",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::an_unsurprising_call_is_compressed_by_the_registry_and_still_counts_in_the_analysts_hit_rate"
     ],
-    "gap": "Registry store and integration. A MemoryRegistry in qip-agents/src/memory.rs is simple; the consult is not. ResearchMemory lives in the kernel Platform (platform.rs research_memory, its episodes recorded at platform.rs record_episode (~14187, located by symbol)), not in qip-deepbrain's main.rs, and a consult that can refuse an episode drops it from ResearchMemory::hit_rate, so it biases the calibration the platform scores its analysts on. A default policy that never refuses (importance threshold zero) would be a gate that cannot fire. The decision needed first: which MemoryKind an episode is, what its importance is, and whether a below-threshold episode is dropped or kept compressed.",
+    "gap": "2026-10-24: requirement is a registry recording semantic knowledge, episodes, procedures, failures, simulations and abstractions with declared fields, refusing an entry that misses one; MemoryRegistry holds per-analyst retained and compressed episode counts only, has no entry type with declared fields to refuse, and does not classify procedures, simulations or abstractions",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-kernel --lib an_unsurprising_call",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: not implemented after reading MemoryEntry/ValuePolicy (qip-contracts expansion.rs) and the single production record_episode site; see gap for the design question."
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d8. Mutations fired: recording only Retained episodes in write_research_memory fails the kernel test (compression drops nothing: left 1, right 4); inverting the registry threshold comparison fails the qip-agents test (retained 9, expected 1). Default threshold 0.3 is DEFAULT_IMPORTANCE_THRESHOLD; the registry is not yet persisted or journaled, only counted in memory. AUDIT-2 2026-10-24: regraded, requirement is a registry recording semantic knowledge, episodes, procedures, failures, simulations and abstractions with declared fields, refusing an entry that misses one; MemoryRegistry holds per-analyst retained and compressed episode counts only, has no entry type with declared fields to refuse, and does not classify procedures, simulations or abstractions"
   },
   {
     "id": "R12-EXPAND-6058",
@@ -1312,7 +1314,7 @@
   },
   {
     "id": "R12-EXPAND-6059",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-agents ToolRegistry with ten ToolKinds, read-only start. qip-deepbrain registers the three desks (source-discovery, model-fit, stress-simulator) and, from the settings main.rs parsed, what the process runs: research::node_tools adds the classical solver always, the quantum-backend only where ComputeSettings attached the in-tree simulator, and one connector per catalogued source the node polls; ResearchLoop::new_for_node (called from main.rs) checks the desk and every BrainSpec against it. tick-replay and venue-adapter stay unregistered because the node holds neither (R12-EXPAND-6037).",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/research.rs:node_tools",
@@ -1320,7 +1322,7 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs:new_for_node",
       "backend/crates/apps/qip-deepbrain/tests/research.rs:the_node_registers_every_tool_kind_it_actually_runs"
     ],
-    "gap": "",
+    "gap": "2026-10-24: The requirement is that an entry missing a declared field is refused; the one refusal in the registry (a blank name) is tested by nothing, and the named test checks what the node registers, not what the registry refuses. Closing: a test that proposes an entry with a blank name (and any other declared field the registry should require) and asserts the refusal; it must fail the line-137 mutation.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1331,7 +1333,7 @@
     "verification": "cargo test -p qip-deepbrain --test research the_node_registers_every_tool_kind_it_actually_runs",
     "work_item": "",
     "size": "S",
-    "notes": "Mutation: replacing the quantum-backend push in node_tools with a no-op failed the test at the QuantumBackend assertion; restored, passes. The parsers, browsers, geospatial and code-runtime kinds are not registered because no process runs them; the planner proposes them as tools to build."
+    "notes": "Mutation: replacing the quantum-backend push in node_tools with a no-op failed the test at the QuantumBackend assertion; restored, passes. The parsers, browsers, geospatial and code-runtime kinds are not registered because no process runs them; the planner proposes them as tools to build. AUDIT-4: 2026-10-24 regraded, the registry's only declared-field refusal (a blank name) is tested by nothing: removing it leaves the named deepbrain test and the whole qip-agents suite green."
   },
   {
     "id": "R12-EXPAND-6060",
@@ -1359,23 +1361,27 @@
   {
     "id": "R12-EXPAND-6061",
     "status": "PARTIAL",
-    "current": "ExpansionDesk holds a ResearchRegistry on the deep-brain sweep; a concluded null is recorded and a re-raised question is refused at admission.",
+    "current": "A research campaign is identified by qip_agents::research::campaign_id, the SHA-256 of its normalised question (ResearchCampaign::id), and each stage that ran is an experiment reference `<campaign id>/<stage>` (ResearchCampaign::experiment_refs). ResearchRegistry::record_concluded refuses a Null or Supported verdict that cites no experiment or one belonging to another question, and stores the sorted unique references on ResearchVersion.experiments; ExpansionDesk::conclude records through it on both the promotion and the null arm. No free-text benchmark_suite is added (ADR 0152 d11).",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/research.rs:33",
-      "backend/crates/libs/qip-agents/tests/expansion_registries.rs:64"
+      "backend/crates/libs/qip-agents/src/research.rs::campaign_id",
+      "backend/crates/libs/qip-agents/src/research.rs::ResearchRegistry::record_concluded",
+      "backend/crates/services/qip-expansion/src/promotion.rs::ResearchCampaign::experiment_refs",
+      "backend/crates/services/qip-expansion/src/desk.rs::ExpansionDesk::conclude",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs::campaign_identity::a_campaign_has_a_stable_id_and_a_verdict_cites_its_experiment_references",
+      "backend/crates/services/qip-expansion/tests/executor.rs::a_concluded_null_cites_the_campaigns_own_experiment_references"
     ],
-    "gap": "The registry stores hypothesis plus Verdict, and a Null or Supported verdict already must cite non-empty evidence (research.rs record_version), so the 'refuse a verdict without an experiment' half exists as free text. Missing: structured experiment ids (ResearchCampaign has none - it holds a question and per-stage provenance), a list of open questions, a benchmark-suite field, and unresolved contradictions. Widening needs a campaign identity first, and the desk's two record() call sites (qip-expansion desk.rs conclude) and the tests that call record() change with the signature.",
+    "gap": "2026-10-24: requirement is a registry of hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions; the row states open questions, an unresolved-contradictions list and a benchmark_suite are not recorded (ADR 0152 d11 declines them), so three of the six named record kinds are absent",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-expansion --test executor",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: not implemented; ExpansionDesk is on the deep-brain sweep, so the widened record would run, but ResearchCampaign has no id to cite."
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d11. Mutations fired: skipping normalise in campaign_id makes the same question two ids (left eb21c939.., right ef8b9a5e..); recording &[] in the null arm leaves nothing recorded (held.len left 0, right 1). Not added, per the ADR: a list of open questions and an unresolved-contradictions list (needs a variable-to-subject map ADR 0151 declines to invent). ResearchRegistry::record still exists for Open verdicts. AUDIT-2 2026-10-24: regraded, requirement is a registry of hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions; the row states open questions, an unresolved-contradictions list and a benchmark_suite are not recorded (ADR 0152 d11 declines them), so three of the six named record kinds are absent"
   },
   {
     "id": "R12-EXPAND-6062",
@@ -1385,7 +1391,7 @@
       "backend/crates/libs/qip-agents/src/registries.rs:115",
       "backend/crates/libs/qip-contracts/src/expansion.rs:416 CapabilityEntry"
     ],
-    "gap": "CapabilityRegistry (registries.rs) has no caller outside qip-agents tests and none was added: the UnsupportedRequest arm of the sweep is the coverage detector over asset-class and venue keys (detectors.rs coverage), which is not a request for a capability verb, so there is no input there to look up in a registry of the ten verbs. Populating it from the configured venues and the simulated broker's modes is mechanical; what it would be consulted against is the missing piece, and is a design decision for the expansion loop rather than a wiring one.",
+    "gap": "2026-10-24 (ADR 0158 decision 15): none to close in code. CapabilityRegistry is consulted against nothing and stays empty: the sweep's coverage detector (qip-expansion detectors.rs coverage) keys on asset class, venue and geography and never a verb, and populating the ten verbs would assert Trade, Purchase and Transfer capabilities the paper platform does not have. It is populated when a promoted capability declares its verb at registration, with eligibility stated as shadow or simulated.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1396,7 +1402,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": "Checked 2026-10-18 against the code: coverage() takes (universe map, covered set, floor) and raises per dimension value; no part of the sweep names a CapabilityVerb."
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed. Kept PARTIAL: library-only type with no production caller, by decision."
   },
   {
     "id": "R12-EXPAND-6063",
@@ -1741,9 +1747,10 @@
       "backend/crates/apps/qip-cli/src/agency.rs:48",
       "backend/crates/apps/qip-cli/tests/agency.rs:81",
       "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from, learn_stages (engine::learn on the default node path), ask, await_follow_up; DraftLearning, LEARNING_ORIGIN, learnings",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect"
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
+      "backend/crates/tests/qip-acceptance/tests/ambient_effect_boundary.rs::a_boundary_suite_pins_that_no_production_code_feeds_an_unidentified_effect_to_the_federation_the_graph_or_the_engine"
     ],
-    "gap": "No causal edge is updated from the result: the only measured effect on a running path is unidentified, and the AffordanceGraph holds no edge the outbox draft moves, so an update would raise an edge's estimate on a correlation.",
+    "gap": "no causal edge is updated from an ambient result by design: ToolEdge carries declared properties, not a learned strength, and the effect is unidentified (ADR 0145 decision 2). (dated 2026-10-24)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1751,10 +1758,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-cli --test agency; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
+    "verification": "cargo +1.94.1 test -p qip-acceptance --test ambient_effect_boundary",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity)."
+    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): AffordanceGraph has no operation that takes an attribution and none is added; the boundary is pinned by an acceptance suite."
   },
   {
     "id": "R12-AGENCY-6079",
@@ -1997,9 +2004,10 @@
       "backend/crates/services/qip-agency/src/comparison.rs:41",
       "backend/crates/services/qip-agency/tests/agency.rs:423",
       "backend/crates/services/qip-agency/src/plan.rs:309-318",
-      "backend/crates/services/qip-agency/src/comparison.rs::Comparison::rank"
+      "backend/crates/services/qip-agency/src/comparison.rs::Comparison::rank",
+      "causal :: every_one_of_the_nine_axes_changes_which_candidate_is_chosen"
     ],
-    "gap": "None for the requirement; not deployed.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2007,10 +2015,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cargo +1.94.1 test -p qip-agency --test causal every_one_of_the_nine_axes_changes_which_candidate_is_chosen",
     "work_item": "",
     "size": "M",
-    "notes": "comparison.rs's own module doc says seven of the nine axes are weighed by nothing. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": "comparison.rs's own module doc says seven of the nine axes are weighed by nothing. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the nine-axis ranking property (conduct risk and downside change the ranking) is proved only by tests/causal.rs, which the row does not name; the named agency.rs test checks only that a missing axis is refused, and mutating conduct_risk in score() or the downside tie-break leaves all 59 tests/agency.rs tests green.; AUDIT-5 2026-10-24: promoted under lanes/audit-5-bar.md after two independent checks: mechanical re-run by the parent session (backend/crates/services/qip-agency/src/comparison.rs: the test passed clean, failed under the mutation, and the file was restored with git diff clean) and two read-only skeptics (default-path and requirement-text lenses), neither of which refuted it (lanes/audit-5-verification-2026-10-24.md)"
   },
   {
     "id": "R12-AGENCY-6090",
@@ -2338,7 +2346,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:471 an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::an_attribution_missing_its_chain_confounders_rivals_or_horizons_is_refused_on_the_record"
     ],
-    "gap": "Validation admits a single horizon, so 'multiple horizons' is not enforced, and the triage closure (require two distinct horizons in EffectAttribution::validate) cannot land alone. Both default-path producers build exactly one HorizonObservation: qip-agency simulated.rs:178 (the shadowed pass's simulated effect, at the plan's own horizon) and qip-deepbrain ambient_agency.rs:663 (the measured null effect of a draft read again on a later sweep). Each must first observe a second distinct horizon, from the simulator's path or a second sweep. Raising the bound alone broke 14 tests across qip-agency (agency, causal, journal), qip-cli (agency_record), qip-deepbrain (ambient_agency) and qip-world-model (federation).",
+    "gap": "validation admits one horizon by decision (raising it broke 14 tests for a property no producer supplies). The simulator evaluates at the plan's one time_to_effect_secs; the ambient door drops a draft at its first follow-up and a second horizon of an unidentified effect has no consumer (ADR 0145 decision 7). (dated 2026-10-24)",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2349,7 +2357,7 @@
     "verification": "cargo test -p qip-agency -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Probed 2026-10-18 (lane L12): requiring two distinct horizons in qip-contracts EffectAttribution::validate failed 14 tests in five crates, every failure an attribution built by one of the two producers above, so the change was reverted rather than shipped with the producers refused. Kept PARTIAL."
+    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Probed 2026-10-18 (lane L12): requiring two distinct horizons in qip-contracts EffectAttribution::validate failed 14 tests in five crates, every failure an attribution built by one of the two producers above, so the change was reverted rather than shipped with the producers refused. Kept PARTIAL. Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): EffectAttribution::validate keeps one distinct horizon as the minimum; a second horizon is supplied only by a producer that observes one, and none does."
   },
   {
     "id": "R12-AGENCY-6105",
@@ -2360,7 +2368,7 @@
       "backend/crates/services/qip-agency/src/ambient_intake.rs::AmbientIntake",
       "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs::AmbientAgency::route"
     ],
-    "gap": "The ambient path journals a guarded draft against a per-opportunity decomposed sub-goal (R12-AGENCY-3002) but runs no engine::run: no levers, candidates, simulation or gate stage, so no shadowed plan is journaled before the drafting adapter. Running it needs a structural model of what a notice to a person changes; the ambient path declares none, and its own learning records the effect as unidentified. A model written per opportunity would restate the declaration (the fault R12-AGENCY-1056's audit named), so it needs an owner decision on what the draft's causal model is before code. The adapter is the outbox, which writes a draft and sends nothing.",
+    "gap": "the ambient path runs no engine::run by decision; the eight stages before ObserveEffect on a learning record are seated, not run, and the record says so (ADR 0145 decisions 4 and 5). (dated 2026-10-24)",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2373,7 +2381,7 @@
     "verification": "cargo test (new integration)",
     "work_item": "",
     "size": "M",
-    "notes": "Re-read 2026-10-18 (lane L10) against qip-agency ambient_intake.rs::attempt and qip-deepbrain ambient_agency.rs: the sub-goal exists and is journaled; the engine stages do not run. Held PARTIAL with the reason above rather than a one-edge SCM invented to satisfy the check."
+    "notes": "Re-read 2026-10-18 (lane L10) against qip-agency ambient_intake.rs::attempt and qip-deepbrain ambient_agency.rs: the sub-goal exists and is journaled; the engine stages do not run. Held PARTIAL with the reason above rather than a one-edge SCM invented to satisfy the check. Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): No per-opportunity structural model of what a notice changes is written; the ambient path declares none and runs the guard, not engine::run."
   },
   {
     "id": "R12-AGENCY-6106",
@@ -2384,9 +2392,10 @@
       "backend/crates/services/qip-agency/tests/agency.rs::learning_after_a_shadowed_act_admits_only_an_outcome_that_says_it_is_simulated",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update",
       "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from, learn_stages (engine::learn on the default node path), ask, await_follow_up; DraftLearning, LEARNING_ORIGIN, learnings",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect"
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
+      "backend/crates/tests/qip-acceptance/tests/ambient_effect_boundary.rs::a_boundary_suite_pins_that_no_production_code_feeds_an_unidentified_effect_to_the_federation_the_graph_or_the_engine"
     ],
-    "gap": "No production pass runs all eleven through engine::run: the CLI shadows Act, and the deepbrain door runs the guard rather than the engine, so its first eight stages are seated, not an engine pass's record.",
+    "gap": "no production pass runs all eleven stages on the ambient door by decision; the CLI shadow binary runs engine::run and shadows Act (ADR 0145 decision 5). (dated 2026-10-24)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2394,10 +2403,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
+    "verification": "cargo +1.94.1 test -p qip-acceptance --test ambient_effect_boundary",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity)."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): The deep brain door runs the guard rather than the engine; the first eight stages of a learning record stay documented as seated."
   },
   {
     "id": "R12-AGENCY-6107",
@@ -2438,9 +2447,11 @@
       "backend/crates/apps/qip-cli/src/agency.rs Session::learn",
       "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from, learn_stages (engine::learn on the default node path), ask, await_follow_up; DraftLearning, LEARNING_ORIGIN, learnings",
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::the_memory_is_asked_before_every_offer_and_its_answer_is_on_the_cycle_line",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect"
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
+      "backend/crates/services/qip-agency/tests/agency.rs::three_measured_outcomes_at_zero_attribution_confidence_recommend_nothing_however_positive_their_mean",
+      "backend/crates/services/qip-agency/src/memory.rs ActionOutcomeMemory::recommend_for"
     ],
-    "gap": "The answer gates nothing and reaches the cycle line, not the hash-chained log: the only measured effect is unidentified, and recommend_for weighs no confidence (AGENCY-028, qip-agency), so a subject that drifts after a draft would read as the draft working; acting on that would be acting on a correlation.",
+    "gap": "2026-10-24: learning which actions work needs a recommendation the memory can return; with production outcomes all at attribution confidence 0 the default node's recommend_for is always empty, and its answer changes no draft; recommend_for is exercised only by tests that seed positive confidence",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2448,10 +2459,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
+    "verification": "cargo +1.94.1 test -p qip-agency --test agency zero_attribution",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Audience and delay dimensions now present and tested; integration still absent, so still PARTIAL. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity)."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Audience and delay dimensions now present and tested; integration still absent, so still PARTIAL. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): ActionOutcomeMemory::recommend_for counts only records with attribution_confidence above zero; the answer still gates no draft. Mutation: remove the attribution_confidence filter in recommend_for: three Measured outcomes at confidence 0 with a positive mean effect return Some(..) and the test fails, which is the right failure fired. AUDIT-2 2026-10-24: regraded, learning which actions work needs a recommendation the memory can return; with production outcomes all at attribution confidence 0 the default node's recommend_for is always empty, and its answer changes no draft; recommend_for is exercised only by tests that seed positive confidence"
   },
   {
     "id": "R12-CONTRACT-6109",
@@ -2479,14 +2490,16 @@
   {
     "id": "R12-CONTRACT-6110",
     "status": "PARTIAL",
-    "current": "WorldBranch is a Validated contract with deny_unknown_fields; qip-twin futures.rs converts a branch to it (to_world_branch).",
+    "current": "WorldBranch is a Validated contract with deny_unknown_fields; qip-twin futures.rs converts a branch to it (to_world_branch), and the tick desk round writes every live branch the contract can state to its outputs store (world-branches/<manifest>.json), counting the ones it refused (the baseline) so none is silently absent.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/world_model.rs:173 type",
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:387 a_world_branch_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:401 a_world_branch_refuses_each_broken_invariant",
-      "backend/crates/services/qip-twin/src/futures.rs::to_world_branch"
+      "backend/crates/services/qip-twin/src/futures.rs::to_world_branch",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::round (world_branches)",
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_round_replays_the_lake_trains_on_its_labels_and_ships_the_map_only_where_the_licence_permits"
     ],
-    "gap": "to_world_branch has no production caller. The triage closure (call Future::to_world_branch in Platform::stage_simulate where qip-twin futures are evaluated) rests on a seam that does not exist: stage_simulate evaluates no qip-twin futures, and FutureTree/TwinState::fit have no caller outside qip-twin/tests/futures.rs (grep -rn FutureTree backend/crates --include=*.rs). Closing this row first requires growing a FutureTree in SIMULATE from the desk price series (TwinState::fit over bar closes, TreeConfig, WorldDriver selection) and only then journaling one WorldBranch per live branch; that is an M-sized kernel change, not the S the triage sized it as.",
+    "gap": "stage_simulate grows no tree by decision (ADR 0151 d5). Since 2026-10-24 to_world_branch has a production caller on the path the ADR names: TickDesk::round writes each live branch the contract can state to the outputs store as a WorldBranch. The desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no committed deployment does, and nothing reads the written branches.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2494,33 +2507,36 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts; cargo test -p qip-deepbrain --test tick_desk",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding WorldBranch exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-read 2026-10-18 by lane L01 (ran grep only): kept PARTIAL, closure not applicable as written; gap corrected to name the missing SIMULATE seam."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding WorldBranch exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-read 2026-10-18 by lane L01 (ran grep only): kept PARTIAL, closure not applicable as written; gap corrected to name the missing SIMULATE seam. Lane N1-KERNEL-ACCEPT 2026-10-24: added the tick-desk write (qip-deepbrain tick_desk.rs, world_branches/world_branches_refused, tests/tick_desk.rs); mutations that fired: skipping the write, and not counting the refused baseline. Kept PARTIAL: ADR 0151 d5 decides the closure is the restated gap, the desk is off by default, and no consumer reads the branches."
   },
   {
     "id": "R12-CONTRACT-6111",
-    "status": "PARTIAL",
-    "current": "qip-world-model federation.rs now constructs the contract: Federation::information_request returns qip_contracts::control::InformationRequest (question, expected information value, deadline, allowed sources, budget) through Validated::new, and FederationStage::run consumes it onto FederationReview::information_requests, which is journaled and decodes as the contract. The local federation InformationRequest (proposition, models) remains the arbitration decisions payload. A federation test proves the emitted request round-trips as the contract and is refused without a budget.",
+    "status": "COMPLETE",
+    "current": "qip-world-model federation.rs constructs the contract: Federation::information_request returns qip_contracts::control::InformationRequest (question, expected information value, deadline, allowed sources, budget) through Validated::new, and FederationStage::run consumes it onto FederationReview::information_requests, which is journaled and decodes as the contract. Platform::understand_federation now states the exposure at stake on each held instrument before every pass (FederationStage::set_stakes over TrackedCapital::exposure_at_cost, cost basis, unsigned), so on the default cycle a material disagreement on a held name issues the contract request and one on an unheld name does not. The local federation InformationRequest (proposition, models) remains the arbitration decision's payload; qip_contracts::ambient::InfoRequest is still what the ambient path uses.",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::understand_federation (self.federation.set_stakes(self.capital.exposure_at_cost()))",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::TrackedCapital::exposure_at_cost",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::idle_routing_tests::the_federation_pass_is_told_what_each_held_instrument_has_at_stake_and_forgets_it_when_flat",
       "backend/crates/services/qip-world-model/src/federation.rs::Federation::information_request",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationReview::information_requests",
       "backend/crates/services/qip-world-model/tests/federation.rs::a_material_disagreement_with_exposure_at_stake_issues_the_contract_information_request_and_a_small_one_does_not",
       "backend/crates/libs/qip-contracts/src/control.rs:48 InformationRequest = Validated<InformationRequestFields>"
     ],
-    "gap": "The constructing seam runs only when FederationStage::set_stakes has been called, and platform.rs does not call it yet (patch in the L14 lane report for L01); until then no deployed binary constructs or consumes the contract. qip_contracts::ambient::InfoRequest is still what the ambient path uses.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test federation a_material_disagreement_with_exposure",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib the_federation_pass_is_told && cargo +1.94.1 test -p qip-world-model --test federation a_material_disagreement_with_exposure",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 (lane L14). Mutation: inverting the exposure gate failed the test (no contract emitted for a million at stake)."
+    "notes": "Re-graded 2026-10-18 (lane L14). Mutation: inverting the exposure gate failed the test (no contract emitted for a million at stake). Re-graded 2026-10-24 (lane T8-RESIDUAL). Mutation: replacing the set_stakes call with a bare read of exposure_at_cost left the stage's stakes empty and the new test failed (None vs Some(300)); restored byte-for-byte, passes. Stakes are at cost, in the instrument's own units, because the platform holds no marks and no FX conversion to the account currency; a mark-to-market or converted stake would only raise the figure the information-value gate reads and is not part of this clause."
   },
   {
     "id": "R12-CONTRACT-6112",
@@ -2620,16 +2636,13 @@
   {
     "id": "R12-GOV-6116",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-compliance/src/eligibility.rs:43-58 defines all five SubjectKinds (venue, product, entity, jurisdiction, strategy). EligibilityRecord (:98) carries jurisdictions, grantor and lifetime. EligibilityRegister::check (:244-280) refuses a subject with no record (Refusal::NoRecord) and a missing jurisdiction record. The register is built in a shipped binary: qip-cli `agency shadow` loads it from the policy document (apps/qip-cli/src/agency.rs:228; dispatched from apps/qip-cli/src/main.rs:73). Every pass's touched subjects are put to it (services/qip-agency/src/engine.rs:700-725).",
+    "current": "The compliance EligibilityRegister is the one register of operating permission (ADR 0155 section 21). StrategyFactory::promote now calls admit_deployment on the candidate strategy family, the plane jurisdiction, venues and products when CentralConfig::promotion_eligibility is set (qip-kernel/src/central/factory.rs PromotionEligibility); a family with no record, an expired record, or an unrecorded venue or product refuses naming each. The learning promotion path (promote_strategies_with_evidence) reaches it through promote. The kernel holds no eligibility table of its own; the user registry and ProductCatalogue answer to whom a product may be offered.",
     "evidence": [
-      "backend/crates/libs/qip-compliance/src/eligibility.rs:43",
-      "backend/crates/libs/qip-compliance/src/eligibility.rs:244",
-      "backend/crates/apps/qip-cli/src/agency.rs:228",
-      "libs/qip-compliance/tests/eligibility.rs::each_of_the_five_subject_kinds_carries_a_record_and_an_absent_one_refuses",
-      "libs/qip-compliance/tests/eligibility.rs::a_record_admits_only_in_its_jurisdictions_between_grant_and_expiry_and_not_once_revoked",
-      "services/qip-agency/tests/journal.rs::a_goal_touching_a_venue_not_eligible_in_its_jurisdiction_chooses_nothing"
+      "backend/crates/runtime/qip-kernel/src/central/factory.rs::StrategyFactory::promote",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs::CentralConfig::promotion_eligibility",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_family_cleared_in_the_product_catalogue_but_unrecorded_in_the_compliance_register_cannot_be_promoted"
     ],
-    "gap": "EligibilityRegister is consumed only by the shadow agency CLI; trading-path venues, products and strategies carry no eligibility metadata.",
+    "gap": "Unarmed on every binary (2026-10-24): CentralConfig::promotion_eligibility defaults to None and no composition root sets it, because the register must be loaded from the committed seed (data/datasets/paper-eligibility.json) at runtime and the image build context is backend/ only (infrastructure/docker/Dockerfile COPY backend/), so the seed is not in any deployed image and nothing publishes it to a deployment. Arming needs the seed published like universe.json (a Terraform module and gitops change) and the three roots reading it. Production strategy families come from foundry lineages, which the seed (the ten alpha families) does not name, so arming today would refuse them; that list needs the operator to state which lineages are permitted.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2637,10 +2650,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital && cargo test -p qip-kernel",
+    "verification": "cargo test -p qip-kernel --test central -- a_family_cleared a_promotion_naming",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Scope note: the register is populated only from the agency policy file. The trading paths (the cell's configured venues, the kernel's strategy registry) attach no record from it; that gap belongs to GOV-6118. The kernel has a separate product/user eligibility (platform.rs:269-276, ProductCatalogue/fund_user) that does not share this register. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Register exists and gates agency planning only; the platform's venues/strategies do not carry eligibility metadata."
+    "notes": "2026-10-24 ADR 0155 lane: mechanism built, PARTIAL kept. Mutations fired: skipping the register check in promote, and reading a missing record as eligible (qip-compliance check), each failed both new tests (premise: the seeded family and venue promote first)."
   },
   {
     "id": "R12-GOV-6117",
@@ -2667,14 +2680,13 @@
   {
     "id": "R12-GOV-6118",
     "status": "PARTIAL",
-    "current": "EligibilityRegister::admit_deployment and admit_enablement (backend/crates/libs/qip-compliance/src/eligibility.rs:299-340) refuse a strategy deployment or a venue/instrument enablement that names any subject without an eligible record. They are called only from libs/qip-compliance/tests/eligibility.rs. No strategy promotion path (qip-lifecycle, kernel promote) and no venue enablement path (cell CellConfig::with_venue, whitelist/grant application) consults the register. The kernel's nearest gate is Platform::product_refusal (runtime/qip-kernel/src/platform.rs:6230-6280), which gates funding a user into a strategy family, not deploying a strategy or enabling a venue.",
+    "current": "EligibilityRegister::admit_deployment is now called at StrategyFactory::promote (and so on the learning promotion path) when the plane is armed, with the strategy family as subject. A committed seed, data/datasets/paper-eligibility.json, holds one record per simulated venue (XLON, XNYS, XPAR), per asset-class product (fifteen) and per alpha family (ten) plus the jurisdiction paper, in the single jurisdiction paper, each granted by ADR 0155 section 24 and expiring 2027-10-19; a test asserts every seed record names exactly the paper jurisdiction.",
     "evidence": [
-      "backend/crates/libs/qip-compliance/src/eligibility.rs:299",
-      "backend/crates/libs/qip-compliance/src/eligibility.rs:329",
-      "libs/qip-compliance/tests/eligibility.rs::deployment_and_enablement_are_refused_naming_every_subject_without_a_record",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:6230"
+      "backend/crates/runtime/qip-kernel/src/central/factory.rs::StrategyFactory::promote",
+      "data/datasets/paper-eligibility.json",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_promotion_naming_a_venue_with_no_eligibility_record_is_refused_while_the_committed_paper_seed_admits_the_simulated_venues_and_only_the_paper_jurisdiction"
     ],
-    "gap": "EligibilityRegister::admit_deployment and admit_enablement exist and are exercised by qip-compliance tests and loaded only by qip-cli's agency policy. Neither is called from the kernel promotion seams (central/learning.rs promote_strategies_with_evidence, central/factory.rs promote) or CellConfig::with_venue, and no committed eligibility records exist for a composition root to load: a fail-closed gate would refuse every promotion until an operator commits records, which is a regulatory input this lane does not hold. Wiring it optional (no register, no gate) would be a gate that runs nowhere by default.",
+    "gap": "Two of ADR 0155 section 23 three call sites are not wired (2026-10-24): the plane is unarmed on every binary (see R12-GOV-6116: the seed is not published to any deployment and the image build context excludes data/), and qip-edge-node assemble does not yet call admit_enablement for every venue it passes to CellConfig::with_venue, which would refuse to start on a venue the seed does not name and needs the seed loaded at that root. The seed expires 2027-10-19 and an expired seed stops every promotion at once, by design.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2684,10 +2696,10 @@
       "R12-GOV-6116"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel (new)",
+    "verification": "cargo test -p qip-kernel --test central -- a_promotion_naming",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The gate is library-only; grep finds no non-test caller of admit_deployment/admit_enablement. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": "2026-10-24 ADR 0155 lane: promotion gate and seed built, PARTIAL kept. Mutations fired: reading a missing record as eligible made the unrecorded-venue assertion fail (premise: the seeded venue and family promote). The seed jurisdiction assertion walks every record, so a record naming a real jurisdiction fails the build."
   },
   {
     "id": "R12-GOV-6119",
@@ -2713,14 +2725,15 @@
   {
     "id": "R12-GOV-6120",
     "status": "PARTIAL",
-    "current": "CapitalEnvelope now optionally carries AuthorityBounds {max_leverage, product_classes, regulated_functions} inside the signed payload (backend/crates/libs/qip-contracts/src/capital.rs:40-63, signing_payload :236-258). bound() clears the signature and refuses re-bounding (:150-165), so a widening needs a new signature. admit_bounded refuses an unbounded envelope and any product class, leverage or regulated function outside the bounds (:266-300). admit_bounded and bound() are called only from libs/qip-contracts/tests/authority_bounds.rs. The cell admits orders through the unbounded `admit`, and no issuer (centre/API signing) produces a bounded envelope.",
+    "current": "The cell enforces an envelope authority bounds with the order own inputs (ADR 0155 section 2 to 6). ExecutionMode::as_str (qip-execution-engine/src/modes.rs) is the regulated-function vocabulary; CellConfig::with_product_class maps an instrument to AssetClass::as_str and an instrument with no entry is refused under GATE_ENVELOPE_PRODUCT; Cell::intent_for runs authority_verdict after exposure_verdict with the one leverage measure check_exposure computes (gross after the order over capital less realised loss) and the net order function order_taking; CapitalEnvelope::check_authority returns which bound refused. An envelope carrying both blocks must state equal max_leverage, refused at construction in either order, and AuthorityBounds::max_leverage documentation now says what is measured. CellConfig::with_authority_bounds_required arms the refusal of an envelope without the block; bounds an envelope does carry are enforced whatever the switch says.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/capital.rs:40",
-      "backend/crates/libs/qip-contracts/src/capital.rs:236",
-      "backend/crates/libs/qip-contracts/src/capital.rs:266",
-      "libs/qip-contracts/tests/authority_bounds.rs"
+      "backend/crates/edge/qip-edge/src/cell.rs::authority_verdict",
+      "backend/crates/libs/qip-contracts/src/capital.rs::CapitalEnvelope::check_authority",
+      "backend/crates/services/qip-execution-engine/src/modes.rs::ExecutionMode::as_str",
+      "backend/crates/edge/qip-edge/tests/envelope_exposure.rs::an_armed_cell_admits_an_order_inside_a_bounded_envelope_and_refuses_one_outside_its_product_class_function_or_leverage_naming_which",
+      "backend/crates/libs/qip-contracts/tests/authority_bounds.rs::an_envelope_stating_two_different_leverages_is_refused_whichever_block_is_added_second"
     ],
-    "gap": "The cell admits through the unbounded CapitalEnvelope::admit and no issuer signs a bounded envelope, and the switch the owner decision describes cannot be made on the cell's side alone because admit_bounded takes three inputs nothing in the tree produces: a product class for the order's instrument, the order's leverage, and the regulated function it performs. grep finds no product class or regulated-function concept outside capital.rs, so the cell would refuse every order for want of an argument to pass, not because a bound was breached. Closing it needs those three facts defined and produced per order (an instrument taxonomy and a leverage measure in the cell), the centre signing bounded envelopes (CentralPlane at its three issue sites, a kernel-lane change), and then admit_bounded behind a CellConfig switch in the register of with_exposure_bounds_required so unbounded test envelopes are not all refused at once.",
+    "gap": "Not armed and not issued on any binary (2026-10-24): the issuer does not yet state the authority block (CapitalRequest, EnvelopeTerms and CentralPlane::issue_narrowed carry exposure but no AuthorityBounds, so the ADR section 5 payload comparison covers no authority claim), qip-edge-node assemble does not build the instrument-to-class map from the catalogue or call with_authority_bounds_required, and the arbitrage desk legs (admit_leg) are not yet checked against the block. Rollout order per ADR 0155 section 6: issuer, then the node map, then the switch; arming earlier is the refuse-everything failure.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2728,10 +2741,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-edge --test envelope_exposure; cargo test -p qip-contracts --test authority_bounds",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: an envelope with no bounds still admits through CapitalEnvelope::admit, which the cell uses. Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure (swap the three envelope.admit sites to admit_bounded) refuses every order today because the product-class, leverage and regulated-function arguments have no producer; a refusal-everything gate is the failure the infrastructure rules call out ('admits a good one')."
+    "notes": "2026-10-24 ADR 0155 lane: cell half and leverage definition built, PARTIAL kept. Mutations fired: passing a fixed equity class instead of the mapped class admitted the commodity-mapped order and the test failed (premise: the in-bounds order is admitted first); dropping the leverage-equality check let a contradiction build. Leverage-authority refusals cannot exceed the exposure bound by construction, so the exposure gate refuses first; the authority leverage check is the second line."
   },
   {
     "id": "R12-GOV-6121",
@@ -2886,7 +2899,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs decide_tests::a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted",
       "backend/crates/services/qip-agency/src/guard.rs check_justification in ActionGuard::preflight"
     ],
-    "gap": "No test drives an approved hypothesis with no supporting evidence through stage_reason, so the call site in stage_reason is proven by reading, not by a mutated test; only justify_thesis itself is mutation-proven. Closing needs a kernel fixture that queues an opportunity whose reasoning outcome is approved with zero supporting items (red-team serious_tolerance >= 1) and asserts no thesis is queued and DECIDE forms no intent.",
+    "gap": "Unchanged on 2026-10-24 (lane T8-RESIDUAL), but the proposed closure is not writable as stated. Platform::synthesise always passes the triggering anomaly into SynthesisInput::direct_evidence as a Stance::Supports item, so no cycle fixture can reach an approved hypothesis with zero supporting evidence: the justify_thesis branch in reason_about_the_queue is a guard behind an invariant the caller keeps. Proving the call site needs a seam that lets a test hand reason_about_the_queue a ReasoningOutcome (or a synthesise that can omit the direct item), which is a design choice about test-only surface in platform.rs, not a fixture.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2897,6 +2910,6 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Wired into the agency engine; no production market-facing action consults it. 2026-10-18 (lane L01): justification wired into the kernel REASON->DECIDE seam. Mutation: grounds built from every evidence item instead of supporting ones admitted the contradicting-only set and the test failed at its expect_err; restored byte-for-byte, passes. Kept PARTIAL: call site not yet proven by a stage-level mutated test."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Wired into the agency engine; no production market-facing action consults it. 2026-10-18 (lane L01): justification wired into the kernel REASON->DECIDE seam. Mutation: grounds built from every evidence item instead of supporting ones admitted the contradicting-only set and the test failed at its expect_err; restored byte-for-byte, passes. Kept PARTIAL: call site not yet proven by a stage-level mutated test. 2026-10-24 (lane T8-RESIDUAL): read synthesise, the redteam verdict and Hypothesis::validate (which itself refuses a hypothesis with no supporting evidence); found the branch unreachable through a cycle, nothing changed."
   }
 ]

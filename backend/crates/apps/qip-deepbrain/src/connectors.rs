@@ -238,6 +238,9 @@ pub struct ConnectorArm {
     admitted: AdmittedSource,
     /// What the last poll's evidence did to the world fabric.
     last_evidence: EvidenceIntake,
+    /// Records the last poll released that the world fabric withheld from
+    /// observation (R12-EVID-1200).
+    last_withheld: usize,
     /// Where this arm keeps its knowledge packs, when the root opened a
     /// store for them (R12-DATA-1041).
     pack_store: Option<Arc<dyn BlobStore>>,
@@ -287,6 +290,7 @@ impl ConnectorArm {
                 admission,
                 admitted,
                 last_evidence: EvidenceIntake::default(),
+                last_withheld: 0,
                 pack_store: None,
                 pack_stats: PackStoreStats::default(),
                 refetch: ReFetchDriver::new(),
@@ -358,6 +362,7 @@ impl ConnectorArm {
             admission,
             admitted,
             last_evidence: EvidenceIntake::default(),
+            last_withheld: 0,
             pack_store: None,
             pack_stats: PackStoreStats::default(),
             refetch: ReFetchDriver::new(),
@@ -431,6 +436,11 @@ impl ConnectorArm {
         &self.last_evidence
     }
 
+    /// Records the last poll released that the world fabric withheld.
+    pub const fn last_withheld(&self) -> usize {
+        self.last_withheld
+    }
+
     pub fn source_id(&self) -> &str {
         self.admitted.source_id()
     }
@@ -493,10 +503,18 @@ impl ConnectorArm {
                 return Err(refusal);
             }
         }
-        let records = self.feed.poll_referencing(until, &mut |digest| {
-            platform.reference_fetch(digest, until).map(|_| ())
-        })?;
+        let identified = self
+            .feed
+            .poll_referencing_identified(until, &mut |digest| {
+                platform.reference_fetch(digest, until).map(|_| ())
+            })?;
+        let released = identified.len();
         self.last_evidence = platform.absorb_evidence(self.feed.drain_evidence(), until);
+        // A record is handed up for observation only if the world fabric
+        // stood behind its claim (R12-EVID-1200): the connector's own check
+        // ran against one source's private fabric, the world's against all.
+        let records = self.last_evidence.release(identified);
+        self.last_withheld = released - records.len();
         self.persist_packs();
         Ok(records)
     }

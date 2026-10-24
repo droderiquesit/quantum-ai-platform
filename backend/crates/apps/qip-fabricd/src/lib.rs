@@ -42,6 +42,7 @@ pub mod archiver;
 pub mod bench;
 pub mod config;
 pub mod health;
+pub mod openobserve;
 pub mod spanner;
 pub mod telemetry;
 
@@ -57,7 +58,9 @@ use qip_core::Clock;
 use qip_core::error::{Error, Result};
 use qip_events::event_fabric::catalogue::Catalogue;
 use qip_events::event_fabric::policy::StreamPolicy;
+use qip_observability::Telemetry;
 use qip_observability::metrics::Metrics;
+use qip_observability::trace::{SpanKind, Tracer};
 use qip_storage::gcp::GcpAccess;
 use qip_storage::segment::archive::Archiver;
 use qip_storage::segment::log::SegmentLogConfig;
@@ -201,10 +204,34 @@ pub fn data_plane_limits() -> ServerLimits {
 struct DataPlane {
     service: Arc<Service>,
     telemetry: Arc<FabricdTelemetry>,
+    tracer: Arc<Tracer>,
     clock: Arc<dyn Clock>,
 }
 
 impl DataPlane {
+    /// Close the span of one produce with exactly three attributes: the
+    /// `stream`, its QoS `class` and the `outcome`. Never a partition key, a
+    /// producer id, an event id or an order id: those are unbounded, and a
+    /// span attribute is read by whatever the collector builds on it. A stream
+    /// the catalogue does not declare is recorded as `undeclared`, as the
+    /// metrics do, so a caller's typo cannot mint an attribute value.
+    fn finish_span(&self, mut span: qip_observability::trace::ActiveSpan, handled: &Handled) {
+        let seen = &handled.observation;
+        let class = seen.class.map_or("undeclared", |class| class.as_str());
+        let stream = match (&seen.stream, seen.class) {
+            (Some(stream), Some(_)) => stream.as_str(),
+            _ => "undeclared",
+        };
+        span.set_attribute("stream", stream);
+        span.set_attribute("class", class);
+        span.set_attribute("outcome", seen.outcome);
+        if seen.outcome == "error" {
+            span.finish_with_error("the produce failed");
+        } else {
+            span.finish();
+        }
+    }
+
     fn record(&self, handled: &Handled, elapsed_ms: f64) {
         let seen = &handled.observation;
         // A group's lag is known where its checkpoint moves (a commit) or is
@@ -262,6 +289,14 @@ impl Handler for DataPlane {
             );
         }
         let started = self.clock.now();
+        // A span around an append (R12-OBS-8082, ADR 0156 §5.5), recorded
+        // here at the request handler and not inside the `Broker` library, so
+        // the library keeps no tracing dependency and a produce that never
+        // reached the handler leaves none. Started before the service runs so
+        // its duration is the handler's; dropped unfinished, and so recorded
+        // nowhere, for every other route.
+        let span = (request.path == Route::Produce.path())
+            .then(|| self.tracer.start("fabricd.produce", SpanKind::Server));
         let handled = self.service.handle(
             request.header(auth::HEADER),
             request.header(qip_transport::server::PEER_IDENTITY_HEADER),
@@ -272,6 +307,9 @@ impl Handler for DataPlane {
         // so an f64, and the one place this crate crosses from integers.
         let elapsed_ms = (self.clock.now().as_nanos() - started.as_nanos()) as f64 / 1_000_000.0;
         self.record(&handled, elapsed_ms);
+        if let Some(span) = span {
+            self.finish_span(span, &handled);
+        }
         Response::new(handled.status, "application/json", handled.body)
     }
 }
@@ -307,6 +345,10 @@ pub struct Running {
     health: Arc<Health>,
     metrics: Arc<Metrics>,
     telemetry: Arc<FabricdTelemetry>,
+    /// The metrics registry, the tracer the data plane records its produce
+    /// spans on, and the logger: the surface the OTLP drain exports from
+    /// when it is configured (`main`), and that a test reads spans from.
+    observability: Telemetry,
     stop_data: Arc<AtomicBool>,
     stop_health: Arc<AtomicBool>,
     stop_housekeeping: Arc<AtomicBool>,
@@ -367,6 +409,13 @@ impl Running {
 
     pub fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
+    }
+
+    /// The telemetry surface this broker records on: its metrics, the spans
+    /// its data plane records, and its log. Cheap to clone; the drain takes
+    /// a clone.
+    pub fn observability(&self) -> &Telemetry {
+        &self.observability
     }
 
     /// Drain leadership (RES-8103): stop leading every managed partition and
@@ -592,7 +641,8 @@ fn start_composed(
         }
     }
 
-    let metrics = Arc::new(Metrics::new("qip-fabricd"));
+    let observability = Telemetry::foreground("qip-fabricd", clock.clone());
+    let metrics = observability.metrics.clone();
     let telemetry = Arc::new(FabricdTelemetry::new(metrics.clone()));
     telemetry.leader_epoch(broker.leader_epoch());
     let health = Arc::new(Health::new(broker.leader_epoch()));
@@ -627,6 +677,7 @@ fn start_composed(
     let data_plane = Arc::new(DataPlane {
         service: service.clone(),
         telemetry: telemetry.clone(),
+        tracer: observability.tracer.clone(),
         clock,
     });
     let data_limits = data_plane_limits();
@@ -795,6 +846,7 @@ fn start_composed(
         health,
         metrics,
         telemetry,
+        observability,
         stop_data,
         stop_health,
         stop_housekeeping,

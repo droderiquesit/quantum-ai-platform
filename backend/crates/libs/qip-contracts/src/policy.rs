@@ -89,6 +89,12 @@ pub enum PolicyItem {
     /// Opportunity definitions that the strategy runtime evaluates against
     /// live local state (REFLEX-026).
     OpportunityDefinitions,
+    /// ADR 0155 section 14: the build identities the centre accepts a cell to
+    /// be running. A set, because a rollout runs two builds at once. Off the
+    /// wire and out of the signing string while unproduced, so every payload
+    /// signed before it existed keeps its digest (consumer first, producer
+    /// after).
+    AcceptableBuilds,
 }
 
 impl PolicyItem {
@@ -108,10 +114,11 @@ impl PolicyItem {
             Self::AdversaryProfiles => "adversary_profiles",
             Self::Dispositions => "dispositions",
             Self::OpportunityDefinitions => "opportunity_definitions",
+            Self::AcceptableBuilds => "acceptable_builds",
         }
     }
 
-    pub const fn all() -> [Self; 14] {
+    pub const fn all() -> [Self; 15] {
         [
             Self::TrainedModels,
             Self::CompiledPlan,
@@ -127,6 +134,7 @@ impl PolicyItem {
             Self::AdversaryProfiles,
             Self::Dispositions,
             Self::OpportunityDefinitions,
+            Self::AcceptableBuilds,
         ]
     }
 
@@ -151,7 +159,8 @@ impl PolicyItem {
             | Self::RegimeState
             | Self::FeasibilityConstraints
             | Self::Dispositions
-            | Self::OpportunityDefinitions => Duration::from_secs(86_400),
+            | Self::OpportunityDefinitions
+            | Self::AcceptableBuilds => Duration::from_secs(86_400),
             // "seconds to minutes" — the conservative end is minutes.
             Self::BeliefPriors => Duration::from_secs(300),
             // "minutes".
@@ -195,7 +204,8 @@ impl PolicyItem {
             | Self::FeasibilityConstraints
             | Self::AdversaryProfiles
             | Self::Dispositions
-            | Self::OpportunityDefinitions => None,
+            | Self::OpportunityDefinitions
+            | Self::AcceptableBuilds => None,
         }
     }
 }
@@ -644,6 +654,15 @@ pub struct BeliefPriors {
     pub priors: BTreeMap<String, f64>,
 }
 
+/// The build identities the centre accepts a cell to be running (ADR 0155
+/// section 14). A cell whose own identity is absent from a produced set takes
+/// no new exposure; an unproduced set changes nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildSet {
+    pub builds: BTreeSet<String>,
+}
+
 /// The compact episodic digest for the current neighbourhood.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1014,6 +1033,11 @@ pub struct PolicyPayload {
     /// so payloads signed before this field existed keep their digest.
     #[serde(default, skip_serializing_if = "is_unproduced_slot")]
     pub opportunity_definitions: Slot<OpportunityManifest>,
+    /// ADR 0155 section 14. Off the wire and out of the signing string while
+    /// unproduced, by the same predicate, so payloads signed before the slot
+    /// existed keep their digest.
+    #[serde(default, skip_serializing_if = "is_unproduced_slot")]
+    pub acceptable_builds: Slot<BuildSet>,
     /// Hex MAC over [`Self::signing_payload`]. Empty until signed.
     pub signature: String,
 }
@@ -1042,6 +1066,7 @@ impl PolicyPayload {
             adversary_profiles: Slot::unproduced(),
             dispositions: Slot::unproduced(),
             opportunity_definitions: Slot::unproduced(),
+            acceptable_builds: Slot::unproduced(),
             signature: String::new(),
         }
     }
@@ -1067,6 +1092,7 @@ impl PolicyPayload {
             PolicyItem::AdversaryProfiles => self.adversary_profiles.freshness(item, now),
             PolicyItem::Dispositions => self.dispositions.freshness(item, now),
             PolicyItem::OpportunityDefinitions => self.opportunity_definitions.freshness(item, now),
+            PolicyItem::AcceptableBuilds => self.acceptable_builds.freshness(item, now),
         };
         let expired = now > self.issued_at.saturating_add(self.valid_for) || now < self.issued_at;
         if expired && own == Freshness::Fresh {
@@ -1134,7 +1160,8 @@ impl PolicyPayload {
                 | PolicyItem::FeasibilityConstraints
                 | PolicyItem::AdversaryProfiles
                 | PolicyItem::Dispositions
-                | PolicyItem::OpportunityDefinitions => false,
+                | PolicyItem::OpportunityDefinitions
+                | PolicyItem::AcceptableBuilds => false,
             })
             .collect()
     }
@@ -1210,6 +1237,12 @@ impl PolicyPayload {
             digests.push(digest(
                 PolicyItem::OpportunityDefinitions,
                 &self.opportunity_definitions,
+            )?);
+        }
+        if !is_unproduced_slot(&self.acceptable_builds) {
+            digests.push(digest(
+                PolicyItem::AcceptableBuilds,
+                &self.acceptable_builds,
             )?);
         }
         Ok(digests)

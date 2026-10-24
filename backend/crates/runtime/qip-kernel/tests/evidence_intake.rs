@@ -29,6 +29,7 @@ use qip_observability::metrics::labels;
 use qip_risk::limits::LimitSet;
 use qip_streaming::envelope::StreamEnvelope;
 use qip_world_model::evidence::{META_ATTRIBUTE, META_SUBJECT, META_VALUE};
+use qip_world_model::fabric::{Contest, ProvenanceEdge};
 use qip_world_model::{EvidenceFabric, EvidenceRecord};
 
 fn at(secs: i64) -> Timestamp {
@@ -178,6 +179,93 @@ fn a_coordinated_campaign_forwarded_from_connectors_is_found_by_the_poisoning_de
             &labels([("class", "coordinated_manipulation")])
         ) >= 1
     );
+}
+
+/// Everything a fabric believes that a restart must reproduce, as comparable
+/// text: the held claims in order with their verdicts, the provenance edges,
+/// the contests with their resolutions, the per-source records and the version.
+fn fabric_state(fabric: &EvidenceFabric) -> String {
+    let held: Vec<String> = fabric
+        .held()
+        .map(|h| format!("{} {:?} {:?}", h.record.id, h.verdict, h.document_hash))
+        .collect();
+    let edges: Vec<String> = fabric.graph().edges().map(|e| format!("{e:?}")).collect();
+    format!(
+        "held={held:#?}\nedges={edges:#?}\ncontests={:#?}\nsources={:#?}\nversion={}",
+        fabric.contests(),
+        fabric.sources(),
+        fabric.version()
+    )
+}
+
+/// ADR 0152 §2 / R12-EVID-2032: links are derived, not journaled, so the
+/// journal of admitted claims alone must be enough to hold the same links,
+/// contests and resolutions after a restart. A journal that lost the order,
+/// the instant or a claim would rebuild a different belief and present it as
+/// the recovered one.
+///
+/// Mutation: in `EvidenceFabric::rebuild`, iterate the claims in reverse —
+/// the contest's hypotheses and the corroboration edges point the other way
+/// and the state comparison fails. Mutation: skip the
+/// `journal_record(EvidenceAdmittedRecord ..)` loop in `absorb_evidence` —
+/// the journal-length premise fails.
+#[test]
+fn a_fabric_rebuilt_from_the_journaled_claims_holds_the_same_links_contests_and_resolutions() {
+    let mut platform = platform();
+    assert!(
+        platform.journaled_evidence().unwrap().is_empty(),
+        "premise: nothing is journaled before a claim is admitted"
+    );
+    let intake = platform.absorb_evidence(
+        vec![
+            checked("a1", "https://a.example", "rate 1.10", "1.10", &hash('a')),
+            checked("b1", "https://b.example", "rate 1.20", "1.20", &hash('b')),
+            checked("c1", "https://c.example", "fix at 1.10", "1.10", &hash('c')),
+        ],
+        at(30),
+    );
+    assert_eq!(intake.admitted, 3, "{intake:?}");
+    assert_eq!(intake.claims_journaled, 3, "{intake:?}");
+    assert_eq!(intake.journal_refused, 0, "{intake:?}");
+
+    let journal = platform.journaled_evidence().unwrap();
+    assert_eq!(
+        journal
+            .iter()
+            .map(|c| c.record.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a1", "b1", "c1"],
+        "the journal keeps admission order"
+    );
+    assert!(
+        journal.iter().all(|c| c.admitted_at == at(30)),
+        "the journal keeps the admission instant"
+    );
+
+    let before = platform.world().evidence().clone();
+    assert!(
+        before.contests().values().any(Contest::is_contested)
+            || before.contests().values().any(|c| c.resolution.is_some()),
+        "premise: the disagreement left a contest or a resolution to reproduce"
+    );
+    assert!(
+        before
+            .graph()
+            .edges()
+            .any(|(_, edge, _)| *edge == ProvenanceEdge::Contradicts),
+        "premise: the fabric holds a contradiction edge"
+    );
+    assert!(
+        before
+            .graph()
+            .edges()
+            .any(|(_, edge, _)| *edge == ProvenanceEdge::Corroborates),
+        "premise: the fabric holds a corroboration edge"
+    );
+
+    let rebuilt = EvidenceFabric::default().rebuild(journal).unwrap();
+
+    assert_eq!(fabric_state(&rebuilt), fabric_state(&before));
 }
 
 // ---------------------------------------------------------------------------
@@ -605,6 +693,38 @@ fn an_unchecked_claim_under_a_forged_admissible_verdict_is_held_inadmissible_and
         .expect("the claim is held for the poisoning detector");
     assert!(!held.admissible, "the forged verdict was believed");
     assert_eq!(held.belief_weight, 0.0);
+}
+
+/// R12-EVID-1200. The connector's check ran against one source's private
+/// fabric; a record reaches `observe` only if the fabric every source shares
+/// also stood behind its claim. A claim the world holds inadmissible is named
+/// on `withheld` and `release` drops the record it rests on, while the honest
+/// record beside it passes. Mutation: delete the `withheld.insert` in the
+/// inadmissible branch of `absorb_evidence` — the forged record is released
+/// and the first assertion fails.
+#[test]
+fn a_record_whose_claim_the_world_fabric_holds_inadmissible_is_not_released_for_observation() {
+    let mut platform = platform();
+    let honest = checked("h1", "https://a.example", "rate 1.10", "1.10", &hash('a'));
+    let mut forged = checked("f1", "https://b.example", "rate 1.12", "1.10", &hash('b'));
+    forged.record.ingestion_timestamp = at(5);
+    forged.verdict = honest.verdict.clone();
+    // The premise: the forwarded verdict called both admissible, so any
+    // difference below is the world fabric's own judgement.
+    assert!(honest.verdict.admissible && forged.verdict.admissible);
+
+    let intake = platform.absorb_evidence(vec![honest, forged], at(30));
+
+    assert_eq!(intake.admitted, 2, "{intake:?}");
+    assert_eq!(
+        intake.withheld.iter().cloned().collect::<Vec<_>>(),
+        vec!["f1".to_string()]
+    );
+    let released = intake.release(vec![
+        ("honest-record", "h1".to_string()),
+        ("forged-record", "f1".to_string()),
+    ]);
+    assert_eq!(released, vec!["honest-record"]);
 }
 
 /// Every knowledge delta the kernel has journalled, re-admitted through the

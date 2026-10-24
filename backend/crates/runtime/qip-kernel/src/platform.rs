@@ -62,7 +62,7 @@ use crate::venue_review::{
     FEASIBILITY_WINDOW, FeasibilityRefusal, FeasibilitySeam, REINSTATED, REINSTATEMENT_AWAITING,
     REINSTATEMENT_REFUSED, RefusalStanding, VenueReinstatementEntry, VenueWithdrawal,
 };
-use qip_agents::memory::ResearchMemory;
+use qip_agents::memory::{MemoryRegistry, ResearchMemory};
 use qip_agents::runtime::{Reading, Upstream};
 use qip_agents::{Budget, RunStatus};
 use qip_ai::language::{DeterministicModel, LanguageModel};
@@ -323,6 +323,12 @@ pub struct Platform {
     /// empty no wallet is assembled — a wallet showing zero holdings would
     /// read as an empty account rather than an unobserved one.
     holdings_observed: BTreeMap<VenueAsset, HoldingObservation>,
+    /// The shares of each instrument a lender has said can be borrowed to
+    /// sell short, latest per instrument (R12-RISK-4096). Empty until a
+    /// licensed source is wired to [`Platform::observe_borrow`], and while
+    /// empty every short is refused: an instrument nobody has said is
+    /// borrowable is not borrowable.
+    borrow_availability: BTreeMap<String, BorrowReading>,
     /// §38.3's tolerance formula per observed **venue-asset**: the class, the
     /// dust floor the statement stated, and one interval's rate. The wallet
     /// refuses to reconcile a venue-asset it has no basis for rather than
@@ -684,6 +690,11 @@ pub struct Platform {
     /// What the latest federation review earns each instrument in DECIDE's
     /// caps (ADR 0125 decision 4), with the spread behind it.
     federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
+    /// The active-sensing requests the latest federation pass issued, each
+    /// with the disagreement spread behind it in basis points (ADR 0158
+    /// decisions 9-10), replaced wholesale each pass so a disagreement that
+    /// has resolved stops asking. Read by the deep brain's research sweep.
+    federation_requests: Vec<(qip_contracts::control::InformationRequest, u32)>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -944,6 +955,9 @@ pub struct Platform {
     /// so the chain's counter is monotonic across both kinds and never
     /// zero, which the treasury funding carries.
     capital_grant_operations: u64,
+    /// The mandates whose subscription is in the log, by the operation id's
+    /// mandate part, so a second funding of one mandate queues nothing.
+    subscribed_mandates: BTreeSet<String>,
     /// Fills declined for want of a ledger record, bounded like the declined
     /// queue and cleared by nobody: the list is the evidence a person works
     /// from.
@@ -984,6 +998,12 @@ pub struct Platform {
     /// LEARN now writes it where a thesis resolves; see
     /// [`Self::write_research_memory`].
     research_memory: Upstream<ResearchMemory>,
+    /// The value policy over the episodes `research_memory` holds: which
+    /// resolved analyst calls were surprising enough to keep whole and which
+    /// are counted into a per-analyst summary (ADR 0152 decision 8,
+    /// R12-EXPAND-6057). It classifies and counts; `research_memory` still
+    /// holds every episode, so the hit rate the reviewer reads is unfiltered.
+    memory_registry: MemoryRegistry,
     /// Per claim class, the recent resolutions a lesson about that class is
     /// built from, and whether one has been promoted. Bounded by the anomaly
     /// kinds the detectors raise and by [`LESSON_WINDOW`] per class.
@@ -1122,6 +1142,14 @@ pub struct Platform {
     /// thesis is queued once and drained once; re-expressing it every cycle
     /// would pyramid the same idea until the mandate cap alone stopped it.
     pending_theses: Vec<qip_portfolio_engine::construction::ApprovedThesis>,
+    /// Beliefs from outside the opportunity, by subject. REASON may only be
+    /// narrowed by them (ADR 0151 decision 3); empty unless a producer sets it.
+    outside_priors: BTreeMap<String, crate::fusion::OutsidePrior>,
+    /// The reference and sized quantities of each leg ACT is about to release,
+    /// by order id, taken by `submit_order` when it stamps the order. Emptied
+    /// on every submission, accepted or refused, so it holds at most the order
+    /// in flight.
+    leg_quantities: BTreeMap<String, (Decimal, Decimal)>,
     /// The capital survival kernel and the confidence governor: what DECIDE
     /// may size against, and the gross the Risk Gate holds orders to. See
     /// [`crate::survival`]. One field for both because they answer one
@@ -1178,6 +1206,9 @@ const PENDING_CORPORATE_ACTIONS: usize = 4_096;
 ///
 /// Large enough that a cycle can still see what the previous ones decided,
 /// small enough that the working set does not grow with uptime.
+/// The most outside priors REASON holds at once.
+const OUTSIDE_PRIOR_CAPACITY: usize = 1_024;
+
 const PROPOSAL_HISTORY: usize = 256;
 
 /// How many cycles of the book's own equity the platform keeps, for the tail
@@ -1257,6 +1288,26 @@ const DECLINED_HISTORY: usize = 256;
 /// under, and the `gate` its rejection record carries (R12-ASSET-4074). A
 /// source literal, so the label has exactly one value for this refusal.
 const WALLET_HALT_CONTROL: &str = "wallet-halt";
+
+/// The control name a short refused for want of a borrow is journaled under.
+const BORROW_CONTROL: &str = "borrow-availability";
+
+/// How old a borrow reading may be when a short is judged against it.
+/// Locate availability moves intraday; a day-old reading is the oldest one
+/// that is not a guess, so an older one is treated as no reading at all.
+const BORROW_FRESHNESS: Duration = Duration::from_days(1);
+
+/// The most instruments whose borrow availability is held at once, so the
+/// map is bounded by the deployment and not by a feed.
+const MAX_BORROW_READINGS: usize = 4096;
+
+/// One lender statement: how much of an instrument could be borrowed, and
+/// when the lender said so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BorrowReading {
+    available: Decimal,
+    observed_at: Timestamp,
+}
 
 /// Why no proposal is signed while the desk's feed to the ledger cannot take
 /// another record (R12-RES-7098). One sentence for the cycle report; the
@@ -1795,6 +1846,34 @@ const MARGIN_FIGURE: &str = "margin";
 /// `RiskState::unevaluated` when the statements held cannot be summed. A
 /// source literal, for the reason `LIQUIDITY_FIGURE` is one.
 const CUSTODY_FIGURE: &str = "custody";
+
+/// The most sent-but-unbooked orders the central ledger may trail the cells
+/// by before capital stops moving (R12-RES-10127): above this,
+/// [`Platform::issue_region_shares`] ships no manifest, so cell envelopes
+/// lapse at their expiry, and the transfer gate vetoes every transfer.
+///
+/// Sixteen, and a judgement: a cycle that settles normally books its
+/// outcomes within the cycle, so a backlog past a handful of orders means
+/// the ledger is not keeping up rather than that orders are resting. The
+/// value is deliberately low, since both consequences are the restrictive
+/// direction (a grant not renewed, a transfer not made) and cost nothing but
+/// a delay; it is a committed constant, never read from configuration.
+pub const LEDGER_LAG_THRESHOLD: usize = 16;
+
+/// The fewest fill-error observations at a venue before its twin can be
+/// called persistently wrong (R12-RES-7104). The calibration is an
+/// exponentially weighted average, so a single large error moves it; eight
+/// observations are enough for it to have forgotten its starting point
+/// (0.8^8 is about 17% of the first) and too few for one outlier to pass
+/// for a trend.
+pub const TWIN_MISFIT_MIN_OBSERVATIONS: u64 = 8;
+
+/// The absolute calibrated fill error, in basis points, at which a venue's
+/// twin counts as wrong (R12-RES-7104). Fifty basis points is several times
+/// the half-spread the liquid-equity cost model charges, so a bias of this
+/// size is the twin missing the cost of trading there by more than the cost
+/// itself. A bias that is not a finite number counts as wrong.
+pub const TWIN_MISFIT_BIAS_BPS: f64 = 50.0;
 
 /// The exposure buckets one instrument record vouches for.
 ///
@@ -4316,6 +4395,16 @@ impl EventBody for CapitalGrantFunded {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+impl EventBody for PrivateCommitmentMade {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+impl EventBody for MandateSubscribed {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 /// The journalled record that the central treasury recalled the deployable
 /// capital of a grant it had funded (ADR 0123, Amendment 1): the whole
 /// `CapitalGrantRecalled` [`qip_contracts::ledger_operation::LedgerOperation`]
@@ -4343,6 +4432,43 @@ pub struct CapitalGrantRecalled {
 /// [`CAPITAL_GRANT_FUNDING_ORIGIN`], so a reader of either stream of records
 /// decodes one body shape and never meets the other's.
 const CAPITAL_GRANT_RECALL_ORIGIN: &str = "kernel/capital-grant-recall";
+
+/// The journalled record that a private commitment was made (ADR 0153
+/// decision 2): the whole
+/// [`qip_contracts::ledger_operation::LedgerOperation`] the ledger books as
+/// `Commitment { stage: Commit }`, written once, at the first assembly that
+/// saw the fund's universe record, and before the operation is queued.
+///
+/// The operation is journalled, not the universe record it came from,
+/// because the universe record's `updated_at` moves and a rebuilt operation
+/// at a restart's clock would be a second digest under the same id, which the
+/// ledger refuses as a conflict. Replaying the record as written re-sends the
+/// bytes the first process sent, and a universe record whose amount later
+/// differs is reported rather than rebooked: the commitment that was made is
+/// the one that was booked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PrivateCommitmentMade {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+/// The producer of [`PrivateCommitmentMade`]. Its own origin so a reader of
+/// the other `LedgerOperationRecorded` producers never meets this body.
+const PRIVATE_COMMITMENT_ORIGIN: &str = "kernel/private-commitment";
+
+/// The journalled record that a user's mandate first funded capital at work
+/// (ADR 0153 decision 4): the whole `MandateSubscription { Establish }`
+/// [`qip_contracts::ledger_operation::LedgerOperation`] (treasury ← mandate),
+/// written once per mandate by [`Platform::fund_user`] and before the
+/// operation is queued. Journalled whole for the reason
+/// [`PrivateCommitmentMade`] is: a restart re-sends the bytes the first
+/// process sent, and the ledger books each id once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MandateSubscribed {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+/// The producer of [`MandateSubscribed`].
+const MANDATE_SUBSCRIPTION_ORIGIN: &str = "kernel/mandate-subscription";
 
 impl EventBody for CapitalGrantRecalled {
     const TOPIC: Topic = Topic::LedgerOperationRecorded;
@@ -4731,6 +4857,24 @@ impl TrackedCapital {
         self.positions
             .values()
             .fold(self.cash, |sum, lot| sum + lot.quantity * lot.average_price)
+    }
+
+    /// What each open position has at stake, unsigned, at cost.
+    ///
+    /// At cost for the reason [`Self::position_weights`] gives. A position
+    /// whose notional cannot be represented is left out rather than clamped:
+    /// the federation then asks nothing about it, and a question not asked
+    /// is the safe direction for an information request.
+    fn exposure_at_cost(&self) -> BTreeMap<String, Decimal> {
+        self.positions
+            .iter()
+            .filter_map(|(object, lot)| {
+                lot.quantity
+                    .abs()
+                    .checked_mul(lot.average_price.abs())
+                    .map(|notional| (object.clone(), notional))
+            })
+            .collect()
     }
 
     /// Open positions as signed weights of the given equity, at cost.
@@ -5374,7 +5518,20 @@ impl Platform {
             evaluations: Vec::new(),
             last_calibration: None,
             self_model: SelfModel::new(),
-            federation: crate::federation_stage::FederationStage::new(),
+            // The universe's asset classes are named here, at the one place
+            // they are known, so the domain members (MODEL-4009) are declared
+            // by the first pass of every deployed cycle and not only in the
+            // stage's own tests.
+            federation: {
+                let mut stage = crate::federation_stage::FederationStage::new();
+                stage.set_asset_classes(
+                    asset_classes
+                        .iter()
+                        .map(|(subject, class)| (subject.clone(), class.as_str().to_string()))
+                        .collect(),
+                );
+                stage
+            },
             now_brain: crate::now_stage::NowStage::new()?,
             lattice: crate::lattice_stage::LatticeStage::new()?,
             research: qip_learning_engine::research::ResearchLedger::new(),
@@ -5412,6 +5569,7 @@ impl Platform {
             pending_routing: None,
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
+            federation_requests: Vec::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -5456,10 +5614,13 @@ impl Platform {
             desk_operations: Vec::new(),
             capital_grant_fundings: BTreeMap::new(),
             capital_grant_operations: 0,
+            subscribed_mandates: BTreeSet::new(),
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             pending_theses: Vec::new(),
+            outside_priors: BTreeMap::new(),
+            leg_quantities: BTreeMap::new(),
             governor: crate::survival::SurvivalGovernor::default(),
             ledger_obligations: None,
             unsettled_sales: Vec::new(),
@@ -5497,6 +5658,7 @@ impl Platform {
             pending_capital_grants: BTreeMap::new(),
             fabric,
             holdings_observed: BTreeMap::new(),
+            borrow_availability: BTreeMap::new(),
             wallet_tolerances: ToleranceSchedule::new(),
             policy_rates: PolicyRateTable::new(),
             wallet_tolerance_reasons: BTreeMap::new(),
@@ -5528,6 +5690,7 @@ impl Platform {
             world,
             market,
             research_memory,
+            memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
             liquidity: LiquidityTopology::default(),
             market_events: Vec::new(),
@@ -5617,6 +5780,11 @@ impl Platform {
         // ledger is the authority for (ADR 0123). Journaled once, so every
         // restart re-derives the same operation with the same digest.
         platform.queue_treasury_funding(now)?;
+        // Each private commitment the universe holds, booked once as a
+        // journalled `Commit` operation (ADR 0153 decision 2).
+        platform.queue_private_commitments(now)?;
+        // Every mandate subscription this log recorded, re-queued as written.
+        platform.requeue_mandate_subscriptions()?;
         // Every capital grant this log funded or recalled, re-queued as
         // written and in the order written: the plane's envelopes do not
         // survive a restart but the ledger's debt to the books they funded
@@ -6183,6 +6351,12 @@ impl Platform {
     /// is exactly the fact an operator asking why the desk never installs
     /// needs to find. A refusal is not journaled here, because nothing was
     /// shipped; it is returned, naming the entry, for the shipper to log.
+    /// Whether the central ledger trails the cells' outcomes past
+    /// [`LEDGER_LAG_THRESHOLD`].
+    pub fn ledger_lagging(&self) -> bool {
+        self.central.outcome_backlog() > LEDGER_LAG_THRESHOLD
+    }
+
     /// Partition every configured cell's share of its region's grant for the
     /// `capital_grants` slot (ADR 0039), under this platform's own drawdown.
     ///
@@ -6205,6 +6379,18 @@ impl Platform {
         membership: &RegionMembership,
         now: Timestamp,
     ) -> GrantManifests {
+        if self.ledger_lagging() {
+            return GrantManifests::decide(
+                cells,
+                Err(Error::denied(format!(
+                    "the central ledger trails the cells by {} unbooked orders, past the \
+                     committed threshold of {LEDGER_LAG_THRESHOLD}; no share is granted \
+                     against a book that does not yet say what it holds, so envelopes lapse \
+                     at their expiry until the backlog drains",
+                    self.central.outcome_backlog()
+                ))),
+            );
+        }
         let drawdown = self.drawdown();
         self.central
             .grant_manifests(cells, membership, drawdown, now)
@@ -6257,6 +6443,12 @@ impl Platform {
     /// slot the desk's gate shares, not a copy.
     pub fn research_memory(&self) -> Reading<'_, ResearchMemory> {
         self.research_memory.read()
+    }
+
+    /// How the resolved analyst episodes were valued: kept whole, or counted
+    /// into a per-analyst summary (R12-EXPAND-6057).
+    pub fn memory_registry(&self) -> &MemoryRegistry {
+        &self.memory_registry
     }
 
     /// Produce the cycle's episodic digest — payload slot 4 — and journal it.
@@ -6902,7 +7094,103 @@ impl Platform {
             },
             LEDGER_ORIGIN,
             now,
-        )
+        )?;
+        self.subscribe_mandate(user, currency, amount, now)
+    }
+
+    /// Queue the ledger's record that this user's mandate subscribed capital
+    /// into the treasury, journalling it first, once per mandate (ADR 0153
+    /// decision 4, R12-LEDGER-5010).
+    ///
+    /// The amount is the first funding's, and later fundings of the same
+    /// mandate queue nothing: the decision keys the operation by mandate, so
+    /// the ledger's mandate account states what the mandate first put to
+    /// work and not a running total. A mandate funding is a
+    /// `MandateSubscription`, not a `Transfer`: a transfer is a movement
+    /// between books, venues and custodies, and `TransferEnd` gains no mandate
+    /// arm. The treasury → book leg is the capital grant that already exists.
+    ///
+    /// A mandate the contract refuses (an id the ledger's account text cannot
+    /// carry) is reported and skipped: the funding has already happened and is
+    /// journalled, and nothing is journalled for the operation, so it is
+    /// retried on the next first funding rather than half-recorded.
+    fn subscribe_mandate(
+        &mut self,
+        user: &UserId,
+        currency: Currency,
+        amount: Decimal,
+        now: Timestamp,
+    ) -> Result<()> {
+        use qip_contracts::ledger_operation::{LedgerOperationFields, OperationKind, Phase};
+        let Some(registration) = self.user_ledger.registry().registration(user) else {
+            return Ok(());
+        };
+        let mandate = registration.id.to_string();
+        if self.subscribed_mandates.contains(&mandate) {
+            return Ok(());
+        }
+        let chain = self.desk_ledger.chain().to_string();
+        let built = qip_contracts::validated::Validated::new(LedgerOperationFields {
+            schema_version: 1,
+            operation_id: format!("{chain}:mandate-subscription:{mandate}"),
+            origin: chain,
+            sequence: self.subscribed_mandates.len() as u64 + 1,
+            recorded_at: now,
+            settlement: qip_contracts::ledger::Settlement::Simulated,
+            kind: OperationKind::MandateSubscription {
+                mandate: mandate.clone(),
+                treasury: CENTRAL_TREASURY.to_string(),
+                unit: currency.to_string(),
+                amount,
+                phase: Phase::Establish,
+            },
+        });
+        let operation = match built {
+            Ok(operation) => operation,
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "the subscription of mandate {mandate} could not be booked at the ledger: {}",
+                    error.message()
+                ));
+                return Ok(());
+            }
+        };
+        self.journal_record(
+            MandateSubscribed {
+                operation: operation.clone(),
+            },
+            MANDATE_SUBSCRIPTION_ORIGIN,
+            now,
+        )?;
+        self.subscribed_mandates.insert(mandate);
+        self.desk_operations.push(operation);
+        Ok(())
+    }
+
+    /// Re-queue every mandate subscription the log holds, as written and in
+    /// the order written, and remember which mandates they cover so the
+    /// first-funding rule survives a restart.
+    fn requeue_mandate_subscriptions(&mut self) -> Result<()> {
+        let mut recorded = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer == MANDATE_SUBSCRIPTION_ORIGIN
+                && record.event.topic == MandateSubscribed::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                recorded.push(frame.decode::<MandateSubscribed>()?.body.operation);
+            }
+        }
+        for operation in recorded {
+            if let qip_contracts::ledger_operation::OperationKind::MandateSubscription {
+                mandate,
+                ..
+            } = &operation.kind
+            {
+                self.subscribed_mandates.insert(mandate.clone());
+            }
+            self.desk_operations.push(operation);
+        }
+        Ok(())
     }
 
     /// Whether the product gate refuses this user this strategy, and under
@@ -9136,6 +9424,17 @@ impl Platform {
         now: Timestamp,
     ) -> Result<FabricRecord> {
         let at = command.at();
+        // The ledger-lag flag is the platform's own reading, so it is set
+        // here rather than trusted from the caller: a command stating a
+        // clear anomaly flag is assessed, and journaled, as lagging. Only a
+        // clear flag is overwritten; a caller's own raised flag already vetoes.
+        let mut command = command;
+        if let FabricCommand::Gate(gate) = &mut command
+            && self.ledger_lagging()
+            && gate.velocity.anomaly == qip_capital_fabric::gate::AnomalyFlag::Clear
+        {
+            gate.velocity.anomaly = qip_capital_fabric::gate::AnomalyFlag::LedgerLagging;
+        }
         // A gate command *states* the Intelligence layer's ruling on the
         // corridor, and this is the seam where that statement is checked
         // against the layer that makes it. Without this, the caller — an
@@ -10081,6 +10380,22 @@ impl Platform {
         self.capital.cash
     }
 
+    /// What each belief class's error is applied to (R12-AMBIENT-3113, ADR
+    /// 0158 decisions 7-8): the book's gross notional at cost, split by which
+    /// class alone holds an open thesis on the instrument. Open theses are
+    /// the platform's own unresolved predictions that carry a claim; one
+    /// recorded before claims were kept names no class and holds nothing.
+    pub fn class_exposure(&self) -> crate::class_exposure::ClassExposure {
+        crate::class_exposure::attribute(
+            self.predictions
+                .iter()
+                .filter(|prediction| prediction.is_open())
+                .filter_map(|prediction| prediction.claim.as_ref())
+                .map(|claim| (claim.class.as_str(), claim.subject.as_str())),
+            &self.positions_at_cost(),
+        )
+    }
+
     /// The desk's open positions as the book holds them: signed quantity
     /// and average entry cost, by instrument.
     pub fn positions_at_cost(&self) -> BTreeMap<String, (Decimal, Decimal)> {
@@ -10266,6 +10581,26 @@ impl Platform {
     /// construction against.
     pub fn confidence_signals(&self) -> &crate::confidence::ConfidenceSignals {
         self.governor.signals()
+    }
+
+    /// Replace the beliefs from outside the opportunity that REASON may be
+    /// narrowed by (ADR 0151 decision 3). Replaced, not merged: a posterior
+    /// from an earlier tick that the desk no longer holds must stop acting.
+    /// Bounded like the proposal working set; a longer list is refused rather
+    /// than truncated, because which beliefs a truncation dropped would depend
+    /// on the order the producer happened to list them.
+    pub fn set_outside_priors(&mut self, priors: Vec<crate::fusion::OutsidePrior>) -> Result<()> {
+        if priors.len() > OUTSIDE_PRIOR_CAPACITY {
+            return Err(Error::invalid(format!(
+                "{} outside priors exceed the bound of {OUTSIDE_PRIOR_CAPACITY}; the producer ranks and caps them",
+                priors.len()
+            )));
+        }
+        self.outside_priors = priors
+            .into_iter()
+            .map(|prior| (prior.subject().to_string(), prior))
+            .collect();
+        Ok(())
     }
 
     /// Withhold hedge capacity under `policy` from every construction from
@@ -12646,7 +12981,18 @@ impl Platform {
                 confirmed_trades: view.state().trades(),
             }),
         };
+        // State what rides on each instrument before the pass (AMBIENT-10093),
+        // so a material disagreement on a held name issues the contract
+        // information request and one on a name nothing is at stake in does
+        // not.
+        self.federation.set_stakes(self.capital.exposure_at_cost());
         let review = self.federation.run(&inputs, now);
+        self.federation_requests = review
+            .information_requests
+            .iter()
+            .cloned()
+            .zip(review.request_spreads_bp.iter().copied())
+            .collect();
         // What this review's disagreements earn each instrument in DECIDE
         // (ADR 0125 decision 4), replaced wholesale so a disagreement that
         // has resolved stops narrowing on the next pass.
@@ -12703,6 +13049,14 @@ impl Platform {
         &self,
     ) -> &BTreeMap<String, (crate::federation_stage::Narrowing, f64)> {
         &self.federation_narrowing
+    }
+
+    /// The active-sensing requests the latest federation pass issued, with
+    /// the disagreement spread behind each in basis points.
+    pub fn federation_information_requests(
+        &self,
+    ) -> &[(qip_contracts::control::InformationRequest, u32)] {
+        &self.federation_requests
     }
 
     /// The World Model Federation as the UNDERSTAND stage runs it.
@@ -13906,7 +14260,21 @@ impl Platform {
         // where the anomaly does not imply a mechanism, no hypothesis is
         // formed rather than one being invented.
         let outcome = match self.synthesise(&opportunity, &report, now) {
-            Ok(Some(reasoned)) => {
+            Ok(Some(mut reasoned)) => {
+                // An outside prior may only narrow (ADR 0151 decision 3). It
+                // runs before the confidence is counted, charted, written into
+                // a prediction or sized on, so every reader sees one number.
+                // A claim with no inherent direction has nothing to be against.
+                let outside_narrowing = opportunity
+                    .affected_objects
+                    .first()
+                    .and_then(|subject| self.outside_priors.get(subject.as_str()))
+                    .zip(reasoned.hypothesis.claim.implied_sign())
+                    .map(|(prior, sign)| prior.narrowing_for(sign))
+                    .filter(|multiplier| *multiplier < 1.0);
+                if let Some(multiplier) = outside_narrowing {
+                    reasoned.hypothesis.confidence *= multiplier;
+                }
                 let approved = reasoned.hypothesis.status.is_actionable();
                 // Recorded here, where review's verdict becomes known, rather
                 // than inferred later from the order count. `created` is the
@@ -13980,9 +14348,10 @@ impl Platform {
                     ));
                 }
                 // Blueprint §9.4: the symbolic reasoners over this hypothesis,
-                // journaled as a derivation trace. Advisory — run after review
-                // has decided, and read by nothing that sizes or sends.
-                let (symbolic_detail, symbolic_problem) =
+                // journaled as a derivation trace. Its one power is ADR 0125's
+                // veto: a hypothesis review approved and the rule pack does not
+                // find eligible forms no proposal. Nothing here sizes or sends.
+                let (symbolic_detail, symbolic_problem, symbolic_veto) =
                     self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
                 outcome.detail.push_str(&symbolic_detail);
                 if let Some(problem) = symbolic_problem {
@@ -13999,6 +14368,16 @@ impl Platform {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
                     DecisionTaken::RejectedOnReview
+                } else if let Some(veto) = symbolic_veto {
+                    // ADR 0125 decision 2: the rule pack refused what review
+                    // approved. Recorded under its own words, because "vetoed
+                    // by a rule" and "could not be sized" send an operator to
+                    // different places; the derivation that produced it is
+                    // already on the log under `kernel/symbolic`.
+                    outcome = outcome.with_problem(format!(
+                        "approved but vetoed by the symbolic rule pack: {veto}"
+                    ));
+                    DecisionTaken::NotSizeable
                 } else if let Err(refusal) = justify_thesis(&reasoned.hypothesis.evidence) {
                     // Approved on review and still not queued: a thesis whose
                     // only ground is the return it expects never reaches
@@ -14191,6 +14570,16 @@ impl Platform {
         self.attribution_lineage.last()
     }
 
+    /// The reference, sized and released quantities an order was stamped with
+    /// at release (ADR 0148 decision 5), where it came from a constructed
+    /// proposal leg and its lineage has not been evicted.
+    pub fn release_quantities(
+        &self,
+        order_id: &str,
+    ) -> Option<crate::attribution::ReleaseQuantities> {
+        self.attribution_lineage.release_quantities(order_id)
+    }
+
     /// The latest instant any watched subject crossed a regime boundary,
     /// for the verifier society's structural-break critic.
     pub(crate) fn latest_regime_crossing(&self) -> Option<Timestamp> {
@@ -14214,9 +14603,11 @@ impl Platform {
     /// derivation — REASON-3053 to -3060.
     ///
     /// Gathers only; the module decides. Takes the hypothesis by shared
-    /// reference and returns a clause and a problem, so the derivation has no
-    /// path back into the thesis, its conviction or any order: that is what
-    /// keeps it advisory by construction rather than by convention.
+    /// reference and returns a clause, a problem and, under ADR 0125
+    /// decision 2, the reason the rule pack vetoes an approved hypothesis (see
+    /// `SymbolicDerivation::veto`). The derivation has no path back into the
+    /// thesis, its conviction or any order: the caller may drop a proposal on
+    /// the veto and can do nothing else with it.
     /// What one lot of `subject` leaves of the position budget and of cash,
     /// in whole currency units, for the symbolic rule pack (REASON-3057).
     ///
@@ -14268,13 +14659,13 @@ impl Platform {
         reasoned: &ReasoningOutcome,
         contested: bool,
         now: Timestamp,
-    ) -> (String, Option<String>) {
+    ) -> (String, Option<String>, Option<String>) {
         use crate::symbolic_stage::{AnomalyFacts, SymbolicInput};
         let (Some(anomaly), Some(subject)) = (
             opportunity.anomalies.first(),
             opportunity.affected_objects.first(),
         ) else {
-            return (String::new(), None);
+            return (String::new(), None, None);
         };
         let hypothesis = &reasoned.hypothesis;
         let moves: BTreeMap<String, f64> = self
@@ -14335,6 +14726,7 @@ impl Platform {
             crate::symbolic_stage::derive(input, world.causal(), now)
         };
         let detail = derivation.detail();
+        let veto = derivation.veto();
         let problem = self
             .journal_record(derivation, "kernel/symbolic", now)
             .err()
@@ -14344,7 +14736,7 @@ impl Platform {
                     error.message()
                 )
             });
-        (detail, problem)
+        (detail, problem, veto)
     }
 
     /// The regime in force for `subject`, as the labels memory encodes.
@@ -14784,6 +15176,7 @@ impl Platform {
         if !moved.is_finite() || moved == 0.0 {
             return None;
         }
+        let registry = &mut self.memory_registry;
         self.research_memory.update(|memory| {
             for stance in &episode.stances {
                 let leaned = match stance.direction {
@@ -14792,7 +15185,7 @@ impl Platform {
                     StanceDirection::Ambiguous | StanceDirection::Neutral => continue,
                 };
                 let correct = leaned * moved > 0.0;
-                memory.record_episode(ResearchEpisode {
+                let analyst_episode = ResearchEpisode {
                     run_id: AgentRunId::from_string(format!(
                         "{}:{}",
                         episode.episode_id, stance.agent_id
@@ -14814,7 +15207,12 @@ impl Platform {
                             "the series moved {moved:.1} bps over the claim's horizon"
                         ),
                     }),
-                });
+                };
+                // Valued before it is stored and stored whatever the value:
+                // compression is a summary beside the episode, never a drop,
+                // so `hit_rate` counts every resolved call.
+                registry.consult(&analyst_episode);
+                memory.record_episode(analyst_episode);
             }
         });
 
@@ -15550,11 +15948,15 @@ impl Platform {
         // response a tail world the book does not survive is required to
         // have (R12-RISK-4117..4124).
         capped.extend(sizing.narrowing());
-        let outcome = self.constructor.construct_capped(
+        // `free` is the budget before the governor and the multipliers took
+        // anything from it: the reference the leg quantities are reported
+        // against, by the constructor in this same pass (ADR 0148 decision 5).
+        let outcome = self.constructor.construct_referenced(
             theses,
             &covariance,
             &current,
             Money::new(budget, Currency::USD),
+            Money::new(free, Currency::USD),
             &caps,
             now,
             now,
@@ -17370,6 +17772,12 @@ impl Platform {
                     now,
                 );
 
+                if let Some(reference) = leg.reference_quantity {
+                    self.leg_quantities.insert(
+                        order.order_id.as_str().to_string(),
+                        (reference, leg.quantity),
+                    );
+                }
                 match self.submit_order(order, now) {
                     Ok(()) => {
                         released += 1;
@@ -18901,6 +19309,7 @@ impl Platform {
         let state = crate::shared_cause::observe(&self.world, &self.price_history, state);
         let state = self.with_margin_and_funding(state, figures);
         let state = self.with_custody_exposure(state);
+        let state = self.with_twin_misfit(state);
         // Both maps or neither. The fractions are a sum over the same ladder
         // the day counts come from, so filling one from a ladder whose totals
         // could not be computed would leave the two halves of one liquidity
@@ -18916,6 +19325,133 @@ impl Platform {
             },
             Err(error) => state.with_unevaluated(LIQUIDITY_FIGURE, error.message()),
         }
+    }
+
+    /// Record a lender's statement of how much of `instrument` can be
+    /// borrowed (R12-RISK-4096). Refuses a negative quantity, a reading from
+    /// the future, and a new instrument past the bound. **No caller feeds
+    /// this in the tree**: a borrow source is a data source, and
+    /// `qip-data-finder` evaluates its licensing posture before one is
+    /// used, so until one is admitted every short is refused.
+    pub fn observe_borrow(
+        &mut self,
+        instrument: &str,
+        available: Decimal,
+        observed_at: Timestamp,
+        now: Timestamp,
+    ) -> Result<()> {
+        if available.is_negative() {
+            return Err(Error::invalid(format!(
+                "borrow availability for {instrument} is {available}; a quantity cannot be \
+                 negative — state zero if nothing can be borrowed"
+            )));
+        }
+        if observed_at > now {
+            return Err(Error::invalid(format!(
+                "borrow availability for {instrument} is dated {observed_at} but now is {now}; \
+                 a reading from the future is a clock fault, not evidence"
+            )));
+        }
+        if !self.borrow_availability.contains_key(instrument)
+            && self.borrow_availability.len() >= MAX_BORROW_READINGS
+        {
+            return Err(Error::denied(format!(
+                "borrow availability is held for {MAX_BORROW_READINGS} instruments already; \
+                 {instrument} would be the next"
+            )));
+        }
+        self.borrow_availability.insert(
+            instrument.to_string(),
+            BorrowReading {
+                available,
+                observed_at,
+            },
+        );
+        Ok(())
+    }
+
+    /// Why a sell would short without a borrow that is known, or `None` for
+    /// an order that does not take the book below flat or whose shorted part
+    /// is covered by a fresh reading. **Unknown is refused**: no reading, a
+    /// stale one, or one smaller than the shorted quantity all refuse, and
+    /// nothing defaults to borrowable.
+    pub fn short_without_borrow(&self, order: &Order, now: Timestamp) -> Option<String> {
+        if !matches!(order.side, Side::Sell) {
+            return None;
+        }
+        let instrument = order.object_id.as_str();
+        let held = self
+            .capital
+            .positions
+            .get(instrument)
+            .map_or(Decimal::ZERO, |lot| lot.quantity);
+        let long = if held.is_positive() {
+            held
+        } else {
+            Decimal::ZERO
+        };
+        let shorted = order.quantity - long;
+        if !shorted.is_positive() {
+            return None;
+        }
+        match self.borrow_availability.get(instrument) {
+            None => Some(format!(
+                "selling {} of {instrument} takes the book {shorted} short and no borrow \
+                 availability has been observed for it; an instrument nobody has said is \
+                 borrowable is not borrowable",
+                order.quantity
+            )),
+            Some(reading) if now.since(reading.observed_at) > BORROW_FRESHNESS => Some(format!(
+                "selling {} of {instrument} takes the book {shorted} short and the borrow \
+                 reading for it is older than {BORROW_FRESHNESS:?}; re-read it rather than \
+                 shorting against a stale one",
+                order.quantity
+            )),
+            Some(reading) if reading.available < shorted => Some(format!(
+                "selling {} of {instrument} takes the book {shorted} short and only {} can be \
+                 borrowed",
+                order.quantity, reading.available
+            )),
+            Some(_) => None,
+        }
+    }
+
+    /// Whether the twin's fills at `venue` have been persistently wrong
+    /// (R12-RES-7104): at least [`TWIN_MISFIT_MIN_OBSERVATIONS`] observed and
+    /// a calibrated bias of [`TWIN_MISFIT_BIAS_BPS`] or more either way. A
+    /// venue the twin has not been scored at yet is not called wrong: the
+    /// absence of evidence is not evidence, and narrowing every new venue
+    /// would narrow every cold start.
+    pub fn twin_misfit(&self, venue: &str) -> bool {
+        self.fill_calibration
+            .venue(venue)
+            .is_some_and(|calibration| {
+                calibration.observations >= TWIN_MISFIT_MIN_OBSERVATIONS
+                    && (calibration.bias_bps.is_nan()
+                        || calibration.bias_bps.abs() >= TWIN_MISFIT_BIAS_BPS)
+            })
+    }
+
+    /// The gross carried at each venue whose twin is misfit, on
+    /// [`qip_risk::limits::VENUE_TWIN_MISFIT_AXIS`] (R12-RES-7104). The
+    /// buckets are the counterparty axis's own running gross, so the cap
+    /// reads what the book carries there and not a second count.
+    fn with_twin_misfit(&self, state: RiskState) -> RiskState {
+        let mut state = state;
+        let misfit: BTreeMap<String, Decimal> = state
+            .axis_exposures
+            .get(qip_risk::limits::COUNTERPARTY_AXIS)
+            .into_iter()
+            .flatten()
+            .filter(|(venue, _)| self.twin_misfit(venue))
+            .map(|(venue, gross)| (venue.clone(), *gross))
+            .collect();
+        if !misfit.is_empty() {
+            state
+                .axis_exposures
+                .insert(qip_risk::limits::VENUE_TWIN_MISFIT_AXIS.to_string(), misfit);
+        }
+        state
     }
 
     /// Capital held at each custodian, for `custodian-concentration`
@@ -19250,6 +19786,9 @@ impl Platform {
         if let Some(reason) = self.wallet_halt_for(order.object_id.as_str(), order.side) {
             return self.refuse_for_wallet_halt(&order, reason, now);
         }
+        if let Some(reason) = self.short_without_borrow(&order, now) {
+            return self.refuse_for_borrow(&order, reason, now);
+        }
         // R12-RISK-3022: the pre-trade check is routed through the cost router
         // as a decision that must be deterministic, and the order does not go
         // further without that routing. `Router::determine` returns a type that
@@ -19272,13 +19811,22 @@ impl Platform {
         let release_hypotheses = order.hypotheses.clone();
         let release_scope = order.scope.clone();
         let release_type = order.order_type.as_str();
+        let leg_quantities = self.leg_quantities.remove(&release_order_id);
         // The order's own buckets, so the pre-trade projection adds this
         // order to the sector, country, class and venue it belongs to before
         // the limits read it. The projection used to be handed no axes, so
         // an order that would take a bucket over its limit was admitted and
         // the breach was discovered — if the aggregate had carried a bucket
         // at all — only by the monitor, one cycle late.
-        let axes = self.exposure_axes_for(object_id.as_str());
+        let mut axes = self.exposure_axes_for(object_id.as_str());
+        // An order to a venue whose twin is misfit is charged to the misfit
+        // axis too, so the cap sees it before the order exists.
+        if self.twin_misfit(self.broker.name()) {
+            axes.insert(
+                qip_risk::limits::VENUE_TWIN_MISFIT_AXIS.to_string(),
+                self.broker.name().to_string(),
+            );
+        }
         // The counterparty is the venue that will hold the other side, and the
         // platform knows it here because it is about to hand the order to it.
         // Until this was named, `None` went in and
@@ -19305,7 +19853,23 @@ impl Platform {
             // Stamped at acceptance, from what was in force at acceptance:
             // a key read at LEARN from whatever policy holds then would
             // credit today's policy with yesterday's fill.
-            let context = self.release_context(&result, &object_id, &release_scope, release_type);
+            // The released quantity is what the gate let through: the risk
+            // reduction, where it cut the order, else the order as sent.
+            let quantities = leg_quantities.and_then(|(reference, sized)| {
+                crate::attribution::ReleaseQuantities::new(
+                    reference,
+                    sized,
+                    result.reduced_to.unwrap_or(quantity),
+                )
+                .ok()
+            });
+            let context = self.release_context(
+                &result,
+                &object_id,
+                &release_scope,
+                release_type,
+                quantities,
+            );
             if let Err(error) = self.attribution_lineage.note_release(
                 &release_order_id,
                 &release_hypotheses,
@@ -19375,6 +19939,27 @@ impl Platform {
             })
     }
 
+    /// Put a short the borrow rule stopped on the record and refuse it.
+    fn refuse_for_borrow(&mut self, order: &Order, reason: String, now: Timestamp) -> Result<()> {
+        let correlation = self.correlation_for(now);
+        self.telemetry
+            .metrics
+            .count(names::ORDERS_REFUSED, labels([("control", BORROW_CONTROL)]));
+        let _ = self.capture(
+            now,
+            &correlation,
+            order.object_id.clone(),
+            Action::Rejected {
+                order_id: order.order_id.clone(),
+                gate: BORROW_CONTROL.to_string(),
+                reason: reason.clone(),
+            },
+            RealisedOutcome::nothing_happened(now),
+            reason.clone(),
+        );
+        Err(Error::denied(reason))
+    }
+
     /// Put an order the wallet halt stopped on the record and refuse it.
     fn refuse_for_wallet_halt(
         &mut self,
@@ -19420,6 +20005,7 @@ impl Platform {
         object_id: &ObjectId,
         scope: &str,
         order_type: &str,
+        quantities: Option<crate::attribution::ReleaseQuantities>,
     ) -> crate::attribution::ReleaseContext {
         let narrowed = self
             .governor
@@ -19454,6 +20040,7 @@ impl Platform {
                 .spread_history
                 .get(object_id.as_str())
                 .and_then(|series| series.last().copied()),
+            quantities,
         }
     }
 
@@ -20709,6 +21296,110 @@ impl Platform {
             },
         })?;
         self.desk_operations.push(operation);
+        Ok(())
+    }
+
+    /// Queue the `Commit`-stage booking of every private commitment this
+    /// assembly holds, journalling each first if this log has never recorded
+    /// it (ADR 0153 decision 2, R12-LEDGER-5006 and 5020).
+    ///
+    /// The observer is the universe record, which `private_holdings_of`
+    /// already turned into a [`qip_financial::cashflow::Commitment`]; the
+    /// operation id is `<chain>:commitment:<commitment id>`, so a commitment
+    /// books once however many assemblies see it. `recorded_at` is the
+    /// instant of the first assembly that journalled it, read back from the
+    /// record on every later one — never `now`, and never the universe
+    /// record's `updated_at`, which moves.
+    ///
+    /// A record whose committed amount later differs from the journalled one
+    /// is **not rebooked**: the original stands and the difference is
+    /// reported as a problem naming the commitment, because a second
+    /// operation under the same id with another digest is a conflict the
+    /// ledger refuses, and a silent overwrite would edit a fact already
+    /// booked. No `Draw` or `Release` is produced: no capital-call observer
+    /// exists in the tree, and a draw inferred from a cash-flow schedule is a
+    /// forecast, not an event.
+    ///
+    /// A commitment the contract refuses (an id the ledger's account text
+    /// cannot carry) is reported and skipped rather than stopping assembly:
+    /// the ledger queue is not the platform's start condition, and nothing is
+    /// journalled for it, so a corrected id books on a later start.
+    fn queue_private_commitments(&mut self, now: Timestamp) -> Result<()> {
+        use qip_contracts::ledger_operation::{
+            Book, CommitmentStage, LedgerOperationFields, OperationKind,
+        };
+        let mut journalled: BTreeMap<String, qip_contracts::ledger_operation::LedgerOperation> =
+            BTreeMap::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer == PRIVATE_COMMITMENT_ORIGIN
+                && record.event.topic == PrivateCommitmentMade::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                let made = frame.decode::<PrivateCommitmentMade>()?.body;
+                journalled.insert(made.operation.operation_id.clone(), made.operation);
+            }
+        }
+        let chain = self.desk_ledger.chain().to_string();
+        let mut sequence = journalled.len() as u64;
+        let commitments: Vec<(String, Decimal)> = self
+            .commitments
+            .iter()
+            .map(|commitment| (commitment.subject().to_string(), commitment.committed()))
+            .collect();
+        for (subject, committed) in commitments {
+            let operation_id = format!("{chain}:commitment:{subject}");
+            if let Some(booked) = journalled.get(&operation_id) {
+                if let OperationKind::Commitment { amount, .. } = &booked.kind
+                    && *amount != committed
+                {
+                    self.capture_problems.push(format!(
+                        "private commitment {subject} is {committed} in the universe record but \
+                         was booked at {amount}; the original booking stands and nothing was \
+                         rebooked"
+                    ));
+                }
+                self.desk_operations.push(booked.clone());
+                continue;
+            }
+            sequence += 1;
+            let built = qip_contracts::validated::Validated::new(LedgerOperationFields {
+                schema_version: 1,
+                operation_id,
+                origin: chain.clone(),
+                sequence,
+                recorded_at: now,
+                settlement: qip_contracts::ledger::Settlement::Simulated,
+                kind: OperationKind::Commitment {
+                    commitment: subject.clone(),
+                    counterparty: subject.clone(),
+                    book: Book {
+                        cell: chain.clone(),
+                        strategy: DESK_STRATEGY.to_string(),
+                    },
+                    unit: crate::desk_ledger::DESK_QUOTE_UNIT.to_string(),
+                    amount: committed,
+                    stage: CommitmentStage::Commit,
+                },
+            });
+            let operation = match built {
+                Ok(operation) => operation,
+                Err(error) => {
+                    self.capture_problems.push(format!(
+                        "private commitment {subject} could not be booked at the ledger: {}",
+                        error.message()
+                    ));
+                    continue;
+                }
+            };
+            self.journal_record(
+                PrivateCommitmentMade {
+                    operation: operation.clone(),
+                },
+                PRIVATE_COMMITMENT_ORIGIN,
+                now,
+            )?;
+            self.desk_operations.push(operation);
+        }
         Ok(())
     }
 
@@ -30737,6 +31428,56 @@ mod episodic_slot_tests {
         );
     }
 
+    /// R12-EXPAND-6057. A consult that dropped the unsurprising calls would
+    /// keep only the misses and score every analyst as wrong; the registry
+    /// summarises beside the memory and the memory keeps every episode.
+    #[test]
+    fn an_unsurprising_call_is_compressed_by_the_registry_and_still_counts_in_the_analysts_hit_rate()
+     {
+        use qip_ai::memory::{AnalystStance, StanceDirection};
+        use qip_core::ids::AgentRunId;
+        let mut platform = platform();
+        let calls = [
+            ("ep-1", 0.95, 12.0),
+            ("ep-2", 0.95, 12.0),
+            ("ep-3", 0.95, 12.0),
+            ("ep-4", 0.95, -12.0),
+        ];
+        let mut last = start();
+        for (n, (id, conviction, moved)) in calls.into_iter().enumerate() {
+            let at = start().saturating_add(Duration::from_hours(n as i64 + 1));
+            last = at;
+            let mut episode = resolved(id, at);
+            episode.stances = vec![AnalystStance {
+                agent_id: "analyst-a".to_string(),
+                direction: StanceDirection::Positive,
+                conviction,
+            }];
+            if let Some(outcome) = episode.outcome.as_mut() {
+                outcome.realised_move_bps = moved;
+            }
+            platform.write_research_memory(&episode, at);
+        }
+        let registry = platform.memory_registry();
+        // The premise: the registry did both things, so the equalities below
+        // are not about a threshold that classified everything one way.
+        assert_eq!(registry.retained_for("analyst-a"), 1, "only the miss");
+        let summary = registry.summary_for("analyst-a").expect("a summary");
+        assert_eq!(summary.episodes, 3);
+        assert_eq!(summary.correct, 3);
+
+        let memory = platform.research_memory.read();
+        assert_eq!(memory.episode_count(), 4, "compression drops nothing");
+        assert_eq!(memory.hit_rate("analyst-a", last), Some(0.75));
+        assert!(
+            memory
+                .episodes()
+                .iter()
+                .any(|e| e.run_id == AgentRunId::from_string("ep-1:analyst-a".to_string())),
+            "a compressed call is still held"
+        );
+    }
+
     #[test]
     fn the_episodic_slot_is_produced_from_the_platforms_own_memory_and_journaled_either_way() {
         // Slot 4 of the signed §41.5 payload had no producer: every payload
@@ -32128,6 +32869,59 @@ mod idle_routing_tests {
             .governor
             .size(figures, None, STRESS_LOSS_TOLERANCE, &[], at)
             .expect("the waterfall releases")
+    }
+
+    /// The federation is told what rides on each instrument at the start of
+    /// every UNDERSTAND pass (AMBIENT-10093, CONTRACT-6111). Before the call
+    /// existed `FederationStage::stakes` stayed empty in every deployed
+    /// cycle, so the exposure gate on the contract `InformationRequest` could
+    /// never open and a million held on a split verdict asked nothing.
+    ///
+    /// Mutation: delete the `set_stakes` line in `understand_federation` and
+    /// the first assertion fails with `None`.
+    #[test]
+    fn the_federation_pass_is_told_what_each_held_instrument_has_at_stake_and_forgets_it_when_flat()
+    {
+        let mut platform = platform();
+        let at = start();
+        platform.capital.apply_fill(
+            "AAA",
+            Side::Buy,
+            Decimal::from_int(100),
+            Decimal::from_int(3),
+            Decimal::ZERO,
+            at,
+        );
+        assert_eq!(
+            platform.federation.stake_of("AAA"),
+            None,
+            "premise: nothing stated before a pass"
+        );
+        let _ = platform.understand_federation(at);
+        assert_eq!(
+            platform.federation.stake_of("AAA"),
+            Some(Decimal::from_int(300))
+        );
+        assert_eq!(
+            platform.federation.stake_of("BBB"),
+            None,
+            "an unheld name has nothing at stake"
+        );
+
+        platform.capital.apply_fill(
+            "AAA",
+            Side::Sell,
+            Decimal::from_int(100),
+            Decimal::from_int(3),
+            Decimal::ZERO,
+            at,
+        );
+        let _ = platform.understand_federation(at.saturating_add(Duration::from_mins(5)));
+        assert_eq!(
+            platform.federation.stake_of("AAA"),
+            None,
+            "a closed position stakes nothing"
+        );
     }
 
     /// Mutation: drop the `budget.at == now` filter in `route_idle_capital`

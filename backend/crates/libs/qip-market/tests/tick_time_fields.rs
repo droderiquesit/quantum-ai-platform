@@ -94,3 +94,35 @@ fn a_tick_captured_before_it_occurred_is_refused_and_one_captured_after_is_not()
         check_capture_order(Timestamp::from_millis(EVENT), Timestamp::from_millis(EVENT)).is_none()
     );
 }
+
+/// ADR 0151 decision 9 (R12-TICK-2051): the central tick states when the
+/// event happened and when the platform received it, and claims no normalised
+/// time and no clock uncertainty, because the centre has no clock discipline
+/// to certify either. A field of that name here would read as a measurement
+/// nobody took; the edge lake line carries both from the disciplined clock.
+///
+/// Mutation: `#[serde(rename = "normalized_time_ns")]` on `Tick::capture_time`
+/// — the premise assertion on `capture_time` and the token check both fail.
+#[test]
+fn the_central_tick_states_received_time_and_claims_no_normalised_time_or_uncertainty() {
+    let value = serde_json::to_value(tick()).unwrap();
+    let keys: Vec<&str> = value
+        .as_object()
+        .expect("a tick serialises as an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    // Premise: the two instants it does state are present, delimited tokens.
+    assert!(keys.contains(&"at"), "event time missing: {keys:?}");
+    assert!(
+        keys.contains(&"capture_time"),
+        "received time missing: {keys:?}"
+    );
+    for key in &keys {
+        assert!(
+            key.split('_')
+                .all(|token| token != "normalized" && token != "uncertainty"),
+            "the central tick claims `{key}`, which the centre cannot certify"
+        );
+    }
+}

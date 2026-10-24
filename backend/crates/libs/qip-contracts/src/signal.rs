@@ -141,6 +141,15 @@ pub struct Signal {
     /// attributed to exactly the inputs that produced it.
     pub inputs: Vec<(String, u64)>,
     pub at: Timestamp,
+    /// The edge the strategy's own rule declared, in basis points of
+    /// notional (ADR 0155 §7). `None` is "this rule states none", never
+    /// "zero": conviction is a probability that the claim holds and a payoff
+    /// is a different quantity, so nothing derives one from the other, and a
+    /// gate that compared a number nobody computed would be the
+    /// `MaxExpectedShortfall` failure again. Off the wire when absent so a
+    /// signal that states none encodes as it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_edge_bp: Option<f64>,
 }
 
 impl Signal {

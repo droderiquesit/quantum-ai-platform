@@ -54,6 +54,28 @@ impl ResearchCampaign {
         &self.question
     }
 
+    /// The campaign's identity: the digest of its normalised question
+    /// (ADR 0152 decision 11), so the same question is one campaign.
+    pub fn id(&self) -> Result<String> {
+        qip_agents::research::campaign_id(&self.question)
+    }
+
+    /// One `<campaign id>/<stage>` reference per stage that ran, in stage
+    /// order: the experiments a verdict on this campaign rests on.
+    pub fn experiment_refs(&self) -> Result<Vec<String>> {
+        let id = self.id()?;
+        Ok(self
+            .stages
+            .iter()
+            .map(|(environment, _)| {
+                qip_agents::research::experiment_ref(
+                    &id,
+                    &format!("{environment:?}").to_ascii_lowercase(),
+                )
+            })
+            .collect())
+    }
+
     pub fn stages(&self) -> &[(Environment, Provenance)] {
         &self.stages
     }

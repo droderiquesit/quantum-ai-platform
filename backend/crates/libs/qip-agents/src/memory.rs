@@ -41,6 +41,13 @@ pub const VERSIONS_PER_PROCEDURE: usize = 16;
 /// a procedure something may still follow.
 pub const MAX_PROCEDURES: usize = 256;
 
+/// The calibration surprise below which a resolved episode is compressed
+/// rather than kept whole (ADR 0152 decision 8).
+///
+/// Positive on purpose: a threshold of zero would retain everything, and a
+/// gate that can never refuse reads as curation while doing none.
+pub const DEFAULT_IMPORTANCE_THRESHOLD: f64 = 0.3;
+
 /// A way of answering a kind of question, distilled from episodes that
 /// followed it and turned out right.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -449,5 +456,109 @@ impl ResearchMemory {
         };
         lesson.superseded_at = Some(at);
         true
+    }
+}
+
+/// What a [`MemoryRegistry`] did with one resolved episode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disposition {
+    /// Surprising enough to keep whole.
+    Retained,
+    /// Below the threshold: counted into the agent's summary, detail given up.
+    Compressed,
+}
+
+/// What compression keeps of the episodes it summarised.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CompressedSummary {
+    pub episodes: usize,
+    pub correct: usize,
+    /// Sum of the summarised episodes' importance, so a mean is recoverable.
+    pub importance_sum: f64,
+}
+
+/// Value policy over resolved episodes: which are kept whole and which are
+/// compressed (ADR 0152 decision 8, R12-EXPAND-6057).
+///
+/// The registry only classifies and summarises. It never holds the verdict
+/// on the calibration: [`ResearchMemory::hit_rate`] is computed over every
+/// resolved episode `ResearchMemory` holds, before any consult, because a
+/// consult that dropped the unsurprising calls would keep the surprising
+/// misses and bias the rate the platform scores its analysts on.
+#[derive(Clone, Debug)]
+pub struct MemoryRegistry {
+    importance_threshold: f64,
+    retained: BTreeMap<String, usize>,
+    compressed: BTreeMap<String, CompressedSummary>,
+}
+
+impl MemoryRegistry {
+    /// A registry with a positive importance threshold in `(0, 1]`.
+    ///
+    /// Zero, negative, above one and non-finite are refused rather than
+    /// clamped: zero retains everything, so it is a gate that cannot fire.
+    pub fn new(importance_threshold: f64) -> Result<Self> {
+        if !importance_threshold.is_finite()
+            || importance_threshold <= 0.0
+            || importance_threshold > 1.0
+        {
+            return Err(Error::invalid(format!(
+                "a memory registry needs an importance threshold in (0, 1], got \
+                 {importance_threshold}; zero would retain every episode and never compress one"
+            )));
+        }
+        Ok(Self {
+            importance_threshold,
+            retained: BTreeMap::new(),
+            compressed: BTreeMap::new(),
+        })
+    }
+
+    /// The registry at [`DEFAULT_IMPORTANCE_THRESHOLD`].
+    pub fn standard() -> Self {
+        Self {
+            importance_threshold: DEFAULT_IMPORTANCE_THRESHOLD,
+            retained: BTreeMap::new(),
+            compressed: BTreeMap::new(),
+        }
+    }
+
+    pub fn importance_threshold(&self) -> f64 {
+        self.importance_threshold
+    }
+
+    /// `|outcome − predicted probability|` in `[0, 1]`: the outcome is `1`
+    /// when the conclusion was right, the prediction is the conviction held.
+    /// `None` for an episode whose outcome is not yet known, which is not an
+    /// episode in this registry's sense.
+    pub fn importance(episode: &Episode) -> Option<f64> {
+        let outcome = episode.outcome.as_ref()?;
+        let hit = if outcome.correct { 1.0 } else { 0.0 };
+        Some((hit - episode.conviction).abs().clamp(0.0, 1.0))
+    }
+
+    /// Classify one resolved episode and count it; `None` for an unresolved
+    /// one, which is neither retained nor summarised.
+    pub fn consult(&mut self, episode: &Episode) -> Option<Disposition> {
+        let importance = Self::importance(episode)?;
+        let correct = episode.outcome.as_ref().is_some_and(|o| o.correct);
+        if importance < self.importance_threshold {
+            let summary = self.compressed.entry(episode.agent_id.clone()).or_default();
+            summary.episodes += 1;
+            summary.correct += usize::from(correct);
+            summary.importance_sum += importance;
+            Some(Disposition::Compressed)
+        } else {
+            *self.retained.entry(episode.agent_id.clone()).or_default() += 1;
+            Some(Disposition::Retained)
+        }
+    }
+
+    pub fn retained_for(&self, agent_id: &str) -> usize {
+        self.retained.get(agent_id).copied().unwrap_or(0)
+    }
+
+    pub fn summary_for(&self, agent_id: &str) -> Option<&CompressedSummary> {
+        self.compressed.get(agent_id)
     }
 }

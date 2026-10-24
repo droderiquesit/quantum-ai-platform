@@ -1,0 +1,67 @@
+[
+  {
+    "id": "R12-EVENT-5084",
+    "class": "DESIGN_OPEN",
+    "reason": "ADR 0151 d10 decides no Arrival producer: backend/crates/runtime/qip-kernel/src/event_markets.rs::EventMarketPlane::price labels book-mid distributions venue-implied; restated in gap."
+  },
+  {
+    "id": "R12-RES-7095",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "Peer loss is reproducible by dropping a ReflexPort (qip-peer-link/src/host.rs Host::run returns on Disconnected) but PeerStatus has no counter for an epoch lapsing at its TTL (grep -n 'cycles_expired' backend/crates/edge/qip-peer-link finds nothing); the seam is in qip-peer-link, outside this lane."
+  },
+  {
+    "id": "R12-RES-7103",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "Event uncertainty from the cell's clock lead: qip-edge-node/src/feed.rs::SimulatedFeed::capture; label and replay promotion control remains a centre/research-lane item."
+  },
+  {
+    "id": "R12-RISK-4112",
+    "class": "EXTERNAL_BLOCKED",
+    "reason": "Grant half unreachable: backend/crates/apps/qip-api/src/auth.rs::Principal::presence always returns Unattested, so every capital grant is refused before CentralPlane::issue_narrowed; needs the per-person credential of ADR 0065/0076 (qip-api, outside this lane)."
+  },
+  {
+    "id": "R12-RISK-4115",
+    "class": "EXTERNAL_BLOCKED",
+    "reason": "Same as R12-RISK-4112: grant path gated by qip-api Principal::presence (auth.rs:169), Unattested everywhere."
+  },
+  {
+    "id": "R12-SEC-9129",
+    "class": "EXTERNAL_BLOCKED",
+    "reason": "vpc_service_controls is null in every infrastructure/environments/*/terraform.tfvars (protected) and the perimeter needs an organisation access policy."
+  },
+  {
+    "id": "R12-SEC-9134",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "sensitive_data_protection is null in every environment tfvars (protected); closing needs a real plan against a project."
+  },
+  {
+    "id": "R12-TICK-2050",
+    "class": "EXTERNAL_BLOCKED",
+    "reason": "ADR 0151 d8 / ADR 0157: raw capture writer is gated on a licence record permitting raw retention; drain.rs LakeSink::deliver passes None for raw bytes."
+  },
+  {
+    "id": "R12-EVENT-5089",
+    "class": "PROTECTED_PATCH",
+    "reason": "Breadth plan is unset because no tfvars sets it (infrastructure/environments/**, protected) and which markets to install is an owner choice; an_unset_plan_installs_nothing."
+  },
+  {
+    "id": "R12-EXEC-1169",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "grep -rn 'MarketFactory' backend/crates finds no consumer of the permission register's admissions; a market factory is a new service, bigger than one lane."
+  },
+  {
+    "id": "R12-EXEC-5074",
+    "class": "CODE_CLOSABLE",
+    "reason": "backend/crates/runtime/qip-kernel/src/quote_loop.rs build_inputs passed correlated: None; closed by deriving it in QuoteLoopReview::of."
+  },
+  {
+    "id": "R12-FINOPS-8040",
+    "class": "BILLED",
+    "reason": "execution_nodes = {} in every environment tfvars (protected) and a committed-use commitment is a billed owner decision."
+  },
+  {
+    "id": "R12-GCP-7002",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "No node declared in any environment (execution_nodes = {}; dev has execution_nodes_enabled = false); needs protected tfvars and a real plan."
+  }
+]

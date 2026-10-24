@@ -209,12 +209,14 @@
   {
     "id": "R12-DATA-2010",
     "status": "PARTIAL",
-    "current": "Data-finder has a commerce-source test suite exercising categorisation and legality for commerce candidates; no commerce connector exists.",
+    "current": "The data finder categorises and legality-checks commerce candidates. The seven commerce source kinds are catalogued in data/datasets/source-candidates.json as unevaluated placeholders on reserved .example.com hosts: each posture is Undetermined, so every usage answers Unknown and every one is refused.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/tests/commerce_sources.rs",
+      "data/datasets/source-candidates.json (seven commerce placeholders, posture undetermined)",
+      "backend/crates/services/qip-data-finder/tests/commerce_sources.rs::no_candidate_on_a_reserved_documentation_host_carries_a_declared_licence",
+      "backend/crates/services/qip-data-finder/tests/commerce_sources.rs::all_seven_commerce_source_kinds_are_catalogued_and_refused_until_a_licence_record_exists",
       "backend/crates/services/qip-data-finder/src/category.rs"
     ],
-    "gap": "No acquisition adapter for any commerce source.",
+    "gap": "No commerce connector. Which commerce source to license is the owner's decision and is billed (ADR 0157): a source enters only as a committed licence record quoting the terms it was read from. Until one exists the seven stay Undetermined and refused.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -222,10 +224,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --test connector_contract",
+    "verification": "cargo test -p qip-data-finder --test commerce_sources",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 N2-FABRIC-DATA: the seven placeholders carried Declared licences nobody evaluated and invented fees; they are now Undetermined (ADR 0157). Mutation: restore one placeholder's posture to declared - both commerce_sources tests fail naming it; restored byte for byte. Status stays PARTIAL: the acquisition adapter is billed."
   },
   {
     "id": "R12-DATA-2011",
@@ -254,14 +256,14 @@
   {
     "id": "R12-DATA-2012",
     "status": "PARTIAL",
-    "current": "Connector polls run an evidence check before release, forward evidence into the world model's fabric (Platform::absorb_evidence) in production, and derive a knowledge-delta pack the deep brain can store.",
+    "current": "Connector polls run an evidence check before release and forward evidence into the world model fabric (Platform::absorb_evidence) in production. A claim that changes what the fabric believes leaves one validated KnowledgeDelta in the log (the world-model change path, Topic::WorldModelUpdated) and each admitted claim is journaled to evidence.admitted. Restated per ADR 0152 d8: an acquired claim is not an episode, because episodes are resolved outcomes; typed facts update the world model through the delta, which is the path built.",
     "evidence": [
       "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs:45 every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
       "backend/crates/apps/qip-deepbrain/src/connectors.rs:499 drain_evidence into Platform::absorb_evidence (the production caller the earlier evidence line said was missing)",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::absorb_evidence",
       "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs:575 an_unchecked_claim_under_a_forged_admissible_verdict_is_held_inadmissible_and_weighs_nothing"
     ],
-    "gap": "No memory/episode update from acquired facts; typed facts do not update world-model state beyond the evidence fabric. (The gate-bypass test now exists: a claim on an impossible timeline forwarded under a forged admissible verdict is held inadmissible at zero weight by the world fabric's own re-check.)",
+    "gap": "2026-10-24: the connector acquisition path is not enabled in any committed deployment (deepbrain_connector / market_data_connector null in every environment tfvars), so no deployed process fetches, checks and distils a source into a knowledge delta",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -274,7 +276,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_runtime && cargo test -p qip-kernel --test evidence_intake",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Evidence-check stage added on the production poll path; the delta->world model step is still unwired. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L23: bypass test added in the kernel's evidence_intake suite (absorb_evidence lives in qip-kernel, not qip-market-ingestion as the closure proposed); mutation fired - the fabric's admissibility ignoring its own temporal check held the forgery admissible (inadmissible left 0, right 1)."
+    "notes": "Regraded 2026-10-24 to the ADR 0152 d8 wording after running both verification commands (45 and 10 passed). Mutation on the production caller: taking zero deltas in the journalling loop of Platform::absorb_evidence fails a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys (knowledge_deltas 0, expected 2). AUDIT-2 2026-10-24: regraded, the connector acquisition path is not enabled in any committed deployment (deepbrain_connector / market_data_connector null in every environment tfvars), so no deployed process fetches, checks and distils a source into a knowledge delta"
   },
   {
     "id": "R12-DATA-2013",
@@ -398,7 +400,7 @@
   },
   {
     "id": "R12-DATA-2018",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Source cannot be built without ProbeEvidence; finder records findings per inspection attribute (access, terms, schema, freshness, cost, uniqueness, manipulation).",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/finder.rs:326 DataFinder::assess",
@@ -406,7 +408,7 @@
       "backend/crates/services/qip-data-finder/src/quality.rs:87 SourceCost",
       "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs:492 a_registered_source_records_a_finding_for_every_inspection_attribute_in_its_trail"
     ],
-    "gap": "None in code; discovery disabled in deployments.",
+    "gap": "2026-10-24: The finder is real and mutation-checked, but a deployed deep brain inspects no candidate until an operator commits source-candidates.json and sets source_candidates_file. Closing: a committed environment names a candidate catalogue so a deployed process runs the inspections, or the row is narrowed to the DataFinder library.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -417,7 +419,7 @@
     "verification": "cargo test -p qip-data-finder --test lifecycle_policy",
     "work_item": "",
     "size": "S",
-    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it."
+    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it. AUDIT-4: 2026-10-24 regraded, DataFinder inspects candidates only from QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH, rendered from source_candidates_file, commented out in dev and absent elsewhere, so a deployed deep brain inspects nothing."
   },
   {
     "id": "R12-DATA-2019",
@@ -714,7 +716,7 @@
       "qip-market-ingestion/tests/evidence_stage.rs::every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
       "qip-evidence/src/evidence.rs::tests::an_evidence_record_refuses_empty_license"
     ],
-    "gap": "A world-model fact does not carry its evidence id, and observe is not gated on world-fabric admission. The connector runtime already quarantines a record whose evidence is refused, impossible or from an altered document (connector/runtime.rs check_evidence), so a record reaching Platform::sense via ConnectorFeed::poll has passed a per-source check. What is missing is the kernel-level gate: a SensedRecord carries no evidence id (the id is the event fingerprint minted inside the connector runtime), so Platform::absorb_evidence cannot hand back which records the world fabric admitted and node.rs / connectors.rs cannot gate observe on it; ConnectorFeed::poll would have to return (record, evidence id) pairs first (qip-market-ingestion, outside the model lane).",
+    "gap": "Unchanged on 2026-10-24 (lane T8-RESIDUAL), graded LARGE_SPLITTABLE. The slices, in order: (1) qip-market-ingestion: ConnectorFeed::poll returns each accepted record with the evidence id minted in connector/runtime.rs; (2) qip-kernel: Platform::absorb_evidence reports which ids the world fabric admitted; (3) qip-fastbrain node.rs and qip-deepbrain connectors.rs gate observe on that set; (4) give a world-model fact its evidence id; (5) non-connector feeds (synthetic, replay, tape, live) forward evidence at all (fastbrain feed.rs). None is started: slice 1 changes a public return type in two apps and the kernel's intake together.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -727,20 +729,21 @@
     "verification": "an integration test that a narrative poll produces EvidenceRecords",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop. 2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap."
+    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop. 2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap. 2026-10-24 (lane T8-RESIDUAL): re-read, no change."
   },
   {
     "id": "R12-EVID-2032",
     "status": "PARTIAL",
-    "current": "EvidenceFabric::admit links a new claim to held claims of the same key as corroborates/contradicts. Since 2026-10-18 the relation is recorded on both claims: the incoming record names the held ones and each held record names the incoming one, with Corroborates/Contradicts edges in both directions in the provenance graph; when a claim is evicted, every survivor's lists drop it. The world fabric is fed in production (evidence_intake.rs). The fabric is in-memory, bounded and evicts; nothing journals it, and the intake module states durability is not claimed.",
+    "current": "Every claim the world fabric admits is journaled to the new evidence.admitted topic (Topic::EvidenceAdmitted, DerivedState) by Platform::absorb_evidence as the record, its document hash and the admission instant (ADR 0152 section 2). Links, contests and resolutions are derived, not journaled: Platform::journaled_evidence reads the claims back in log order and EvidenceFabric::rebuild re-admits them at their recorded instants into an empty fabric configured like the writer's. A fabric rebuilt from the journal equals the live one in held claims, verdicts, provenance edges, contests, resolutions, source records and version. rebuild refuses a non-empty fabric and a journal the fabric refuses. Since 2026-10-18 the relation is also recorded on both claims in memory.",
     "evidence": [
-      "backend/crates/libs/qip-evidence/src/fabric.rs:911 both-sides links in EvidenceFabric::admit",
-      "backend/crates/libs/qip-evidence/src/fabric.rs::EvidenceFabric::evict prunes evicted ids from survivors",
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:797 a_relation_is_recorded_on_both_claims_and_forgotten_on_both_when_one_is_evicted",
-      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:33-38",
-      "qip-kernel/tests/evidence_intake.rs::two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric"
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::absorb_evidence",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::EvidenceAdmittedRecord",
+      "backend/crates/libs/qip-evidence/src/fabric.rs::EvidenceFabric::rebuild",
+      "backend/crates/libs/qip-events/src/topic.rs::Topic::EvidenceAdmitted",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_fabric_rebuilt_from_the_journaled_claims_holds_the_same_links_contests_and_resolutions",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs::a_rebuild_refuses_a_fabric_that_holds_claims_and_a_journal_the_fabric_refuses"
     ],
-    "gap": "Persist links to the event log, and a replay test proving links survive. The intake's module doc names the blocker: EvidenceAttached already carries the symbolic stage's derivations, so evidence links need their own journal kind or topic, and a replay that re-admits journaled claims in order to rebuild the fabric.",
+    "gap": "2026-10-24: requirement is that links survive replay; EvidenceFabric::rebuild is never called outside tests (a restarted process begins with an empty fabric) and the claim journal is fed only by the connector arm that no committed deployment enables",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -750,10 +753,10 @@
       "R12-EVID-2031"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test evidence_fabric",
+    "verification": "cargo test -p qip-kernel --test evidence_intake a_fabric_rebuilt && cargo test -p qip-world-model --test evidence_fabric a_rebuild_refuses",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Links now populated; not durable. 2026-10-18 lane L23: both-sides recording landed; mutations fired - back-link loop skipped (a.corroborates left [], right [\"b\"]); eviction prune skipped (b still named the evicted a)."
+    "notes": "Closed 2026-10-24 to ADR 0152 section 2. Mutations that fired: rebuild iterating in reverse fails the state comparison; skipping the journal loop in absorb_evidence fails claims_journaled == 3; deleting the emptiness refusal and swallowing the per-claim error in rebuild each fail a_rebuild_refuses. Not claimed: no composition root calls rebuild at start-up yet, so a restarted process still begins with an empty fabric and the journal is the evidence a caller can rebuild from; retention is DerivedState, so the rebuilt window is what the journal retains. ADR 0152 item 4 (a full all-contested fabric refuses) is separate and not built here. AUDIT-2 2026-10-24: regraded, requirement is that links survive replay; EvidenceFabric::rebuild is never called outside tests (a restarted process begins with an empty fabric) and the claim journal is fed only by the connector arm that no committed deployment enables"
   },
   {
     "id": "R12-EVID-2033",
@@ -764,7 +767,7 @@
       "backend/crates/libs/qip-evidence/src/fabric.rs:738-758",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:103-150"
     ],
-    "gap": "A belief cannot be walked to its source document hashes: a NowVariable cites ManifestRefs that are in-process names (kernel/bar-history, cycle-N), not evidence ids, so there is no edge from a belief to a claim in the fabric's ProvenanceGraph and ProvenanceGraph::sources_of has no production reader. The link has to be made where the world model feeds the NOW stage (macro and company readings carry their feature's evidence id), which is the same missing record-to-evidence id as R12-EVID-1200.",
+    "gap": "2026-10-24 (re-read, unchanged): a belief cannot be walked to its source document hashes. A NowVariable cites ManifestRefs that are in-process names (kernel/bar-history, cycle-N), not evidence ids, so there is no edge from a belief to a claim in ProvenanceGraph, and ProvenanceGraph::sources_of has no production reader (grep of backend/crates outside qip-evidence and tests: the graph() hits are the world model's own graph). The link has to be made where the world model feeds the NOW stage, which needs the record-to-evidence id seam of R12-EVID-1200 and the evidence.admitted journal of R12-EVID-2032 (T3-FABRIC, in flight). A resolver over names that are not evidence ids would resolve nothing or invent edges, so none was written.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -777,7 +780,7 @@
     "verification": "a test walking a belief back to source hashes",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Graph exists inside the fabric only. 2026-10-18 lane L06: not implemented; a resolver over manifest names that are not evidence ids would resolve nothing or invent edges. Left PARTIAL with the corrected gap."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Graph exists inside the fabric only. 2026-10-18 lane L06: not implemented; a resolver over manifest names that are not evidence ids would resolve nothing or invent edges. Left PARTIAL with the corrected gap. 2026-10-24 N2-FABRIC-DATA: LARGE, blocked on R12-EVID-2032 and R12-EVID-1200; no code change."
   },
   {
     "id": "R12-EVID-2034",
@@ -809,7 +812,7 @@
   },
   {
     "id": "R12-EVID-2035",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "EvidenceFabric::admit skips same-origin corroboration and credits authenticity per independent origin at other sources (capped at MAX_CORROBORATING_ORIGINS), collapsing copies by normalised-statement fingerprint and document hash; fed in production through the kernel's evidence intake. A test now asserts the supporting weight itself: the same probe claim earns an identical belief_weight and authenticity after ten copies of one press release as after one, and a strictly higher one after one copy plus an independent origin.",
     "evidence": [
       "backend/crates/libs/qip-evidence/src/fabric.rs:758 EvidenceFabric::admit",
@@ -817,7 +820,7 @@
       "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:719 ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it",
       "qip-world-model/tests/evidence_fabric.rs::ten_copies_of_one_press_release_count_as_one_origin"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when a committed deployment (deepbrain_connector or market_data_connector set in an environment tfvars) feeds claims into EvidenceFabric::admit on a running node, or the row's requirement is narrowed to the library property.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -828,7 +831,7 @@
     "verification": "cargo test -p qip-world-model --test evidence_fabric ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutation fired - crediting per corroborating claim (others.len()) instead of per independent origin gave the ten-copy probe authenticity 0.6 against the one-copy probe's lower score. Limits that do not belong to this clause: normalisation collapses punctuation and case, not reworded copies; belief_weight reaches no decision. Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: mutation fired - crediting per corroborating claim (others.len()) instead of per independent origin gave the ten-copy probe authenticity 0.6 against the one-copy probe's lower score. Limits that do not belong to this clause: normalisation collapses punctuation and case, not reworded copies; belief_weight reaches no decision. Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. AUDIT-3 2026-10-24: regraded, the origin-discount arithmetic is real and mutation-checked, but EvidenceFabric::admit runs in a deployed process only through the connector arm, which no committed environment enables"
   },
   {
     "id": "R12-EVID-2036",
@@ -860,27 +863,27 @@
   {
     "id": "R12-EVID-2037",
     "status": "PARTIAL",
-    "current": "check_geographic_consistency records location/routing/weather/jurisdiction disagreement (evidence.rs:293-360) and the fabric runs it on admit (fabric.rs:647). On the production path every claim's location is its source manifest's region (connector/evidence.rs:183, `region:{:?}`), so two claims about one entity can never carry incompatible coordinates from the evidence itself.",
+    "current": "A claim carries a geo:lat,lon location only where the publisher's own payload states coordinates: NwsStationObservationsConnector::published_location copies the station point verbatim into the event body and SourceConnector::location_of hands it to evidence_of (connector/runtime.rs check_evidence), so check_geographic_consistency now has a parseable position to compare on the shipped NWS source (reached from qip-deepbrain evolution). Every other source carries no location; the manifest region moved to the `region` metadata key. Coordinates from free text are refused (ADR 0157 d9).",
     "evidence": [
-      "backend/crates/libs/qip-evidence/src/evidence.rs:293-360",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:647",
-      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:183",
-      "qip-evidence/src/evidence.rs::tests::a_record_with_geographic_location_contradiction_records_the_specific_violation"
+      "backend/crates/services/qip-market-ingestion/src/connectors/nws_station_observations.rs::published_location",
+      "backend/crates/services/qip-market-ingestion/src/connector/mod.rs::SourceConnector::location_of",
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs::evidence_of",
+      "backend/crates/services/qip-market-ingestion/tests/connector_contract.rs::a_weather_reading_carries_the_stations_published_coordinates_as_its_claim_location_and_a_rate_reading_carries_none"
     ],
-    "gap": "Extract claim locations from the content (or a geo source) so the check can detect a real disagreement in production.",
+    "gap": "2026-10-24: the geographic consistency check can only bite on the NWS station source, and no committed deployment polls it (connector arm null in every tfvars); no other source carries a location",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-EVID-2031"
     ],
     "blocked_by": "",
-    "verification": "a unit test with contradictory locations",
+    "verification": "cargo test -p qip-market-ingestion --test connector_contract a_weather_reading_carries_the_stations_published_coordinates",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Check implemented and tested; production input makes it vacuous."
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0157 d9. Mutations fired: restoring with_location(region string) fails the rate-reading absence assertion (left: Some(\"region:NorthAmerica\")); writing a None location in the NWS decode fails the weather assertion (left: None). Only sources whose payload states coordinates can make the check bite; no free-text extractor is built or wanted. AUDIT-2 2026-10-24: regraded, the geographic consistency check can only bite on the NWS station source, and no committed deployment polls it (connector arm null in every tfvars); no other source carries a location"
   },
   {
     "id": "R12-EVID-2038",
@@ -1063,7 +1066,7 @@
       "backend/crates/libs/qip-market/src/curve.rs",
       "backend/crates/libs/qip-market/tests/volatility.rs"
     ],
-    "gap": "No acquisition for any of these data types.",
+    "gap": "2026-10-24 (ADR 0157, BILLED): no acquisition for options chains, futures curves, borrow or funding. Which licensed vendor supplies them is the owner's and billed; the volatility and curve types stay without an acquirer until a recorded licence and a reviewed route exist (public-record publishers are the first terms to read). Options are refused under ADR 0050. This lane fetched from no new source.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1074,7 +1077,7 @@
     "verification": "cargo test -p qip-twin --test twin",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 M2-DATA-AGENTS: classified BILLED, no code changed."
   },
   {
     "id": "R12-TICK-2046",
@@ -1108,7 +1111,7 @@
       "backend/crates/services/qip-twin/tests/twin.rs:753 every_captured_outcome_carries_a_trace_id_and_the_chain_reconstructs",
       "backend/crates/runtime/qip-desk-ship/src/lib.rs::DeskShipper"
     ],
-    "gap": "Three named elements, none of them a field to add in the twin: (1) queue estimates and (2) hedge legs have no producer on the desk path, and the P1 record they would ride is qip_contracts::reflex::OutcomeRecord { cell, session, journal_sequence, journal_digest, entry: JournalEntry } (not a qip-twin type), whose JournalEntry is a hash-chained, versioned wire body (ChainVersion v1/v2): a new field changes sealed bytes and needs a chain version, a codec ADR and a decision on what a v2 verifier does with an entry that lacks it. Queue position exists only in the order book and quoting lane (qip-orderbook, quote_loop.rs), not in DeskLedgerFeed's inputs. (3) No tick-lake write beside market events; desk shipping is loopback-tested only and nothing is deployed.",
+    "gap": "Queue estimates and hedge legs have no producer on the desk path, and the sealed OutcomeRecord chain is not versioned for them: by decision a field is not added (ADR 0151 d7), and a future producer's diagnostics ride a separate non-chained DeskDiagnostic record. Desk shipping (DeskShipper) is loopback-tested only and nothing is deployed; nothing writes to the tick lake beside market events. Re-read 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1119,7 +1122,7 @@
     "verification": "cargo test -p qip-twin --test twin",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. The triage closure named qip-twin OutcomeRecord; the type is qip-contracts reflex.rs:997 and the change is a chained-wire change, not a twin field."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. The triage closure named qip-twin OutcomeRecord; the type is qip-contracts reflex.rs:997 and the change is a chained-wire change, not a twin field. Lane N1-KERNEL-ACCEPT 2026-10-24: re-read against ADR 0151 d7; the closure is the restated gap, no code. grep -rn DeskShipper backend/crates/apps/qip-deepbrain/src shows only the loopback wiring."
   },
   {
     "id": "R12-TICK-2048",
@@ -1174,7 +1177,7 @@
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:498 raw_retention_permitted: false",
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs::parse_retention"
     ],
-    "gap": "No production writer stores venue-native raw bytes under a permitting right. The drain cannot: the spool's MARKET_EVENT_APPLIED records carry the decoded MarketEvent and its source_hash, never the wire frame, so LakeSink::deliver has no raw bytes to pass to Lake::write_segment (drain.rs, the trailing None). Closing it needs the applied record to carry the frame (a schema bump on that topic, through the schema gate) where the dataset's right permits raw retention, or a separate raw-capture writer on the feed side.",
+    "gap": "No raw-capture writer, by decision (ADR 0151 d8, ADR 0157): raw frames go to a separate raw-capture writer in the Transient class, only where a licence record permits raw retention. LakeSink::deliver (drain.rs) holds decoded events and passes None for raw bytes, and the MARKET_EVENT_APPLIED record is not extended to carry the frame.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1187,18 +1190,19 @@
     "verification": "cargo test -p qip-storage --test lake",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: the triage closure (hand the wire frame to LakeSink::deliver) needs the frame on the spool first; that schema change was not attempted in this lane."
+    "notes": "Corrected 2026-10-24 by lane M1-KERNEL-EDGE. Restated per ADR 0151 d8 (no-code-restate): no code change; closes when a licence record permitting raw retention exists and a feed-side writer is built."
   },
   {
     "id": "R12-TICK-2051",
     "status": "PARTIAL",
-    "current": "MarketEvent and CapturedMarketEvent hold event, receive and normalized time and clock uncertainty as distinct fields (qip-contracts tests/market_event.rs). Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool. The central plane's Tick (backend/crates/libs/qip-market/src/quote.rs) still carries event and capture time only.",
+    "current": "Decided by ADR 0151 decision 9: the central Tick states event time (at) and capture time (capture_time) and claims no normalised time or uncertainty, because the centre has no clock discipline to certify either; Tick's documentation says so. Normalised time, uncertainty and the ClockCorrection lineage are edge-lake facts, written by drain.rs tick_line from the disciplined clock (decision_loop test).",
     "evidence": [
+      "backend/crates/libs/qip-market/src/quote.rs::Tick (documentation states the decision)",
+      "backend/crates/libs/qip-market/tests/tick_time_fields.rs::the_central_tick_states_received_time_and_claims_no_normalised_time_or_uncertainty",
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:708 tick_line writes the clock block",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
-      "backend/crates/libs/qip-contracts/tests/market_event.rs"
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock"
     ],
-    "gap": "The central Tick in qip-market quote.rs carries no normalized time or uncertainty; the edge lake line now does.",
+    "gap": "2026-10-24: the uncertainty half of the requirement is unproven: every lake line the test drains has uncertainty 0 (76 of 76), so overwriting uncertainty_ns with the constant 0 passes; needs a test whose clock discipline yields a non-zero uncertainty and asserts it reaches the lake line. The exchange and capture times on the lake line are not asserted by the node test either",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1206,10 +1210,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts market_event; cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+    "verification": "cargo test -p qip-market --test tick_time_fields; cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L09: edge half closed (lake line). Central Tick not changed in this lane."
+    "notes": "Re-graded 2026-10-18 by lane L09: edge half closed (lake line). Central Tick not changed in this lane. 2026-10-24 lane T7-KERNEL, closing by ADR 0151 decision 9: no field is added to the central Tick. A guard test pins that its serialised keys name no normalised or uncertainty token. Mutation: #[serde(rename = \"normalized_time_ns\")] on Tick::capture_time - the new test failed on the capture_time premise; restored, passes. AUDIT-2 2026-10-24: regraded, the uncertainty half of the requirement is unproven: every lake line the test drains has uncertainty 0 (76 of 76), so overwriting uncertainty_ns with the constant 0 passes; needs a test whose clock discipline yields a non-zero uncertainty and asserts it reaches the lake line. The exchange and capture times on the lake line are not asserted by the node test either"
   },
   {
     "id": "R12-TICK-2052",
@@ -1313,7 +1317,7 @@
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:458 LakeSink writes applied market events",
       "infrastructure/environments/dev/terraform.tfvars:280 enable_cloud_storage = false (same in test/stage/prod)"
     ],
-    "gap": "Enable storage with lifecycle; entitlement-scoped job reads.",
+    "gap": "Enable storage with lifecycle; entitlement-scoped job reads (corrected 2026-10-24): enable_cloud_storage = false in infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars, a protected path, and enabling it creates billed buckets, so no patch was written; the lifecycle rules and entitlement-scoped reads are not built.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1326,7 +1330,7 @@
     "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class PROTECTED_PATCH and BILLED."
   },
   {
     "id": "R12-TICK-2057",
@@ -1357,15 +1361,13 @@
   {
     "id": "R12-TICK-2058",
     "status": "PARTIAL",
-    "current": "Segment archive Manifest carries a replay_index used by ArchiveReader; fabricd archives sealed segments. The acceptance suite named for TICK-039 tests a local Vec, not this code.",
+    "current": "Segment archive Manifest carries a replay_index of (offset, byte_start) used by ArchiveReader::read_indexed; fabricd archives sealed segments with the index. read_indexed re-proves the whole segment's content hash before it serves a batch, so it never returns unverified bytes. The per-batch digest format is decided and reserved (ADR 0156 2.4): a manifest wire version, replay-index entries gaining the SHA-256 of the batch's bytes as they sit in the segment, optional on read so every manifest written so far is served by the whole-segment path and never refused, and a ranged read as a new, separately named method whose result states what it proved (the batch equals the digest this manifest recorded), not a faster read_indexed.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/segment/archive.rs:188 replay_index",
-      "backend/crates/libs/qip-storage/src/segment/archive.rs:591-601 index lookup on read",
+      "backend/crates/libs/qip-storage/src/segment/archive.rs replay_index, read_indexed (whole-segment verification)",
       "backend/crates/libs/qip-storage/tests/segment_archive.rs:425 a_manifest_alone_proves_the_hash_a_contiguous_range_its_entitlements_and_a_replay_index",
-      "backend/crates/apps/qip-fabricd/src/archiver.rs:25 Archiver",
-      "backend/crates/tests/qip-acceptance/tests/tick_hot_replay_indexes.rs:13-60 vacuous: tests a Vec built in the test"
+      "backend/crates/apps/qip-fabricd/src/archiver.rs:25 Archiver"
     ],
-    "gap": "Applies to the event-fabric segment log, not a market-tick lake. No ranged read, and one cannot be added as the closure proposed without weakening integrity: ArchiveReader::read_indexed (archive.rs:662) re-proves the whole segment's content hash (manifest.verify at archive.rs:716) before serving any batch, and the manifest's replay_index holds only (offset, byte_start) pairs, so a fetched byte range has nothing to be verified against. Closing it needs a per-batch digest in the replay index (a Manifest wire-format change, with a refusal or full-segment fallback for manifests written before it) and then BlobStore::get_range verified against that digest.",
+    "gap": "Ranged archive reads are not built, by decision: a ranged read trusts the manifest's digests exactly as far as the manifest is trusted, where the whole-segment path trusts it only for the hash, so it proves less; that weakening is stated and the build waits on a committed measurement of hydrate bytes and latency per read_indexed on the broker's replay path showing the whole-segment cost is the problem. Segment size is bounded by roll_after_bytes and the last hydrated segment is cached, so no such measurement exists. tick_hot_replay_indexes.rs must drive the real archiver (a separate test lane). (Restated 2026-10-19.)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1378,7 +1380,7 @@
     "verification": "cargo test -p qip-storage --test segment_archive",
     "work_item": "",
     "size": "M",
-    "notes": "tick_hot_replay_indexes.rs would pass with all production code deleted (the 2026-10-18 triage reports it rewritten to drive the real archiver; not re-read by lane L23). 2026-10-18 lane L23: kept PARTIAL - a get_range that served bytes before the whole-segment hash was re-proved would break read_indexed's documented guarantee that it never returns unverified bytes; the per-batch digest is the missing design step."
+    "notes": "tick_hot_replay_indexes.rs would pass with all production code deleted (the 2026-10-18 triage reports it rewritten to drive the real archiver; not re-read by lane L23). 2026-10-18 lane L23: kept PARTIAL - a get_range that served bytes before the whole-segment hash was re-proved would break read_indexed's documented guarantee that it never returns unverified bytes; the per-batch digest is the missing design step. Lane W8-156, 2026-10-19 (ADR 0156) §2.4. Decision and register restatement only; no code changed, and the capability the requirement names (fetching only a byte range) is not built, so the row stays PARTIAL."
   },
   {
     "id": "R12-TICK-2059",
@@ -1391,7 +1393,7 @@
       "backend/crates/services/qip-simulation-engine/src/tick_replay.rs::ReplaySession::resume",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::round"
     ],
-    "gap": "None for the requirement; not deployed (desk off unless configured).",
+    "gap": "Not deployed (corrected 2026-10-24): the requirement is met in code and test; the deep brain tick desk runs only when configured and no environment configures it or deploys a deep brain with lake history.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1404,7 +1406,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class DEPLOY_DEPENDENT."
   },
   {
     "id": "R12-TICK-2060",
@@ -1480,7 +1482,7 @@
   },
   {
     "id": "R12-TICK-2063",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-feature-dag implements every named family: spread (Spread), depth and imbalance (BookPressure), queue (TouchQueueDepth, bid and ask), flow (OrderFlowImbalance), toxicity (FlowToxicity, one-bucket VPIN over signed prints), volatility (RealisedVolatility), liquidity (SweepCost, basis points to take a quantity, undefined when the book cannot fill it), lead/lag (LeadLagCorrelation, lagged correlation of grid-aligned returns) and cross-venue (CrossVenueSpread, mid dislocation in basis points). Queue, toxicity and liquidity are in standard_suite, which qip-edge-node registers for every strategy subject; lead/lag and cross-venue are two-subject definitions registered per pair, like RollingCorrelation.",
     "evidence": [
       "backend/crates/edge/qip-feature-dag/src/features.rs:770 TouchQueueDepth",
@@ -1494,7 +1496,7 @@
       "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:1111 the_standard_suite_carries_the_queue_toxicity_and_liquidity_families",
       "backend/crates/apps/qip-edge-node/src/strategies.rs:505 registers standard_suite per strategy subject"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when a production composition root registers LeadLagCorrelation and CrossVenueSpread for the configured venue pairs, and a committed deployment runs a node that installs a strategy so the feature engine computes the families, or the row is narrowed to the feature library.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1505,7 +1507,7 @@
     "verification": "cargo test -p qip-feature-dag --test feature_dag",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18: five families added with hand-computed values. Mutations, each failing its assertion: toxicity numerator as buys only; bid queue reading the ask; sweep cost forced to zero; lead/lag ignoring the lag; cross-venue sign flipped; FlowToxicity removed from standard_suite. All restored, 26 passed; qip-edge and qip-edge-node suites (80 test binaries) still pass with the larger suite."
+    "notes": "Lane L24 2026-10-18: five families added with hand-computed values. Mutations, each failing its assertion: toxicity numerator as buys only; bid queue reading the ask; sweep cost forced to zero; lead/lag ignoring the lag; cross-venue sign flipped; FlowToxicity removed from standard_suite. All restored, 26 passed; qip-edge and qip-edge-node suites (80 test binaries) still pass with the larger suite. AUDIT-3 2026-10-24: regraded, the requirement is a feature engine that generates ten named families; two of them (lead/lag, cross-venue) are constructed by no production code, and the other eight are registered only for an installed strategy, which no committed deployment has; the hand-computed unit tests are real and mutation-checked"
   },
   {
     "id": "R12-TICK-2064",
@@ -1536,7 +1538,7 @@
       "backend/crates/services/qip-training/tests/labels.rs:31-148",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::round"
     ],
-    "gap": "None for the requirement; not deployed (desk off unless configured).",
+    "gap": "None in code. Not deployed: QIP_DEEPBRAIN_TICK_EVERY is unset and turning it on needs QIP_DEEPBRAIN_TICK_ENTITLEMENTS, a per-dataset licensing decision nobody has made (manifest_wiring.rs THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED). Checked 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1613,7 +1615,7 @@
       "backend/crates/services/qip-training/src/microstructure.rs::train_fill_model",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk"
     ],
-    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. Slippage, liquidity, regime and execution models not trained.",
+    "gap": "Tick desk is off until a licensing decision per dataset is made (QIP_DEEPBRAIN_TICK_ENTITLEMENTS, manifest_wiring.rs THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED), so this never runs in a deployed binary. Slippage, liquidity, regime and execution models are not trained and need licensed replay data. Checked 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1677,14 +1679,18 @@
   },
   {
     "id": "R12-TICK-2071",
-    "status": "PARTIAL",
-    "current": "StreamingDrift and degraded_models compute feature drift in deepbrain's learning desk and feed ModelCard drift_score; twin-vs-fill error is recorded per venue as qip_venue_fill_error_bps.",
+    "status": "COMPLETE",
+    "current": "Regime drift is measured through the regime-sensitive model features (volatility_10, momentum_5, via StreamingDrift in deepbrain's learning desk feeding ModelCard drift_score) and through the regime-crossing event: Platform::latest_regime_crossing feeds the verifier society's structural-break critic, which refuses a promotion of a model last evaluated before the market crossed a boundary. Venue change is routed (TickCampaignDetector::observe_venue opens a NewVenue campaign). Twin-vs-fill error is recorded per venue as qip_venue_fill_error_bps. No execution models exist to drift.",
     "evidence": [
       "backend/crates/services/qip-training/src/estimators.rs:450 StreamingDrift",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:136 drift in the desk",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14488 latest_regime_crossing",
+      "backend/crates/services/qip-learning-engine/src/verifier.rs:498 attack_model structural break",
+      "backend/crates/services/qip-expansion/src/campaigns.rs:324 observe_venue",
+      "backend/crates/runtime/qip-kernel/tests/regime_boundary.rs::a_model_evaluated_before_the_market_crossed_a_regime_boundary_is_refused_promotion",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:884 per-venue fill error"
     ],
-    "gap": "Venue changes are already routed (research.rs observes a first-seen venue through TickCampaignDetector::observe_venue and opens a NewVenue campaign; the register text calling it library-only was stale). Regime drift is not measured as such: StreamingDrift runs over the five model features only (volatility_10 and momentum_5 are the regime-sensitive ones), not over the features the platform classifies a regime from, and no execution-model residuals exist to drift (no such models).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1694,10 +1700,10 @@
       "R12-TICK-2068"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-deepbrain learning",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test regime_boundary a_model_evaluated_before; cargo +1.94.1 test -p qip-deepbrain learning",
     "work_item": "",
     "size": "M",
-    "notes": "Checked 2026-10-18 against learning.rs stream_drift and research.rs sweep_over. Not changed: volatility_10 already drifts the models that read it, and a second regime column would measure the same series twice."
+    "notes": "Checked 2026-10-18 against learning.rs stream_drift and research.rs sweep_over. Closed 2026-10-24 by lane N3-MODEL-EDGE-INFRA per ADR 0149: no second regime column is added (it would measure the same prices as volatility_10) and no execution-model residual drift is built (no such models); the regime change is an event the promotion gate reads. The test drives a real causal-edge subject through a spread blow-out and promotes the same model three ways (no crossing: promoted; evaluated before the crossing: refused with structural_break; evaluated after: promoted). Mutation fired: Platform::latest_regime_crossing returning None promotes the stale model and the refusal assertion fails; restored, test result: ok. 2 passed."
   },
   {
     "id": "R12-TICK-2072",

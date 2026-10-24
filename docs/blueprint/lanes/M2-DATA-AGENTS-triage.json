@@ -1,0 +1,15 @@
+[
+  {"id":"R12-EVID-2037","class":"CODE_CLOSABLE","reason":"qip-market-ingestion/src/connector/evidence.rs::evidence_of set with_location(format!(\"region:{:?}\")) for every claim; ADR 0157 d9 closure is a connector-side coordinate copy (NWS payload carries geometry.coordinates)."},
+  {"id":"R12-EXPAND-6057","class":"CODE_CLOSABLE","reason":"ADR 0152 decided episode/importance/threshold; qip-agents/src/memory.rs has ResearchMemory::hit_rate, no MemoryRegistry store (grep MemoryRegistry qip-agents/src)."},
+  {"id":"R12-EXPAND-6061","class":"CODE_CLOSABLE","reason":"ADR 0152 decided campaign id = digest of normalised question; qip-agents/src/research.rs::ResearchCampaign has no id."},
+  {"id":"R12-EXPAND-6062","class":"DESIGN_OPEN","reason":"ADR 0158 d15 decided: CapabilityRegistry stays empty, consulted against nothing (qip-agents/src/registries.rs::CapabilityRegistry); no code, register wording restated."},
+  {"id":"R12-QUANT-4032","class":"DESIGN_OPEN","reason":"ADR 0150 d3 decided: no default-path quantum-eligible problem is invented (qip-optimization-engine/src/router.rs::RoutingPolicy); register restate."},
+  {"id":"R12-QUANT-4040","class":"DESIGN_OPEN","reason":"ADR 0150 d6 decided: no cycle problem made QUBO-admissible (qip-quantum/src/foundry.rs::Foundry::platform); register restate."},
+  {"id":"R12-RISK-4103","class":"DESIGN_OPEN","reason":"ADR 0146 d6/d7 decided: externality/overclaiming/channel-compromise not built, kernel ACT does not call conduct brain (qip-agency/src/conduct_brain.rs::ConductGate); register restate."},
+  {"id":"R12-TICK-2045","class":"BILLED","reason":"ADR 0157: which licensed vendor supplies options chains/futures curves/borrow/funding is the owner's and billed; fetch from no new source."},
+  {"id":"R12-REFLEX-10205","class":"DEPLOY_DEPENDENT","reason":"venue benchmark records need a deployed execution node (execution_nodes = {} in test/stage/prod); qip-storage/tests/fabric_bench.rs exists but a venue record is a measurement on real infrastructure."},
+  {"id":"R12-RES-9171","class":"DEPLOY_DEPENDENT","reason":"a rebuild drill needs a deployed control-plane cluster; nothing applied. Terraform may not be applied or planned against a real project."},
+  {"id":"R12-API-9057","class":"PROTECTED_PATCH","reason":"public_edge is enabled only via infrastructure/environments/*/terraform.tfvars (protected) and proven with a real plan, which this lane may not run."},
+  {"id":"R12-EVID-1200","class":"LARGE_SPLITTABLE","reason":"ConnectorFeed::poll (qip-market-ingestion/src/connector_feed.rs) returns records without evidence ids; kernel Platform::absorb_evidence gating is a cross-crate change."},
+  {"id":"R12-FINOPS-10138","class":"DEPLOY_DEPENDENT","reason":"active Bigtable/BQ tiers need a provisioned data module; rules and retention.rs exist and are tested (acceptance infrastructure.rs derived_data_stores_carry_bounded_retention_or_lifecycle_rules)."}
+]

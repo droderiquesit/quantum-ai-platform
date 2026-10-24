@@ -331,12 +331,21 @@ impl SimulatedFeed {
         // The line as the venue's publisher wrote it: the bytes the decoder
         // read, which is what `source_hash`'s canonical re-encoding is not.
         let native = level_line(*sequence, venue_time, id, *side, *price, *size);
+        // The half-width of the clock error this event is stored with. A
+        // message cannot be received before it was sent, so a venue stamp
+        // that leads this cell's receive instant by `lead` proves one of the
+        // two clocks is out by at least `lead`: the lead is a lower bound, not
+        // a guess, and `Cell::observe_clock_lead` is where the same lead
+        // drives the cell's clock row. Recording zero here stored a
+        // precision-sensitive label as exact beside a venue the cell had
+        // already stopped trading against for skew.
+        let uncertainty = venue_time.since(now).max(qip_core::time::Duration::ZERO);
         Ok(MarketEvent::new(
             payload,
             venue_time,
             now,
             now,
-            qip_core::time::Duration::ZERO,
+            uncertainty,
             hash,
             simulated_entitlement(),
         )?

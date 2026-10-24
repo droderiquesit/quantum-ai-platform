@@ -148,3 +148,133 @@ fn a_research_verdict_that_does_not_raise_the_version_is_refused_and_every_versi
         .unwrap();
     assert_eq!(registry.latest_version("credit leads equity"), Some(3));
 }
+
+mod memory_registry {
+    use qip_agents::memory::{
+        Disposition, Episode, EpisodeOutcome, MemoryRegistry, ResearchMemory,
+    };
+    use qip_core::ids::AgentRunId;
+    use qip_core::time::Timestamp;
+
+    fn at(text: &str) -> Timestamp {
+        Timestamp::parse_rfc3339(text).unwrap()
+    }
+
+    fn call(run: &str, conviction: f64, correct: bool) -> Episode {
+        Episode {
+            run_id: AgentRunId::from_string(run.to_string()),
+            agent_id: "analyst-a".to_string(),
+            occurred_at: at("2026-10-01T00:00:00Z"),
+            question: "which way would it move".to_string(),
+            conclusion: "positive".to_string(),
+            evidence: vec![run.to_string()],
+            conviction,
+            outcome: Some(EpisodeOutcome {
+                resolved_at: at("2026-10-01T00:00:00Z"),
+                correct,
+                realised_bps: Some(10.0),
+                explanation: "moved".to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_below_threshold_episode_is_kept_compressed_and_still_counts_in_the_hit_rate() {
+        let mut registry = MemoryRegistry::new(0.3).unwrap();
+        let mut memory = ResearchMemory::new();
+        // Nine confident calls that came off (surprise 0.1) and one confident
+        // call that missed (surprise 0.9): the registry keeps only the miss
+        // whole, and a hit rate over what it kept would read 0 rather than 0.9.
+        let mut calls: Vec<Episode> = (0..9)
+            .map(|n| call(&format!("hit-{n}"), 0.9, true))
+            .collect();
+        calls.push(call("miss", 0.9, false));
+        let mut dispositions = Vec::new();
+        for episode in calls {
+            dispositions.push(registry.consult(&episode).unwrap());
+            memory.record_episode(episode);
+        }
+        // The premise: both dispositions occurred, so the assertions below
+        // are not about a registry that only ever did one thing.
+        assert!(dispositions.contains(&Disposition::Retained));
+        assert!(dispositions.contains(&Disposition::Compressed));
+
+        assert_eq!(registry.retained_for("analyst-a"), 1);
+        let summary = registry.summary_for("analyst-a").unwrap();
+        assert_eq!(summary.episodes, 9);
+        assert_eq!(summary.correct, 9);
+        assert_eq!(memory.episode_count(), 10, "compression drops no episode");
+        let rate = memory
+            .hit_rate("analyst-a", at("2026-10-02T00:00:00Z"))
+            .unwrap();
+        assert!((rate - 0.9).abs() < 1e-9, "hit rate was {rate}");
+    }
+
+    #[test]
+    fn a_registry_refuses_a_threshold_that_could_never_compress_and_an_unresolved_episode() {
+        for bad in [0.0, -0.1, 1.5, f64::NAN, f64::INFINITY] {
+            assert!(MemoryRegistry::new(bad).is_err(), "{bad} was accepted");
+        }
+        let mut registry = MemoryRegistry::new(1.0).unwrap();
+        let mut open = call("open", 0.5, true);
+        open.outcome = None;
+        assert_eq!(registry.consult(&open), None);
+        assert_eq!(registry.retained_for("analyst-a"), 0);
+    }
+}
+
+mod campaign_identity {
+    use qip_agents::research::{ResearchRegistry, Verdict, campaign_id, experiment_ref};
+
+    #[test]
+    fn a_campaign_has_a_stable_id_and_a_verdict_cites_its_experiment_references() {
+        // Case and spacing do not make a question new, and a different
+        // question is a different campaign.
+        let id = campaign_id("Does  momentum persist?").unwrap();
+        assert_eq!(id, campaign_id("does momentum persist?").unwrap());
+        assert_ne!(id, campaign_id("does reversal persist?").unwrap());
+        assert!(campaign_id("   ").is_err());
+
+        let mut registry = ResearchRegistry::new();
+        let null = Verdict::Null {
+            evidence: "failed leakage".to_string(),
+        };
+        // No experiment, another question's experiment, and a bare campaign
+        // id with no stage are each refused; the premise is that the id used
+        // below is the one a correct reference would carry.
+        let other = campaign_id("does reversal persist?").unwrap();
+        for bad in [
+            vec![],
+            vec![experiment_ref(&other, "historical")],
+            vec![format!("{id}/")],
+            vec![id.clone()],
+        ] {
+            assert!(
+                registry
+                    .record_concluded("Does momentum persist?", null.clone(), &bad)
+                    .is_err(),
+                "{bad:?} was accepted"
+            );
+        }
+        assert!(registry.history("does momentum persist?").is_empty());
+
+        let refs = [
+            experiment_ref(&id, "simulated"),
+            experiment_ref(&id, "historical"),
+            experiment_ref(&id, "historical"),
+        ];
+        let version = registry
+            .record_concluded("Does momentum persist?", null, &refs)
+            .unwrap();
+        assert_eq!(version, 1);
+        let held = registry.history("DOES MOMENTUM PERSIST?");
+        assert_eq!(
+            held[0].experiments,
+            vec![
+                experiment_ref(&id, "historical"),
+                experiment_ref(&id, "simulated")
+            ],
+            "sorted and de-duplicated"
+        );
+    }
+}

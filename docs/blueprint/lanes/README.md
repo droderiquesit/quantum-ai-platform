@@ -26,6 +26,42 @@ is already COMPLETE, or if a lane commit today already touched it
 (`git log --oneline --since=2026-10-18T04:00 -S '"R12-XXX-NNNN"' -- docs/blueprint/assessment`):
 an earlier session on your lane may have closed it or corrected its gap.
 
+## Wave 9: lanes that triage their own rows
+
+`wave9-2026-10-19.json` holds the 761 open rows that no ADR-c lane
+(`adr-c-2026-10-19.json`) and no running lane owned on 2026-10-19. It splits
+them into 26 lanes by the crate each row's text names most. Nobody graded these
+rows against the code first, so a W9 lane does that itself. Read your rows with:
+
+```
+python3 -I -c "import json; d=json.load(open('docs/blueprint/lanes/wave9-2026-10-19.json')); print(json.dumps([l for l in d['lanes'] if l['lane']=='W9-XXX'][0], indent=1))"
+```
+
+Before implementing, give every row exactly one class from the code as it now
+stands. Write the classes to `docs/blueprint/lanes/<lane>-triage.json` as
+`[{"id", "class", "reason"}]`, where `reason` cites a `path::symbol` or a grep
+result. Push the file before the first code commit.
+
+- `CODE_CLOSABLE`: closable here by one lane. Close it per "Per row" below.
+  Do these first: MISSING and INCORRECT before PARTIAL.
+- `LARGE_SPLITTABLE`: in-repo but bigger than one lane. Do one slice, keep the
+  row PARTIAL, and list the remaining slices in its `gap`.
+- `PROTECTED_PATCH`: needs a protected path. The owner approved such patches
+  on 2026-10-19, so write the exact diff to
+  `docs/blueprint/lanes/<lane>-protected.patch`. The parent session applies
+  it. Keep the row PARTIAL until then.
+- `RISK_TIGHTEN`: needs a new or stricter control. The owner authorised
+  tighten-only changes on 2026-10-19. Prove the control fires, and change no
+  existing limit value. A loosening is never in scope.
+- `BILLED`, `DEPLOY_DEPENDENT`, `EXTERNAL_BLOCKED`, `DESIGN_OPEN`: finish any
+  in-repo part. Then make `gap` say exactly what is missing (the resource and
+  its cost, the deployment evidence, the third party, or the open question),
+  dated 2026-10-19.
+- `FORBIDDEN_LIVE`: needs live orders or real capital. Never closable. Say so
+  in `gap`.
+- `ALREADY_COMPLETE`: regrade only after running the cited test and
+  mutation-verifying it on the production caller.
+
 ## Per row
 
 1. Read the code and tests the closure names with `grep -n` and `sed -n 'a,bp'`

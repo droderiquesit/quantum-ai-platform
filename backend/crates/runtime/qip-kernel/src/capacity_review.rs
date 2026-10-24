@@ -436,6 +436,7 @@ mod tests {
             target_weight: 0.01,
             estimated_cost_bps: cost_bps,
             hypotheses: vec!["h".to_string()],
+            reference_quantity: None,
         }
     }
 

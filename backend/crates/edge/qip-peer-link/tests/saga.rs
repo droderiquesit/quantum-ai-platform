@@ -16,7 +16,9 @@
 
 use qip_core::error::Result;
 use qip_core::{Clock, Decimal, SystemClock, dec};
-use qip_peer_link::boundary::{EdgeQuote, LegAuthority, Offer, PeerStatus, ReflexPort, Side};
+use qip_peer_link::boundary::{
+    EdgeQuote, LegAuthority, Offer, PeerStatus, RebalanceTask, ReflexPort, Side,
+};
 use qip_peer_link::{DEFAULT_CLOCK_BOUND, PeerSettings};
 use qip_transport::tls::LinkSecurity;
 use std::collections::BTreeMap;
@@ -257,5 +259,141 @@ fn a_leg_whose_unwind_bound_does_not_cover_the_cells_exit_is_declined_and_no_leg
     assert_eq!(e.reservations, 0, "{e:?}");
     assert_eq!(a.fires, 0, "{a:?}");
     assert_eq!(a.legs_sent + e.legs_sent, 0, "{a:?} {e:?}");
+    Ok(())
+}
+
+/// Poll both ports for the tasks their saga raised, publishing as a decision
+/// loop would, until `done` holds of what each has collected so far.
+fn collect_tasks(
+    americas: &ReflexPort,
+    europe: &ReflexPort,
+    books: (&Book, &Book),
+    done: impl Fn(&[RebalanceTask], &[RebalanceTask]) -> bool,
+) -> (Vec<RebalanceTask>, Vec<RebalanceTask>) {
+    let (mut a, mut e) = (Vec::new(), Vec::new());
+    let began = std::time::Instant::now();
+    loop {
+        americas.try_publish(offer(books.0, true));
+        europe.try_publish(offer(books.1, true));
+        a.extend(americas.status().rebalance_new);
+        e.extend(europe.status().rebalance_new);
+        if done(&a, &e) {
+            return (a, e);
+        }
+        assert!(
+            began.elapsed() < PATIENCE,
+            "no task arrived within {PATIENCE:?}:\namericas {:?}\neurope {:?}",
+            americas.status(),
+            europe.status()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// europe's touch fills six of the ten the cycle was priced at, so americas
+/// fills ten and unwinds four and both are left four short of the ten they
+/// planned. Each node closes the cycle once it knows every fill and reports
+/// one task per place that is short, through the port and nothing else
+/// (ADR 0154 decision 6; R12-CAPITAL-5067).
+///
+/// Mutation (run): drop `self.close(session, &mut step)` from `Saga::step` —
+/// no cycle closes, no task is raised, and the wait for tasks times out.
+#[test]
+fn a_closed_epoch_with_drift_raises_one_rebalance_task_per_drifting_place_through_the_port()
+-> Result<()> {
+    let (americas, europe) = nodes()?;
+    let usa = Book {
+        venue: "XNYS",
+        bid: dec!("99"),
+        ask: dec!("100"),
+        displayed: dec!("50"),
+        authorised: dec!("10"),
+        fills: dec!("10"),
+        exit_cost: None,
+    };
+    let europe_book = Book {
+        venue: "XLON",
+        bid: dec!("101"),
+        ask: dec!("102"),
+        displayed: dec!("50"),
+        authorised: dec!("10"),
+        fills: dec!("6"),
+        exit_cost: None,
+    };
+    let (a, e) = collect_tasks(&americas, &europe, (&usa, &europe_book), |a, e| {
+        !a.is_empty() && !e.is_empty()
+    });
+    // Premise: the cycle really ran to fills on both sides before it closed.
+    let (sa, se) = (americas.status(), europe.status());
+    assert!(sa.fills >= 1 && se.fills >= 1, "{sa:?} {se:?}");
+    // The cycle is held for a while, and a later crossing may open another;
+    // what must hold is per epoch: each opportunity's tasks are one per
+    // place, once, which a close that repeated every turn would break.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!a.is_empty() && !e.is_empty(), "premise: tasks were raised");
+    for tasks in [
+        [a, americas.status().rebalance_new].concat(),
+        [e, europe.status().rebalance_new].concat(),
+    ] {
+        let mut by_epoch: BTreeMap<(String, u64), Vec<&str>> = BTreeMap::new();
+        for task in &tasks {
+            by_epoch
+                .entry((task.opportunity.clone(), task.epoch_sequence))
+                .or_default()
+                .push(task.place.as_str());
+        }
+        assert!(!by_epoch.is_empty(), "premise: tasks were raised");
+        for (epoch, places) in &by_epoch {
+            assert_eq!(
+                places,
+                &vec!["americas/XNYS/obj-ACME", "europe/XLON/obj-ACME"],
+                "one task for each place epoch {epoch:?} left short, ordered by place, raised once"
+            );
+        }
+        assert!(
+            tasks.iter().all(|t| t.amount == dec!("-4")),
+            "ten planned, six held after the unwind: {tasks:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A cycle both sides filled in full leaves nothing short, so it closes and
+/// raises no task: the report is silent when there is nothing to move, and a
+/// test that only counted tasks could not tell that from a cycle that never
+/// closed, which is why it also asserts the close.
+#[test]
+fn a_closed_epoch_that_filled_in_full_raises_no_rebalance_task() -> Result<()> {
+    let (americas, europe) = nodes()?;
+    let usa = Book {
+        venue: "XNYS",
+        bid: dec!("99"),
+        ask: dec!("100"),
+        displayed: dec!("50"),
+        authorised: dec!("10"),
+        fills: dec!("10"),
+        exit_cost: None,
+    };
+    let europe_book = Book {
+        venue: "XLON",
+        bid: dec!("101"),
+        ask: dec!("102"),
+        displayed: dec!("50"),
+        authorised: dec!("10"),
+        fills: dec!("10"),
+        exit_cost: None,
+    };
+    let (a, e) = run_until(
+        &americas,
+        &europe,
+        (&usa, &europe_book),
+        (true, true),
+        |a, e| a.cycles_closed >= 1 && e.cycles_closed >= 1,
+    );
+    assert!(a.fills >= 1 && e.fills >= 1, "{a:?} {e:?}");
+    assert_eq!(a.unwinds + e.unwinds, 0, "premise: nothing was unwound");
+    assert!(americas.status().rebalance_new.is_empty());
+    assert!(europe.status().rebalance_new.is_empty());
+    assert_eq!(a.rebalance_tasks + e.rebalance_tasks, 0, "{a:?} {e:?}");
     Ok(())
 }

@@ -1,0 +1,170 @@
+[
+  {
+    "id": "R12-AGENCY-6089",
+    "mutation": {
+      "file": "backend/crates/services/qip-agency/src/comparison.rs",
+      "old": ".checked_sub(self.conduct_risk)",
+      "new": ".checked_sub(Decimal::ZERO)"
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-agency --test causal",
+      "test": "every_one_of_the_nine_axes_changes_which_candidate_is_chosen (causal.rs:605)"
+    },
+    "default_path": "backend/crates/apps/qip-cli agency shadow -> qip_agency plan.rs select -> comparison.rs::Comparison::rank (operator CLI of a shipped binary)",
+    "requirement_clauses_met": "'a comparison missing any axis is refused' is tested in agency.rs; 'changing conduct risk or downside changes the ranking' is the causal.rs test, which fails the mutation"
+  },
+  {
+    "id": "R12-AMBIENT-1026",
+    "mutation": {
+      "file": "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs",
+      "old": "woke: round.woken.get(&event.signal_id).map(|s| (*s).to_string()),",
+      "new": "woke: None,"
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal",
+      "test": "a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (ambient_journal.rs:304)"
+    },
+    "default_path": "backend/crates/apps/qip-deepbrain/src/main.rs builds ResearchLoop (every_cycles default 1) and AmbientJournal::open; node.rs::run_with records each sweep",
+    "requirement_clauses_met": "An AttentionEvent produced by the router wakes a named specialist and is journaled: the failing test asserts the journaled woke name"
+  },
+  {
+    "id": "R12-AMBIENT-1144",
+    "mutation": {
+      "file": "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs",
+      "old": "woke: round.woken.get(&event.signal_id).map(|s| (*s).to_string()),",
+      "new": "woke: None,"
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal",
+      "test": "a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (ambient_journal.rs:304)"
+    },
+    "default_path": "backend/crates/apps/qip-deepbrain/src/node.rs::run_with journals every scheduled sweep (every_cycles default 1)",
+    "requirement_clauses_met": "a running ambient loop updates automatic waking on a schedule and journals it: the run-loop test covers the schedule and journaling, the failing test covers the wake record"
+  },
+  {
+    "id": "R12-CICD-8031",
+    "mutation": {
+      "file": "scripts/check-secrets.sh",
+      "old": "  'AKIA[0-9A-Z]{16}'\n",
+      "new": ""
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-acceptance --test pipeline_scripts",
+      "test": "a_secret_committed_and_then_deleted_passes_the_tree_scan_and_fails_the_history_scan (also a_reviewed_finding_is_skipped_only_when_the_record_says_what_it_was, a_shallow_clone_is_refused_rather_than_reported_clean)"
+    },
+    "default_path": ".github/workflows/ci.yml runs ./scripts/check-secrets.sh and --history on every push (pinned by pipeline_scripts.rs)",
+    "requirement_clauses_met": "check-secrets.sh over tree and history reports nothing (run); committing a key fixture fails the scan (pipeline_scripts plants one)"
+  },
+  {
+    "id": "R12-CICD-10203",
+    "mutation": {
+      "file": "infrastructure/terraform/modules/registry/main.tf",
+      "old": "immutable_tags = true",
+      "new": "immutable_tags = false"
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure",
+      "test": "the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it (infrastructure.rs:6309)"
+    },
+    "default_path": "infrastructure/terraform/main.tf:610 module \"registry\" instantiated unconditionally; gitops.rs every_image_under_gitops_is_pinned_by_digest_and_is_either_attested_by_the_pipeline_or_vendored and event_fabric_schema_lock cover the other two inspections",
+    "requirement_clauses_met": "images pinned by digest (gitops.rs), registry tags immutable (infrastructure.rs), schemas versioned and locked (event_fabric_schema_lock.rs)"
+  },
+  {
+    "id": "R12-CONTRACT-7083",
+    "mutation": {
+      "file": "backend/crates/libs/qip-contracts/src/expansion.rs",
+      "old": "        text(R, \"goal_id\", &self.goal_id)?;\n        text(R, \"intervention_id\"",
+      "new": "        text(R, \"intervention_id\""
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-contracts --test expansion",
+      "test": "a_blank_or_empty_listed_field_is_refused_naming_the_field"
+    },
+    "default_path": "EffectAttribution::validate is called by qip-agency attribution.rs and qip-cli agency.rs (operator CLI), decoded and validated on every qip agency pass",
+    "requirement_clauses_met": "constructing an EffectAttribution missing a required field is refused (expansion.rs tests); the agency.rs test covers five further fields"
+  },
+  {
+    "id": "R12-REASON-3060",
+    "mutation": {
+      "file": "backend/crates/services/qip-world-model/src/inference.rs",
+      "old": "score: edge.confidence / (1.0 + miss),",
+      "new": "score: edge.confidence,"
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-world-model --test inference",
+      "test": "abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions (inference.rs:722); also the_alternatives_are_kept_with_scores_and_evidence_and_later_evidence_promotes_one_from_the_record (:832)"
+    },
+    "default_path": "backend/crates/runtime/qip-kernel/src/platform.rs::reason_symbolically -> symbolic_stage.rs::derive -> causal.abduce, REASON stage for every formed hypothesis, no flag",
+    "requirement_clauses_met": "a reasoner of this kind produces a deterministic cited result on a fixture and mutating its core rule fails the test"
+  },
+  {
+    "id": "R12-REFLEX-5029",
+    "mutation": {
+      "file": "backend/crates/apps/qip-edge-node/src/mesh.rs",
+      "old": "match self.inbound.try_recv() {",
+      "new": "match self.inbound.recv().map_err(|_| std::sync::mpsc::TryRecvError::Disconnected) {"
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-edge-node --test decision_loop",
+      "test": "a_cell_whose_centre_has_gone_silent_keeps_journaling_its_orders_to_the_fabric_spool: the test-level watchdog (decision_loop.rs:325-340) prints 'orders reaching the spool beside a silent centre did not finish within 10s' and aborts the binary (SIGABRT), a bounded failure"
+    },
+    "default_path": "backend/crates/apps/qip-edge-node/src/scheduler.rs DecisionLoop::turn -> apply_mesh -> mesh.rs::take_inbound_at_most (shipped node; not deployed)",
+    "requirement_clauses_met": "with the centre unreachable the node runs the same passes and sends the same orders; mutation: make the pass call the mesh and the test hangs, here as a watchdog abort"
+  },
+  {
+    "id": "R12-LEDGER-5016",
+    "mutation": {
+      "file": "backend/crates/libs/qip-contracts/src/ledger_operation.rs",
+      "old": "            } => pair(\n                book.trading(),\n                Account::Treasury {\n                    treasury: treasury.clone(),\n                },",
+      "new": "            } => pair(\n                book.trading(),\n                Account::Treasury {\n                    treasury: { let _ = treasury; \"elsewhere\".to_string() },\n                },"
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-ledgerd --test history",
+      "test": "an_operation_posts_to_its_subledger_and_the_ledger_reopens_on_its_own_history (also qip-ledgerd --test operations_on_the_stream an_operation_is_booked_once_and_its_offset_moves_in_the_same_commit; qip-acceptance --test vertical_slice_ship a_funded_mandate_posts_to_its_own_subledger_once_across_restarts)"
+    },
+    "default_path": "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::apply_operation, the shipped qip-ledgerd binary's own apply path",
+    "requirement_clauses_met": "a treasury event posts to the treasury subledger and the trial balance still balances; routing it elsewhere fails the test. Producer shipping (QIP_FABRIC_URL) is a separate deployment clause the requirement does not make"
+  },
+  {
+    "id": "R12-COVERAGE-5107",
+    "mutation": {
+      "file": "backend/crates/services/qip-execution-engine/src/creation.rs",
+      "old": "if !missing.is_empty() {\n            let names",
+      "new": "if false && !missing.is_empty() {\n            let names"
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-acceptance --test market_creation",
+      "test": "a_market_is_listed_at_a_simulated_venue_only_once_the_venue_the_product_rules_and_the_jurisdiction_all_permit_it (also qip-execution-engine creation::tests::with_nothing_recorded_every_action_is_refused_naming_all_three_authorities; qip-kernel --test breadth a_plan_missing_a_permission_is_refused_whole_and_creates_nothing)"
+    },
+    "default_path": "backend/crates/services/qip-execution-engine/src/creation.rs::CreationAdmission (private fields, one mint CreationPermissions::admit) demanded by market_creation.rs::MarketFactory, the only market creator; reached via qip-kernel breadth.rs::install_breadth (bar part 3: guard sits on the only creation path)",
+    "requirement_clauses_met": "a created instrument without all three permissions cannot be admitted; dropping a permission check fails the test"
+  },
+  {
+    "id": "R12-EVENT-5087",
+    "mutation": {
+      "file": "backend/crates/services/qip-prediction/src/access.rs",
+      "old": "if !policy.creation.contains(jurisdiction) {",
+      "new": "if false && !policy.creation.contains(jurisdiction) {"
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-prediction --test access",
+      "test": "creation_is_refused_from_a_jurisdiction_the_venue_does_not_permit_and_admitted_from_one_it_does"
+    },
+    "default_path": "backend/crates/runtime/qip-kernel/src/breadth.rs::install_breadth calls book.admit_creation before the factory touches the venue; the only event-market creation path (bar part 3)",
+    "requirement_clauses_met": "creation is admitted only with a permitting jurisdiction record; admitting on an empty book fails the test"
+  },
+  {
+    "id": "R12-EVENT-5088",
+    "mutation": {
+      "file": "backend/crates/services/qip-prediction/src/access.rs",
+      "old": "if policy.kind != path {",
+      "new": "if false && policy.kind != path {"
+    },
+    "failing_test": {
+      "command": "cd backend && cargo +1.94.1 test -p qip-prediction --test access",
+      "test": "a_wagering_venue_refuses_the_event_path_and_an_event_venue_refuses_the_wagering_path (also qip-kernel --test breadth wagering_venues_and_ineligible_entities_are_refused_and_the_price_does_not_depend_on_access)"
+    },
+    "default_path": "backend/crates/runtime/qip-kernel/src/event_markets.rs::EventMarkets holds a non-optional AccessBook; both order seams (:482, :533) call admit_event_order (bar part 3)",
+    "requirement_clauses_met": "an event order to a wagering venue is refused, as is an underage or out-of-jurisdiction entity; routing by venue id only fails the test"
+  }
+]

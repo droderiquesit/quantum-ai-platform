@@ -456,6 +456,27 @@ impl ConnectorFeed {
         until: Timestamp,
         reference: &mut dyn FnMut(&FetchDigest) -> Result<()>,
     ) -> Result<Vec<SensedRecord>> {
+        Ok(self
+            .poll_referencing_identified(until, reference)?
+            .into_iter()
+            .map(|(record, _)| record)
+            .collect())
+    }
+
+    /// [`Self::poll_referencing`], each released record paired with the id of
+    /// the evidence claim the connector runtime checked for it (R12-EVID-1200).
+    ///
+    /// A `SensedRecord` carries no evidence id — the id is the event
+    /// fingerprint, minted inside the runtime — so a root that wanted to act
+    /// on the world fabric's verdict about a claim (`EvidenceIntake::withheld`)
+    /// had no way to say which record the verdict was about. The runtime
+    /// pushes a record and its claim together, so the two lists are aligned;
+    /// a length mismatch is refused rather than paired by guess.
+    pub fn poll_referencing_identified(
+        &mut self,
+        until: Timestamp,
+        reference: &mut dyn FnMut(&FetchDigest) -> Result<()>,
+    ) -> Result<Vec<(SensedRecord, String)>> {
         let before = self.runtime.snapshot();
         let mut report =
             self.runtime
@@ -548,6 +569,21 @@ impl ConnectorFeed {
                 PENDING_PACK_CAPACITY,
             );
         }
+        let evidence_ids: Vec<String> = report
+            .evidence
+            .iter()
+            .map(|checked| checked.record.id.clone())
+            .collect();
+        if evidence_ids.len() != report.admitted.len() {
+            self.runtime.unwind(before);
+            return Err(Error::invalid(format!(
+                "the runtime released {} record(s) with {} evidence claim(s); a record without \
+                 its claim cannot be gated on the world fabric's verdict, so the poll is \
+                 unwound and nothing is released",
+                report.admitted.len(),
+                evidence_ids.len()
+            )));
+        }
         // Refused evidence goes up with the released: its records stay in
         // quarantine, but the world fabric's detectors read the claims.
         for checked in report.evidence.into_iter().chain(report.refused_evidence) {
@@ -563,6 +599,7 @@ impl ConnectorFeed {
             .admitted
             .into_iter()
             .map(|envelope| envelope.into_record())
+            .zip(evidence_ids)
             .collect())
     }
 
@@ -998,6 +1035,44 @@ mod tests {
         feed.journal_to(store)
             .expect("a journal opens on an empty store");
         feed
+    }
+
+    /// R12-EVID-1200. Each released record is paired with the id of the claim
+    /// the runtime checked for it, in order, so a root can act on the world
+    /// fabric's verdict about exactly that record. Mutation: reverse the
+    /// `evidence_ids` before the `zip` — the pairing is wrong and the id
+    /// comparison fails.
+    #[test]
+    fn each_released_record_is_paired_with_the_id_of_its_own_evidence_claim() {
+        let opened = instant("2026-08-27T00:00:00Z");
+        let table = r#"{"amount":1.0,"base":"EUR","date":"2026-08-26","rates":{"GBP":0.85898,"JPY":181.59,"USD":1.1622}}"#;
+        let store: Arc<dyn qip_core::kv::KeyValueStore> =
+            Arc::new(qip_storage::MemoryKeyValueStore::default());
+        let mut feed = journaled_frankfurter_serving(store, opened, table);
+
+        let identified = feed
+            .poll_referencing_identified(opened, &mut |_| Ok(()))
+            .expect("the poll delivers");
+        let evidence = feed.drain_evidence();
+
+        assert_eq!(identified.len(), 3, "premise: three rates were released");
+        assert_eq!(evidence.len(), 3, "premise: each has a checked claim");
+        let ids: Vec<&str> = identified.iter().map(|(_, id)| id.as_str()).collect();
+        let claimed: Vec<&str> = evidence.iter().map(|c| c.record.id.as_str()).collect();
+        assert_eq!(ids, claimed);
+        // Distinct per record, and each claim names its own record's series.
+        let distinct: std::collections::BTreeSet<&str> = ids.iter().copied().collect();
+        assert_eq!(distinct.len(), 3);
+        for ((record, _), checked) in identified.iter().zip(&evidence) {
+            let subject = record
+                .subject_id()
+                .expect("premise: a rate record names its series");
+            assert!(
+                checked.record.statement.contains(subject),
+                "{} does not mention {subject}",
+                checked.record.statement
+            );
+        }
     }
 
     /// The raw payload is discarded once distilled (EVID-020). A canary

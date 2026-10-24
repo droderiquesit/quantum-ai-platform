@@ -73,6 +73,13 @@ pub const VINTAGE_AXIS: &str = "vintage";
 /// is reported by the reconciliation stage, not refused here.
 pub const CUSTODIAN_AXIS: &str = "custodian";
 
+/// The exposure axis a venue whose fill twin is persistently wrong is
+/// charged to (R12-RES-7104): the gross the book carries at that venue,
+/// filed only for a venue `qip-kernel` has measured as misfit. Absent for
+/// every other venue, so [`LimitKind::MaxAxisWeight`] records nothing for
+/// them. A single literal for the reason [`COUNTERPARTY_AXIS`] is one.
+pub const VENUE_TWIN_MISFIT_AXIS: &str = "venue_twin_misfit";
+
 /// The name [`RiskState::with_tail_risk`] files its value-at-risk refusal
 /// under, when the return series it was handed cannot be measured.
 ///
@@ -2147,6 +2154,27 @@ impl LimitSet {
                     "capital held at one custodian is one failure away from being capital \
                      held nowhere: no custodian may hold more than this share of equity, \
                      however sound its statement reads today",
+                ),
+            )
+            // Added by R12-RES-7104. A narrowing and never a withdrawal: a
+            // venue is withdrawn on feasibility evidence and on nothing else.
+            // A quarter of equity is the tightest single-name-style bound in
+            // the set (`position-weight` is a tenth of equity per name, a
+            // venue carries many names), chosen so that a venue whose
+            // simulated entry prices are persistently wrong carries at most
+            // a quarter of the book on prices nobody can vouch for.
+            .with(
+                Limit::new(
+                    "twin-misfit-venue-gross",
+                    LimitKind::MaxAxisWeight {
+                        axis: VENUE_TWIN_MISFIT_AXIS.into(),
+                        limit: 0.25,
+                    },
+                )
+                .with_rationale(
+                    "a venue the twin has persistently mispriced is a venue whose simulated \
+                     fills the book cannot rely on: it may carry at most a quarter of equity \
+                     until the twin's error comes back inside the measured bound",
                 ),
             )
         // No venue limit ships here. `venue-exposure-simulated` did, and

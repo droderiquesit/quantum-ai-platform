@@ -76,7 +76,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:3317-3353 check_models_promoted",
       "backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs:38-120 one toy tree evaluated under five purpose names"
     ],
-    "gap": "No model trained for order-book state, fill probability, adverse selection, short-horizon signal or opportunity scoring; no plan in the deployed path carries one.",
+    "gap": "Corrected 2026-10-24. No model trained for order-book state, fill probability, adverse selection, short-horizon signal or opportunity scoring exists, and no plan in the deployed path carries one (R12-MODEL-4024: no compiled plan carries a model, no node deployed). The in-tree LocalTrainer, distillation and manifest path are free to run, but the only data a purpose model could be fitted on today is the paper simulator's own fills, so the fit would measure the simulator and not a venue; that is a data decision (an ADR and a licensed venue record), not a lane's. model_reflex_evaluation.rs still evaluates one toy tree under five purpose names and constructs two forms; its title overstates it and its assertions pass with every purpose model absent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -89,11 +89,11 @@
     "verification": "cargo test -p qip-edge with a purpose model deployed through the manifest",
     "work_item": "",
     "size": "L",
-    "notes": "model_reflex_evaluation.rs claims to verify 'trained models for each of five named purposes' and 'three forms tree, linear and ensemble'; it evaluates one toy tree renamed per purpose and constructs only two forms, so its assertions would pass with every purpose model absent."
+    "notes": "model_reflex_evaluation.rs claims to verify 'trained models for each of five named purposes' and 'three forms tree, linear and ensemble'; it evaluates one toy tree renamed per purpose and constructs only two forms, so its assertions would pass with every purpose model absent. 2026-10-24 lane N3-MODEL-EDGE-INFRA: gap restated; no training job launched, no code changed."
   },
   {
     "id": "R12-MODEL-4005",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip_training::distill::distil fits a DistilledModel to a teacher's outputs and measures the gap; the deep brain calls it each learning round; evaluation is deterministic and bounded.",
     "evidence": [
       "backend/crates/services/qip-training/src/distill.rs:311 distil",
@@ -101,7 +101,7 @@
       "backend/crates/services/qip-training/tests/training.rs:1118 a_distilled_tree_is_bounded_and_evaluable_everywhere",
       "backend/crates/services/qip-training/tests/training.rs:1607 a_distillation_only_exists_with_its_fidelity_already_measured"
     ],
-    "gap": "Not deployed; otherwise none.",
+    "gap": "2026-10-24: Closes when a test asserts the measured fidelity values themselves: a student with a known gap reports that mean and maximum gap, R2, rank correlation and decision agreement, and FidelityPolicy::shortfalls refuses a student for each of R2, rank, decision agreement and mean gap in turn. Today only the failure-mode and parameter-byte shortfalls are driven.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -112,7 +112,7 @@
     "verification": "cargo test -p qip-training --test training",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "AUDIT-4 2026-10-24: regraded, overwriting the measured fidelity with a perfect report (R2, rank and decision agreement 1.0, gaps 0.0) after measure_fidelity passes the named qip-training training suite (55 passed), the whole qip-training crate and qip-deepbrain's learning tests; so do `false &&` on the mean-gap and R2 shortfalls and forcing every decision to agree. a_distillation_only_exists_with_its_fidelity_already_measured asserts gap >= 0, max >= mean and agreement within [0,1], all true of zeros."
   },
   {
     "id": "R12-MODEL-4006",
@@ -182,26 +182,27 @@
   },
   {
     "id": "R12-MODEL-4009",
-    "status": "PARTIAL",
-    "current": "FederationStage declares one domain member per asset class the composition root names through set_asset_classes (domain.<class>.global.meso, domain = the class, hypothesis cross-sectional-breadth), fed on every instrument proposition of that class with the classs breadth (share of class members whose short-window mean return is positive), so an instrument rising while its class falls is arbitrated between its tape members and its domain member and the Disagreement and research task record both. covers(\"domain\", ..) reads the family. Regional, horizon and scenario members unchanged.",
+    "status": "COMPLETE",
+    "current": "FederationStage declares one domain member per asset class (domain.<class>.global.meso, hypothesis cross-sectional-breadth), fed on every instrument proposition of that class with the class's breadth, so an instrument rising while its class falls is arbitrated between its tape members and its domain member and the Disagreement and research task record both. Platform::new now names the universe's asset classes to its FederationStage (platform.rs, the `federation:` field of the Platform literal), so every deployed cycle's first pass declares the members: the journaled review of a one-class universe carries domain.equity.global.meso beside the ten others (11 members, 9 views per instrument proposition).",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::new `federation:` literal calls FederationStage::set_asset_classes over the universe asset_classes map",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::set_asset_classes, declare_domain_members, class_breadth, domain_member",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::run (domain_view fed per instrument)",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_its_arbitrations (asserts the domain member in the replayed population)",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::tests::a_domain_member_fed_its_asset_classs_breadth_disagrees_with_the_tape_members_and_is_recorded",
       "backend/crates/services/qip-world-model/src/federation.rs::Federation::arbitrate"
     ],
-    "gap": "platform.rs::understand_federation does not yet call FederationStage::set_asset_classes (InstrumentView carries no asset class and is built by a struct literal there; the call-site patch is in the L14 lane report for L01), so no deployed cycle declares a domain member yet. domain is deliberately not in REQUIRED_FAMILIES until that call lands. Members remain declared statistics rather than fitted models.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib federation_stage",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test symbolic_federation every_cycle_journals && cargo +1.94.1 test -p qip-kernel --lib federation_stage",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L14). Mutation: feeding the domain member a constant breadth of one half failed the test at the views probability (1/3 expected)."
+    "notes": "Re-graded 2026-10-24 (lane T8-RESIDUAL). Earlier mutation (L14): constant breadth of one half failed the stage test. This lane: replacing the class map handed to set_asset_classes with an empty map failed symbolic_federation::every_cycle_journals... at the population count (10 members, expected 11); restored byte-for-byte, passes. The two tests in that file that counted 10 members and 8 views were updated to 11 and 9 because the platform now declares the domain member itself. Remaining caveat, not part of this row's clause: members are declared statistics, not fitted models, and `domain` stays out of REQUIRED_FAMILIES because a process with no universe has no class to cover."
   },
   {
     "id": "R12-MODEL-4010",
@@ -298,7 +299,7 @@
       "backend/crates/apps/qip-cli/tests/agency.rs::every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations",
       "backend/crates/apps/qip-cli/src/agency.rs only caller"
     ],
-    "gap": "Integration beyond the CLI: no deployed binary acts under authority (qip-deepbrain's ambient door only drafts and never runs engine::execute), and the branches come from the request's declared structural models, not qip-twin futures.",
+    "gap": "Integration beyond the CLI is not built, by decision (ADR 0146 decision 2): no deployed binary acts under authority; qip-deepbrain's ambient door only drafts and never runs engine::execute. Branches come from the request's declared structural models and, when the request declares a twin, qip-twin futures (qip-cli agency.rs TwinScenarios, a ScenarioSource). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -309,7 +310,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L10): the simulation-before-authority half is met; kept PARTIAL on integration, as the closure itself said it would stay. Mutation fired: reading only the first branch in counterfactually_supported lets the contested pass Execute."
+    "notes": "Re-graded 2026-10-18 (lane L10): simulation-before-authority is met. 2026-10-24 lane T6-MODEL-AGENTS: gap rewritten per ADR 0146 (the twin-futures clause was stale: TwinScenarios exists); kept PARTIAL because no running deployed path acts under authority, which the ADR keeps true on purpose. Mutation fired earlier: reading only the first branch in counterfactually_supported lets the contested pass Execute."
   },
   {
     "id": "R12-MODEL-4015",
@@ -645,7 +646,7 @@
       "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled defaults false; no app config sets it (grep quantum in apps/*/src/config.rs, main.rs: none)",
       "backend/crates/apps/qip-deepbrain/src/main.rs::with_compute_settings"
     ],
-    "gap": "The synchronous seam is closed and tested (2026-10-18, lane RT-C), but GatewayEntrant has no production caller: SolverBenchmark is driven by tests with a hosted provider and by no binary, quantum_enabled defaults false and no app config sets it, and no app wires a HostedProvider. The refusal in ProviderSolver therefore guards a path no deployed process takes yet, the shape the gateway module doc calls a refusal that guards nothing. Closing needs a composition root that enables the quantum arm with a gateway-fronted provider, which is an owner decision on quantum_enabled and a provider, not a library change.",
+    "gap": "Unchanged on 2026-10-24: GatewayEntrant has no production caller. SolverBenchmark is driven by tests only, quantum_enabled (qip-kernel/src/config.rs) defaults false, no apps/*/src config sets it, and no app wires a HostedProvider. Closing needs an owner decision to enable the quantum arm with a named vendor and its billing (ADR 0006: a quantum path runs only where a measured benefit over the classical baseline is demonstrable). No in-repo slice is left, so nothing was changed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -656,7 +657,7 @@
     "verification": "cd backend && cargo test -p qip-quantum --test solvers a_hosted_provider_is_refused_a_synchronous_solve_and_enters_the_benchmark_only_through_the_gateway && cargo test -p qip-quantum --test hosted a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline",
     "work_item": "",
     "size": "M",
-    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L24 2026-10-18: triage closure (make both QuboSolver impls refuse) read against the code and not applied; ProviderSolver is the hosted benchmark's seam and the gap now names the larger change (an M row, not S). Lane RT-C 2026-10-18: seam closed in code and mutation-verified; kept PARTIAL because the closed seam has no deployed caller (quantum_enabled false everywhere). The hosted.rs test used a loopback test service, never a vendor; the new test uses an in-tree stand-in device with no transport or credential."
+    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L24 2026-10-18: triage closure (make both QuboSolver impls refuse) read against the code and not applied; ProviderSolver is the hosted benchmark's seam and the gap now names the larger change (an M row, not S). Lane RT-C 2026-10-18: seam closed in code and mutation-verified; kept PARTIAL because the closed seam has no deployed caller (quantum_enabled false everywhere). The hosted.rs test used a loopback test service, never a vendor; the new test uses an in-tree stand-in device with no transport or credential. 2026-10-24 (lane T8-RESIDUAL): re-read against the code, no change; graded DESIGN_OPEN."
   },
   {
     "id": "R12-QUANT-4030",
@@ -707,7 +708,7 @@
   {
     "id": "R12-QUANT-4032",
     "status": "PARTIAL",
-    "current": "PortfolioProblem::to_qubo with cardinality and position caps; ComputeRouter attempts QAOA on a provider; kernel construct_from runs it each cycle. But quantum_enabled is false by default and set by no app, and with RoutingPolicy::default (minimum_assets_for_quantum = 50) and SimulatedProvider (MAX_QUBITS = 24) quantum_assessment always declines, so the quantum arm is unreachable in any default composition.",
+    "current": "Default minimum_assets_for_quantum is DEFAULT_EXACT_ENUMERATION_LIMIT + 1 (router.rs RoutingPolicy::default, not fifty); quantum_enabled is false by default and ComputeSettings attaches the in-tree simulator only when QIP_QUANTUM_PROVIDER=simulated (read in qip-deepbrain and qip-api); hosted is refused by name. A cycle approves one thesis, so DECIDE routes exact enumeration; the quantum arm is proven by scripted-provider tests and dev/test simulated attachment.",
     "evidence": [
       "backend/crates/services/qip-optimization-engine/src/problem.rs:198,379 cardinality, to_qubo",
       "backend/crates/services/qip-optimization-engine/src/router.rs:181-192 default policy (50 assets)",
@@ -715,7 +716,7 @@
       "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled: false",
       "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1127 cardinality-violating quantum answer refused"
     ],
-    "gap": "No kernel cycle hands the router a problem the quantum arm can take. Measured 2026-10-18 in a throwaway probe (not committed): a Platform with PlatformConfig::with_quantum(), RoutingPolicy { minimum_assets_for_quantum: 4, exact_enumeration_limit: 2 }, a four-name universe with bars observed for all four and a holdings cap of two journaled solver_routing for six consecutive cycles with compute.task.variables = 1 and ran = [exact_enumeration] every time ('1 assets is below the 4 at which a quantum formulation could pay'). The problem has one variable per approved thesis and a cycle approved one, so the triage's closure (a 4+ asset universe and a policy of 4) does not reach the arm. Closing needs a fixture that yields four simultaneous approved theses in one DECIDE, or a seam handing the router the held book plus the thesis; then the end-to-end assertions the row names (both runs journaled; a cardinality-violating or limit-breaching quantum answer refused by PreTradeChecker before the broker). The quantum arm also stays off in every default composition (quantum_enabled false; QAOA runs on SimulatedProvider only; no hosted provider is wired).",
+    "gap": "2026-10-24 (ADR 0150 decision 3): closed by decision. No fixture or seam is added to hand the router a default-path quantum-eligible problem: one thesis gives one variable and exact enumeration is correct. Kept PARTIAL because the arm is unreachable on a default composition by design.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -728,7 +729,7 @@
     "verification": "kernel test with quantum enabled reaching the QAOA arm",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed."
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed. Existing proof: qip-kernel compute_routing.rs the_compute_settings_attach_only_what_is_asked_and_refuse_what_they_do_not_know."
   },
   {
     "id": "R12-QUANT-4033",
@@ -877,7 +878,7 @@
       "backend/crates/services/qip-reasoning-engine/src/constraint.rs to_qubo, minimise, decode",
       "backend/crates/libs/qip-quantum/src/foundry.rs Foundry::platform symbolic reason"
     ],
-    "gap": "No problem the cycle poses is QUBO-admissible: symbolic_stage::acting() (the only constraint Problem in the kernel) has Boolean single-value domains and Or-conditions, which to_qubo refuses by name, so the grader closure that solves acting() through a Benchmark cannot be done as written. The family stays NotBuilt on purpose: model_serving promotes a Registered family, so registering one with no production caller would assert a quantum benefit path that nothing runs. Closing needs the symbolic stage to pose a 0/1 linear-equality problem each cycle and route it through ComputeRouter, with the benchmark result journaled.",
+    "gap": "2026-10-24 (ADR 0150 decision 6): closed by decision. acting() is a few Boolean variables the exact solver decides, so no cycle problem is made QUBO-admissible and SymbolicCombinatorialSearch stays NotBuilt with its true reason (Foundry::platform). Kept PARTIAL: the constraint encoder is exercised as a capability test only.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -888,7 +889,7 @@
     "verification": "cargo test -p qip-kernel --test symbolic_federation the_constraint_encoders_qubo_is_solved_by_a_quantum_entrant_and_decodes_to_the_symbolic_optimum; cargo test -p qip-quantum --test foundry",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 L22: test and reason added; kept PARTIAL. Mutation: remove the equality penalty block from Problem::to_qubo - the quantum answer no longer decodes and the test fails; restored byte for byte."
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed; qip-quantum tests/foundry.rs the_symbolic_family_is_not_routed_and_its_reason_names_the_encoder_that_exists is the standing proof. Earlier note: 2026-10-18 L22 test and reason added."
   },
   {
     "id": "R12-QUANT-4041",
@@ -1392,17 +1393,17 @@
   },
   {
     "id": "R12-QUANT-4064",
-    "status": "PARTIAL",
-    "current": "An acceptance test makes a scripted provider win routing, sizes an order from the winning weight by hand and shows OrderManager/PreTradeChecker refuse it on max_position_weight before the simulated broker fills.",
+    "status": "COMPLETE",
+    "current": "arch_033_quantum_path.rs drives the real router chain (classical baseline solved first, a quantum answer inside the margin never chosen, no provider records the reason); quantum_pretrade.rs makes a scripted provider win routing, sizes an order from the winning weight and shows OrderManager/PreTradeChecker refuse it on max_position_weight before the simulated broker fills. The quantum arm stays off in every default composition (quantum_enabled false; QAOA runs on SimulatedProvider only; no hosted provider is wired).",
     "evidence": [
       "backend/crates/services/qip-execution-engine/src/oms.rs:735 checker.check before broker",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4789 OrderManager::new(PreTradeChecker)",
-      "backend/crates/tests/qip-acceptance/tests/arch_033_quantum_path.rs:11-40 vacuous/text-search tests",
+      "backend/crates/libs/qip-risk/src/limits.rs:1633 MaxPositionWeight evaluation",
+      "backend/crates/tests/qip-acceptance/tests/arch_033_quantum_path.rs:117 baseline solved first",
       "backend/crates/tests/qip-acceptance/tests/quantum_pretrade.rs::a_position_sized_from_a_winning_quantum_answer_is_still_refused_by_pre_trade_risk"
     ],
-    "gap": "No kernel cycle hands the router a problem the quantum arm can take. Measured 2026-10-18 in a throwaway probe (not committed): a Platform with PlatformConfig::with_quantum(), RoutingPolicy { minimum_assets_for_quantum: 4, exact_enumeration_limit: 2 }, a four-name universe with bars observed for all four and a holdings cap of two journaled solver_routing for six consecutive cycles with compute.task.variables = 1 and ran = [exact_enumeration] every time ('1 assets is below the 4 at which a quantum formulation could pay'). The problem has one variable per approved thesis and a cycle approved one, so the triage's closure (a 4+ asset universe and a policy of 4) does not reach the arm. Closing needs a fixture that yields four simultaneous approved theses in one DECIDE, or a seam handing the router the held book plus the thesis; then the end-to-end assertions the row names (both runs journaled; a cardinality-violating or limit-breaching quantum answer refused by PreTradeChecker before the broker). The quantum arm also stays off in every default composition (quantum_enabled false; QAOA runs on SimulatedProvider only; no hosted provider is wired).",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
@@ -1410,10 +1411,10 @@
       "R12-RISK-4093"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test quantum_pretrade; cargo +1.94.1 test -p qip-acceptance --test arch_033_quantum_path",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed."
+    "notes": "Lane L07, 2026-10-18: re-read, gap corrected. Closed 2026-10-24 by lane N3-MODEL-EDGE-INFRA per ADR 0150 decision 3: the end-to-end evidence for a quantum answer reaching PreTradeChecker is the scripted-provider acceptance test, and no kernel cycle is engineered to reach the quantum arm by default (the probe's finding stands: a cycle approves one thesis, so the problem has one variable). Mutation fired: breaking the MaxPositionWeight arm of the limit evaluation (limits.rs) sends the quantum-sized order and the test fails at quantum_pretrade.rs:230 'a quantum-sized order breaching the single-name cap was sent'; restored, test result: ok. 1 passed. The vacuous text-search tests the row once cited no longer exist."
   },
   {
     "id": "R12-ASSET-4065",
@@ -1719,7 +1720,7 @@
       "backend/crates/runtime/qip-kernel/src/survival.rs::tests::a_hold_parked_in_a_yield_instrument_does_not_lift_the_gross_ceiling",
       "data/datasets/yield-shelf.json"
     ],
-    "gap": "2026-10-19: built, called from DECIDE in all three central roots, and unarmed everywhere. The committed data/datasets/yield-shelf.json declares no instrument, no routed share and no ladder horizons, because ADR 0159 leaves every shelf capacity, every realisation, the share of unreleased capital that may be routed and the ladder horizons to the RISK lane; no deployment sets QIP_YIELD_SHELF_PATH or mounts the file (a Cloud Run mount is a modules/cloudrun change plus per-environment tfvars under the protected infrastructure/environments/*; not attempted because there is no declared value to mount). Even armed, it moves only the capital the confidence governor declined to release, and the shipped schedule releases everything on a book with no calibration, disagreement, shift or regime signal (a plain whole cycle leaves nothing unreleased), so the share limit is the only lever on how much liquidity a cycle gives up. Routable instruments are those realised within the day a reservation may hold capital; the longer ShortDuration instruments the blueprint names need a longer-lived hold with its own record. Needs RISK to declare a shelf, a share and horizons, and a deployment to mount the file.",
+    "gap": "2026-10-24 (re-read, unchanged since 2026-10-19; yield-shelf.json still lists no instrument): built, called from DECIDE in all three central roots, and unarmed everywhere. The committed data/datasets/yield-shelf.json declares no instrument, no routed share and no ladder horizons, because ADR 0159 leaves every shelf capacity, every realisation, the share of unreleased capital that may be routed and the ladder horizons to the RISK lane; no deployment sets QIP_YIELD_SHELF_PATH or mounts the file (a Cloud Run mount is a modules/cloudrun change plus per-environment tfvars under the protected infrastructure/environments/*; not attempted because there is no declared value to mount). Even armed, it moves only the capital the confidence governor declined to release, and the shipped schedule releases everything on a book with no calibration, disagreement, shift or regime signal (a plain whole cycle leaves nothing unreleased), so the share limit is the only lever on how much liquidity a cycle gives up. Routable instruments are those realised within the day a reservation may hold capital; the longer ShortDuration instruments the blueprint names need a longer-lived hold with its own record. Needs RISK to declare a shelf, a share and horizons, and a deployment to mount the file.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1730,7 +1731,7 @@
     "verification": "cd backend && cargo test -p qip-capital --test bank; cargo test -p qip-kernel --test capital; cargo test -p qip-kernel --lib idle_routing_tests",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the missing shelf, not the missing call. Lane W8-159 2026-10-19 (ADR 0159). Mutations that fired, each restored byte for byte: no reservation hold taken (idle_cash_routed_to_a_shelf_instrument... fails at parked 0 against 125000); LedgerFigures::standing counting held whole (a_hold_parked... fails, ceiling difference 0 against 60000); the budget.at == now filter dropped (a quiet cycle routes off an earlier cycle's budget; idle_routing_tests fails); InstrumentClass::Other routed (three bank tests fail); share ignored (only_the_declared_share... fails); reservation-ceiling check removed (a_shelf_instrument_realised_past... fails); IdleCash accepting a release above the opportunity capital; a named shelf file that does not read treated as no shelf. The bank tests that routed 2- and 30-day instruments now route instruments realised within a day because the longer ones are refused at load by decision; no assertion was dropped. Kept PARTIAL: the behaviour is reached by default but routes nothing by default."
+    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the missing shelf, not the missing call. Lane W8-159 2026-10-19 (ADR 0159). Mutations that fired, each restored byte for byte: no reservation hold taken (idle_cash_routed_to_a_shelf_instrument... fails at parked 0 against 125000); LedgerFigures::standing counting held whole (a_hold_parked... fails, ceiling difference 0 against 60000); the budget.at == now filter dropped (a quiet cycle routes off an earlier cycle's budget; idle_routing_tests fails); InstrumentClass::Other routed (three bank tests fail); share ignored (only_the_declared_share... fails); reservation-ceiling check removed (a_shelf_instrument_realised_past... fails); IdleCash accepting a release above the opportunity capital; a named shelf file that does not read treated as no shelf. The bank tests that routed 2- and 30-day instruments now route instruments realised within a day because the longer ones are refused at load by decision; no assertion was dropped. Kept PARTIAL: the behaviour is reached by default but routes nothing by default. 2026-10-24 N2-FABRIC-DATA: no code change; ADR 0159 closure test and mutations already hold, and the remaining items are RISK-declared values and a protected per-environment mount."
   },
   {
     "id": "R12-CAPITAL-4079",
@@ -1934,7 +1935,7 @@
       "backend/crates/runtime/qip-kernel/src/survival.rs::CombinedObligations",
       "backend/crates/services/qip-capital/src/obligations.rs::LedgerObligations"
     ],
-    "gap": "2026-10-19: the emergency reserve is a policy fraction of equity derived by the waterfall (SurvivalPolicy::emergency_reserve_fraction), by decision (ADR 0159 D): a reserve nobody moved is not an observed fact and the ledger books only observed facts, so it is not a ledger account and will not become one. What the ledger contributes is what it observes, margin, collateral and settlement through LedgerObligations. What remains is the obligations route: no binary calls Platform::observe_ledger_obligations, so collateral and ledger settlement read zero in production. That wiring belongs to R12-CAPITAL-4086, not to this row.",
+    "gap": "2026-10-24 (ADR 0159 D): The emergency reserve is a derived policy fraction of equity by decision, not a ledger account (a reserve nobody moved is not an observed fact, and the ledger books only observed facts, ADR 0153). Collateral and settlement read zero in production until a binary feeds Platform::observe_ledger_obligations (grep finds no non-test caller in any binary); that wiring belongs to the obligations-route row R12-CAPITAL-4086, and collateral additionally has no producer because no venue states a margin requirement (ADR 0153 d3).",
     "implemented": false,
     "tested": true,
     "integrated": true,
@@ -1945,7 +1946,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: depends on the ledgerd obligations route in R12-CAPITAL-4086. Kept PARTIAL. Lane W8-159 2026-10-19 (ADR 0159). Gap restated; no grade change."
+    "notes": "Lane W8-159 2026-10-19 (ADR 0159). Lane T4-LEDGER 2026-10-24: re-read against the code, gap re-dated and the missing margin producer named; no code change, no grade change."
   },
   {
     "id": "R12-CAPITAL-4088",
@@ -2024,14 +2025,14 @@
   },
   {
     "id": "R12-CAPITAL-4091",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Platform::new builds the counterfactual AlternativeMenu from the configuration: with_hedge from the first declared HedgePolicyDeclaration (instrument, beta) and with_venue from the first whitelisted arbitrage venue that is not the desk broker (taker cost carried into the twin cost model, quotes not assumed firm). score_filled and score_declined build the twin market through Platform::counterfactual_bars, which adds the hedge instrument bars so the hedged alternative can be sized. qip-capital shadow.rs allocation-level variants are a separate library claim outside this clause.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs Platform::new, the menu block after settlement.assign_venue (grep -n \"R12-CAPITAL-4091\" platform.rs)",
       "backend/crates/runtime/qip-kernel/src/platform.rs fn counterfactual_bars, called from score_declined and score_filled",
       "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge"
     ],
-    "gap": "",
+    "gap": "2026-10-24: The size and timing alternatives run by default; the venue and hedge alternatives the requirement asks for exist only if an operator supplies hedge_policies (no app sets them) and QIP_ARBITRAGE_POLICY_PATH (no environment sets it). Closing: a default hedge policy/venue source wired in a composition root or committed environment, with a test through that root.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2042,18 +2043,22 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test platform_outcomes a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge",
     "work_item": "",
     "size": "M",
-    "notes": "shadow.rs module doc claims shadows hold 'alternate sizes, hedges, timing, venues'; AllocationVariant has no timing arm. Closed 2026-10-18 (lane L01). Mutation 1: menu reverted to AlternativeMenu::standard made the test fail at its menu-venue premise; mutation 2: hedge bars dropped from counterfactual_bars made the production-path fill go unscored and the test fail at its fill_scores assertion; both restored byte-for-byte and the test passes. The menu is read once at assembly; a deployment with no hedge policy and no arbitrage whitelist still gets neither arm, which is the configured truth rather than an invented venue."
+    "notes": "shadow.rs module doc claims shadows hold 'alternate sizes, hedges, timing, venues'; AllocationVariant has no timing arm. Closed 2026-10-18 (lane L01). Mutation 1: menu reverted to AlternativeMenu::standard made the test fail at its menu-venue premise; mutation 2: hedge bars dropped from counterfactual_bars made the production-path fill go unscored and the test fail at its fill_scores assertion; both restored byte-for-byte and the test passes. The menu is read once at assembly; a deployment with no hedge policy and no arbitrage whitelist still gets neither arm, which is the configured truth rather than an invented venue. AUDIT-4: 2026-10-24 regraded, the venue and hedge arms of the menu are built only from config.hedge_policies (no composition root sets it) and config.central.arbitrage (set only by QIP_ARBITRAGE_POLICY_PATH, which no committed environment sets), so by default the twin prices size and timing only."
   },
   {
     "id": "R12-CAPITAL-4092",
-    "status": "PARTIAL",
-    "current": "Belief calibration (calibrate_resolved) scores prediction; attribution separates market/factor from commission/spread/impact/shortfall; sizing_review caps size from counterfactual sizes. No single decomposition across the four.",
+    "status": "COMPLETE",
+    "current": "Each released order from a constructed leg is stamped at release with three quantities read off the stages that produced them: the reference (the constructor's own quantity at the budget before the governor and multipliers, reported in the same pass by PortfolioConstructor::construct_referenced), the sized (ProposalLeg.quantity) and the released (after lot rounding and any risk reduction). LEARN's attribution::run splits each stamped order's held move into prediction, sizing, allocation and unfilled terms that sum to side x filled x (mark - arrival) to the last digit, and carries the execution term (arrival-to-fill slippage plus commission); the five add to the per-fill attribution's own position total. The result is AttributionPass::held_moves, read by Platform::last_attribution. An order submitted without a leg is stamped with no quantities and has no split rather than a zero one.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15155 calibrate_resolved",
-      "backend/crates/services/qip-learning-engine/src/attribution.rs:22-42 Source",
-      "backend/crates/runtime/qip-kernel/src/sizing_review.rs"
+      "backend/crates/services/qip-portfolio-engine/src/construction.rs::PortfolioConstructor::construct_referenced",
+      "backend/crates/services/qip-portfolio-engine/src/proposal.rs::ProposalLeg::reference_quantity",
+      "backend/crates/runtime/qip-kernel/src/attribution.rs::ReleaseQuantities",
+      "backend/crates/runtime/qip-kernel/src/attribution.rs::HeldMoveSplit",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::submit_order (leg_quantities stamped into ReleaseContext)",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_decide.rs::the_four_terms_of_a_fills_held_move_sum_exactly_to_the_filled_quantity_times_the_move",
+      "backend/crates/services/qip-portfolio-engine/tests/portfolio.rs::a_leg_reports_its_quantity_at_the_unnarrowed_budget_from_the_same_pass_and_a_smaller_reference_is_refused"
     ],
-    "gap": "A four-way split needs three order quantities this platform does not stamp together: the thesis's reference size, the size after sizing, and the size the book finally allocated. AttributionLineage::note_release (runtime/qip-kernel/src/attribution.rs) stamps strategy, capital policy, risk rule, execution path and quoted spread only, and 'allocation' has no counterfactual yet (what weight the book would have held with no allocator). Without those, prediction/sizing/allocation can only be defined by choosing the numbers; the existing per-fill total (signed_qty x (mark - fill) - commission) already splits exactly into the execution term (arrival to fill, plus commission) and the held move (arrival to mark). Next step: stamp the three quantities at release, then split the held move as q_ref x move (prediction), (q_sized - q_ref) x move (sizing), (q_final - q_sized) x move (allocation), and assert the sum equals the fill total.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2061,10 +2066,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-acceptance --test vertical_slice_decide && cargo test -p qip-portfolio-engine --test portfolio",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: not implemented. Read attribution.rs and the learning engine's Attribution; the four-way record would have defined its own reference quantities rather than reading stamped ones, and the grader's closure names none of the three sources."
+    "notes": "Lane N1-KERNEL-ACCEPT 2026-10-24, closing ADR 0148 decision 5. The constructor reports q_ref itself (leg quantity is linear in the budget and the optimiser weights do not depend on it), so no second governor run was needed and the ADR stop condition did not trigger. The unfilled term balances the directly computed held move because Decimal rounds each of four products to nine places; the test pins it to the stated definition within four raw units. Allocation is q_released - q_sized, a measured nonzero here from lot rounding. Mutations that fired: stamping the reference as the sized quantity (premise/equality fails), sizing as (sized - released) x move (definition fails), dropping the slippage from the execution term (outcome differs from the position total by 13.5), reference_quantity = quantity in the constructor (unit test fails). Not journaled in AttributionRecorded: a journal field is a separate decision."
   },
   {
     "id": "R12-RISK-4093",
@@ -2254,14 +2259,15 @@
   {
     "id": "R12-RISK-4101",
     "status": "PARTIAL",
-    "current": "Edge halts on journal pressure, awaiting reconciliation and polled halt flag; kill switch; reconciliation breaks halt a cell. Clock is now a risk signal: Cell::on_bytes measures how far each venue's batch stamps messages ahead of the cell's capture time, journals the transition (Decision::ClockSkew), withholds a venue past CellConfig::max_clock_skew under GATE_CLOCK_SKEW, and the pass sizes down by the clock row. Credential and deployment failures are still not modelled as risk.",
+    "current": "Edge halts on journal pressure, awaiting reconciliation and polled halt flag; kill switch; reconciliation breaks halt a cell. Clock is a risk signal (Decision::ClockSkew, GATE_CLOCK_SKEW). Deployment identity now has a consumer (ADR 0155 section 14): PolicyItem::AcceptableBuilds and BuildSet in qip-contracts (off the wire and out of the signing string while unproduced), CellConfig::with_build_identity, and a narrowing-only halt derived from the applied payload (Cell::deployment_halted): a cell whose build is absent from a produced set takes no new exposure under GATE_DEPLOYMENT_HALT, charted as qip_edge_halted{source=deployment} only on a cell built with an identity (absent, not zero, elsewhere); a rollback can neither release nor impose it. qip-edge-node reads its identity from the file named by QIP_BUILD_IDENTITY_FILE and stops if that file is set and unreadable.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:432 GATE_CLOCK_SKEW; :4017 observe_clock_lead measures each batch's venue time against capture time; :4045 clock_skewed; :4068 venue_withheld refuses a skewed venue; :2867 Cell::narrowing observes Clock, Feed and VenueSession; :7945 scan_cycles pauses the desk",
-      "backend/crates/libs/qip-contracts/src/degradation.rs:895 pauses_cross_venue_ordering",
-      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1516 a_venue_stamping_its_messages_ahead_of_the_cell_gets_no_order_until_a_batch_shows_it_level_again; :1597 a_cell_with_one_skewed_venue_reads_its_clock_stale_and_pauses_cross_venue_ordering; :1673 a_pass_sizes_down_by_the_clock_row_once_any_venue_is_skewed",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs the_desk_opens_no_cycle_while_a_venues_clock_cannot_be_placed_against_the_cells"
+      "backend/crates/libs/qip-contracts/src/policy.rs::PolicyItem::AcceptableBuilds",
+      "backend/crates/edge/qip-edge/src/cell.rs::Cell::deployment_halted",
+      "backend/crates/edge/qip-edge/src/telemetry.rs::CellMetrics::deployment_halt",
+      "backend/crates/apps/qip-edge-node/src/main.rs (QIP_BUILD_IDENTITY_FILE)",
+      "backend/crates/edge/qip-edge/tests/policy_rollback.rs::belief_is_freshness_only::a_cell_whose_build_is_absent_from_a_produced_build_set_takes_no_new_exposure_while_an_unproduced_set_changes_nothing"
     ],
-    "gap": "Credential and deployment risk signals: no halt source in qip-edge-node main.rs for a venue credential nearing expiry or a deployed commit that disagrees with the one the centre published. The clock half measures venue time against the cell's capture time, so a cell whose own clock is wrong and every venue's agree is not seen (the peer mesh's clock probe measures that, and is not wired into this row).",
+    "gap": "Producer and writer are missing (2026-10-24; ADR 0155 consumer-first rollout): the centre issues no acceptable_builds set (nothing in qip-kernel or qip-api populates PolicyPayload::acceptable_builds), and no unit writes QIP_BUILD_IDENTITY_FILE (infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl does not), so on every binary the wire is unbuilt and no cell halts on its deployment. Credential expiry has no source on a paper platform (the simulated gateway authenticates against references to requirements, no secret material, and the venue credential is readable nowhere, ADR 0003) and is not built; the shape for a real-venue connection under ADR 0108 is a per-venue not_after instant in signed policy, recorded as unreachable, not pending. The clock half measures venue time against the cell capture time, so a cell whose own clock is wrong while every venue agrees is not seen.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2269,10 +2275,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test venue_failure --test arbitrage",
+    "verification": "cargo test -p qip-edge --test policy_rollback",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: clock half closed on the default path, PARTIAL kept for credential and deployment. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests."
+    "notes": "2026-10-24 ADR 0155 section 14 and 15: consumer built, PARTIAL kept. Mutation fired: treating a mismatching build as matching left the cell trading under a set that omits it and the halted assertion failed (premise: an unproduced set and a set naming the build both size normally)."
   },
   {
     "id": "R12-RISK-4102",
@@ -2298,11 +2304,11 @@
   {
     "id": "R12-RISK-4103",
     "status": "PARTIAL",
-    "current": "qip-agency conduct_brain gates external communications through seven checks in shadow form; reached only from qip-cli.",
+    "current": "The conduct gate runs on every engine::execute adapter call and every ambient draft (ActionGuard::from_policy builds ConductGate::from_policy; reached from qip-cli and qip-deepbrain); qip-kernel has no dependency on qip-agency.",
     "evidence": [
       "backend/crates/services/qip-agency/src/conduct_brain.rs:1-15"
     ],
-    "gap": "Integration and the externality/overclaiming/channel-compromise checks.",
+    "gap": "2026-10-24 (ADR 0146 decisions 6 and 7): externality, overclaiming and channel-compromise are not built, because no existing input states them and a check with no input cannot fire; an ACT-stage conduct refusal is a RISK matter not decided here. Nothing further is closable in code without a new input.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2313,7 +2319,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 M2-DATA-AGENTS: claims re-verified against the code (qip-kernel/Cargo.toml has no qip-agency; ConductGate::from_policy in guard.rs and ambient_intake.rs). Kept PARTIAL by decision, no code changed."
   },
   {
     "id": "R12-RISK-4104",
@@ -2401,7 +2407,7 @@
       "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
       "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::every_common_stock_in_the_committed_catalogue_is_a_declared_hedge_candidate"
     ],
-    "gap": "Only CorrelatedAsset is declared in a running root, because the committed catalogue holds only common stock. Closing needs catalogue records (with a printed price on the simulated exchange) for the other eight classes and stated Greeks/loadings for each; declaring a common stock as an option or future would be a guessed sensitivity, which paper_hedge_candidates refuses to do.",
+    "gap": "By decision (ADR 0155 section 19, 2026-10-24) the committed universe stays equities and only CorrelatedAsset hedge candidates are declared (backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates). The other classes enter only with a catalogue record carrying a price printed on the simulated exchange and a sensitivity the record states or an in-tree pricer computes from printed prices; a vendor sensitivity feed is a data subscription and BILLED, not decided here.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2412,7 +2418,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap corrected (the triage's closure, one candidate per class against the present catalogue, would mislabel equities)."
+    "notes": "2026-10-24 ADR 0155 section 19: gap restated, PARTIAL kept; no code."
   },
   {
     "id": "R12-RISK-4108",

@@ -12,8 +12,9 @@
 //! when an experiment was scheduled.
 
 use qip_core::error::{Error, Result};
+use qip_core::hash::sha256_hex;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Verdict {
@@ -44,6 +45,12 @@ pub struct ResearchVersion {
     /// The hypothesis as it was stated when this verdict was recorded.
     pub hypothesis: String,
     pub verdict: Verdict,
+    /// The experiments this verdict cites, as `<campaign id>/<stage>`
+    /// references (ADR 0152 decision 11), sorted and unique. Empty only for a
+    /// verdict recorded through [`ResearchRegistry::record`], which names no
+    /// experiment and is therefore only ever `Open` on a running path.
+    #[serde(default)]
+    pub experiments: Vec<String>,
 }
 
 /// Versions kept per hypothesis. Past it the oldest is given up; the latest
@@ -57,12 +64,35 @@ pub struct ResearchRegistry {
 }
 
 /// Case and whitespace do not make a hypothesis new.
-fn key(hypothesis: &str) -> String {
+pub fn normalise(hypothesis: &str) -> String {
     hypothesis
         .split_whitespace()
         .map(str::to_lowercase)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn key(hypothesis: &str) -> String {
+    normalise(hypothesis)
+}
+
+/// A research campaign's identity: the SHA-256 digest of its normalised
+/// question (ADR 0152 decision 11). Content-derived and not a timestamp or a
+/// counter, so the same question asked twice is one campaign and a verdict
+/// can be matched to the campaign that produced it after a restart.
+pub fn campaign_id(question: &str) -> Result<String> {
+    let normalised = normalise(question);
+    if normalised.is_empty() {
+        return Err(Error::invalid(
+            "a campaign researches a question; state the question it answers",
+        ));
+    }
+    Ok(sha256_hex(normalised.as_bytes()))
+}
+
+/// The reference an experiment is cited by: `<campaign id>/<stage>`.
+pub fn experiment_ref(campaign_id: &str, stage: &str) -> String {
+    format!("{campaign_id}/{stage}")
 }
 
 impl ResearchRegistry {
@@ -77,6 +107,51 @@ impl ResearchRegistry {
             .latest_version(hypothesis)
             .map_or(1, |latest| latest.saturating_add(1));
         self.record_version(hypothesis, next, verdict)?;
+        Ok(next)
+    }
+
+    /// Record a concluded verdict together with the experiments it rests on.
+    ///
+    /// Each reference must be `<campaign id>/<stage>` for *this* hypothesis's
+    /// campaign: a verdict citing another question's experiment, or none, is
+    /// refused, because a null that names no experiment cannot be audited and
+    /// would stop a later repeat on free text alone. `Open` takes none.
+    pub fn record_concluded(
+        &mut self,
+        hypothesis: &str,
+        verdict: Verdict,
+        experiments: &[String],
+    ) -> Result<u32> {
+        let id = campaign_id(hypothesis)?;
+        let prefix = format!("{id}/");
+        let concluded = !matches!(verdict, Verdict::Open);
+        if concluded && experiments.is_empty() {
+            return Err(Error::invalid(
+                "a concluded verdict must cite the experiments it rests on; none were given",
+            ));
+        }
+        let mut cited = BTreeSet::new();
+        for reference in experiments {
+            let stage = reference.strip_prefix(&prefix).unwrap_or_default();
+            if stage.trim().is_empty() {
+                return Err(Error::invalid(format!(
+                    "experiment reference `{reference}` is not `{prefix}<stage>` for this \
+                     hypothesis's campaign"
+                )));
+            }
+            cited.insert(reference.clone());
+        }
+        let next = self
+            .latest_version(hypothesis)
+            .map_or(1, |latest| latest.saturating_add(1));
+        self.record_version(hypothesis, next, verdict)?;
+        if let Some(recorded) = self
+            .entries
+            .get_mut(&key(hypothesis))
+            .and_then(|versions| versions.last_mut())
+        {
+            recorded.experiments = cited.into_iter().collect();
+        }
         Ok(next)
     }
 
@@ -124,6 +199,7 @@ impl ResearchRegistry {
             version,
             hypothesis: hypothesis.trim().to_string(),
             verdict,
+            experiments: Vec::new(),
         });
         Ok(())
     }

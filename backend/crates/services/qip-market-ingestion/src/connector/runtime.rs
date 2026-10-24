@@ -181,12 +181,6 @@ pub struct PollReport {
     /// The evidence each admitted record was checked as, in admission
     /// order and one per record in `admitted`. See [`super::evidence`].
     pub evidence: Vec<CheckedEvidence>,
-    /// Each admitted claim as the §27 evidence packet another brain
-    /// receives, in the same order and one per entry of `evidence`
-    /// (R12-COVERAGE-7152). A claim whose packet cannot be formed is
-    /// quarantined, so no claim leaves this connector without its source,
-    /// licence terms and content hash.
-    pub packets: Vec<qip_contracts::evidence_packet::EvidencePacket>,
     /// Evidence the fabric checked and the runtime then refused to release:
     /// a claim on an impossible timeline, or one from a body that did not
     /// match the digest its own source declared. The records are
@@ -219,7 +213,6 @@ impl PollReport {
             digest: None,
             unreferenced: false,
             evidence: Vec::new(),
-            packets: Vec::new(),
             refused_evidence: Vec::new(),
             knowledge_delta: KnowledgeDelta::default(),
             knowledge_pack: None,
@@ -901,6 +894,7 @@ impl ConnectorRuntime {
             declared_digest,
             feed_sequence.as_ref(),
             quality.confidence,
+            connector.location_of(event),
             report,
         ) {
             Ok(checked) => checked,
@@ -918,27 +912,29 @@ impl ConnectorRuntime {
             }
         };
 
-        let packet = match checked.packet(&self.manifest) {
-            Ok(packet) => packet,
-            Err(error) => {
-                self.hold(
-                    &event.key,
-                    QuarantineReason::ValidationFailure {
-                        issues: vec![format!("evidence packet refused: {}", error.message())],
-                    },
-                    &event.body.to_string(),
-                    at,
-                    report,
-                );
-                return false;
-            }
-        };
+        // ADR 0152 decision 3: the packet is a derived export, built by
+        // `CheckedEvidence::packet` for the first consumer that names itself
+        // and not carried on the report. It is still formed here and dropped,
+        // because a claim that cannot state its source, licence and content
+        // hash must not leave the connector, and removing the field must not
+        // remove the refusal.
+        if let Err(error) = checked.packet(&self.manifest) {
+            self.hold(
+                &event.key,
+                QuarantineReason::ValidationFailure {
+                    issues: vec![format!("evidence packet refused: {}", error.message())],
+                },
+                &event.body.to_string(),
+                at,
+                report,
+            );
+            return false;
+        }
 
         match MarketEventEnvelope::new(&self.manifest, event, record, at, quality) {
             Ok(envelope) => {
                 report.admitted.push(envelope);
                 report.evidence.push(checked);
-                report.packets.push(packet);
             }
             Err(error) => self.hold(
                 &event.key,
@@ -975,6 +971,7 @@ impl ConnectorRuntime {
         declared_digest: Option<&ContentDigest>,
         feed_sequence: Option<&(String, u64)>,
         confidence: f64,
+        location: Option<String>,
         report: &mut PollReport,
     ) -> std::result::Result<CheckedEvidence, String> {
         let mut fabric = self.evidence.lock().map_err(|_| {
@@ -1002,6 +999,7 @@ impl ConnectorRuntime {
             feed_sequence,
             cause,
             confidence,
+            location,
         )
         .map_err(|error| format!("evidence could not be formed: {}", error.message()))?;
         if let Some(held) = fabric.get(&evidence.id) {

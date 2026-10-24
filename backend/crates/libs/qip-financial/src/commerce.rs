@@ -954,6 +954,30 @@ pub struct ReconciliationBreak {
     pub finding: String,
 }
 
+/// What is open on one sale: the units the difference holds and what was
+/// found, in the order it was found.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct OpenBreak {
+    units: BTreeSet<String>,
+    findings: Vec<String>,
+}
+
+/// Which side of a break a correction was made on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CorrectedSide {
+    Ledger,
+    Marketplace,
+}
+
+/// A recorded correction on one side of a difference. A break is cleared by
+/// one of these and by nothing else: a later pass that happens to agree is
+/// not evidence anybody found out which side was wrong.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BreakCorrection {
+    pub side: CorrectedSide,
+    pub note: String,
+}
+
 /// The ledger and a simulated marketplace, kept consistent: a sale is not
 /// settled until its record exists, and a return changes both sides.
 #[derive(Clone, Debug)]
@@ -965,6 +989,11 @@ pub struct CommercePlane {
     marketplace: SimulatedMarketplace,
     breaks: Vec<ReconciliationBreak>,
     reconciliations: u32,
+    /// Sales with a difference nobody has corrected, and the units that
+    /// difference puts a hold on (ADR 0153 decision 8).
+    open: BTreeMap<String, OpenBreak>,
+    /// Corrections recorded since a sale's break opened, newest last.
+    corrections: Vec<(String, BreakCorrection)>,
 }
 
 impl CommercePlane {
@@ -977,6 +1006,8 @@ impl CommercePlane {
             marketplace: SimulatedMarketplace::default(),
             breaks: Vec::new(),
             reconciliations: 0,
+            open: BTreeMap::new(),
+            corrections: Vec::new(),
         }
     }
 
@@ -1008,6 +1039,26 @@ impl CommercePlane {
     /// that silently overwrote one record with the other would erase the
     /// evidence of the difference.
     pub fn reconcile(&mut self, statement: &MarketplaceStatement) -> Vec<ReconciliationBreak> {
+        let found = self.compare(statement);
+        for found_break in &found {
+            let open = self.open.entry(found_break.sale.clone()).or_default();
+            if let Some(sale) = self.sales.get(&found_break.sale) {
+                open.units.insert(sale.unit.clone());
+            }
+            if let Some(line) = statement.lines.get(&found_break.sale) {
+                open.units.insert(line.unit.clone());
+            }
+            if !open.findings.contains(&found_break.finding) {
+                open.findings.push(found_break.finding.clone());
+            }
+        }
+        self.breaks.extend(found.iter().cloned());
+        self.reconciliations = self.reconciliations.saturating_add(1);
+        found
+    }
+
+    /// The differences between the ledger and `statement`, recording nothing.
+    fn compare(&self, statement: &MarketplaceStatement) -> Vec<ReconciliationBreak> {
         let returned: BTreeSet<&str> = self
             .ledger
             .returns()
@@ -1073,8 +1124,6 @@ impl CommercePlane {
                 );
             }
         }
-        self.breaks.extend(found.iter().cloned());
-        self.reconciliations = self.reconciliations.saturating_add(1);
         found
     }
 
@@ -1082,6 +1131,130 @@ impl CommercePlane {
     pub fn reconcile_with_marketplace(&mut self) -> Vec<ReconciliationBreak> {
         let statement = self.marketplace.statement().clone();
         self.reconcile(&statement)
+    }
+
+    /// Why `unit` is held, or `None` when no open break touches it.
+    ///
+    /// A break is acted on by refusing, not by guessing (ADR 0153 decision
+    /// 8): a unit the ledger and the marketplace disagree about is neither
+    /// listed nor sold until a correction on one side is recorded and the
+    /// two agree again. The venue is not held.
+    pub fn hold_on(&self, unit: &str) -> Option<String> {
+        self.open.iter().find_map(|(sale, open)| {
+            open.units.contains(unit).then(|| {
+                format!(
+                    "unit {unit} is held: the ledger and the marketplace disagree about sale \
+                     {sale} ({}); record a correction on one side and clear the break",
+                    open.findings.join("; ")
+                )
+            })
+        })
+    }
+
+    /// The sales whose breaks are still open, oldest id first.
+    pub fn open_breaks(&self) -> Vec<&str> {
+        self.open.keys().map(String::as_str).collect()
+    }
+
+    /// Correct the marketplace's side of a sale: restate the line it holds.
+    /// Recorded, so the hold can be cleared; nothing is cleared here.
+    pub fn restate_marketplace_line(
+        &mut self,
+        sale: &str,
+        line: StatementLine,
+        note: impl Into<String>,
+    ) -> Result<()> {
+        let note = Self::correction_note(sale, note)?;
+        self.require_open(sale)?;
+        self.marketplace
+            .statement
+            .lines
+            .insert(sale.to_string(), line);
+        self.corrections.push((
+            sale.to_string(),
+            BreakCorrection {
+                side: CorrectedSide::Marketplace,
+                note,
+            },
+        ));
+        Ok(())
+    }
+
+    /// Correct the ledger's side of a settled sale with a named adjustment.
+    /// Recorded, so the hold can be cleared; nothing is cleared here.
+    pub fn adjust_settlement(
+        &mut self,
+        sale: &str,
+        label: impl Into<String>,
+        amount: Decimal,
+    ) -> Result<()> {
+        let label = Self::correction_note(sale, label)?;
+        self.require_open(sale)?;
+        let settlement = self
+            .settlements
+            .get_mut(sale)
+            .ok_or_else(|| Error::not_found(format!("sale {sale} is not settled here")))?;
+        settlement.adjustments.push((label.clone(), amount));
+        self.corrections.push((
+            sale.to_string(),
+            BreakCorrection {
+                side: CorrectedSide::Ledger,
+                note: label,
+            },
+        ));
+        Ok(())
+    }
+
+    /// Clear a sale's open break, which needs both a recorded correction and
+    /// a fresh comparison that finds the sale in agreement.
+    ///
+    /// Refused without a correction, because agreement by itself does not say
+    /// which side was wrong, and refused while the comparison still finds a
+    /// difference, naming it. On success the units the break held are free.
+    pub fn clear_break(&mut self, sale: &str) -> Result<()> {
+        self.require_open(sale)?;
+        if !self.corrections.iter().any(|(s, _)| s == sale) {
+            return Err(Error::denied(format!(
+                "sale {sale} has an open break and no recorded correction; correct the ledger \
+                 or the marketplace first, then clear it"
+            )));
+        }
+        let statement = self.marketplace.statement().clone();
+        let still: Vec<String> = self
+            .compare(&statement)
+            .into_iter()
+            .filter(|b| b.sale == sale)
+            .map(|b| b.finding)
+            .collect();
+        if !still.is_empty() {
+            return Err(Error::denied(format!(
+                "sale {sale} still disagrees after the correction: {}",
+                still.join("; ")
+            )));
+        }
+        self.open.remove(sale);
+        self.corrections.retain(|(s, _)| s != sale);
+        Ok(())
+    }
+
+    fn require_open(&self, sale: &str) -> Result<()> {
+        if self.open.contains_key(sale) {
+            Ok(())
+        } else {
+            Err(Error::invalid(format!(
+                "sale {sale} has no open break to correct"
+            )))
+        }
+    }
+
+    fn correction_note(sale: &str, note: impl Into<String>) -> Result<String> {
+        let note = note.into();
+        if note.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "a correction to sale {sale} must say what was wrong"
+            )));
+        }
+        Ok(note)
     }
 
     pub fn ledger(&self) -> &Ledger {
@@ -1130,6 +1303,9 @@ impl CommercePlane {
         }
         if !gross.is_positive() {
             return Err(Error::invalid("a sale needs a positive price"));
+        }
+        if let Some(hold) = self.hold_on(unit) {
+            return Err(Error::denied(hold));
         }
         self.ledger.apply(LedgerEvent::Sold {
             unit: unit.to_string(),

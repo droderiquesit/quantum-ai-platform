@@ -55,7 +55,7 @@ ADR 0036 decision 3. Two GitHub App installations on this repository —
 `qip-github-app-kargo-<env>`) as one JSON document:
 
 ```json
-{"app_id": "<number>", "installation_id": "<number>", "private_key": "-----BEGIN RSA PRIVATE KEY-----\n..."}
+{"app_id": "<number>", "installation_id": "<number>", "private_key": "<the App's PEM private key, newlines escaped as \n>"}
 ```
 
 The bootstrap reads each with `gcloud secrets versions access` into a

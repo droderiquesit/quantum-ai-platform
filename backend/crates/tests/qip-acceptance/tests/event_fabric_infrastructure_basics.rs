@@ -422,3 +422,61 @@ fn fabric_010_gap_a_durable_partition_cannot_be_declared_at_rf3() {
         assert!(refused.to_string().contains("(C2)"), "{refused}");
     }
 }
+
+#[test]
+fn fabric_010_a_stream_is_admitted_at_rf3_only_for_p0_and_p1_acknowledged_managed_majority() {
+    // FABRIC-010 / R12-FABRIC-10027. The pin above proves RF3 is refused for
+    // an `archived` stream; it cannot tell a working managed path from no path
+    // at all. This one drives the admission rule ADR 0111 §3 wrote: RF3 is a
+    // claim only the Spanner-committed `managed_majority` acknowledgement
+    // honours, only P0 and P1 may make it, and the factor must be exactly
+    // three. Each refusal is checked for its own reason, because a stream that
+    // is refused for the wrong reason (a bad overload policy, say) would make
+    // "P2 cannot claim RF3" pass while admitting it.
+    //
+    // Mutation: in `StreamPolicy::new`, delete the `QosClass::P0Control |
+    // QosClass::P1Outcomes` guard on a replicated ack profile — the P2 stream
+    // is admitted at RF3 and the `expect_err` fires.
+    use qip_events::event_fabric::policy::{
+        AckProfile, Entitlement, Mirroring, Ordering, OverloadPolicy, QosClass, StreamPolicy,
+        StreamPolicySpec,
+    };
+    let spec = |class: QosClass, replication_factor, ack_profile| StreamPolicySpec {
+        qos_class: class,
+        partition_key: "key".to_string(),
+        ordering: Ordering::PerPartition,
+        retention: qip_events::retention::RetentionClass::Irreplaceable,
+        replication_factor,
+        mirroring: Mirroring::None,
+        overload_policy: OverloadPolicy::RefuseProducer,
+        ack_profile,
+        byte_quota_per_producer: 1 << 20,
+        message_quota_per_producer: 1_000,
+        lag_limit: 10_000,
+        entitlement: Entitlement::new("control", "trade").expect("valid"),
+        seal_age_ms: 60_000,
+        peak_bytes_per_second: 1 << 16,
+    };
+    for class in [QosClass::P0Control, QosClass::P1Outcomes] {
+        assert!(
+            StreamPolicy::new(spec(class, 3, AckProfile::ManagedMajority)).is_ok(),
+            "premise: {class:?} at RF3 managed_majority is the one admitted claim"
+        );
+        let local = StreamPolicy::new(spec(class, 3, AckProfile::Archived))
+            .expect_err("RF3 on one disk was admitted");
+        assert!(local.to_string().contains("(C2)"), "{local}");
+        let wrong_factor = StreamPolicy::new(spec(class, 1, AckProfile::ManagedMajority))
+            .expect_err("managed_majority at RF1 was admitted");
+        assert!(
+            wrong_factor.to_string().contains("managed_majority stream"),
+            "{wrong_factor}"
+        );
+    }
+    let p2 = StreamPolicy::new(spec(
+        QosClass::P2MarketJournal,
+        3,
+        AckProfile::ManagedMajority,
+    ))
+    .expect_err("a P2 stream claimed the managed consensus");
+    assert!(p2.to_string().contains("(ADR 0111 §2)"), "{p2}");
+}

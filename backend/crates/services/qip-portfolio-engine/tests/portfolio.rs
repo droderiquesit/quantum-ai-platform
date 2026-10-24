@@ -699,6 +699,7 @@ fn draft() -> Proposal {
             target_weight: 0.01,
             estimated_cost_bps: 10.0,
             hypotheses: vec!["hyp-1".to_string()],
+            reference_quantity: None,
         }],
         "expresses one approved thesis",
     )
@@ -900,4 +901,52 @@ fn a_proposal_with_no_rationale_fails_validation() {
 fn the_traded_notional_is_the_sum_of_the_legs() {
     let proposal = draft();
     assert_eq!(proposal.traded_notional(), dec!("100000"));
+}
+
+// --- ADR 0148 decision 5: the constructor reports the quantity before narrowing
+
+#[test]
+fn a_leg_reports_its_quantity_at_the_unnarrowed_budget_from_the_same_pass_and_a_smaller_reference_is_refused()
+-> Result<()> {
+    let theses = vec![thesis("AAA", 0.9, 0.08), thesis("BBB", 0.9, 0.02)];
+    let narrowed = Money::new(dec!("2500000"), Currency::USD);
+    let run = |reference: Money, budget: Money| {
+        constructor(wide_mandate())?.construct_referenced(
+            &theses,
+            &covariance(theses.len()),
+            &BTreeMap::new(),
+            budget,
+            reference,
+            &BTreeMap::new(),
+            now(),
+            now(),
+            ProposalId::from_string("prop-referenced"),
+        )
+    };
+    let narrowed_run = run(equity(), narrowed)?.proposal;
+    let plain = run(equity(), equity())?.proposal;
+    assert!(
+        !narrowed_run.legs.is_empty() && narrowed_run.legs.len() == plain.legs.len(),
+        "premise: both runs size the same legs"
+    );
+    for (narrowed_leg, plain_leg) in narrowed_run.legs.iter().zip(&plain.legs) {
+        // Unnarrowed, the leg's own quantity is its reference.
+        assert_eq!(plain_leg.reference_quantity, Some(plain_leg.quantity));
+        // Narrowed to a quarter, the reference is still the unnarrowed figure
+        // (read from this pass, so the weights are the same) and the quantity
+        // is a quarter of it.
+        assert_eq!(narrowed_leg.reference_quantity, Some(plain_leg.quantity));
+        assert!(
+            narrowed_leg.quantity < plain_leg.quantity,
+            "premise: the narrowed budget shrank the leg"
+        );
+    }
+    // A reference below the sizing budget would turn narrowing into widening.
+    let refusal = run(narrowed, equity()).expect_err("a reference below the budget was accepted");
+    assert!(
+        refusal.message().contains("narrowing contracts"),
+        "{}",
+        refusal.message()
+    );
+    Ok(())
 }

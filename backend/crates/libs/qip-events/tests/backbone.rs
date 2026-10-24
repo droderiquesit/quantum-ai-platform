@@ -2424,7 +2424,7 @@ fn every_topic_declares_the_retention_class_its_record_carries() {
     // Premise: the closed set is the size the registry says, so a topic
     // added to `ALL` without a row below is a failure here and not a silent
     // default.
-    assert_eq!(Topic::ALL.len(), 89, "the topic registry changed size");
+    assert_eq!(Topic::ALL.len(), 90, "the topic registry changed size");
 
     let expected = |topic: Topic| match topic {
         Topic::MarketTick | Topic::MarketQuote | Topic::MarketOrderBook => {
@@ -2444,6 +2444,7 @@ fn every_topic_declares_the_retention_class_its_record_carries() {
         | Topic::EntityResolved
         | Topic::RelationshipUpdated
         | Topic::WorldModelUpdated
+        | Topic::EvidenceAdmitted
         | Topic::FeatureComputed => RetentionClass::DerivedState,
         Topic::SignalGenerated
         | Topic::AnomalyDetected

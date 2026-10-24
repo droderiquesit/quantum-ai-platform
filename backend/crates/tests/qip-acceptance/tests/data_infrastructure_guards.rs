@@ -677,8 +677,14 @@ impl BodyServer {
                     body.len(),
                     body
                 );
-                let _ = stream.write_all(response.as_bytes());
+                // Counted before the write, not after it: the client returns as
+                // soon as it has read `content-length` bytes, so a count taken
+                // after `write_all` raced the premise assertion and read 0 on a
+                // loaded ci runner (ci run 1229, 2026-10-24). A write that fails
+                // after the count still fails the test: its records premise
+                // then finds nothing.
                 thread_served.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(response.as_bytes());
             }
         });
         Self {

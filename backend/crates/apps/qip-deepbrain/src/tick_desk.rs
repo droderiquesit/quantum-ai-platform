@@ -89,6 +89,9 @@ pub const MAX_TICKS: usize = 2_000_000;
 
 /// The distilled map's capacity and lifetime.
 pub const MAP_CAPACITY: usize = 64;
+
+/// The most outside priors one round hands REASON; the kernel refuses more.
+pub const MAX_OUTSIDE_PRIORS: usize = 1_024;
 pub const MAP_TTL: Duration = Duration::from_mins(15);
 
 /// The desk's configuration, read once at the composition root.
@@ -321,6 +324,14 @@ pub struct TickRound {
     pub refused_regions: BTreeMap<String, String>,
     pub branches_grown: usize,
     pub branches_live: usize,
+    /// Live branches written to the outputs store as §24.9 `WorldBranch`
+    /// contracts (ADR 0151 decision 5: the tick desk is where trees are grown,
+    /// so it is where they are journaled), and the live ones the contract
+    /// refused to state: the baseline, which is its parent's own future, and
+    /// any whose propagation no basis-point strength can state. The two add up
+    /// to `branches_live`, so a branch is never silently absent.
+    pub world_branches: usize,
+    pub world_branches_refused: usize,
     pub tree_log_score: Option<f64>,
     pub compression: Option<CompressionReport>,
 }
@@ -430,6 +441,9 @@ pub struct TickDesk {
     /// (`FusedState::posteriors`), which the evolution engine reads as a
     /// search prior (R12-TICK-2085).
     posteriors: BTreeMap<String, f64>,
+    /// The same fused state as beliefs REASON may be narrowed by, never
+    /// raised (ADR 0151 decision 3, R12-TICK-1002).
+    outside_priors: Vec<qip_kernel::fusion::OutsidePrior>,
 }
 
 impl TickDesk {
@@ -445,6 +459,7 @@ impl TickDesk {
             rounds: 0,
             tree: None,
             posteriors: BTreeMap::new(),
+            outside_priors: Vec::new(),
         }
     }
 
@@ -455,6 +470,14 @@ impl TickDesk {
     /// What the last round's fused events believe about each instrument.
     pub const fn posteriors(&self) -> &BTreeMap<String, f64> {
         &self.posteriors
+    }
+
+    /// What the last round's fused events would have REASON be careful of: the
+    /// strongest directional posterior per instrument, at most
+    /// [`MAX_OUTSIDE_PRIORS`], ranked by strength so the cap drops the weakest
+    /// rather than whichever sorted last.
+    pub fn outside_priors(&self) -> &[qip_kernel::fusion::OutsidePrior] {
+        &self.outside_priors
     }
 
     /// The synthetic future tree the last round grew.
@@ -753,6 +776,15 @@ impl TickDesk {
         };
         let fused = fuse(graph, &traces, now, &fusion_config)?;
         self.posteriors = fused.posteriors();
+        let mut priors = fused.outside_priors();
+        // Strongest first: the smallest multiplier either way is the prior that
+        // can narrow most, and a stable sort keeps instrument order on ties.
+        let strength = |prior: &qip_kernel::fusion::OutsidePrior| {
+            prior.narrowing_for(1.0).min(prior.narrowing_for(-1.0))
+        };
+        priors.sort_by(|a, b| strength(a).total_cmp(&strength(b)));
+        priors.truncate(MAX_OUTSIDE_PRIORS);
+        self.outside_priors = priors;
         round.fused_events = fused.events.len();
         round.mismatches = fused.mismatches().len();
         let map = fused.opportunity_map(MAP_CAPACITY, MAP_TTL)?;
@@ -848,6 +880,20 @@ impl TickDesk {
             )?;
             round.branches_grown = tree.branches.len();
             round.branches_live = tree.live().count();
+            let mut contracts = Vec::new();
+            for branch in tree.live() {
+                match branch.to_world_branch() {
+                    Ok(contract) => contracts.push(contract),
+                    Err(_) => round.world_branches_refused += 1,
+                }
+            }
+            round.world_branches = contracts.len();
+            if !contracts.is_empty() {
+                self.outputs.put(
+                    &format!("{OUTPUT_NAMESPACE}/world-branches/{}.json", round.manifest),
+                    serde_json::to_vec(&contracts)?,
+                )?;
+            }
             self.tree = Some(tree);
         }
         Ok(round)

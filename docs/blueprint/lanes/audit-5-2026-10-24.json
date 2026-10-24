@@ -1,0 +1,209 @@
+{
+  "comment": "AUDIT-5, 2026-10-24: one rater reconciles the calls AUDIT-2, AUDIT-3 and AUDIT-4's three lanes made differently. The lanes' overclaim rates were 44%, 18% and 10% on draws from the same population, wider than sampling explains, and each lane's report lists the calls a sibling would grade differently. Every row below is re-graded against the single bar in lanes/audit-5-bar.md.",
+  "rows": [
+    {
+      "id": "R12-AGENCY-6089",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "named test survives; lane says the ranking property is tested only in causal.rs"
+    },
+    {
+      "id": "R12-AMBIENT-1026",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "named tests do not exercise the specialist wake"
+    },
+    {
+      "id": "R12-AMBIENT-1144",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "named tests do not exercise the specialist wake"
+    },
+    {
+      "id": "R12-AMBIENT-3106",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "admit urgency untested by the named tests"
+    },
+    {
+      "id": "R12-CICD-8031",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "named checks do not cover the clause"
+    },
+    {
+      "id": "R12-CICD-10203",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "named checks do not cover the clause"
+    },
+    {
+      "id": "R12-CONTRACT-7083",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "required-field checks untested in the named suite"
+    },
+    {
+      "id": "R12-EXPAND-6059",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "registry blank-name refusal untested"
+    },
+    {
+      "id": "R12-FABRIC-7055",
+      "from": "A4-2",
+      "status_at_plan": "PARTIAL",
+      "contested": "defaulting byte/message producer quotas passes the named suite"
+    },
+    {
+      "id": "R12-MODEL-4005",
+      "from": "A4-2",
+      "status_at_plan": "PARTIAL",
+      "contested": "overwriting measured fidelity passes qip-training and deepbrain learning"
+    },
+    {
+      "id": "R12-MODEL-10092",
+      "from": "A4-2",
+      "status_at_plan": "PARTIAL",
+      "contested": "zeroed per-forecaster calibration error passes every suite"
+    },
+    {
+      "id": "R12-REASON-3060",
+      "from": "A4-3",
+      "status_at_plan": "PARTIAL",
+      "contested": "only an unnamed qip-world-model test fails under the abduce mutation"
+    },
+    {
+      "id": "R12-REFLEX-5029",
+      "from": "A4-3",
+      "status_at_plan": "PARTIAL",
+      "contested": "named tests drive MeshLink::exchange which the node never calls; decision_loop hangs under the recv mutation"
+    },
+    {
+      "id": "R12-RES-10130",
+      "from": "A4-3",
+      "status_at_plan": "PARTIAL",
+      "contested": "removing gate_strategic_service call fails no node:: lib test"
+    },
+    {
+      "id": "R12-TICK-1122",
+      "from": "A4-3",
+      "status_at_plan": "PARTIAL",
+      "contested": "requirement says a clock-stage mutation must change the replay digest; only qip-sequencing capture test notices"
+    },
+    {
+      "id": "R12-WORLD-9027",
+      "from": "A4-3",
+      "status_at_plan": "PARTIAL",
+      "contested": "set_calibrator_available(true) leaves qip-kernel green"
+    },
+    {
+      "id": "R12-TICK-2051",
+      "from": "AUDIT-2",
+      "status_at_plan": "PARTIAL",
+      "contested": "uncertainty overwritten with 0 passes (all 76 lines carry 0)"
+    },
+    {
+      "id": "R12-REFLEX-5030",
+      "from": "AUDIT-2",
+      "status_at_plan": "PARTIAL",
+      "contested": "dropping belief freshness passes"
+    },
+    {
+      "id": "R12-REASON-3059",
+      "from": "A4-3 kept VERIFIED",
+      "status_at_plan": "COMPLETE",
+      "contested": "verification command does not run the proving test"
+    },
+    {
+      "id": "R12-WORLD-1129",
+      "from": "A4-3 kept VERIFIED",
+      "status_at_plan": "COMPLETE",
+      "contested": "verification command does not run the proving test"
+    },
+    {
+      "id": "R12-SEC-9125",
+      "from": "A4-3 kept VERIFIED",
+      "status_at_plan": "COMPLETE",
+      "contested": "verification command does not run the proving test"
+    },
+    {
+      "id": "R12-SEC-9138",
+      "from": "A4-3 kept VERIFIED",
+      "status_at_plan": "COMPLETE",
+      "contested": "verification command does not run the proving test"
+    },
+    {
+      "id": "R12-TICK-2087",
+      "from": "A4-3 kept VERIFIED",
+      "status_at_plan": "COMPLETE",
+      "contested": "a zero DelayedFeed amount survives the named tests"
+    },
+    {
+      "id": "R12-SEC-10021",
+      "from": "A4-3 kept VERIFIED",
+      "status_at_plan": "COMPLETE",
+      "contested": "no committed environment instantiates an edge certificate"
+    },
+    {
+      "id": "R12-OBS-9145",
+      "from": "A4-2 kept VERIFIED",
+      "status_at_plan": "COMPLETE",
+      "contested": "verified on emission; nothing scrapes the series"
+    },
+    {
+      "id": "R12-OBS-9147",
+      "from": "A4-2 kept VERIFIED",
+      "status_at_plan": "COMPLETE",
+      "contested": "verified on emission; nothing scrapes the series"
+    },
+    {
+      "id": "R12-OBS-9150",
+      "from": "A4-2 kept VERIFIED",
+      "status_at_plan": "COMPLETE",
+      "contested": "verified on emission; nothing scrapes the series"
+    },
+    {
+      "id": "R12-LEDGER-10197",
+      "from": "A4-2 kept VERIFIED",
+      "status_at_plan": "COMPLETE",
+      "contested": "verified because no Spanner instance is planned"
+    },
+    {
+      "id": "R12-LEDGER-5016",
+      "from": "A4-2",
+      "status_at_plan": "PARTIAL",
+      "contested": "treasury postings reach the ledger only with QIP_FABRIC_URL; ledgerd's own apply path may be the behaviour"
+    },
+    {
+      "id": "R12-OBS-9161",
+      "from": "A4-2",
+      "status_at_plan": "PARTIAL",
+      "contested": "pod disruption withdrawn by a code comment; no GKE workload exists"
+    },
+    {
+      "id": "R12-COVERAGE-5107",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "gated prohibition: the gate runs only when a gated plan exists"
+    },
+    {
+      "id": "R12-DATA-7021",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "gated prohibition: the gate runs only when a gated plan exists"
+    },
+    {
+      "id": "R12-EVENT-5087",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "borderline gated prohibition (QIP_DEEPBRAIN_BREADTH_PLAN)"
+    },
+    {
+      "id": "R12-EVENT-5088",
+      "from": "A4-1",
+      "status_at_plan": "PARTIAL",
+      "contested": "borderline gated prohibition (QIP_DEEPBRAIN_BREADTH_PLAN)"
+    }
+  ]
+}

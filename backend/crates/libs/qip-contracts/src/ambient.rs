@@ -331,6 +331,15 @@ pub enum Disposition {
     /// and charged no budget, and is dropped on the record rather than in
     /// silence, so a storm that outlasted its own signals is visible.
     Expired,
+    /// A live signal of the same class, trigger, subject and affected entities, at
+    /// least as severe, had already been routed. It woke nothing, charged no
+    /// budget and took no hold-queue slot, and is dropped on the record: a
+    /// detector that re-raises one deviation every sweep otherwise spends the
+    /// whole attention budget saying one thing, and the storm it makes is
+    /// what the budget exists to survive (R12-RES-7107). A repeat that is
+    /// *more* severe than the live one is not a duplicate; it is the
+    /// deviation getting worse, and routes.
+    Clustered,
 }
 
 /// Why an activation happened: the class of deviation and the trigger that
@@ -404,6 +413,7 @@ pub struct RoutingPolicy {
     budget_per_window: u32,
     window: Duration,
     defer_capacity: usize,
+    cluster_duplicates: bool,
 }
 
 impl RoutingPolicy {
@@ -437,7 +447,19 @@ impl RoutingPolicy {
             budget_per_window,
             window,
             defer_capacity,
+            cluster_duplicates: false,
         })
+    }
+
+    /// Cluster duplicate signals: a repeat of a live signal (same class,
+    /// detector, subject and affected entities) that is no more severe is recorded
+    /// [`Disposition::Clustered`] and spends nothing. Off by default, so a
+    /// caller that routes distinct signals under one entity name sees the
+    /// budget and nothing else; a router that faces a detector re-raising the
+    /// same deviation every sweep turns it on.
+    pub fn clustering_duplicates(mut self) -> Self {
+        self.cluster_duplicates = true;
+        self
     }
 
     /// The default routing: surprise to a specialist, opportunity to research,
@@ -478,6 +500,34 @@ pub struct AttentionRouter {
     used: u32,
     deferred: VecDeque<AmbientSignal>,
     issued: u64,
+    /// Signals routed and not yet past their expiry, by what makes two of
+    /// them the same deviation, with the expiry and severity to compare a
+    /// repeat against. Bounded by [`MAX_CLUSTER_KEYS`].
+    live: BTreeMap<ClusterKey, (Timestamp, u32)>,
+}
+
+/// How many distinct live deviations the router remembers for clustering. A
+/// storm of *different* signals is the budget's business, not this map's; at
+/// the cap a new key is simply not remembered, so its repeats route as they
+/// did before clustering existed rather than the map growing with the storm.
+pub const MAX_CLUSTER_KEYS: usize = 1024;
+
+/// What makes two signals one deviation: the class, which detector raised it,
+/// the subject it is about (a forecast and an adversarial reading of the same
+/// entity are different deviations that wake different pathways, so the
+/// subject is part of the key) and the entities it affects (sorted, so order
+/// is not a difference).
+type ClusterKey = (SignalClass, String, String, Vec<String>);
+
+fn cluster_key(signal: &AmbientSignal) -> ClusterKey {
+    let detector = match &signal.trigger {
+        Trigger::Schedule(name) => format!("schedule:{name}"),
+        Trigger::Event(name) => format!("event:{name}"),
+    };
+    let mut entities = signal.affected_entities.clone();
+    entities.sort();
+    entities.dedup();
+    (signal.class, detector, signal.subject.clone(), entities)
 }
 
 impl AttentionRouter {
@@ -488,6 +538,7 @@ impl AttentionRouter {
             used: 0,
             deferred: VecDeque::new(),
             issued: 0,
+            live: BTreeMap::new(),
         }
     }
 
@@ -564,6 +615,18 @@ impl AttentionRouter {
             out.push(event);
             return Ok(out);
         }
+        self.live.retain(|_, (expiry, _)| *expiry >= now);
+        let key = cluster_key(signal);
+        if self.policy.cluster_duplicates
+            && self
+                .live
+                .get(&key)
+                .is_some_and(|(_, severity)| signal.severity_bp <= *severity)
+        {
+            let event = self.event(signal, Disposition::Clustered, now)?;
+            out.push(event);
+            return Ok(out);
+        }
         let disposition = if self.used < self.policy.budget_per_window && self.deferred.is_empty() {
             self.used += 1;
             Disposition::Activated
@@ -573,6 +636,12 @@ impl AttentionRouter {
         } else {
             Disposition::Shed
         };
+        if self.policy.cluster_duplicates
+            && disposition != Disposition::Shed
+            && (self.live.contains_key(&key) || self.live.len() < MAX_CLUSTER_KEYS)
+        {
+            self.live.insert(key, (signal.expiry, signal.severity_bp));
+        }
         let event = self.event(signal, disposition, now)?;
         out.push(event);
         Ok(out)
@@ -819,6 +888,25 @@ pub struct InfoRequest {
     status: AcquisitionStatus,
     /// Cumulative cost spent on acquisitions against this request so far, in basis points.
     cumulative_cost_bp: u32,
+    /// The uncertainty reduction on offer when the first acquisition was
+    /// recorded, before any purchase shrank it (ADR 0158 decision 11). The
+    /// ceiling realised gain is read against. Absent until then, and on a
+    /// record written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch_reduction_bp: Option<u32>,
+    /// What the acquisitions have measurably bought so far: the sum of each
+    /// window's fall in the uncertainty reading, in basis points of that
+    /// window's opening reading, capped at the scale.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    realised_gain_bp: u32,
+    /// Halted because a purchase was measured to have bought nothing, as
+    /// distinct from one that ran out of value or time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    halted_for_no_gain: bool,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl InfoRequest {
@@ -850,6 +938,9 @@ impl InfoRequest {
             requested_at,
             status: AcquisitionStatus::Requested,
             cumulative_cost_bp: 0,
+            launch_reduction_bp: None,
+            realised_gain_bp: 0,
+            halted_for_no_gain: false,
         })
     }
 
@@ -909,12 +1000,68 @@ impl InfoRequest {
         // back here — and it is the conservative direction: it can only make
         // a request halt sooner.
         let kept = u64::from(MAX_SEVERITY_BP.saturating_sub(acquisition_cost_bp));
+        self.launch_reduction_bp
+            .get_or_insert(self.criteria.uncertainty_reduction_bp);
         self.criteria.uncertainty_reduction_bp = u32::try_from(
             u64::from(self.criteria.uncertainty_reduction_bp) * kept / u64::from(MAX_SEVERITY_BP),
         )
         .unwrap_or(0);
         self.status = AcquisitionStatus::InProgress;
         Ok(())
+    }
+
+    /// Feeds back what the last acquisition measurably bought: `window_bp` is
+    /// the fall of the uncertainty reading over the window, in basis points of
+    /// the reading the window opened on (ADR 0158 decision 11). A reading that
+    /// rose is a fall of zero, and the caller passes zero for it.
+    ///
+    /// Realised gain can only shrink what is left: the remaining reduction
+    /// becomes `min(what the cost proxy left, launch reduction - realised so
+    /// far)`. The proxy stays as a floor on shrinkage because feeding gain
+    /// back without it would let a purchase that bought nothing make buying
+    /// more look better. A window that bought nothing halts the request as
+    /// `no_gain`, so it is not bought again. Refuses a request with no
+    /// acquisition recorded, one no longer in progress, and a figure past
+    /// the scale. A request with no measurement is simply never passed here,
+    /// and completes.
+    pub fn record_realised_gain(&mut self, window_bp: u32) -> Result<()> {
+        if window_bp > MAX_SEVERITY_BP {
+            return Err(Error::invalid(
+                "info request: realised gain must be 0-10000 basis points; do not exceed MAX_SEVERITY_BP",
+            ));
+        }
+        if self.status != AcquisitionStatus::InProgress {
+            return Err(Error::denied(
+                "info request: realised gain is measured on a request in progress; check status",
+            ));
+        }
+        let Some(launch) = self.launch_reduction_bp else {
+            return Err(Error::denied(
+                "info request: no acquisition has been recorded, so there is nothing to measure",
+            ));
+        };
+        self.realised_gain_bp = self
+            .realised_gain_bp
+            .saturating_add(window_bp)
+            .min(MAX_SEVERITY_BP);
+        self.criteria.uncertainty_reduction_bp = self
+            .criteria
+            .uncertainty_reduction_bp
+            .min(launch.saturating_sub(self.realised_gain_bp));
+        if window_bp == 0 {
+            self.status = AcquisitionStatus::Halted;
+            self.halted_for_no_gain = true;
+        }
+        Ok(())
+    }
+
+    pub fn realised_gain_bp(&self) -> u32 {
+        self.realised_gain_bp
+    }
+
+    /// Whether the request was halted because a purchase bought nothing.
+    pub fn halted_for_no_gain(&self) -> bool {
+        self.halted_for_no_gain
     }
 
     /// Completes the request. Refuses if the request was not in progress.

@@ -981,3 +981,66 @@ fn an_alpaca_transport_missing_one_of_its_two_files_names_that_variable_and_no_v
     std::fs::remove_dir_all(dir)?;
     Ok(())
 }
+
+/// R12-EVID-2037. Until 2026-10-24 every claim's location was its manifest's
+/// region name, which `GeoPoint::parse` refuses, so
+/// `check_geographic_consistency` had nothing to compare on any production
+/// claim and read as a check that ran while being unable to fire.
+#[test]
+fn a_weather_reading_carries_the_stations_published_coordinates_as_its_claim_location_and_a_rate_reading_carries_none()
+-> Result<()> {
+    // The premise: the recording's first feature really states a point, so
+    // an absence below is the connector's doing and not the fixture's.
+    let recorded: serde_json::Value = serde_json::from_str(nws_station_observations::FIXTURE)
+        .expect("the shipped fixture is a recorded source script");
+    let body = recorded["exchanges"][0]["answers"][0]["body"]
+        .as_str()
+        .expect("the recorded answer carries a body");
+    let served: serde_json::Value =
+        serde_json::from_str(body).expect("the recorded body is the JSON the source served");
+    let point = &served["features"][0]["geometry"];
+    assert_eq!(
+        point["type"], "Point",
+        "the recording no longer states a station point: {point}"
+    );
+    assert_eq!(point["coordinates"][0].as_f64(), Some(-87.9));
+    assert_eq!(point["coordinates"][1].as_f64(), Some(41.98));
+
+    let (mut connector, mut emulator) = nws()?;
+    let mut runtime = runtime_for(&connector)?;
+    let admitted = runtime
+        .poll(&mut connector, &mut emulator, nws_horizon())?
+        .admitted;
+    assert!(!admitted.is_empty(), "the weather poll admitted nothing");
+    let fabric = runtime.evidence_fabric();
+    let held = fabric.lock().expect("the fabric lock is not poisoned");
+    let weather: Vec<Option<String>> = held.held().map(|h| h.record.location.clone()).collect();
+    assert!(!weather.is_empty(), "no weather claim reached the fabric");
+    for location in &weather {
+        // GeoJSON orders longitude first; the claim states latitude first.
+        assert_eq!(location.as_deref(), Some("geo:41.98,-87.9"));
+        let parsed = location.as_deref().and_then(qip_evidence::GeoPoint::parse);
+        assert!(parsed.is_some(), "{location:?} is not a parseable position");
+    }
+    drop(held);
+
+    let (mut rates, mut rate_emulator) = frankfurter()?;
+    let mut rate_runtime = runtime_for(&rates)?;
+    let admitted = rate_runtime
+        .poll(&mut rates, &mut rate_emulator, frankfurter_horizon())?
+        .admitted;
+    assert!(!admitted.is_empty(), "the rate poll admitted nothing");
+    let fabric = rate_runtime.evidence_fabric();
+    let held = fabric.lock().expect("the fabric lock is not poisoned");
+    let mut seen = 0;
+    for entry in held.held() {
+        seen += 1;
+        assert_eq!(
+            entry.record.location, None,
+            "a rate claim was given a location its publisher never stated"
+        );
+        assert!(entry.record.metadata.contains_key("region"));
+    }
+    assert!(seen > 0, "no rate claim reached the fabric");
+    Ok(())
+}

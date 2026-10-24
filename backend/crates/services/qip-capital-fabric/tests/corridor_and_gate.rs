@@ -1120,6 +1120,24 @@ fn a_tripped_velocity_breaker_or_a_raised_anomaly_flag_vetoes_all_with_an_alert(
 }
 
 #[test]
+fn a_lagging_ledger_vetoes_every_transfer_and_a_caught_up_one_admits() -> Result<()> {
+    // R12-RES-10127. The failure prevented: capital moved on a book that does
+    // not yet say what it holds, because the cells' outcomes were still
+    // unbooked. The premise is the admission: the same inputs with the flag
+    // clear are approved, so the veto below is the flag's doing.
+    let mut inputs = Inputs::satisfied()?;
+    assert!(inputs.assess().is_ok(), "premise: the inputs are admitted");
+    inputs.velocity = VelocityState {
+        breaker: VelocityBreaker::Armed,
+        anomaly: AnomalyFlag::LedgerLagging,
+    };
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::VelocityAndAnomaly);
+    assert!(veto.reason.contains("ledger lags"), "{}", veto.reason);
+    Ok(())
+}
+
+#[test]
 fn a_tripped_kill_switch_vetoes_everything() -> Result<()> {
     // The failure prevented: a kill switch that stops orders but not
     // transfers, because the transfer path was written later by someone who
