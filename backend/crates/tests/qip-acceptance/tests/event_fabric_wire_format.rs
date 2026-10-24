@@ -219,7 +219,43 @@ fn every_fabric_socket_write_carries_bytes_from_the_versioned_encoders() {
         "and it is the handler's"
     );
 
-    // Replication and mirroring: not built, so there is no third send path.
+    // The mirror's copy logic (ADR 0119, R12-FABRIC-7038) is pinned here: it
+    // writes no socket and builds no bytes of its own. A copy's bytes are the
+    // source row's already-encoded batch, moved unchanged, and the only
+    // codec call it makes is the decoder that checks them. The send itself
+    // is the producer's, above, so there is still no third send path.
+    //
+    // Mutation: in `plan_copy`, build `MirrorCopy::bytes` from
+    // `format!("{row:?}").into_bytes()` — the `bytes: row.bytes` pin fails.
+    const PINNED_MIRROR: &str = "backend/crates/services/qip-streaming/src/event_fabric/mirror.rs";
+    let mirror = code_at(PINNED_MIRROR);
+    assert!(
+        mirror.contains("bytes: row.bytes,") && mirror.contains("Batch::decode(&row.bytes)?"),
+        "a mirrored copy carries the source batch's own encoded bytes, checked by the codec's \
+         decoder"
+    );
+    for native in [
+        "TcpStream",
+        "TcpListener",
+        "write_all",
+        ".write(",
+        "to_ne_bytes",
+        "to_le_bytes",
+        "to_be_bytes",
+        "transmute",
+        ".encode(",
+        "format!(\"{row",
+        "into_bytes()",
+    ] {
+        assert!(
+            !mirror.contains(native),
+            "the mirror writes or builds bytes with `{native}`; a mirrored copy must be the \
+             source batch's encoded bytes and nothing else (FABRIC-038)"
+        );
+    }
+
+    // Replication and mirroring: every other such path is unpinned, so there
+    // is no further send path.
     for directory in [
         "backend/crates/libs/qip-transport/src/event_fabric",
         "backend/crates/services/qip-streaming/src/event_fabric",
@@ -227,6 +263,9 @@ fn every_fabric_socket_write_carries_bytes_from_the_versioned_encoders() {
     ] {
         for path in files_with_extension(directory, "rs") {
             let name = relative(&path);
+            if name == PINNED_MIRROR {
+                continue;
+            }
             assert!(
                 !name.contains("replica") && !name.contains("mirror"),
                 "{name} looks like a replication or mirror path; pin its send path here before \
