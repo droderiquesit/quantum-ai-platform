@@ -40,9 +40,9 @@ use crate::lake::{Entitlement, Lake, Manifest, Partition, RecordClass, SegmentRe
 use crate::lake_codec::SegmentCodec;
 use qip_contracts::market_event::MarketEvent;
 use qip_contracts::message::MarketMessage;
-use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256_hex;
+use qip_core::{Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -115,6 +115,38 @@ pub struct RecordedTick {
     pub entitlement: String,
     /// The segment key it was read from, for lineage.
     pub segment: String,
+    /// What the capture path's clock discipline made of the tick, where the
+    /// line recorded it (R12-TICK-1201, R12-TICK-2051). `None` for a line
+    /// whose discipline refused the tick, or one written before the lake
+    /// carried a clock block: a reader is told the clock is unknown rather
+    /// than handed the venue's instant as if it had been disciplined.
+    ///
+    /// Until 2026-10-24 the reader dropped the block, so a replay from the
+    /// lake saw the venue's and the receive instants and never the
+    /// normalized time or its uncertainty the lake had been written with.
+    #[serde(default)]
+    pub clock: Option<RecordedClock>,
+}
+
+/// A tick's disciplined clock, as the lake line holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedClock {
+    /// The venue's instant in this cell's clock.
+    pub normalized_time: Timestamp,
+    /// The half-width of the error on `normalized_time`.
+    pub uncertainty: Duration,
+}
+
+/// The edge node's clock block: present only when both figures are, so a
+/// refused or half-written block reads as unknown.
+fn edge_clock(value: &serde_json::Value) -> Option<RecordedClock> {
+    let clock = value.get("clock")?;
+    let normalized = clock.get("normalized_time_ns")?.as_i64()?;
+    let uncertainty = clock.get("uncertainty_ns")?.as_i64()?;
+    Some(RecordedClock {
+        normalized_time: Timestamp::from_nanos(normalized),
+        uncertainty: Duration::from_nanos(uncertainty),
+    })
 }
 
 /// What [`Lake::list_market_history`] selected.
@@ -187,6 +219,7 @@ fn decode_line(line: &str, segment: &str, entitlement: &str) -> Option<RecordedT
             knowable_at: event.receive_time(),
             entitlement: event.entitlement().dataset().to_string(),
             segment: segment.to_string(),
+            clock: edge_clock(&value),
         });
     }
     let captured: crate::tick_capture::CapturedMarketEvent = serde_json::from_value(value).ok()?;
@@ -201,6 +234,10 @@ fn decode_line(line: &str, segment: &str, entitlement: &str) -> Option<RecordedT
             captured.entitlement
         },
         segment: segment.to_string(),
+        clock: Some(RecordedClock {
+            normalized_time: captured.normalized_time,
+            uncertainty: captured.uncertainty,
+        }),
     })
 }
 

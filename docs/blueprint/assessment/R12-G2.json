@@ -142,7 +142,7 @@
       "backend/crates/tests/qip-acceptance/tests/tick_replay.rs",
       "backend/crates/apps/qip-cli/src/replay.rs"
     ],
-    "gap": "Batch/sharded execution against retained GCS/BQ history; intervention simulation wired to qip-agency plans.",
+    "gap": "2026-10-24 (re-read against the tree): Partly met: the no-action baseline refusal is in qip-agency plan.rs (tested in qip-agency tests/agency.rs) and intervention simulation is wired to agency plans through qip-cli agency.rs TwinScenarios (qip-cli tests/agency.rs). Missing: retained history (edge lake in memory by default, enable_cloud_storage=false everywhere, execution_nodes_enabled=false) and any test that replaying retained history yields the same decisions (tick_replay.rs reproduces events, books and fills, not decisions). Sharding comes from the row's KUBERNETES tag, not the requirement text. Needs tfvar flips plus a decision-replay test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -153,7 +153,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay && cargo test -p qip-simulation-engine",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'tick replay (qip-cli replay, qip-edge-node replay)' is stale: qip-cli replay verifies the event-log hash chain and registries, and qip-edge-node src/replay.rs is a doc stub; the tick replay engine is qip_simulation_engine::tick_replay::ReplaySession, reached only from qip-deepbrain tick_desk."
   },
   {
     "id": "R12-QUANT-9007",
@@ -857,7 +857,7 @@
       "backend/crates/services/qip-simulation-engine/tests/agents.rs",
       "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled"
     ],
-    "gap": "Sharded batch execution; queue-position modelling evidence.",
+    "gap": "2026-10-24 (re-read against the tree): Queue modelling is evidenced (qip-simulation-engine tests/tick_replay.rs a_resting_limit_order_waits_behind_the_size_already_queued_at_its_price documents the mutation dropping queue_ahead). What remains is running the twin as sharded replay/simulation jobs: infrastructure/gitops holds no Job, CronJob or indexed-job manifest for simulation (the replay gate is a Kargo promotion gate), and ReplaySession is reached only from the off-by-default tick_desk. Needs a job entrypoint, manifests and a deployment, likely an ADR or workload-register entry.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -868,7 +868,7 @@
     "verification": "cargo test -p qip-simulation-engine",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-WORLD-9037",
@@ -902,7 +902,7 @@
       "backend/crates/services/qip-simulation-engine/tests/scenario_construction.rs",
       "backend/crates/services/qip-twin/src/futures.rs::Branch"
     ],
-    "gap": "No adversarial search; no lesson-promotion step; tree only in the off-by-default tick desk.",
+    "gap": "2026-10-24 (re-read against the tree): Moves outside history exist (FutureTree Branch.beyond_history via tick_desk, off, and qip-cli agency; Monte Carlo/hypothetical scenarios), but the kernel's default-path adversarial search, StressTester::adversarial_sequence, is bounded inside the scenario library's plausibility envelope, so it generates no move beyond history. No lesson-promotion step exists for simulation outputs and no test asserts outputs are ephemeral with only promoted lessons persisted. Needs an owner/ADR decision on what a promoted lesson is and where it persists, then code.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -913,7 +913,7 @@
     "verification": "cargo test -p qip-simulation-engine",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-CAPITAL-9039",
@@ -1248,7 +1248,7 @@
       "infrastructure/terraform/modules/data/main.tf:322",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:967"
     ],
-    "gap": "Bigtable adapter and routing.",
+    "gap": "2026-10-24 (re-read against the tree): No mapping routes the named record kinds (ambient state, forecast reputation, model scores, live features, branch indexes) to StorageTarget::Bigtable; qip-storage classes.rs has only Blob/KeyValue classes and rowkey.rs is a pure key scheme with no adapter. The store is refused (provider.rs: no gRPC stack), not admitted by ADR 0113 §1, and enable_bigtable=false everywhere. A pure routing table would be plain code but would route to a store an ADR has declined, so the owner decides first on a Bigtable store record or a restatement.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1259,7 +1259,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence architecture.rs:967 is stale (guard now no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store)."
   },
   {
     "id": "R12-DATA-9054",
