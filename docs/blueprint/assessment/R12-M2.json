@@ -1191,14 +1191,15 @@
   },
   {
     "id": "R12-TICK-2051",
-    "status": "PARTIAL",
-    "current": "MarketEvent and CapturedMarketEvent hold event, receive and normalized time and clock uncertainty as distinct fields (qip-contracts tests/market_event.rs). Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool. The central plane's Tick (backend/crates/libs/qip-market/src/quote.rs) still carries event and capture time only.",
+    "status": "COMPLETE",
+    "current": "Decided by ADR 0151 decision 9: the central Tick states event time (at) and capture time (capture_time) and claims no normalised time or uncertainty, because the centre has no clock discipline to certify either; Tick's documentation says so. Normalised time, uncertainty and the ClockCorrection lineage are edge-lake facts, written by drain.rs tick_line from the disciplined clock (decision_loop test).",
     "evidence": [
+      "backend/crates/libs/qip-market/src/quote.rs::Tick (documentation states the decision)",
+      "backend/crates/libs/qip-market/tests/tick_time_fields.rs::the_central_tick_states_received_time_and_claims_no_normalised_time_or_uncertainty",
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:708 tick_line writes the clock block",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
-      "backend/crates/libs/qip-contracts/tests/market_event.rs"
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock"
     ],
-    "gap": "The central Tick in qip-market quote.rs carries no normalized time or uncertainty; the edge lake line now does.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1206,10 +1207,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts market_event; cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+    "verification": "cargo test -p qip-market --test tick_time_fields; cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L09: edge half closed (lake line). Central Tick not changed in this lane."
+    "notes": "Re-graded 2026-10-18 by lane L09: edge half closed (lake line). Central Tick not changed in this lane. 2026-10-24 lane T7-KERNEL, closing by ADR 0151 decision 9: no field is added to the central Tick. A guard test pins that its serialised keys name no normalised or uncertainty token. Mutation: #[serde(rename = \"normalized_time_ns\")] on Tick::capture_time - the new test failed on the capture_time premise; restored, passes."
   },
   {
     "id": "R12-TICK-2052",
