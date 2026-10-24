@@ -586,14 +586,15 @@
   },
   {
     "id": "R12-AMBIENT-1026",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "The deep-brain research loop forecasts (NowEstimator), simulates (fill-bias campaign bootstrap), raises assumption and weak-signal gaps, and routes them; an AttentionEvent wakes a named registered specialist and is journaled.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter",
       "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over",
-      "backend/crates/apps/qip-deepbrain/src/now.rs::surprise_signals"
+      "backend/crates/apps/qip-deepbrain/src/now.rs::surprise_signals",
+      "ambient_journal :: a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist"
     ],
-    "gap": "2026-10-24: The row's evidence lists no test and its verification (cargo test -p qip-contracts --test ambient) covers the router alone, not 'wakes a named specialist and is journaled'. Closing: add qip-deepbrain --test ambient_journal a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (fails the woke mutation) to evidence and verification.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -603,10 +604,10 @@
       "R12-AMBIENT-1005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient",
+    "verification": "cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist",
     "work_item": "",
     "size": "L",
-    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare. AUDIT-4: 2026-10-24 regraded, the named test (qip-contracts ambient) covers the router alone; the journaled specialist wake is proved only by a deepbrain test the row does not name, and the woke mutation leaves the named test green."
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare. AUDIT-4: 2026-10-24 regraded, the named test (qip-contracts ambient) covers the router alone; the journaled specialist wake is proved only by a deepbrain test the row does not name, and the woke mutation leaves the named test green.; AUDIT-5 2026-10-24: promoted under lanes/audit-5-bar.md after two independent checks: mechanical re-run by the parent session (backend/crates/apps/qip-deepbrain/src/ambient_journal.rs: the test passed clean, failed under the mutation, and the file was restored with git diff clean) and two read-only skeptics (default-path and requirement-text lenses), neither of which refuted it (lanes/audit-5-verification-2026-10-24.md)"
   },
   {
     "id": "R12-FABRIC-1027",
@@ -3292,7 +3293,7 @@
       "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs::AmbientRecord",
       "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs::the_run_loop_journals_each_sweeps_signals_and_attention_unprompted_and_a_disabled_loop_none"
     ],
-    "gap": "2026-10-24: The named tests prove the loop journals signals and attention on a schedule but never assert which specialist an Activated event woke (it asserts no woke value). Closing: name ambient_journal.rs::a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist in evidence and verification, or assert woke in the_run_loop test.",
+    "gap": "2026-10-24: The named tests prove the loop journals signals and attention on a schedule but never assert which specialist an Activated event woke (it asserts no woke value). Closing: name ambient_journal.rs::a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist in evidence and verification, or assert woke in the_run_loop test. 2026-10-24 (AUDIT-5 verification): the cited test calls sweep and record itself, so it never runs the loop on its schedule; the run-loop test (the_run_loop_journals_each_sweeps_signals_and_attention_unprompted_and_a_disabled_loop_none) raises no NOW surprise, so no test asserts that the scheduled, unprompted loop journals a named wake. Recording a copy of the round with woken cleared at node.rs journal.record would pass every test. Closes with an integration test that runs node::run_with over bars that raise a NOW surprise and asserts the journaled woke specialist.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3305,7 +3306,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "L",
-    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare. AUDIT-4: 2026-10-24 regraded, the named run-loop test asserts signals and attention are journaled but never which specialist an Activated event woke; the woke mutation leaves it green and only a_now_surprise_is_journaled (not named) fails."
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare. AUDIT-4: 2026-10-24 regraded, the named run-loop test asserts signals and attention are journaled but never which specialist an Activated event woke; the woke mutation leaves it green and only a_now_surprise_is_journaled (not named) fails.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
   },
   {
     "id": "R12-QUANT-1145",

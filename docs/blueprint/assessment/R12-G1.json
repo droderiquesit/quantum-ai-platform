@@ -702,7 +702,7 @@
       ".github/workflows/ci.yml:455-456 check-secrets.sh and --history",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:49 no_secret_value_appears_in_the_terraform"
     ],
-    "gap": "2026-10-24: The requirement is that committing a key fixture fails CI. The row names a scan that prints 'nothing found' on a clean tree and a Terraform-only test; neither can fail when the scanner is weakened. The tests that plant a fixture are pipeline_scripts.rs (a_secret_committed_and_then_deleted..., 9 tests) and security.rs. Closing: name those in evidence and verification.",
+    "gap": "2026-10-24: The requirement is that committing a key fixture fails CI. The row names a scan that prints 'nothing found' on a clean tree and a Terraform-only test; neither can fail when the scanner is weakened. The tests that plant a fixture are pipeline_scripts.rs (a_secret_committed_and_then_deleted..., 9 tests) and security.rs. Closing: name those in evidence and verification. 2026-10-24 (AUDIT-5 verification): two holes in the requirement's own proof: (1) the tree scan's private-key pattern never runs, because git grep reads '-----BEGIN ...' as an option, exits 129, and `2>/dev/null` plus the `if` turn that into 'no match' (verified 2026-10-24: rc=129, 'unknown option'); (2) EXCLUDE_PATHS skips */tests/*, so a key fixture under any tests/ directory passes both scans. Only --history catches a PEM key outside tests/. Closes with docs/blueprint/lanes/secrets-scan-protected.patch (a person must review it: scripts/check-* is protected) and an owner decision on the */tests/* exclusion.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -713,7 +713,7 @@
     "verification": "./scripts/check-secrets.sh --history",
     "work_item": "",
     "size": "S",
-    "notes": " AUDIT-4: 2026-10-24 regraded, the named checks (a scan that prints 'nothing found' on a clean tree, and a Terraform-only test) pass with the scanner's AKIA pattern deleted; only pipeline_scripts.rs and security.rs, which plant a key fixture and which the row does not name, fail."
+    "notes": " AUDIT-4: 2026-10-24 regraded, the named checks (a scan that prints 'nothing found' on a clean tree, and a Terraform-only test) pass with the scanner's AKIA pattern deleted; only pipeline_scripts.rs and security.rs, which plant a key fixture and which the row does not name, fail.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
   },
   {
     "id": "R12-CICD-8032",

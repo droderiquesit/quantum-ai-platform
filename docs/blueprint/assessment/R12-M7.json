@@ -1878,7 +1878,7 @@
       "backend/crates/libs/qip-contracts/src/expansion.rs:183-226",
       "backend/crates/services/qip-agency/tests/agency.rs:458"
     ],
-    "gap": "2026-10-24: The named test (agency.rs an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused) probes five of the fields; deleting the goal_id, side_effects or counterfactual_method check leaves it and the whole agency suite green. The suite that proves the required-field refusal is qip-contracts tests/expansion.rs. Closing: point evidence and verification at it (cargo test -p qip-contracts --test expansion).",
+    "gap": "2026-10-24: The named test (agency.rs an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused) probes five of the fields; deleting the goal_id, side_effects or counterfactual_method check leaves it and the whole agency suite green. The suite that proves the required-field refusal is qip-contracts tests/expansion.rs. Closing: point evidence and verification at it (cargo test -p qip-contracts --test expansion). 2026-10-24 (AUDIT-5 verification): the requirement names a two-part proof, refusal of a missing field and a round-trip that preserves every field. Only the refusal half is tested: every_decoded_record_encodes_back_to_the_same_document_field_for_field (qip-contracts tests/expansion.rs) lists goal, plan, gap and item but not the attribution, and no test serialises an EffectAttribution and compares it field for field. Closes with that round-trip test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1889,7 +1889,7 @@
     "verification": "cargo test -p qip-agency --test agency",
     "work_item": "",
     "size": "S",
-    "notes": "Integrated only via qip-cli shadow agency. AUDIT-4: 2026-10-24 regraded, the named agency.rs test probes five of the contract's fields; deleting the goal_id, side_effects or counterfactual_method check leaves the whole qip-agency suite green, and only qip-contracts tests/expansion.rs (not named) fails."
+    "notes": "Integrated only via qip-cli shadow agency. AUDIT-4: 2026-10-24 regraded, the named agency.rs test probes five of the contract's fields; deleting the goal_id, side_effects or counterfactual_method check leaves the whole qip-agency suite green, and only qip-contracts tests/expansion.rs (not named) fails.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
   },
   {
     "id": "R12-CONTRACT-7084",

@@ -358,7 +358,7 @@
   },
   {
     "id": "R12-LEDGER-5016",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Account::Treasury is the credit side of two production operations that reach qip-ledgerd over ledger.operation_recorded: every desk's treasury funding, queued at assembly (Platform::queue_treasury_funding), and every capital grant's funding, queued when two operators issue the grant (Platform::issue_capital -> fund_capital_grant, OperationKind::CapitalGrantFunded). Both post Dr the book's trading account, Cr treasury:central; the trial balance closes in the acceptance test against a real ledgerd, and the treasury balance is the sum of both fundings. A grant's funding is recalled once — Dr treasury, Cr the book, for the funding's own deployable capital, as OperationKind::CapitalGrantRecalled with cause expired, revoked or superseded — by the cycle that observes its window has ended (Platform::recall_lapsed_capital_grants, ACT), by the ingestion whose recall order withdraws it (Platform::recall_revoked_capital_grant), or by the renewal that funds the same book under a later grant (Platform::recall_superseded_capital_grant, recall before funding), so the book's deployable capital at the ledger is the live grants' sum; the acceptance test shows a real ledgerd returning the book to zero and the treasury to the desk's own funding at expiry. A restart replays each funding and recall record as written, rebuilds which fundings are outstanding from the same walk, and the ledger answers each resend with a duplicate.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs Account::Treasury",
@@ -377,9 +377,10 @@
       "backend/crates/runtime/qip-kernel/tests/central.rs::a_recall_order_on_a_report_recalls_the_grants_funding_at_the_ledger_once",
       "backend/crates/runtime/qip-kernel/tests/central.rs::renewing_a_grant_recalls_the_old_funding_and_funds_the_new_so_the_book_nets_to_the_live_grant",
       "backend/crates/runtime/qip-kernel/tests/central.rs::a_restart_replays_a_grants_recall_as_written_and_recalls_it_no_second_time",
-      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_recall_returns_its_book_to_the_treasury_at_expiry_across_restarts"
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_recall_returns_its_book_to_the_treasury_at_expiry_across_restarts",
+      "history :: an_operation_posts_to_its_subledger_and_the_ledger_reopens_on_its_own_history"
     ],
-    "gap": "2026-10-24: Closes when a committed environment ships the desk's treasury and grant fundings to a running ledger: QIP_FABRIC_URL and the desk token set in a committed gitops manifest with the event_fabric_broker and ledgerd tfvars enabled (today qip_desk_ship::build answers 'NOT SHIPPED (QIP_FABRIC_URL unset)' everywhere and ledgerd is null in every environment), or the row is narrowed to the kernel's queueing and the ledgerd store applying it in a test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -387,10 +388,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test central -- grant recall; cargo test -p qip-acceptance --test vertical_slice_ship -- funding recall; cargo test -p qip-contracts --test ledger_operation",
+    "verification": "cargo +1.94.1 test -p qip-ledgerd --test history an_operation_posts_to_its_subledger_and_the_ledger_reopens_on_its_own_history",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->COMPLETE. The gap text ('no production producer') predated ADR 0123's desk funding (27aa66df) and is closed a second way by the grant funding. Mutations: fund_capital_grant journals but does not queue (central and vertical_slice_ship fail on the queued count); the restart rebuilds the funding one second later (ledgerd refuses the resend as a conflict and the acceptance test fails on the refusal note); the region falls back to the cell name (central fails). Not deployed: no broker and no desk token exist in any environment, so deployable stays false. Re-graded 2026-10-18 by the lane that gave grant fundings a recall (ADR 0123 Amendment 1), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: COMPLETE->COMPLETE. The earlier note that a grant's funding is never recalled at expiry is withdrawn: expiry, revocation and renewal each recall the funding once, by the grant's identity, and a restart replays the recall rather than rebuilding it. Mutations: the expiry filter matches nothing (central and vertical_slice_ship fail on the recall count); the outstanding set is not cleared (central fails on the once-only assertions, vertical_slice_ship on the cycle after expiry queueing a second recall); the revocation loop is skipped (central); the supersession recall is skipped (central: funding, recall, funding); the replay rebuilds the recall one second later (central fails the byte comparison, ledgerd refuses the resend as a conflict); the replay keeps a recalled grant outstanding (central); in qip-contracts the recall posts as an establish (net-to-zero fails) and an in-window expiry is admitted (refusal fails). Deployable stays false for the reason above. AUDIT-4 2026-10-24: regraded, the treasury postings reach qip-ledgerd only through the desk shipper, which qip-api and qip-deepbrain build only when QIP_FABRIC_URL is set, and no committed infrastructure sets it; ledgerd is null in every environment. Routing the credit to another treasury account (ledger_operation.rs:399) fails only the vertical_slice_ship acceptance test, not the contracts or kernel tests the row also names."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->COMPLETE. The gap text ('no production producer') predated ADR 0123's desk funding (27aa66df) and is closed a second way by the grant funding. Mutations: fund_capital_grant journals but does not queue (central and vertical_slice_ship fail on the queued count); the restart rebuilds the funding one second later (ledgerd refuses the resend as a conflict and the acceptance test fails on the refusal note); the region falls back to the cell name (central fails). Not deployed: no broker and no desk token exist in any environment, so deployable stays false. Re-graded 2026-10-18 by the lane that gave grant fundings a recall (ADR 0123 Amendment 1), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: COMPLETE->COMPLETE. The earlier note that a grant's funding is never recalled at expiry is withdrawn: expiry, revocation and renewal each recall the funding once, by the grant's identity, and a restart replays the recall rather than rebuilding it. Mutations: the expiry filter matches nothing (central and vertical_slice_ship fail on the recall count); the outstanding set is not cleared (central fails on the once-only assertions, vertical_slice_ship on the cycle after expiry queueing a second recall); the revocation loop is skipped (central); the supersession recall is skipped (central: funding, recall, funding); the replay rebuilds the recall one second later (central fails the byte comparison, ledgerd refuses the resend as a conflict); the replay keeps a recalled grant outstanding (central); in qip-contracts the recall posts as an establish (net-to-zero fails) and an in-window expiry is admitted (refusal fails). Deployable stays false for the reason above. AUDIT-4 2026-10-24: regraded, the treasury postings reach qip-ledgerd only through the desk shipper, which qip-api and qip-deepbrain build only when QIP_FABRIC_URL is set, and no committed infrastructure sets it; ledgerd is null in every environment. Routing the credit to another treasury account (ledger_operation.rs:399) fails only the vertical_slice_ship acceptance test, not the contracts or kernel tests the row also names.; AUDIT-5 2026-10-24: promoted under lanes/audit-5-bar.md after two independent checks: mechanical re-run by the parent session (backend/crates/libs/qip-contracts/src/ledger_operation.rs: the test passed clean, failed under the mutation, and the file was restored with git diff clean) and two read-only skeptics (default-path and requirement-text lenses), neither of which refuted it (lanes/audit-5-verification-2026-10-24.md)"
   },
   {
     "id": "R12-LEDGER-5017",
@@ -665,7 +666,7 @@
       "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:350 a_node_works_the_same_passes_sends_the_same_orders_and_refuses_the_same_when_the_centre_stops_answering",
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:253 a_cell_cut_off_from_everything_keeps_placing_paper_orders_inside_its_envelope_and_journals_that_it_is_degraded"
     ],
-    "gap": "2026-10-24: Closes when verification names a test through DecisionLoop::turn with the centre silent that hangs or fails under `try_recv` -> `recv` (decision_loop.rs does), or reasoning_outage drives the loop instead of exchange.",
+    "gap": "2026-10-24: Closes when verification names a test through DecisionLoop::turn with the centre silent that hangs or fails under `try_recv` -> `recv` (decision_loop.rs does), or reasoning_outage drives the loop instead of exchange. 2026-10-24 (AUDIT-5 verification): the mutated line runs only inside MeshWorker, which qip-edge-node spawns only when QIP_MESH_PEER is set, and no committed configuration sets it (the startup template writes no such line). The requirement's own proof, that a test asserting the same passes and orders hangs or diverges when the pass calls the mesh, does not hold: reasoning_outage asserts sameness but drives link.exchange directly and stays green, and the aborting test asserts no sameness. Closes with a sameness test through DecisionLoop::turn on a committed mesh configuration.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -676,7 +677,7 @@
     "verification": "cargo test -p qip-edge-node --test reasoning_outage; cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap (a synchronous mesh exchange before each pass) predated Scheduler::apply_mesh and the off-thread link. No mutation run by this lane. Not deployed, so deployable stays false. AUDIT-4 2026-10-24: regraded, the named tests drive MeshLink::exchange, a synchronous exchange the shipped node never calls; the production read (DecisionLoop::turn apply_mesh -> mesh.rs take_inbound_at_most) is proven only by tests/decision_loop.rs, which the row does not name."
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap (a synchronous mesh exchange before each pass) predated Scheduler::apply_mesh and the off-thread link. No mutation run by this lane. Not deployed, so deployable stays false. AUDIT-4 2026-10-24: regraded, the named tests drive MeshLink::exchange, a synchronous exchange the shipped node never calls; the production read (DecisionLoop::turn apply_mesh -> mesh.rs take_inbound_at_most) is proven only by tests/decision_loop.rs, which the row does not name.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
   },
   {
     "id": "R12-REFLEX-5030",
@@ -2020,7 +2021,7 @@
       "backend/crates/services/qip-prediction/tests/access.rs:77",
       "backend/crates/runtime/qip-kernel/src/breadth.rs::Platform::install_breadth"
     ],
-    "gap": "2026-10-24: The permission gate is real and mutation-checked but runs only under a breadth plan no committed environment supplies. Closing: a committed environment sets QIP_DEEPBRAIN_BREADTH_PLAN with an event-market section so a deployed deep brain reaches admit_creation, or the row is narrowed to the library gate.",
+    "gap": "2026-10-24: The permission gate is real and mutation-checked but runs only under a breadth plan no committed environment supplies. Closing: a committed environment sets QIP_DEEPBRAIN_BREADTH_PLAN with an event-market section so a deployed deep brain reaches admit_creation, or the row is narrowed to the library gate. 2026-10-24 (AUDIT-5 verification): the requirement's kind is 'capability' (R12-M5.json: 'may create new event markets only where permitted'), so bar part 3 does not apply. Its only path is behind QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets. Closes when a committed configuration installs a breadth plan, with a test through that root.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2031,7 +2032,7 @@
     "verification": "cargo test -p qip-prediction --test access",
     "work_item": "",
     "size": "M",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the creation-permission gate runs only under a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets."
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the creation-permission gate runs only under a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
   },
   {
     "id": "R12-EVENT-5088",
@@ -2044,7 +2045,7 @@
       "backend/crates/services/qip-prediction/tests/access.rs:141",
       "backend/crates/services/qip-prediction/src/access.rs::AccessBook::admit"
     ],
-    "gap": "2026-10-24: The wagering/event path separation and the age and jurisdiction controls are real and mutation-checked but run only under a breadth plan no committed environment supplies. Closing: a committed environment sets QIP_DEEPBRAIN_BREADTH_PLAN with an event-market section, or the row is narrowed to the library.",
+    "gap": "2026-10-24: The wagering/event path separation and the age and jurisdiction controls are real and mutation-checked but run only under a breadth plan no committed environment supplies. Closing: a committed environment sets QIP_DEEPBRAIN_BREADTH_PLAN with an event-market section, or the row is narrowed to the library. 2026-10-24 (AUDIT-5 verification): the guard is not on the only order path: the breadth plan's market_factory section creates event-contract markets and seeds resting order ladders (FactoryStage::install -> OrderManager::admit_ladder / MarketFactory::seed) and checks only admit_creation's jurisdiction, never policy.kind or entity eligibility. A factory venue recorded as Wagering gets event orders resting at it. The path is also behind QIP_DEEPBRAIN_BREADTH_PLAN, set by no committed environment. Closes when the seeding path calls the same admit as the order seams, with a test of the crossing.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2055,7 +2056,7 @@
     "verification": "cargo test -p qip-prediction --test access",
     "work_item": "",
     "size": "S",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the wagering/event separation and age and jurisdiction controls run only under a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets."
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the wagering/event separation and age and jurisdiction controls run only under a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
   },
   {
     "id": "R12-EVENT-5089",
@@ -2476,7 +2477,7 @@
       "qip-kernel/tests/breadth.rs::a_plan_missing_a_permission_is_refused_whole_and_creates_nothing",
       "qip-kernel/tests/breadth.rs::an_event_market_is_created_only_where_the_access_book_permits_creation"
     ],
-    "gap": "2026-10-24: The permission gate is real and mutation-checked, but it runs only when an operator supplies a breadth plan through QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment does. Closing: a committed environment (or a default plan) sets the variable so a deployed process reaches the gate, or the row is narrowed to the library gate.",
+    "gap": "2026-10-24: The permission gate is real and mutation-checked, but it runs only when an operator supplies a breadth plan through QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment does. Closing: a committed environment (or a default plan) sets the variable so a deployed process reaches the gate, or the row is narrowed to the library gate. 2026-10-24 (AUDIT-5 verification): the guard is not on the only creation path: qip_brokers::exchange::SimulatedExchange::list and list_synthetic are public, take no CreationAdmission, and qip-edge-node gateway.rs calls list_synthetic. So an instrument can be listed without the three permissions. Closes when every listing path demands a CreationAdmission, with a test that a listing without one does not compile or is refused.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2487,6 +2488,6 @@
     "verification": "cargo test -p qip-acceptance --test market_creation",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Opt-in: only when QIP_DEEPBRAIN_BREADTH_PLAN is set (no committed deployment sets it), and only on the desk's simulated listing venue (breadth.rs:180-186). The kernel test drops only the jurisdiction permission; the unit test covers all three. AUDIT-4: 2026-10-24 regraded, the permission gate runs only when QIP_DEEPBRAIN_BREADTH_PLAN names a plan, which no committed environment sets, so no deployed process creates a market or reaches the gate."
+    "notes": "Round-2 independent audit, 2026-10-11: Opt-in: only when QIP_DEEPBRAIN_BREADTH_PLAN is set (no committed deployment sets it), and only on the desk's simulated listing venue (breadth.rs:180-186). The kernel test drops only the jurisdiction permission; the unit test covers all three. AUDIT-4: 2026-10-24 regraded, the permission gate runs only when QIP_DEEPBRAIN_BREADTH_PLAN names a plan, which no committed environment sets, so no deployed process creates a market or reaches the gate.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
   }
 ]

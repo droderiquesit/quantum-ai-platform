@@ -1338,16 +1338,17 @@
   },
   {
     "id": "R12-REASON-3060",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "causal.abduce runs on each anomaly surprise in REASON and the ranked explanations are journaled, including an empty set kept as a result.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:537 derive",
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:556 causal.abduce",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:751 a_surprise_with_no_causal_claim_into_it_is_abduced_to_no_candidates_and_kept"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:751 a_surprise_with_no_causal_claim_into_it_is_abduced_to_no_candidates_and_kept",
+      "inference :: abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions"
     ],
-    "gap": "2026-10-24: Closes when the row's verification or evidence names a test that fails when the abduce ranking is mutated (qip-world-model tests/ abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions does: cd backend && cargo test -p qip-world-model), or a kernel test pins the ranking through derive.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1355,10 +1356,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cargo +1.94.1 test -p qip-world-model --test inference abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. abduce now called in the cycle. AUDIT-4 2026-10-24: regraded, the acceptance is that mutating the reasoner's core rule fails the test, and the abduction ranking (qip-world-model inference.rs abduce, score `edge.confidence / (1.0 + miss)`) is pinned by no named test: qip-reasoning-engine reasoners never calls abduce, and symbolic_federation and the kernel symbolic_stage lib tests pass with the ranking reduced to the edge confidence. Only qip-world-model's abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions fails, and no field of the row names it. The wiring (derive passing the observed moves to abduce) is pinned by symbolic_federation"
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. abduce now called in the cycle. AUDIT-4 2026-10-24: regraded, the acceptance is that mutating the reasoner's core rule fails the test, and the abduction ranking (qip-world-model inference.rs abduce, score `edge.confidence / (1.0 + miss)`) is pinned by no named test: qip-reasoning-engine reasoners never calls abduce, and symbolic_federation and the kernel symbolic_stage lib tests pass with the ranking reduced to the edge confidence. Only qip-world-model's abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions fails, and no field of the row names it. The wiring (derive passing the observed moves to abduce) is pinned by symbolic_federation; AUDIT-5 2026-10-24: promoted under lanes/audit-5-bar.md after two independent checks: mechanical re-run by the parent session (backend/crates/services/qip-world-model/src/inference.rs: the test passed clean, failed under the mutation, and the file was restored with git diff clean) and two read-only skeptics (default-path and requirement-text lenses), neither of which refuted it (lanes/audit-5-verification-2026-10-24.md)"
   },
   {
     "id": "R12-REASON-3061",

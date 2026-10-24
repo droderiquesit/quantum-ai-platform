@@ -1997,16 +1997,17 @@
   },
   {
     "id": "R12-AGENCY-6089",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Comparison now weighs all nine axes: refusals (legal, downside envelope, time horizon), score effect x confidence x (1-conduct_risk), tie-breaks downside/reversibility/cost/capital/time. Test flips choice per axis incl. conduct_risk and downside; missing axis refused.",
     "evidence": [
       "backend/crates/services/qip-agency/src/comparison.rs:1-8",
       "backend/crates/services/qip-agency/src/comparison.rs:41",
       "backend/crates/services/qip-agency/tests/agency.rs:423",
       "backend/crates/services/qip-agency/src/plan.rs:309-318",
-      "backend/crates/services/qip-agency/src/comparison.rs::Comparison::rank"
+      "backend/crates/services/qip-agency/src/comparison.rs::Comparison::rank",
+      "causal :: every_one_of_the_nine_axes_changes_which_candidate_is_chosen"
     ],
-    "gap": "2026-10-24: The nine-axis ranking property (changing conduct risk or downside changes the ranking) is proved only by tests/causal.rs::every_one_of_the_nine_axes_changes_which_candidate_is_chosen; the row's verification (cargo test -p qip-agency --test agency) and its cited agency.rs test check only that a missing axis is refused. Closing: point verification and evidence at that causal.rs test (it fails the mutation) or add the flip assertion to agency.rs.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2014,10 +2015,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cargo +1.94.1 test -p qip-agency --test causal every_one_of_the_nine_axes_changes_which_candidate_is_chosen",
     "work_item": "",
     "size": "M",
-    "notes": "comparison.rs's own module doc says seven of the nine axes are weighed by nothing. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the nine-axis ranking property (conduct risk and downside change the ranking) is proved only by tests/causal.rs, which the row does not name; the named agency.rs test checks only that a missing axis is refused, and mutating conduct_risk in score() or the downside tie-break leaves all 59 tests/agency.rs tests green."
+    "notes": "comparison.rs's own module doc says seven of the nine axes are weighed by nothing. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the nine-axis ranking property (conduct risk and downside change the ranking) is proved only by tests/causal.rs, which the row does not name; the named agency.rs test checks only that a missing axis is refused, and mutating conduct_risk in score() or the downside tie-break leaves all 59 tests/agency.rs tests green.; AUDIT-5 2026-10-24: promoted under lanes/audit-5-bar.md after two independent checks: mechanical re-run by the parent session (backend/crates/services/qip-agency/src/comparison.rs: the test passed clean, failed under the mutation, and the file was restored with git diff clean) and two read-only skeptics (default-path and requirement-text lenses), neither of which refuted it (lanes/audit-5-verification-2026-10-24.md)"
   },
   {
     "id": "R12-AGENCY-6090",
