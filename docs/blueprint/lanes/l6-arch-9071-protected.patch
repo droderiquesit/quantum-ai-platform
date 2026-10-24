@@ -1,0 +1,60 @@
+diff --git a/scripts/agent-guard.test.mjs b/scripts/agent-guard.test.mjs
+index 27c1247..0427e84 100644
+--- a/scripts/agent-guard.test.mjs
++++ b/scripts/agent-guard.test.mjs
+@@ -118,6 +118,29 @@ test("the autonomy ceiling's validation file is protected", () => {
+   assert.equal(refusals.length, 1);
+ });
+ 
++// R12-ARCH-9071. The suites that hold the non-negotiables are protected, so an
++// agent cannot weaken a guard in the same unreviewed change as the code it
++// guards. Every guard suite CODEOWNERS singles out must be here too, so the two
++// lists cannot drift. Mutation: drop paper_boundary.rs from protected_paths.
++test("an agent change to a guard suite needs a person's approval", () => {
++  const owners = readFileSync(new URL("../.github/CODEOWNERS", import.meta.url), "utf8");
++  const suites = owners.split("\n")
++    .map((l) => l.trim().split(/\s+/)[0])
++    .filter((p) => p && p.startsWith("backend/crates/tests/qip-acceptance/tests/") && p.endsWith(".rs"));
++  // Premise: CODEOWNERS names the guard suites, so the loop below runs.
++  assert.ok(suites.includes("backend/crates/tests/qip-acceptance/tests/paper_boundary.rs"), suites.join(","));
++  assert.ok(suites.includes("backend/crates/tests/qip-acceptance/tests/architecture.rs"), suites.join(","));
++  for (const suite of suites) {
++    // Premise: the test engineer's role admits the file, so only protection refuses it.
++    assert.ok(matchesAny(suite, POLICY.roles["test-engineer"].may_edit), suite);
++    const { refusals } = judgeChange({
++      policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
++      files: [suite], commits: [agentCommit("test-engineer")], reviews: [],
++    });
++    assert.equal(refusals.length, 1, suite);
++  }
++});
++
+ // ADR 0124 §1. A new decision record and the index row that lists it are the
+ // agent's to write without a person: each records a decision, and a gate
+ // reads them only to hold their form. Mutation: delete
+diff --git a/scripts/agent-policy.json b/scripts/agent-policy.json
+index 0d6ed1f..b020836 100644
+--- a/scripts/agent-policy.json
++++ b/scripts/agent-policy.json
+@@ -11,7 +11,7 @@
+   },
+ 
+   "protected_paths": {
+-    "comment": "Paths an agent-authored change may touch only with an approving review from a person who is not an agent. These are the files that decide what every other check means: the workflows, the agents' own instructions and settings, the gates' scripts and policies, the paper-trading boundary's Terraform layer, the owner's switches (every environment's tfvars), and the dependency allow-list.",
++    "comment": "Paths an agent-authored change may touch only with an approving review from a person who is not an agent. These are the files that decide what every other check means: the workflows, the agents' own instructions and settings, the gates' scripts and policies, the paper-trading boundary's Terraform layer, the owner's switches (every environment's tfvars), the dependency allow-list, and the four guard suites .github/CODEOWNERS names as the non-negotiables' own tests (R12-ARCH-9071): an agent that could rewrite architecture.rs or paper_boundary.rs in the same change as the code they guard could redefine a non-negotiable with one review and no person.",
+     "globs": [
+       ".github/**",
+       ".claude/**",
+@@ -32,7 +32,11 @@
+       "infrastructure/terraform/execution-nodes-enabled.tf",
+       "infrastructure/terraform/build-pool.tf",
+       "infrastructure/environments/**",
+-      "docs/adr/**"
++      "docs/adr/**",
++      "backend/crates/tests/qip-acceptance/tests/architecture.rs",
++      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs",
++      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs",
++      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs"
+     ]
+   },
+ 

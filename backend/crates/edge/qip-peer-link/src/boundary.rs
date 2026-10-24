@@ -187,8 +187,16 @@ pub struct PeerStatus {
     pub fills: u64,
     /// This node's filled legs unwound because a counterparty filled less.
     pub unwinds: u64,
-    /// Cycles rejected at the end of their TTL for want of a guarantee.
+    /// Cycles rejected at the end of their TTL for want of a guarantee:
+    /// every unfired epoch the endpoint expired, including ones a peer
+    /// coordinated and this node only held a leg of.
     pub cycles_rejected: u64,
+    /// Of the cycles this node originated, those that reached their TTL
+    /// without FIRE — the counterparty never reserved, declined, or was lost
+    /// mid-epoch — so the cycle was refused and no leg was sent
+    /// (R12-RES-7095). Never more than `cycles_originated`; distinct from
+    /// `cycles_rejected`, which cannot say whose cycle it was.
+    pub cycles_expired: u64,
     /// Fired cycles closed because every leg's fill was known, whether or
     /// not they left drift (ADR 0154 decision 6).
     pub cycles_closed: u64,
@@ -235,6 +243,7 @@ pub(crate) struct StatusCells {
     pub(crate) fills: AtomicU64,
     pub(crate) unwinds: AtomicU64,
     pub(crate) cycles_rejected: AtomicU64,
+    pub(crate) cycles_expired: AtomicU64,
     pub(crate) cycles_closed: AtomicU64,
     pub(crate) rebalance_tasks: AtomicU64,
     pub(crate) rebalance_dropped: AtomicU64,
@@ -305,6 +314,7 @@ impl ReflexPort {
             fills: cells.fills.load(Ordering::Relaxed),
             unwinds: cells.unwinds.load(Ordering::Relaxed),
             cycles_rejected: cells.cycles_rejected.load(Ordering::Relaxed),
+            cycles_expired: cells.cycles_expired.load(Ordering::Relaxed),
             cycles_closed: cells.cycles_closed.load(Ordering::Relaxed),
             rebalance_tasks: cells.rebalance_tasks.load(Ordering::Relaxed),
             rebalance_dropped: cells.rebalance_dropped.load(Ordering::Relaxed),

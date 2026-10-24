@@ -20991,6 +20991,17 @@ impl Platform {
             .filter_map(RegistrationDecision::transition)
         {
             let dataset = format!("source.{}", transition.source_id);
+            // A quarantined source's evidence is quarantined with it
+            // (R12-RES-7097): what it already told the world model stops
+            // being believed, so every belief and hypothesis read from the
+            // graph afterwards is formed without it. A retirement is not a
+            // finding against the facts — a feed retired for cost or
+            // staleness said nothing false — so it leaves them standing.
+            if transition.action == LifecycleAction::Quarantined {
+                let source = transition.source_id.clone();
+                self.world
+                    .update(|world| world.quarantine_source(&source, now));
+            }
             if matches!(
                 transition.action,
                 LifecycleAction::Quarantined | LifecycleAction::Retired

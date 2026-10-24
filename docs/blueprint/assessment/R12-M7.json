@@ -42,7 +42,7 @@
     "verification": "terraform plan with execution_nodes naming one region",
     "work_item": "",
     "size": "S",
-    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL."
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL. 2026-10-24 lane L6: a conflict for the owner, not a code gap: modules/execution-node/variables.tf's machine_type validation admits only c4-highcpu-8/16 and c4d-highcpu-8/16 and refuses C3 and C3D, following R12-REFLEX-8002 (GCP v3.0 §1, 'a C3 or N2 shape must be refused at plan'), while this row's check asks that 'a non-C3 machine_type is refused'. The requirement's own text allows 'C3/C3D-class (or equivalent)', which C4/C4D can be read to meet; the check's literal wording cannot be met without breaking REFLEX-8002. Recorded, not changed."
   },
   {
     "id": "R12-REFLEX-7003",
@@ -2155,9 +2155,13 @@
     "evidence": [
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:245 a cell cut off from everything keeps placing paper orders inside its envelope and journals degradation",
       "backend/crates/edge/qip-edge/tests/mesh.rs",
-      "backend/crates/edge/qip-edge/tests/cross_region.rs"
+      "backend/crates/edge/qip-edge/tests/cross_region.rs",
+      "backend/crates/edge/qip-peer-link/src/saga.rs Saga::forget_gone (cycles_expired), Saga::fired",
+      "backend/crates/edge/qip-peer-link/src/boundary.rs PeerStatus::cycles_expired",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading",
+      "backend/crates/edge/qip-peer-link/tests/saga.rs::a_fired_cycle_that_outlives_its_ttl_is_not_counted_as_lapsed"
     ],
-    "gap": "Peer loss mid-epoch IS reproducible without a stop on ReflexPort: dropping the counterparty ReflexPort ends its session thread (host.rs Host::run returns on Disconnected). What a test cannot observe is the refusal at TTL: qip-peer-link PeerStatus has no counter for an originated epoch lapsing unfired (Saga::forget_gone silently drops it once the endpoint expires it), so the property a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading has no assertion to hang on. Closing needs a PeerStatus.cycles_expired counter in qip-peer-link (outside lane M1-KERNEL-EDGE territory: boundary.rs, host.rs, saga.rs) plus the degraded.rs test; DirectionalBand as a type reserved against the region share (ADR 0154) is also not built.",
+    "gap": "2026-10-24 (lane L6): the refusal at TTL is now observable and tested. qip-peer-link PeerStatus::cycles_expired counts cycles this node originated that reached their TTL without FIRE, incremented only in Saga::forget_gone, with a fired set so a cycle that traded and then aged out is not miscounted; decision_loop.rs::a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading drives the shipped DecisionLoop::turn with real ports, drops the peer's port after a cycle opens, and asserts the cycle lapsed (cycles_expired >= 1, fires 0, legs_sent 0) while the single-venue strategy's orders kept growing. Still open: (1) 'reduced to pre-positioned directional bands' (ADR 0154 DirectionalBand) is not built; (2) cycles_expired is in PeerStatus only, not in the node's health body or PeerSeries; (3) the peer mesh runs only when QIP_MESH_PEER/peers are configured, which no committed environment does, so the multi-cell refusal is not on a default path (bar part 2).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2165,10 +2169,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test degraded",
+    "verification": "cargo test -p qip-edge-node --test decision_loop a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading; cargo test -p qip-peer-link --test saga",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-24 by lane M1-KERNEL-EDGE: not closed; the missing seam is in qip-peer-link, not in qip-edge or qip-edge-node."
+    "notes": "Corrected 2026-10-24 by lane M1-KERNEL-EDGE: not closed; the missing seam is in qip-peer-link, not in qip-edge or qip-edge-node. 2026-10-24 lane L6 (implemented by a delegated agent, re-verified on this branch): `lapsed += 1` made a no-op in forget_gone failed the new decision_loop test at :1557 after its 60 s bound ('0 passed; 1 failed'); restored by cp and cmp, it passes in 2.04 s. The agent also reported: dropping the Host::record line for cycles_expired failed it the same way; an always-true fired guard failed saga.rs:327 (left 2, right 1). qip-peer-link + qip-edge-node --no-fail-fast: 46 result lines, 301 passed, 0 failed; mesh_lane 'ok. 4 passed'. Stays PARTIAL."
   },
   {
     "id": "R12-RES-7096",
@@ -2195,12 +2199,15 @@
   {
     "id": "R12-RES-7097",
     "status": "PARTIAL",
-    "current": "data-finder has a Quarantined decision; reasoning trust score penalises failures; no propagation to dependent beliefs.",
+    "current": "A source policy quarantines now has its evidence quarantined in the world model: Platform::assess_sources calls WorldModel::quarantine_source for every Quarantined transition, which retracts (keeps, bitemporally) every fact that source stated through KnowledgeGraph::retract_source, leaves another source's statement of the same relationship standing, and journals each as RelationshipRetracted. Facts read through facts_at after the quarantine no longer include it, so beliefs and hypotheses formed from the graph afterwards are formed without it. Models: the verifier society's data-poisoning critic refutes a model whose training datasets include a quarantined catalogue dataset (qip-learning-engine verifier.rs attack_model, fed by Platform::quarantined_datasets). The catalogue stops offering the dataset (existing).",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/decision.rs:218,586",
-      "backend/crates/services/qip-reasoning-engine/src/trust_score.rs"
+      "backend/crates/services/qip-world-model/src/graph.rs KnowledgeGraph::retract_source",
+      "backend/crates/services/qip-world-model/src/world.rs WorldModel::quarantine_source",
+      "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources (Quarantined transition)",
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs::quarantining_a_source_stops_the_world_model_believing_what_it_said",
+      "backend/crates/services/qip-learning-engine/src/verifier.rs attack_model (quarantined training data)"
     ],
-    "gap": "Dependency propagation from quarantined source to beliefs/models.",
+    "gap": "2026-10-24 (lane L6): (1) default path: qip-deepbrain assesses sources only when QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH names a candidate catalogue, which no committed environment sets, so the quarantine (and with it the retraction) never runs on a shipped binary's default path (bar part 2); (2) 'stale' half: a source retired for staleness or cost keeps its facts and nothing downweights beliefs citing a stale source; (3) a hypothesis or belief already formed and held (reasoning engine, episodic memory) is not re-scored when its evidence is retracted; only reads after the quarantine see the narrower graph.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2208,10 +2215,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "integration test quarantine→belief downweight",
+    "verification": "cd backend && cargo test -p qip-kernel --test source_lifecycle quarantining_a_source_stops_the_world_model_believing_what_it_said",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: implemented the propagation. Mutations, each restored by cp and cmp: replacing the kernel's quarantine_source call with a no-op failed the new test at source_lifecycle.rs:470 ('a quarantined source's facts are still believed'); dropping the source match in retract_source failed it at :475 ('a clean source's facts were retracted with the quarantined one's'). qip-kernel + qip-world-model --no-fail-fast: 90 result lines, 1355 passed, 0 failed. Stays PARTIAL on the default-path and stale clauses."
   },
   {
     "id": "R12-RES-7098",
@@ -2312,9 +2319,11 @@
       "backend/crates/edge/qip-edge/src/cell.rs:1467,3685,3908,3927 SnapshotRequest / sequence gap tracking",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:689,810 a gap or crossed book marks exactly the affected books unreliable; snapshot request until gap closes",
       "backend/crates/apps/qip-edge-node/tests/feed_recovery.rs",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:526"
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:526",
+      "backend/crates/services/qip-training/src/microstructure.rs build_examples (refused_unreliable)",
+      "backend/crates/services/qip-training/tests/microstructure.rs::no_example_is_built_across_a_span_the_replay_flagged_unreliable"
     ],
-    "gap": "Feature quarantine and training-set exclusion.",
+    "gap": "2026-10-24 (lane L6, gap corrected): training-set exclusion is built and tested, not missing: qip-training microstructure::build_examples refuses every example whose trailing window or label horizon touches a span the tick replay flagged unreliable and counts it in refused_unreliable, and the deep brain's tick desk (tick_desk.rs) is its one caller. What remains: (1) that desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no committed environment does, so the exclusion is not on a shipped binary's default path (bar part 2); (2) 'derived features quarantined' has no mechanism of its own: nothing marks a feature computed from an unreliable book as quarantined in the feature store or the world model; (3) 'until integrity is restored' for replay is the outbox gap's refusal of the window, which does not lift when a later snapshot rebuilds the book.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2325,7 +2334,7 @@
     "verification": "cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: mutation removing the unreliable-observation and flagged-span conditions from build_examples' refusal failed no_example_is_built_across_a_span_the_replay_flagged_unreliable (tests/microstructure.rs:140, '7 passed; 1 failed'); restored by cp and cmp, 9 'test result: ok' lines. No code change. Stays PARTIAL."
   },
   {
     "id": "R12-RES-7103",
@@ -2647,9 +2656,10 @@
     "current": "Simulation tests are part of the workspace test job that deploy depends on; no named simulation gate.",
     "evidence": [
       ".github/workflows/ci.yml:27-481 jobs format, lint, test, dependency-policy, security-audit, trivy, sbom, infrastructure, secrets",
-      ".github/workflows/deploy.yml:44,91 deploy runs on CI workflow_run and a gate job"
+      ".github/workflows/deploy.yml:44,91 deploy runs on CI workflow_run and a gate job",
+      "docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch"
     ],
-    "gap": "Explicit simulation gate.",
+    "gap": "2026-10-24 (lane L6): the gate is written as docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch: a ci.yml job named 'simulation gate' (qip-simulation-engine's tests, then qip-acceptance arch_042_twin_simulation, arch_056_simulation_engine, tick_replay, replay_queue_and_unwind) and a deploy.yml step that refuses a deploy unless the trusted ci run has that job by name and it succeeded (absent is a refusal), with deploy_provenance.rs::a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused executing the step against a stub gh and asserting ci.yml defines the job. The suites it runs pass today (lane run: 'test result: ok' for 13, 4, 4, 4 and 1 tests). The patch applies on top of docs/blueprint/lanes/l6-cicd-9066-protected.patch (both append to deploy_provenance.rs); with both applied in a scratch worktree, cargo test -p qip-acceptance --test deploy_provenance printed 'test result: ok. 7 passed'. Mutations, restored by cp and cmp: the deploy step's `!= \"success\"` turned into `= \"never\"` failed a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused at the missing-simulation-gate case; renaming ci.yml's job to 'perf gate' failed it at the job-definition assertion. .github/** is protected, so a person must apply it. Until it lands, a deploy is gated only on ci as a whole.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2660,7 +2670,7 @@
     "verification": "inspect ci.yml/deploy.yml",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: protected patch written and verified in a worktree; not applied. Stays PARTIAL."
   },
   {
     "id": "R12-CICD-7117",
@@ -2707,13 +2717,16 @@
   },
   {
     "id": "R12-CICD-7119",
-    "status": "MISSING",
-    "current": "No performance gate job; performance acceptance tests are unit-level.",
+    "status": "PARTIAL",
+    "current": "performance.rs and m5_performance.rs in qip-acceptance assert per-stage ceilings and run inside ci's acceptance partition (debug profile, opt-level 1); deploy.yml requires ci to have succeeded but has no performance job of its own to require.",
     "evidence": [
       ".github/workflows/ci.yml:27-481 jobs format, lint, test, dependency-policy, security-audit, trivy, sbom, infrastructure, secrets",
-      "backend/crates/tests/qip-acceptance/tests/performance.rs"
+      "backend/crates/tests/qip-acceptance/tests/performance.rs",
+      "docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch",
+      "backend/crates/tests/qip-acceptance/tests/performance.rs",
+      "backend/crates/tests/qip-acceptance/tests/m5_performance.rs"
     ],
-    "gap": "Add a performance gate with thresholds.",
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL: the thresholds exist, the gate does not): docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch adds a ci.yml job named 'performance gate' running performance and m5_performance in the release profile on one test thread, and the deploy.yml step that refuses a deploy unless that job succeeded in the trusted ci run. In this lane's session, the release suite failed twice under heavy machine load (central OMS submit scaling 2.04x vs a 2.0x tolerance; cell::work p99 11479us vs 10000us) and passed on three reruns on the same build (twice the two tests alone, then 'test result: ok. 36 passed' with --test-threads=1 and again in parallel), which is why the patch pins one thread; a hosted runner's noise is unmeasured. The patch applies on top of docs/blueprint/lanes/l6-cicd-9066-protected.patch (both append to deploy_provenance.rs); with both applied in a scratch worktree, cargo test -p qip-acceptance --test deploy_provenance printed 'test result: ok. 7 passed'. Mutations, restored by cp and cmp: the deploy step's `!= \"success\"` turned into `= \"never\"` failed a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused at the missing-simulation-gate case; renaming ci.yml's job to 'perf gate' failed it at the job-definition assertion. .github/** is protected, so a person must apply it.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2724,7 +2737,7 @@
     "verification": "ci.yml perf job",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: protected patch written and verified; release-profile performance run quoted in gap. Stays PARTIAL."
   },
   {
     "id": "R12-CICD-7120",
@@ -3054,12 +3067,17 @@
   {
     "id": "R12-ARCH-7134",
     "status": "PARTIAL",
-    "current": "Code spans many phases at once (agency, ambient, quantum present before multi-region fabric); no phase gate artefact in code.",
+    "current": "ADR 0143's phase register is committed at docs/architecture/phase-register.json: the seventeen blueprint build phases (0-16) in order, each with its requirement row, exit capability, state, exit tests and the capabilities the tree carries ahead of it with the switch that keeps each off ('none' where nothing does). Phase 0 is entered with eight named exit tests; phases 1-16 are not entered. backend/crates/tests/qip-acceptance/tests/phase_register.rs refuses a phase entered or exited over an unexited predecessor, an exited phase with no exit test, an exit test that does not exist as a delimited #[test] in its named file, a row that is not the blueprint's requirement for that phase number, and a named switch that neither the Terraform root declares nor an app reads.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/m5_critical_path.rs",
-      "backend/crates/tests/qip-acceptance/tests/m6_foundation.rs"
+      "docs/architecture/phase-register.json",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs::the_committed_phase_register_is_admitted",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs::a_phase_entered_over_an_unexited_predecessor_is_refused",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs::an_exited_phase_with_no_exit_test_or_a_renamed_one_is_refused",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs::every_phase_is_the_blueprints_own_build_phase",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs::every_named_switch_exists_in_the_tree",
+      "docs/adr/0143-phases-are-gated-by-a-committed-phase-register-whose-exit-evidence-an-acceptance-test-checks-not-by-runtime-feature-flags.md"
     ],
-    "gap": "Decided by ADR 0143 (accepted 2026-10-18): A committed phase register lists each phase's exit capability and named tests, and an acceptance test refuses a phase entered over an unexited predecessor; no runtime feature flags. Code left: docs/architecture/phase-register.json populated from the blueprint phases and the acceptance test reading it, with its mutations.",
+    "gap": "2026-10-24 (lane L6): the register and its test landed. Still PARTIAL on the requirement's own text: 'later-phase features stay disabled until it passes' is withdrawn by ADR 0143 decision 3 (record, do not switch off), and the register itself shows the cost: phase 0 has not exited, yet every later phase carries capabilities in the tree, many with switch 'none' (the cycle, the agents, the warm Cloud Run services deployed to dev, the GitOps control plane turned on in dev). Bar part 4: an ADR-declined clause leaves the row PARTIAL until the owner changes the requirement or real switches are added. Phase 0's own exit is open (PAM, NCC, CA, SCC off; R12-ARCH-10159).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3067,10 +3085,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cd backend && cargo test -p qip-acceptance --test phase_register",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D19; gap before it: Machine-checkable phase exit gates. ADR lane 2026-10-18: gap re-graded against ADR 0143; gap before it: Delegable decision D19 (design-decisions-2026-10-18.json), ADR not yet written: A phase register with recorded exit checks read by an acceptance test, without runtime feature gating. Needs that ADR, then the code."
+    "notes": "ADR lane 2026-10-18: gap re-graded against decision D19; gap before it: Machine-checkable phase exit gates. ADR lane 2026-10-18: gap re-graded against ADR 0143; gap before it: Delegable decision D19 (design-decisions-2026-10-18.json), ADR not yet written: A phase register with recorded exit checks read by an acceptance test, without runtime feature gating. Needs that ADR, then the code. 2026-10-24 lane L6: register and suite added, 'test result: ok. 5 passed'. Mutations, each restored by cp and cmp: disabling the predecessor check failed a_phase_entered_over_an_unexited_predecessor_is_refused (:188); matching 'fn name' without the parenthesis failed an_exited_phase_with_no_exit_test_or_a_renamed_one_is_refused (:217); phase 1 set to entered in the committed register failed the_committed_phase_register_is_admitted (:126). Stays PARTIAL (ADR 0143 withdraws the disable clause)."
   },
   {
     "id": "R12-ARCH-7135",

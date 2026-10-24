@@ -1,0 +1,307 @@
+{
+  "comment": "ADR 0143's phase register (R12-ARCH-7134). One row per blueprint build phase (GCP v2.1 §26 and §26.1), in order. state is not_entered, entered or exited; a phase may be entered or exited only when its predecessor is exited, and an exited phase names the tests that demonstrate its exit capability. Moving a state is a reviewed commit carrying the run that shows those tests passing. ahead_of_phase lists what the tree already carries ahead of a phase that is not entered, and the switch (a tfvar, an environment variable, or none) that keeps it off in deployment; 'none' says plainly that nothing does. Checked by backend/crates/tests/qip-acceptance/tests/phase_register.rs.",
+  "phases": [
+    {
+      "phase": 0,
+      "row": "R12-ARCH-10159",
+      "title": "Foundations",
+      "exit_capability": "Every foundation deliverable exists and its exit test passes: projects, IAM/PAM, Terraform modules, NCC/VPC/DNS/firewalls, KMS/CA, audit/SCC and GitHub WIF.",
+      "state": "entered",
+      "exit_tests": [
+        {
+          "file": "backend/crates/tests/qip-acceptance/tests/infrastructure.rs",
+          "test": "no_service_account_key_exists_anywhere_in_the_terraform"
+        },
+        {
+          "file": "backend/crates/tests/qip-acceptance/tests/infrastructure.rs",
+          "test": "organization_policy_disables_service_account_key_creation"
+        },
+        {
+          "file": "backend/crates/tests/qip-acceptance/tests/infrastructure.rs",
+          "test": "the_pipeline_authenticates_without_a_long_lived_key"
+        },
+        {
+          "file": "backend/crates/tests/qip-acceptance/tests/infrastructure.rs",
+          "test": "no_firewall_allow_rule_permits_the_whole_internet"
+        },
+        {
+          "file": "backend/crates/tests/qip-acceptance/tests/infrastructure.rs",
+          "test": "no_firewall_allow_rule_opens_remote_administration_except_from_iap"
+        },
+        {
+          "file": "backend/crates/tests/qip-acceptance/tests/infrastructure.rs",
+          "test": "no_virtual_machine_the_repository_defines_carries_an_external_address"
+        },
+        {
+          "file": "backend/crates/tests/qip-acceptance/tests/infrastructure.rs",
+          "test": "every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed"
+        },
+        {
+          "file": "backend/crates/tests/qip-acceptance/tests/workload_identity.rs",
+          "test": "every_workload_identity_holds_only_the_roles_its_allow_list_names"
+        }
+      ],
+      "ahead_of_phase": []
+    },
+    {
+      "phase": 1,
+      "row": "R12-CICD-10160",
+      "title": "Supply chain",
+      "exit_capability": "Images are built once in a private pool, stored by digest, attested and promoted only by GitOps.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "Artifact Registry with immutable tags, Binary Authorization attestation and the reproducibility check in deploy.yml",
+          "reason": "built and run by the dev deploy before phase 0 exited; a supply chain is needed to deploy anything at all",
+          "switch": "none"
+        },
+        {
+          "capability": "GitOps control plane (Argo CD, Kargo, Config Connector, ADR 0036)",
+          "reason": "declared ahead of phase; dev turns it on",
+          "switch": "gitops_enabled"
+        },
+        {
+          "capability": "Cloud Build private pool",
+          "reason": "declared, off",
+          "switch": "cloud_build_private_pool_enabled"
+        }
+      ]
+    },
+    {
+      "phase": 2,
+      "row": "R12-FABRIC-10161",
+      "title": "Rust Fabric MVP",
+      "exit_capability": "A single-region three-broker Fabric with RF3 journal, consumer offsets and GCS archive passes its chaos tests.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "qip-fabricd broker binary and the event-fabric protocol",
+          "reason": "built and tested in-process; no broker is deployed",
+          "switch": "event_fabric_broker"
+        }
+      ]
+    },
+    {
+      "phase": 3,
+      "row": "R12-REFLEX-10162",
+      "title": "One Reflex Cell",
+      "exit_capability": "One venue/asset shard trades paper with local risk, an async Fabric journal and replay.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "qip-edge-node and the paper-only Cell",
+          "reason": "the binary ships; no node is deployed",
+          "switch": "execution_nodes_enabled"
+        }
+      ]
+    },
+    {
+      "phase": 4,
+      "row": "R12-LEDGER-10163",
+      "title": "Financial truth",
+      "exit_capability": "The Spanner ledger writer is idempotent, reconciles, and the capital/risk envelope contracts hold.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "qip-ledgerd and the ledger store",
+          "reason": "built and tested; not deployed",
+          "switch": "ledgerd"
+        },
+        {
+          "capability": "Spanner",
+          "reason": "declared, off",
+          "switch": "enable_spanner"
+        }
+      ]
+    },
+    {
+      "phase": 5,
+      "row": "R12-DATA-10164",
+      "title": "Data plane",
+      "exit_capability": "Retained tick and internal archives, Bigtable, BigQuery, Knowledge Catalog and replay/feature sinks run under data contracts.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "BigQuery and Bigtable",
+          "reason": "declared, off or dev-only",
+          "switch": "enable_bigquery"
+        },
+        {
+          "capability": "Tick Lake and the deep brain's tick desk",
+          "reason": "code ships; the desk is off unless configured",
+          "switch": "QIP_DEEPBRAIN_TICK_EVERY"
+        }
+      ]
+    },
+    {
+      "phase": 6,
+      "row": "R12-GCP-10165",
+      "title": "Regional service plane",
+      "exit_capability": "Asset, capital, risk, evidence and API services serve regionally with Fabric consumer scaling and a cache.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "Cloud Run warm services (qip-api, fastbrain, deepbrain, portal)",
+          "reason": "deployed to dev ahead of phase, on Cloud Run rather than GKE (ADR 0114 Amendment 1)",
+          "switch": "none"
+        }
+      ]
+    },
+    {
+      "phase": 7,
+      "row": "R12-MESH-10166",
+      "title": "Multi-region",
+      "exit_capability": "Three regional cells with an NCC latency mesh, selective Fabric mirrors and a direct Reflex Mesh survive a game-day failover.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "qip-peer-link and the reflex mesh protocol",
+          "reason": "built and tested in-process; no peer is configured",
+          "switch": "QIP_MESH_PEER"
+        }
+      ]
+    },
+    {
+      "phase": 8,
+      "row": "R12-MODEL-10167",
+      "title": "Cognitive/AI",
+      "exit_capability": "Model registry and training, ambient and symbolic agents, world and tick fusion and the signed model package lifecycle run end to end.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "The eight-stage cycle with agents, world model, reasoning and learning in qip-kernel",
+          "reason": "runs in the deployed brains ahead of phase; it is the platform's core loop",
+          "switch": "none"
+        }
+      ]
+    },
+    {
+      "phase": 9,
+      "row": "R12-CICD-10168",
+      "title": "Autonomous development",
+      "exit_capability": "The planner/coder/test/security/reviewer/release/SRE agent loop runs through normal CI and GitOps inside a sandbox with budgets.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "agent-guard, agent-lanes, the sandbox workflow and the model gateway",
+          "reason": "in use ahead of phase; they bound the agents that already write this repository",
+          "switch": "none"
+        }
+      ]
+    },
+    {
+      "phase": 10,
+      "row": "R12-QUANT-10169",
+      "title": "Quantum/agency expansion",
+      "exit_capability": "A quantum gateway, causal agency adapters and larger arbitrage cycles run only after classical baseline and reliability gates.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "QAOA against SimulatedProvider with a classical baseline every time (ADR 0006); qip-agency",
+          "reason": "runs in-process ahead of phase; no hosted quantum vendor is called",
+          "switch": "none"
+        }
+      ]
+    },
+    {
+      "phase": 11,
+      "row": "R12-WORLD-10170",
+      "title": "NOW + Forecast Lattice",
+      "exit_capability": "A promoted current-state model, multi-horizon forecast contracts and calibration SLOs hold.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "NOW lattice and forecast lattice in qip-kernel",
+          "reason": "runs ahead of phase",
+          "switch": "none"
+        }
+      ]
+    },
+    {
+      "phase": 12,
+      "row": "R12-MODEL-10171",
+      "title": "Model Society",
+      "exit_capability": "A specialist tournament, forecast market and adversarial verification decide promotions.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "model tournament and verifier society",
+          "reason": "runs ahead of phase",
+          "switch": "none"
+        }
+      ]
+    },
+    {
+      "phase": 13,
+      "row": "R12-TICK-10172",
+      "title": "Digital Twins",
+      "exit_capability": "Future-state trees, market/macro/company twins, a rare-event factory and a counterfactual portfolio farm are scored.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "synthetic future tree in the tick desk; qip-twin",
+          "reason": "code ships; the tick desk is off unless configured",
+          "switch": "QIP_DEEPBRAIN_TICK_EVERY"
+        }
+      ]
+    },
+    {
+      "phase": 14,
+      "row": "R12-QUANT-10173",
+      "title": "Hybrid Compute",
+      "exit_capability": "A compute router, GPU/TPU pools, the quantum gateway, a solver registry and benchmark memory route work by measured benefit.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "solver routing in qip-kernel",
+          "reason": "runs in-process ahead of phase",
+          "switch": "none"
+        }
+      ]
+    },
+    {
+      "phase": 15,
+      "row": "R12-CAPITAL-10174",
+      "title": "Money Intelligence",
+      "exit_capability": "Capital society, survival kernel, hedge brain, confidence governor and shadow portfolios govern paper capital.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "survival gate, hedge and capital calls in qip-kernel",
+          "reason": "run ahead of phase, paper only",
+          "switch": "none"
+        }
+      ]
+    },
+    {
+      "phase": 16,
+      "row": "R12-AMBIENT-10175",
+      "title": "Meta-Intelligence",
+      "exit_capability": "Value-of-information sensing, a compute/attention market, recursive specialist creation and a cognitive compiler operate under budget.",
+      "state": "not_entered",
+      "exit_tests": [],
+      "ahead_of_phase": [
+        {
+          "capability": "ambient intake and specialist spawning",
+          "reason": "code ships ahead of phase",
+          "switch": "none"
+        }
+      ]
+    }
+  ]
+}

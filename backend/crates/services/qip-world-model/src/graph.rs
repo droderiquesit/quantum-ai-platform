@@ -534,6 +534,33 @@ impl KnowledgeGraph {
         retracted
     }
 
+    /// Retract, from `at`, every still-believed fact a quarantined source
+    /// stated, and return the keys of the relationships it touched
+    /// (R12-RES-7097).
+    ///
+    /// Only that source's versions move. Another source's statement of the
+    /// same relationship is independent evidence and keeps standing: a
+    /// poisoned feed must not take down what a clean one also said. Without
+    /// this a quarantined feed stopped being read while everything it had
+    /// already told the graph went on being believed and reasoned over, so
+    /// the quarantine stopped the next poisoned fact and none of the old ones.
+    pub fn retract_source(&mut self, source: &str, at: Timestamp) -> Vec<String> {
+        let mut keys = Vec::new();
+        for (key, versions) in &mut self.facts {
+            let mut touched = false;
+            for fact in versions.iter_mut() {
+                if fact.retracted_at.is_none() && fact.relationship.source == source {
+                    fact.retracted_at = Some(at);
+                    touched = true;
+                }
+            }
+            if touched {
+                keys.push(key.clone());
+            }
+        }
+        keys
+    }
+
     /// Every fact believed at the given point in both time dimensions.
     pub fn facts_at(&self, valid_at: Timestamp, known_at: Timestamp) -> Vec<&Fact> {
         self.facts

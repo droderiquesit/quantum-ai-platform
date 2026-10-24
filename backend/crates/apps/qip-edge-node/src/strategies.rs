@@ -52,6 +52,7 @@ use qip_core::hash::sha256_hex;
 use qip_core::{Duration, Timestamp};
 use qip_edge::cell::{Cell, PricingPolicy};
 use qip_edge::envelope::VerifiedEnvelope;
+use qip_edge::telemetry::PackageActivation;
 use qip_feature_dag::features::standard_suite;
 use qip_feature_dag::state::DEFAULT_MAX_STALENESS;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
@@ -257,6 +258,9 @@ pub struct StrategyInstaller {
     /// one generation: the cell itself keeps one previous payload, so a
     /// deeper history here could only name plans no payload can return to.
     parent: Option<CompiledPlan>,
+    /// The digest [`Self::install_compiled`] last deployed, so an activation
+    /// is counted once per package and not once per pass (R12-OBS-9152).
+    active: Option<String>,
 }
 
 impl StrategyInstaller {
@@ -273,6 +277,7 @@ impl StrategyInstaller {
             deployed_from: BTreeMap::new(),
             compiled: None,
             parent: None,
+            active: None,
         }
     }
 
@@ -419,6 +424,7 @@ impl StrategyInstaller {
                  set it to `{MARKETABLE}` or `{REST_AT_MID_PREFIX}<seconds>`"
             ));
         };
+        let mut rolled_back = false;
         // A payload naming the parent is a rollback (the operator's wire, or
         // the centre re-shipping the older plan): the parent becomes the plan
         // in hand and the one it replaced becomes the parent, so a second
@@ -433,6 +439,7 @@ impl StrategyInstaller {
                 .is_some_and(|plan| plan.digest == named.digest)
         {
             std::mem::swap(&mut self.compiled, &mut self.parent);
+            rolled_back = true;
         }
         let Some(plan) = self.compiled.take() else {
             return PlanInstallation::blocked(format!(
@@ -456,13 +463,22 @@ impl StrategyInstaller {
                 named.strategies
             ))
         } else {
-            self.reconcile(cell, now, pricing, &plan.specs, |strategy, _| {
+            let installation = self.reconcile(cell, now, pricing, &plan.specs, |strategy, _| {
                 plan.programs.get(strategy).cloned().unwrap_or_else(|| {
                     Err(format!(
                         "the compiled plan names {strategy} and carries no program for it"
                     ))
                 })
-            })
+            });
+            if self.active.as_deref() != Some(plan.digest.as_str()) {
+                cell.record_package_activation(if rolled_back {
+                    PackageActivation::RolledBack
+                } else {
+                    PackageActivation::Activated
+                });
+                self.active = Some(plan.digest.clone());
+            }
+            installation
         };
         self.compiled = Some(plan);
         outcome

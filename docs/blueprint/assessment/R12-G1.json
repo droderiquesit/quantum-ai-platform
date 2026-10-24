@@ -1268,14 +1268,15 @@
   },
   {
     "id": "R12-GCP-8057",
-    "status": "MISSING",
-    "current": "No NCC resources.",
+    "status": "PARTIAL",
+    "current": "modules/ncc declares a MESH preset-topology hub (google_network_connectivity_hub.latency) and one VPC spoke per Reflex/Fabric network exporting only its named prefixes (include_export_ranges), refused at plan unless every spoke names prefixes and each is /24 or narrower. Declared only when latency_spokes names spokes; tests/hubs.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/modules/edge-mesh/main.tf:47 PSC endpoint only"
+      "infrastructure/terraform/modules/ncc/main.tf google_network_connectivity_hub.latency, google_network_connectivity_spoke.latency",
+      "infrastructure/terraform/modules/ncc/tests/hubs.tftest.hcl"
     ],
-    "gap": "Latency hub module.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the module is not instantiated from the root (a root variable is a change to the protected infrastructure/terraform/variables.tf) and there is one region and no per-region Reflex/Fabric VPC to join (R12-GCP-8035, 8044, 8045); no real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1283,21 +1284,22 @@
       "R12-GCP-8056"
     ],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/ncc && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused."
   },
   {
     "id": "R12-GCP-8058",
-    "status": "MISSING",
-    "current": "No NCC resources.",
+    "status": "PARTIAL",
+    "current": "modules/ncc declares a STAR preset-topology hub (google_network_connectivity_hub.services) with VPC spokes in center and edge groups, refused at plan unless at least one center and one edge spoke are named. Declared only when star_spokes names spokes; tests/hubs.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf"
+      "infrastructure/terraform/modules/ncc/main.tf google_network_connectivity_hub.services, google_network_connectivity_spoke.services",
+      "infrastructure/terraform/modules/ncc/tests/hubs.tftest.hcl"
     ],
-    "gap": "Star hub module.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): not instantiated from the root (protected variables.tf) and the service, data and AI planes share one VPC per environment today, so there is nothing to make spokes of (R12-GCP-8046, 8049, 8050); 'stronger centralised inspection' needs an inspection appliance or Cloud NGFW endpoint in the centre VPC, which is not declared; no real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1305,10 +1307,10 @@
       "R12-GCP-8056"
     ],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/ncc && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused."
   },
   {
     "id": "R12-GCP-8059",
@@ -1381,12 +1383,13 @@
   {
     "id": "R12-SEC-8062",
     "status": "PARTIAL",
-    "current": "Execution node has no external address (tested) and SSH ingress only from the IAP range; no PAM entitlements or workforce identity pool in Terraform.",
+    "current": "Execution node has no external address (tested) and SSH ingress only from the IAP range. PAM entitlements are declared in Terraform (variables.tf pam_entitlements, security.tf google_privileged_access_manager_entitlement.this) with plan-time refusals of an entitlement nobody approves, self-approval, an elevation over eight hours, basic roles and every identity-administration and secret-reading role (tests/pam.tftest.hcl, tests/security.tftest.hcl). The list is empty in every environment. No workforce identity pool is declared (grep google_iam_workforce finds nothing).",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:662 the_execution_node_has_no_external_address_and_no_container_runtime",
-      "infrastructure/terraform/modules/execution-node/main.tf:683 iap_ssh firewall"
+      "infrastructure/terraform/modules/execution-node/main.tf:683 iap_ssh firewall",
+      "infrastructure/terraform/tests/pam.tftest.hcl (18 runs)"
     ],
-    "gap": "PAM entitlements / temporary grants and audit.",
+    "gap": "2026-10-24 (lane L6, current corrected: it said no PAM entitlements in Terraform): (1) pam_entitlements is empty in every environment, so no privileged role is in fact granted through PAM; enabling one is an infrastructure/environments/** change (protected) with a real plan, tracked with R12-SEC-9123/9060; (2) no workforce identity pool; (3) standing privileged grants outside PAM (the owner's own roles) are not inventoried, so 'privileged access must be temporary' is not proven of the project.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1397,7 +1400,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: scratch copy, terraform 1.9.8: terraform test -filter=tests/pam.tftest.hcl 'Success! 18 passed, 0 failed.' No code change. Stays PARTIAL."
   },
   {
     "id": "R12-REFLEX-8063",
@@ -2693,9 +2696,11 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/console_route.rs every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
       "infrastructure/gitops/envs/dev/portal.yaml QIP_API_AUDIENCE",
-      "frontend/portal/src/lib/server/upstream.ts AUDIENCE_VARIABLE"
+      "frontend/portal/src/lib/server/upstream.ts AUDIENCE_VARIABLE",
+      "backend/crates/tests/qip-acceptance/tests/no_service_mesh.rs::nothing_the_repository_deploys_enrols_a_workload_in_a_service_mesh",
+      "backend/crates/tests/qip-acceptance/tests/no_service_mesh.rs::the_scan_finds_a_sidecar_injection_label_and_a_mesh_feature"
     ],
-    "gap": "2026-10-24: Closes when an acceptance test asserts the clauses the check names and the named test does not: no execution, broker or ledger machine and no Fabric or Reflex workload carries a service-mesh sidecar or mesh membership, and the warm-service client in the Cloud Run hop enforces a timeout and a breaker (qip-transport breaker.rs) on the console-to-API call; or the requirement is reinterpreted by an ADR that withdraws the mesh clauses.",
+    "gap": "2026-10-24 (lane L6): the prohibition half now has its test: qip-acceptance no_service_mesh.rs::nothing_the_repository_deploys_enrols_a_workload_in_a_service_mesh scans every Terraform, template and GitOps file under infrastructure/ (premise: it reads the execution-node, broker and ledgerd modules and the dev portal manifest) for service-mesh enrolment or sidecar-injection markers and finds none, so no execution, broker or ledger machine and no Fabric or Reflex workload can be meshed without failing it. Still open, the warm-client half: the one Cloud Run hop (console to API, frontend/portal src/app/api/gateway/[...path]/route.ts) aborts at a timeout (QIP_API_TIMEOUT_MS, default 10 s) but has no circuit breaker, and upstream.ts falls back to 10 s on an invalid timeout rather than refusing it; the Rust clients that leave a process (fabric producer and consumer, mesh spine) carry qip-transport breakers. Closing needs a breaker on the console's gateway with a Playwright test, or an ADR withdrawing the breaker clause for that hop.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2706,7 +2711,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test console_route -- every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 (lane L08). The register text claimed the audience was minted against the named-invoker binding; the manifest set no audience until this change, see R12-GCP-8055. The audience equals the derived URL asserted per environment against its tfvars project_number and region. Same mutations as R12-GCP-8055. The test covers environments that carry a portal manifest (dev only). AUDIT-4 2026-10-24: regraded, the named console_route test proves only the IAM identity-token audience of the one Cloud Run hop, the ADR 0112 substitute for mTLS, and it fails when the portal's QIP_API_AUDIENCE is changed (console_route.rs:881). No test asserts that Fabric or Reflex traffic stays out of mesh sidecars or that warm-service clients enforce timeouts and breakers, which is what the requirement and its check say."
+    "notes": "Re-graded 2026-10-18 (lane L08). The register text claimed the audience was minted against the named-invoker binding; the manifest set no audience until this change, see R12-GCP-8055. The audience equals the derived URL asserted per environment against its tfvars project_number and region. Same mutations as R12-GCP-8055. The test covers environments that carry a portal manifest (dev only). AUDIT-4 2026-10-24: regraded, the named console_route test proves only the IAM identity-token audience of the one Cloud Run hop, the ADR 0112 substitute for mTLS, and it fails when the portal's QIP_API_AUDIENCE is changed (console_route.rs:881). No test asserts that Fabric or Reflex traffic stays out of mesh sidecars or that warm-service clients enforce timeouts and breakers, which is what the requirement and its check say. 2026-10-24 lane L6: suite added, 'test result: ok. 2 passed'. Mutation: an `istio-injection: enabled` label appended to infrastructure/gitops/envs/dev/portal.yaml failed nothing_the_repository_deploys_enrols_a_workload_in_a_service_mesh naming portal.yaml:224; restored by cp and cmp, 2 passed. Stays PARTIAL on the breaker clause."
   },
   {
     "id": "R12-DATA-8120",
