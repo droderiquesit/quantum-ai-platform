@@ -484,13 +484,15 @@
   {
     "id": "R12-LEDGER-5021",
     "status": "PARTIAL",
-    "current": "qip_capital::ledger::UserLedger / Mandate (backend/crates/services/qip-capital/src/ledger/mod.rs) used by the kernel (platform.rs:74) but not part of the double-entry event-sourced ledger; Account::Trading has no user/mandate dimension.",
+    "current": "Account::Mandate (mandate:<id>) is a subledger of the one double-entry journal, posted only by OperationKind::MandateSubscription (Dr treasury, Cr mandate); the mandate's balance is a fold of postings and the trial balance closes (qip-contracts tests/ledger_operation.rs). Platform::fund_user queues one journalled MandateSubscription per mandate on its first funding, re-queued as written after a restart, and it reaches a real qip-ledgerd through the desk shipper (vertical_slice_ship). UserLedger itself stays the kernel's per-user fill split; Account::Trading keeps no user dimension by decision (TransferEnd gains no mandate arm, ADR 0153 decision 4).",
     "evidence": [
-      "backend/crates/services/qip-capital/src/ledger/mod.rs UserLedger",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:74 import",
-      "backend/crates/libs/qip-contracts/src/ledger.rs:69 no user field"
+      "backend/crates/libs/qip-contracts/src/ledger.rs Account::Mandate",
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs OperationKind::MandateSubscription",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::subscribe_mandate",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_funded_mandate_posts_to_its_own_subledger_once_across_restarts",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs::funding_a_users_mandate_queues_one_mandate_subscription_and_a_second_funding_queues_none"
     ],
-    "gap": "Mandate/user ownership as a ledger subledger keyed to postings.",
+    "gap": "2026-10-24: the subledger and its posting reach a real ledgerd, but no binary calls Platform::fund_user (grep of backend/crates/apps; api_boundary asserts no route does), so a mandate subscription is queued by tests only. Wiring a user-funding route into qip-api is the user-funding product row. The mandate account states what the mandate first put to work, not a running total, by decision.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -498,10 +500,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd plus a subledger test",
+    "verification": "cargo test -p qip-acceptance --test vertical_slice_ship a_funded_mandate; cargo test -p qip-contracts --test ledger_operation; cargo test -p qip-kernel --test ledger mandate",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 N2-FABRIC-DATA: current text corrected (it said the mandate had no ledger presence; Account::Mandate and MandateSubscription exist). Added a_funded_mandate_posts_to_its_own_subledger_once_across_restarts against a real ledgerd: mandate balance -100, treasury leg its counterpart, a top-up adds nothing, a restart's resend books once, trial balance closes. Mutations that fired, each restored byte for byte: subscribe_mandate not queueing (premise fails); restart not re-queueing (premise fails); already-subscribed check dropped (resend refused as a conflict). Kept PARTIAL: no production caller of fund_user."
   },
   {
     "id": "R12-LEDGER-5022",
@@ -1851,7 +1853,7 @@
       "qip-execution-engine/src/market_creation.rs::tests::an_approved_creation_lists_seeds_and_publishes_its_rule_at_the_simulated_venue",
       "qip-kernel/tests/breadth.rs::a_planned_market_is_created_listed_and_seeded_on_the_simulated_venue_and_journaled"
     ],
-    "gap": "Inventory management after seeding is absent and has no flow to drive it: SimulatedBroker::fill_price only sweeps the listed book read-only (broker.rs:456), so a fill never consumes resting depth, and nothing routes a fill on a created product back to MarketFactory. The factory side (a settle_fill debiting CreatedMarket.inventory and re-listing the consumed ladder) is the easy half; the broker consuming the book and the kernel reporting the fill are the missing path. Live creation stays BLOCKED (ADR 0003/0021).",
+    "gap": "Inventory management after seeding is absent. Three slices, none built: (1) MarketFactory::settle_fill debiting CreatedMarket.inventory and re-listing the consumed ladder; (2) SimulatedBroker::fill_price consuming resting depth instead of only sweeping the listed book (broker.rs); (3) the kernel routing a fill on a created product back to MarketFactory. Live creation stays BLOCKED (ADR 0003/0021). Re-read 2026-10-24.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1864,7 +1866,7 @@
     "verification": "acceptance test listing + seeding at SimulatedExchange",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: the kernel test's mutation claim (tests/breadth.rs) now reads the venue's book through Platform::listed_book, so that part of the 2026-10-11 audit finding is closed; inventory management remains. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the kernel test's mutation claim (tests/breadth.rs) now reads the venue's book through Platform::listed_book, so that part of the 2026-10-11 audit finding is closed; inventory management remains. Kept PARTIAL. Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE; two crates and a settle_fill exceed one row."
   },
   {
     "id": "R12-EXEC-5081",

@@ -892,3 +892,154 @@ fn a_fractional_fill_from_the_default_simulator_is_booked_exactly_and_queued_for
     assert!(fills.iter().all(|fill| fill.simulated));
     Ok(())
 }
+
+/// R12-CAPITAL-4092 (ADR 0148 decision 5). The held move of a released,
+/// partly filled order splits into the thesis, the sizing, the allocation and
+/// the unfilled remainder, and the four add back to the fill's own held move
+/// to the last digit.
+///
+/// The failure it guards: before the three quantities were stamped, "how much
+/// of this came from the prediction, how much from the sizing" could only be
+/// answered by choosing the numbers. Here every quantity is read off the stage
+/// that produced it, through the production cycle (thesis, constructor,
+/// governor, lot rounding, simulated venue, LEARN), and the premise asserts
+/// they are three different numbers and the fill is partial so no term is
+/// vacuous.
+///
+/// Mutations that must fail it: stamping the reference quantity as the sized
+/// one collapses the prediction and sizing terms and fails the premise;
+/// computing the sizing term as `(sized - released) * move` fails its
+/// definition.
+#[test]
+fn the_four_terms_of_a_fills_held_move_sum_exactly_to_the_filled_quantity_times_the_move()
+-> Result<()> {
+    let Run { mut platform, .. } = run(&Spec::funded(), |_| {})?;
+    let leg = platform
+        .proposals()
+        .last()
+        .expect("DECIDE records a proposal")
+        .legs[0]
+        .clone();
+    platform.observe(vec![bar(
+        start().saturating_add(Duration::from_days(1)),
+        110.0,
+        110.0,
+    )]);
+    platform.run_cycle(start().saturating_add(Duration::from_days(5)));
+
+    let fill = platform
+        .orders()
+        .fills()
+        .into_iter()
+        .next()
+        .cloned()
+        .expect("premise: the released order filled");
+    let order_id = fill.order_id.as_str().to_string();
+    let quantities = platform
+        .release_quantities(&order_id)
+        .expect("premise: the order came from a constructed leg and was stamped at release");
+
+    // The stamped quantities are the stages' own figures, not recomputed.
+    assert_eq!(quantities.sized, leg.quantity);
+    assert_eq!(Some(quantities.reference), leg.reference_quantity);
+    // Premise: three different numbers and a partial fill, so no term below is
+    // a zero that proves nothing.
+    assert!(
+        quantities.reference > quantities.sized
+            && quantities.sized > quantities.released
+            && quantities.released > fill.quantity
+            && fill.quantity.is_positive(),
+        "premise: reference {} sized {} released {} filled {} are not strictly ordered",
+        quantities.reference,
+        quantities.sized,
+        quantities.released,
+        fill.quantity
+    );
+
+    let split = platform
+        .last_attribution()
+        .and_then(|pass| pass.held_moves.get(&order_id))
+        .expect("the stamped order's held move was split");
+    let held_move = dec!("110") - leg.reference_price;
+    assert!(
+        held_move.is_positive(),
+        "premise: the tape moved in the buy's favour"
+    );
+    // The fill's own held move, computed here and not read from the split.
+    assert_eq!(split.total, fill.quantity * held_move);
+    assert_eq!(
+        split.sum(),
+        split.total,
+        "the four terms do not add to the fill's held move"
+    );
+    assert_eq!(split.prediction, quantities.reference * held_move);
+    assert_eq!(
+        split.sizing,
+        (quantities.sized - quantities.reference) * held_move,
+        "the sizing term is not what narrowing took"
+    );
+    assert_eq!(
+        split.allocation,
+        (quantities.released - quantities.sized) * held_move
+    );
+    // The unfilled term balances the others; it must still be what it says,
+    // to the rounding `Decimal` applies to each of four products.
+    let stated = -((quantities.released - fill.quantity) * held_move);
+    assert!(
+        (split.unfilled - stated).abs() <= Decimal::from_raw(4),
+        "unfilled {} is not the unfilled share of the move {stated}",
+        split.unfilled
+    );
+    // And with the cost of getting the fill, the five components are the
+    // order's whole outcome — which the per-fill attribution measured on its
+    // own, from the fill price and the commission, without any of the above.
+    let position = platform
+        .last_attribution()
+        .and_then(|pass| {
+            pass.attribution
+                .positions
+                .iter()
+                .find(|position| position.object_id == order_id)
+        })
+        .expect("the fill is in the per-fill attribution");
+    assert!(
+        split.execution.is_negative(),
+        "premise: getting the fill cost something: {}",
+        split.execution
+    );
+    assert!(
+        (split.outcome() - position.total).abs() <= Decimal::from_raw(4),
+        "the five components {} are not the order's outcome {}",
+        split.outcome(),
+        position.total
+    );
+    assert!(
+        split.prediction.is_positive()
+            && split.sizing.is_negative()
+            && split.unfilled.is_negative(),
+        "premise: each term has its own sign, so a swapped pair is visible: {split:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_order_submitted_without_a_leg_is_stamped_with_no_quantities_rather_than_zeros() -> Result<()>
+{
+    let Run { mut platform, .. } = run(&Spec::funded(), |_| {})?;
+    let order = platform.order_from(
+        acme(),
+        qip_execution_engine::order::Side::Buy,
+        dec!("5"),
+        dec!("100"),
+        "prop-direct",
+        vec!["hyp-direct".to_string()],
+        start(),
+    );
+    let order_id = order.order_id.as_str().to_string();
+    platform.submit_order(order, start())?;
+    assert!(
+        platform.release_quantities(&order_id).is_none(),
+        "a direct order has no proposal to be narrowed from; a stamped zero would read as a measurement"
+    );
+    Ok(())
+}

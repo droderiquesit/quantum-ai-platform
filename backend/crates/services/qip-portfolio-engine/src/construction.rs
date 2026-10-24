@@ -260,6 +260,47 @@ impl PortfolioConstructor {
         now: Timestamp,
         proposal_id: ProposalId,
     ) -> Result<ConstructionOutcome> {
+        self.construct_referenced(
+            theses,
+            covariance,
+            current,
+            equity,
+            equity,
+            caps,
+            as_of,
+            now,
+            proposal_id,
+        )
+    }
+
+    /// [`Self::construct_capped`], also reporting each leg's quantity at
+    /// `reference_equity`: the budget before any narrowing multiplier took
+    /// `equity` below it (ADR 0148 decision 5).
+    ///
+    /// The weights the optimiser produces do not depend on the budget, so a
+    /// leg's quantity is linear in it and the reference quantity is read off
+    /// the same weight change in the same pass, never from a second solve.
+    /// A reference below the sizing budget is refused: it would make the
+    /// narrowing term a widening, and narrowing only ever contracts.
+    #[allow(clippy::too_many_arguments)]
+    pub fn construct_referenced(
+        &self,
+        theses: &[ApprovedThesis],
+        covariance: &[Vec<f64>],
+        current: &BTreeMap<String, f64>,
+        equity: Money,
+        reference_equity: Money,
+        caps: &BTreeMap<String, f64>,
+        as_of: Timestamp,
+        now: Timestamp,
+        proposal_id: ProposalId,
+    ) -> Result<ConstructionOutcome> {
+        if reference_equity.currency != equity.currency || reference_equity.amount < equity.amount {
+            return Err(Error::invalid(
+                "the reference budget is the budget before narrowing, so it is in the sizing \
+                 budget's currency and at least as large; narrowing contracts and never widens",
+            ));
+        }
         if now < as_of {
             return Err(Error::invalid(format!(
                 "constructing at {now} for an as-of time of {as_of}, which is in its future"
@@ -430,6 +471,18 @@ impl PortfolioConstructor {
             if quantity <= Decimal::ZERO {
                 continue;
             }
+            // The same weight change at the budget before narrowing, from the
+            // same pass: the quantity the thesis implies unnarrowed.
+            let reference_quantity = reference_equity
+                .amount
+                .checked_mul(weight_change)
+                .and_then(|reference_notional| reference_notional.checked_div(thesis.price))
+                .ok_or_else(|| {
+                    Error::numeric(format!(
+                        "the reference quantity for {} overflows the decimal range",
+                        thesis.object_id.as_str()
+                    ))
+                })?;
 
             legs.push(ProposalLeg {
                 object_id: thesis.object_id.clone(),
@@ -440,6 +493,7 @@ impl PortfolioConstructor {
                 target_weight: target,
                 estimated_cost_bps: self.mandate.turnover_cost_bps,
                 hypotheses: vec![thesis.hypothesis_id.clone()],
+                reference_quantity: Some(reference_quantity),
             });
         }
         // Turnover is half the sum of absolute weight changes: the fraction of

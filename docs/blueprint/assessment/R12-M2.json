@@ -767,7 +767,7 @@
       "backend/crates/libs/qip-evidence/src/fabric.rs:738-758",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:103-150"
     ],
-    "gap": "A belief cannot be walked to its source document hashes: a NowVariable cites ManifestRefs that are in-process names (kernel/bar-history, cycle-N), not evidence ids, so there is no edge from a belief to a claim in the fabric's ProvenanceGraph and ProvenanceGraph::sources_of has no production reader. The link has to be made where the world model feeds the NOW stage (macro and company readings carry their feature's evidence id), which is the same missing record-to-evidence id as R12-EVID-1200.",
+    "gap": "2026-10-24 (re-read, unchanged): a belief cannot be walked to its source document hashes. A NowVariable cites ManifestRefs that are in-process names (kernel/bar-history, cycle-N), not evidence ids, so there is no edge from a belief to a claim in ProvenanceGraph, and ProvenanceGraph::sources_of has no production reader (grep of backend/crates outside qip-evidence and tests: the graph() hits are the world model's own graph). The link has to be made where the world model feeds the NOW stage, which needs the record-to-evidence id seam of R12-EVID-1200 and the evidence.admitted journal of R12-EVID-2032 (T3-FABRIC, in flight). A resolver over names that are not evidence ids would resolve nothing or invent edges, so none was written.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -780,7 +780,7 @@
     "verification": "a test walking a belief back to source hashes",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Graph exists inside the fabric only. 2026-10-18 lane L06: not implemented; a resolver over manifest names that are not evidence ids would resolve nothing or invent edges. Left PARTIAL with the corrected gap."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Graph exists inside the fabric only. 2026-10-18 lane L06: not implemented; a resolver over manifest names that are not evidence ids would resolve nothing or invent edges. Left PARTIAL with the corrected gap. 2026-10-24 N2-FABRIC-DATA: LARGE, blocked on R12-EVID-2032 and R12-EVID-1200; no code change."
   },
   {
     "id": "R12-EVID-2034",
@@ -1111,7 +1111,7 @@
       "backend/crates/services/qip-twin/tests/twin.rs:753 every_captured_outcome_carries_a_trace_id_and_the_chain_reconstructs",
       "backend/crates/runtime/qip-desk-ship/src/lib.rs::DeskShipper"
     ],
-    "gap": "Three named elements, none of them a field to add in the twin: (1) queue estimates and (2) hedge legs have no producer on the desk path, and the P1 record they would ride is qip_contracts::reflex::OutcomeRecord { cell, session, journal_sequence, journal_digest, entry: JournalEntry } (not a qip-twin type), whose JournalEntry is a hash-chained, versioned wire body (ChainVersion v1/v2): a new field changes sealed bytes and needs a chain version, a codec ADR and a decision on what a v2 verifier does with an entry that lacks it. Queue position exists only in the order book and quoting lane (qip-orderbook, quote_loop.rs), not in DeskLedgerFeed's inputs. (3) No tick-lake write beside market events; desk shipping is loopback-tested only and nothing is deployed.",
+    "gap": "Queue estimates and hedge legs have no producer on the desk path, and the sealed OutcomeRecord chain is not versioned for them: by decision a field is not added (ADR 0151 d7), and a future producer's diagnostics ride a separate non-chained DeskDiagnostic record. Desk shipping (DeskShipper) is loopback-tested only and nothing is deployed; nothing writes to the tick lake beside market events. Re-read 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1122,7 +1122,7 @@
     "verification": "cargo test -p qip-twin --test twin",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. The triage closure named qip-twin OutcomeRecord; the type is qip-contracts reflex.rs:997 and the change is a chained-wire change, not a twin field."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. The triage closure named qip-twin OutcomeRecord; the type is qip-contracts reflex.rs:997 and the change is a chained-wire change, not a twin field. Lane N1-KERNEL-ACCEPT 2026-10-24: re-read against ADR 0151 d7; the closure is the restated gap, no code. grep -rn DeskShipper backend/crates/apps/qip-deepbrain/src shows only the loopback wiring."
   },
   {
     "id": "R12-TICK-2048",

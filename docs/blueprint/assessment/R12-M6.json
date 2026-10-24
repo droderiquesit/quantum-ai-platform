@@ -2483,14 +2483,16 @@
   {
     "id": "R12-CONTRACT-6110",
     "status": "PARTIAL",
-    "current": "WorldBranch is a Validated contract with deny_unknown_fields; qip-twin futures.rs converts a branch to it (to_world_branch).",
+    "current": "WorldBranch is a Validated contract with deny_unknown_fields; qip-twin futures.rs converts a branch to it (to_world_branch), and the tick desk round writes every live branch the contract can state to its outputs store (world-branches/<manifest>.json), counting the ones it refused (the baseline) so none is silently absent.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/world_model.rs:173 type",
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:387 a_world_branch_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:401 a_world_branch_refuses_each_broken_invariant",
-      "backend/crates/services/qip-twin/src/futures.rs::to_world_branch"
+      "backend/crates/services/qip-twin/src/futures.rs::to_world_branch",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::round (world_branches)",
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_round_replays_the_lake_trains_on_its_labels_and_ships_the_map_only_where_the_licence_permits"
     ],
-    "gap": "to_world_branch has no production caller. The triage closure (call Future::to_world_branch in Platform::stage_simulate where qip-twin futures are evaluated) rests on a seam that does not exist: stage_simulate evaluates no qip-twin futures, and FutureTree/TwinState::fit have no caller outside qip-twin/tests/futures.rs (grep -rn FutureTree backend/crates --include=*.rs). Closing this row first requires growing a FutureTree in SIMULATE from the desk price series (TwinState::fit over bar closes, TreeConfig, WorldDriver selection) and only then journaling one WorldBranch per live branch; that is an M-sized kernel change, not the S the triage sized it as.",
+    "gap": "stage_simulate grows no tree by decision (ADR 0151 d5). Since 2026-10-24 to_world_branch has a production caller on the path the ADR names: TickDesk::round writes each live branch the contract can state to the outputs store as a WorldBranch. The desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no committed deployment does, and nothing reads the written branches.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2498,10 +2500,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts; cargo test -p qip-deepbrain --test tick_desk",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding WorldBranch exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-read 2026-10-18 by lane L01 (ran grep only): kept PARTIAL, closure not applicable as written; gap corrected to name the missing SIMULATE seam."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding WorldBranch exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-read 2026-10-18 by lane L01 (ran grep only): kept PARTIAL, closure not applicable as written; gap corrected to name the missing SIMULATE seam. Lane N1-KERNEL-ACCEPT 2026-10-24: added the tick-desk write (qip-deepbrain tick_desk.rs, world_branches/world_branches_refused, tests/tick_desk.rs); mutations that fired: skipping the write, and not counting the refused baseline. Kept PARTIAL: ADR 0151 d5 decides the closure is the restated gap, the desk is off by default, and no consumer reads the branches."
   },
   {
     "id": "R12-CONTRACT-6111",

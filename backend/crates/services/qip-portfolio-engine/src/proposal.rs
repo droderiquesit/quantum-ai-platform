@@ -55,6 +55,13 @@ pub struct ProposalLeg {
     pub estimated_cost_bps: f64,
     /// The hypotheses this leg expresses.
     pub hypotheses: Vec<String>,
+    /// The quantity this leg would have been at the reference budget, before
+    /// any narrowing multiplier shrank it (ADR 0148 decision 5). Reported by
+    /// the constructor in the same pass that sized the leg, because a second
+    /// unnarrowed run would not be side-effect free. `None` where the proposal
+    /// was not built by a constructor that reports one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_quantity: Option<Decimal>,
 }
 
 impl ProposalLeg {

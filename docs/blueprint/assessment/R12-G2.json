@@ -1399,7 +1399,7 @@
       "infrastructure/terraform/modules/iap-edge/main.tf:130",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs:2821 no_controller_manifest_publishes_a_service_and_the_argo_server_is_cluster_ip"
     ],
-    "gap": "PAM entitlements.",
+    "gap": "PAM entitlements are declared (variables.tf pam_entitlements, security.tf) and empty in every environment; enabling one needs infrastructure/environments/** (protected) and a real plan, and is tracked by R12-SEC-9123 (PARTIAL). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1412,7 +1412,7 @@
     "verification": "cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane N1-KERNEL-ACCEPT 2026-10-24: classed PROTECTED_PATCH, held back because the same environment edit closes R12-SEC-9123 and nothing here may write infrastructure/environments/**."
   },
   {
     "id": "R12-API-9061",
@@ -1503,7 +1503,7 @@
     "verification": "cargo test -p qip-acceptance --test egress --test security_controls",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O17; gap before it: Dedicated project if required."
+    "notes": "ADR lane 2026-10-18: gap re-graded against decision O17; gap before it: Dedicated project if required. Lane N1-KERNEL-ACCEPT 2026-10-24: re-read, still owner decision O17 (design-decisions-2026-10-18.json); classed DESIGN_OPEN, no agent writes the ADR and no code changed."
   },
   {
     "id": "R12-SEC-9065",
@@ -4077,7 +4077,7 @@
       "infrastructure/terraform/modules/execution-node/main.tf:331",
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:373"
     ],
-    "gap": "Shard assignment and provisioning.",
+    "gap": "Shard assignment is ADR 0136's centre-signed book ownership (a books slot in the policy payload, the cell's refusal at the pass gate, the centre's one-owner check): none of it is in code (grep -rn 'BookOwnership' backend/crates finds nothing). Terraform shard keying of execution_nodes needs infrastructure/terraform/variables.tf, a protected path, and execution_nodes is {} in every tfvars. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4088,7 +4088,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285)."
+    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285). Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE; slices: (1) BookOwnership slot and Cell gate in qip-edge/qip-contracts, (2) the centre's overlap refusal in the kernel, (3) a protected patch keying execution_nodes by owned books. None started."
   },
   {
     "id": "R12-MESH-9181",

@@ -8,10 +8,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkScenario, get, isLoopbackUrl, parsePrometheus, runScenario, sumSeries, validateResult } from "./harness.mjs";
+import { checkScenario, defaultLaunch, get, isLoopbackUrl, parsePrometheus, readPeakRssKib, runScenario, sumSeries, validateResult } from "./harness.mjs";
 import { attempts, main as escalationMain, runDrill, validateRecord as validateEscalation } from "./agent-escalation.mjs";
 import { readFileSync as readFileForDrill, readdirSync as readdirForDrill } from "node:fs";
 import { join as joinForDrill } from "node:path";
@@ -261,4 +261,65 @@ test("the command runs, exits zero on a held drill, and refuses an unknown mode"
   assert.equal(escalationMain(["run"], { out: (l) => lines.push(l), err: () => {} }), 0);
   assert.match(lines.at(-1), /verdict: held/);
   assert.equal(escalationMain(["nonsense"], { out: () => {}, err: () => {} }), 64);
+});
+
+// The harness measured no memory, so a drill could not say a broker
+// stayed small while a sink was frozen. Mutation: make readPeakRssKib return
+// null — the first test's peak assertion fails; compare `peak <= ceiling` as
+// `peak >= ceiling` — the ceiling tests fail.
+test("the kernel's resident-set high water mark is read from /proc and an unreadable one is null, not zero", () => {
+  const root = mkdtempSync(join(tmpdir(), "game-day-proc-"));
+  try {
+    mkdirSync(join(root, "4242"));
+    writeFileSync(join(root, "4242", "status"), "Name:\tqip-fabricd\nVmPeak:\t  900000 kB\nVmHWM:\t  123456 kB\nVmRSS:\t   100000 kB\n");
+    mkdirSync(join(root, "4243"));
+    writeFileSync(join(root, "4243", "status"), "Name:\tkernel-thread\n");
+    assert.equal(readPeakRssKib(4242, root), 123456, "VmHWM, not VmRSS or VmPeak");
+    assert.equal(readPeakRssKib(4243, root), null, "a status with no VmHWM line");
+    assert.equal(readPeakRssKib(9999, root), null, "a process that is gone");
+    assert.equal(readPeakRssKib(0, root), null);
+    assert.equal(readPeakRssKib("4242", root), null, "a pid that is not an integer");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a drill records each process's peak resident size, and a ceiling it exceeds makes the drill missed", async () => {
+  await withScratch(async ({ bin, work }) => {
+    const generous = await runScenario(scenario({ memory_ceiling_kib: { broker: 4 * 1024 * 1024, cell: 4 * 1024 * 1024 } }), { bin, repo: work, work });
+    assert.deepEqual(validateResult(generous), []);
+    for (const name of ["broker", "cell"]) {
+      const peak = generous.measurements.peak_rss_kib[name];
+      assert.ok(Number.isFinite(peak) && peak > 0, `premise: ${name} peak was measured, got ${peak}`);
+    }
+    assert.equal(generous.verdict, "met", JSON.stringify(generous.checks, null, 1));
+    assert.ok(generous.checks.some((c) => c.phase === "memory" && c.passed));
+
+    const tight = await runScenario(scenario({ memory_ceiling_kib: { broker: 1 } }), { bin, repo: work, work });
+    assert.equal(tight.verdict, "missed");
+    assert.ok(tight.checks.some((c) => c.phase === "memory" && !c.passed && /broker stayed under 1 KiB/.test(c.name)));
+    assert.deepEqual(validateResult(tight), []);
+  });
+});
+
+test("a ceiling on a process that is not declared is refused, and a negative peak in a result is refused", () => {
+  const problems = checkScenario({ ...scenario(), memory_ceiling_kib: { sink: 1000, broker: 0 } });
+  assert.ok(problems.some((p) => /names sink, which is not a declared process/.test(p)), problems.join("\n"));
+  assert.ok(problems.some((p) => /memory_ceiling_kib\.broker must be a positive number/.test(p)), problems.join("\n"));
+  assert.deepEqual(checkScenario(scenario()), []);
+  const result = { schema: "qip.game-day.result/v1", scenario: "x", drill: "x", run_at: "2026-10-24T00:00:00Z", commit: "x", environment: "local", objectives: { rto_ms: 1, rpo_records: null }, measurements: { detected_ms: null, outage_ms: null, rto_ms: null, rpo_records: null, peak_rss_kib: { broker: -5 } }, checks: [], verdict: "aborted" };
+  assert.ok(validateResult(result).some((p) => /peak_rss_kib\.broker/.test(p)));
+});
+
+// A ceiling that cannot be checked is not a ceiling that held. Mutation: record
+// an unreadable peak as passed — this test fails.
+test("a ceiling on a process whose peak cannot be read fails closed", async () => {
+  await withScratch(async ({ bin, work }) => {
+    const blind = (binary, args, env, log) => ({ ...defaultLaunch(binary, args, env, log), pid: undefined });
+    const result = await runScenario(scenario({ memory_ceiling_kib: { broker: 4 * 1024 * 1024 } }), { bin, repo: work, work, launch: blind });
+    assert.equal(result.measurements.peak_rss_kib.broker, null, "premise: the peak was unreadable");
+    assert.equal(result.verdict, "missed");
+    assert.ok(result.checks.some((c) => c.phase === "memory" && !c.passed && /could not be read/.test(c.detail)));
+    assert.deepEqual(validateResult(result), []);
+  });
 });

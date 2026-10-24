@@ -331,6 +331,15 @@ pub enum Disposition {
     /// and charged no budget, and is dropped on the record rather than in
     /// silence, so a storm that outlasted its own signals is visible.
     Expired,
+    /// A live signal of the same class, trigger, subject and affected entities, at
+    /// least as severe, had already been routed. It woke nothing, charged no
+    /// budget and took no hold-queue slot, and is dropped on the record: a
+    /// detector that re-raises one deviation every sweep otherwise spends the
+    /// whole attention budget saying one thing, and the storm it makes is
+    /// what the budget exists to survive (R12-RES-7107). A repeat that is
+    /// *more* severe than the live one is not a duplicate; it is the
+    /// deviation getting worse, and routes.
+    Clustered,
 }
 
 /// Why an activation happened: the class of deviation and the trigger that
@@ -404,6 +413,7 @@ pub struct RoutingPolicy {
     budget_per_window: u32,
     window: Duration,
     defer_capacity: usize,
+    cluster_duplicates: bool,
 }
 
 impl RoutingPolicy {
@@ -437,7 +447,19 @@ impl RoutingPolicy {
             budget_per_window,
             window,
             defer_capacity,
+            cluster_duplicates: false,
         })
+    }
+
+    /// Cluster duplicate signals: a repeat of a live signal (same class,
+    /// detector, subject and affected entities) that is no more severe is recorded
+    /// [`Disposition::Clustered`] and spends nothing. Off by default, so a
+    /// caller that routes distinct signals under one entity name sees the
+    /// budget and nothing else; a router that faces a detector re-raising the
+    /// same deviation every sweep turns it on.
+    pub fn clustering_duplicates(mut self) -> Self {
+        self.cluster_duplicates = true;
+        self
     }
 
     /// The default routing: surprise to a specialist, opportunity to research,
@@ -478,6 +500,34 @@ pub struct AttentionRouter {
     used: u32,
     deferred: VecDeque<AmbientSignal>,
     issued: u64,
+    /// Signals routed and not yet past their expiry, by what makes two of
+    /// them the same deviation, with the expiry and severity to compare a
+    /// repeat against. Bounded by [`MAX_CLUSTER_KEYS`].
+    live: BTreeMap<ClusterKey, (Timestamp, u32)>,
+}
+
+/// How many distinct live deviations the router remembers for clustering. A
+/// storm of *different* signals is the budget's business, not this map's; at
+/// the cap a new key is simply not remembered, so its repeats route as they
+/// did before clustering existed rather than the map growing with the storm.
+pub const MAX_CLUSTER_KEYS: usize = 1024;
+
+/// What makes two signals one deviation: the class, which detector raised it,
+/// the subject it is about (a forecast and an adversarial reading of the same
+/// entity are different deviations that wake different pathways, so the
+/// subject is part of the key) and the entities it affects (sorted, so order
+/// is not a difference).
+type ClusterKey = (SignalClass, String, String, Vec<String>);
+
+fn cluster_key(signal: &AmbientSignal) -> ClusterKey {
+    let detector = match &signal.trigger {
+        Trigger::Schedule(name) => format!("schedule:{name}"),
+        Trigger::Event(name) => format!("event:{name}"),
+    };
+    let mut entities = signal.affected_entities.clone();
+    entities.sort();
+    entities.dedup();
+    (signal.class, detector, signal.subject.clone(), entities)
 }
 
 impl AttentionRouter {
@@ -488,6 +538,7 @@ impl AttentionRouter {
             used: 0,
             deferred: VecDeque::new(),
             issued: 0,
+            live: BTreeMap::new(),
         }
     }
 
@@ -564,6 +615,18 @@ impl AttentionRouter {
             out.push(event);
             return Ok(out);
         }
+        self.live.retain(|_, (expiry, _)| *expiry >= now);
+        let key = cluster_key(signal);
+        if self.policy.cluster_duplicates
+            && self
+                .live
+                .get(&key)
+                .is_some_and(|(_, severity)| signal.severity_bp <= *severity)
+        {
+            let event = self.event(signal, Disposition::Clustered, now)?;
+            out.push(event);
+            return Ok(out);
+        }
         let disposition = if self.used < self.policy.budget_per_window && self.deferred.is_empty() {
             self.used += 1;
             Disposition::Activated
@@ -573,6 +636,12 @@ impl AttentionRouter {
         } else {
             Disposition::Shed
         };
+        if self.policy.cluster_duplicates
+            && disposition != Disposition::Shed
+            && (self.live.contains_key(&key) || self.live.len() < MAX_CLUSTER_KEYS)
+        {
+            self.live.insert(key, (signal.expiry, signal.severity_bp));
+        }
         let event = self.event(signal, disposition, now)?;
         out.push(event);
         Ok(out)

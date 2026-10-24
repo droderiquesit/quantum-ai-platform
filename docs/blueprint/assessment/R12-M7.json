@@ -2417,14 +2417,15 @@
   {
     "id": "R12-RES-7107",
     "status": "PARTIAL",
-    "current": "Attention budget enforced (storm test); ModelReputation exists; no duplicate clustering or quarantine; router unwired.",
+    "current": "Attention budget enforced (storm test). AttentionRouter now clusters duplicates when its policy asks (RoutingPolicy::clustering_duplicates): a repeat of a live signal with the same class, detector, subject and entities that is no more severe is recorded Disposition::Clustered, spends no budget and takes no hold slot; a more severe repeat routes as an escalation; the memory is bounded (MAX_CLUSTER_KEYS) and lapses with each signal's expiry. AttentionRouter::route is called from qip-deepbrain research.rs, but that router does not enable clustering. ModelReputation exists; there is no producer quarantine.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:294-401 RoutingPolicy budget_per_window/window/defer_capacity; AttentionRouter::route",
+      "backend/crates/libs/qip-contracts/src/ambient.rs RoutingPolicy::clustering_duplicates, Disposition::Clustered, AttentionRouter::route, MAX_CLUSTER_KEYS",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs::a_repeat_of_a_live_signal_is_clustered_and_spends_no_budget",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs::a_more_severe_repeat_routes_and_a_repeat_after_the_live_signal_lapsed_routes",
       "backend/crates/libs/qip-contracts/tests/ambient.rs:148,203,213 a storm never exceeds the attention budget",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:764",
-      "AttentionRouter is referenced only inside backend/crates/libs/qip-contracts/src/ambient.rs and tests (no production caller)"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1158 RoutingPolicy::standard (clustering not enabled)"
     ],
-    "gap": "Duplicate clustering, producer quarantine, production wiring.",
+    "gap": "2026-10-24: (1) Clustering is built and tested but not on the running path: qip-deepbrain's ResearchLoop builds its router without clustering_duplicates, because enabling it failed research_market::research_that_realises_nothing_is_retired_by_the_market_and_stays_retired and ambient_agency::a_full_outbox_defers_drafts_and_never_stops_the_node, which depend on a re-raised gap reaching the desk every sweep (a retired question raised again is declined as retired). Enabling it needs the desk to be told of a Clustered re-raise, or the loop to tolerate its absence. (2) Producer quarantine of a drifting ambient model does not exist: nothing reads ModelReputation to stop a producer's signals. (3) The research loop runs every cycle (ResearchConfig::default every_cycles = 1) but no serving deployment is committed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2435,7 +2436,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: the triage premise is wrong. ResearchConfig::default sets every_cycles = 1 (backend/crates/apps/qip-deepbrain/src/research.rs, impl Default for ResearchConfig) and main.rs constructs the ResearchLoop unconditionally, so the loop runs every cycle in every deep-brain deployment; only an explicit QIP_DEEPBRAIN_RESEARCH_EVERY=0 disables it, and no manifest sets one. No switch is needed; what stays open is this row's own clause and a serving deployment."
+    "notes": "L-SWITCH 2026-10-18: the triage premise is wrong. ResearchConfig::default sets every_cycles = 1 (backend/crates/apps/qip-deepbrain/src/research.rs, impl Default for ResearchConfig) and main.rs constructs the ResearchLoop unconditionally, so the loop runs every cycle in every deep-brain deployment; only an explicit QIP_DEEPBRAIN_RESEARCH_EVERY=0 disables it, and no manifest sets one. No switch is needed; what stays open is this row's own clause and a serving deployment. 2026-10-24 N2-FABRIC-DATA: duplicate clustering added as an opt-in router policy (old logs still decode: Clustered is a new Disposition value, no field changed). Mutations that fired, each restored byte for byte: Clustered branch disabled (two tests fail), expiry retain removed (lapse test fails), severity comparison made always true (escalation test fails). Kept PARTIAL: not on the running path and no quarantine."
   },
   {
     "id": "R12-RES-7108",

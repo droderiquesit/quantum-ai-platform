@@ -277,7 +277,7 @@
       "backend/crates/tests/qip-acceptance/tests/egress.rs (egress suite)",
       "infrastructure/terraform/modules/egress-proxy/tests/venue-refusal.tftest.hcl"
     ],
-    "gap": "No deployed proxy; agent workers (scripts/fleet) run outside it.",
+    "gap": "No deployed proxy: nothing is applied with real egress, so the Envoy sidecar is unproven in a deployment (a run URL and terminal status are the evidence), and the agent workers under scripts/fleet, a protected path, run outside it. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -288,7 +288,7 @@
     "verification": "cargo test -p qip-acceptance --test egress",
     "work_item": "",
     "size": "M",
-    "notes": "Equivalent control by a different product; acceptable under ADR 0024 if the proxy is proven in a deployment."
+    "notes": "Equivalent control by a different product; acceptable under ADR 0024 if the proxy is proven in a deployment. Lane N1-KERNEL-ACCEPT 2026-10-24: classed DEPLOY_DEPENDENT; no code changed."
   },
   {
     "id": "R12-GCP-10014",
@@ -1991,7 +1991,7 @@
       "backend/crates/services/qip-world-model/src/now.rs::NowBrain",
       "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::run"
     ],
-    "gap": "Inputs come from in-process bar history and the world model, not scout/evidence workers over typed Fabric knowledge events.",
+    "gap": "Inputs still come from in-process bar history and the world model: no scout or evidence worker produces typed Fabric knowledge events in-repo, and none is deployed. Re-read 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2002,7 +2002,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE; the producers are outside the cycle. No code changed."
   },
   {
     "id": "R12-WORLD-10091",
@@ -2737,7 +2737,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:19703 the_expected_shortfall_limit_can_actually_fire",
       "backend/crates/libs/qip-contracts/src/degradation.rs:776 sizing_multiplier"
     ],
-    "gap": "No capital society; distributions not via ForecastState.",
+    "gap": "No capital society: nothing arbitrates among capital policies as members, and the survival and confidence governors read disagreement without carrying distributions via ForecastState. The ForecastState consumer was declined by decision (ADR 0159 F, R12-CAPITAL-10097), which this row depends on. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2750,7 +2750,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE; a society stage is a new member set and arbitration rule, not a call-site change. No code changed."
   },
   {
     "id": "R12-MODEL-10123",
@@ -3336,7 +3336,7 @@
       "infrastructure/environments/stage/terraform.tfvars:49-51",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5009"
     ],
-    "gap": "Canary packages and game-day use.",
+    "gap": "Canary packages and game-day use need a stage workload and control plane: gitops is off in stage and its tfvars (infrastructure/environments/stage/terraform.tfvars) are a protected path. R12-GCP-10143 is COMPLETE, so only the environment edit and a deployment remain. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3349,7 +3349,7 @@
     "verification": "plan stage",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane N1-KERNEL-ACCEPT 2026-10-24: classed DEPLOY_DEPENDENT; nothing in-repo left to close."
   },
   {
     "id": "R12-GOV-10149",
@@ -3445,14 +3445,15 @@
   {
     "id": "R12-RES-10153",
     "status": "PARTIAL",
-    "current": "Stream quotas and lag limits refuse a producer while a checkpointed group trails its lag limit (services/qip-streaming/tests/event_fabric_quota.rs:159) and sink failures are isolated (tests/qip-acceptance/tests/event_fabric_scaling.rs:596). The game-day harness has four scenarios (broker-loss, ledgerd-loss, region-isolation, stale-policy; scripts/game-day/scenarios/) and none freezes a sink or measures broker memory.",
+    "current": "Stream quotas and lag limits refuse a producer while a checkpointed group trails its lag limit (services/qip-streaming/tests/event_fabric_quota.rs:159) and sink failures are isolated (tests/qip-acceptance/tests/event_fabric_scaling.rs:596). The game-day harness has four scenarios (broker-loss, ledgerd-loss, region-isolation, stale-policy; scripts/game-day/scenarios/) and now measures memory: each result records every process's peak resident set (VmHWM from /proc/<pid>/status) and a scenario may state memory_ceiling_kib per process, a breach or an unreadable peak failing the drill. No scenario freezes a sink yet.",
     "evidence": [
       "services/qip-streaming/tests/event_fabric_quota.rs::a_refuse_producer_stream_stops_accepting_while_a_checkpointed_group_trails_its_lag_limit",
       "tests/qip-acceptance/tests/event_fabric_scaling.rs::fabric_097_each_sink_failure_and_backpressure_isolated_from_others",
-      "scripts/game-day/harness.mjs",
+      "scripts/game-day/harness.mjs readPeakRssKib, memory_ceiling_kib",
+      "scripts/game-day/harness.test.mjs (peak resident size tests)",
       "docs/ops/game-days/README.md"
     ],
-    "gap": "Three things are missing and the first two are code: the harness has no memory measurement (no /proc/<pid>/status sampling), no process that drives producers past a lag limit (there is no standalone producer binary; the cell produces outcomes only when it fires orders, which a local drill cannot make it do — see R12-RES-10154), and a scenario file. The sink freeze itself is available as the existing 'pause' fault (SIGSTOP on qip-ledgerd).",
+    "gap": "2026-10-24: the RSS sampler is built and tested (harness.test.mjs). Two things remain, both needing more than the harness: a process that drives producers past a stream's lag limit (no standalone producer binary exists; the cell produces outcomes only when it fires orders, see R12-RES-10154), and a frozen-sink.json scenario using the existing 'pause' fault (SIGSTOP on qip-ledgerd) with a memory_ceiling_kib on qip-fabricd, run once and its result committed under docs/ops/game-days/results. Until the drill has run, the row is code without a recorded drill.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3462,10 +3463,10 @@
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "game-day",
+    "verification": "node --test scripts/game-day/harness.test.mjs; then the frozen-sink game-day",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L17 from harness.mjs's fault kinds and the scenarios directory; nothing in the code changed."
+    "notes": "Gap corrected 2026-10-18 by lane L17 from harness.mjs's fault kinds and the scenarios directory; nothing in the code changed. 2026-10-24 N2-FABRIC-DATA: split step (1) done. Mutations that fired, each restored byte for byte: VmHWM read as VmRSS (the /proc test fails), ceiling comparison inverted (the ceiling test fails), an unreadable peak counted as passed (the fail-closed test fails). Kept PARTIAL."
   },
   {
     "id": "R12-RES-10154",
@@ -3498,7 +3499,7 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:595-680"
     ],
-    "gap": "Drill + rollback.",
+    "gap": "Rollback exists in-process (qip-kernel/src/model_serving.rs::rollback_model, which ADR 0148 d8's re-verification demotes through). The staged drill ('game-day: promote degraded candidate in stage') needs a deployed stage and depends on R12-RES-10119 (SLO-driven rollback automation, PARTIAL). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3511,7 +3512,7 @@
     "verification": "game-day",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane N1-KERNEL-ACCEPT 2026-10-24: classed DEPLOY_DEPENDENT; no code changed."
   },
   {
     "id": "R12-FABRIC-10156",

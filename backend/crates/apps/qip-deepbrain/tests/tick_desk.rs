@@ -339,6 +339,24 @@ fn a_round_replays_the_lake_trains_on_its_labels_and_ships_the_map_only_where_th
     );
 
     assert!(round.branches_grown > 1, "a future tree was grown");
+    // R12-CONTRACT-6110: the live branches cross as WorldBranch contracts, and
+    // none is silently absent: every live branch was either written or refused
+    // by the contract (the baseline is its parent's own future).
+    assert!(
+        round.world_branches > 0 && round.world_branches_refused > 0,
+        "premise: some live branch is stateable and the baseline is not ({} written, {} refused)",
+        round.world_branches,
+        round.world_branches_refused
+    );
+    assert_eq!(
+        round.world_branches + round.world_branches_refused,
+        round.branches_live
+    );
+    let written = outputs.list(&format!("{OUTPUT_NAMESPACE}/world-branches/"))?;
+    assert_eq!(written.len(), 1, "one file per round");
+    let contracts: Vec<qip_contracts::WorldBranch> =
+        serde_json::from_slice(&outputs.get(&written[0])?.expect("the file was listed"))?;
+    assert_eq!(contracts.len(), round.world_branches);
     let tree = desk.tree().expect("the desk holds its tree");
     assert!(
         tree.branches

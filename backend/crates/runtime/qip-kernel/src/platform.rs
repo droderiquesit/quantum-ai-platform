@@ -1139,6 +1139,11 @@ pub struct Platform {
     /// Beliefs from outside the opportunity, by subject. REASON may only be
     /// narrowed by them (ADR 0151 decision 3); empty unless a producer sets it.
     outside_priors: BTreeMap<String, crate::fusion::OutsidePrior>,
+    /// The reference and sized quantities of each leg ACT is about to release,
+    /// by order id, taken by `submit_order` when it stamps the order. Emptied
+    /// on every submission, accepted or refused, so it holds at most the order
+    /// in flight.
+    leg_quantities: BTreeMap<String, (Decimal, Decimal)>,
     /// The capital survival kernel and the confidence governor: what DECIDE
     /// may size against, and the gross the Risk Gate holds orders to. See
     /// [`crate::survival`]. One field for both because they answer one
@@ -5609,6 +5614,7 @@ impl Platform {
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             pending_theses: Vec::new(),
             outside_priors: BTreeMap::new(),
+            leg_quantities: BTreeMap::new(),
             governor: crate::survival::SurvivalGovernor::default(),
             ledger_obligations: None,
             unsettled_sales: Vec::new(),
@@ -14551,6 +14557,16 @@ impl Platform {
         self.attribution_lineage.last()
     }
 
+    /// The reference, sized and released quantities an order was stamped with
+    /// at release (ADR 0148 decision 5), where it came from a constructed
+    /// proposal leg and its lineage has not been evicted.
+    pub fn release_quantities(
+        &self,
+        order_id: &str,
+    ) -> Option<crate::attribution::ReleaseQuantities> {
+        self.attribution_lineage.release_quantities(order_id)
+    }
+
     /// The latest instant any watched subject crossed a regime boundary,
     /// for the verifier society's structural-break critic.
     pub(crate) fn latest_regime_crossing(&self) -> Option<Timestamp> {
@@ -15913,11 +15929,15 @@ impl Platform {
         // response a tail world the book does not survive is required to
         // have (R12-RISK-4117..4124).
         capped.extend(sizing.narrowing());
-        let outcome = self.constructor.construct_capped(
+        // `free` is the budget before the governor and the multipliers took
+        // anything from it: the reference the leg quantities are reported
+        // against, by the constructor in this same pass (ADR 0148 decision 5).
+        let outcome = self.constructor.construct_referenced(
             theses,
             &covariance,
             &current,
             Money::new(budget, Currency::USD),
+            Money::new(free, Currency::USD),
             &caps,
             now,
             now,
@@ -17733,6 +17753,12 @@ impl Platform {
                     now,
                 );
 
+                if let Some(reference) = leg.reference_quantity {
+                    self.leg_quantities.insert(
+                        order.order_id.as_str().to_string(),
+                        (reference, leg.quantity),
+                    );
+                }
                 match self.submit_order(order, now) {
                     Ok(()) => {
                         released += 1;
@@ -19766,6 +19792,7 @@ impl Platform {
         let release_hypotheses = order.hypotheses.clone();
         let release_scope = order.scope.clone();
         let release_type = order.order_type.as_str();
+        let leg_quantities = self.leg_quantities.remove(&release_order_id);
         // The order's own buckets, so the pre-trade projection adds this
         // order to the sector, country, class and venue it belongs to before
         // the limits read it. The projection used to be handed no axes, so
@@ -19807,7 +19834,23 @@ impl Platform {
             // Stamped at acceptance, from what was in force at acceptance:
             // a key read at LEARN from whatever policy holds then would
             // credit today's policy with yesterday's fill.
-            let context = self.release_context(&result, &object_id, &release_scope, release_type);
+            // The released quantity is what the gate let through: the risk
+            // reduction, where it cut the order, else the order as sent.
+            let quantities = leg_quantities.and_then(|(reference, sized)| {
+                crate::attribution::ReleaseQuantities::new(
+                    reference,
+                    sized,
+                    result.reduced_to.unwrap_or(quantity),
+                )
+                .ok()
+            });
+            let context = self.release_context(
+                &result,
+                &object_id,
+                &release_scope,
+                release_type,
+                quantities,
+            );
             if let Err(error) = self.attribution_lineage.note_release(
                 &release_order_id,
                 &release_hypotheses,
@@ -19943,6 +19986,7 @@ impl Platform {
         object_id: &ObjectId,
         scope: &str,
         order_type: &str,
+        quantities: Option<crate::attribution::ReleaseQuantities>,
     ) -> crate::attribution::ReleaseContext {
         let narrowed = self
             .governor
@@ -19977,6 +20021,7 @@ impl Platform {
                 .spread_history
                 .get(object_id.as_str())
                 .and_then(|series| series.last().copied()),
+            quantities,
         }
     }
 
