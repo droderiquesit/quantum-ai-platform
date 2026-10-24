@@ -1,4 +1,4 @@
-# ADR 0160: The edge node's simulated gateway holds no listing register on any shipped path until an execution node is deployed
+# ADR 0220: The edge node's simulated gateway holds no listing register on any shipped path until an execution node is deployed
 
 - **Status**: **Proposed**, 2026-10-24, by lane L7-5107 of the wave580
   blueprint drive. Nothing here is accepted on the owner's behalf. It records
