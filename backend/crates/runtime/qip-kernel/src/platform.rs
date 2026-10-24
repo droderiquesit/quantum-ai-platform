@@ -12581,12 +12581,15 @@ impl Platform {
             routing_decisions.len() as f64,
         );
         // Blueprint §9.3: the World Model Federation's pass — views fed,
-        // forecasts scored, disagreement arbitrated and journaled. Advisory;
-        // see `crate::federation_stage` for why nothing downstream reads it.
+        // forecasts scored, disagreement arbitrated and journaled. Advisory
+        // under ADR 0125: DECIDE reads only the narrowing it derives
+        // (`federation_stage::narrow`), which can shrink a bound and never
+        // raise one.
         let (federation_detail, federation_problems) = self.understand_federation(now);
         // Blueprint §9.6 and §9.7: the NOW Brain's latent state, then the
-        // forecast lattice over it. Advisory; see `crate::now_stage` and
-        // `crate::lattice_stage` for why nothing downstream reads either.
+        // forecast lattice over it. Advisory under ADR 0125: DECIDE reads
+        // only the lattice's tactical staleness, which vetoes a thesis on an
+        // expired forecast or narrows its bound (R12-WORLD-9024).
         let (now_detail, now_problems) = self.understand_now(now);
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
