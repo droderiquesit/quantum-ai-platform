@@ -1228,3 +1228,134 @@ fn moving_the_production_alias_records_the_desk_that_moved_it_and_the_evidence_i
     assert_eq!(last_move(&elsewhere, &orphan_reference)?.moved_by, DESK);
     Ok(())
 }
+
+/// R12-EXPAND-6070: a model the platform fitted for itself reaches
+/// production only out of a completed shadow stage. A self-fitted candidate
+/// straight from its holdout is refused, and so is one still short of
+/// `MIN_SHADOW_ROUNDS` won rounds; nothing is journalled and the card does
+/// not move. The same artifact, shadowed for the full period, is promoted.
+///
+/// Mutation: make `require_completed_shadow` return `Ok` for any stage --
+/// the unshadowed candidate is promoted and the first `unwrap_err` panics.
+/// Mutation: compare `rounds_won` against zero -- the short shadow is
+/// promoted and the second `unwrap_err` panics.
+#[test]
+fn a_self_fitted_model_that_skipped_its_shadow_stage_is_refused_production() -> Result<()> {
+    use qip_kernel::ModelProducer;
+    use qip_kernel::model_serving::MIN_SHADOW_ROUNDS;
+    let mut platform = platform_serving(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let teacher = teacher("bar-linear-self", "0.1.0")?;
+    let reference = registered(&mut registry, &teacher)?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let promote = |platform: &mut Platform, registry: &mut ModelRegistry, at: Timestamp| {
+        platform.promote_model_from(
+            ModelProducer::SelfFitted,
+            registry,
+            &artifact,
+            None,
+            &[],
+            at,
+        )
+    };
+
+    let skipped = promote(&mut platform, &mut registry, start()).unwrap_err();
+    assert!(
+        skipped
+            .message()
+            .contains("a self-fitted model that skipped its shadow stage is refused production"),
+        "{skipped}"
+    );
+    assert_eq!(
+        registry.get(&reference).map(|card| card.stage),
+        Some(ModelStage::Development)
+    );
+
+    registry.enter_shadow(&reference, start())?;
+    let minute = |n: i64| start().saturating_add(qip_core::Duration::from_mins(n));
+    for round in 1..i64::from(MIN_SHADOW_ROUNDS) {
+        registry.record_shadow_round(&reference, &format!("round {round} won"), minute(round))?;
+    }
+    let short = promote(&mut platform, &mut registry, minute(10)).unwrap_err();
+    assert!(
+        short.message().contains("shadow round(s) required"),
+        "{short}"
+    );
+    assert_eq!(promotion_records(&platform), 0, "a refusal reached the log");
+
+    registry.record_shadow_round(
+        &reference,
+        "the last round won",
+        minute(i64::from(MIN_SHADOW_ROUNDS)),
+    )?;
+    promote(&mut platform, &mut registry, minute(20))?;
+    assert_eq!(
+        registry.get(&reference).map(|card| card.stage),
+        Some(ModelStage::Production)
+    );
+    assert_eq!(promotion_records(&platform), 1);
+    Ok(())
+}
+
+/// R12-EXPAND-6070: the promotion record lists every stage the model passed
+/// — shadow, evaluation, verifier — and carries the central plane's
+/// signature over them, so a stage list edited after the fact no longer
+/// verifies.
+///
+/// Mutation: sign an empty payload in `promote_model_from` -- the honest
+/// record no longer verifies and the first assertion fails. Mutation: drop
+/// the stages from `ModelPromotion::signed_payload` -- the edited record
+/// still verifies and the last assertion fails.
+#[test]
+fn a_promotion_record_lists_its_stages_under_a_signature_an_edit_breaks() -> Result<()> {
+    use qip_kernel::ModelProducer;
+    use qip_kernel::model_serving::MIN_SHADOW_ROUNDS;
+    let mut platform = platform_serving(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let teacher = teacher("bar-linear-signed", "0.1.0")?;
+    let reference = registered(&mut registry, &teacher)?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    registry.enter_shadow(&reference, start())?;
+    for round in 1..=i64::from(MIN_SHADOW_ROUNDS) {
+        registry.record_shadow_round(
+            &reference,
+            &format!("round {round}: rmse 0.1 against the zero-return predictor's 0.2"),
+            start().saturating_add(qip_core::Duration::from_mins(round)),
+        )?;
+    }
+    platform.promote_model_from(
+        ModelProducer::SelfFitted,
+        &mut registry,
+        &artifact,
+        None,
+        &[],
+        start().saturating_add(qip_core::Duration::from_hours(1)),
+    )?;
+    let record = platform
+        .model_promotions()
+        .get(&reference)
+        .cloned()
+        .ok_or_else(|| Error::not_found("the promotion record"))?;
+    assert!(platform.promotion_verifies(&record), "{record:?}");
+    let stages = record.stages.join(" | ");
+    assert!(stages.starts_with("shadow since"), "{stages}");
+    assert!(
+        stages.contains(&format!("{MIN_SHADOW_ROUNDS} round(s) won")),
+        "{stages}"
+    );
+    assert!(
+        stages.contains("evaluation: ") && stages.contains("verifier: "),
+        "{stages}"
+    );
+
+    let mut edited = record.clone();
+    edited.stages.remove(0);
+    assert!(
+        !platform.promotion_verifies(&edited),
+        "a record with its shadow stage struck out still verifies"
+    );
+    let mut unsigned = record;
+    unsigned.signature = None;
+    assert!(!platform.promotion_verifies(&unsigned));
+    Ok(())
+}

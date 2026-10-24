@@ -1154,3 +1154,71 @@ fn an_alias_move_names_its_mover_and_its_evidence_and_a_card_keeps_only_the_newe
         "the oldest retained move is not the one the bound implies"
     );
 }
+
+/// R12-EXPAND-6070: the shadow stage is the registry's, not the caller's
+/// word. A model enters it only with a passing evaluation and only once; a
+/// round is counted only for a model in shadow, only with evidence, and
+/// only strictly after the last, so one window cannot be counted twice.
+///
+/// Mutations: drop the passing-evaluation check in `enter_shadow` (the
+/// failed card enters and the first `unwrap_err` panics); drop the time
+/// check in `record_shadow_round` (the repeated round counts and its
+/// `unwrap_err` panics).
+#[test]
+fn a_shadow_round_is_counted_only_for_a_shadowed_model_once_per_window_with_evidence() {
+    let t0 = Timestamp::from_secs(1_760_000_000);
+    let minute = |n: i64| t0.saturating_add(Duration::from_mins(n));
+    let mut registry = ModelRegistry::new();
+    let failed_card = evaluated_card(t0, false);
+    let failed = failed_card.reference();
+    registry.register(failed_card);
+    assert!(registry.enter_shadow(&failed, t0).is_err());
+    assert_eq!(
+        registry.get(&failed).unwrap().stage,
+        ModelStage::Development
+    );
+
+    let mut registry = ModelRegistry::new();
+    let card = evaluated_card(t0, true);
+    let reference = card.reference();
+    registry.register(card);
+    assert!(
+        registry
+            .record_shadow_round(&reference, "won", minute(1))
+            .is_err(),
+        "a round was counted for a model that never entered shadow"
+    );
+    registry.enter_shadow(&reference, t0).unwrap();
+    assert_eq!(registry.get(&reference).unwrap().stage, ModelStage::Shadow);
+    assert!(registry.enter_shadow(&reference, minute(1)).is_err());
+    assert!(
+        registry
+            .record_shadow_round(&reference, "  ", minute(1))
+            .is_err()
+    );
+    assert!(
+        registry.record_shadow_round(&reference, "won", t0).is_err(),
+        "a round at the instant shadow began is not new data"
+    );
+    assert_eq!(
+        registry
+            .record_shadow_round(&reference, "won", minute(1))
+            .unwrap(),
+        1
+    );
+    registry
+        .record_shadow_round(&reference, "won again", minute(1))
+        .unwrap_err();
+    assert_eq!(
+        registry
+            .record_shadow_round(&reference, "won", minute(2))
+            .unwrap(),
+        2
+    );
+    let shadow = registry.get(&reference).unwrap().shadow.clone().unwrap();
+    assert_eq!(
+        (shadow.since, shadow.rounds_won, shadow.evidence.len()),
+        (t0, 2, 2)
+    );
+    assert!(!ModelStage::Shadow.allows_decisions());
+}

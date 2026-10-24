@@ -147,6 +147,12 @@ pub const SERVE_REFUSED: &str = "refused";
 #[serde(rename_all = "snake_case")]
 pub enum ModelProducer {
     TrainingPipeline,
+    /// A model the platform fitted and proposed for itself: the deep
+    /// brain's learning desk. Promoted only out of a shadow period of at
+    /// least [`MIN_SHADOW_ROUNDS`] won rounds (R12-EXPAND-6070), because a
+    /// self-proposed change must run beside production, acted on by
+    /// nothing, before it may replace what production runs.
+    SelfFitted,
     QuantumGateway,
     QuantumInformed {
         baseline: String,
@@ -239,7 +245,64 @@ pub struct ModelPromotion {
     /// otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permitted_locations: Option<BTreeSet<String>>,
+    /// Every stage the promotion passed, in order, as the kernel read each
+    /// off the registry and the verifier at that instant (R12-EXPAND-6070).
+    /// Absent from records written before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<String>,
+    /// The central plane's signature over [`Self::signed_payload`]: the
+    /// reference, the artifact digest and the stages. A stage list edited
+    /// after the fact does not verify (`Platform::promotion_verifies`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
     pub at: Timestamp,
+}
+
+impl ModelPromotion {
+    /// What [`Self::signature`] covers.
+    pub fn signed_payload(&self) -> String {
+        format!(
+            "model-promotion|{}|{}|{}",
+            self.reference,
+            self.artifact_digest,
+            self.stages.join("\u{1f}")
+        )
+    }
+}
+
+/// Shadow rounds a self-fitted model must win before it may be promoted.
+/// Chosen, not measured: three passes on data that arrived after the fit is
+/// the least that distinguishes a model from one lucky window.
+pub const MIN_SHADOW_ROUNDS: u32 = 3;
+
+/// The shadow stage a self-fitted candidate must have completed, as one
+/// stage line, or the refusal (R12-EXPAND-6070).
+fn require_completed_shadow(registry: &ModelRegistry, reference: &str) -> Result<String> {
+    let card = registry
+        .get(reference)
+        .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+    match (&card.stage, &card.shadow) {
+        (qip_ai::registry::ModelStage::Shadow, Some(shadow))
+            if shadow.rounds_won >= MIN_SHADOW_ROUNDS =>
+        {
+            Ok(format!(
+                "shadow since {}: {} round(s) won against production on data after the fit ({})",
+                shadow.since.as_secs(),
+                shadow.rounds_won,
+                shadow.evidence.join("; ")
+            ))
+        }
+        (qip_ai::registry::ModelStage::Shadow, Some(shadow)) => Err(Error::denied(format!(
+            "{reference} is not promoted: a self-fitted model completes its shadow stage first, \
+             and it has won {} of the {MIN_SHADOW_ROUNDS} shadow round(s) required",
+            shadow.rounds_won
+        ))),
+        (stage, _) => Err(Error::denied(format!(
+            "{reference} is not promoted: a self-fitted model that skipped its shadow stage is \
+             refused production (it is in {stage:?}); run it beside production through \
+             ModelRegistry::enter_shadow first"
+        ))),
+    }
 }
 
 impl EventBody for ModelPromotion {
@@ -716,6 +779,16 @@ impl Platform {
     }
 
     /// Every promotion this process holds, by reference, in reference order.
+    /// Whether a promotion record carries the central plane's signature
+    /// over its reference, digest and stages (R12-EXPAND-6070). False for a
+    /// record with no signature and for one edited after it was signed.
+    pub fn promotion_verifies(&self, record: &ModelPromotion) -> bool {
+        record.signature.as_deref().is_some_and(|signature| {
+            self.central
+                .verifies_record(&record.signed_payload(), signature)
+        })
+    }
+
     pub fn model_promotions(&self) -> &BTreeMap<String, ModelPromotion> {
         &self.model_promotions
     }
@@ -844,8 +917,12 @@ impl Platform {
         displaced: &[String],
         now: Timestamp,
     ) -> Result<PublishedArtifact> {
+        let mut stages = Vec::new();
         match &producer {
             ModelProducer::TrainingPipeline => {}
+            ModelProducer::SelfFitted => {
+                stages.push(require_completed_shadow(registry, &artifact.reference)?);
+            }
             ModelProducer::QuantumGateway => {
                 return Err(Error::denied(format!(
                     "{} is not promoted: its producer is the quantum gateway, whose output is a \
@@ -927,6 +1004,7 @@ impl Platform {
             .verdict
             .is_refuted()
             .then(|| verification.verdict.summary());
+        let verified = verification.verdict.summary();
         self.journal_record(
             crate::model_tournament::ModelVerified { verification },
             crate::model_tournament::VERIFIER_ORIGIN,
@@ -974,7 +1052,12 @@ impl Platform {
         })?;
         let permitted_locations =
             (!card.data_entitlements.is_empty()).then(|| card.permitted_locations.clone());
-        let record = ModelPromotion {
+        // The stages in the order they ran: the shadow period (for a
+        // self-fitted candidate, checked above), the registry's evaluation,
+        // the verifier society's verdict.
+        stages.push(format!("evaluation: {evidence}"));
+        stages.push(format!("verifier: {verified}"));
+        let mut record = ModelPromotion {
             reference: artifact.reference.clone(),
             name,
             format: artifact.format,
@@ -989,8 +1072,11 @@ impl Platform {
             moved_by: Some(desk),
             evidence: Some(evidence),
             permitted_locations,
+            stages,
+            signature: None,
             at: now,
         };
+        record.signature = Some(self.central.sign_record(&record.signed_payload()));
         self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
         *registry = scratch;
         self.succeed_model_pack(&record);

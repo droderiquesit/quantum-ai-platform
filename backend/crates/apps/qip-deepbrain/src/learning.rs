@@ -129,6 +129,7 @@ use qip_core::{ObjectId, Timestamp};
 use qip_evolution::scoring::{Outcome, Scoreboard};
 use qip_kernel::Platform;
 use qip_kernel::central::models::{ModelRegistration, register_fit, require_calibrated_baseline};
+use qip_kernel::model_serving::{MIN_SHADOW_ROUNDS, ModelProducer};
 use qip_lifecycle::{Evaluator, EvaluatorPolicy};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
@@ -498,12 +499,24 @@ pub enum PromotionOutcome {
     },
     /// The candidate stays at development stage, and why.
     NotPromoted { reference: String, reason: String },
+    /// The model is in shadow: it runs beside production on data that
+    /// arrived after its fit, acted on by nothing, and is promoted only
+    /// once it has won `required` rounds (R12-EXPAND-6070).
+    Shadowed {
+        reference: String,
+        rounds_won: u32,
+        required: u32,
+        /// What this round did: entered shadow, or won a round, and on what.
+        reason: String,
+    },
 }
 
 impl PromotionOutcome {
     pub fn reference(&self) -> &str {
         match self {
-            Self::Promoted { reference, .. } | Self::NotPromoted { reference, .. } => reference,
+            Self::Promoted { reference, .. }
+            | Self::NotPromoted { reference, .. }
+            | Self::Shadowed { reference, .. } => reference,
         }
     }
 
@@ -511,7 +524,7 @@ impl PromotionOutcome {
     pub fn published(&self) -> Option<&PublishedArtifact> {
         match self {
             Self::Promoted { published, .. } => Some(published),
-            Self::NotPromoted { .. } => None,
+            Self::NotPromoted { .. } | Self::Shadowed { .. } => None,
         }
     }
 
@@ -547,6 +560,14 @@ impl PromotionOutcome {
             ),
             Self::NotPromoted { reference, reason } => {
                 format!("{reference} not promoted: {reason}")
+            }
+            Self::Shadowed {
+                reference,
+                rounds_won,
+                required,
+                reason,
+            } => {
+                format!("{reference} in shadow, {rounds_won} of {required} round(s) won: {reason}")
             }
         }
     }
@@ -715,6 +736,17 @@ pub struct LearningStats {
     pub refused_at_door: u64,
     /// Rounds whose candidate the promote stage promoted.
     pub promoted: u64,
+    /// Candidates that passed every check and entered shadow.
+    pub shadowed: u64,
+}
+
+/// A model in its shadow period: what the desk needs to score it on each
+/// later round and to promote it once it has won enough (R12-EXPAND-6070).
+#[derive(Clone, Debug)]
+struct Shadowing {
+    reference: String,
+    artifact: ModelArtifact,
+    distillation: Option<Distillation>,
 }
 
 /// Fits models from observed bars and watches the ones it has fitted age.
@@ -725,6 +757,10 @@ pub struct LearningDesk {
     /// This round's candidate for the promote stage; see
     /// [`PromotionCandidate`].
     candidate: Option<PromotionCandidate>,
+    /// Per subject, the model in shadow, if any. One at a time: a subject
+    /// with a model in shadow scores that model on each new window and
+    /// fits nothing new into production until it is decided.
+    shadowing: BTreeMap<String, Shadowing>,
     /// The artifact of every model this desk promoted, by reference, so an
     /// incumbent can be rescored on a later candidate's held-out rows by
     /// the same provider. Bounded by the registry: a displaced reference is
@@ -837,6 +873,7 @@ impl LearningDesk {
             policy: SkillPolicy::default(),
             registry: ModelRegistry::new(),
             candidate: None,
+            shadowing: BTreeMap::new(),
             promoted_artifacts: BTreeMap::new(),
             displaced_artifacts: BTreeMap::new(),
             reference: BTreeMap::new(),
@@ -1042,6 +1079,9 @@ impl LearningDesk {
         let Some(candidate) = self.candidate.take() else {
             return Ok(None);
         };
+        if let Some(shadow) = self.shadowing.get(&candidate.subject).cloned() {
+            return self.shadow_round(platform, shadow, &candidate, now);
+        }
         let reference = candidate.teacher.reference();
         let not_promoted = |reason: String| {
             Ok(Some(PromotionOutcome::NotPromoted {
@@ -1187,7 +1227,169 @@ impl LearningDesk {
             best_incumbent =
                 Some(best_incumbent.map_or(incumbent_rmse, |best| best.min(incumbent_rmse)));
         }
-        let student = candidate.distillation.as_ref().and_then(|distillation| {
+        // R12-EXPAND-6070: every check above is a check on the past the fit
+        // was handed. The candidate now runs beside production, acted on by
+        // nothing (`ModelStage::Shadow` allows no decision), and is promoted
+        // only after it beats production on [`MIN_SHADOW_ROUNDS`] later
+        // windows (`Self::shadow_round`). The kernel refuses a self-fitted
+        // promotion that skipped this stage, so the desk cannot.
+        if let Err(error) = self.registry.enter_shadow(&reference, now) {
+            return not_promoted(error.message().to_string());
+        }
+        self.shadowing.insert(
+            candidate.subject.clone(),
+            Shadowing {
+                reference: reference.clone(),
+                artifact,
+                distillation: candidate.distillation.clone(),
+            },
+        );
+        self.stats.shadowed += 1;
+        let against = match best_incumbent {
+            Some(rmse) => format!("{baseline_name} at rmse {rmse:.6}"),
+            None => "no incumbent".to_string(),
+        };
+        Ok(Some(PromotionOutcome::Shadowed {
+            reference,
+            rounds_won: 0,
+            required: MIN_SHADOW_ROUNDS,
+            reason: format!(
+                "passed holdout (rmse {candidate_rmse:.6} on {} row(s) against {against}), \
+                 adversarial and verifier checks, and entered shadow",
+                rows.len()
+            ),
+        }))
+    }
+
+    /// One shadow round for the model in shadow on `candidate`'s subject,
+    /// scored on the rows the new window held out (R12-EXPAND-6070).
+    ///
+    /// Won when the shadowed model's error on those rows is strictly below
+    /// production's — every incumbent on the subject, rescored by the same
+    /// provider on the same rows — or, with no incumbent, below the
+    /// zero-return predictor's. A martingale is the honest no-skill
+    /// baseline here: the held-out mean would be computed from the very
+    /// targets it is scored on. A lost round retires the shadowed model; the
+    /// last of [`MIN_SHADOW_ROUNDS`] won promotes it as
+    /// [`ModelProducer::SelfFitted`]. The new window's own fit is not
+    /// promoted this round: one model per subject is decided at a time.
+    fn shadow_round(
+        &mut self,
+        platform: &mut Platform,
+        shadow: Shadowing,
+        candidate: &PromotionCandidate,
+        now: Timestamp,
+    ) -> Result<Option<PromotionOutcome>> {
+        let reference = shadow.reference.clone();
+        let rows = candidate.holdout.rows();
+        let targets = candidate.holdout.targets();
+        let lost = |desk: &mut Self, reason: String| -> Result<Option<PromotionOutcome>> {
+            desk.shadowing.remove(&candidate.subject);
+            desk.registry.retire(&reference, now)?;
+            Ok(Some(PromotionOutcome::NotPromoted {
+                reference: reference.clone(),
+                reason: format!("lost its shadow round and is retired: {reason}"),
+            }))
+        };
+        if rows.is_empty() {
+            return Ok(Some(PromotionOutcome::NotPromoted {
+                reference: reference.clone(),
+                reason: "the new window holds no row to score the shadowed model on".to_string(),
+            }));
+        }
+        let served = match platform.serve_model(&shadow.artifact) {
+            Ok(served) => served,
+            Err(error) => return lost(self, error.message().to_string()),
+        };
+        let mut scores = Vec::with_capacity(rows.len());
+        for row in rows {
+            match served.score(row) {
+                Ok(score) => scores.push(score),
+                Err(error) => return lost(self, error.message().to_string()),
+            }
+        }
+        let shadow_rmse = rmse(&scores, targets);
+        let incumbents: Vec<String> = self
+            .registry
+            .iter()
+            .filter(|card| card.stage == ModelStage::Production)
+            .filter(|card| card_subject(card) == Some(candidate.subject.as_str()))
+            .map(ModelCard::reference)
+            .collect();
+        let mut production: Option<(String, f64)> = None;
+        for incumbent in &incumbents {
+            let Some(held) = self.promoted_artifacts.get(incumbent) else {
+                return lost(
+                    self,
+                    format!("incumbent {incumbent} has no artifact this desk can rescore"),
+                );
+            };
+            let served_incumbent = match platform.serve_model(held) {
+                Ok(served) => served,
+                Err(error) => return lost(self, error.message().to_string()),
+            };
+            let mut incumbent_scores = Vec::with_capacity(rows.len());
+            for row in rows {
+                match served_incumbent.score(row) {
+                    Ok(score) => incumbent_scores.push(score),
+                    Err(error) => return lost(self, error.message().to_string()),
+                }
+            }
+            let incumbent_rmse = rmse(&incumbent_scores, targets);
+            if production
+                .as_ref()
+                .is_none_or(|(_, best)| incumbent_rmse < *best)
+            {
+                production = Some((incumbent.clone(), incumbent_rmse));
+            }
+        }
+        let (against, baseline_rmse) = production.clone().unwrap_or_else(|| {
+            (
+                "the zero-return predictor".to_string(),
+                rmse(&vec![0.0; targets.len()], targets),
+            )
+        });
+        // Strictly less, as a `partial_cmp`: an incomparable pair (a NaN
+        // error) is a lost round, never a won one.
+        if !matches!(
+            shadow_rmse.partial_cmp(&baseline_rmse),
+            Some(std::cmp::Ordering::Less)
+        ) {
+            return lost(
+                self,
+                format!(
+                    "rmse {shadow_rmse:.6} against {against}'s {baseline_rmse:.6} on {} row(s) \
+                     the fit never saw",
+                    rows.len()
+                ),
+            );
+        }
+        let evidence = format!(
+            "rmse {shadow_rmse:.6} against {against}'s {baseline_rmse:.6} on {} new row(s) of {}",
+            rows.len(),
+            candidate.subject
+        );
+        let rounds_won = match self
+            .registry
+            .record_shadow_round(&reference, &evidence, now)
+        {
+            Ok(rounds) => rounds,
+            Err(error) => {
+                return Ok(Some(PromotionOutcome::NotPromoted {
+                    reference: reference.clone(),
+                    reason: error.message().to_string(),
+                }));
+            }
+        };
+        if rounds_won < MIN_SHADOW_ROUNDS {
+            return Ok(Some(PromotionOutcome::Shadowed {
+                reference,
+                rounds_won,
+                required: MIN_SHADOW_ROUNDS,
+                reason: format!("won a shadow round: {evidence}"),
+            }));
+        }
+        let student = shadow.distillation.as_ref().and_then(|distillation| {
             distillation
                 .approved_student(&FidelityPolicy::default())
                 .ok()
@@ -1197,37 +1399,48 @@ impl LearningDesk {
         // same name every time; a platform some other desk already named
         // refuses, and that refusal is this candidate's verdict.
         if let Err(error) = platform.name_model_desk(MODEL_DESK) {
-            return not_promoted(error.message().to_string());
+            return Ok(Some(PromotionOutcome::NotPromoted {
+                reference,
+                reason: error.message().to_string(),
+            }));
         }
-        let published = match platform.promote_model(
+        let published = match platform.promote_model_from(
+            ModelProducer::SelfFitted,
             &mut self.registry,
-            &artifact,
+            &shadow.artifact,
             student,
             &incumbents,
             now,
         ) {
             Ok(published) => published,
-            Err(error) => return not_promoted(error.message().to_string()),
+            Err(error) => {
+                return Ok(Some(PromotionOutcome::NotPromoted {
+                    reference,
+                    reason: error.message().to_string(),
+                }));
+            }
         };
+        self.shadowing.remove(&candidate.subject);
         for incumbent in &incumbents {
             if let Some(artifact) = self.promoted_artifacts.remove(incumbent) {
                 self.displaced_artifacts.insert(incumbent.clone(), artifact);
             }
         }
         self.promoted_artifacts
-            .insert(reference.clone(), artifact.clone());
+            .insert(reference.clone(), shadow.artifact.clone());
         self.stats.promoted += 1;
         Ok(Some(PromotionOutcome::Promoted {
             reference,
             published,
             distilled: student.map(|model| model.digest()),
             displaced: incumbents,
-            candidate_rmse,
-            incumbent_rmse: best_incumbent,
+            candidate_rmse: shadow_rmse,
+            incumbent_rmse: production.map(|(_, rmse)| rmse),
             holdout_rows: rows.len(),
-            baseline: baseline_name,
+            baseline: against,
             benchmark: format!(
-                "rmse on the {} held-out row(s) of {}",
+                "rmse on the {} held-out row(s) of {}, the newest window's, after {rounds_won} \
+                 shadow round(s)",
                 rows.len(),
                 candidate.subject
             ),
@@ -1985,6 +2198,40 @@ mod tests {
     /// `Platform::regime_context`; the pair shape is the platform's.
     const REGIME: &str = "trending/calm";
 
+    /// Drive the candidate `desk` holds through its shadow stage
+    /// (R12-EXPAND-6070): the first call enters shadow, and each later fit
+    /// of `bars`, a minute apart, is one shadow round. Returns the last
+    /// outcome: `Promoted` after `MIN_SHADOW_ROUNDS` won rounds, or whatever
+    /// stopped it first. The rounds score the shadowed model on the new
+    /// fit's holdout; on one fixed bar series that is the same tail, which
+    /// is enough to exercise the stage and is not a claim of fresh data.
+    fn through_shadow(
+        desk: &mut LearningDesk,
+        platform: &mut Platform,
+        bars: &[Bar],
+        from_cycle: u64,
+        start: Timestamp,
+    ) -> Result<Option<PromotionOutcome>> {
+        let Some(entered) = desk.promote_candidate(platform, start)? else {
+            return Ok(None);
+        };
+        if !matches!(entered, PromotionOutcome::Shadowed { .. }) {
+            return Ok(Some(entered));
+        }
+        let mut last = entered;
+        for round in 1..=u64::from(MIN_SHADOW_ROUNDS) {
+            let at = start.saturating_add(qip_core::Duration::from_mins(round as i64));
+            desk.maybe_learn(&subject(), bars, REGIME, from_cycle + round, at)?;
+            last = desk
+                .promote_candidate(platform, at)?
+                .ok_or_else(|| Error::not_found("a shadow round's candidate"))?;
+            if !matches!(last, PromotionOutcome::Shadowed { .. }) {
+                break;
+            }
+        }
+        Ok(Some(last))
+    }
+
     fn learning_desk() -> LearningDesk {
         LearningDesk::new(
             LearningConfig {
@@ -2030,7 +2277,7 @@ mod tests {
             .ok_or_else(|| Error::not_found("a registration"))?
             .reference
             .clone();
-        desk.promote_candidate(&mut platform, at())?
+        through_shadow(&mut desk, &mut platform, &bars, 1, at())?
             .ok_or_else(|| Error::not_found("a candidate"))?;
 
         // Premise: healthy, and nothing is named.
@@ -2077,7 +2324,7 @@ mod tests {
             .ok_or_else(|| Error::not_found("a registration"))?
             .reference
             .clone();
-        desk.promote_candidate(&mut platform, at())?
+        through_shadow(&mut desk, &mut platform, &bars, 1, at())?
             .ok_or_else(|| Error::not_found("a first candidate"))?;
 
         // A successor the platform promotes over it, as a better fit would be.
@@ -2176,8 +2423,7 @@ mod tests {
         let mut lenient = learning_desk();
         let mut platform = serving_platform()?;
         lenient.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
-        let promoted = lenient
-            .promote_candidate(&mut platform, at())?
+        let promoted = through_shadow(&mut lenient, &mut platform, &bars, 1, at())?
             .ok_or_else(|| Error::not_found("a candidate"))?;
         assert!(
             matches!(promoted, PromotionOutcome::Promoted { .. }),
@@ -2229,8 +2475,7 @@ mod tests {
         let mut platform = serving_platform()?;
         let bars = super::tests_support::learnable(400);
         desk.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
-        let first = desk
-            .promote_candidate(&mut platform, at())?
+        let first = through_shadow(&mut desk, &mut platform, &bars, 1, at())?
             .ok_or_else(|| Error::not_found("a first candidate"))?;
         let PromotionOutcome::Promoted {
             reference: incumbent,
@@ -2293,8 +2538,7 @@ mod tests {
         // And a better one is promoted and displaces the incumbent.
         let bigger = super::tests_support::learnable(1_200);
         restarted.maybe_learn(&subject(), &bigger, REGIME, 4, at())?;
-        let better = restarted
-            .promote_candidate(&mut platform, at())?
+        let better = through_shadow(&mut restarted, &mut platform, &bigger, 4, at())?
             .ok_or_else(|| Error::not_found("a better candidate"))?;
         assert!(
             matches!(&better, PromotionOutcome::Promoted { displaced, .. }
@@ -2308,6 +2552,123 @@ mod tests {
             .filter(|card| card.stage == ModelStage::Production)
             .count();
         assert_eq!(production, 1, "one production card per subject");
+        Ok(())
+    }
+
+    /// R12-EXPAND-6070: the desk's own fit runs in shadow before it may
+    /// replace anything. Passing every holdout check enters shadow and
+    /// promotes nothing; each later window it beats production on is one
+    /// round won; the third promotes it, as `SelfFitted`, under a signed
+    /// record whose first stage is the shadow period. A shadowed model that
+    /// loses a round on a window it cannot predict is retired, never
+    /// promoted.
+    ///
+    /// Mutations: promote at entry instead of entering shadow (the kernel
+    /// refuses `SelfFitted` and the first outcome is `NotPromoted`, failing
+    /// the `Shadowed` match); count a lost round as won in `shadow_round`
+    /// (the unpredictable window promotes and the retirement assertion
+    /// fails).
+    #[test]
+    fn a_self_fitted_candidate_runs_in_shadow_and_is_promoted_only_after_winning_its_rounds()
+    -> Result<()> {
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+        let reference = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        let entered = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(entered, PromotionOutcome::Shadowed { rounds_won: 0, .. }),
+            "{}",
+            entered.describe()
+        );
+        assert_eq!(
+            desk.registry().get(&reference).map(|card| card.stage),
+            Some(ModelStage::Shadow)
+        );
+        assert!(
+            platform.model_promotions().is_empty(),
+            "shadow promoted nothing"
+        );
+
+        let mut outcomes = Vec::new();
+        for round in 1..=u64::from(MIN_SHADOW_ROUNDS) {
+            let later = at().saturating_add(qip_core::Duration::from_mins(round as i64));
+            desk.maybe_learn(&subject(), &bars, REGIME, 1 + round, later)?;
+            outcomes.push(
+                desk.promote_candidate(&mut platform, later)?
+                    .ok_or_else(|| Error::not_found("a shadow round"))?,
+            );
+        }
+        for (index, outcome) in outcomes.iter().take(outcomes.len() - 1).enumerate() {
+            assert!(
+                matches!(outcome, PromotionOutcome::Shadowed { rounds_won, .. }
+                    if *rounds_won == index as u32 + 1),
+                "{}",
+                outcome.describe()
+            );
+        }
+        let last = outcomes
+            .last()
+            .ok_or_else(|| Error::not_found("a last round"))?;
+        assert!(
+            matches!(last, PromotionOutcome::Promoted { reference: promoted, .. }
+                if promoted == &reference),
+            "{}",
+            last.describe()
+        );
+        let record = platform
+            .model_promotions()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the promotion record"))?;
+        assert_eq!(record.producer, ModelProducer::SelfFitted);
+        assert!(
+            record
+                .stages
+                .first()
+                .is_some_and(|s| s.starts_with("shadow since"))
+        );
+        assert!(platform.promotion_verifies(record));
+
+        // A second subject's fit shadows, then meets a window it cannot
+        // predict: the round is lost and the model retired.
+        let other = ObjectId::from_string("OBJ0000000000000000000BBB");
+        desk.maybe_learn(&other, &bars, REGIME, 10, at())?;
+        let shadowed = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(shadowed, PromotionOutcome::Shadowed { .. }),
+            "{}",
+            shadowed.describe()
+        );
+        let doomed = shadowed.reference().to_string();
+        let noise = super::tests_support::unlearnable(400);
+        let later = at().saturating_add(qip_core::Duration::from_mins(30));
+        desk.maybe_learn(&other, &noise, REGIME, 11, later)?;
+        let lost = desk
+            .promote_candidate(&mut platform, later)?
+            .ok_or_else(|| Error::not_found("a shadow round"))?;
+        assert!(
+            matches!(&lost, PromotionOutcome::NotPromoted { reason, .. }
+                if reason.contains("lost its shadow round")),
+            "{}",
+            lost.describe()
+        );
+        assert_eq!(
+            desk.registry().get(&doomed).map(|card| card.stage),
+            Some(ModelStage::Retired)
+        );
+        assert!(!platform.model_promotions().contains_key(&doomed));
         Ok(())
     }
 
@@ -2353,8 +2714,7 @@ mod tests {
             "premise: nothing named the desk before it acted"
         );
 
-        let first = desk
-            .promote_candidate(&mut platform, at())?
+        let first = through_shadow(&mut desk, &mut platform, &bars, 1, at())?
             .ok_or_else(|| Error::not_found("a candidate from the first round"))?;
         let PromotionOutcome::Promoted {
             reference,
@@ -2375,10 +2735,12 @@ mod tests {
         assert_eq!(reference, &first_reference);
         assert_eq!(*incumbent_rmse, None, "there was no incumbent to score");
         // EXPAND-055: the record itself says what was beaten and on what.
-        // With no incumbent the baseline named is the mean predictor the
-        // skill bar's R-squared is measured against, not a blank.
+        // With no incumbent the baseline named is the one the final shadow
+        // round beat (R12-EXPAND-6070): the zero-return predictor, because
+        // the held-out mean would be computed from the targets it is scored
+        // on. Not a blank.
         assert!(
-            baseline.contains("mean predictor"),
+            baseline.contains("zero-return predictor"),
             "the promotion does not name its baseline: {baseline}"
         );
         assert!(
@@ -2516,8 +2878,7 @@ mod tests {
         let bigger = super::tests_support::learnable(1_200);
         desk.maybe_learn(&subject(), &bigger, REGIME, 3, at())?
             .ok_or_else(|| Error::not_found("the third round"))?;
-        let third = desk
-            .promote_candidate(&mut platform, at())?
+        let third = through_shadow(&mut desk, &mut platform, &bigger, 3, at())?
             .ok_or_else(|| Error::not_found("a candidate from the third round"))?;
         let PromotionOutcome::Promoted {
             baseline,
@@ -3330,8 +3691,8 @@ mod tests {
             card.code_version.as_deref(),
             Some("qip-kernel 0.1.0 (test)")
         );
-        let outcome = noted
-            .promote_candidate(&mut serving_platform()?, at())?
+        let mut serving = serving_platform()?;
+        let outcome = through_shadow(&mut noted, &mut serving, &bars, 1, at())?
             .ok_or_else(|| Error::not_found("a candidate"))?;
         assert!(
             matches!(outcome, PromotionOutcome::Promoted { .. }),
