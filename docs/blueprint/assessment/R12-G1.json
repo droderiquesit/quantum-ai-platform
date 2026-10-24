@@ -313,7 +313,7 @@
     "evidence": [
       "backend/crates/libs/qip-storage/src/provider.rs:379 Spanner/AlloyDB refused"
     ],
-    "gap": "Registry service + store adapter, lookup by URI/provider ID.",
+    "gap": "2026-10-24 (re-read against the tree): No Source Manifest Registry type or store exists: qip_financial::manifest::SourceManifest lives only inside NewsItem/intelligence records, and nothing writes or looks it up by canonical URI or provider ID. ADR 0113 unblocks Spanner and qip_storage::gcp::spanner::SpannerKv (proven in qip-ledgerd/tests/spanner.rs against an in-process double) could back it, so the code needs no ADR or crate. It does not meet the bar alone: enable_spanner=false in every env, so it also needs a tfvar flip, a deploy, and a shipped binary writing the registry on its default path.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -326,7 +326,7 @@
     "verification": "integration test of the registry against an emulator",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Spanner/AlloyDB adapters are refused' is partly stale: StorageProvider still refuses Spanner/AlloyDB as general targets (qip-storage/src/provider.rs), but SpannerKv exists in qip-storage/src/gcp/spanner.rs and is used by qip-ledgerd (ADR 0113)."
   },
   {
     "id": "R12-DATA-8015",
@@ -379,7 +379,7 @@
       "infrastructure/terraform/modules/data/main.tf:117-215 archive bucket lifecycle rules",
       "backend/crates/libs/qip-storage/src/gcp/storage.rs:388 CloudStorageBlobStore"
     ],
-    "gap": "Pack format/writer, dedicated pack prefix or bucket, enable_cloud_storage in an environment.",
+    "gap": "2026-10-24 (re-read against the tree): Pack format and writer exist (qip-contracts/src/knowledge_pack.rs canonical JSON; qip-deepbrain connectors write to blob namespace knowledge-packs when QIP_DEEPBRAIN_KNOWLEDGE_PACKS=store), but no Terraform sets that variable and deepbrain_connector is null/commented in every env (owner egress decision). The class is bound to bucket segments (qip-storage/src/classes.rs), which deletes at 30 days with no Standard/Nearline/Coldline tiering; the archive bucket's tier rules match only lake/ prefixes; enable_cloud_storage=false everywhere; protobuf/Parquet needs a dependency ADR (ADR 0109 does not admit prost). Remaining: rebind packs to a tiered bucket/prefix with lifecycle rules (Terraform plus a one-line class change), the owner's egress decision, tfvar flips, and a plan.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -390,7 +390,7 @@
     "verification": "terraform plan; unit tests for pack writer",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'no pack writer or pack format' is stale: format qip-contracts/src/knowledge_pack.rs (PackBody, SCHEMA_VERSION 1); writer qip-deepbrain/src/connectors.rs (KNOWLEDGE_PACKS_VARIABLE, with_knowledge_packs), bound in qip-storage/src/classes.rs to bucket segments."
   },
   {
     "id": "R12-DATA-8018",
@@ -399,7 +399,7 @@
     "evidence": [
       "backend/crates/libs/qip-financial/src/manifest.rs:31-38 module doc (no fetch)"
     ],
-    "gap": "Re-fetch service using manifest locator + hash verification.",
+    "gap": "2026-10-24 (re-read against the tree): Re-fetch runs on a cadence (QIP_DEEPBRAIN_REFETCH_EVERY, default 0, absent from catalogue.tf) through a connector arm no environment configures; a replay of a past document does not trigger it. Cached-copy paths exist: the deep brain's QIP_DEEPBRAIN_REPLAY_PATH and QIP_DEEPBRAIN_TAPE_PATH recorded-file adapters, and TickLakeWriter capture on ConnectorFeed. Needs code (replay-triggered re-fetch through DataReference; remove or justify the copy paths), possibly an ADR since replay and tick-lake paths are decided features, and a tfvar flip plus connector and egress owner decision.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -413,7 +413,7 @@
     "verification": "integration test with a fixture provider",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: A re-fetch path exists: qip-data-finder refetch.rs (ReFetchDriver, TransportRefetcher, RevisionCheck against the reference hash) and qip-deepbrain connectors.rs ConnectorArm::refetch, wired by evolution.with_refetch."
   },
   {
     "id": "R12-DATA-8019",
@@ -424,7 +424,7 @@
       "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:874-905 archive_sealed with entitlements",
       "infrastructure/terraform/modules/data/main.tf:117 archive bucket (enable_cloud_storage=false)"
     ],
-    "gap": "Enable the archive store and wire fabricd to GCS; explicit tick vs financial retention policies.",
+    "gap": "2026-10-24 (re-read against the tree): The unit clause looks met in code: Topic::retention_class (qip-events/src/topic.rs) is exhaustive (ticks Transient, own orders/fills Irreplaceable), the lake writer separates RecordClass::Market/Internal with entitlement= in the key (qip-storage/src/lake.rs), and Broker::archive_sealed attaches dataset:usage entitlements. Remaining: enable_cloud_storage=false and event_fabric_broker null in every env; modules/event-fabric-broker passes neither QIP_EVENT_FABRIC_ARCHIVE_BUCKET nor _DIR; fabric archive keys (segments/sha256/, manifests/ in qip-storage/src/segment/archive.rs) fall outside the bucket's lake/class=market|internal/ lifecycle prefixes, so archived fabric segments get no class-specific retention. Needs tfvar flips, Terraform wiring of the bucket into the broker, a decision on the fabric archive's class prefix, and an apply.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -435,7 +435,7 @@
     "verification": "cargo test -p qip-events retention",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'explicit tick vs financial retention policies' is stale: archive-bucket lifecycle rules exist for lake/class=market/ (Coldline 30d, delete 90d) and lake/class=internal/ (Coldline 180d, never deleted) in modules/data/main.tf, with RecordClass in qip-storage/src/lake.rs; broker evidence moved to Broker::archive_sealed."
   },
   {
     "id": "R12-REFLEX-8020",
@@ -1294,7 +1294,7 @@
     "verification": "cargo test -p qip-acceptance --test gcp_placement (the guard); after the superseding ADR: git apply docs/blueprint/lanes/l6-ncc-hubs-parked.patch, then terraform init -backend=false && terraform test in a scratch copy of modules/ncc",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused. 2026-10-24 parent session: back to MISSING, and the module was parked as a patch. CI on 2105c7f2 failed the guard with 'infrastructure/terraform/modules/ncc/main.tf: `google_network_connectivity_hub.latency` joins networks. ADR 0035 runs one execution node in one region'. L6 had run the infrastructure, gitops, terraform_plan and documentation suites, but not gcp_placement. The guard is not edited."
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused. 2026-10-24 parent session: back to MISSING, and the module was parked as a patch. CI on 2105c7f2 failed the guard with 'infrastructure/terraform/modules/ncc/main.tf: `google_network_connectivity_hub.latency` joins networks. ADR 0035 runs one execution node in one region'. L6 had run the infrastructure, gitops, terraform_plan and documentation suites, but not gcp_placement. The guard is not edited. 2026-10-24 lane L6 (later): a modules/ncc declaring the latency mesh and service star hubs was committed and then reverted, because it contradicts accepted ADR 0035 and ADR 0156 6c: there is one execution region, so no hub is declared until the record superseding ADR 0035 arrives, and then only control-fabric subnets are exported between regions' fabric spokes. qip-acceptance gcp_placement.rs::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region failed on the module and caught it. The row stays MISSING; closing it needs that superseding record (an owner/ADR decision), not code."
   },
   {
     "id": "R12-GCP-8058",
@@ -1317,7 +1317,7 @@
     "verification": "cargo test -p qip-acceptance --test gcp_placement (the guard); after the superseding ADR: git apply docs/blueprint/lanes/l6-ncc-hubs-parked.patch, then terraform init -backend=false && terraform test in a scratch copy of modules/ncc",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused. 2026-10-24 parent session: back to MISSING, and the module was parked as a patch. CI on 2105c7f2 failed the guard with 'infrastructure/terraform/modules/ncc/main.tf: `google_network_connectivity_hub.latency` joins networks. ADR 0035 runs one execution node in one region'. L6 had run the infrastructure, gitops, terraform_plan and documentation suites, but not gcp_placement. The guard is not edited."
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused. 2026-10-24 parent session: back to MISSING, and the module was parked as a patch. CI on 2105c7f2 failed the guard with 'infrastructure/terraform/modules/ncc/main.tf: `google_network_connectivity_hub.latency` joins networks. ADR 0035 runs one execution node in one region'. L6 had run the infrastructure, gitops, terraform_plan and documentation suites, but not gcp_placement. The guard is not edited. 2026-10-24 lane L6 (later): a modules/ncc declaring the latency mesh and service star hubs was committed and then reverted, because it contradicts accepted ADR 0035 and ADR 0156 6c: there is one execution region, so no hub is declared until the record superseding ADR 0035 arrives, and then only control-fabric subnets are exported between regions' fabric spokes. qip-acceptance gcp_placement.rs::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region failed on the module and caught it. The row stays MISSING; closing it needs that superseding record (an owner/ADR decision), not code."
   },
   {
     "id": "R12-GCP-8059",
@@ -2731,7 +2731,7 @@
       "backend/crates/libs/qip-financial/src/manifest.rs:63",
       "backend/crates/services/qip-streaming/src/provenance.rs"
     ],
-    "gap": "End-to-end pipeline with cursor and knowledge-delta output.",
+    "gap": "2026-10-24 (re-read against the tree): The transient scout worker stage does not exist (ADR 0144 slices unbuilt: no scout entry point in qip-deepbrain main.rs, no job/bucket/identity/routes in infrastructure/terraform/catalogue.tf). The knowledge delta Platform::absorb_evidence journals (evidence_intake.rs knowledge_delta_for) carries claim id and document hash but no manifest reference (KnowledgeDeltaFields has no manifest field); absorbed claims go only to the in-memory EvidenceFabric, never to the KnowledgeGraph, a qip-mesh GraphStore or Bigtable; no integration test drives a fixture source through every stage. Needs code (manifest on the delta, a graph write, the fixture test), ADR 0144's code and Terraform plus an owner apply, and a connector enabled by tfvar.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2745,7 +2745,7 @@
     "verification": "integration test with fixture source",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Cursor tracking exists (connector/checkpoint.rs Cursor; ConnectorFeed::journal_to StreamLedger); knowledge deltas are journaled on world_model.updated by Platform::absorb_evidence, called from the connector arms of qip-deepbrain, qip-fastbrain and qip-api."
   },
   {
     "id": "R12-DATA-8121",
@@ -2777,7 +2777,7 @@
       "backend/crates/edge/qip-feature-dag/src",
       "backend/crates/libs/qip-storage/src/provider.rs:441"
     ],
-    "gap": "Bigtable tier.",
+    "gap": "2026-10-24 (re-read against the tree): The bounded in-memory K0 tier exists; spill to Bigtable does not: no Bigtable client (StorageTarget::Bigtable refused in qip-storage/src/provider.rs for want of gRPC), enable_bigtable=false everywhere, ADR 0113 §1 does not admit Bigtable, ADR 0109 does not admit prost. Needs a Bigtable store ADR, a dependency ADR, a tfvar flip and a deploy, or an owner decision restating K0 without Bigtable.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2790,7 +2790,7 @@
     "verification": "integration test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-8123",
@@ -2849,7 +2849,7 @@
       "infrastructure/terraform/modules/data/main.tf:130-146 versioning + retention_policy is_locked",
       "infrastructure/terraform/modules/evidence/main.tf:58"
     ],
-    "gap": "Enable archive; lifecycle copy from landing.",
+    "gap": "2026-10-24 (re-read against the tree): The archive bucket (google_storage_bucket.archive, infrastructure/terraform/modules/data/main.tf) declares versioning and a locked retention_policy but sits behind enable_cloud_storage, which is false in all four infrastructure/environments/*/terraform.tfvars, so nothing is planned and the plan: clause cannot be met while billing is paused. Nothing moves data from a landing/segment bucket into the archive: the regional google_storage_bucket.segments deletes at 30 days and its own comment says object lifecycle cannot move objects between buckets, so 'receive data by lifecycle from landing' cannot be met as written. Needs: an owner decision restating that clause or a transfer step (Storage Transfer Service, a managed service, or an in-tree copy job); a tfvar flip of enable_cloud_storage in at least dev; a real plan/apply.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2860,7 +2860,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-8126",
@@ -2894,7 +2894,7 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:967"
     ],
-    "gap": "Sink/batch loader.",
+    "gap": "2026-10-24 (re-read against the tree): Isolation holds (architecture.rs no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store, no_crate_on_the_reflex_path_can_reach_the_bigquery_client). No fabric-sink-bigquery and no GCS-to-BigQuery load job exist (qip-mesh/src/bigquery.rs has insertAll only, no /jobs load); the one writer, qip-deepbrain warehouse::OutcomeSink, streams rows directly, which is neither a fabric sink nor a GCS batch load, so 'loads come from the fabric/GCS' fails once enabled (off today: no Terraform sets QIP_BIGQUERY_*). Needs a fabric-consuming sink or GCS load job (code), a running fabricd (event_fabric_broker null everywhere), env wiring in catalogue.tf, and a deploy.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2907,7 +2907,7 @@
     "verification": "cargo test -p qip-acceptance --test architecture",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence architecture.rs:967 is stale (test now named no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store); qip-deepbrain/src/warehouse.rs OutcomeSink writes BigQuery directly, bypassing fabric/GCS."
   },
   {
     "id": "R12-DATA-8128",
@@ -2916,7 +2916,7 @@
     "evidence": [
       "infrastructure/terraform (no google_dataplex_*)"
     ],
-    "gap": "Catalog registration.",
+    "gap": "2026-10-24 (re-read against the tree): No Dataplex/Knowledge Catalog resources or code register GCS/BigQuery/Spanner/AI lineage, quality or evidence contracts: no google_dataplex_* in infrastructure/terraform, no lineage emitter in Rust. ADR 0101 row C4 requires a storage record for Knowledge Catalog first, so this needs an ADR/owner decision, a managed service in Terraform, and a real plan.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2927,7 +2927,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-WORLD-8129",
@@ -2980,7 +2980,7 @@
     "evidence": [
       "infrastructure/terraform (no google_dataflow_*)"
     ],
-    "gap": "Batch reprocessing approach (Rust batch on Cloud Run jobs would meet intent).",
+    "gap": "2026-10-24 (re-read against the tree): No Dataflow/Dataproc resources or batch-reprocessing jobs (no google_dataflow_*, google_dataproc_* or google_cloud_run_v2_job in infrastructure/terraform); the 'not the primary live consumer' half holds only because nothing exists. ADR 0011's surviving 'everything in Rust' half replaces Dataflow with in-tree qip-streaming and the row is tagged NON_RUST, so the owner decides whether the requirement becomes a Rust batch job (e.g. a Cloud Run job reading GCS/BigQuery, needing Terraform and a plan) or an ADR admits Dataflow/Dataproc.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2991,7 +2991,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-LEDGER-8132",

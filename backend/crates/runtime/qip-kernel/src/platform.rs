@@ -415,6 +415,12 @@ pub struct Platform {
     /// `Platform::promote_model`. What the `trained_models` slot is
     /// produced from; see `crate::model_serving`.
     pub(crate) model_promotions: BTreeMap<String, crate::model_serving::ModelPromotion>,
+    /// Every registered model card as this process last journaled it, by
+    /// reference, rebuilt from the log at assembly and written only by
+    /// `Platform::journal_model_registry` (R12-MODEL-9003). What lets a card
+    /// that was registered and evaluated but never promoted survive a
+    /// restart; bounded by the registry it mirrors.
+    pub(crate) journaled_cards: BTreeMap<String, qip_ai::registry::ModelCard>,
     /// The Model Pack in force — the newest version of the promoted set,
     /// naming its predecessor and delta (MODEL-037). Rebuilt from the same
     /// log records as `model_promotions` and advanced only beside it.
@@ -703,6 +709,11 @@ pub struct Platform {
     /// decisions 9-10), replaced wholesale each pass so a disagreement that
     /// has resolved stops asking. Read by the deep brain's research sweep.
     federation_requests: Vec<(qip_contracts::control::InformationRequest, u32)>,
+    /// The decisions the latest DECIDE sized on a conviction it was unsure
+    /// of (R12-AMBIENT-3104), replaced wholesale each cycle and bounded by
+    /// that cycle's legs. Read by the deep brain's research sweep, which
+    /// prices the cheapest observation that could discriminate.
+    decision_uncertainties: Vec<DecisionUncertainty>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -1230,6 +1241,77 @@ const PENDING_CORPORATE_ACTIONS: usize = 4_096;
 const OUTSIDE_PRIOR_CAPACITY: usize = 1_024;
 
 const PROPOSAL_HISTORY: usize = 256;
+/// The uncertainty, `1 - |conviction|`, at or above which a sized decision
+/// is handed to active sensing (R12-AMBIENT-3104): a leg sized on a
+/// conviction of one half or less is a decision the platform is no surer
+/// of than a coin, and the value of learning more before its horizon is
+/// worth pricing.
+pub const DECISION_UNCERTAINTY_FLOOR: f64 = 0.5;
+
+/// A decision DECIDE sized on a conviction it was unsure of, as the deep
+/// brain's research sweep reads it (R12-AMBIENT-3104, blueprint §9.10):
+/// what is at stake, how unsure the platform is, and the deadline after
+/// which evidence answers a question nobody is still asking.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecisionUncertainty {
+    pub hypothesis_id: String,
+    pub subject: String,
+    /// What the evidence would have to decide.
+    pub question: String,
+    /// The notional the decision commits, in account currency.
+    pub value_at_stake: Decimal,
+    /// `1 - |conviction|` of the thesis the leg expresses, in `[0, 1]`.
+    pub uncertainty: f64,
+    /// The thesis's horizon: when its claim resolves.
+    pub deadline: Timestamp,
+}
+
+/// The decisions in `proposal` sized on a thesis at or above
+/// [`DECISION_UNCERTAINTY_FLOOR`], one per leg and thesis, with the claim's
+/// resolution instant as the deadline. A thesis no prediction claims a
+/// resolution for has no deadline to state and is left out rather than given
+/// one.
+fn decision_uncertainties(
+    proposal: &Proposal,
+    theses: &[qip_portfolio_engine::construction::ApprovedThesis],
+    predictions: &[RecordedPrediction],
+) -> Vec<DecisionUncertainty> {
+    let mut out = Vec::new();
+    for leg in &proposal.legs {
+        for hypothesis in &leg.hypotheses {
+            let Some(thesis) = theses.iter().find(|t| &t.hypothesis_id == hypothesis) else {
+                continue;
+            };
+            let uncertainty = 1.0 - thesis.conviction.abs().min(1.0);
+            if uncertainty < DECISION_UNCERTAINTY_FLOOR {
+                continue;
+            }
+            let Some(claim) = predictions
+                .iter()
+                .rev()
+                .find(|p| &p.hypothesis == hypothesis)
+                .and_then(|p| p.claim.as_ref())
+            else {
+                continue;
+            };
+            out.push(DecisionUncertainty {
+                hypothesis_id: hypothesis.clone(),
+                subject: leg.object_id.as_str().to_string(),
+                question: format!(
+                    "does {} move {:.0} bp {} by {} as {hypothesis} claims?",
+                    claim.subject,
+                    claim.expected_move_bps.abs(),
+                    if claim.direction >= 0.0 { "up" } else { "down" },
+                    claim.resolves_at,
+                ),
+                value_at_stake: leg.notional().abs(),
+                uncertainty,
+                deadline: claim.resolves_at,
+            });
+        }
+    }
+    out
+}
 /// The self-model key the world-model federation's arbitrated view is
 /// scored under as an ensemble (R12-MODEL-6016).
 pub const FEDERATION_ENSEMBLE: &str = "world-model-federation";
@@ -5545,6 +5627,7 @@ impl Platform {
             references: Self::resume_references(&event_log)?,
             model_provider,
             model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
+            journaled_cards: crate::model_serving::resume_model_registrations(&event_log)?,
             model_pack: crate::model_serving::resume_model_pack(&event_log)?,
             release_packs: None,
             model_desk: None,
@@ -5614,6 +5697,7 @@ impl Platform {
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
             federation_requests: Vec::new(),
+            decision_uncertainties: Vec::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -12663,12 +12747,15 @@ impl Platform {
             routing_decisions.len() as f64,
         );
         // Blueprint §9.3: the World Model Federation's pass — views fed,
-        // forecasts scored, disagreement arbitrated and journaled. Advisory;
-        // see `crate::federation_stage` for why nothing downstream reads it.
+        // forecasts scored, disagreement arbitrated and journaled. Advisory
+        // under ADR 0125: DECIDE reads only the narrowing it derives
+        // (`federation_stage::narrow`), which can shrink a bound and never
+        // raise one.
         let (federation_detail, federation_problems) = self.understand_federation(now);
         // Blueprint §9.6 and §9.7: the NOW Brain's latent state, then the
-        // forecast lattice over it. Advisory; see `crate::now_stage` and
-        // `crate::lattice_stage` for why nothing downstream reads either.
+        // forecast lattice over it. Advisory under ADR 0125: DECIDE reads
+        // only the lattice's tactical staleness, which vetoes a thesis on an
+        // expired forecast or narrows its bound (R12-WORLD-9024).
         let (now_detail, now_problems) = self.understand_now(now);
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
@@ -12928,6 +13015,9 @@ impl Platform {
         // next pass rather than moving influence on a record nobody kept.
         let journalled = self.journal_record(lattice, "kernel/forecast-lattice", now);
         self.lattice.set_calibrator_available(journalled.is_ok());
+        if journalled.is_ok() {
+            self.lattice.confirm_calibration();
+        }
         if let Err(error) = journalled {
             problems.push(format!(
                 "the forecast lattice's review was computed and not journalled, so its \
@@ -13156,6 +13246,12 @@ impl Platform {
         &self,
     ) -> &BTreeMap<String, (crate::federation_stage::Narrowing, f64)> {
         &self.federation_narrowing
+    }
+
+    /// The decisions the latest DECIDE sized on a conviction it was unsure of
+    /// (R12-AMBIENT-3104), for the deep brain's research intake.
+    pub fn decision_uncertainties(&self) -> &[DecisionUncertainty] {
+        &self.decision_uncertainties
     }
 
     /// The active-sensing requests the latest federation pass issued, with
@@ -14383,6 +14479,21 @@ impl Platform {
                 if let Some(multiplier) = outside_narrowing {
                     reasoned.hypothesis.confidence *= multiplier;
                 }
+                // Blueprint §9.4: the symbolic reasoners over this hypothesis,
+                // journaled as a derivation trace. Run before approval is read
+                // (ADR 0125 decision 2, R12-REASON-3053), so the rule pack's
+                // verdict is an input to approval rather than a comment on it:
+                // a hypothesis review approved that the pack refuses on a hard
+                // stop is rejected here, before it is counted, charted, written
+                // into a prediction or handed to the tournament as approved.
+                // The derivation records the status review gave it, which is
+                // what the pack was asked about. Nothing here sizes or sends.
+                let (symbolic_detail, symbolic_problem, symbolic_veto) =
+                    self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                if symbolic_veto.is_some() {
+                    reasoned.hypothesis.status =
+                        qip_reasoning_engine::hypothesis::HypothesisStatus::Rejected;
+                }
                 let approved = reasoned.hypothesis.status.is_actionable();
                 // Recorded here, where review's verdict becomes known, rather
                 // than inferred later from the order count. `created` is the
@@ -14455,12 +14566,8 @@ impl Platform {
                         error.message()
                     ));
                 }
-                // Blueprint §9.4: the symbolic reasoners over this hypothesis,
-                // journaled as a derivation trace. Its one power is ADR 0125's
-                // veto: a hypothesis review approved and the rule pack does not
-                // find eligible forms no proposal. Nothing here sizes or sends.
-                let (symbolic_detail, symbolic_problem, symbolic_veto) =
-                    self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                // The derivation ran before approval, above; its trace joins
+                // the stage detail here, after the hypothesis line it explains.
                 outcome.detail.push_str(&symbolic_detail);
                 if let Some(problem) = symbolic_problem {
                     outcome = outcome.with_problem(problem);
@@ -14472,20 +14579,21 @@ impl Platform {
                 if let Some(clause) = self.observe_hypothesis(&reasoned, &report, approved, now) {
                     outcome.detail.push_str(&clause);
                 }
-                let decision = if !approved {
+                let decision = if let Some(veto) = symbolic_veto {
+                    // ADR 0125 decision 2: the rule pack refused what review
+                    // approved, so the hypothesis was rejected above. Recorded
+                    // under its own words, because "vetoed by a rule" and
+                    // "rejected on review" send an operator to different
+                    // places; the derivation that produced it is already on
+                    // the log under `kernel/symbolic`.
+                    outcome = outcome.with_problem(format!(
+                        "approved on review but vetoed by the symbolic rule pack: {veto}"
+                    ));
+                    DecisionTaken::NotSizeable
+                } else if !approved {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
                     DecisionTaken::RejectedOnReview
-                } else if let Some(veto) = symbolic_veto {
-                    // ADR 0125 decision 2: the rule pack refused what review
-                    // approved. Recorded under its own words, because "vetoed
-                    // by a rule" and "could not be sized" send an operator to
-                    // different places; the derivation that produced it is
-                    // already on the log under `kernel/symbolic`.
-                    outcome = outcome.with_problem(format!(
-                        "approved but vetoed by the symbolic rule pack: {veto}"
-                    ));
-                    DecisionTaken::NotSizeable
                 } else {
                     // Approved on review and still not queued unless
                     // justified: a thesis whose only ground is the return it
@@ -15636,6 +15744,15 @@ impl Platform {
         let mut weakest = Decimal::ONE;
         let mut refusals = Vec::new();
         for thesis in theses {
+            // R12-WORLD-9024: a tactical forecast past its expiry vetoes the
+            // thesis before anything else is read about it.
+            if let Some(Err(stale)) = self
+                .lattice
+                .tactical_staleness(thesis.object_id.as_str(), now)
+            {
+                refusals.push(stale);
+                continue;
+            }
             match self.sizing_confidence(thesis.object_id.as_str(), now) {
                 Ok(confidence) => {
                     weakest = weakest.min(confidence);
@@ -16061,6 +16178,25 @@ impl Platform {
                 .map(|thesis| thesis.object_id.as_str().to_string()),
             &self.federation_narrowing,
         );
+        // ADR 0125 decision 4 for the forecast lattice (R12-WORLD-9024): the
+        // bound narrows by the share of its tactical forecasts' life left,
+        // compounding with the caps above and never above one. An expired
+        // forecast never reaches here; `sizeable_theses` vetoed its thesis.
+        let distinct: std::collections::BTreeSet<&str> = theses
+            .iter()
+            .map(|thesis| thesis.object_id.as_str())
+            .collect();
+        for object in distinct {
+            if let Some(Ok(left)) = self.lattice.tactical_staleness(object, now)
+                && left < 1.0
+            {
+                *caps.entry(object.to_string()).or_insert(1.0) *= left;
+                capped.push(format!(
+                    "{object}: its tactical forecasts have {left:.2} of their life left, narrowed \
+                     to that share of the bound"
+                ));
+            }
+        }
         // Every survival tier and confidence contraction that bit, on the
         // same DECIDE detail line the caps above reach: the recorded capital
         // response a tail world the book does not survive is required to
@@ -17252,6 +17388,10 @@ impl Platform {
             }
         };
         let legs = proposal.len();
+        // §9.10: a decision sized while the platform was unsure of it is
+        // handed to active sensing, which prices the cheapest observation
+        // that could tell its worlds apart (R12-AMBIENT-3104).
+        self.decision_uncertainties = decision_uncertainties(&proposal, &theses, &self.predictions);
         self.proposals.push(proposal);
         self.proposals_made += 1;
         // Age the oldest out rather than letting the working set grow with
@@ -24903,6 +25043,78 @@ mod decide_tests {
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
+    }
+
+    /// R12-WORLD-9024: a tactical forecast past its expiry is not used and
+    /// its thesis is not sized; one part-way through its life narrows the
+    /// instrument's bound by the share left (ADR 0125 decision 4). The
+    /// fresh run is the premise that AAPL is sized at all.
+    ///
+    /// Mutations: drop the expiry veto in `sizeable_theses` (the stale run
+    /// sizes AAPL and the leg assertion fails); return no `Err` for an
+    /// expired slot in `LatticeStage::tactical_staleness` (the veto then
+    /// comes from the no-life-left guard, and the expiry-specific refusal the
+    /// test pins is missing); make the cap multiply a no-op while keeping its
+    /// note (the strict size assertion fails).
+    #[test]
+    fn an_expired_tactical_forecast_vetoes_its_thesis_and_an_ageing_one_narrows_the_bound() {
+        use qip_world_model::lattice::LatticeHorizon;
+        let now = Timestamp::from_secs(1_760_000_100);
+        let run = |slot: Option<(Timestamp, Timestamp)>| {
+            let mut platform = small_book_platform();
+            feed_history(&mut platform, "AAPL", 30);
+            feed_history(&mut platform, "MSFT", 30);
+            platform.pending_theses.push(thesis("AAPL", 0.6));
+            platform.pending_theses.push(thesis("MSFT", -0.4));
+            if let Some((issued, expires)) = slot {
+                platform
+                    .lattice
+                    .set_slot("AAPL", LatticeHorizon::HoursDays, issued, expires);
+            }
+            let decided = platform.stage_decide(now);
+            let aapl = platform.proposals.last().and_then(|p| {
+                p.legs
+                    .iter()
+                    .find(|leg| leg.object_id.as_str() == "AAPL")
+                    .map(|leg| leg.quantity.abs())
+            });
+            (decided, aapl)
+        };
+
+        let (_, fresh) = run(None);
+        let fresh = fresh.expect("premise: with no lattice slot AAPL is sized");
+
+        let (decided, stale) = run(Some((
+            now.saturating_sub(Duration::from_days(2)),
+            now.saturating_sub(Duration::from_days(1)),
+        )));
+        assert!(
+            stale.is_none(),
+            "an expired forecast's thesis was sized: {stale:?}"
+        );
+        let said = format!("{} {:?}", decided.detail, decided.problems);
+        assert!(
+            said.contains("AAPL: the forecast lattice's hours_days forecast expired"),
+            "{said}"
+        );
+
+        let (decided, ageing) = run(Some((
+            now.saturating_sub(Duration::from_secs(990)),
+            now.saturating_add(Duration::from_secs(10)),
+        )));
+        let said = format!("{} {:?}", decided.detail, decided.problems);
+        assert!(
+            said.contains("AAPL: its tactical forecasts have 0.01 of their life left"),
+            "{said}"
+        );
+        // A hundredth of the bound binds whatever the optimiser wanted, so
+        // the size must fall, strictly: a cap noted and not applied leaves
+        // it where the fresh run put it.
+        let ageing = ageing.expect("an ageing forecast still sizes its thesis");
+        assert!(
+            ageing < fresh,
+            "sizing did not contract on staleness: {ageing} vs fresh {fresh}"
+        );
     }
 
     #[test]
@@ -33648,6 +33860,102 @@ mod lattice_journal_tests {
             }
         }
         out
+    }
+
+    /// A resolved forecast with two members, the second `drift_err` off.
+    fn resolution(id: &str, outcome: f64, drift_err: f64) -> qip_world_model::lattice::Resolution {
+        use qip_world_model::lattice::LatticeHorizon;
+        let h = LatticeHorizon::HoursDays;
+        let issued = start().saturating_sub(Duration::from_days(10));
+        let due = issued.saturating_add(h.representative());
+        qip_world_model::lattice::Resolution {
+            forecast_id: id.into(),
+            domain: "markets".into(),
+            horizon: h,
+            regime: "r".into(),
+            model_means: BTreeMap::from([
+                ("seeded/martingale".to_string(), 100.0),
+                ("seeded/drift".to_string(), outcome + drift_err),
+            ]),
+            quantiles: [98.0, 100.0, 102.0],
+            p_up: 0.6,
+            reference: 100.0,
+            issued_at: issued,
+            observed_at: due,
+            outcome,
+            resolved_at: due,
+        }
+    }
+
+    /// The bug the first version of this test let through: the set frozen
+    /// on must be the last one whose review the log *kept*, not the one
+    /// computed on the pass whose review it refused. Seeded scores make both
+    /// sets non-empty and different, so an empty-equals-empty pass cannot
+    /// stand in for the property. Mutations: drop `confirm_calibration` after
+    /// a kept review (the frozen set is empty, not the kept one); make
+    /// `refresh_weights` set `last_safe` on refresh (the frozen set is the
+    /// refused one).
+    #[test]
+    fn the_weights_freeze_at_the_last_set_whose_review_the_log_kept() {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            listed_test_universe(&["AAPL", "MSFT"]),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        platform.observe(calm_history());
+        for i in 0..5 {
+            platform
+                .lattice
+                .calibrator_mut()
+                .score(&resolution(&format!("a{i}"), 101.0, 0.1))
+                .expect("a seeded score");
+        }
+        let (_, problems) = platform.understand_now(start());
+        assert!(
+            problems.iter().all(|p| !p.contains("not journalled")),
+            "{problems:?}"
+        );
+        let kept = platform.lattice().calibrator().weights().clone();
+        assert!(
+            kept.len() >= 2,
+            "premise: the seeded row is weighed: {kept:?}"
+        );
+
+        for i in 0..20 {
+            platform
+                .lattice
+                .calibrator_mut()
+                .score(&resolution(&format!("b{i}"), 110.0, 30.0))
+                .expect("a seeded score");
+        }
+        let dir = std::path::PathBuf::from("/tmp")
+            .join(format!("qip-kernel-lattice-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, "").expect("an empty log file");
+        platform.event_log = EventLog::inspect(&path).expect("a read-only log");
+        let (_, problems) = platform.understand_now(start().saturating_add(Duration::from_days(1)));
+        assert!(
+            problems.iter().any(|p| p.contains("not journalled")),
+            "premise: {problems:?}"
+        );
+        let refused = platform.lattice().calibrator().weights().clone();
+        assert_ne!(refused, kept, "premise: the refused pass moved the weights");
+
+        let _ = platform.understand_now(start().saturating_add(Duration::from_days(2)));
+        assert!(platform.lattice().calibrator().frozen());
+        assert_eq!(
+            platform.lattice().calibrator().weights(),
+            &kept,
+            "the weights froze on a set whose review the log refused"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -74,6 +74,60 @@ use std::collections::{BTreeMap, BTreeSet};
 /// records the way the venue review's records are picked out by origin.
 pub const MODEL_PROMOTION_ORIGIN: &str = "kernel/model-promotion";
 
+/// The lineage producer of every [`ModelRegistered`] record, which shares the
+/// promotion records' topic and is told apart from them by this.
+pub const MODEL_REGISTRATION_ORIGIN: &str = "kernel/model-registration";
+
+/// A registered model card as it stood when the registry handed it to the
+/// log (R12-MODEL-9003): its version, every evaluation, its lineage, its
+/// stage and alias history and its limitations, whether or not it was ever
+/// promoted.
+///
+/// The registry is in memory in the deep brain, and the promotion records
+/// only carry promoted versions, so a card registered and evaluated and then
+/// not promoted was lost at every restart — and with it the evidence that a
+/// fit failed, which is the record that keeps a search from retrying until
+/// something passes unseen. A record is written when a card is new or has
+/// changed since the last one; the newest record per reference is the card.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelRegistered {
+    pub card: qip_ai::registry::ModelCard,
+}
+
+impl EventBody for ModelRegistered {
+    /// The Learn group, which the log never evicts, like the promotions.
+    const TOPIC: Topic = Topic::ModelEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// Whether two cards differ only in their drift reading.
+fn same_but_drift(a: &qip_ai::registry::ModelCard, b: &qip_ai::registry::ModelCard) -> bool {
+    let mut b = b.clone();
+    b.drift_score = a.drift_score;
+    *a == b
+}
+
+/// Every card the log's registration records hold, the newest per
+/// reference, for a restarted process to rebuild from.
+pub(crate) fn resume_model_registrations(
+    log: &EventLog,
+) -> Result<BTreeMap<String, qip_ai::registry::ModelCard>> {
+    let mut cards = BTreeMap::new();
+    for event in log.events() {
+        if event.topic != ModelRegistered::TOPIC
+            || event.lineage.producer != MODEL_REGISTRATION_ORIGIN
+        {
+            continue;
+        }
+        let card = StreamEnvelope::from_frame(event)
+            .and_then(|envelope| envelope.decode::<ModelRegistered>())?
+            .body
+            .card;
+        cards.insert(card.reference(), card);
+    }
+    Ok(cards)
+}
+
 /// The `outcome` label values of `qip_model_serves_total`: the provider served
 /// the artifact, or refused it. Constants, so the label stays a fixed pair
 /// however many sites record it.
@@ -577,6 +631,59 @@ fn apply_promotion(promoted: &mut BTreeMap<String, ModelPromotion>, record: Mode
 }
 
 impl Platform {
+    /// Journal every card in `registry` that is new or has changed since this
+    /// process last journaled it — a registration, an evaluation, a stage or
+    /// alias move, a limitation — and return how many were written
+    /// (R12-MODEL-9003). The deep brain calls it after each learning round,
+    /// so the registry it rebuilds empty at start can be refilled from the
+    /// log by [`Self::registered_model_cards`]. A card is written before the
+    /// in-memory mirror moves, so a refused write is retried next time
+    /// rather than forgotten.
+    pub fn journal_model_registry(
+        &mut self,
+        registry: &ModelRegistry,
+        now: Timestamp,
+    ) -> Result<usize> {
+        let mut written = 0;
+        for card in registry.iter() {
+            let reference = card.reference();
+            // A drift reading alone is not a new record. The desk re-measures
+            // every earlier fit on a subject each round, so journaling each
+            // reading would grow the never-evicted Learn group with the
+            // square of the rounds; drift is a monitoring figure the next
+            // round re-measures, not part of what the registry must keep.
+            if self
+                .journaled_cards
+                .get(&reference)
+                .is_some_and(|journaled| same_but_drift(journaled, card))
+            {
+                continue;
+            }
+            self.journal_record(
+                ModelRegistered { card: card.clone() },
+                MODEL_REGISTRATION_ORIGIN,
+                now,
+            )?;
+            self.journaled_cards.insert(reference, card.clone());
+            written += 1;
+        }
+        Ok(written)
+    }
+
+    /// Every promotion the log holds, in log order, displaced ones included:
+    /// what a restarted desk fetches incumbent and predecessor artifacts by
+    /// (R12-MODEL-9003).
+    pub fn model_promotion_history(&self) -> Result<Vec<ModelPromotion>> {
+        promotions_in(self.event_log())
+    }
+
+    /// Every registered card the log holds, the newest record per reference,
+    /// in reference order: what a restarted deep brain registers before its
+    /// first round (R12-MODEL-9003).
+    pub fn registered_model_cards(&self) -> impl Iterator<Item = &qip_ai::registry::ModelCard> {
+        self.journaled_cards.values()
+    }
+
     /// The provider the composition root handed in.
     pub fn model_provider(&self) -> &dyn ModelProvider {
         self.model_provider.as_ref()

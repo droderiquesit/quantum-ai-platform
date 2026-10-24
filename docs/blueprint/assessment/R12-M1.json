@@ -200,7 +200,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:135 distil used by learning desk",
       "backend/crates/services/qip-training/tests/training.rs:942 linear teacher distils into faithful student"
     ],
-    "gap": "Microstructure representation learning on replayed books and distillation from it into reflex models.",
+    "gap": "2026-10-24 (re-read against the tree): tick_replay.rs pins RECORDED_DIGEST (decode, sequence, book, fill) and DISTILLED_DIGEST over a student distilled from replayed touch features built by hand in the test, not by shipped code. Missing from the requirement text: a learned microstructure representation between replayed books and distillation (qip_training::microstructure fits only fill-probability and volatility models), and any shipped path distilling from replayed ticks into a reflex model (qip-deepbrain learning.rs distils from bars; tick_desk, off, distils only a fused OpportunityMap). Needs representation code plus a committed deepbrain env enabling the desk (QIP_DEEPBRAIN_TICK_EVERY, entitlements) and a lake source.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -211,7 +211,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay; cargo test -p qip-training",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-MESH-1010",
@@ -269,7 +269,7 @@
       "backend/crates/runtime/qip-kernel/tests/serving.rs:713 quantum candidate admitted only with calibrated baseline",
       "backend/crates/services/qip-world-model/tests/quantum_causal_refusal.rs"
     ],
-    "gap": "Advisory typing (qip_contracts::quantum) is not the type the kernel uses; only the portfolio family is integrated; gate is per-call, not structural at the risk boundary.",
+    "gap": "Advisory typing (qip_contracts::quantum) is not the type the kernel uses; only the portfolio family is integrated; gate is per-call, not structural at the risk boundary. 2026-10-24 (L4): read again. In production a quantum answer reaches a weight only through ComputeRouter::judge (qip-optimization-engine router.rs). judge refuses a wrong-length assignment and an energy claim the QUBO does not reproduce, and re-scores the weights on the real problem. The quantum-inspired arm goes through ClassicalValidator into the typed ValidatedSolution; the QAOA arm reads QaoaResult's public fields directly, so the 'typed advisory candidate' half holds only for the inspired arm. The 'only the portfolio family' half is ADR 0150 A1's deliberate scope, so under bar part 4 this row stays PARTIAL until an owner reopens A1. Typing the QAOA arm through ClassicalValidator is the code step left.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2353,7 +2353,7 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs:502",
       "backend/crates/apps/qip-deepbrain/src/main.rs:518"
     ],
-    "gap": "Integrated, tested end to end from deepbrain.",
+    "gap": "2026-10-24 (re-read against the tree): Continuous search is not built and is ruled out: ADR 0157 §5 decides no crawl or search stage is built and candidates are written by an operator (discovery.rs module doc agrees). The desk's cadence is 0 in every environment (deepbrain_discover_every null), so the research loop's ScoutRequests queue in DiscoveryDesk::scout (bounded at 64) unread; a pass would journal only lifecycle transitions of registered sources, its targets/queries/decisions going to stdout only. Needs a new ADR superseding ADR 0157 §5, an owner decision and tfvar flip for the cadence, and code to journal the pass.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2364,7 +2364,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Earlier main.rs:502/518 citations now point at replay-admission code; the desk is attached via with_discovery with default every_cycles = 0, so it never runs on a default path."
   },
   {
     "id": "R12-DATA-1102",
@@ -2373,7 +2373,7 @@
     "evidence": [
       "backend/crates/services/qip-data-finder/src/scoring.rs:22"
     ],
-    "gap": "Integrated, tested end to end from deepbrain.",
+    "gap": "2026-10-24 (re-read against the tree): Novelty exists only as the uniqueness term of SourceScores (scoring.rs; finder.rs coverage overlap) and no score is journaled: SourceLifecycleChanged records only a class change for an already-registered source (lifecycle.rs policy), not the novelty value. No scout run on a default path records novelty: the DiscoveryDesk is off everywhere and no ADR 0144 scout job exists. Needs an owner decision and tfvar flip (deepbrain_discover_every, source_candidates_file, cognition-zone egress) and code to journal per-candidate scores.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2384,7 +2384,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-1103",
@@ -2395,7 +2395,7 @@
       "backend/crates/services/qip-data-finder/src/robots.rs:26",
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:784"
     ],
-    "gap": "Integrated, tested end to end from deepbrain.",
+    "gap": "2026-10-24 (re-read against the tree): No scout run on a default path records anything in the event log: the only scout run is DiscoveryDesk::maybe_run (qip-deepbrain src/discovery.rs) and DiscoveryConfig::default sets every_cycles = 0; all four tfvars leave deepbrain_discover_every and source_candidates_file null; ADR 0144's scout entry point and Cloud Run job do not exist. Even with the desk on, Platform::assess_sources journals only SourceLifecycleChanged for already-registered sources (source_lifecycle.rs journal_source_transitions), so a first-pass legal or robots refusal never reaches the log; the quarantine path is proven only in a lib test. Needs an owner decision plus tfvar flip (ADR 0157 leaves the discovery cadence to the owner; the cognition zone has no external egress) or the ADR 0144 scout job deployed, plus code to journal first-pass access-rights verdicts.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2406,14 +2406,14 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-1104",
     "status": "MISSING",
     "current": "No code generates or synthesizes source adapters; connectors are hand-written per source.",
     "evidence": [],
-    "gap": "Adapter generation for discovered sources.",
+    "gap": "2026-10-24 (re-read against the tree): No code creates adapters, and ADR 0157 §4 ('A descriptor never polls') forbids building a connector or DataAdapter from a RegisteredSource or IngestionPlan; the acceptance suite pins that absence; every connector is a hand-written reviewed change (connector_feed.rs shipped_manifest, KNOWN_SOURCES). Needs a new ADR superseding ADR 0157 §4, substantial new code, per-source licence records and egress routes, and a scout run on a default path (desk off; no scout job).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2424,7 +2424,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-1105",
@@ -2455,7 +2455,7 @@
       "backend/crates/services/qip-data-finder/src/lifecycle.rs:25",
       "backend/crates/services/qip-data-finder/src/replacement.rs:19"
     ],
-    "gap": "Integrated, tested end to end from deepbrain.",
+    "gap": "2026-10-24 (re-read against the tree): Retirement of a registered source below the floor is journaled as SourceLifecycleChanged (lifecycle.rs policy BelowFloor gives Retired; source_lifecycle.rs) and tested in qip-kernel tests/source_lifecycle.rs, but no scout run on a default path records a retirement (DiscoveryDesk off everywhere, no ADR 0144 scout job). The feeds actually polled (connector arms) never enter the DataFinder registry (ADR 0157 §8) and SourceAlphaDesk scores feed no routing, so no weak connector feed can be retired. Needs an owner decision and tfvar flip for discovery, and code applying lifecycle and retirement to connector arms.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2466,7 +2466,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-EVID-1107",
@@ -2498,7 +2498,7 @@
       "backend/crates/services/qip-reasoning-engine/src/trust_score.rs:26",
       "backend/crates/runtime/qip-kernel/src/references.rs:240 ConcentrationVerdict"
     ],
-    "gap": "Integrated corroboration in the cycle with a named test.",
+    "gap": "2026-10-24 (re-read against the tree): The unit clause is met in-repo (qip-kernel tests/evidence_intake.rs two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric and an_unchecked_claim_under_a_forged_admissible_verdict_is_held_inadmissible_and_weighs_nothing; contested keys recorded through the journaled KnowledgeDeltaRecord). On every shipped default path the fabric receives nothing: drain_evidence is empty for synthetic, replay and tape arms (fastbrain and api feed.rs), and no committed environment configures a connector. Needs a tfvar flip of deepbrain_connector or market_data_connector plus the owner's egress decision, or the ADR 0144 scout job deployed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2509,7 +2509,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Corroboration is integrated in the cycle: the qip-evidence world fabric runs through Platform::absorb_evidence in all three roots, and records whose claim it withholds are not released."
   },
   {
     "id": "R12-EVID-1109",
@@ -2779,7 +2779,7 @@
       "backend/crates/libs/qip-storage/src/lake.rs:13 a segment is written once",
       "backend/crates/libs/qip-storage/tests/lake.rs"
     ],
-    "gap": "Implement/integrate immutable tick/order-book history.",
+    "gap": "2026-10-24 (re-read against the tree): No replay digest covers the lake stage: RECORDED_DIGEST in qip-acceptance tick_replay.rs is computed in memory from decode to book and never passes through qip_storage::lake, so mutating Lake::write_segment or lake_history::decode_line moves no digest (and decode_line drops the clock block). Write-once sealing runs on the edge binary's default path (LakeSink) but into the memory store; a history outliving the process needs tfvar flips (enable_cloud_storage, or execution_nodes_enabled with the engine-root template). Code step: write the recorded session through Lake::write_segment, read it back with read_market_history, replay, and assert RECORDED_DIGEST.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2790,7 +2790,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Lake segments are opened by a composition root: qip-edge-node main.rs builds LakeSink and drain.rs deliver calls Lake::write_segment; qip-deepbrain tick_desk pins manifests through Lake::pin_market_history only when enabled."
   },
   {
     "id": "R12-TICK-1122",
@@ -2814,7 +2814,7 @@
     "verification": "cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 by lane L09: clock normalization now runs on the node's production drain. The test recomputes every lake line's clock block with an independent CaptureStream over the line's own event and requires equality, plus an offset estimate once the discipline holds its minimum samples. Mutation: a fresh CaptureStream per tick in LakeSink::deliver (no discipline state) made the lake line's correction lineage differ from the independent discipline's and the test fail; restored byte for byte. AUDIT-4 2026-10-24: regraded, the requirement asks that a mutation of the clock-normalization stage change the replay digest. The named test compares the lake line with a second CaptureStream built from the same qip-sequencing code, so removing the offset correction from ClockDiscipline changes both sides alike and it still passes; the tick_replay digest does not cover CaptureStream output, so it does not move either 2026-10-24 lane L3-DATA: lake_clock.rs added (see R12-TICK-2051 notes for the mutations). Independent skeptic (code-reviewer) verdict REFUTED for COMPLETE: the digest is the test's own, not a replay digest; reasons in gap. Kept PARTIAL."
+    "notes": "Re-graded 2026-10-18 by lane L09: clock normalization now runs on the node's production drain. The test recomputes every lake line's clock block with an independent CaptureStream over the line's own event and requires equality, plus an offset estimate once the discipline holds its minimum samples. Mutation: a fresh CaptureStream per tick in LakeSink::deliver (no discipline state) made the lake line's correction lineage differ from the independent discipline's and the test fail; restored byte for byte. AUDIT-4 2026-10-24: regraded, the requirement asks that a mutation of the clock-normalization stage change the replay digest. The named test compares the lake line with a second CaptureStream built from the same qip-sequencing code, so removing the offset correction from ClockDiscipline changes both sides alike and it still passes; the tick_replay digest does not cover CaptureStream output, so it does not move either 2026-10-24 lane L3-DATA: lake_clock.rs added (see R12-TICK-2051 notes for the mutations). Independent skeptic (code-reviewer) verdict REFUTED for COMPLETE: the digest is the test's own, not a replay digest; reasons in gap. Kept PARTIAL. 2026-10-24 later: qip_storage::lake_history::decode_line now carries the clock block (RecordedTick::clock), checked on read-back by lake_clock.rs::reading_the_lake_back_returns_each_ticks_disciplined_clock; still no platform replay digest consumes it (tick desk off; tick_replay.rs RECORDED_DIGEST has no clock stage), so the gap's replay-digest step stands."
   },
   {
     "id": "R12-TICK-1123",
@@ -2842,7 +2842,7 @@
     "status": "MISSING",
     "current": "No code for cross-venue alignment.",
     "evidence": [],
-    "gap": "Implement/integrate cross-venue alignment.",
+    "gap": "2026-10-24 (re-read against the tree): qip_sequencing::align (Placed, align, as_of) has no caller outside qip-sequencing beyond CaptureStream's within-stream arrival order on the edge drain; qip_feature_dag CrossVenueSpread compares fresh mids without clock uncertainty; lake lines carry normalized_time_ns and uncertainty_ns but lake_history::decode_line drops them, so no reader can place lake ticks across venues; no replay digest covers alignment. Wiring is plain code (RecordedTick carries the clock, a cross-venue aligner over the lake, a digest test); a shipped path needs the deepbrain desk enabled in committed gitops (the edge node runs one simulated venue).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2853,7 +2853,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Cross-venue alignment code exists: qip_sequencing::align orders two disciplined stamps only beyond both uncertainties and has no 'simultaneous' answer (tests in qip-sequencing tests/align.rs)."
   },
   {
     "id": "R12-TICK-1125",
@@ -2863,7 +2863,7 @@
       "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:327",
       "backend/crates/apps/qip-edge-node/src/replay.rs"
     ],
-    "gap": "Implement/integrate replay/simulation.",
+    "gap": "2026-10-24 (re-read against the tree): RECORDED_DIGEST covers the replay stage only as qip_orderbook::replay plus sweep_cost simulated fills over in-memory events; no digest is pinned over the fabric's replay/simulation engine, qip_simulation_engine::tick_replay::ReplaySession, on a recorded session (its test one_history_replayed_twice_and_from_a_checkpoint... checks run-to-run equality without a pinned digest). ReplaySession is reached only from qip-deepbrain tick_desk, off (QIP_DEEPBRAIN_TICK_EVERY in no gitops env). The test is plain code; the default path needs a committed deployment change with entitlement grants (owner decision) and a lake source.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2874,7 +2874,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: qip-edge-node src/replay.rs is a doc comment (ADR 0100 §8) with no code, not replay evidence; the fabric replay is ReplaySession, called only by tick_desk."
   },
   {
     "id": "R12-TICK-1126",
@@ -2883,7 +2883,7 @@
     "evidence": [
       "backend/crates/services/qip-training/tests/labels.rs:88"
     ],
-    "gap": "Implement/integrate microstructure training.",
+    "gap": "2026-10-24 (re-read against the tree): qip_training::microstructure (build_examples, train_fill_model, train_volatility_model, benchmark_fill_model) trains on replayed books, called only from the off-by-default qip-deepbrain tick_desk; no replay digest covers it (DISTILLED_DIGEST covers a linear distil on test-built features, not microstructure.rs); no learned microstructure representation exists. The digest test is plain code; the default path needs a committed deepbrain env (QIP_DEEPBRAIN_TICK_EVERY, entitlements under an owner decision) and a lake source.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2894,7 +2894,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Microstructure training exists beyond labels: qip-training microstructure.rs fits fill-probability and short-horizon volatility models against naive baselines on a time holdout, benchmarked by venue x asset x regime x horizon, called from tick_desk."
   },
   {
     "id": "R12-TICK-1127",
@@ -2903,7 +2903,7 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse"
     ],
-    "gap": "No recorded-session replay through the fabric with a digest changed by mutating the fusion stage; desk off by default.",
+    "gap": "2026-10-24 (re-read against the tree): No recorded session is replayed through qip_kernel::fusion::fuse with a digest a fusion mutation changes: qip-acceptance tests/fusion.rs only checks two fuse calls on hand-built traces agree, with no pinned digest and no mutation; RECORDED_DIGEST and DISTILLED_DIGEST exclude fusion. The only caller is qip-deepbrain tick_desk, off by default. The test is plain code; the default path needs a deployment change and entitlement grants (owner decision).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2914,7 +2914,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-TICK-1128",
@@ -3506,7 +3506,7 @@
       "backend/crates/tests/qip-acceptance/tests/news_ingestion.rs",
       "backend/crates/tests/qip-acceptance/tests/regulatory_ingestion.rs"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "2026-10-24 (re-read against the tree): Only API-polled connectors (seven in connector_feed shipped_manifest), file and tape replay, and news and regulatory narrative paths exist. Satellite/geospatial, IoT, shipping, port, customs and commodity are placeholder skeletons in qip-market-ingestion/src/connectors/ not in KNOWN_SOURCES; WebSocket, database, registry, social and product sources have no connector; blockchain (qip-chain) has no caller in any app; no inspection artefact maps the scope list; no committed environment enables any connector. Needs ADR 0157 licence records and vendor choices (owner, billed), the egress infrastructure the stubs cite, tfvar flips, and connector code per class.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3517,7 +3517,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Satellite, IoT, shipping, port and commodity connectors now exist as BLOCKED/PARTIAL placeholder stubs (connectors/geospatial_satellite.rs, public_iot.rs, shipping_ais.rs, port_congestion.rs, commodity_flow.rs) that implement nothing."
   },
   {
     "id": "R12-EVID-1154",
@@ -3527,7 +3527,7 @@
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:784",
       "backend/crates/runtime/qip-kernel/tests/references.rs:169"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "2026-10-24 (re-read against the tree): Every scope item has code (source identity and provenance on EvidenceRecord; licensing via per-poll admission; freshness and manipulation in the DataFinder; corroboration, contradiction and confidence in the qip-evidence fabric; the hash-chained event log as audit trail), but no inspection artefact or test maps each item to a root and a named test. On default paths only the audit trail and the per-cycle poisoning scan run, and the scan reads an empty fabric because no environment configures a connector; freshness and manipulation run only via the DiscoveryDesk, off everywhere. Needs connector and discovery tfvar flips plus the owner's egress decision, and code for the inspection mapping.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3538,7 +3538,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Corroboration and contradiction are integrated: Platform::absorb_evidence runs in all three roots, tested in qip-kernel tests/evidence_intake.rs."
   },
   {
     "id": "R12-WORLD-1155",
@@ -3661,7 +3661,7 @@
       "backend/crates/services/qip-portfolio-engine/tests/portfolio.rs:586",
       "backend/crates/libs/qip-financial/tests/valuation.rs:138"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "2026-10-24 (re-read against the tree): No inspection table maps each scope item to code reached from a composition root plus a named test. On today's tree construction (construct_from), mandates (desk mandate, qip-capital ledger), horizons (arm_horizon_gate), valuation (sizing_confidence), corporate actions (queue_/apply_due_/apply_corporate_action), commitments (record_capital_call via POST /ledger/commitments/:commitment/capital-calls), hedging (hedge_review in DECIDE) and attribution (LEARN) are on the kernel path. Divestment is not (Portfolio::begin_unwind and secondary_exit::plan_secondary_exit have no production caller), and lifecycle is partial (PositionLifecycle never moved to Flagged/Unwinding by the kernel; LifeStage unused, see R12-ASSET-4071). Plain code: wire begin_unwind at the kernel's close-to-flat seam, then commit the per-item mapping.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3672,7 +3672,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'corporate actions not evidenced' is stale: the kernel queues and applies corporate actions (queue_corporate_action, apply_due_corporate_actions, apply_corporate_action, with unit tests in platform.rs); hedging is a production DECIDE-stage survey."
   },
   {
     "id": "R12-CAPITAL-1161",
@@ -3849,11 +3849,14 @@
   {
     "id": "R12-EXEC-1169",
     "status": "PARTIAL",
-    "current": "Permission register refuses unpermitted creation; no Market Factory consumes admissions.",
+    "current": "Create/list/seed only where permitted is structural (R12-EXEC-5079, COMPLETE 2026-10-24): every listing and seeding primitive demands a CreationAdmission minted only under recorded venue, product and jurisdiction permissions. Bootstrapping liquidity and risk-managing it are MarketFactory::seed, which rests the pricing rule's ladder only on a LadderAdmission from OrderManager::admit_ladder (the desk's limit check over both sides), and the factory's validity monitor in SIMULATE; the kernel's market-factory stage drives both from qip-deepbrain's breadth plan.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/market_creation.rs:12"
+      "backend/crates/tests/qip-acceptance/tests/market_creation.rs:12",
+      "backend/crates/services/qip-execution-engine/src/market_creation.rs MarketFactory::list, ::seed (LadderAdmission)",
+      "backend/crates/apps/qip-deepbrain/src/breadth.rs PLAN_VARIABLE QIP_DEEPBRAIN_BREADTH_PLAN",
+      "R12-EXEC-5079 evidence (admission on every primitive)"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Corrected 2026-10-24 (lane L1-MONEY): the 'no Market Factory consumes admissions' text was stale; the factory and the guarded primitives exist and are tested. What remains is bar part 2 for the bootstrap and risk-manage items: the factory runs only when qip-deepbrain is started with QIP_DEEPBRAIN_BREADTH_PLAN naming a plan file, and no committed environment sets it (grep of infrastructure finds none), so no default path creates, seeds or risk-manages a market. Closes when a committed deployment sets the breadth plan, or an owner accepts the guarded-but-off factory as the scope's delivery. Deployment/owner step, not code.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3864,7 +3867,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " 2026-10-24 lane L1-MONEY: gap corrected; no code changed for this row."
   },
   {
     "id": "R12-EVENT-1170",
@@ -3980,7 +3983,7 @@
       "backend/crates/tests/qip-acceptance/tests/market_depth_ingestion.rs",
       "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:327"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "2026-10-24 (re-read against the tree): No typed record or capture path for options, futures, perp funding or liquidations (qip_edge::funding::FundingRate is cell state set only in tests); crypto has only the Coinbase spot ticker; on-chain state has typed models (qip-chain mempool/AMM, Platform::observe_chain) but no capture connector. Training, fusion and replay are reached only from the off-by-default tick_desk; no inspection artefact maps each item to a root and a named test. New feeds need ADR 0157 licence records (owner/vendor decision) plus connector code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3991,7 +3994,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-TICK-1176",
@@ -4022,7 +4025,7 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse"
     ],
-    "gap": "No learned tick embeddings in the alignment; tick desk off by default.",
+    "gap": "2026-10-24 (re-read against the tree): fuse aligns knowledge-graph events (bitemporal by as_of) with TracePoint mid, spread, depth and imbalance; no learned tick embedding exists to align (see R12-TICK-2064) and it does not use qip_sequencing::align clock uncertainty; its only composition-root caller, qip-deepbrain tick_desk, is off in every committed deployment. Needs representation-learning code, the desk enabled in gitops with entitlement grants (owner decision), and a lake source.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -4033,7 +4036,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-WORLD-1178",
@@ -4566,9 +4569,12 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:327",
       "backend/crates/tests/qip-acceptance/tests/tick_hot_replay_indexes.rs",
-      "backend/crates/libs/qip-storage/src/lake.rs:191 Manifest"
+      "backend/crates/libs/qip-storage/src/lake.rs:191 Manifest",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::the_lake_alone_rebuilds_the_book_the_venue_published",
+      "backend/crates/apps/qip-edge-node/tests/lake_clock.rs::reading_the_lake_back_returns_each_ticks_disciplined_clock",
+      "backend/crates/libs/qip-storage/src/lake_history.rs RecordedTick::clock / RecordedClock"
     ],
-    "gap": "Write market segments to the lake from a running process.",
+    "gap": "2026-10-24 (skeptic-refuted promotion, then partly addressed): on the edge node's default path the feed's applied ticks are disciplined and sealed by LakeSink; decision_loop::the_lake_alone_rebuilds_the_book_the_venue_published reads them back through qip_storage::lake_history and replays them with qip_orderbook::replay to the simulated venue's own depth, and since the same day lake_history::decode_line carries the clock block into RecordedTick::clock, which lake_clock.rs::reading_the_lake_back_returns_each_ticks_disciplined_clock checks against hand-worked figures. Remaining: (1) the rebuilt book is compared with the venue's depth, not with the book the cell itself reconstructed from the frame (Cell exposes no book or book digest), so a fault in Cell::on_bytes decoding is invisible to the proof; (2) the lake holds MarketEvents captured from the publisher's structured lines, not events derived from the bytes the cell decoded (drain.rs: 'The sink holds decoded events, not the venue's wire bytes'), so 'captured bytes produce ... lake segments' holds only loosely; (3) 'replay branching from it' has no consumer on a default path: the only production lake reader is qip-deepbrain tick_desk, off unless QIP_DEEPBRAIN_TICK_EVERY is set, which no committed environment sets; live features branching from the lake are not shown. (1)-(2) are code (a cell book digest accessor and a byte-derived capture); (3) needs a deployment change or an owner restatement.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4576,9 +4582,9 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test tick_replay --test tick_hot_replay_indexes",
+    "verification": "cargo test -p qip-edge-node --test decision_loop the_lake_alone; cargo test -p qip-edge-node --test lake_clock",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: A composition root writes market segments: qip-edge-node main.rs run() builds LakeSink::new(config.storage.blobs(LAKE_NAMESPACE)...) and drain.rs LakeSink::deliver seals every MARKET_EVENT_APPLIED tick with a disciplined clock block. The binary's default store is memory; the committed execution-node template sets QIP_STORAGE_TARGET=engine and QIP_VENUE_FEED=simulated, but no node is provisioned. 2026-10-24 lane L3-DATA: write-read-replay test added (1f35c346). Mutations fired, restored by cp + cmp: LakeSink::deliver skipping even-sequenced ticks ('only 37 of 73 ticks reached the lake', bounded by PATIENCE); feed capturing each level one above the published price (bids rebuilt from the lake differ); decode_line returning clock: None (read-back test left None, right Some(..)). Independent skeptic (code-reviewer) verdict REFUTED: read-back dropped the clock (since fixed), replay compared against venue not cell books, lake not byte-derived, replay consumer off by default. Kept PARTIAL."
   }
 ]

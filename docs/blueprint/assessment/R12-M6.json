@@ -349,7 +349,7 @@
   },
   {
     "id": "R12-MODEL-6016",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "LEARN grades resolved theses (ThesisEvaluator) and charges them to SelfModel components (detector, analyst, rung, strategy). World-model federation members are charged per resolved forecast to ComponentKind::WorldModel. Since 2026-10-24 the two ensembles are charged too, under ComponentKind::Ensemble: the federation's arbitrated probability (FederationStage keeps each pending proposition's latest arbitrated_probability and carries it on the journaled Resolution as `ensemble`; the platform's federation pass charges it under `world-model-federation`), and the tournament's market aggregate on each resolved question (charged in LEARN under `model-tournament` as the probability it held for the outcome that happened). A forecast of exactly one half took no side and is not charged.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12064 the charge loop in the federation pass",
@@ -362,9 +362,10 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs FEDERATION_ENSEMBLE / TOURNAMENT_ENSEMBLE charges",
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_resolved_federation_arbitration_is_charged_to_the_ensembles_own_component",
       "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::a_resolved_tournament_question_charges_its_market_aggregate_to_the_ensembles_own_component",
+      "backend/crates/services/qip-learning-engine/tests/self_model.rs::an_ensemble_forecast_is_charged_by_the_side_it_took_and_never_freshens_the_self_model",
       "backend/crates/services/qip-learning-engine/tests/self_model.rs::an_ensembles_resolved_forecasts_never_freshen_the_self_model"
     ],
-    "gap": "2026-10-24 (lane L2-INTEL): ensembles are now charged (federation arbitration and tournament aggregate). Promotion awaits the independent skeptic.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -372,10 +373,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test symbolic_federation charged && cargo +1.94.1 test -p qip-kernel --test model_tournament ensemble && cargo +1.94.1 test -p qip-learning-engine --test self_model",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test symbolic_federation charged && cargo +1.94.1 test -p qip-kernel --test model_tournament ensemble && cargo +1.94.1 test -p qip-learning-engine --test self_model && cargo +1.94.1 test -p qip-fastbrain --test tape",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutations fired - skipping the charge loop in Platform's federation pass left markets.microstructure.home.micro (2 resolved forecasts) with no estimate; charging the outcome instead of the side taken gave hits 0 against 1; removing the sample_facts filter listed the member. World-model records are kept out of SelfModel::sample_facts: counting them freshened the self-model capability and lifted the sizing bound (valuation_seam's compounded budget came out at 0.75 of the expected factor instead of 0.5 until the filter landed). The kernel test lives in symbolic_federation.rs, not learning.rs as the closure proposed, because that suite already holds the tape fixture under which reality answers forecasts. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the federation ensemble charge disabled (`resolution.ensemble.filter(|_| false)`) fails a_resolved_federation_arbitration_is_charged_to_the_ensembles_own_component; no arbitrated probability recorded in FederationStage::run fails its premise; the tournament aggregate charge disabled fails a_resolved_tournament_question_charges_its_market_aggregate_to_the_ensembles_own_component. qip-kernel and qip-learning-engine: 69 test binaries ok, none failed. 2026-10-24 parent session, after the wave580 merge: the ensemble charges reopened the sizing hole the world-model exclusion closed. SelfModel::sample_facts filtered only ComponentKind::WorldModel, so the federation's arbitrated probability, charged as an Ensemble on every resolution, read the self-model fresh before LEARN had graded anything. CI on 2105c7f2 failed qip-fastbrain tests/tape.rs::the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_budget with 'cycle 367 sized against 10000000, not 5000000'. sample_facts now excludes Ensemble too. New test: qip-learning-engine tests/self_model.rs::an_ensembles_resolved_forecasts_never_freshen_the_self_model. Mutation: dropping Ensemble from the filter lists both ensembles and fails it; restored, cmp clean."
+    "notes": "2026-10-18 lane L23: mutations fired - skipping the charge loop in Platform's federation pass left markets.microstructure.home.micro (2 resolved forecasts) with no estimate; charging the outcome instead of the side taken gave hits 0 against 1; removing the sample_facts filter listed the member. World-model records are kept out of SelfModel::sample_facts: counting them freshened the self-model capability and lifted the sizing bound (valuation_seam's compounded budget came out at 0.75 of the expected factor instead of 0.5 until the filter landed). The kernel test lives in symbolic_federation.rs, not learning.rs as the closure proposed, because that suite already holds the tape fixture under which reality answers forecasts. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the federation ensemble charge disabled (`resolution.ensemble.filter(|_| false)`) fails a_resolved_federation_arbitration_is_charged_to_the_ensembles_own_component; no arbitrated probability recorded in FederationStage::run fails its premise; the tournament aggregate charge disabled fails a_resolved_tournament_question_charges_its_market_aggregate_to_the_ensembles_own_component. qip-kernel and qip-learning-engine: 69 test binaries ok, none failed. 2026-10-24 L2-INTEL second pass: mutations fired, each restored by copy and cmp: the federation charge with `!resolution.outcome` fails the federation test's hits assertion; the tournament charge with `false` fails the tournament test's hits assertion; Ensemble dropped from sample_facts' filter fails the new self_model unit test. qip-kernel, qip-learning-engine and qip-fastbrain: 77 test binaries ok, none failed. 2026-10-24 L2-INTEL promoted after a second independent skeptic (security-engineer, read-only, default REFUTED): HOLDS. It judged the first skeptic's F4 vacuous rather than unmet: no stage of the cycle reads a served score (model_serving.rs), serve_model is called only in the deep brain's promotion rescore against already-resolved holdout targets, so no registered ML model issues a forecast that later resolves on a default path; the first stage that consumes a served score must also charge its resolved outcome. F1-F3 fixes confirmed sound; it reran qip-fastbrain --test tape (3 passed), qip-learning-engine self_model (13 passed), qip-kernel symbolic_federation (12), model_tournament (18) and learning (28), all ok. 2026-10-24 parent session, after the wave580 merge: the ensemble charges reopened the sizing hole the world-model exclusion closed. SelfModel::sample_facts filtered only ComponentKind::WorldModel, so the federation's arbitrated probability, charged as an Ensemble on every resolution, read the self-model fresh before LEARN had graded anything. CI on 2105c7f2 failed qip-fastbrain tests/tape.rs::the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_budget with 'cycle 367 sized against 10000000, not 5000000'. sample_facts now excludes Ensemble too. New test: qip-learning-engine tests/self_model.rs::an_ensembles_resolved_forecasts_never_freshen_the_self_model. Mutation: dropping Ensemble from the filter lists both ensembles and fails it; restored, cmp clean."
   },
   {
     "id": "R12-MODEL-6017",
@@ -1320,15 +1321,17 @@
   },
   {
     "id": "R12-EXPAND-6059",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip-agents ToolRegistry with ten ToolKinds, read-only start. qip-deepbrain registers the three desks (source-discovery, model-fit, stress-simulator) and, from the settings main.rs parsed, what the process runs: research::node_tools adds the classical solver always, the quantum-backend only where ComputeSettings attached the in-tree simulator, and one connector per catalogued source the node polls; ResearchLoop::new_for_node (called from main.rs) checks the desk and every BrainSpec against it. tick-replay and venue-adapter stay unregistered because the node holds neither (R12-EXPAND-6037).",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/research.rs:node_tools",
       "backend/crates/apps/qip-deepbrain/src/research.rs:ResearchLoop::new_for_node",
       "backend/crates/apps/qip-deepbrain/src/main.rs:new_for_node",
-      "backend/crates/apps/qip-deepbrain/tests/research.rs:the_node_registers_every_tool_kind_it_actually_runs"
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:the_node_registers_every_tool_kind_it_actually_runs",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs::a_tool_proposed_or_registered_without_a_name_is_refused_and_nothing_is_registered",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::the_node_refuses_to_start_its_tool_registry_with_a_nameless_tool"
     ],
-    "gap": "2026-10-24: The requirement is that an entry missing a declared field is refused; the one refusal in the registry (a blank name) is tested by nothing, and the named test checks what the node registers, not what the registry refuses. Closing: a test that proposes an entry with a blank name (and any other declared field the registry should require) and asserts the refusal; it must fail the line-137 mutation.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1336,10 +1339,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-deepbrain --test research the_node_registers_every_tool_kind_it_actually_runs",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agents --test expansion_registries a_tool_proposed_or_registered_without_a_name && cargo +1.94.1 test -p qip-deepbrain --test research the_node_refuses_to_start_its_tool_registry_with_a_nameless_tool",
     "work_item": "",
     "size": "S",
-    "notes": "Mutation: replacing the quantum-backend push in node_tools with a no-op failed the test at the QuantumBackend assertion; restored, passes. The parsers, browsers, geospatial and code-runtime kinds are not registered because no process runs them; the planner proposes them as tools to build. AUDIT-4: 2026-10-24 regraded, the registry's only declared-field refusal (a blank name) is tested by nothing: removing it leaves the named deepbrain test and the whole qip-agents suite green."
+    "notes": "Mutation: replacing the quantum-backend push in node_tools with a no-op failed the test at the QuantumBackend assertion; restored, passes. The parsers, browsers, geospatial and code-runtime kinds are not registered because no process runs them; the planner proposes them as tools to build. AUDIT-4: 2026-10-24 regraded, the registry's only declared-field refusal (a blank name) is tested by nothing: removing it leaves the named deepbrain test and the whole qip-agents suite green. 2026-10-24 (L4), commit 09ccd529: the mutation `if false && name.is_empty()` in ToolRegistry::propose failed both new tests (expansion_registries.rs:36 unwrap_err on Ok; research.rs:1247 'a nameless tool was registered'). The file was restored and checked with cmp, and both tests pass again. Declared fields are name, kind and scope. Kind is an enum and scope is fixed at Read, so name is the only one a caller can omit, and register->propose is the only insert. qip-deepbrain main.rs calls ResearchLoop::new_for_node unconditionally. The registry is consulted at start (BrainSpec tool check) and on each sweep (qip-expansion desk.rs tools.get, every_cycles 1). Independent code-reviewer skeptic: HOLDS. Promoted to COMPLETE."
   },
   {
     "id": "R12-EXPAND-6060",
@@ -1585,13 +1588,15 @@
   {
     "id": "R12-EXPAND-6071",
     "status": "PARTIAL",
-    "current": "Tool scope widens only with a cited evaluation; agency ActionPolicy widens only with identified attribution plus approver authority, and drops to shadow on drift (library); no graded schedule linking authority level to evidence strength.",
+    "current": "ADR 0141's schedule is code: qip_agency::autonomy::SCHEDULE gives per level the scope, from-level, attribution need, clean days, compensation, kill path, rollback, distinct approvers and grant. ActionPolicy::widen_to reads only that table, and widen (reached from qip-cli's agency pass through engine::widen) delegates to it. Checks run in order: prohibited levels (External: ADR 0114 D8; Capital: ADR 0003/0021/0108), then evidence item by item, then distinct approvers, then the from-level, then the grant. NarrowCompensable and BroadInternal refuse lesser evidence by name, and with full evidence refuse naming ADR 0141.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/tools.rs:126",
       "backend/crates/services/qip-agency/src/autonomy.rs:87 widen",
-      "backend/crates/services/qip-agency/tests/agency.rs:1153"
+      "backend/crates/services/qip-agency/tests/agency.rs:1153",
+      "backend/crates/services/qip-agency/src/autonomy.rs::SCHEDULE, ActionPolicy::widen_to",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_refuses_it"
     ],
-    "gap": "Decided by ADR 0141 (accepted 2026-10-18): Agency authority is a typed schedule widen reads, with evidence, rollback and approvers per level; nothing above NarrowReversible is granted, and External and Capital stay refused by ADR 0114 D8 and ADR 0003/0021/0108. Code left: the schedule table in autonomy.rs, widen reading it, the two ungranted variants, and tests/agency.rs asserting each level refuses lesser evidence and names the record that refuses it.",
+    "gap": "2026-10-24 (L4, skeptic REFUTED): (1) Bar part 2: the only shipped caller, qip-cli via engine::widen, hard-codes the NarrowReversible step with one attribution and one approver. No binary can offer clean days, compensations, a kill path or a second approver, so the scale exists only in tests that call widen_to. Nothing above NarrowReversible can be granted without a further ADR, so closing this needs that ADR plus a CLI or engine path that requests a target level. (2) Rollback is declared, not verified. LevelRequirement.rollback and .scope are read by nothing. Compensation and kill path need only a non-blank string in the evidence, not a drill record attached to the policy. BroadInternal checks one clean_days figure, not one per class at NarrowCompensable. NarrowReversible's 'tool's declared reverse' is not checked in widen_to; it is checked at call time.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1599,10 +1604,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_refuses_it",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D17; gap before it: Authority-graded evidence schedule. ADR lane 2026-10-18: gap re-graded against ADR 0141; gap before it: Delegable decision D17 (design-decisions-2026-10-18.json), ADR not yet written: Agency authority levels with an evidence and rollback schedule per level; every level above internal drafting stays refused under ADR 0114 D8. Needs that ADR, then the code."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D17; gap before it: Authority-graded evidence schedule. ADR lane 2026-10-18: gap re-graded against ADR 0141; gap before it: Delegable decision D17 (design-decisions-2026-10-18.json), ADR not yet written: Agency authority levels with an evidence and rollback schedule per level; every level above internal drafting stays refused under ADR 0114 D8. Needs that ADR, then the code. 2026-10-24 (L4), commit 09ccd529: six mutants of widen_to each failed the new test at their own assertion: drop clean-days, drop compensation, count signatures not distinct approvers, drop the Ungranted refusal, drop the Refused check, drop kill-path. Restored and checked with sha256sum. An independent security-engineer skeptic returned REFUTED (default path and rollback findings in gap). Status stays PARTIAL."
   },
   {
     "id": "R12-EXPAND-6072",

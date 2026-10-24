@@ -108,6 +108,7 @@ use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_portfolio_engine::proposal::Proposal;
 use qip_reasoning_engine::redteam::ReviewPolicy;
+use qip_reasoning_engine::rules::Value;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
 /// See the module note. Low enough that the panel's verdict on a synthetic
@@ -1465,9 +1466,15 @@ fn a_thesis_whose_evidence_contradicts_itself_is_sized_on_a_narrower_conviction_
 /// contested or low-confidence approval is sized small and not vetoed
 /// (ADR 0150 decision 14).
 ///
-/// Mutation: make `SymbolicDerivation::veto` return `None` — the vetoed
-/// platform queues the thesis ("sized on conviction") and the first assertion
-/// on the vetoed report fails.
+/// Since R12-REASON-3053 the derivation runs before approval is read (ADR 0125
+/// decision 2's placement), so the veto is an input to approval: the vetoed
+/// hypothesis is reported rejected, not approved-then-dropped, and the cycle
+/// proposes nothing where the control proposes.
+///
+/// Mutations: make `SymbolicDerivation::veto` return `None` — the vetoed
+/// platform queues the thesis ("sized on conviction") and reports it
+/// approved; drop the status demotion in `reason_about_the_queue` — the
+/// vetoed hypothesis is reported approved and the status assertion fails.
 #[test]
 fn a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal()
 -> Result<()> {
@@ -1518,12 +1525,32 @@ fn a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_f
     );
 
     // A million shares at 100 is a hundred million against a million of cash.
+    assert!(
+        controlled.proposals().iter().any(|p| !p.legs.is_empty()),
+        "premise: the control proposes a leg, so a legless vetoed book is the veto's doing"
+    );
     let (vetoed, report) = run(dec!("1000000"))?;
     let reason = report.stage(Stage::Reason).expect("reason ran");
+    let derivations = qip_kernel::symbolic_stage::replay(&vetoed)?;
+    assert_eq!(derivations.len(), 1, "the refusing derivation is journaled");
     assert!(
-        reason.detail.contains("hypothesis approved at confidence "),
-        "premise: review approved this hypothesis too: {}",
+        derivations[0]
+            .rules
+            .inputs
+            .iter()
+            .any(|(name, value)| name == "status" && *value == Value::Text("approved".into())),
+        "premise: review approved this hypothesis too, and the pack was asked about it: {:?}",
+        derivations[0].rules.inputs
+    );
+    assert!(
+        reason.detail.contains("hypothesis rejected at confidence "),
+        "the rule pack's verdict did not reach approval: {}",
         reason.detail
+    );
+    assert!(
+        vetoed.proposals().iter().all(|p| p.legs.is_empty()),
+        "a hypothesis the rule pack refused still produced a proposed leg: {:?}",
+        vetoed.proposals()
     );
     assert!(
         !reason.detail.contains("; sized on conviction"),
@@ -1539,8 +1566,6 @@ fn a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_f
         "the veto and its cause were not reported: {:?}",
         reason.problems
     );
-    let derivations = qip_kernel::symbolic_stage::replay(&vetoed)?;
-    assert_eq!(derivations.len(), 1, "the refusing derivation is journaled");
     assert!(!derivations[0].rules.agrees_with_review);
     Ok(())
 }

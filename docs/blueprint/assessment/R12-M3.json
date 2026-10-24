@@ -754,23 +754,24 @@
   },
   {
     "id": "R12-WORLD-3034",
-    "status": "MISSING",
-    "current": "Only a MemoryKind::Procedural label in a contract enum; no procedure store, versioning or retrieval.",
+    "status": "PARTIAL",
+    "current": "qip_agents::memory::ResearchMemory holds versioned procedures. record_procedure stores the next version of a named procedure only on at least MINIMUM_PROCEDURE_SUPPORT (3) distinct held episodes resolved correct by then, refusing a blank name, no steps or a blank step. Each name keeps up to VERSIONS_PER_PROCEDURE (16) versions, and MAX_PROCEDURES bounds the names. procedure_as_of retrieves the latest version known at a date, so past decisions stay reconstructable.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs:780 Procedural variant only"
+      "backend/crates/libs/qip-agents/src/memory.rs::ResearchMemory::record_procedure, procedure_as_of",
+      "backend/crates/libs/qip-agents/tests/memory.rs::a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version"
     ],
-    "gap": "Procedural memory store and reader.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (L4): the row said no procedure store existed. That was stale: store, versioning and retrieval exist and are tested. What is missing is the integration the requirement's test names. No production code calls record_procedure or procedure_as_of (grep finds only tests/memory.rs), so no procedure is distilled from the kernel's resolved episodes, and none is retrieved for reuse by a later run. Closing it needs LEARN to distil a procedure from an analyst's resolved-correct episodes, the next convening of that analyst to retrieve it, and a cycle-level test.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agents --test memory a_procedure_is_recorded_only_after_enough_correct_episodes",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->MISSING. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->MISSING. Unchanged. 2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed. Not promoted: there is no running path."
   },
   {
     "id": "R12-WORLD-3035",
@@ -819,13 +820,14 @@
   {
     "id": "R12-WORLD-3037",
     "status": "PARTIAL",
-    "current": "UNDERSTAND runs a seven-member federation across all five axes each cycle and journals a review; members are simple declared statistics, unfed members produce no state, and decisions still read the single WorldModel.",
+    "current": "UNDERSTAND runs the federation each cycle (FederationStage::run): ten members plus one domain member per declared asset class, spanning all five axes. DECIDE reads the population through federation_stage::narrow (ADR 0125 decision 4, landed under R12-WORLD-1003, COMPLETE), so decisions no longer read only the single WorldModel.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1 runs in UNDERSTAND; advisory",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:872 a_population_differing_on_all_five_axes_is_built_and_every_fed_member_produces_state",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review"
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs (first.silent == [ON_CHAIN] on a default cycle)"
     ],
-    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the same federation narrowing slice as WORLD-1003, so a decision reads the population rather than the single WorldModel.",
+    "gap": "2026-10-24 (L4): the 'code left' this gap named, the WORLD-1003 narrowing slice, has landed. The requirement's integration clause, 'every member produces state each cycle', still fails on the default composition. qip-kernel tests/symbolic_federation.rs pins the on-chain member as silent on a cycle with no observed chain (assert_eq!(first.silent, vec![ON_CHAIN])), and no committed environment feeds a chain view. Closing it needs a chain view on the default path, or a decision that a member with no input this pass meets 'produces state' by reporting its silence. That decision belongs to an owner or an ADR.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -836,7 +838,7 @@
     "verification": "cargo test -p qip-world-model --test federation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Federation now built by the kernel; advisory only. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Decisions consume the federation; every member produces state each cycle."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Federation now built by the kernel; advisory only. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Decisions consume the federation; every member produces state each cycle. 2026-10-24 (L4): gap corrected by reading the code; no code changed."
   },
   {
     "id": "R12-WORLD-3038",
@@ -1173,7 +1175,7 @@
   {
     "id": "R12-REASON-3053",
     "status": "PARTIAL",
-    "current": "REASON runs rules, timeline, Bayesian network, constraint, lifecycle, abduction and intervention per hypothesis (symbolic_stage::derive) and journals the derivation. Under ADR 0125 decision 2 the rule pack's verdict now feeds the decision: Platform::reason_symbolically returns SymbolicDerivation::veto, and a hypothesis review approved that the pack finds ineligible on a hard stop (live ceiling, one lot over the position budget, cash short of one lot) forms no thesis and no proposal, recorded as 'approved but vetoed by the symbolic rule pack'.",
+    "current": "REASON runs rules, timeline, Bayesian network, constraint, lifecycle, abduction and intervention per hypothesis (symbolic_stage::derive) and journals the derivation; the rule verdict feeds the constraint solver inside derive. Since 2026-10-24 the derivation runs before approval is read, as ADR 0125 decision 2 places it: reason_symbolically runs on the synthesised, reviewed hypothesis before `approved` is computed, and a hard-stop veto (live ceiling, one lot over the position budget, cash short of one lot) sets the hypothesis to Rejected, so it is counted as rejected, reported 'hypothesis rejected', handed to the tournament as unapproved, and forms no thesis and no proposed leg.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:537 derive",
@@ -1181,9 +1183,11 @@
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:18 advisory: called after REASON has decided",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs::SymbolicDerivation::veto",
       "backend/crates/runtime/qip-kernel/src/platform.rs reason_about_the_queue: the symbolic_veto arm before thesis_from (DecisionTaken::NotSizeable)",
-      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs::a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal (control queued, vetoed half forms none)"
+      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs::a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal (control queued, vetoed half forms none)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs reason_about_the_queue: reason_symbolically before `let approved`, status set to Rejected on a veto",
+      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs::a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal (now asserts the derivation's input status was approved, the reported status is rejected, the control proposes a leg and the vetoed cycle proposes none)"
     ],
-    "gap": "2026-10-24 (lane L2-INTEL, skeptic REFUTED): the rule-pack veto gates thesis and proposal formation, not hypothesis formation. In REASON the hypothesis is synthesised and reviewed, `approved` is computed, HYPOTHESES_APPROVED counted and the prediction recorded before reason_symbolically runs; the veto arm returns DecisionTaken::NotSizeable and leaves the hypothesis approved (the vetoed run's detail still reads 'hypothesis approved at confidence 0.36'). ADR 0125 decision 2 itself says the derivation moves before approval so the verdict is an input to approval; that move is not done. In practice the veto's two reachable stops (lot over budget, cash short of a lot) duplicate ACT's whole-lot gate, and the named test pins only the absence of '; sized on conviction', not proposals(). 'Alongside neural inference' is unmet on a default path: qip-fastbrain forbids a language model and qip-deepbrain's hosted adapter is behind unset model, attestation and credential variables (DeterministicModel otherwise). Remaining step: run reason_symbolically on the synthesised hypothesis before `approved` is computed, a hard-stop veto setting the status to not approved with the rule-pack rationale (driving the approved/rejected counters and the recorded prediction), plus a mutation-verified test with a control that the vetoed hypothesis's journaled status is not approved and proposals_made() is unchanged; the neural clause needs a neural reasoner on a default path or an ADR scoping it out.",
+    "gap": "2026-10-24 (lane L2-INTEL): the skeptic's first finding is closed: the rule pack's verdict is an input to approval (derivation before `approved`, veto demotes to Rejected, with the counters, prediction and tournament reading the rejected status). Still open: (1) 'alongside neural inference' is unmet on any default path: qip-fastbrain's roster forbids a language model and qip-deepbrain's hosted adapter needs a pinned model variable, a terms attestation and a credential that no committed environment sets (DeterministicModel otherwise), so it needs a neural reasoner on a default path or an ADR scoping the clause out; (2) the veto's two reachable stops duplicate ACT's whole-lot gate, so on the default path it changes the record, not the orders. Not re-sent to a skeptic for that reason.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1194,7 +1198,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test valuation_seam a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Compose at least one symbolic verdict into hypothesis formation, as the verification requires. 2026-10-24 L2-INTEL: mutation re-run: SymbolicDerivation::veto returning None at entry fails the named test at valuation_seam.rs:1528 (the vetoed thesis is queued); restored by copy and cmp, the test passes (1 passed). Skeptic (code-reviewer, read-only, default REFUTED) 2026-10-24: REFUTED as recorded in gap; it confirmed the default path (qip-fastbrain node::run -> run_cycle -> stage_reason -> reason_symbolically) and the mutation."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Compose at least one symbolic verdict into hypothesis formation, as the verification requires. 2026-10-24 L2-INTEL: mutation re-run: SymbolicDerivation::veto returning None at entry fails the named test at valuation_seam.rs:1528 (the vetoed thesis is queued); restored by copy and cmp, the test passes (1 passed). Skeptic (code-reviewer, read-only, default REFUTED) 2026-10-24: REFUTED as recorded in gap; it confirmed the default path (qip-fastbrain node::run -> run_cycle -> stage_reason -> reason_symbolically) and the mutation. 2026-10-24 L2-INTEL (second pass): mutations fired, each restored by copy and cmp: SymbolicDerivation::veto returning None, and the status demotion disabled (`symbolic_veto.is_some() && false`), each fail the valuation_seam test at the 'hypothesis rejected' assertion."
   },
   {
     "id": "R12-REASON-3054",
@@ -2227,7 +2231,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:193-197 causal_scenario",
       "backend/crates/services/qip-twin/src/futures.rs::FutureTree::grow"
     ],
-    "gap": "No weather, policy, default, supply-constraint or Algorik-action variation. Tree grown only by the tick desk, off by default.",
+    "gap": "2026-10-24 (re-read against the tree): FutureTree::grow varies only shock size, propagation and sign per untyped WorldDriver; SyntheticMarket and agents vary participants, liquidity and market structure in the simulation engine. Policy, weather, supply constraints, defaults and Algorik own actions vary nowhere, and no single generator test covers the named dimensions. ADR 0151 decision 5's typed DriverKind (Policy, Weather, Default, Supply, OwnAction, Price) is accepted but unbuilt and allows producers only for OwnAction and Price; the rest need data under ADR 0157 (owner decision) or an ADR amendment. Trees are grown by tick_desk (off) and qip-cli agency TwinScenarios.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2238,7 +2242,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-TICK-3098",
@@ -2250,7 +2254,7 @@
       "backend/crates/services/qip-world-model/tests/no_copied_documents.rs",
       "backend/crates/services/qip-twin/src/futures.rs::TwinState"
     ],
-    "gap": "Only instrument twins; no economically important entity twins. Used only by the tick desk, off by default.",
+    "gap": "2026-10-24 (re-read against the tree): The unit clause is met (qip-twin tests/futures.rs the_twin_is_a_compact_learned_state_whose_size_does_not_grow_with_history fails if TwinState keeps fitted points). The requirement asks for twins of economically important entities; qip_twin::futures::TwinState holds only per-instrument InstrumentDynamics, no company, macro or other entity twin. TwinState is reached only from qip-deepbrain tick_desk (off) and qip-cli agency shadow when a pass carries an optional twin. Entity twins need entity data under ADR 0157 licence records (owner decision) plus new code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2261,7 +2265,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-TICK-3099",
@@ -2390,13 +2394,16 @@
   {
     "id": "R12-AMBIENT-3104",
     "status": "PARTIAL",
-    "current": "backend/crates/apps/qip-deepbrain/src/research.rs:290 cheapest_viable prices a re-sweep or the class's declared acquisition per research gap; admit() creates an InfoRequest (backend/crates/apps/qip-deepbrain/src/research.rs:760)",
+    "current": "VOI is priced for research gaps (cheapest_viable over a re-sweep and the class's declared acquisition, admitted as an InfoRequest), for the federation's own questions (R12-AMBIENT-10093), and since 2026-10-24 for DECIDE's uncertain decisions: stage_decide records a DecisionUncertainty for every proposed leg whose thesis conviction is at or below one half (uncertainty = 1 - |conviction| >= DECISION_UNCERTAINTY_FLOOR), with the leg's notional as the value at stake and the thesis claim's resolution instant as the deadline; the deep brain's research sweep (ResearchLoop::admit_decision_uncertainties, beside admit_federation_requests in sweep_over) turns each into an InfoRequest ranked with every other candidate, choosing the cheapest viable observation: a re-sweep of the subject's next price, the series the claim resolves against, before the declared acquisition of a data gap.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/research.rs:812 a_gap_with_economic_value_launches_on_the_product_rank",
       "backend/crates/apps/qip-deepbrain/tests/research.rs:171 a_gap_worth_less_than_its_cheapest_observation_launches_no_information_request",
-      "backend/crates/apps/qip-deepbrain/src/node.rs:450 maybe_sweep runs in the deep brain run loop"
+      "backend/crates/apps/qip-deepbrain/src/node.rs:450 maybe_sweep runs in the deep brain run loop",
+      "backend/crates/runtime/qip-kernel/src/platform.rs DecisionUncertainty, DECISION_UNCERTAINTY_FLOOR, decision_uncertainties (called in stage_decide), Platform::decision_uncertainties",
+      "backend/crates/apps/qip-deepbrain/src/research.rs ResearchLoop::admit_decision_uncertainties",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::an_uncertain_sized_decision_becomes_an_information_request_at_the_cheapest_observation (a real cycle sizes an uncertain leg; the sweep launches a dec- request at the re-sweep cost with the decision's uncertainty and subject)"
     ],
-    "gap": "VOI is priced for research gaps, and since 2026-10-24 for the federation's own questions (R12-AMBIENT-10093: Platform::federation_information_requests admitted by ResearchLoop::admit_federation_requests). Still missing: DECIDE emits no decision-uncertainty gap: grep -rn 'decision_uncertainty|DecisionUncertainty' backend/crates finds nothing, platform.rs reads a proposal's confidence and nothing carries a low-confidence decision, its deadline and its value at stake to the research intake. That needs a new intake type in qip-kernel (platform.rs, outside this lane's territory) and a hand-off in qip-deepbrain node.rs, which IMPL-B is editing under ADR 0145. Corrected 2026-10-24.",
+    "gap": "2026-10-24 (lane L2-INTEL, skeptic REFUTED 9c61a602's 3104 half): DECIDE now hands sized legs at conviction <= 0.5 to the research sweep, which launches an InfoRequest at the cheapest viable observation; but against the requirement text: (1) no expected value of information is computed: net_value_bp is a product of four scores with no competing worlds, priors or payoff per world, and significance saturates at 100 units of notional so value at stake does not separate decisions; (2) the observation is the first viable in a fixed order (re-sweep, then acquisition), not the one most likely to discriminate, and the launched re-sweep is only a ScoutRequest handed to a discovery desk that is off by default (every_cycles 0), so nothing is observed; (3) 'lawful' is unchecked: admit_decision_uncertainties consults no licensed source, unlike admit_federation_requests; (4) only sized legs are covered: unsized, capped or refused theses, hypotheses rejected or vetoed, declines, hedges and capital moves are not; (5) the test lowers the review floor to 0.10, so the default ReviewPolicy path is not shown. Remaining step needs a design (an owner or ADR on what the competing worlds and their payoffs are): an EV over the claim resolving true or false with probabilities from conviction and the decision's payoff in each, observations scored by expected decision change net of cost, a licence gate, a launched observation that executes, coverage of unsized and rejected decisions, and a default-config integration test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2404,10 +2411,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research an_uncertain_sized_decision_becomes_an_information_request_at_the_cheapest_observation",
     "work_item": "",
     "size": "L",
-    "notes": "Checked 2026-10-18 against research.rs admit; 2026-10-24 lane T6-MODEL-AGENTS graded it LARGE_SPLITTABLE (docs/blueprint/lanes/T6-MODEL-AGENTS-triage.json) and left it to the ADR 0145 lane to avoid a conflicting edit of node.rs. Kept PARTIAL."
+    "notes": "Checked 2026-10-18 against research.rs admit; 2026-10-24 lane T6-MODEL-AGENTS graded it LARGE_SPLITTABLE (docs/blueprint/lanes/T6-MODEL-AGENTS-triage.json) and left it to the ADR 0145 lane to avoid a conflicting edit of node.rs. Kept PARTIAL. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the admit_decision_uncertainties call in sweep_over deleted (no dec- request); the decision_uncertainties assignment in stage_decide deleted (premise fails); the floor comparison inverted (premise fails). Skeptic (code-reviewer, read-only, default REFUTED) 2026-10-24: REFUTED on the five points in gap; it could not run the test (disk full at the time), the lane's own mutation runs are recorded above."
   },
   {
     "id": "R12-DATA-3105",
@@ -2416,7 +2423,7 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:620"
     ],
-    "gap": "Kinds and handlers.",
+    "gap": "2026-10-24 (re-read against the tree): InfoRequest (qip-contracts ambient.rs) has no kind: the research loop turns every launched request into one ScoutRequest (qip-deepbrain research.rs) whose only handler is the DiscoveryDesk (the 'new source query' kind, off by default). Alternative provider, microstructure probe, simulation, specialist agent, public filing fetch and additional measurement have no dispatch; qip-expansion AcquisitionAction is keyed on GapClass, not the request. Needs a qip-contracts schema change (architecture review or ADR), handlers that do not exist for filing fetch and alternative provider (vendor/connector), and the per-kind dispatch test.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2429,7 +2436,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: InfoRequest now sits near qip-contracts/src/ambient.rs:880."
   },
   {
     "id": "R12-AMBIENT-3106",

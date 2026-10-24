@@ -780,7 +780,7 @@
       "infrastructure/terraform/modules/data/main.tf:322 google_bigtable_instance timeseries (count enable_bigtable)",
       "infrastructure/environments/dev/terraform.tfvars:282 enable_bigtable = false"
     ],
-    "gap": "No writer/sink, no rebuild path.",
+    "gap": "2026-10-24 (re-read against the tree): google_bigtable_instance.timeseries (two autoscaling clusters, replication justified in a comment) is declared but enable_bigtable=false in all four envs, so no plan; no rebuild job from GCS/fabric and no Rust Bigtable client exist (provider refuses StorageTarget::Bigtable for want of a gRPC stack, ADR 0109 does not admit prost, ADR 0113 §1 does not admit Bigtable). Needs a Bigtable store ADR, a gRPC/protobuf dependency ADR or REST alternative, a rebuild job, a tfvar flip, and a plan.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -793,7 +793,7 @@
     "verification": "terraform plan; sink integration test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Line refs stale: the instance now carries a second cluster and app profiles in modules/data/main.tf; enable_bigtable in dev tfvars is at ~line 342."
   },
   {
     "id": "R12-DATA-10036",
@@ -822,7 +822,7 @@
     "status": "MISSING",
     "current": "No Dataplex/Knowledge Catalog resource.",
     "evidence": [],
-    "gap": "Declare catalog/lake/lineage.",
+    "gap": "2026-10-24 (re-read against the tree): No Knowledge Catalog/Dataplex resource (google_dataplex_*) anywhere under infrastructure/terraform, and no catalog, lineage or quality registration in code. ADR 0101 row C4 lists Knowledge Catalog among stores needing their own storage record, so this needs an ADR/owner decision, a managed service in Terraform, and a real plan.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -836,7 +836,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-10038",
@@ -1774,7 +1774,7 @@
     "status": "MISSING",
     "current": "No Bigtable writer in the workspace; Bigtable is gated off.",
     "evidence": [],
-    "gap": "Bigtable client + sink.",
+    "gap": "2026-10-24 (re-read against the tree): No Bigtable writer or fabric sink exists: StorageTarget::Bigtable is refused in qip-storage/src/provider.rs for want of a gRPC/HTTP2/protobuf stack, ADR 0109 does not admit prost, ADR 0113 §1 does not admit Bigtable. Needs a Bigtable store ADR plus a new-dependency ADR (NEW_DEPENDENCY), a running fabricd (event_fabric_broker null everywhere), and enable_bigtable flipped and applied. The ingest app profile it would write through is declared.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1787,7 +1787,7 @@
     "verification": "integration test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-10081",
@@ -1796,7 +1796,7 @@
     "evidence": [
       "backend/crates/services/qip-mesh/src/bigquery.rs"
     ],
-    "gap": "Fabric-driven sink.",
+    "gap": "2026-10-24 (re-read against the tree): No fabric-driven sink feeds qip_mesh::bigquery::BigQueryWarehouse; its only caller is qip-deepbrain's direct OutcomeSink, and nothing shows sink lag cannot affect producers. The adapter uses legacy tabledata.insertAll, not the Storage Write API the requirement names. Needs code (a fabric consumer driving the warehouse with a lag-isolation test), a running fabricd, QIP_BIGQUERY_* wiring in catalogue.tf and a deploy; the Storage Write API is gRPC/protobuf and needs a dependency ADR, or an owner restatement accepting insertAll.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1809,7 +1809,7 @@
     "verification": "cargo test -p qip-mesh --test bigquery",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'no Fabric sink drives it' is true but incomplete: qip-deepbrain/src/warehouse.rs OutcomeSink drives the adapter directly; it is off because no Terraform sets QIP_BIGQUERY_PROJECT/QIP_BIGQUERY_DATASET, though dev has enable_bigquery = true."
   },
   {
     "id": "R12-LEDGER-10082",
@@ -2379,7 +2379,7 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs no_workload_identity_can_delete_from_the_evidence_bucket",
       "backend/crates/services/qip-data-finder"
     ],
-    "gap": "Observation publisher to Fabric and evidence store.",
+    "gap": "2026-10-24 (re-read against the tree): No code writes an observation to the retention-locked evidence bucket: modules/evidence grants the deep brain a writer role but no Rust root writes connector observations to GCS (only the execution node is handed evidence_bucket). Connector evidence is journaled as EvidenceAdmittedRecord on evidence.admitted, but only from connector arms, which no committed environment configures (deepbrain_connector, market_data_connector null; cognition zone external_egress = {}). Needs code (an observation writer to the evidence bucket plus the integration test), a tfvar flip, and the owner's egress decision (or the ADR 0144 scout job deployed).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2392,7 +2392,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'No Fabric publication of observations' is stale: Platform::absorb_evidence journals each admitted claim with source and document hash on evidence.admitted (ADR 0152 §2), called from deepbrain ConnectorArm::poll, fastbrain node::step_with and api POST /cycle. Nothing goes to GCS."
   },
   {
     "id": "R12-EVID-10107",
@@ -2402,7 +2402,7 @@
       "backend/crates/services/qip-entity-resolution",
       "backend/crates/services/qip-world-model/src/evidence.rs"
     ],
-    "gap": "Graph persistence (Spanner Graph).",
+    "gap": "2026-10-24 (re-read against the tree): The unit clause is met (corroboration moves per-claim weight - confidence x authenticity x source reliability, qip-evidence fabric.rs - and per-source SourceHistory, tested in qip-world-model tests/evidence_fabric.rs ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it). Platform::absorb_evidence and WorldModel::absorb_evidence do not normalize claim subjects through the Resolver and never update the KnowledgeGraph; no graph persistence exists (no root uses the qip-mesh GraphStore; no Spanner Graph); the fabric is fed only by connectors no environment enables. Needs code (resolve entities, apply the delta to the graph), a deploy and ADR for graph persistence, and a connector tfvar plus owner egress decision.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2415,7 +2415,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: qip-world-model/src/evidence.rs does not exist; corroboration and trust live in qip-evidence/src/fabric.rs (re-exported by qip-world-model), and the Resolver is not on the evidence-intake path."
   },
   {
     "id": "R12-AMBIENT-10108",
@@ -3318,7 +3318,7 @@
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/replay.rs:1-3"
     ],
-    "gap": "Environment.",
+    "gap": "2026-10-24 (re-read against the tree): No replay environment exists: var.environment (infrastructure/terraform/variables.tf) accepts only dev/test/stage/prod, ADR 0118 fixes those four projects, and infrastructure/environments/ holds only their tfvars. 'replay' is only a Kargo approval gate (infrastructure/gitops/gates/replay/freight.yaml, ADR 0115) with no project, read-only curated-data grants, governance, or proof of no venue route. Needs an owner decision and an ADR 0118 amendment for a fifth environment, then tfvars and a plan.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3331,7 +3331,7 @@
     "verification": "plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-EXEC-10147",
@@ -3745,7 +3745,7 @@
       "backend/crates/libs/qip-contracts/src/knowledge_pack.rs",
       "infrastructure/terraform/modules/data/main.tf"
     ],
-    "gap": "Enable stores, sinks, catalog.",
+    "gap": "2026-10-24 (re-read against the tree): Phase 5 deliverables missing or off: GCS tick/internal archive (enable_cloud_storage=false everywhere); Bigtable (enable_bigtable=false everywhere, no Rust client, not admitted by ADR 0113 §1); Knowledge Catalog (no google_dataplex_* resource; ADR 0101 row C4 needs a storage record); replay/feature sinks (no fabric-driven sink to any store). BigQuery is on in dev tfvars but no Terraform sets QIP_BIGQUERY_PROJECT/QIP_BIGQUERY_DATASET for qip-deepbrain, and nothing is applied. No phase-5 exit test exists (ADR 0143's docs/architecture/phase-register.json is not committed; no phase-5 suite beside phase12_exit.rs/phase_16_exit.rs). Needs tfvar flips and applies, store ADRs for Bigtable and Knowledge Catalog, managed services, and the register plus exit test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3761,7 +3761,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'data stores declared but disabled' is stale: dev sets enable_bigquery = true (owner-approved 2026-10-19), a regional segment bucket and a simulation bucket are declared, and a knowledge-pack writer exists (qip-deepbrain connectors with_knowledge_packs, behind QIP_DEEPBRAIN_KNOWLEDGE_PACKS, unset by default)."
   },
   {
     "id": "R12-GCP-10165",
@@ -3939,7 +3939,7 @@
     "evidence": [
       "backend/crates/services/qip-twin/src/counterfactual.rs"
     ],
-    "gap": "Remaining twins.",
+    "gap": "2026-10-24 (re-read against the tree): Present: future-state tree (qip_twin::futures::FutureTree, qip-twin tests/futures.rs) and a market twin as per-instrument TwinState; a portfolio outcome distribution over one tree (FutureTree::portfolio_outcomes), not a counterfactual portfolio farm. Missing: macro and company twins, a rare-event factory, and any defined phase-13 exit test. Needs an owner decision on the exit test, licensed macro/company data (ADR 0157) and new code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3952,7 +3952,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'no future-state tree' is false: FutureTree exists with tests, grown by tick_desk and qip-cli agency TwinScenarios; rare-event pieces (beyond_history branches, Monte Carlo, adversarial_sequence) exist without a factory."
   },
   {
     "id": "R12-QUANT-10173",
@@ -4770,7 +4770,7 @@
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:322"
     ],
-    "gap": "App profiles.",
+    "gap": "2026-10-24 (re-read against the tree): Profiles are declared: google_bigtable_app_profile.timeseries with ingest (single-cluster to primary, high priority), serve (multi-cluster, medium) and batch (single-cluster to secondary, low) in modules/data/main.tf, planned only when enable_bigtable=true, which no env sets; no plan can run now. No Rust reader/writer picks a profile (Bigtable not admitted, ADR 0113 §1), and no acceptance test guards the profile-to-routing mapping. Needs a tfvar flip, a Bigtable store ADR, and a plan.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -4783,7 +4783,7 @@
     "verification": "plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'No Bigtable app profile declared' is false: three profiles (ingest/serve/batch) were added in commit 4f2da224 (local.bigtable_app_profiles, google_bigtable_app_profile.timeseries)."
   },
   {
     "id": "R12-CICD-10207",

@@ -431,7 +431,7 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/tick_hot_replay_indexes.rs"
     ],
-    "gap": "No replay worker placement.",
+    "gap": "2026-10-24 (re-read against the tree): No replay worker pool is provisioned separately from serving: no Terraform module, instance group or Cloud Run service/job in infrastructure/terraform is dedicated to replay; hot replay indexes exist only in-process (qip-acceptance tests/tick_hot_replay_indexes.rs, qip-edge-node replay.rs). Needs an owner cost decision (ADR 0101 C11), a Terraform placement plus per-env tfvar, and a plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -442,7 +442,7 @@
     "verification": "terraform plan with replay pool",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-7021",
@@ -3341,7 +3341,7 @@
       "backend/crates/tests/qip-acceptance/tests/market_creation.rs",
       "backend/crates/libs/qip-financial/src/commerce.rs"
     ],
-    "gap": "Logistics adapters; regulated wagering isolation not assessed.",
+    "gap": "2026-10-24 (re-read against the tree): Event markets (qip-prediction plus kernel event_markets.rs), market creation (market_factory_stage.rs, qip-acceptance tests/market_creation.rs) and paper physical commerce (qip-financial commerce.rs, kernel commerce_research.rs) exist and are tested; no logistics adapter exists - qip-financial commerce.rs LogisticsPlan is a planner with no carrier port and no simulated or real carrier adapter anywhere in backend/crates. A simulated carrier adapter is plain code; any real carrier is BLOCKED by ADR 0021/0099; the commerce plane is itself behind QIP_DEEPBRAIN_BREADTH_PLAN, unset in every committed env.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3352,7 +3352,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'regulated wagering isolation not assessed' is stale: qip-prediction src/access.rs isolates VenueKind::Wagering, tested by qip-prediction tests/access.rs and qip-kernel tests/breadth.rs."
   },
   {
     "id": "R12-AMBIENT-7146",

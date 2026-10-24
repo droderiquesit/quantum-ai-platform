@@ -121,9 +121,13 @@ fn tick(index: u64) -> Result<Record> {
 /// The session through the drain's lake sink, read back as lake lines in
 /// sequence order.
 fn drained() -> Result<Vec<serde_json::Value>> {
-    let lake = Arc::new(MemoryBlobStore::new());
+    drained_into(&Arc::new(MemoryBlobStore::new()))
+}
+
+/// [`drained`], into a store the caller keeps.
+fn drained_into(lake: &Arc<MemoryBlobStore>) -> Result<Vec<serde_json::Value>> {
     let mut sink = LakeSink::new(
-        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::clone(lake) as Arc<dyn BlobStore>,
         "edge-1",
         default_retention(),
         SegmentCodec::Identity,
@@ -273,5 +277,56 @@ fn the_recorded_sessions_clock_digest_is_reproducible_and_is_the_hand_worked_one
         "the replayed clock digest is not the hand-worked one:\n{}",
         clock_facts(&first)
     );
+    Ok(())
+}
+
+/// A replay reading the lake back gets the clock it was written with
+/// (R12-TICK-1201): `qip_storage::lake_history`, the reader every replay job
+/// uses, hands each tick its normalized instant and uncertainty, equal to
+/// the hand-worked figures.
+///
+/// Mutation: `decode_line` returns `clock: None` for the edge node's shape —
+/// line 0 fails, left None, right Some(..).
+#[test]
+fn reading_the_lake_back_returns_each_ticks_disciplined_clock() -> Result<()> {
+    use qip_storage::lake::Lake;
+    use qip_storage::lake_history::{HistoryQuery, RecordedClock};
+    use std::collections::BTreeSet;
+
+    let lake = Arc::new(MemoryBlobStore::new());
+    drained_into(&lake)?;
+    let granted = BTreeSet::from([SIMULATED_DATASET.to_string()]);
+    let reader = Lake::new(lake.as_ref());
+    reader.pin_market_history(
+        "clock",
+        &HistoryQuery {
+            from_date: "2000-01-01".to_string(),
+            to_date: "2100-01-01".to_string(),
+            venues: BTreeSet::new(),
+            instruments: BTreeSet::new(),
+            granted: granted.clone(),
+            max_segments: 100,
+            max_ticks: 1_000,
+        },
+    )?;
+    let mut ticks = reader.read_market_history("clock", &granted, 1_000)?.ticks;
+    ticks.sort_by_key(|tick| tick.message.origin.sequence);
+    assert_eq!(ticks.len() as u64, TICKS, "premise: every tick read back");
+    for (index, tick) in (0u64..).zip(&ticks) {
+        let venue = Timestamp::from_millis(venue_ms(index)).as_nanos();
+        let (normalized, uncertainty) = if index + 1 < MIN_SAMPLES {
+            (venue, OWN_UNCERTAINTY_NS)
+        } else {
+            (venue + ONE_MS, 2 * ONE_MS)
+        };
+        assert_eq!(
+            tick.clock,
+            Some(RecordedClock {
+                normalized_time: Timestamp::from_nanos(normalized),
+                uncertainty: Duration::from_nanos(uncertainty),
+            }),
+            "line {index}: the replayed clock is not the one the lake was written with"
+        );
+    }
     Ok(())
 }

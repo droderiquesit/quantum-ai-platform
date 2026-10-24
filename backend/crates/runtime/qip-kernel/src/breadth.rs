@@ -29,7 +29,11 @@
 //! before the synthetic venue that holds them is built, and the admissions
 //! are journaled with their references (R12-COVERAGE-5107). Until
 //! 2026-10-24 the event plane built its venue, and so its market and three
-//! instruments, with no admission of any kind.
+//! instruments, with no admission of any kind. The plane then holds the same
+//! register and asks it again at every listing (`list`) and every paper
+//! quote (`seed`), and [`Platform::revise_event_market_permissions`] — which
+//! the deep brain's permission watch calls beside the factory's — replaces
+//! it, so a revocation withdraws the market at the next pass.
 //!
 //! # Paper, by structure
 //!
@@ -45,7 +49,9 @@ use qip_contracts::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
-use qip_execution_engine::creation::{CreationAction, CreationAdmission, CreationRequest};
+use qip_execution_engine::creation::{
+    CreationAction, CreationAdmission, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::market_creation::PricingRule;
 use qip_prediction::access::{AccessBook, EntityRecord, Jurisdiction, VenuePolicy};
 use qip_prediction::{
@@ -61,8 +67,10 @@ use crate::market_factory_stage::{FactoryPlan, FactoryStage, PermissionEntry, re
 use crate::platform::Platform;
 use qip_observability::metrics::labels;
 
-/// Market Factory permission-register revisions, by `outcome`: `applied` or
-/// `revoked_all` (the fail-closed answer to an unreadable register).
+/// Creation permission-register revisions, by `outcome`: `applied` or
+/// `revoked_all` (the fail-closed answer to an unreadable register) for the
+/// Market Factory, `applied_events` or `revoked_all_events` for the event
+/// plane.
 pub const MARKET_PERMISSIONS_REVISED: &str = "qip_market_permissions_revised_total";
 
 /// The only source name this build can open for either plane.
@@ -92,8 +100,9 @@ pub struct EventMarketPlan {
     /// The creation register for the plane's own market and each outcome
     /// instrument: the same entries, and the same three authorities, the
     /// Market Factory's section records. Each instrument needs `create` from
-    /// the venue, the product rules and the jurisdiction. Empty refuses the
-    /// section (R12-COVERAGE-5107).
+    /// the venue, the product rules and the jurisdiction to be built, `list`
+    /// to be taken in when the venue lists it, and `seed` for a paper quote
+    /// to rest on it. Empty refuses the section (R12-COVERAGE-5107).
     #[serde(default)]
     pub permissions: Vec<PermissionEntry>,
 }
@@ -237,14 +246,9 @@ pub const MARKET_FACTORY_SCOPE: &str = "market-factory";
 /// four refusals.
 fn admit_event_market(
     section: &EventMarketPlan,
+    permissions: &CreationPermissions,
     venue: &VenueId,
 ) -> Result<Vec<EventMarketCreationAdmitted>> {
-    let permissions = register(&section.permissions).map_err(|error| {
-        Error::invalid(format!(
-            "configuration: the event-markets section's permissions do not parse: {}",
-            error.message()
-        ))
-    })?;
     let mut admitted = Vec::new();
     let mut refused = Vec::new();
     for product in std::iter::once(DEMO_MARKET_ID).chain(DEMO_OUTCOME_INSTRUMENTS) {
@@ -289,7 +293,8 @@ fn open_event_plane(
         return Err(refuse_source("event-market", &section.source));
     }
     let config = SyntheticVenueConfig::demo(seed)?;
-    let admitted = admit_event_market(section, &config.venue)?;
+    let permissions = event_register(&section.permissions)?;
+    let admitted = admit_event_market(section, &permissions, &config.venue)?;
     let venue = SyntheticPredictionVenue::new(config, now)?;
     let plane = EventMarketPlane::open(
         Box::new(venue),
@@ -297,6 +302,8 @@ fn open_event_plane(
         access,
         section.entity.clone(),
         synthetic_oracle()?,
+        permissions,
+        section.jurisdiction.clone(),
     )?;
     let line = format!(
         "event markets from {} ({}, research only): {} instrument(s) admitted for creation in {}; \
@@ -309,6 +316,17 @@ fn open_event_plane(
         section.policies.len()
     );
     Ok((plane, admitted, line))
+}
+
+/// The event-markets section's creation register, refused whole naming the
+/// section when an entry does not parse.
+fn event_register(entries: &[PermissionEntry]) -> Result<CreationPermissions> {
+    register(entries).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: the event-markets section's permissions do not parse: {}",
+            error.message()
+        ))
+    })
 }
 
 fn refuse_source(section: &str, source: &str) -> Error {
@@ -542,6 +560,45 @@ impl Platform {
             self.telemetry.metrics.count(
                 MARKET_PERMISSIONS_REVISED,
                 labels([("outcome", "revoked_all")]),
+            );
+        }
+    }
+
+    /// Replace the event plane's creation register with `entries`, as the
+    /// deep brain does each cycle from its plan file (R12-COVERAGE-5107).
+    ///
+    /// The next DISCOVER or SIMULATE pass withdraws every event market whose
+    /// `create` or `list` permission is gone and rests no quote without
+    /// `seed`. Until 2026-10-24 the register was read once, at install, for
+    /// `create` alone, and nothing an operator revoked reached a running
+    /// plane. Refuses with no event plane installed, and refuses a register
+    /// that does not parse, leaving the old one in place; the deep brain
+    /// then revokes everything. Returns the number of entries applied.
+    pub fn revise_event_market_permissions(
+        &mut self,
+        entries: &[PermissionEntry],
+    ) -> Result<usize> {
+        let register = event_register(entries)?;
+        let plane = self.breadth.events.as_mut().ok_or_else(|| {
+            Error::invalid("no event-market plane is installed, so there is no register to revise")
+        })?;
+        plane.set_creation_permissions(register);
+        self.telemetry.metrics.count(
+            MARKET_PERMISSIONS_REVISED,
+            labels([("outcome", "applied_events")]),
+        );
+        Ok(entries.len())
+    }
+
+    /// Revoke every event-plane creation permission: every event market is
+    /// withdrawn at the next pass. The fail-closed answer to a register
+    /// nobody can read. A no-op without an event plane.
+    pub fn revoke_event_market_permissions(&mut self) {
+        if let Some(plane) = self.breadth.events.as_mut() {
+            plane.set_creation_permissions(CreationPermissions::new());
+            self.telemetry.metrics.count(
+                MARKET_PERMISSIONS_REVISED,
+                labels([("outcome", "revoked_all_events")]),
             );
         }
     }

@@ -426,6 +426,36 @@ fn an_ensembles_resolved_forecasts_never_freshen_the_self_model() -> Result<()> 
     Ok(())
 }
 
+/// R12-MODEL-6016: an ensemble is graded by the side its combined view took,
+/// like a member, and never reaches the freshness facts the sizing bound
+/// reads. The second half is not hypothetical: the first cut of ensemble
+/// charging let the federation's arbitration freshen the self-model.
+/// Mutation: drop `ComponentKind::Ensemble` from `sample_facts`' filter — the
+/// ensemble's record is counted and the last assertion fails.
+#[test]
+fn an_ensemble_forecast_is_charged_by_the_side_it_took_and_never_freshens_the_self_model()
+-> Result<()> {
+    let mut model = SelfModel::new();
+    let ensemble = ComponentKey::new(ComponentKind::Ensemble, "world-model-federation")?;
+    for n in 0..12 {
+        // Twelve resolutions, more than any minimum sample, so a leak would
+        // read fresh rather than thin.
+        assert!(model.absorb_forecast(
+            ensemble.clone(),
+            format!("p{n}"),
+            0.7,
+            n % 3 != 0,
+            at(n)
+        )?);
+    }
+    let estimate = model.get(&ensemble).expect("the ensemble was charged");
+    assert_eq!(estimate.sample_count(), 12);
+    // 0.7 says true; true for eight of the twelve.
+    assert_eq!(estimate.hits(), 8);
+    assert_eq!(model.sample_facts().count(), 0);
+    Ok(())
+}
+
 /// A confident outcome: stated at `confidence`, right or wrong.
 fn graded(n: usize, confidence: f64, correct: bool) -> ScoredOutcome {
     ScoredOutcome::new(format!("hyp-{n}"), confidence, correct, at(n)).expect("a probability")

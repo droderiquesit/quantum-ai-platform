@@ -105,7 +105,7 @@ impl ExecutionOutcome {
 }
 
 /// One instrument's two-sided book.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 struct InstrumentBook {
     /// Highest price first, then earliest sequence.
     bids: Vec<Resting>,
@@ -142,7 +142,11 @@ impl InstrumentBook {
 }
 
 /// Books for every listed instrument.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+// Serialize for a snapshot a person reads; deliberately not Deserialize. A
+// decoded engine would arrive with books open and liquidity resting that no
+// admission ever opened or seeded (R12-EXEC-5079), so the only way an engine
+// comes to hold a book is `open`, and venue liquidity `seed`.
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct MatchingEngine {
     /// One entry per instrument [`MatchingEngine::open`] opened, and no
     /// other: nothing here creates a book on demand.
@@ -342,8 +346,13 @@ impl MatchingEngine {
         }
 
         let filled = quantity - remaining;
+        // Venue flow takes and never rests (R12-EXEC-5079). Resting liquidity
+        // that belongs to the venue is seeding, and `seed` is the one way to
+        // it, under a seeding admission; a venue-owned remainder resting here
+        // would be seeded liquidity nobody admitted. It is cancelled like a
+        // market order's.
         match limit {
-            Some(price) if remaining > Decimal::ZERO => {
+            Some(price) if remaining > Decimal::ZERO && owner.is_client() => {
                 let sequence = self.sequence.saturating_add(1);
                 let book = self.opened(object_id)?;
                 book.side_mut(side).push(Resting {
@@ -454,6 +463,18 @@ impl MatchingEngine {
             let Some(order) = orders.get_mut(index) else {
                 continue;
             };
+            // Only a client's own order is amended here. Venue liquidity
+            // changes by `seed`, under an admission, and an amendment that
+            // could enlarge a seeded order would be seeding without one
+            // (R12-EXEC-5079).
+            if !order.owner.is_client() {
+                return Err(Error::denied(format!(
+                    "{} rests as venue liquidity in {}, and only a client's own order is \
+                     amended; venue liquidity changes by seeding, under a seeding admission",
+                    order_id.as_str(),
+                    object_id.as_str()
+                )));
+            }
             let moved_price = price.is_some_and(|price| price != order.price);
             let lost_priority = moved_price || quantity > order.quantity;
             if let Some(price) = price {
