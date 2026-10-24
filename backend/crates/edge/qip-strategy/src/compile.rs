@@ -107,6 +107,8 @@ pub struct CompiledRule {
     size: NodeRef,
     conviction: NodeRef,
     observations: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected_edge: Option<NodeRef>,
 }
 
 impl CompiledRule {
@@ -127,6 +129,10 @@ impl CompiledRule {
     }
     pub const fn observations(&self) -> u32 {
         self.observations
+    }
+    /// The node holding the edge the rule declared, if it declared one.
+    pub const fn expected_edge(&self) -> Option<NodeRef> {
+        self.expected_edge
     }
 }
 
@@ -273,10 +279,12 @@ impl StrategyCompiler {
         let mut cost = 0usize;
         for rule in &spec.rules {
             for (label, expr) in [
-                ("condition", &rule.condition),
-                ("size", &rule.size),
-                ("conviction", &rule.conviction),
+                ("condition", Some(&rule.condition)),
+                ("size", Some(&rule.size)),
+                ("conviction", Some(&rule.conviction)),
+                ("expected_edge", rule.expected_edge.as_ref()),
             ] {
+                let Some(expr) = expr else { continue };
                 let site = format!("rule '{}'.{label}", rule.name);
                 self.measure(expr, 0, &mut cost, &site)?;
             }
@@ -319,6 +327,15 @@ impl StrategyCompiler {
                 &format!("rule '{}'.conviction", rule.name),
                 &mut warnings,
             )?;
+            let expected_edge = match &rule.expected_edge {
+                Some(edge) => Some(self.lower_typed(
+                    edge,
+                    Type::Statistic,
+                    &format!("rule '{}'.expected_edge", rule.name),
+                    &mut warnings,
+                )?),
+                None => None,
+            };
             rules.push(CompiledRule {
                 name: rule.name.clone(),
                 kind: rule.kind,
@@ -326,6 +343,7 @@ impl StrategyCompiler {
                 size,
                 conviction,
                 observations: rule.observations,
+                expected_edge,
             });
         }
 
@@ -333,7 +351,11 @@ impl StrategyCompiler {
 
         let roots: Vec<NodeRef> = rules
             .iter()
-            .flat_map(|rule| [rule.condition, rule.size, rule.conviction])
+            .flat_map(|rule| {
+                [rule.condition, rule.size, rule.conviction]
+                    .into_iter()
+                    .chain(rule.expected_edge)
+            })
             .collect();
         let plan = self.program.reachable_from(&roots);
         let cost = self.program.cost_of(&roots);

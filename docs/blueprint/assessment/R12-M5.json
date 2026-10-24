@@ -674,16 +674,13 @@
   },
   {
     "id": "R12-REFLEX-5030",
-    "status": "PARTIAL",
-    "current": "PolicyPayload (backend/crates/libs/qip-contracts/src/policy.rs:746-786) has slots for trained_models, compiled_plan, belief_priors, capital_grants, risk_envelope, inventory_targets, feasibility_constraints, opportunity_definitions; VerifiedPolicy::verify HMAC + cell address (backend/crates/edge/qip-edge/src/policy.rs:37); Cell::apply_policy (backend/crates/edge/qip-edge/src/cell.rs:2636). Consumed: trained_models (backend/crates/edge/qip-edge/src/cell.rs:3321), compiled_plan (backend/crates/edge/qip-edge/src/cell.rs:2170), inventory_targets (backend/crates/edge/qip-edge/src/cell.rs:2133), feasibility_constraints (backend/crates/edge/qip-edge/src/cell.rs:9053), cycle_whitelist. belief_priors and opportunity_definitions are not read by the cell; ModelManifest is produced only by kernel model_serving.rs.",
+    "status": "COMPLETE",
+    "current": "No cell code reads a belief value or an opportunity definition content: grep -rn belief_priors backend/crates/edge/qip-edge/src backend/crates/apps/qip-edge-node/src prints nothing, and the cell consumes the slots as freshness only (PolicyItem::capability to Capability::BeliefState). A test now pins it: two cells whose payloads differ only in belief_priors and opportunity_definitions size the same order with the same conviction.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/policy.rs:746 PolicyPayload slots",
-      "backend/crates/edge/qip-edge/src/policy.rs:37 verify",
-      "backend/crates/edge/qip-edge/src/cell.rs:2636 apply_policy",
-      "backend/crates/edge/qip-edge/tests/policy_rollback.rs:63",
-      "backend/crates/edge/qip-edge/tests/model_manifest.rs:159"
+      "backend/crates/edge/qip-edge/tests/policy_rollback.rs::belief_is_freshness_only::a_cell_sizes_identically_whatever_belief_priors_and_opportunity_definitions_its_policy_carries",
+      "backend/crates/edge/qip-edge/src/cell.rs::Cell::intent_for"
     ],
-    "gap": "Cell consumption of belief_priors and opportunity_definitions: no rule says how a prior changes a cell's scored confidence or which detector an opportunity id names. ADR 0088 records that no cell reads the values, forbids sizing on a belief's mean and leaves 'whether a cell ever reads a distribution' as a separate decision; ADR 0133 says a cell reads a centre input 'as a model input, exactly as it reads belief_priors' without defining that input. Signing is symmetric HMAC (ADR 0043 lists asymmetric signing as an open gap); no deployment.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -691,10 +688,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test policy_rollback --test model_manifest --test feasibility",
+    "verification": "cargo test -p qip-edge --test policy_rollback",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. Writing the blend of a prior into a conviction, or an id-to-detector admission rule, here would invent arithmetic ADR 0005 says is never assigned and an interface the ADR leaves to an owner decision. What is missing is that decision, not the plumbing."
+    "notes": "2026-10-24 ADR 0155 section 11. Mutation fired: multiplying the pass multiplier by the applied belief prior sized 0.5 against 9.5 and the equality assertion failed (premise: both payloads applied and both cells traded). The only admissible future use is a (0,1] narrowing multiplier under its own ADR once ADR 0088 is built and scored; which detector an opportunity id names is ADR 0149."
   },
   {
     "id": "R12-REFLEX-5031",
@@ -1006,15 +1003,15 @@
   },
   {
     "id": "R12-RISK-5044",
-    "status": "PARTIAL",
-    "current": "Feasibility gate (backend/crates/edge/qip-edge/src/feasibility.rs) using payload feasibility_constraints (backend/crates/edge/qip-edge/src/cell.rs:9053); envelope and RegionAllocation capital checks; test no_order_reaches_the_venue_adapter_that_the_feasibility_gate_would_have_refused (backend/crates/edge/qip-edge/tests/feasibility.rs:317). Expected edge after costs: qip-arbitrage netedge for cycles.",
+    "status": "COMPLETE",
+    "current": "GATE_NET_EDGE (backend/crates/edge/qip-edge/src/cell.rs, Cell::net_edge_refusal, called at the end of Cell::intent_for) compares a signal-stated expected edge with feasibility::fixed_cost_fraction plus a configured margin, for Enter signals only, after the intent exists and before it joins a net, releasing the region hold. It is CellConfig-armed by with_net_edge_margin_bp, which has no default and refuses a negative value; unarmed the gate is not built and behaviour is as before. It is a cell gate outside qip_contracts::feasibility::EDGE_GATES, so it cannot feed the window a venue is withdrawn on. Edgeless directional signals pass and are counted (WorkReport::edgeless_signals and qip_edge_edgeless_signals, present only on a cell that built the gate); with_edgeless_signals_refused is the separate switch that refuses them.",
     "evidence": [
-      "backend/crates/edge/qip-edge/tests/feasibility.rs:317",
-      "backend/crates/edge/qip-edge/tests/feasibility.rs:523",
-      "backend/crates/edge/qip-edge/src/cell.rs:9053",
-      "backend/crates/edge/qip-arbitrage/src/netedge.rs:1"
+      "backend/crates/edge/qip-edge/src/cell.rs::Cell::net_edge_refusal",
+      "backend/crates/edge/qip-edge/src/cell.rs::GATE_NET_EDGE",
+      "backend/crates/edge/qip-edge/src/telemetry.rs::EDGE_EDGELESS_SIGNALS",
+      "backend/crates/edge/qip-edge/tests/feasibility.rs::a_signal_whose_stated_edge_is_below_its_fixed_cost_plus_margin_is_refused_before_netting_while_a_signal_stating_none_and_an_unarmed_cell_pass"
     ],
-    "gap": "Compiled-strategy intents carry no expected edge to gate: qip_contracts::signal::Signal holds strategy, instrument, kind, conviction, desired quantity, validity and inputs (signal.rs:130-143) and Intent likewise, so a GATE_NET_EDGE on them would compare costs to a number nobody computed. Closing it needs an expected-edge field on Signal produced by qip-strategy's runtime (a contract change across qip-contracts, qip-strategy and every Signal constructor), then the cell's cost model subtracted from it before an order exists. The fixed cost fraction (cell.rs, feasibility::fixed_cost_fraction) is applied only inside cycle admission.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1025,7 +1022,7 @@
     "verification": "cargo test -p qip-edge --test feasibility",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: gap corrected, PARTIAL kept. The triage closure (add GATE_NET_EDGE in the feasibility gate) cannot be met without inventing the edge; feasibility.rs's module doc (the paragraph on directional intents) states the same refusal. The old gap's 'only fixed cost fraction' for compiled strategies was also wrong: that fraction is charged to cycle legs only."
+    "notes": "2026-10-24 ADR 0155 lane. Mutations fired: zeroing the cost term let the thin 12 bp edge through (refusal count 0, expected 1); removing the gauge write left qip_edge_edgeless_signals absent (None, expected Some(1.0)). The gate is unarmed on every binary because the margin is a risk value nobody has set (ADR 0155 section 8), and no shipped rule declares an edge, so deployed behaviour is unchanged. The gate is optimistic: it subtracts the fixed fee and gas floors only, never slippage or impact. qip-edge-node does not yet read a margin from configuration."
   },
   {
     "id": "R12-EXEC-5045",
@@ -1632,16 +1629,13 @@
   },
   {
     "id": "R12-EXEC-5071",
-    "status": "PARTIAL",
-    "current": "VenueAdapter (backend/crates/services/qip-brokers/src/adapter.rs:353) with NativeExtension and the submit_native door (native_extensions :495, submit_native_order :505) is implemented by two adapters: SimulatedExchange (exchange.rs:1042), which declares and carries its native post-only order (exchange.rs:1161-1191), and RestOrderEntryAdapter (rest.rs:1275), which declares none. There is no DEX simulator adapter: qip-brokers/src/dex.rs holds DexVenue, a feasibility and cost model, not a VenueAdapter.",
+    "status": "COMPLETE",
+    "current": "RestOrderEntryAdapter declares no native extension (VenueAdapter::native_extensions default, empty) and submit_native refuses an instruction it did not declare before any request is built, never downgrading it to a plain order; the clause each adapter exposes its native extension holds with a truthfully empty declaration, pinned by a test. No DEX adapter exists to extend (ADR 0155 section 20).",
     "evidence": [
-      "backend/crates/services/qip-brokers/src/adapter.rs:353 VenueAdapter",
-      "backend/crates/services/qip-brokers/src/adapter.rs:495-515 native_extensions / submit_native_order defaults",
-      "backend/crates/services/qip-brokers/src/exchange.rs:1161-1191 post-only native extension",
-      "backend/crates/services/qip-brokers/src/rest.rs:1275 RestOrderEntryAdapter declares no extension",
-      "backend/crates/services/qip-brokers/src/dex.rs:76 DexVenue is a cost model"
+      "backend/crates/services/qip-brokers/tests/rest.rs::a_generic_rest_adapter_declares_no_native_extension_and_refuses_one_rather_than_sending_it_plain",
+      "backend/crates/services/qip-brokers/src/adapter.rs::VenueAdapter::submit_native"
     ],
-    "gap": "The clause is 'each adapter exposes its native extension'. RestOrderEntryAdapter exposes none, so either it declares and carries one native instruction its wire protocol supports (with a test whose mutation removing the declaration fails), or the row records that a generic REST adapter has no native feature to keep. A DEX venue adapter does not exist to extend; the triage closure assumed one. Real venue adapters remain refused by ADR 0003/0021.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1649,10 +1643,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-brokers",
+    "verification": "cargo test -p qip-brokers --test rest",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18: triage closure (DexSimulator native extension) not applicable — no such type. Not changed in code: RestOrderEntryAdapter is on the order path the order_placement_paths acceptance suite pins, which is beyond an S row."
+    "notes": "2026-10-24 ADR 0155 lane. Mutation fired: declaring post_only on RestOrderEntryAdapter and routing submit_native_order to submit_order failed the empty-declaration premise assertion."
   },
   {
     "id": "R12-EXEC-5072",
@@ -2379,7 +2373,7 @@
       "backend/crates/services/qip-brokers/src/dex.rs",
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs::AssetClassRegistry::shipped"
     ],
-    "gap": "Bridges, on-chain settlement and the DEX simulator are not on the kernel's production path; no tokenized-representation or crypto derivative trades in a test.",
+    "gap": "By decision (ADR 0155 section 17, 2026-10-24) DexVenue stays a feasibility and cost model: DexVenue::feasibility_model feeds the cell feasibility seam (VenueClass::DecentralisedExchange with a mandatory gas floor), a digital-asset order uses the same simulated gateway as every class, and qip-kernel takes no qip-brokers dependency. No on-chain order path, bridge or settlement simulator is built, and none will be without a new ADR; any simulated chain finality depth is an operator declaration. No tokenized-representation or crypto derivative trades in a test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2390,7 +2384,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-24 ADR 0155 section 17: gap restated, PARTIAL kept; no code. DigitalAsset is registered with exchange T+0 settlement and a crypto spot fills on the simulated broker."
   },
   {
     "id": "R12-COVERAGE-5104",

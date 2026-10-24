@@ -2624,16 +2624,13 @@
   {
     "id": "R12-GOV-6116",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-compliance/src/eligibility.rs:43-58 defines all five SubjectKinds (venue, product, entity, jurisdiction, strategy). EligibilityRecord (:98) carries jurisdictions, grantor and lifetime. EligibilityRegister::check (:244-280) refuses a subject with no record (Refusal::NoRecord) and a missing jurisdiction record. The register is built in a shipped binary: qip-cli `agency shadow` loads it from the policy document (apps/qip-cli/src/agency.rs:228; dispatched from apps/qip-cli/src/main.rs:73). Every pass's touched subjects are put to it (services/qip-agency/src/engine.rs:700-725).",
+    "current": "The compliance EligibilityRegister is the one register of operating permission (ADR 0155 section 21). StrategyFactory::promote now calls admit_deployment on the candidate strategy family, the plane jurisdiction, venues and products when CentralConfig::promotion_eligibility is set (qip-kernel/src/central/factory.rs PromotionEligibility); a family with no record, an expired record, or an unrecorded venue or product refuses naming each. The learning promotion path (promote_strategies_with_evidence) reaches it through promote. The kernel holds no eligibility table of its own; the user registry and ProductCatalogue answer to whom a product may be offered.",
     "evidence": [
-      "backend/crates/libs/qip-compliance/src/eligibility.rs:43",
-      "backend/crates/libs/qip-compliance/src/eligibility.rs:244",
-      "backend/crates/apps/qip-cli/src/agency.rs:228",
-      "libs/qip-compliance/tests/eligibility.rs::each_of_the_five_subject_kinds_carries_a_record_and_an_absent_one_refuses",
-      "libs/qip-compliance/tests/eligibility.rs::a_record_admits_only_in_its_jurisdictions_between_grant_and_expiry_and_not_once_revoked",
-      "services/qip-agency/tests/journal.rs::a_goal_touching_a_venue_not_eligible_in_its_jurisdiction_chooses_nothing"
+      "backend/crates/runtime/qip-kernel/src/central/factory.rs::StrategyFactory::promote",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs::CentralConfig::promotion_eligibility",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_family_cleared_in_the_product_catalogue_but_unrecorded_in_the_compliance_register_cannot_be_promoted"
     ],
-    "gap": "EligibilityRegister is consumed only by the shadow agency CLI; trading-path venues, products and strategies carry no eligibility metadata.",
+    "gap": "Unarmed on every binary (2026-10-24): CentralConfig::promotion_eligibility defaults to None and no composition root sets it, because the register must be loaded from the committed seed (data/datasets/paper-eligibility.json) at runtime and the image build context is backend/ only (infrastructure/docker/Dockerfile COPY backend/), so the seed is not in any deployed image and nothing publishes it to a deployment. Arming needs the seed published like universe.json (a Terraform module and gitops change) and the three roots reading it. Production strategy families come from foundry lineages, which the seed (the ten alpha families) does not name, so arming today would refuse them; that list needs the operator to state which lineages are permitted.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2641,10 +2638,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital && cargo test -p qip-kernel",
+    "verification": "cargo test -p qip-kernel --test central -- a_family_cleared a_promotion_naming",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Scope note: the register is populated only from the agency policy file. The trading paths (the cell's configured venues, the kernel's strategy registry) attach no record from it; that gap belongs to GOV-6118. The kernel has a separate product/user eligibility (platform.rs:269-276, ProductCatalogue/fund_user) that does not share this register. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Register exists and gates agency planning only; the platform's venues/strategies do not carry eligibility metadata."
+    "notes": "2026-10-24 ADR 0155 lane: mechanism built, PARTIAL kept. Mutations fired: skipping the register check in promote, and reading a missing record as eligible (qip-compliance check), each failed both new tests (premise: the seeded family and venue promote first)."
   },
   {
     "id": "R12-GOV-6117",
@@ -2671,14 +2668,13 @@
   {
     "id": "R12-GOV-6118",
     "status": "PARTIAL",
-    "current": "EligibilityRegister::admit_deployment and admit_enablement (backend/crates/libs/qip-compliance/src/eligibility.rs:299-340) refuse a strategy deployment or a venue/instrument enablement that names any subject without an eligible record. They are called only from libs/qip-compliance/tests/eligibility.rs. No strategy promotion path (qip-lifecycle, kernel promote) and no venue enablement path (cell CellConfig::with_venue, whitelist/grant application) consults the register. The kernel's nearest gate is Platform::product_refusal (runtime/qip-kernel/src/platform.rs:6230-6280), which gates funding a user into a strategy family, not deploying a strategy or enabling a venue.",
+    "current": "EligibilityRegister::admit_deployment is now called at StrategyFactory::promote (and so on the learning promotion path) when the plane is armed, with the strategy family as subject. A committed seed, data/datasets/paper-eligibility.json, holds one record per simulated venue (XLON, XNYS, XPAR), per asset-class product (fifteen) and per alpha family (ten) plus the jurisdiction paper, in the single jurisdiction paper, each granted by ADR 0155 section 24 and expiring 2027-10-19; a test asserts every seed record names exactly the paper jurisdiction.",
     "evidence": [
-      "backend/crates/libs/qip-compliance/src/eligibility.rs:299",
-      "backend/crates/libs/qip-compliance/src/eligibility.rs:329",
-      "libs/qip-compliance/tests/eligibility.rs::deployment_and_enablement_are_refused_naming_every_subject_without_a_record",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:6230"
+      "backend/crates/runtime/qip-kernel/src/central/factory.rs::StrategyFactory::promote",
+      "data/datasets/paper-eligibility.json",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_promotion_naming_a_venue_with_no_eligibility_record_is_refused_while_the_committed_paper_seed_admits_the_simulated_venues_and_only_the_paper_jurisdiction"
     ],
-    "gap": "EligibilityRegister::admit_deployment and admit_enablement exist and are exercised by qip-compliance tests and loaded only by qip-cli's agency policy. Neither is called from the kernel promotion seams (central/learning.rs promote_strategies_with_evidence, central/factory.rs promote) or CellConfig::with_venue, and no committed eligibility records exist for a composition root to load: a fail-closed gate would refuse every promotion until an operator commits records, which is a regulatory input this lane does not hold. Wiring it optional (no register, no gate) would be a gate that runs nowhere by default.",
+    "gap": "Two of ADR 0155 section 23 three call sites are not wired (2026-10-24): the plane is unarmed on every binary (see R12-GOV-6116: the seed is not published to any deployment and the image build context excludes data/), and qip-edge-node assemble does not yet call admit_enablement for every venue it passes to CellConfig::with_venue, which would refuse to start on a venue the seed does not name and needs the seed loaded at that root. The seed expires 2027-10-19 and an expired seed stops every promotion at once, by design.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2688,10 +2684,10 @@
       "R12-GOV-6116"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel (new)",
+    "verification": "cargo test -p qip-kernel --test central -- a_promotion_naming",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The gate is library-only; grep finds no non-test caller of admit_deployment/admit_enablement. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": "2026-10-24 ADR 0155 lane: promotion gate and seed built, PARTIAL kept. Mutations fired: reading a missing record as eligible made the unrecorded-venue assertion fail (premise: the seeded venue and family promote). The seed jurisdiction assertion walks every record, so a record naming a real jurisdiction fails the build."
   },
   {
     "id": "R12-GOV-6119",

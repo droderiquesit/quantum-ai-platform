@@ -353,11 +353,20 @@ fn proposal(id: &StrategyId, cell: &str) -> Result<StrategyProposal> {
 
 /// Register a candidate with evidence that passes every gate.
 fn register(plane: &mut CentralPlane, id: &StrategyId, cell: &str) -> Result<()> {
+    register_in_family(plane, id, cell, "central-tests")
+}
+
+fn register_in_family(
+    plane: &mut CentralPlane,
+    id: &StrategyId,
+    cell: &str,
+    family: &str,
+) -> Result<()> {
     let (compiled, program) = compile(id.as_str())?;
     let candidate = StrategyCandidate::new(
         compiled,
         program,
-        StrategyFamily::new("central-tests")?,
+        StrategyFamily::new(family)?,
         cell,
         venue(),
         start(),
@@ -8397,5 +8406,130 @@ fn a_successor_candidate_records_its_ancestor_inherits_no_evidence_and_still_nee
     )?
     .with_succeeds(StrategyId::new("never-registered"));
     assert!(plane.factory_mut().register(orphan).is_err());
+    Ok(())
+}
+
+// --- operating eligibility at promotion (ADR 0155 section 21 to 24) ----------
+
+fn paper_seed() -> Vec<qip_compliance::eligibility::EligibilityRecord> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../../data/datasets/paper-eligibility.json"
+    );
+    let text = std::fs::read_to_string(path).expect("the committed paper seed is readable");
+    serde_json::from_str(&text).expect("the committed paper seed parses")
+}
+
+fn armed_plane(
+    records: Vec<qip_compliance::eligibility::EligibilityRecord>,
+    venues: &[&str],
+) -> Result<CentralPlane> {
+    let register = qip_compliance::eligibility::EligibilityRegister::from_records(records)?;
+    let config = CentralConfig {
+        promotion_eligibility: Some(qip_kernel::central::PromotionEligibility {
+            register,
+            jurisdiction: "paper".to_string(),
+            venues: venues.iter().map(|v| (*v).to_string()).collect(),
+            products: vec!["equity".to_string()],
+        }),
+        ..CentralConfig::default()
+    };
+
+    CentralPlane::new(&[7u8; 32], config)
+}
+
+/// Inside the seed's window: the seed is granted 2026-10-19 and expires a
+/// year on, and a promotion judged outside it is refused by design.
+fn inside_seed() -> Timestamp {
+    Timestamp::from_secs(1_793_000_000)
+}
+
+#[test]
+fn a_promotion_naming_a_venue_with_no_eligibility_record_is_refused_while_the_committed_paper_seed_admits_the_simulated_venues_and_only_the_paper_jurisdiction()
+-> Result<()> {
+    // The failure this prevents: a committed seed that quietly named a real
+    // jurisdiction would make the platform look permitted somewhere it is not
+    // (ADR 0003), and a gate that read a missing record as eligible would
+    // promote onto a venue nobody recorded.
+    let seed = paper_seed();
+    assert!(!seed.is_empty(), "premise: the seed holds records");
+    for record in &seed {
+        assert_eq!(
+            record.jurisdictions,
+            std::collections::BTreeSet::from(["paper".to_string()]),
+            "{} names a jurisdiction other than paper",
+            record.subject
+        );
+    }
+
+    // Premise: the seeded simulated venue and family promote.
+    let id = strategy();
+    let mut seeded = armed_plane(seed.clone(), &["XNYS"])?;
+    register_in_family(&mut seeded, &id, CELL, "momentum_and_trend")?;
+    seeded
+        .factory_mut()
+        .promote(&id, None, "the seed admits it", inside_seed())?;
+    assert_eq!(seeded.factory().stage_of(&id), GateStage::Holdout);
+
+    // A venue nobody recorded refuses, naming it.
+    let mut unrecorded = armed_plane(seed.clone(), &["XNYS", "XFAKE"])?;
+    register_in_family(&mut unrecorded, &id, CELL, "momentum_and_trend")?;
+    let refused = unrecorded
+        .factory_mut()
+        .promote(&id, None, "no record for the venue", inside_seed())
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("XFAKE"), "{refused}");
+
+    // The seed is fail-closed in time: past its expiry nothing promotes.
+    let mut late = armed_plane(seed, &["XNYS"])?;
+    register_in_family(&mut late, &id, CELL, "momentum_and_trend")?;
+    let expired = late
+        .factory_mut()
+        .promote(
+            &id,
+            None,
+            "seed expired",
+            Timestamp::from_secs(1_830_000_000),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(expired.contains("expired"), "{expired}");
+    Ok(())
+}
+
+#[test]
+fn a_family_cleared_in_the_product_catalogue_but_unrecorded_in_the_compliance_register_cannot_be_promoted()
+-> Result<()> {
+    // `central-tests` is not in the seed: whatever a catalogue says about
+    // offering it, the register that answers "may the operator deploy it" has
+    // no record, and no record is ineligible.
+    let id = strategy();
+    let mut plane = armed_plane(paper_seed(), &["XNYS"])?;
+    register_in_family(&mut plane, &id, CELL, "central-tests")?;
+    let refused = plane
+        .factory_mut()
+        .promote(&id, None, "unrecorded family", inside_seed())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("central-tests") && refused.contains("no eligibility record"),
+        "{refused}"
+    );
+
+    // Premise: the same family promotes once a record exists, so the refusal
+    // above was the register's and not something else's.
+    let mut records = paper_seed();
+    let mut recorded = records[0].clone();
+    recorded.subject = qip_compliance::eligibility::Subject::new(
+        qip_compliance::eligibility::SubjectKind::Strategy,
+        "central-tests",
+    );
+    records.push(recorded);
+    let mut plane = armed_plane(records, &["XNYS"])?;
+    register_in_family(&mut plane, &id, CELL, "central-tests")?;
+    plane
+        .factory_mut()
+        .promote(&id, None, "recorded family", inside_seed())?;
     Ok(())
 }

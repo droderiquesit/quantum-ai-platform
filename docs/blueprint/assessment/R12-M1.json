@@ -1604,7 +1604,7 @@
       "backend/crates/libs/qip-contracts/src/action.rs:53 Spoofing as a whole-word conduct phrase class",
       "backend/crates/libs/qip-contracts/src/action.rs:93 whole-word matcher"
     ],
-    "gap": "The behavioural control covers the cell's own place-then-withdraw-unfilled pattern only. Requotes sent beneath the placer seam (qip-edge-node reprice.rs, Cell::spend_requote) are deliberately not counted, so layering by repeated repricing away from the touch is not judged; cross-venue and momentum-ignition patterns have no control; and the desk's order path in qip-execution-engine has none.",
+    "gap": "Requote layering is defined by ADR 0155 section 13 (requotes that move an order away from the touch and whose order is then withdrawn unfilled, keyed by venue, instrument and side, judged against an opposite-side fill; a requote at or inside the touch or one a venue or halt forced never counts) and has no control: the window, minimum and ratio are not declared, so no gate is built and GATE_CONDUCT_SPOOFING is unchanged. Requotes beneath the placer seam (Cell::spend_requote) are deliberately not counted by it. Cross-venue and momentum-ignition patterns have no control, and neither does the desk order path in qip-execution-engine. Needs a declared bound (a risk value, owner decision).",
     "implemented": false,
     "tested": false,
     "integrated": true,
@@ -1615,7 +1615,7 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: PARTIAL kept. The clause says any order pattern constituting spoofing; one pattern is now refused (see R12-AGENCY-6100, closed by the same change, mutation-verified). A requote keeps an order's intent to trade and counting it would convict ordinary market making, so judging requote layering needs its own bound, not this one."
+    "notes": "2026-10-24 ADR 0155 section 13: gap restated, PARTIAL kept; no code. Counting requotes would convict ordinary market making, so the measure needs its own bound."
   },
   {
     "id": "R12-AGENCY-1069",

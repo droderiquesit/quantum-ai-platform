@@ -1634,13 +1634,14 @@
   {
     "id": "R12-CONTRACT-7073",
     "status": "PARTIAL",
-    "current": "ReplayManifest can state ReplayAssumptions (clock, latency, queue, fill, impact) and per-component model versions via ReplayManifest::with_assumptions; blank assumptions, no versions and blank names are refused naming what is missing; the reproducibility hash covers marker, assumptions and versions together, a manifest stating none hashes and encodes exactly as before, and is_consistent catches an assumption altered after the hash was taken.",
+    "current": "SimulatedGateway::replay_assumptions renders ReplayAssumptions from the ExchangeSettings the venue was built with (qip-edge-node/src/gateway.rs assumptions_of: latency and jitter, rejection probability, fees, with none stated where a setting is zero), and SimulatedGateway::default_settings is the one function new() and the node digest both read. main.rs widens the pass marker config_digest to cover those settings (widen_config_digest) on the simulated path, so a node under other gateway settings records a different digest. ReplayManifest::with_assumptions accepts the rendered text and model versions. The PassMarker topic and schema lock are untouched and no topic is added.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/replay.rs ReplayManifest::with_assumptions / hash_with / ReplayAssumptions",
-      "backend/crates/libs/qip-contracts/tests/replay_manifest.rs a_manifest_states_its_assumptions_and_model_versions_and_a_change_to_either_changes_the_hash",
-      "backend/crates/libs/qip-contracts/tests/replay_manifest.rs a_blank_assumption_or_a_missing_model_version_is_refused_naming_what_is_missing"
+      "backend/crates/apps/qip-edge-node/src/gateway.rs::assumptions_of",
+      "backend/crates/apps/qip-edge-node/src/gateway.rs::widen_config_digest",
+      "backend/crates/apps/qip-edge-node/src/main.rs (config_digest widened after the venue choice)",
+      "backend/crates/apps/qip-edge-node/tests/gateway.rs::a_replay_manifest_built_from_the_gateways_settings_names_them_and_a_gateway_with_other_settings_yields_other_assumptions_and_a_different_config_digest"
     ],
-    "gap": "ReplayManifest has no production constructor: the edge node records the PassMarker (qip-edge-node scheduler.rs marker(), schema locked by event_fabric_schema_lock) and nothing builds a ReplayManifest from it, so no run states its assumptions. The triage names qip-edge/src/replay.rs, which does not exist. Needs a manifest builder at the node, and the simulated gateway (qip-edge-node gateway.rs over qip_brokers SimulatedExchange) to state its own clock, latency (none: every offset is zero), queue (price-time), fill and impact assumptions from its ExchangeSettings rather than from prose, then the manifest recorded beside the marker.",
+    "gap": "No replayer exists (2026-10-24): grep -rln ReplayManifest backend/crates finds only qip-contracts, so nothing constructs a manifest from a recorded marker and replay_assumptions at replay time; the manifest is built only in tests. The digest widening runs in the node binary, the assumptions rendering is exercised by the test only. Closing needs a replay tool that reads recorded markers and the run gateway settings, which is not designed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1648,10 +1649,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test replay_manifest",
+    "verification": "cargo test -p qip-edge-node --test gateway",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 L12: mutation that fired: hashing the assumptions as null left the hash unchanged and failed the changes-the-hash test. Contract half only; assumption text is for the gateway to supply, not guessed here."
+    "notes": "2026-10-24 ADR 0155 section 16: built, PARTIAL kept because the consumer of the manifest does not exist. Mutation fired: hard-coding the no-refusal text in assumptions_of made two gateways with different rejection probabilities yield equal assumptions and the test failed (premise: both gateways build and the default matches new())."
   },
   {
     "id": "R12-CONTRACT-7074",
@@ -3687,14 +3688,14 @@
   },
   {
     "id": "R12-COVERAGE-7163",
-    "status": "PARTIAL",
-    "current": "An asset class registry exists in qip-kernel asset_class_registry.rs registering equity, fixed income, credit, rates, derivative, prediction, commodity, private, real asset, physical product.",
+    "status": "COMPLETE",
+    "current": "AssetClassRegistry::shipped holds all 15 AssetClass variants. Platform::new assembles over one instrument of each of the ten classes that need no maturity record, and over a FixedIncome bond, a Credit loan and a Derivative option built with the maturity or extension record their types require (test inputs, not catalogue data). Prediction and PhysicalProduct have no InstrumentType by decision (ADR 0155 section 18): physical goods are commerce units and a prediction market is VenueClass::PredictionMarket.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/universe.rs",
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs",
-      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs::the_shipped_registry_holds_a_record_for_every_asset_class_the_object_model_names, ::an_instrument_of_each_constructible_class_assembles_through_platform_new"
+      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs::an_instrument_of_each_dated_class_assembles_through_platform_new_with_a_stated_maturity",
+      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs::an_instrument_of_each_constructible_class_assembles_through_platform_new",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs::AssetClassRegistry::shipped"
     ],
-    "gap": "The acceptance suite exists (2026-10-18): AssetClassRegistry::shipped holds a record for all 15 AssetClass variants including DigitalAsset (tokenized representations resolve into it), and Platform::new assembles over one instrument of each of the ten classes that can be built without a maturity record. Still PARTIAL as a composite: FixedIncome, Credit and Derivative are not assembled by the suite (every instrument type of theirs needs a maturity or extension record), Prediction and PhysicalProduct have no InstrumentType so no instrument can be in them, and constituent rows R12-COVERAGE-5099..5106 remain PARTIAL on trading-path integration.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3702,10 +3703,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-acceptance --test asset_class_registry",
+    "verification": "cargo test -p qip-acceptance --test asset_class_registry",
     "work_item": "",
     "size": "XL",
-    "notes": "Mutation 2026-10-18: deleting the DigitalAsset record from AssetClassRegistry::shipped failed all four tests; restored."
+    "notes": "2026-10-24 ADR 0155 section 18. Mutation fired: deleting the FixedIncome record from AssetClassRegistry::shipped made the dated-class assembly test fail (premise: the fixtures build with their maturity records). Constituent rows R12-COVERAGE-5099..5106 stay PARTIAL on trading-path integration; this composite closes on what is constructible."
   },
   {
     "id": "R12-COVERAGE-7164",

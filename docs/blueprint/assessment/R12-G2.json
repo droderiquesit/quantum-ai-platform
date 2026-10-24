@@ -533,15 +533,17 @@
   },
   {
     "id": "R12-WORLD-9023",
-    "status": "PARTIAL",
-    "current": "The cell evaluates inline DistilledModel strategies and a local feature DAG with no network calls; calibration/outcome recording to Bigtable is absent.",
+    "status": "COMPLETE",
+    "current": "Signal gains an optional expected_edge_bp (backend/crates/libs/qip-contracts/src/signal.rs, off the wire when absent). qip-strategy Rule gains an optional expected_edge expression typed Statistic (ir.rs Rule::with_expected_edge, compile.rs CompiledRule::expected_edge), evaluated in runtime.rs only for a rule that declared one; nothing derives an edge from conviction. The cell refuses a non-finite edge under GATE_SIGNAL_EDGE beside GATE_SIGNAL_CONVICTION and journals the edge in Decision::SignalRaised, so the centre joins the realised result through attribution lineage and no outcome returns to the cell (ADR 0155 section 7, 10).",
     "evidence": [
-      "backend/crates/edge/qip-feature-dag/src",
-      "backend/crates/edge/qip-strategy/src",
-      "backend/crates/edge/qip-edge/src/cell.rs:3293",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:849 every_lane_0_stage_is_linked_into_the_node"
+      "backend/crates/libs/qip-contracts/src/signal.rs::Signal",
+      "backend/crates/edge/qip-strategy/src/ir.rs::Rule",
+      "backend/crates/edge/qip-strategy/src/runtime.rs::StrategyRuntime::run",
+      "backend/crates/libs/qip-contracts/src/reflex.rs::Decision::SignalRaised",
+      "backend/crates/edge/qip-edge/src/cell.rs::GATE_SIGNAL_EDGE",
+      "backend/crates/edge/qip-strategy/tests/strategy.rs::a_rule_that_declares_an_edge_raises_a_signal_stating_it_and_a_rule_that_does_not_raises_a_signal_stating_none"
     ],
-    "gap": "No predicted edge exists to calibrate: qip_contracts::signal::Signal carries a conviction, a desired quantity and inputs, not an expected edge or return, and the cell sees a fill (a venue fact about quantity and price) but never the realised outcome of the position, which is marked to market elsewhere. A tally of conviction against fill would measure execution, not forecast skill, and calling it calibration would be the overclaim the row exists to avoid. Closing it needs an expected-edge field on Signal produced by qip-strategy's runtime (the same contract change R12-RISK-5044 names) and a realised-outcome signal back to the cell; outcome storage stays out of scope until a storage ADR.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -549,10 +551,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge",
+    "verification": "cargo test -p qip-strategy --test strategy a_rule_that_declares",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure's 'predicted edge against the venue-confirmed fill' compares two things that are not both in the cell: no edge is predicted and a fill is not an outcome."
+    "notes": "2026-10-24 ADR 0155 lane. Mutation fired: deriving expected_edge_bp from conviction when the rule declares none made the edgeless-rule assertion fail (premise: the declaring rule stated Some(35.0) first). No shipped strategy declares an edge yet, so every signal in the tree still states none; the gate that reads it is RISK-5044."
   },
   {
     "id": "R12-WORLD-9024",

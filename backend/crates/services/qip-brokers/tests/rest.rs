@@ -24,7 +24,7 @@
 
 mod server;
 
-use qip_brokers::adapter::{AdapterClass, VenueAdapter, VenueOrderState};
+use qip_brokers::adapter::{AdapterClass, NativeInstruction, VenueAdapter, VenueOrderState};
 use qip_brokers::connection::ConnectionPhase;
 use qip_brokers::credential::{
     RequirementKind, Secret, VenueCredential, requirements_of_kind, standard_requirements,
@@ -1301,6 +1301,60 @@ fn an_order_the_adapter_will_not_put_on_the_wire_is_refused_before_it_is_sent() 
     assert!(
         adapter.tracked_orders().is_empty(),
         "an order refused before it was sent is not tracked as unknown"
+    );
+    Ok(())
+}
+
+// --- ADR 0155 §20: a generic wire declares nothing native -------------------
+
+#[test]
+fn a_generic_rest_adapter_declares_no_native_extension_and_refuses_one_rather_than_sending_it_plain()
+-> Result<()> {
+    // The failure this prevents: an adapter that quietly sent a native
+    // instruction as a plain order would trade something the caller did not
+    // ask for. The REST adapter speaks one generic schema, so it has no
+    // native feature to declare, and the clause "each adapter exposes its
+    // native extension" is met by the declaration being truthfully empty.
+    let server = TestServer::routed(vec![
+        health(),
+        Route::new(
+            "POST",
+            ORDERS,
+            Action::json(
+                200,
+                record("ORD-1", "filled", "100", "100", &one_fill("F-1", "100")),
+            ),
+        ),
+    ]);
+    let mut adapter = brought_up(&server)?;
+    let ticket = adapter.ready(start())?;
+
+    // Premise: the adapter does send a plain order, so the refusal below is
+    // the native door's and not a dead wire.
+    adapter.submit_order(&ticket, &order("ORD-1", 100), start())?;
+    assert_eq!(
+        server.hits("POST", ORDERS),
+        1,
+        "premise: a plain order is sent"
+    );
+
+    assert!(
+        adapter.native_extensions().is_empty(),
+        "a generic REST wire has no native instruction to declare"
+    );
+    let refused = adapter
+        .submit_native(
+            &ticket,
+            &order("ORD-2", 100),
+            &NativeInstruction::new("post_only"),
+            start(),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code(), "denied", "{refused}");
+    assert_eq!(
+        server.hits("POST", ORDERS),
+        1,
+        "the refused native order must not reach the venue as a plain one"
     );
     Ok(())
 }

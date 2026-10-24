@@ -1,0 +1,947 @@
+{
+ "generated": "2026-10-24",
+ "base": "origin/ccr-d1bc1e54-kf6mr0",
+ "method": "python3 -I over the register: open rows not BLOCKED, not owned by IMPL-A (ADR 0155) or IMPL-B (ADR 0145), not retriage BILLED/DEPLOY_DEPENDENT/OWNER_SWITCH, not in the W9 billed/protected/blocked lanes, and whose gap names no billed, credential, licence, vendor, deployment-evidence, live-order or real-capital blocker. Scored: 4 x rows that depend on it, + status (INCORRECT 6, NEEDS-VALIDATION 4, PARTIAL 3, MISSING 2), + 3 for a capital-protection domain (RISK LEDGER CAPITAL EXEC SEC COMPLIANCE RES PAPER GOV REFLEX), + size (S 3, M 1.5, L 0, XL -1), + 3 implemented-and-tested-but-not-integrated, + 2 implemented-not-tested, + 2 decided by ADR-c, + 3 retriage CODE_CLOSABLE. Top 100 by score, grouped by territory.",
+ "lanes": [
+  {
+   "lane": "T1-EDGE",
+   "rows": [
+    {
+     "id": "R12-REFLEX-5031",
+     "status": "PARTIAL",
+     "score": 21.5,
+     "dependents": 3,
+     "file": "R12-M5.json",
+     "adr": null,
+     "w9lane": "W9-EDGE-NODE"
+    },
+    {
+     "id": "R12-TICK-2059",
+     "status": "PARTIAL",
+     "score": 19.5,
+     "dependents": 3,
+     "file": "R12-M2.json",
+     "adr": null,
+     "w9lane": "W9-EDGE"
+    },
+    {
+     "id": "R12-FABRIC-7058",
+     "status": "PARTIAL",
+     "score": 16.5,
+     "dependents": 3,
+     "file": "R12-M7.json",
+     "adr": null,
+     "w9lane": "W9-EDGE-NODE"
+    },
+    {
+     "id": "R12-RES-10131",
+     "status": "PARTIAL",
+     "score": 15.5,
+     "dependents": 2,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-EDGE-NODE"
+    },
+    {
+     "id": "R12-EXEC-5079",
+     "status": "PARTIAL",
+     "score": 14.5,
+     "dependents": 1,
+     "file": "R12-M5.json",
+     "adr": null,
+     "w9lane": "W9-EDGE"
+    },
+    {
+     "id": "R12-REFLEX-10085",
+     "status": "PARTIAL",
+     "score": 14.0,
+     "dependents": 2,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-EDGE-NODE"
+    },
+    {
+     "id": "R12-CONTRACT-7068",
+     "status": "PARTIAL",
+     "score": 13.5,
+     "dependents": 1,
+     "file": "R12-M7.json",
+     "adr": 154,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-REFLEX-6012",
+     "status": "PARTIAL",
+     "score": 13.5,
+     "dependents": 1,
+     "file": "R12-M6.json",
+     "adr": null,
+     "w9lane": "W9-EDGE"
+    },
+    {
+     "id": "R12-REFLEX-8069",
+     "status": "PARTIAL",
+     "score": 13.0,
+     "dependents": 1,
+     "file": "R12-G1.json",
+     "adr": null,
+     "w9lane": "W9-EDGE-NODE"
+    },
+    {
+     "id": "R12-TICK-2056",
+     "status": "PARTIAL",
+     "score": 13.0,
+     "dependents": 1,
+     "file": "R12-M2.json",
+     "adr": null,
+     "w9lane": "W9-EDGE-NODE"
+    },
+    {
+     "id": "R12-CAPITAL-5067",
+     "status": "PARTIAL",
+     "score": 12.5,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": 154,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-FABRIC-10102",
+     "status": "PARTIAL",
+     "score": 12.5,
+     "dependents": 2,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-EDGE-NODE"
+    },
+    {
+     "id": "R12-RES-9166",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 1,
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-EDGE-NODE"
+    },
+    {
+     "id": "R12-REFLEX-8067",
+     "status": "PARTIAL",
+     "score": 11.5,
+     "dependents": 1,
+     "file": "R12-G1.json",
+     "adr": null,
+     "w9lane": "W9-EDGE-NODE"
+    }
+   ]
+  },
+  {
+   "lane": "T2-ACCEPT",
+   "rows": [
+    {
+     "id": "R12-API-10017",
+     "status": "PARTIAL",
+     "score": 19.5,
+     "dependents": 3,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-A"
+    },
+    {
+     "id": "R12-REFLEX-8002",
+     "status": "INCORRECT",
+     "score": 15.0,
+     "dependents": 0,
+     "file": "R12-G1.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-B"
+    },
+    {
+     "id": "R12-CICD-10118",
+     "status": "PARTIAL",
+     "score": 14.0,
+     "dependents": 2,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-A"
+    },
+    {
+     "id": "R12-SEC-9123",
+     "status": "PARTIAL",
+     "score": 13.5,
+     "dependents": 1,
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-B"
+    },
+    {
+     "id": "R12-FINOPS-10135",
+     "status": "MISSING",
+     "score": 13.0,
+     "dependents": 2,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-A"
+    },
+    {
+     "id": "R12-RES-10119",
+     "status": "PARTIAL",
+     "score": 13.0,
+     "dependents": 1,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-B"
+    },
+    {
+     "id": "R12-REFLEX-8064",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 0,
+     "file": "R12-G1.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-B"
+    },
+    {
+     "id": "R12-SEC-10019",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 0,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-B"
+    },
+    {
+     "id": "R12-SEC-9110",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 0,
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-B"
+    },
+    {
+     "id": "R12-SEC-9130",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 0,
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-B"
+    },
+    {
+     "id": "R12-SEC-9133",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 0,
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-B"
+    },
+    {
+     "id": "R12-SEC-9132",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 0,
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-B"
+    }
+   ]
+  },
+  {
+   "lane": "T3-FABRIC",
+   "rows": [
+    {
+     "id": "R12-FABRIC-10027",
+     "status": "MISSING",
+     "score": 49.0,
+     "dependents": 12,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-FABRICD"
+    },
+    {
+     "id": "R12-FABRIC-8086",
+     "status": "PARTIAL",
+     "score": 34.0,
+     "dependents": 8,
+     "file": "R12-G1.json",
+     "adr": null,
+     "w9lane": "W9-FABRICD"
+    },
+    {
+     "id": "R12-FABRIC-7038",
+     "status": "MISSING",
+     "score": 21.0,
+     "dependents": 5,
+     "file": "R12-M7.json",
+     "adr": null,
+     "w9lane": "W9-EVENTS"
+    },
+    {
+     "id": "R12-DATA-10079",
+     "status": "PARTIAL",
+     "score": 19.5,
+     "dependents": 3,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-FABRICD"
+    },
+    {
+     "id": "R12-FABRIC-7037",
+     "status": "PARTIAL",
+     "score": 18.0,
+     "dependents": 4,
+     "file": "R12-M7.json",
+     "adr": null,
+     "w9lane": "W9-FABRICD"
+    },
+    {
+     "id": "R12-EVID-2032",
+     "status": "PARTIAL",
+     "score": 17.5,
+     "dependents": 2,
+     "file": "R12-M2.json",
+     "adr": 152,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-FABRIC-7035",
+     "status": "PARTIAL",
+     "score": 14.0,
+     "dependents": 3,
+     "file": "R12-M7.json",
+     "adr": null,
+     "w9lane": "W9-FABRICD"
+    },
+    {
+     "id": "R12-FABRIC-8075",
+     "status": "MISSING",
+     "score": 13.0,
+     "dependents": 3,
+     "file": "R12-G1.json",
+     "adr": null,
+     "w9lane": "W9-FABRICD"
+    },
+    {
+     "id": "R12-RES-10154",
+     "status": "PARTIAL",
+     "score": 12.5,
+     "dependents": 0,
+     "file": "R12-G3.json",
+     "adr": 156,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-DATA-2012",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 1,
+     "file": "R12-M2.json",
+     "adr": 152,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-FABRIC-8101",
+     "status": "PARTIAL",
+     "score": 11.5,
+     "dependents": 1,
+     "file": "R12-G1.json",
+     "adr": null,
+     "w9lane": "W9-FABRICD"
+    },
+    {
+     "id": "R12-DATA-9187",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 0,
+     "file": "R12-G2.json",
+     "adr": 156,
+     "w9lane": ""
+    }
+   ]
+  },
+  {
+   "lane": "T4-LEDGER",
+   "rows": [
+    {
+     "id": "R12-LEDGER-10041",
+     "status": "PARTIAL",
+     "score": 27.0,
+     "dependents": 5,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-FINANCIAL"
+    },
+    {
+     "id": "R12-DATA-8013",
+     "status": "PARTIAL",
+     "score": 18.0,
+     "dependents": 3,
+     "file": "R12-G1.json",
+     "adr": null,
+     "w9lane": "W9-FINANCIAL"
+    },
+    {
+     "id": "R12-CAPITAL-4087",
+     "status": "PARTIAL",
+     "score": 16.0,
+     "dependents": 2,
+     "file": "R12-M4.json",
+     "adr": 159,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-CAPITAL-10097",
+     "status": "PARTIAL",
+     "score": 14.0,
+     "dependents": 1,
+     "file": "R12-G3.json",
+     "adr": 159,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-LEDGER-5009",
+     "status": "PARTIAL",
+     "score": 12.5,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": 153,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-LEDGER-5019",
+     "status": "PARTIAL",
+     "score": 12.5,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": 153,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-RES-7099",
+     "status": "PARTIAL",
+     "score": 12.5,
+     "dependents": 0,
+     "file": "R12-M7.json",
+     "adr": 159,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-LEDGER-5006",
+     "status": "PARTIAL",
+     "score": 11.5,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": 153,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-LEDGER-5010",
+     "status": "PARTIAL",
+     "score": 11.5,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": 153,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-LEDGER-5020",
+     "status": "PARTIAL",
+     "score": 11.5,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": 153,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-LEDGER-1164",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 0,
+     "file": "R12-M1.json",
+     "adr": 153,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-LEDGER-5026",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": 153,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-LEDGER-5008",
+     "status": "PARTIAL",
+     "score": 10.5,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": null,
+     "w9lane": "W9-FINANCIAL"
+    },
+    {
+     "id": "R12-LEDGER-5018",
+     "status": "PARTIAL",
+     "score": 10.5,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": null,
+     "w9lane": "W9-FINANCIAL"
+    }
+   ]
+  },
+  {
+   "lane": "T5-MESH-INFRA",
+   "rows": [
+    {
+     "id": "R12-REFLEX-10024",
+     "status": "PARTIAL",
+     "score": 38.5,
+     "dependents": 7,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-INFRA-TF-B"
+    },
+    {
+     "id": "R12-DATA-10036",
+     "status": "PARTIAL",
+     "score": 23.5,
+     "dependents": 4,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-MESH"
+    },
+    {
+     "id": "R12-SEC-9109",
+     "status": "PARTIAL",
+     "score": 21.0,
+     "dependents": 3,
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-MESH"
+    },
+    {
+     "id": "R12-MESH-10075",
+     "status": "PARTIAL",
+     "score": 18.0,
+     "dependents": 3,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-MESH"
+    },
+    {
+     "id": "R12-GCP-8056",
+     "status": "MISSING",
+     "score": 15.5,
+     "dependents": 3,
+     "file": "R12-G1.json",
+     "adr": null,
+     "w9lane": "W9-INFRA-TF-B"
+    },
+    {
+     "id": "R12-SEC-10006",
+     "status": "PARTIAL",
+     "score": 15.0,
+     "dependents": 1,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-INFRA-TF-B"
+    },
+    {
+     "id": "R12-GCP-10010",
+     "status": "PARTIAL",
+     "score": 13.0,
+     "dependents": 1,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-INFRA-TF-A"
+    },
+    {
+     "id": "R12-MESH-1010",
+     "status": "PARTIAL",
+     "score": 13.0,
+     "dependents": 2,
+     "file": "R12-M1.json",
+     "adr": null,
+     "w9lane": "W9-MESH"
+    },
+    {
+     "id": "R12-REFLEX-8063",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 0,
+     "file": "R12-G1.json",
+     "adr": null,
+     "w9lane": "W9-INFRA-TF-B"
+    },
+    {
+     "id": "R12-GCP-10009",
+     "status": "MISSING",
+     "score": 11.5,
+     "dependents": 2,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-INFRA-TF-A"
+    },
+    {
+     "id": "R12-MESH-5062",
+     "status": "PARTIAL",
+     "score": 11.5,
+     "dependents": 1,
+     "file": "R12-M5.json",
+     "adr": null,
+     "w9lane": "W9-MESH"
+    },
+    {
+     "id": "R12-RES-9176",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 0,
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-INFRA-TF-B"
+    }
+   ]
+  },
+  {
+   "lane": "T6-MODEL-AGENTS",
+   "rows": [
+    {
+     "id": "R12-AMBIENT-10094",
+     "status": "PARTIAL",
+     "score": 17.0,
+     "dependents": 3,
+     "file": "R12-G3.json",
+     "adr": 158,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-TICK-2065",
+     "status": "PARTIAL",
+     "score": 15.5,
+     "dependents": 2,
+     "file": "R12-M2.json",
+     "adr": null,
+     "w9lane": "W9-TRAINING"
+    },
+    {
+     "id": "R12-AMBIENT-3104",
+     "status": "PARTIAL",
+     "score": 15.0,
+     "dependents": 3,
+     "file": "R12-M3.json",
+     "adr": null,
+     "w9lane": "W9-BRAINS"
+    },
+    {
+     "id": "R12-TICK-2068",
+     "status": "PARTIAL",
+     "score": 15.0,
+     "dependents": 3,
+     "file": "R12-M2.json",
+     "adr": null,
+     "w9lane": "W9-TRAINING"
+    },
+    {
+     "id": "R12-CONTRACT-7091",
+     "status": "PARTIAL",
+     "score": 13.5,
+     "dependents": 1,
+     "file": "R12-M7.json",
+     "adr": 149,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-REFLEX-5040",
+     "status": "PARTIAL",
+     "score": 12.5,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": 149,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-SEC-9065",
+     "status": "PARTIAL",
+     "score": 12.5,
+     "dependents": 0,
+     "file": "R12-G2.json",
+     "adr": 158,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-AMBIENT-10093",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 1,
+     "file": "R12-G3.json",
+     "adr": 158,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-MODEL-4014",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 1,
+     "file": "R12-M4.json",
+     "adr": 146,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-AMBIENT-3107",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 0,
+     "file": "R12-M3.json",
+     "adr": 158,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-CONTRACT-7063",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 0,
+     "file": "R12-M7.json",
+     "adr": 149,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-CONTRACT-7064",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 0,
+     "file": "R12-M7.json",
+     "adr": 149,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-REFLEX-5041",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": 149,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-RES-7106",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 0,
+     "file": "R12-M7.json",
+     "adr": 150,
+     "w9lane": ""
+    }
+   ]
+  },
+  {
+   "lane": "T7-KERNEL",
+   "rows": [
+    {
+     "id": "R12-WORLD-3082",
+     "status": "PARTIAL",
+     "score": 27.0,
+     "dependents": 6,
+     "file": "R12-M3.json",
+     "adr": null,
+     "w9lane": "W9-KERNEL-B"
+    },
+    {
+     "id": "R12-MODEL-10084",
+     "status": "PARTIAL",
+     "score": 26.0,
+     "dependents": 5,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-CONTRACTS"
+    },
+    {
+     "id": "R12-WORLD-3075",
+     "status": "PARTIAL",
+     "score": 26.0,
+     "dependents": 6,
+     "file": "R12-M3.json",
+     "adr": null,
+     "w9lane": "W9-KERNEL-B"
+    },
+    {
+     "id": "R12-WORLD-1003",
+     "status": "PARTIAL",
+     "score": 18.0,
+     "dependents": 3,
+     "file": "R12-M1.json",
+     "adr": null,
+     "w9lane": "W9-KERNEL-B"
+    },
+    {
+     "id": "R12-TICK-2051",
+     "status": "PARTIAL",
+     "score": 17.5,
+     "dependents": 2,
+     "file": "R12-M2.json",
+     "adr": 151,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-CAPITAL-9039",
+     "status": "PARTIAL",
+     "score": 13.5,
+     "dependents": 1,
+     "file": "R12-G2.json",
+     "adr": 148,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-TICK-3096",
+     "status": "PARTIAL",
+     "score": 13.0,
+     "dependents": 2,
+     "file": "R12-M3.json",
+     "adr": null,
+     "w9lane": "W9-WORLD"
+    },
+    {
+     "id": "R12-GOV-6125",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 0,
+     "file": "R12-M6.json",
+     "adr": null,
+     "w9lane": "W9-CONTRACTS"
+    },
+    {
+     "id": "R12-RES-9173",
+     "status": "PARTIAL",
+     "score": 12.0,
+     "dependents": 0,
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-KERNEL-B"
+    },
+    {
+     "id": "R12-CONTRACT-7077",
+     "status": "PARTIAL",
+     "score": 11.5,
+     "dependents": 1,
+     "file": "R12-M7.json",
+     "adr": null,
+     "w9lane": "W9-CONTRACTS"
+    },
+    {
+     "id": "R12-CONTRACT-7072",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 0,
+     "file": "R12-M7.json",
+     "adr": 151,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-TICK-2067",
+     "status": "PARTIAL",
+     "score": 11.0,
+     "dependents": 2,
+     "file": "R12-M2.json",
+     "adr": null,
+     "w9lane": "W9-WORLD"
+    },
+    {
+     "id": "R12-LEDGER-5011",
+     "status": "PARTIAL",
+     "score": 10.5,
+     "dependents": 0,
+     "file": "R12-M5.json",
+     "adr": null,
+     "w9lane": "W9-CONTRACTS"
+    }
+   ]
+  },
+  {
+   "lane": "T8-RESIDUAL",
+   "rows": [
+    {
+     "id": "R12-DATA-10033",
+     "status": "PARTIAL",
+     "score": 31.5,
+     "dependents": 6,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-STORAGE-OBS-RISK"
+    },
+    {
+     "id": "R12-EVID-2031",
+     "status": "PARTIAL",
+     "score": 30.0,
+     "dependents": 6,
+     "file": "R12-M2.json",
+     "adr": null,
+     "w9lane": "W9-DATA"
+    },
+    {
+     "id": "R12-QUANT-4029",
+     "status": "PARTIAL",
+     "score": 18.5,
+     "dependents": 2,
+     "file": "R12-M4.json",
+     "adr": null,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-OBS-10057",
+     "status": "PARTIAL",
+     "score": 16.5,
+     "dependents": 3,
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-STORAGE-OBS-RISK"
+    },
+    {
+     "id": "R12-GOV-6127",
+     "status": "PARTIAL",
+     "score": 15.0,
+     "dependents": 0,
+     "file": "R12-M6.json",
+     "adr": null,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-MODEL-4009",
+     "status": "PARTIAL",
+     "score": 13.0,
+     "dependents": 1,
+     "file": "R12-M4.json",
+     "adr": null,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-DATA-1037",
+     "status": "PARTIAL",
+     "score": 11.5,
+     "dependents": 1,
+     "file": "R12-M1.json",
+     "adr": null,
+     "w9lane": "W9-DATA"
+    },
+    {
+     "id": "R12-CAPITAL-9051",
+     "status": "PARTIAL",
+     "score": 10.5,
+     "dependents": 0,
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": ""
+    },
+    {
+     "id": "R12-CONTRACT-6111",
+     "status": "PARTIAL",
+     "score": 10.5,
+     "dependents": 0,
+     "file": "R12-M6.json",
+     "adr": null,
+     "w9lane": ""
+    }
+   ]
+  }
+ ]
+}

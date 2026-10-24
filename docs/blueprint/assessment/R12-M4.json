@@ -2401,7 +2401,7 @@
       "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
       "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::every_common_stock_in_the_committed_catalogue_is_a_declared_hedge_candidate"
     ],
-    "gap": "Only CorrelatedAsset is declared in a running root, because the committed catalogue holds only common stock. Closing needs catalogue records (with a printed price on the simulated exchange) for the other eight classes and stated Greeks/loadings for each; declaring a common stock as an option or future would be a guessed sensitivity, which paper_hedge_candidates refuses to do.",
+    "gap": "By decision (ADR 0155 section 19, 2026-10-24) the committed universe stays equities and only CorrelatedAsset hedge candidates are declared (backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates). The other classes enter only with a catalogue record carrying a price printed on the simulated exchange and a sensitivity the record states or an in-tree pricer computes from printed prices; a vendor sensitivity feed is a data subscription and BILLED, not decided here.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2412,7 +2412,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap corrected (the triage's closure, one candidate per class against the present catalogue, would mislabel equities)."
+    "notes": "2026-10-24 ADR 0155 section 19: gap restated, PARTIAL kept; no code."
   },
   {
     "id": "R12-RISK-4108",
