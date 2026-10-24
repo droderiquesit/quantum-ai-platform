@@ -126,15 +126,15 @@
   },
   {
     "id": "R12-LEDGER-5006",
-    "status": "PARTIAL",
-    "current": "Account::Obligation exists and margin/commitment operations post obligations through LedgerOperation; tests prove each kind posts to its own subledgers and balances.",
+    "status": "COMPLETE",
+    "current": "Platform::new (every binary's composition root) queues, for each private commitment its universe holds, one journalled PrivateCommitmentMade operation on Topic::LedgerOperationRecorded, booked as OperationKind::Commitment { stage: Commit }, id <chain>:commitment:<commitment id>, counterparty the fund's object id, amount the whole commitment. recorded_at is the first assembly's, read back from the journal on every restart, so a restart re-sends the same bytes and the ledger sees one digest per id. qip-desk-ship ships the queue.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ledger.rs:67 Account variants",
-      "backend/crates/libs/qip-financial/src/cashflow.rs commitment arithmetic, no ledger posting",
-      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::queue_private_commitments",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::PrivateCommitmentMade",
+      "backend/crates/runtime/qip-kernel/tests/capital_calls.rs::a_private_asset_commitment_is_booked_once_as_a_commit_stage_operation_and_a_restart_does_not_book_it_again",
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::OperationKind::Commitment"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for obligations or commitments or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -142,10 +142,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
+    "verification": "cargo test -p qip-kernel --test capital_calls a_private_asset_commitment_is_booked_once",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane T4-LEDGER 2026-10-24 (ADR 0153 decision 2). Mutation that fired: ignoring the journalled record on restart (rebuilding the operation at the restart's clock) made the test fail on 'the restart must re-send the operation as written' with recorded_at 2025-10-12 against 2025-10-09. The producer runs on the assembly path of every binary; it books nothing until the operator's catalogue carries a PrivateAsset record, and no committed catalogue does."
   },
   {
     "id": "R12-LEDGER-5007",
@@ -461,13 +461,13 @@
   {
     "id": "R12-LEDGER-5020",
     "status": "PARTIAL",
-    "current": "Account::Commitment and a private-commitment OperationKind (made/drawn/released) post into the global journal; tested per kind.",
+    "current": "Account::Commitment and a private-commitment OperationKind (made/drawn/released) post into the global journal; tested per kind. Since 2026-10-24 the Commit stage has a production producer (Platform::queue_private_commitments, R12-LEDGER-5006); a restated universe amount is reported and not rebooked.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs:67 Account enum",
-      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::queue_private_commitments",
+      "backend/crates/runtime/qip-kernel/tests/capital_calls.rs::a_commitment_whose_amount_is_restated_in_the_universe_is_reported_and_not_rebooked"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for private commitments or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "2026-10-24: Draw and Release have no producer, by decision (ADR 0153 decision 2): no capital-call observer exists in the tree, and a draw inferred from a cash-flow schedule is a forecast, not an event. A draw must be recorded by hand when a capital call is real. If a capital-call notice becomes a universe record, a follow-on record adds the producer. The Commit stage is produced (R12-LEDGER-5006).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -475,10 +475,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd plus a subledger test",
+    "verification": "cargo test -p qip-kernel --test capital_calls commitment",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane T4-LEDGER 2026-10-24. Mutation that fired: removing the restatement problem from queue_private_commitments made the test fail with 'the restatement was not reported: []'. Kept PARTIAL: draw and release not produced by decision."
   },
   {
     "id": "R12-LEDGER-5021",
