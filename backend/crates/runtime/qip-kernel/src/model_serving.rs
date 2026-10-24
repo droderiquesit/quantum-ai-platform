@@ -100,8 +100,15 @@ impl EventBody for ModelRegistered {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-/// Whether two cards differ only in their drift reading.
+/// Whether two cards differ only in a drift reading that stays on the same
+/// side of the card's threshold. A reading that crosses it changes whether
+/// the model may inform a decision, so it is a record; one that does not is
+/// monitoring the next round re-measures.
 fn same_but_drift(a: &qip_ai::registry::ModelCard, b: &qip_ai::registry::ModelCard) -> bool {
+    let drifted = |card: &qip_ai::registry::ModelCard| card.drift_score > card.drift_threshold;
+    if drifted(a) != drifted(b) {
+        return false;
+    }
     let mut b = b.clone();
     b.drift_score = a.drift_score;
     *a == b
@@ -677,6 +684,22 @@ impl Platform {
         promotions_in(self.event_log())
     }
 
+    /// Journal the cards a committed promotion or rollback moved. The record
+    /// is the commit, so a failure here must not report the move as refused:
+    /// the in-memory mirror is advanced only on a successful write, so the
+    /// caller's next `journal_model_registry` writes them again, and a
+    /// restart in between rebuilds their stages and lifecycle from the
+    /// promotion records (R12-MODEL-9003). The failure is counted where the
+    /// alerts look rather than dropped.
+    fn journal_moved_cards(&mut self, registry: &ModelRegistry, now: Timestamp) {
+        if self.journal_model_registry(registry, now).is_err() {
+            self.telemetry.metrics.count(
+                names::MODEL_PACKAGES,
+                labels([("outcome", "cards_unjournaled")]),
+            );
+        }
+    }
+
     /// Every registered card the log holds, the newest record per reference,
     /// in reference order: what a restarted deep brain registers before its
     /// first round (R12-MODEL-9003).
@@ -991,19 +1014,17 @@ impl Platform {
             permitted_locations,
             at: now,
         };
-        // The cards the promotion moves, journaled before the record that
-        // moves them (R12-MODEL-9003). Written after it, a process that died
-        // between the two left a promoted version with no card anywhere on
-        // the log; written before it, a death between the two leaves cards
-        // that claim a promotion the log does not hold, which a restart
-        // reconciles against the promotion records. And nothing fallible
-        // follows the record, so a promotion the log holds is never reported
-        // as refused.
-        self.journal_model_registry(&scratch, now)?;
+        // Every card as it stands *before* the move, journaled before the
+        // record (R12-MODEL-9003), so the candidate's card and its evaluation
+        // are on the log whatever happens next, and nothing on the log claims
+        // a promotion the record does not hold. Then the record, which is the
+        // commit; then the moved cards, whose write may not unmake it.
+        self.journal_model_registry(registry, now)?;
         self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
         *registry = scratch;
         self.succeed_model_pack(&record);
         apply_promotion(&mut self.model_promotions, record);
+        self.journal_moved_cards(registry, now);
         Ok(published)
     }
 
@@ -1086,13 +1107,14 @@ impl Platform {
                 at: now,
                 ..original.clone()
             };
-            // As in a promotion: the moved cards first, nothing fallible
-            // after the record.
-            self.journal_model_registry(&scratch, now)?;
+            // As in a promotion: the unmoved cards, the record, then the
+            // moved cards, whose write may not unmake the rollback.
+            self.journal_model_registry(registry, now)?;
             self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
             *registry = scratch;
             self.succeed_model_pack(&record);
             apply_promotion(&mut self.model_promotions, record);
+            self.journal_moved_cards(registry, now);
             return Ok(predecessor.clone());
         }
         Err(Error::not_found(format!(
