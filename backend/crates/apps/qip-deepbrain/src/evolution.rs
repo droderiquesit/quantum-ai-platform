@@ -599,6 +599,9 @@ impl EvolutionEngine {
         if !self.learning.due(cycle) {
             return Ok(None);
         }
+        // A restarted process's registry is empty; the log is not
+        // (R12-MODEL-9003). Refilled once, before anything reads it.
+        self.learning.restore_registry(platform);
         // The standing gate, re-asked at this round's instant and copied
         // into the platform before the door is resolved — and asked before
         // a subject is chosen, so a licence that has lapsed is withdrawn
@@ -683,6 +686,9 @@ impl EvolutionEngine {
         // one it displaced comes back (MODEL-045): after the promotion, so a
         // candidate that already displaced the degraded model is not undone.
         round.rolled_back = self.learning.roll_back_degraded(platform, now)?;
+        // Every card the round registered, evaluated, drifted, promoted or
+        // rolled back, on the log, so a restart rebuilds it (R12-MODEL-9003).
+        platform.journal_model_registry(self.learning.registry(), now)?;
         Ok(Some(round))
     }
 
@@ -2275,6 +2281,148 @@ mod tests {
             1,
             "one campaign closed, one manifest journaled"
         );
+        Ok(())
+    }
+
+    /// R12-MODEL-9003. Every card a round registers — promoted or not, with
+    /// its evaluations — is on the log, and a restarted deep brain, whose
+    /// registry starts empty, gets it back from the log before its first
+    /// round. Before this a registered-but-unpromoted version and its
+    /// evaluation lived only in memory and a restart lost them, including
+    /// the record that a fit failed the skill bar.
+    ///
+    /// Mutations: delete the `journal_model_registry` call in `maybe_learn`
+    /// — the second process reads no card back; delete the
+    /// `restore_registry` call — the second process's registry stays empty.
+    #[test]
+    fn a_restarted_node_rebuilds_every_registered_card_and_its_evaluations_from_the_log()
+    -> Result<()> {
+        let directory = std::env::temp_dir().join(format!(
+            "qip-deepbrain-registry-durability-{}-{}",
+            std::process::id(),
+            start().as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let file_platform = || -> Result<Platform> {
+            let config = PlatformConfig::default().with_event_log_file(&path);
+            let (context, _clock) = Context::deterministic(start(), config.seed);
+            Platform::new(
+                config,
+                context,
+                Telemetry::silent(),
+                Universe::new(),
+                LimitSet::conservative_default(),
+            )
+        };
+
+        let mut now = start();
+        let before: BTreeMap<String, qip_ai::registry::ModelCard>;
+        let last_cycle;
+        {
+            let mut platform = file_platform()?;
+            let mut engine = engine(1);
+            for _ in 0..((engine.config.minimum_bars as i64 + 30) * 6) {
+                now = now.saturating_add(Duration::from_mins(1));
+                engine.sense(&mut platform, now)?;
+            }
+            let mut round = None;
+            let mut cycle = 0u64;
+            while round.is_none() && cycle < 16 {
+                cycle += 1;
+                round = engine.maybe_learn(&mut platform, cycle, now)?;
+            }
+            last_cycle = cycle;
+            assert!(
+                round.is_some_and(|r| r.registration.is_some()),
+                "premise: a round registered a fit"
+            );
+            before = engine
+                .learning
+                .registry()
+                .iter()
+                .map(|card| (card.reference(), card.clone()))
+                .collect();
+            assert!(!before.is_empty(), "premise: the round registered a card");
+            assert!(
+                before
+                    .values()
+                    .any(|card| card.latest_evaluation().is_some()),
+                "premise: the cards carry their evaluation"
+            );
+            assert!(
+                before
+                    .values()
+                    .any(|card| card.stage != qip_ai::registry::ModelStage::Production),
+                "premise: at least one card was never promoted"
+            );
+            // Nothing changed since, so a second journal writes nothing.
+            assert_eq!(
+                platform.journal_model_registry(engine.learning.registry(), now)?,
+                0
+            );
+        }
+
+        let mut platform = file_platform()?;
+        let mut engine = engine(1);
+        assert!(
+            engine.learning.registry().is_empty(),
+            "premise: a new process starts with an empty registry"
+        );
+        assert_eq!(
+            platform.registered_model_cards().count(),
+            before.len(),
+            "the log does not hold every registered card"
+        );
+        // The next due round's first act is the restore; it runs whether or
+        // not the round then fits anything.
+        let mut cycle = last_cycle;
+        while engine.learning.registry().is_empty() && cycle < last_cycle + 16 {
+            cycle += 1;
+            let _ = engine.maybe_learn(&mut platform, cycle, now)?;
+        }
+        for (reference, card) in &before {
+            let restored = engine.learning.registry().get(reference).ok_or_else(|| {
+                Error::not_found(format!("{reference} did not survive the restart"))
+            })?;
+            assert_eq!(
+                restored.evaluations, card.evaluations,
+                "{reference} came back without its evaluations"
+            );
+            assert_eq!(restored.version, card.version);
+            assert_eq!(restored.training_datasets, card.training_datasets);
+        }
+        // The restarted desk fits on, and its next version continues past
+        // the restored ones rather than reusing one and replacing that card.
+        for _ in 0..((engine.config.minimum_bars as i64 + 30) * 6) {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        let mut fitted = None;
+        while fitted.is_none() && cycle < last_cycle + 64 {
+            cycle += 1;
+            fitted = engine
+                .maybe_learn(&mut platform, cycle, now)?
+                .and_then(|round| round.registration);
+        }
+        let fitted = fitted.ok_or_else(|| Error::not_found("a round after the restart"))?;
+        assert!(
+            !before.contains_key(&fitted.reference),
+            "the restarted desk reused {} and replaced the restored card",
+            fitted.reference
+        );
+        for (reference, card) in &before {
+            assert_eq!(
+                engine
+                    .learning
+                    .registry()
+                    .get(reference)
+                    .map(|c| &c.evaluations),
+                Some(&card.evaluations),
+                "{reference} was overwritten after the restart"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&directory);
         Ok(())
     }
 

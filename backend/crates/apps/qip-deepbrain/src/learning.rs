@@ -801,6 +801,11 @@ pub struct LearningDesk {
     /// bounded by construction and does not grow with uptime. Read by
     /// [`choose_class`] before a round's own fits are scored onto it.
     classes: Scoreboard,
+    /// Whether the registry has been refilled from the log's registration
+    /// records this process (R12-MODEL-9003). Done once, before the first
+    /// round, so a restart does not lose the cards it registered and never
+    /// promoted.
+    restored: bool,
     /// Fits attempted, which is what a model's version is drawn from.
     fits: u64,
     seed: u64,
@@ -831,6 +836,7 @@ impl LearningDesk {
             require_provenance: false,
             stream_reference: BTreeMap::new(),
             classes: Scoreboard::models(),
+            restored: false,
             fits: 0,
             seed,
             stats: LearningStats::default(),
@@ -872,6 +878,41 @@ impl LearningDesk {
 
     pub const fn stats(&self) -> LearningStats {
         self.stats
+    }
+
+    /// Refill the registry from the cards the platform's log holds, once
+    /// per process, and return how many were registered (R12-MODEL-9003).
+    /// A card already in the registry is left as it is: the in-memory card
+    /// is never older than the log's. Paired with
+    /// `Platform::journal_model_registry` after every round, this is what
+    /// makes a registered-but-unpromoted version and its evaluations survive
+    /// the restart that rebuilds this desk's registry empty.
+    pub fn restore_registry(&mut self, platform: &Platform) -> usize {
+        if self.restored {
+            return 0;
+        }
+        self.restored = true;
+        let mut restored = 0;
+        for card in platform.registered_model_cards() {
+            // The fit count is what versions are drawn from, and it restarts
+            // at zero with the process; left there, the next fit would reuse
+            // a restored card's version and `register` would replace it,
+            // drift score and evaluations with it. Continue past the highest
+            // version the log holds instead.
+            if let Some(fit) = card
+                .version
+                .strip_prefix("0.")
+                .and_then(|rest| rest.strip_suffix(".0"))
+                .and_then(|n| n.parse::<u64>().ok())
+            {
+                self.fits = self.fits.max(fit);
+            }
+            if self.registry.get(&card.reference()).is_none() {
+                self.registry.register(card.clone());
+                restored += 1;
+            }
+        }
+        restored
     }
 
     pub const fn enabled(&self) -> bool {

@@ -415,6 +415,12 @@ pub struct Platform {
     /// `Platform::promote_model`. What the `trained_models` slot is
     /// produced from; see `crate::model_serving`.
     pub(crate) model_promotions: BTreeMap<String, crate::model_serving::ModelPromotion>,
+    /// Every registered model card as this process last journaled it, by
+    /// reference, rebuilt from the log at assembly and written only by
+    /// `Platform::journal_model_registry` (R12-MODEL-9003). What lets a card
+    /// that was registered and evaluated but never promoted survive a
+    /// restart; bounded by the registry it mirrors.
+    pub(crate) journaled_cards: BTreeMap<String, qip_ai::registry::ModelCard>,
     /// The Model Pack in force — the newest version of the promoted set,
     /// naming its predecessor and delta (MODEL-037). Rebuilt from the same
     /// log records as `model_promotions` and advanced only beside it.
@@ -5509,6 +5515,7 @@ impl Platform {
             references: Self::resume_references(&event_log)?,
             model_provider,
             model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
+            journaled_cards: crate::model_serving::resume_model_registrations(&event_log)?,
             model_pack: crate::model_serving::resume_model_pack(&event_log)?,
             release_packs: None,
             model_desk: None,
