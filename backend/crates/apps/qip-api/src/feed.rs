@@ -64,6 +64,7 @@ use qip_data_finder::admission::{
 };
 use qip_data_finder::registration::RegistrationRegistry;
 use qip_kernel::Platform;
+use qip_kernel::evidence_intake::EvidenceIntake;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
 use qip_market_ingestion::connector::FetchDigest;
 use qip_market_ingestion::connector_feed::{ConnectorFeed, shipped_class};
@@ -232,10 +233,42 @@ pub struct Sensed {
     pub at: Timestamp,
     /// Records that passed validation, ready for the platform.
     pub records: Vec<SensedRecord>,
+    /// The evidence claim each of `records` rests on, aligned by index: the
+    /// connector's claim id, `None` for a tape record, which is not a claim
+    /// anybody made.
+    pub claims: Vec<Option<String>>,
     /// Why each rejected record was rejected. Counted and reported rather
     /// than dropped: bad data must never silently become an investment
     /// input, and a rejection nobody counts is a silent one.
     pub rejections: Vec<String>,
+}
+
+impl Sensed {
+    /// Take the records the world fabric did not withhold, in order, and
+    /// return how many it withheld (R12-EVID-1200).
+    ///
+    /// Until 2026-10-24 `POST /cycle` observed every record its connector
+    /// released and never handed the connector's checked evidence to the
+    /// world fabric at all, so a claim the fabric would have refused, held
+    /// inadmissible or judged spoofed reached the world model on the
+    /// strength of one source's private check. A record with a claim goes
+    /// through `EvidenceIntake::release`, the rule the deep brain's arm and
+    /// the fast brain apply; a record with none has no claim to withhold.
+    pub fn release(&mut self, intake: &EvidenceIntake) -> (Vec<SensedRecord>, usize) {
+        let records = std::mem::take(&mut self.records);
+        let claims = std::mem::take(&mut self.claims);
+        let offered = records.len();
+        let released: Vec<SensedRecord> = records
+            .into_iter()
+            .zip(claims)
+            .flat_map(|(record, claim)| match claim {
+                Some(id) => intake.release(vec![(record, id)]),
+                None => vec![record],
+            })
+            .collect();
+        let withheld = offered - released.len();
+        (released, withheld)
+    }
 }
 
 /// The process's record source.
@@ -706,16 +739,29 @@ impl ApiFeed {
             source: source.clone(),
             at,
             records: Vec::new(),
+            claims: Vec::new(),
             rejections: Vec::new(),
         };
-        let polled = match self {
-            Self::Tape(feed) => feed.poll(at)?,
-            Self::Connector { feed, .. } => feed.poll_referencing(at, reference)?,
+        // The connector's records come paired with the claim each rests on,
+        // so the route can drop the ones the world fabric withholds once it
+        // has absorbed the poll's evidence (R12-EVID-1200).
+        let polled: Vec<(SensedRecord, Option<String>)> = match self {
+            Self::Tape(feed) => feed
+                .poll(at)?
+                .into_iter()
+                .map(|record| (record, None))
+                .collect(),
+            Self::Connector { feed, .. } => feed
+                .poll_referencing_identified(at, reference)?
+                .into_iter()
+                .map(|(record, claim)| (record, Some(claim)))
+                .collect(),
         };
-        for record in polled {
+        for (record, claim) in polled {
             let issues = record.validate();
             if issues.is_empty() {
                 sensed.records.push(record);
+                sensed.claims.push(claim);
             } else {
                 sensed.rejections.push(format!(
                     "{source} produced an unusable {}: {}",
@@ -725,6 +771,18 @@ impl ApiFeed {
             }
         }
         Ok(sensed)
+    }
+
+    /// The checked evidence the connector released since the last call,
+    /// for `Platform::absorb_evidence` (R12-EVID-2031). Empty for a tape:
+    /// a recorded period is not a claim anybody made.
+    pub fn drain_evidence(
+        &mut self,
+    ) -> Vec<qip_market_ingestion::connector::evidence::CheckedEvidence> {
+        match self {
+            Self::Connector { feed, .. } => feed.drain_evidence(),
+            Self::Tape(_) => Vec::new(),
+        }
     }
 
     /// The current instant on whichever clock this source runs on.
