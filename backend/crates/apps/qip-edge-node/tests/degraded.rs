@@ -47,6 +47,9 @@ use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::mesh::{MeshLink, MeshSettings};
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
 use qip_edge_node::{NodeAssembly, assemble};
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
@@ -170,7 +173,7 @@ fn cut_off(
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
-    let mut gateway = SimulatedGateway::new(venue(), 7, t(0))?;
+    let mut gateway = permitting(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
 
@@ -473,4 +476,25 @@ fn a_cut_off_cells_orders_shrink_a_step_as_each_input_ages_and_stop_when_its_env
     );
     assert_eq!(gateway.submitted_count(), submitted);
     Ok(())
+}
+
+/// `gateway`, permitted to list each of `objects` on demand: a recorded
+/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
+/// A fixture; the refusal without one is proven in qip-edge-node's
+/// tests/gateway.rs.
+fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        let request = CreationRequest::new(
+            CreationAction::List,
+            venue.as_str(),
+            object.as_str(),
+            "paper",
+        );
+        for authority in CreationAuthority::ALL {
+            permissions.record(authority, &request, "test fixture")?;
+        }
+    }
+    gateway.with_listing_permissions(permissions, "paper")
 }

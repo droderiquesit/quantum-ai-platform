@@ -22,10 +22,14 @@ use qip_contracts::venue::VenueId;
 use qip_core::Clock;
 use qip_core::dec;
 use qip_core::error::Result;
+use qip_core::ids::ObjectId;
 use qip_core::time::Timestamp;
 use qip_edge_node::feed::FeedChoice;
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::tape::TapeDriver;
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -229,7 +233,11 @@ fn no_fill_is_ever_larger_than_the_depth_the_tape_seeded() -> Result<()> {
         ),
     );
     let mut driver = TapeDriver::parse(&text, Some(FeedChoice::Simulated))?;
-    let mut gateway = SimulatedGateway::new(venue(), 11, t(0))?;
+    // The inline tape names `obj-TAPE-TEST` and nothing else.
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue(), 11, t(0))?,
+        &[&ObjectId::from_string("obj-TAPE-TEST")],
+    )?;
     let mut applied = Vec::new();
     while let Some(now) = driver.advance() {
         applied.extend(driver.seed(&mut gateway, now)?);
@@ -254,7 +262,11 @@ fn the_same_tape_applied_twice_on_a_manual_clock_seeds_the_venue_identically() -
 
     let run = |seed: u64| -> Result<(Vec<MarketEvent>, Timestamp)> {
         let mut driver = TapeDriver::parse(&text, Some(FeedChoice::Simulated))?;
-        let mut gateway = SimulatedGateway::new(venue(), seed, t(0))?;
+        // The committed fixture names `obj-SLICE13` and nothing else.
+        let mut gateway = permitting(
+            SimulatedGateway::new(venue(), seed, t(0))?,
+            &[&ObjectId::from_string("obj-SLICE13")],
+        )?;
         let mut applied = Vec::new();
         while let Some(now) = driver.advance() {
             applied.extend(driver.seed(&mut gateway, now)?);
@@ -294,4 +306,25 @@ fn the_same_tape_applied_twice_on_a_manual_clock_seeds_the_venue_identically() -
          a clock reading the wall rather than the tape would not land here"
     );
     Ok(())
+}
+
+/// `gateway`, permitted to list each of `objects` on demand: a recorded
+/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
+/// A fixture; the refusal without one is proven in qip-edge-node's
+/// tests/gateway.rs.
+fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        let request = CreationRequest::new(
+            CreationAction::List,
+            venue.as_str(),
+            object.as_str(),
+            "paper",
+        );
+        for authority in CreationAuthority::ALL {
+            permissions.record(authority, &request, "test fixture")?;
+        }
+    }
+    gateway.with_listing_permissions(permissions, "paper")
 }

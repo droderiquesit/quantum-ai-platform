@@ -28,6 +28,9 @@ use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
 use qip_edge_node::strategies::{PRICING_VARIABLE, StrategyInstaller, StrategyPlan, parse_pricing};
 use qip_edge_node::{NodeAssembly, assemble};
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
@@ -170,7 +173,7 @@ fn node_with_feed() -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     // Far above any grant this suite signs, so the plan's deployment decides.
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
-    let gateway = SimulatedGateway::new(venue(), 7, t(0))?;
+    let gateway = permitting(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
     Ok((node, gateway, feed))
@@ -598,4 +601,25 @@ fn a_rollback_to_the_previous_payload_redeploys_its_plan_from_memory_at_the_next
         "the plan rolled away from is not kept for a rollback forward"
     );
     Ok(())
+}
+
+/// `gateway`, permitted to list each of `objects` on demand: a recorded
+/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
+/// A fixture; the refusal without one is proven in qip-edge-node's
+/// tests/gateway.rs.
+fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        let request = CreationRequest::new(
+            CreationAction::List,
+            venue.as_str(),
+            object.as_str(),
+            "paper",
+        );
+        for authority in CreationAuthority::ALL {
+            permissions.record(authority, &request, "test fixture")?;
+        }
+    }
+    gateway.with_listing_permissions(permissions, "paper")
 }

@@ -146,6 +146,31 @@ fn the_venue_refuses_an_admission_for_another_action_venue_or_product_and_lists_
             !exchange.is_listed(&product()),
             "{case} was refused and still left a listing at the venue"
         );
+        // The simulator's own listing path, which the edge node's gateway
+        // uses to list on demand, makes the same check.
+        let refusal = exchange
+            .list_synthetic(
+                product(),
+                "NEW1",
+                dec!("100"),
+                Decimal::ONE,
+                dec!("0.01"),
+                LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+                start(),
+                &admission,
+            )
+            .expect_err(&format!("{case} listed {PRODUCT} synthetically at {VENUE}"));
+        assert!(
+            refusal
+                .message()
+                .contains("needs an admission to list exactly this instrument"),
+            "{case} was refused synthetically for another reason: {}",
+            refusal.message()
+        );
+        assert!(
+            !exchange.is_listed(&product()),
+            "{case} was refused synthetically and still left a listing at the venue"
+        );
     }
 
     // And the admission it does need lists the instrument, so the refusals

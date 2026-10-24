@@ -24,10 +24,13 @@ use qip_core::error::Result;
 use qip_core::ids::ObjectId;
 use qip_core::time::Timestamp;
 use qip_edge::cell::Placer;
-use qip_edge_node::gateway::{NodeGateway, RestGateway};
+use qip_edge_node::gateway::{NodeGateway, RestGateway, SimulatedGateway};
 use qip_edge_node::venue::{
     ACKNOWLEDGEMENT_VARIABLE, ADAPTER_VARIABLE, DESTINATION_PREFIX, IDEMPOTENCY_VARIABLE,
     LiveVenueChoice, REST_ADAPTER, SEED_VARIABLE, VenueChoice,
+};
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
 };
 use server::{Action, RawRequest, Route, TestVenue};
 use std::collections::BTreeMap;
@@ -659,12 +662,22 @@ fn the_simulated_gateway_still_places_and_reports_that_nothing_left_the_process(
     assert_eq!(gateway.class(), "simulated");
     assert_eq!(gateway.unknown_orders(), 0);
 
+    // The instrument is placed against unlisted, so the venue lists it on
+    // demand, which since R12-COVERAGE-5107 it does only once permitted to.
+    let subject = ObjectId::from_string("obj-ABC");
+    permit_listing(
+        gateway
+            .simulated_mut()
+            .expect("the deployment configured nothing, so the gateway is simulated"),
+        &[&subject],
+    )?;
+
     // At the instant the gateway was opened at: since ADR 0084 an instant
     // past the pass the simulated gateway is on is a hold, not a send, and
     // the subject here is that a send stays in the process.
     gateway.place(
         "cell-3",
-        &ObjectId::from_string("obj-ABC"),
+        &subject,
         &venue(),
         BookSide::Ask,
         dec!("5"),
@@ -701,4 +714,25 @@ fn an_order_for_a_venue_this_gateway_does_not_hold_a_session_with_is_refused() -
         "the refusal happened before anything reached a socket"
     );
     Ok(())
+}
+
+/// `gateway`, permitted to list each of `objects` on demand: a recorded
+/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
+/// A fixture; the refusal without one is proven in qip-edge-node's
+/// tests/gateway.rs.
+fn permit_listing(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Result<()> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        let request = CreationRequest::new(
+            CreationAction::List,
+            venue.as_str(),
+            object.as_str(),
+            "paper",
+        );
+        for authority in CreationAuthority::ALL {
+            permissions.record(authority, &request, "test fixture")?;
+        }
+    }
+    gateway.permit_listings(permissions, "paper")
 }

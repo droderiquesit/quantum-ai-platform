@@ -20,6 +20,9 @@ use qip_core::time::Timestamp;
 use qip_edge::cell::{Placer, QuoteTerms};
 use qip_edge_node::gateway::{NodeGateway, SimulatedGateway};
 use qip_edge_node::reprice::RequotingPlacer;
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+};
 
 const VENUE: &str = "XLON";
 
@@ -35,8 +38,9 @@ fn object() -> ObjectId {
 fn the_requoting_placer_and_the_node_gateway_answer_the_simulated_gateways_quote_terms()
 -> Result<()> {
     let venue = VenueId::new(VENUE);
-    let mut gateway = SimulatedGateway::new(venue.clone(), 7, at())?;
-    // Placing is what lists the instrument at the simulated venue.
+    let mut gateway = permitting(SimulatedGateway::new(venue.clone(), 7, at())?, &[&object()])?;
+    // Placing is what lists the instrument at the simulated venue, once the
+    // venue is permitted to list it.
     gateway.place(
         "ord-1",
         &object(),
@@ -88,4 +92,25 @@ fn the_requoting_placer_and_the_node_gateway_answer_the_simulated_gateways_quote
         "the node gateway does not delegate quote terms"
     );
     Ok(())
+}
+
+/// `gateway`, permitted to list each of `objects` on demand: a recorded
+/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
+/// A fixture; the refusal without one is proven in qip-edge-node's
+/// tests/gateway.rs.
+fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        let request = CreationRequest::new(
+            CreationAction::List,
+            venue.as_str(),
+            object.as_str(),
+            "paper",
+        );
+        for authority in CreationAuthority::ALL {
+            permissions.record(authority, &request, "test fixture")?;
+        }
+    }
+    gateway.with_listing_permissions(permissions, "paper")
 }

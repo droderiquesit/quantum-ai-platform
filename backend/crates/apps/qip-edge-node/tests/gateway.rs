@@ -23,6 +23,9 @@ use qip_edge::journal::Decision;
 use qip_edge_node::gateway::{
     DEFAULT_RELEASE_TOLERANCE, SimulatedGateway, assumptions_of, widen_config_digest,
 };
+use qip_execution_engine::creation::{
+    CreationAction, CreationAdmission, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::features::BookPressure;
@@ -216,7 +219,10 @@ fn pass(
 #[test]
 fn a_cell_order_reaches_the_matching_engine_and_reconciles_through_drop_copy() -> Result<()> {
     let mut cell = armed_cell()?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
 
     // Contra liquidity at the price the cell's book implies (mid = 100), so
     // the buy the strategy raises has something real to cross.
@@ -282,7 +288,10 @@ fn a_cell_order_reaches_the_matching_engine_and_reconciles_through_drop_copy() -
 fn a_partial_fill_at_the_venue_is_booked_for_what_traded_and_the_rest_rests_without_a_break()
 -> Result<()> {
     let mut cell = armed_cell()?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
 
     // Less than the order's size rests on the contra side, so the venue can
     // honestly fill only part of it. What the cell may hold is exactly the
@@ -364,8 +373,15 @@ fn the_gateway_is_simulated_because_the_venue_says_so() -> Result<()> {
 
 #[test]
 fn an_unlisted_instrument_is_listed_synthetically_and_stamped_as_such() -> Result<()> {
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 1, start())?;
     let subject = object("NEWNAME");
+    // The venue lists an instrument it does not know once permitted to, and
+    // only then (R12-COVERAGE-5107): the permission is for this instrument
+    // alone, and the refusal without it is
+    // `an_instrument_nobody_permitted_is_never_listed_whether_placed_against_or_seeded`.
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 1, start())?,
+        &[&subject],
+    )?;
     gateway.seed_touch(&subject, Side::Sell, dec!("42"), dec!("10"), start())?;
 
     let mut probe = gateway;
@@ -395,8 +411,10 @@ fn the_same_seed_replays_the_same_session_exactly() -> Result<()> {
     // zero and zero jitter, so under it every seed behaves identically and
     // this test would pass while proving nothing about seeding at all.
     let run = |seed: u64, rejection: f64| -> Result<Vec<(String, String)>> {
-        let mut gateway =
-            SimulatedGateway::with_rejection_probability(venue("XLON"), seed, rejection, start())?;
+        let mut gateway = permitting(
+            SimulatedGateway::with_rejection_probability(venue("XLON"), seed, rejection, start())?,
+            &[&object("ACME")],
+        )?;
         let subject = object("ACME");
         gateway.seed_touch(&subject, Side::Sell, dec!("100"), dec!("10000"), start())?;
         let mut fills = Vec::new();
@@ -463,7 +481,8 @@ fn a_synthetic_listing_refuses_nonsense_and_records_its_provenance() -> Result<(
                 dec!("1"),
                 dec!("1"),
                 stated_liquidity(),
-                start()
+                start(),
+                &listing_admission("XLON", &object("X"))?,
             )
             .is_err(),
         "a zero-price listing was accepted"
@@ -476,6 +495,7 @@ fn a_synthetic_listing_refuses_nonsense_and_records_its_provenance() -> Result<(
         dec!("0.01"),
         stated_liquidity(),
         start(),
+        &listing_admission("XLON", &object("X"))?,
     )?;
     let listing = exchange.listing(&object("X")).expect("just listed");
     assert_eq!(
@@ -515,9 +535,16 @@ fn a_synthetic_listing_refuses_nonsense_and_records_its_provenance() -> Result<(
 /// and claiming no volume — applied to the record this binary writes.
 #[test]
 fn a_listing_this_node_invents_states_a_liquidity_that_cannot_loosen_a_control() -> Result<()> {
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    // Permitted to list this instrument and nothing else, because since
+    // R12-COVERAGE-5107 a venue lists an instrument it does not know only
+    // once permitted to.
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("UNSEEN")],
+    )?;
     // The premise: the venue does not list this instrument, so the placement
-    // below is what invents the record rather than finding one.
+    // below, once permitted, is what invents the record rather than finding
+    // one.
     assert!(
         gateway.listing(&object("UNSEEN")).is_none(),
         "the venue already lists the instrument, so nothing below invents a listing"
@@ -533,7 +560,7 @@ fn a_listing_this_node_invents_states_a_liquidity_that_cannot_loosen_a_control()
     )?;
     let listing = gateway
         .listing(&object("UNSEEN"))
-        .expect("placing against an unlisted instrument lists it");
+        .expect("placing against an unlisted instrument lists it once permitted");
     let liquidity = &listing.liquidity;
 
     // The figures the deleted `LiquidityProfile::default()` asserted. Named as
@@ -634,7 +661,10 @@ fn a_cell_with_no_policy_sizes_at_the_conservative_floor_and_a_fresh_payload_res
     // stale — 0.75 × 0.5 of the ask — because full-confidence sizing without a
     // belief state was an overclaim, not a default.
     let mut cell = armed_cell()?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
 
     let report = pass(&mut cell, &mut gateway, t(20))?;
@@ -650,7 +680,10 @@ fn a_cell_with_no_policy_sizes_at_the_conservative_floor_and_a_fresh_payload_res
     // A fresh payload restores full-confidence sizing.
     let mut fresh_cell = armed_cell()?;
     fresh_cell.apply_policy(verified_policy(1, false, true, t(18)), t(18))?;
-    let mut fresh_gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut fresh_gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     fresh_gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
     let fresh_report = pass(&mut fresh_cell, &mut fresh_gateway, t(20))?;
     let fresh_order = fresh_report.orders.first().expect("an order was sent");
@@ -669,7 +702,10 @@ fn a_central_policy_halt_stops_the_cell_and_only_a_newer_payload_releases_it() -
     // from a *newer* signed payload that says so, never from a replay of the
     // one before the halt.
     let mut cell = armed_cell()?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
 
     // Premise: the cell trades before the halt.
@@ -723,7 +759,10 @@ fn a_strategy_that_recognises_situations_pauses_when_episodic_memory_goes_stale(
     // refuses when it is reclassified — so the pause is the classification's
     // doing, not the fixture's.
     let mut cell = armed_cell()?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
     // No policy has ever arrived, so episodic memory reads unavailable — and a
     // price-only strategy must trade through that regardless.
@@ -767,7 +806,10 @@ fn a_halt_command_stops_the_cell_and_a_payload_racing_it_cannot_release_it() -> 
     // it, and applying it would let ordinary delivery jitter un-halt a cell
     // the centre just stopped. Only a payload issued after the halt releases.
     let mut cell = armed_cell()?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
 
     // Premise: trading before the halt.
@@ -960,7 +1002,10 @@ fn two_strategies_agreeing_send_one_order_carrying_both_contributors() -> Result
     // its own order: two agreeing strategies sent two orders, paid the spread
     // twice, and showed the venue two prints where the platform meant one.
     let mut cell = cell_with_two_strategies(SignalKind::Enter, "100")?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
 
     let report = pass(&mut cell, &mut gateway, t(20))?;
@@ -1008,7 +1053,10 @@ fn two_strategies_disagreeing_cross_internally_and_the_venue_sees_nothing() -> R
     // problem and a pure loss at once, and the defect this slice exists to
     // remove. Now they cancel internally and neither order is sent.
     let mut cell = cell_with_two_strategies(SignalKind::Exit, "100")?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
@@ -1060,7 +1108,10 @@ fn the_netting_ratio_reports_what_the_strategy_set_actually_cost() -> Result<()>
     // hard-coded to 1.0 — or computed from the net alone — cannot pass. Two
     // agreeing strategies would give exactly one and prove nothing.
     let mut cell = cell_with_two_strategies(SignalKind::Exit, "40")?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
@@ -1120,7 +1171,10 @@ fn a_strategy_its_own_envelope_refuses_never_reaches_the_netting_set() -> Result
     // sit out a trade it was entitled to make on the strength of an order
     // nobody was allowed to send.
     let mut cell = cell_with_a_barred_second_strategy(SignalKind::Exit, "100")?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
@@ -1172,7 +1226,10 @@ fn the_delta_the_centre_receives_names_every_strategy_behind_a_netted_order() ->
     // a netted fill to `strategy` alone — the largest contributor — and credits
     // one strategy with another's trade.
     let mut cell = cell_with_two_strategies(SignalKind::Enter, "100")?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
 
     let report = pass(&mut cell, &mut gateway, t(20))?;
@@ -1222,7 +1279,10 @@ fn a_partial_offset_is_crossed_internally_at_the_mid_and_booked_to_both_sides() 
     // optimisation detail. A cross nobody can point at afterwards is the thing
     // an examiner asks about.
     let mut cell = cell_with_two_strategies(SignalKind::Exit, "40")?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
@@ -1322,7 +1382,10 @@ fn a_cross_above_the_forty_percent_cap_is_refused_whole_rather_than_trimmed() ->
     // abandoning the rest would build that market anyway, just more slowly.
     // So the cap refuses the whole cross rather than trimming to it.
     let mut cell = cell_with_two_strategies(SignalKind::Exit, "100")?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
@@ -1365,7 +1428,10 @@ fn two_strategies_that_agree_are_not_crossed_against_each_other() -> Result<()> 
     // intents genuinely offset; a cell that booked a cross for every netted
     // order would pass an assertion that merely counts them.
     let mut cell = cell_with_two_strategies(SignalKind::Enter, "100")?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
 
     let report = pass(&mut cell, &mut gateway, t(20))?;
@@ -1403,7 +1469,10 @@ fn a_netted_order_spends_every_contributing_strategy_s_own_envelope() -> Result<
     // each asked for. Charging it all to one strategy would let the other keep
     // spending capital it has already used, which is a limit that cannot fire.
     let mut cell = cell_with_two_strategies(SignalKind::Exit, "40")?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
@@ -1482,7 +1551,10 @@ fn cell_firing_only(kind: SignalKind) -> Result<Cell> {
 /// sits on, and one that joins the book is on the same side as it.
 fn pass_against(kind: SignalKind, resting: Side) -> Result<(Decimal, usize, BookSide, Decimal)> {
     let mut cell = cell_firing_only(kind)?;
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(&object("ACME"), resting, dec!("100"), dec!("500"), t(15))?;
     let resting_before = gateway.resting_count();
     assert_eq!(
@@ -1582,7 +1654,10 @@ fn an_order_placed_for_a_later_instant_is_held_and_matched_on_the_first_pass_tha
     // and the schedule the cell computed changes nothing. The order must not
     // reach the venue before its instant, and must reach it on the first
     // pass at or after it, driven by the pass instant alone.
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(
         &object("ACME"),
         Side::Sell,
@@ -1661,7 +1736,10 @@ fn a_held_order_whose_instant_a_pass_finds_past_the_tolerance_is_withdrawn_not_s
     // the window its cycle was admitted on is the exposure the schedule was
     // computed to prevent, so a gateway that sent it late would be spending
     // the mechanism's whole benefit to look busy.
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(
         &object("ACME"),
         Side::Sell,
@@ -1738,7 +1816,10 @@ fn an_order_naming_a_venue_this_gateway_does_not_reach_is_refused_on_the_send_pa
     // order the cell decided for one venue would have been submitted to
     // another's exchange and then reported back under both names — two
     // records of one order, and the louder one wrong.
-    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    let mut gateway = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&object("ACME")],
+    )?;
     gateway.seed_touch(
         &object("ACME"),
         Side::Sell,
@@ -1874,6 +1955,226 @@ fn a_replay_manifest_built_from_the_gateways_settings_names_them_and_a_gateway_w
         first.reproducibility_hash(),
         second.reproducibility_hash(),
         "two runs under different fill models must not share a reproducibility hash"
+    );
+    Ok(())
+}
+
+/// The permissions a listing of each of `objects` at `venue` needs: a recorded
+/// venue, product and jurisdiction permission for each. A fixture.
+fn listing_permissions(venue: &str, objects: &[&ObjectId]) -> Result<CreationPermissions> {
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        let request = CreationRequest::new(CreationAction::List, venue, object.as_str(), "paper");
+        for authority in CreationAuthority::ALL {
+            permissions.record(authority, &request, "test fixture")?;
+        }
+    }
+    Ok(permissions)
+}
+
+/// An admission to list `object` at `venue`, minted by a register holding
+/// all three permissions.
+fn listing_admission(venue: &str, object: &ObjectId) -> Result<CreationAdmission> {
+    let request = CreationRequest::new(CreationAction::List, venue, object.as_str(), "paper");
+    listing_permissions(venue, &[object])?.admit(&request)
+}
+
+/// `gateway`, permitted to list each of `objects` on demand: a recorded
+/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
+/// A fixture; the refusal without one is proven by
+/// `an_instrument_nobody_permitted_is_never_listed_whether_placed_against_or_seeded`.
+fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+    let permissions = listing_permissions(gateway.venue(), objects)?;
+    gateway.with_listing_permissions(permissions, "paper")
+}
+
+// --- R12-COVERAGE-5107: a market nobody permitted is never created ----------
+
+/// The failure this prevents: until 2026-10-24 the gateway listed any id
+/// handed to `place` or `seed_touch`, so an instrument nobody had permitted —
+/// no venue rulebook entry, no product approval, no legal opinion — came into
+/// existence at the venue the moment the cell or a tape named it. An
+/// independent skeptic found it (R12-COVERAGE-5107). Every listing path is
+/// driven here against a register that does not admit the instrument — none
+/// at all, one for another instrument, one for another jurisdiction — and the
+/// last half lists the same instrument under a register that does, so the
+/// refusals cannot be a gateway that refuses everything.
+#[test]
+fn an_instrument_nobody_permitted_is_never_listed_whether_placed_against_or_seeded() -> Result<()> {
+    let unpermitted = object("NOBODY");
+    let permitted_instead = object("SOMEBODY");
+    let refusal = "no market may be created here";
+
+    // A gateway as `SimulatedGateway::new` builds one, which nobody has handed
+    // a permission to.
+    let mut bare = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    assert!(
+        bare.listing(&unpermitted).is_none(),
+        "the premise failed: the venue already lists the instrument, so nothing below could \
+         create it"
+    );
+    let placed = bare
+        .place(
+            "order-bare",
+            &unpermitted,
+            &venue("XLON"),
+            BookSide::Ask,
+            dec!("10"),
+            dec!("100"),
+            start(),
+        )
+        .expect_err("a gateway nobody permitted listed an instrument to place against it");
+    assert!(
+        placed.message().contains(refusal),
+        "the placement was refused, but not as a market nobody permitted: {}",
+        placed.message()
+    );
+    assert!(
+        bare.listing(&unpermitted).is_none(),
+        "the refused placement listed the instrument anyway"
+    );
+    assert_eq!(
+        bare.submitted_count(),
+        0,
+        "the refused placement reached the venue"
+    );
+    // A held order is listed at placement too (ADR 0084), so the hold is no
+    // way round the refusal.
+    let held = bare
+        .place(
+            "order-held",
+            &unpermitted,
+            &venue("XLON"),
+            BookSide::Ask,
+            dec!("10"),
+            dec!("100"),
+            t(1),
+        )
+        .expect_err("a held order listed an instrument nobody permitted");
+    assert!(
+        held.message().contains(refusal),
+        "the held placement was refused, but not as a market nobody permitted: {}",
+        held.message()
+    );
+    assert_eq!(bare.held_count(), 0, "the refused order is held anyway");
+    assert!(
+        bare.listing(&unpermitted).is_none(),
+        "the refused hold listed the instrument anyway"
+    );
+    let seeded = bare
+        .seed_touch(&unpermitted, Side::Sell, dec!("100"), dec!("10"), start())
+        .expect_err("a seeded touch listed an instrument nobody permitted");
+    assert!(
+        seeded.message().contains(refusal),
+        "the seeded touch was refused, but not as a market nobody permitted: {}",
+        seeded.message()
+    );
+    assert!(
+        bare.listing(&unpermitted).is_none(),
+        "the refused seed listed the instrument anyway"
+    );
+    assert_eq!(
+        bare.resting_count(),
+        0,
+        "the refused seed rested liquidity anyway"
+    );
+
+    // Permitted to list a different instrument: a permission is for exactly
+    // the product it names.
+    let mut other = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&permitted_instead],
+    )?;
+    let error = other
+        .place(
+            "order-other",
+            &unpermitted,
+            &venue("XLON"),
+            BookSide::Ask,
+            dec!("10"),
+            dec!("100"),
+            start(),
+        )
+        .expect_err("a permission for one instrument listed another");
+    assert_eq!(error.code(), "denied", "{}", error.message());
+    assert!(
+        error.message().contains(refusal),
+        "the placement was refused, but not as a market nobody permitted: {}",
+        error.message()
+    );
+    assert!(
+        other.listing(&unpermitted).is_none(),
+        "a permission for one instrument listed another"
+    );
+
+    // Every permission this instrument needs, recorded for one jurisdiction,
+    // and a gateway told it trades in another.
+    let mut elsewhere = SimulatedGateway::new(venue("XLON"), 7, start())?
+        .with_listing_permissions(listing_permissions("XLON", &[&unpermitted])?, "elsewhere")?;
+    let error = elsewhere
+        .place(
+            "order-elsewhere",
+            &unpermitted,
+            &venue("XLON"),
+            BookSide::Ask,
+            dec!("10"),
+            dec!("100"),
+            start(),
+        )
+        .expect_err("a permission recorded in one jurisdiction listed in another");
+    assert_eq!(error.code(), "denied", "{}", error.message());
+    assert!(
+        error.message().contains(refusal),
+        "the placement was refused, but not as a market nobody permitted: {}",
+        error.message()
+    );
+    assert!(
+        elsewhere.listing(&unpermitted).is_none(),
+        "a permission recorded in one jurisdiction listed in another"
+    );
+
+    // A register offered with no jurisdiction is refused rather than held:
+    // a gateway that silently refused everything would read as configured.
+    let blank = SimulatedGateway::new(venue("XLON"), 7, start())?
+        .with_listing_permissions(listing_permissions("XLON", &[&unpermitted])?, "  ");
+    assert!(
+        blank.is_err(),
+        "listing permissions offered with a blank jurisdiction were accepted"
+    );
+
+    // The same instrument, at the same venue, under a register permitting it
+    // in the jurisdiction the gateway names: listed, and stamped synthetic.
+    // Without this half every refusal above would also pass on a gateway
+    // that refused everything.
+    let mut admitted = permitting(
+        SimulatedGateway::new(venue("XLON"), 7, start())?,
+        &[&unpermitted],
+    )?;
+    assert!(
+        admitted.listing(&unpermitted).is_none(),
+        "the premise failed: the venue already lists the instrument"
+    );
+    admitted.place(
+        "order-admitted",
+        &unpermitted,
+        &venue("XLON"),
+        BookSide::Ask,
+        dec!("10"),
+        dec!("100"),
+        start(),
+    )?;
+    let listing = admitted
+        .listing(&unpermitted)
+        .expect("placing against a permitted instrument did not list it");
+    assert_eq!(
+        listing.provenance.licensing,
+        LicensingClass::Synthetic,
+        "a listing the simulator invented is not licensed as synthetic"
+    );
+    assert_eq!(
+        admitted.submitted_count(),
+        1,
+        "the permitted placement did not reach the venue"
     );
     Ok(())
 }

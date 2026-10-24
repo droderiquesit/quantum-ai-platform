@@ -41,6 +41,15 @@
 //!   provenance stamped synthetic, because a listing a simulator made up must
 //!   never read as market data. A real venue has its own reference data and
 //!   there is nothing here that would add to it.
+//! * **And it is invented only where governance permits it**
+//!   (R12-COVERAGE-5107). Listing on demand brings an instrument into
+//!   existence at the venue, so it asks the gateway's own
+//!   `CreationPermissions` register for an admission to list exactly that
+//!   instrument here, which needs a recorded venue, product and
+//!   jurisdiction permission. [`SimulatedGateway::new`] gives it no
+//!   register at all, so a gateway nobody has handed permissions to refuses
+//!   every instrument it does not already list, whether it arrives by
+//!   placement, by a seeded touch or from a tape.
 //!
 //! [`Cell`]: qip_edge::cell::Cell
 
@@ -65,6 +74,7 @@ use qip_edge::dispersion::DEFAULT_DISPERSION_BOUND;
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::resume::VenueAccount;
 use qip_execution_engine::broker::Broker;
+use qip_execution_engine::creation::{CreationAction, CreationPermissions, CreationRequest};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::costs::LiquidityProfile;
 use qip_financial::object::FinancialObject;
@@ -202,6 +212,22 @@ pub struct SimulatedGateway {
     unreleased: Vec<UnreleasedOrder>,
     /// See [`DEFAULT_RELEASE_TOLERANCE`].
     release_tolerance: Duration,
+    /// What an on-demand listing is admitted against. `None` until
+    /// [`Self::permit_listings`] supplied it, and while it is `None` every
+    /// listing on demand is refused. Boxed so the gateway, and the
+    /// `NodeGateway` variant holding it, grow by a pointer rather than by a
+    /// register.
+    listing: Option<Box<ListingAuthority>>,
+}
+
+/// The recorded permissions a gateway lists on demand under, and the
+/// jurisdiction its requests name. The jurisdiction is matched exactly
+/// against the register, so it is the deployment's to state and never
+/// inferred.
+#[derive(Debug)]
+struct ListingAuthority {
+    permissions: CreationPermissions,
+    jurisdiction: String,
 }
 
 impl SimulatedGateway {
@@ -285,7 +311,46 @@ impl SimulatedGateway {
             held: BTreeMap::new(),
             unreleased: Vec::new(),
             release_tolerance: DEFAULT_RELEASE_TOLERANCE,
+            listing: None,
         })
+    }
+
+    /// The same gateway, listing on demand only what `permissions` admits for
+    /// `jurisdiction` (R12-COVERAGE-5107).
+    ///
+    /// Refused without a jurisdiction: a request naming none cannot match any
+    /// recorded permission, and a gateway that silently refused everything
+    /// would read as one that had been configured.
+    pub fn with_listing_permissions(
+        mut self,
+        permissions: CreationPermissions,
+        jurisdiction: &str,
+    ) -> Result<Self> {
+        self.permit_listings(permissions, jurisdiction)?;
+        Ok(self)
+    }
+
+    /// [`Self::with_listing_permissions`] on a gateway already held, such as
+    /// the one inside a [`NodeGateway`]. Replaces the register rather than
+    /// merging into it, so what this gateway may list is exactly what the
+    /// last caller recorded.
+    pub fn permit_listings(
+        &mut self,
+        permissions: CreationPermissions,
+        jurisdiction: &str,
+    ) -> Result<()> {
+        if jurisdiction.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "listing permissions were offered to the simulated venue {} with no jurisdiction; \
+                 name the jurisdiction the recorded permissions were granted in",
+                self.venue.as_str()
+            )));
+        }
+        self.listing = Some(Box::new(ListingAuthority {
+            permissions,
+            jurisdiction: jurisdiction.trim().to_string(),
+        }));
+        Ok(())
     }
 
     /// The same gateway under a release tolerance the deployment chooses.
@@ -615,6 +680,25 @@ impl SimulatedGateway {
         if self.exchange.is_listed(object_id) {
             return Ok(());
         }
+        // The admission first and the venue second: a refused instrument
+        // returns here, before anything is built or written.
+        let Some(listing) = self.listing.as_deref() else {
+            return Err(Error::denied(format!(
+                "no market may be created here: the simulated venue {} holds no listing \
+                 permissions, so {} cannot be listed on demand. Record the venue, product and \
+                 jurisdiction permissions and supply them with \
+                 SimulatedGateway::with_listing_permissions; nothing was sent to the venue",
+                self.venue.as_str(),
+                object_id.as_str()
+            )));
+        };
+        let request = CreationRequest::new(
+            CreationAction::List,
+            self.venue.as_str(),
+            object_id.as_str(),
+            listing.jurisdiction.as_str(),
+        );
+        let admission = listing.permissions.admit(&request)?;
         self.exchange.list_synthetic(
             object_id.clone(),
             object_id.as_str(),
@@ -623,6 +707,7 @@ impl SimulatedGateway {
             SYNTHETIC_STEP,
             invented_listing_liquidity(),
             at,
+            &admission,
         )
     }
 }

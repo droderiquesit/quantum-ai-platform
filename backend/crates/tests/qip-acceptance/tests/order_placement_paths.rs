@@ -152,7 +152,8 @@ fn share_policy(grants: Vec<String>) -> Result<VerifiedPolicy> {
 }
 
 /// A node assembled the way `main.rs` assembles it, under `limits`, with one
-/// firing strategy resting at the mid.
+/// firing strategy resting at the mid. Its venue may list `object()` on
+/// demand, the one instrument this suite seeds and trades, and nothing else.
 fn node(limits: &CellRiskLimits) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
@@ -165,7 +166,7 @@ fn node(limits: &CellRiskLimits) -> Result<(NodeAssembly, SimulatedGateway, Simu
         None,
         limits,
     )?;
-    let gateway = SimulatedGateway::new(venue(), 7, t(0))?;
+    let gateway = permitting(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
     let (compiled, program) = firing_strategy()?;
@@ -1498,4 +1499,25 @@ fn every_production_cell_is_built_gated_or_never_run() {
             );
         }
     }
+}
+
+/// `gateway`, permitted to list each of `objects` on demand: a recorded
+/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
+/// A fixture; the refusal without one is proven in qip-edge-node's
+/// tests/gateway.rs.
+fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        let request = CreationRequest::new(
+            CreationAction::List,
+            venue.as_str(),
+            object.as_str(),
+            "paper",
+        );
+        for authority in CreationAuthority::ALL {
+            permissions.record(authority, &request, "test fixture")?;
+        }
+    }
+    gateway.with_listing_permissions(permissions, "paper")
 }
