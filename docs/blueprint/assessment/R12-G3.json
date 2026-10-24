@@ -2078,14 +2078,14 @@
   },
   {
     "id": "R12-AMBIENT-10094",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "The research loop bids only the desk's items (Question, Simulation, DataSource, Model); a grant starts the item, is measured next sweep, and agent compute is bounded by agent_budgets in the market and the manifest Budget in the run. No agent bid exists and no grant raises a ceiling, by decision (ADR 0158 decisions 1-2).",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/research.rs::work_kind",
       "backend/crates/apps/qip-deepbrain/src/research.rs::tests::the_bids_the_research_loop_makes_are_only_of_kinds_that_change_a_named_budget",
       "backend/crates/services/qip-expansion/src/meta.rs::MetaIntelligence::allocate_within"
     ],
-    "gap": "",
+    "gap": "2026-10-24: requirement names CPU/GPU/TPU/QPU and agent budgets allocated by expected value; by default only CPU/GPU are allocated (TPU literal zero, QPU zero, agent_budgets empty, no agent bid exists), and the named test pins which bid kinds exist, not that an allocation is justified by an expected-value term",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2096,7 +2096,7 @@
     "verification": "cargo test -p qip-deepbrain --lib the_bids_the_research_loop",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed per ADR 0158 d1-2 (test-only). Mutation fired: mapping TaskKind::Experiment to WorkKind::Agent in work_kind failed the test (bid set {Question, Agent, Simulation, DataSource} != the four named-budget kinds). The TPU budget is the literal zero and is the owner's."
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed per ADR 0158 d1-2 (test-only). Mutation fired: mapping TaskKind::Experiment to WorkKind::Agent in work_kind failed the test (bid set {Question, Agent, Simulation, DataSource} != the four named-budget kinds). The TPU budget is the literal zero and is the owner's. AUDIT-2 2026-10-24: regraded, requirement names CPU/GPU/TPU/QPU and agent budgets allocated by expected value; by default only CPU/GPU are allocated (TPU literal zero, QPU zero, agent_budgets empty, no agent bid exists), and the named test pins which bid kinds exist, not that an allocation is justified by an expected-value term"
   },
   {
     "id": "R12-QUANT-10095",

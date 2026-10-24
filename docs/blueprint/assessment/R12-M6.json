@@ -2437,7 +2437,7 @@
   },
   {
     "id": "R12-AGENCY-6108",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "memory.rs recommend and recommend_for (per state/audience, learned delay) read only Observed::Measured records. qip-deepbrain asks recommend_for(regime, research-desk, RECOMMENDATION_SUPPORT) before every offer and counts the answer on the cycle line (AgencyRound::asked, recommended_draft, recommended_nothing); measured outcomes now reach the memory through engine::learn on each draft's follow-up. qip-cli records simulated outcomes only.",
     "evidence": [
       "backend/crates/services/qip-agency/src/memory.rs recommend_for",
@@ -2450,7 +2450,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs::three_measured_outcomes_at_zero_attribution_confidence_recommend_nothing_however_positive_their_mean",
       "backend/crates/services/qip-agency/src/memory.rs ActionOutcomeMemory::recommend_for"
     ],
-    "gap": "",
+    "gap": "2026-10-24: learning which actions work needs a recommendation the memory can return; with production outcomes all at attribution confidence 0 the default node's recommend_for is always empty, and its answer changes no draft; recommend_for is exercised only by tests that seed positive confidence",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2461,7 +2461,7 @@
     "verification": "cargo +1.94.1 test -p qip-agency --test agency zero_attribution",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Audience and delay dimensions now present and tested; integration still absent, so still PARTIAL. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): ActionOutcomeMemory::recommend_for counts only records with attribution_confidence above zero; the answer still gates no draft. Mutation: remove the attribution_confidence filter in recommend_for: three Measured outcomes at confidence 0 with a positive mean effect return Some(..) and the test fails, which is the right failure fired."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Audience and delay dimensions now present and tested; integration still absent, so still PARTIAL. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): ActionOutcomeMemory::recommend_for counts only records with attribution_confidence above zero; the answer still gates no draft. Mutation: remove the attribution_confidence filter in recommend_for: three Measured outcomes at confidence 0 with a positive mean effect return Some(..) and the test fails, which is the right failure fired. AUDIT-2 2026-10-24: regraded, learning which actions work needs a recommendation the memory can return; with production outcomes all at attribution confidence 0 the default node's recommend_for is always empty, and its answer changes no draft; recommend_for is exercised only by tests that seed positive confidence"
   },
   {
     "id": "R12-CONTRACT-6109",

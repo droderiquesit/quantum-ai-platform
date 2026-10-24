@@ -4157,7 +4157,7 @@
   },
   {
     "id": "R12-AGENCY-1184",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "EffectAttribution and Comparison types; estimators in estimate.rs; kernel counterfactual scoring of declined/filled orders; counterfactual branches and no-action baselines now feed a policy update from qip-cli after each shadowed pass (simulated::evidence, engine::learn_shadowed). On the deepbrain node (the default path), AmbientAgency holds a draft until a later sweep raises its subject again, then runs ObserveEffect, Attribute and Update through qip_agency::engine::learn on a measured outcome: the subject's reading at the follow-up sweep against its reading when drafted (status quo as the no-action baseline), kept in ActionOutcomeMemory as Observed::Measured, the Communication policy held to a predicted uplift of zero, the attribution recorded NotIdentified at identifiability 0, and the record journaled as DraftLearning (or withheld with the stage that refused it).",
     "evidence": [
       "backend/crates/services/qip-agency/src/simulated.rs evidence",
@@ -4169,7 +4169,7 @@
       "backend/crates/services/qip-world-model/tests/federation.rs::a_federation_update_from_an_unidentified_attribution_is_refused_and_journals_nothing",
       "backend/crates/services/qip-world-model/src/federation.rs Federation::update_from_attribution"
     ],
-    "gap": "",
+    "gap": "2026-10-24: scope item 'update graphs ... from measured effect' is not reached from a composition root: Federation::update_from_attribution has no production caller (ambient_effect_boundary pins it), the deepbrain draft path records NotIdentified at identifiability 0, and the estimators run only in qip-cli's simulated shadow; only the ActionPolicy/memory arm runs",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4180,7 +4180,7 @@
     "verification": "cargo +1.94.1 test -p qip-world-model --test federation unidentified",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): Federation::update_from_attribution refuses an attribution whose identification is not identified, so an unidentified effect cannot reach the federation journal by any caller. Mutation: delete the is_identified refusal in update_from_attribution: the NotIdentified attribution (otherwise valid, a live goal id) is journaled as AttributionApplied and the journal length changes, which is the right failure fired."
+    "notes": "Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): Federation::update_from_attribution refuses an attribution whose identification is not identified, so an unidentified effect cannot reach the federation journal by any caller. Mutation: delete the is_identified refusal in update_from_attribution: the NotIdentified attribution (otherwise valid, a live goal id) is journaled as AttributionApplied and the journal length changes, which is the right failure fired. AUDIT-2 2026-10-24: regraded, scope item 'update graphs ... from measured effect' is not reached from a composition root: Federation::update_from_attribution has no production caller (ambient_effect_boundary pins it), the deepbrain draft path records NotIdentified at identifiability 0, and the estimators run only in qip-cli's simulated shadow; only the ActionPolicy/memory arm runs"
   },
   {
     "id": "R12-ARCH-1185",
@@ -4497,7 +4497,7 @@
   },
   {
     "id": "R12-AGENCY-1199",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "engine::learn validates the attribution, keeps the outcome in ActionOutcomeMemory and updates ActionPolicy; qip-cli calls it (learn_shadowed) after every shadowed pass on the simulated outcome, journaled as AgencyRecord::Learned with the interval the policy was held to. On the deepbrain node (the default path), AmbientAgency holds a draft until a later sweep raises its subject again, then runs ObserveEffect, Attribute and Update through qip_agency::engine::learn on a measured outcome: the subject's reading at the follow-up sweep against its reading when drafted (status quo as the no-action baseline), kept in ActionOutcomeMemory as Observed::Measured, the Communication policy held to a predicted uplift of zero, the attribution recorded NotIdentified at identifiability 0, and the record journaled as DraftLearning (or withheld with the stage that refused it).",
     "evidence": [
       "backend/crates/services/qip-agency/src/engine.rs learn, learn_shadowed",
@@ -4507,7 +4507,7 @@
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
       "backend/crates/services/qip-world-model/tests/federation.rs::a_federation_update_from_an_unidentified_attribution_is_refused_and_journals_nothing"
     ],
-    "gap": "",
+    "gap": "2026-10-24: requirement is an executed intervention producing an attribution consumed by a world-model update; no production code makes that update (boundary suite pins the absence) and the only attribution produced on the default node is unidentified and refused",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4520,7 +4520,7 @@
     "verification": "cargo +1.94.1 test -p qip-world-model --test federation unidentified",
     "work_item": "",
     "size": "L",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): Same refusal as 1184: an attribution updates policy and memory, and a world model only once identified. Mutation: same as R12-AGENCY-1184 (one slice closes both) fired."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): Same refusal as 1184: an attribution updates policy and memory, and a world model only once identified. Mutation: same as R12-AGENCY-1184 (one slice closes both) fired. AUDIT-2 2026-10-24: regraded, requirement is an executed intervention producing an attribution consumed by a world-model update; no production code makes that update (boundary suite pins the absence) and the only attribution produced on the default node is unidentified and refused"
   },
   {
     "id": "R12-EVID-1200",

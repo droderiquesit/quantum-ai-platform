@@ -533,7 +533,7 @@
   },
   {
     "id": "R12-WORLD-9023",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Signal gains an optional expected_edge_bp (backend/crates/libs/qip-contracts/src/signal.rs, off the wire when absent). qip-strategy Rule gains an optional expected_edge expression typed Statistic (ir.rs Rule::with_expected_edge, compile.rs CompiledRule::expected_edge), evaluated in runtime.rs only for a rule that declared one; nothing derives an edge from conviction. The cell refuses a non-finite edge under GATE_SIGNAL_EDGE beside GATE_SIGNAL_CONVICTION and journals the edge in Decision::SignalRaised, so the centre joins the realised result through attribution lineage and no outcome returns to the cell (ADR 0155 section 7, 10).",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/signal.rs::Signal",
@@ -543,7 +543,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs::GATE_SIGNAL_EDGE",
       "backend/crates/edge/qip-strategy/tests/strategy.rs::a_rule_that_declares_an_edge_raises_a_signal_stating_it_and_a_rule_that_does_not_raises_a_signal_stating_none"
     ],
-    "gap": "",
+    "gap": "2026-10-24: requirement is a calibrated microstructure forecast evaluated locally in the cell pass; no forecast model exists under edge/ (grep -i forecast finds nothing in qip-edge, qip-strategy or qip-edge-node/src), only an optional Signal.expected_edge_bp that no committed strategy declares",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -554,7 +554,7 @@
     "verification": "cargo test -p qip-strategy --test strategy a_rule_that_declares",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 lane. Mutation fired: deriving expected_edge_bp from conviction when the rule declares none made the edgeless-rule assertion fail (premise: the declaring rule stated Some(35.0) first). No shipped strategy declares an edge yet, so every signal in the tree still states none; the gate that reads it is RISK-5044."
+    "notes": "2026-10-24 ADR 0155 lane. Mutation fired: deriving expected_edge_bp from conviction when the rule declares none made the edgeless-rule assertion fail (premise: the declaring rule stated Some(35.0) first). No shipped strategy declares an edge yet, so every signal in the tree still states none; the gate that reads it is RISK-5044. AUDIT-2 2026-10-24: regraded, requirement is a calibrated microstructure forecast evaluated locally in the cell pass; no forecast model exists under edge/ (grep -i forecast finds nothing in qip-edge, qip-strategy or qip-edge-node/src), only an optional Signal.expected_edge_bp that no committed strategy declares"
   },
   {
     "id": "R12-WORLD-9024",

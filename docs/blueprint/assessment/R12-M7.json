@@ -4264,7 +4264,7 @@
   },
   {
     "id": "R12-COVERAGE-7189",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-deepbrain records each draft's measured outcome into ActionOutcomeMemory and runs ActionPolicy::observe through engine::learn on the default node path (R12-AGENCY-6107); no world-model or causal-graph update.",
     "evidence": [
       "backend/crates/services/qip-agency/src/memory.rs",
@@ -4274,7 +4274,7 @@
       "backend/crates/services/qip-world-model/tests/federation.rs::a_federation_update_from_an_unidentified_attribution_is_refused_and_journals_nothing",
       "backend/crates/tests/qip-acceptance/tests/ambient_effect_boundary.rs::a_boundary_suite_pins_that_no_production_code_feeds_an_unidentified_effect_to_the_federation_the_graph_or_the_engine"
     ],
-    "gap": "",
+    "gap": "2026-10-24: checklist target is EffectAttribution updating world models, causal graphs, ambient priors and action policies; the row's own current text says no world-model or causal-graph update, and ambient priors are not named as updated; only the action-policy/memory arm is on the default node",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4285,7 +4285,7 @@
     "verification": "cargo +1.94.1 test -p qip-acceptance --test ambient_effect_boundary; cargo +1.94.1 test -p qip-world-model --test federation unidentified",
     "work_item": "",
     "size": "XL",
-    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): An unidentified measured effect updates neither the federation nor the causal graph; enforced in the federation method and pinned by the boundary suite. Mutation: add a call to Federation::update_from_attribution (or engine::run_governed) in qip-deepbrain/src/ambient_agency.rs: the source pin finds a non-comment line and fails, which is the right failure because the boundary is that no running path makes that call fired."
+    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): An unidentified measured effect updates neither the federation nor the causal graph; enforced in the federation method and pinned by the boundary suite. Mutation: add a call to Federation::update_from_attribution (or engine::run_governed) in qip-deepbrain/src/ambient_agency.rs: the source pin finds a non-comment line and fails, which is the right failure because the boundary is that no running path makes that call fired. AUDIT-2 2026-10-24: regraded, checklist target is EffectAttribution updating world models, causal graphs, ambient priors and action policies; the row's own current text says no world-model or causal-graph update, and ambient priors are not named as updated; only the action-policy/memory arm is on the default node"
   },
   {
     "id": "R12-COVERAGE-7190",
