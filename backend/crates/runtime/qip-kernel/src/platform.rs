@@ -189,7 +189,7 @@ use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::factor::FactorRisk;
 use qip_risk::limits::{LimitSet, MarginBasis, RiskState, VenueMargin};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
-use qip_risk_engine::monitor::RiskMonitor;
+use qip_risk_engine::monitor::{MonitorAction, RiskMonitor};
 use qip_risk_engine::pretrade::PreTradeChecker;
 use qip_simulation_engine::agents::CounterpartyAgent;
 use qip_simulation_engine::conditions::{ConditionSchedule, ConditionWindow, MarketCondition};
@@ -765,6 +765,15 @@ pub struct Platform {
     /// order if it cannot. Kept so a test and an operator can see the routing
     /// that guarded the last order rather than trust that one happened.
     pretrade_routing: Option<DeterministicRouting>,
+    /// How the most recent pass of the risk monitor over the book was routed
+    /// (R12-RISK-3022). The monitor's verdict is what engages the kill switch
+    /// and what withholds sign-off and release in ACT, so it is the second
+    /// place a hard limit is evaluated, and until this it was evaluated with
+    /// no routing at all — deterministic by the absence of a model in the
+    /// call, not by anything that could be shown. Always the deterministic
+    /// arm, obtained through [`Router::determine`]; see
+    /// [`Self::observe_book_under_routing`].
+    monitor_routing: Option<DeterministicRouting>,
     /// What the most recent cycle's REASON stage was routed to, and whether
     /// the panel was convened as a result.
     ///
@@ -5707,6 +5716,7 @@ impl Platform {
             cost_engine: CostEngine::new(DataCostModel::new()),
             cost_router: Router::default(),
             pretrade_routing: None,
+            monitor_routing: None,
             reason_routing: None,
             universe_not_decision_grade: not_decision_grade,
             commitments,
@@ -13901,6 +13911,50 @@ impl Platform {
         self.pretrade_routing.as_ref()
     }
 
+    /// How the last pass of the risk monitor over the book was routed.
+    pub fn monitor_routing(&self) -> Option<&DeterministicRouting> {
+        self.monitor_routing.as_ref()
+    }
+
+    /// The conditions the book-level limit evaluation is routed under.
+    ///
+    /// The book has no one instrument, so the regime is the book's own — a
+    /// crisis at the crisis drawdown, quiet otherwise — and the horizon is the
+    /// cycle's. The conditions label the routing record; they choose nothing,
+    /// because the `Required` arm consults no ladder.
+    fn book_conditions(&self) -> Conditions {
+        Conditions::new(
+            AssetClass::Equity,
+            CostRegion::new(HOME_REGION),
+            if self.capital.drawdown() >= CRISIS_DRAWDOWN {
+                MarketRegime::Crisis
+            } else {
+                MarketRegime::Quiet
+            },
+            VolatilityRegime::Normal,
+            Horizon::Intraday,
+        )
+    }
+
+    /// Run the risk monitor over the book under a deterministic routing.
+    ///
+    /// **The only caller of `RiskMonitor::observe`** (R12-RISK-3022). The
+    /// routing is taken by value so a caller must have obtained one from
+    /// [`Router::determine`] — a type that cannot name a model rung — before
+    /// the limits are evaluated, and it is kept as the record of how this
+    /// pass was routed. The monitor's verdict engages the kill switch and
+    /// gates sign-off and release, so those paths are covered by this one.
+    fn observe_book_under_routing(
+        &mut self,
+        routing: DeterministicRouting,
+        state: &RiskState,
+        now: Timestamp,
+    ) -> MonitorAction {
+        self.monitor_routing = Some(routing);
+        self.monitor
+            .observe(state, "platform", self.autonomy.level(), now)
+    }
+
     /// Describe the market this decision is being made in.
     ///
     /// Every field is read off something the platform already tracks. Nothing
@@ -17652,9 +17706,26 @@ impl Platform {
         // book that became unacceptable while it sat is exactly what this
         // stage exists to catch.
         let risk_state = self.risk_state();
-        let action = self
-            .monitor
-            .observe(&risk_state, "platform", self.autonomy.level(), now);
+        // Routed before the limits are read (R12-RISK-3022). A routing the
+        // router refuses is not a reason to skip the monitor: the book is
+        // halted, because limits that could not be shown to be evaluated
+        // deterministically are limits nobody may trade against.
+        let action = match self
+            .cost_router
+            .determine("risk monitor limits for the book", self.book_conditions())
+        {
+            Ok(routing) => self.observe_book_under_routing(routing, &risk_state, now),
+            Err(error) => {
+                self.monitor_routing = None;
+                MonitorAction::HaltGlobally {
+                    reason: format!(
+                        "the book's limits could not be routed as a deterministic decision ({}); \
+                         halted rather than evaluated on an unproven path",
+                        error.message()
+                    ),
+                }
+            }
+        };
         self.monitor
             .enforce(&action, self.autonomy.kill_switch_mut(), now);
 
@@ -25126,6 +25197,73 @@ mod decide_tests {
                 .contains(&format!("{} sized down to whole lots", off_grid.len())),
             "the stage summary does not say how many legs were expressed at the lot: {}",
             outcome.detail
+        );
+    }
+
+    /// R12-RISK-3022: every hard-limit evaluation the kernel makes is taken
+    /// under a deterministic routing. The pre-trade check was; the monitor's
+    /// pass — which engages the kill switch and gates sign-off and release —
+    /// was evaluated with no routing at all. Now ACT obtains one from
+    /// `Router::determine` and hands it to `observe_book_under_routing`, the only
+    /// production caller of `RiskMonitor::observe`.
+    ///
+    /// Mutation: call the monitor directly in `stage_act_orders`, bypassing
+    /// `determine` — the routing is absent after the cycle and the source
+    /// scan finds a second call.
+    #[test]
+    fn every_limit_evaluation_takes_a_deterministic_routing_witness() {
+        let mut platform = platform();
+        assert!(
+            platform.monitor_routing().is_none(),
+            "premise: nothing has been evaluated yet"
+        );
+        let report = platform.run_cycle(Timestamp::from_secs(1_760_000_100));
+        assert!(
+            report.stage(Stage::Act).is_some(),
+            "premise: ACT ran, so the monitor ran"
+        );
+        let routing = platform
+            .monitor_routing()
+            .expect("the monitor's pass was not routed as a deterministic decision");
+        assert!(
+            routing
+                .rationale()
+                .contains("risk monitor limits for the book"),
+            "{}",
+            routing.rationale()
+        );
+
+        // Structurally, not only on this cycle: the production half of this
+        // file evaluates the monitor at exactly one place, inside the function
+        // that demands the routing. The production half ends at the first
+        // test *module*, not the first `#[cfg(test)]` attribute (production
+        // items carry those too). A call is any `.observe(` whose receiver
+        // ends in `monitor`, whatever the argument names. The needles are
+        // assembled so this test's own text is not a match.
+        let source = include_str!("platform.rs");
+        let boundary = ["\n#[cfg(test)]", "\nmod "].concat();
+        let production = &source[..source.find(&boundary).expect("the file has a test module")];
+        let call = [".", "observe("].concat();
+        let monitor_calls: Vec<usize> = production
+            .match_indices(&call)
+            .map(|(at, _)| at)
+            .filter(|&at| production[..at].trim_end().ends_with("monitor"))
+            .collect();
+        assert_eq!(
+            monitor_calls.len(),
+            1,
+            "the monitor is observed at {} production sites, not one",
+            monitor_calls.len()
+        );
+        let wrapper = production
+            .find("fn observe_book_under_routing(")
+            .expect("premise: the routed wrapper exists");
+        let next_fn = production[wrapper + 1..]
+            .find("\n    fn ")
+            .map_or(production.len(), |offset| wrapper + 1 + offset);
+        assert!(
+            (wrapper..next_fn).contains(&monitor_calls[0]),
+            "the monitor's one evaluation sits outside the routed wrapper"
         );
     }
 
