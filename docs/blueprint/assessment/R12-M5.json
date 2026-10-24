@@ -180,7 +180,7 @@
       "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
       "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
     ],
-    "gap": "No production producer opens a lot. Tried 2026-10-18 by lane L15 and dropped: opening a lot per strategy share inside LedgerStore::apply's paper-buy arm, through plan_operation in the fill's own commit, works, but (1) every ledgerd and acceptance oracle that compares balances() or events() with a fill-only refold (qip-ledgerd tests store.rs, fabric.rs, history.rs; qip-acceptance vertical_slice_ledgerd, vertical_slice_cell_ledger, vertical_slice_ship, desk_record_parity, desk_ledger_property) must first fold lot postings through one shared pure function, or each breaks; (2) a sell fill relieves no lot, so open quantity and basis would overstate after any sale until FIFO (or another declared) relief posts Phase::Unwind of the relieved quantity and proportional basis; (3) a lot id must avoid ':' and '/', which Account's text form refuses (order@session-sequence works). Closing needs all three in one change.",
+    "gap": "2026-10-24 (class LARGE_SPLITTABLE, no slice built): unchanged from lane L15's finding and still not closable in one lane. Opening a lot per strategy share inside LedgerStore::apply's paper-buy arm works, but closing the row needs three changes in one commit: (1) every oracle that compares balances() or events() with a fill-only refold (qip-ledgerd tests store.rs, fabric.rs, history.rs; qip-acceptance vertical_slice_ledgerd, vertical_slice_cell_ledger, vertical_slice_ship, desk_record_parity, desk_ledger_property) must first fold lot postings through one shared pure function; (2) a sell fill must relieve lots by FIFO (or another declared method) posting Phase::Unwind of the relieved quantity and proportional basis, or open quantity overstates after any sale; (3) a lot id must avoid ':' and '/' (order@session-sequence works). A partial slice would leave the ledger's balances disagreeing with every refold oracle, so none was built. No ADR decides the relief method; that is the open design question.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -191,7 +191,7 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Gap corrected 2026-10-18 by lane L15 after an attempted closure; nothing in the code changed."
+    "notes": "Text corrected 2026-10-18 by an independent grader. Gap corrected 2026-10-18 by lane L15 after an attempted closure. Lane T4-LEDGER 2026-10-24: re-read against the code (grep finds OperationKind::TaxLot only in the contract and ledgerd's read-back), re-dated, no code change."
   },
   {
     "id": "R12-LEDGER-5009",
@@ -424,7 +424,7 @@
       "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
       "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
     ],
-    "gap": "No production producer for this kind. Two other kinds now reach qip-ledgerd from production (treasury funding at every desk start, capital-grant funding at issue; ADR 0123 decisions 5 and 6), so the path exists; what is missing is an observer of a physical movement that runs by default. Receipts into a warehouse and sales to the paper buyer are observed by the commerce research plane (qip-kernel/src/commerce_research.rs, LedgerEvent::Received and CommercePlane::sell) only when the deep brain is handed a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets; the journaled CommerceSimulated record also carries no warehouse on its purchases and no unit id on its sales, so a movement could not be replayed from the log as written without journaling the operation itself.",
+    "gap": "2026-10-24 (class DEPLOY_DEPENDENT, in-repo producer not built this lane): ADR 0153 decision 9 settles it: physical inventory books only where the commerce plane runs, as a journalled operation produced by the commerce research plane's receipt and sale, and a paper platform holds none. The producer is not built: the journalled CommerceSimulated record carries no warehouse on its purchases and no unit id on its sales, so the operation itself has to be journalled whole at the receipt and the sale seams in qip-kernel/src/commerce_research.rs and queued through Platform::desk_operations, which is a change to the SIMULATE stage's replay and was not attempted alongside the commitment and mandate producers. Even built, it books nothing in a committed deployment: the plane is installed only when the deep brain is handed QIP_DEEPBRAIN_BREADTH_PLAN, a tfvars switch under the protected infrastructure/environments/** that no environment sets.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -435,7 +435,7 @@
     "verification": "cargo test -p qip-ledgerd plus a subledger test",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to add inventory operations only where a production path observes the fact: PARTIAL->PARTIAL, no producer added; the gap names the observing path and why it does not qualify."
+    "notes": "Lane T4-LEDGER 2026-10-24: gap re-dated against ADR 0153 decision 9; no code change."
   },
   {
     "id": "R12-LEDGER-5019",

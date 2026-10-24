@@ -1,0 +1,72 @@
+[
+  {
+    "id": "R12-LEDGER-10041",
+    "class": "BILLED",
+    "reason": "backend/crates/apps/qip-ledgerd/src/config.rs::LedgerStorage::Spanner; infrastructure/environments/dev/terraform.tfvars:344 enable_spanner = false: client, edition and writer exist, a provisioned instance does not"
+  },
+  {
+    "id": "R12-DATA-8013",
+    "class": "CODE_CLOSABLE",
+    "reason": "qip-financial/src/manifest.rs::SourceManifest was v1 only; built as ManifestV2, kept PARTIAL: no production producer attaches it"
+  },
+  {
+    "id": "R12-CAPITAL-4087",
+    "class": "ALREADY_DECIDED_NO_CODE",
+    "reason": "docs/adr/0159 D; grep observe_ledger_obligations finds no non-test caller"
+  },
+  {
+    "id": "R12-CAPITAL-10097",
+    "class": "DESIGN_OPEN",
+    "reason": "docs/adr/0159 F: no consumer by decision; grep ForecastState finds only qip-contracts and lattice_stage.rs"
+  },
+  {
+    "id": "R12-LEDGER-5009",
+    "class": "CODE_CLOSABLE",
+    "reason": "Platform::review_cross_margin never queues an operation; refusal proven by qip-kernel/tests/collateral.rs::review_cross_margin_posts_no_ledger_operation_from_the_default_margin_model"
+  },
+  {
+    "id": "R12-LEDGER-5019",
+    "class": "CODE_CLOSABLE",
+    "reason": "grep OperationKind::TaxCharge finds only qip-contracts; refusal proven by qip-acceptance/tests/ledger_declined_kinds.rs"
+  },
+  {
+    "id": "R12-RES-7099",
+    "class": "DESIGN_OPEN",
+    "reason": "docs/adr/0159 E: grep Capability::Custody finds no producer; the venue position-statement record does not exist"
+  },
+  {
+    "id": "R12-LEDGER-5006",
+    "class": "CODE_CLOSABLE",
+    "reason": "Platform::queue_private_commitments (new); closed COMPLETE"
+  },
+  {
+    "id": "R12-LEDGER-5010",
+    "class": "CODE_CLOSABLE",
+    "reason": "Platform::fund_user queues MandateSubscription (new); PARTIAL: grep backend/crates/apps finds no fund_user caller"
+  },
+  {
+    "id": "R12-LEDGER-5020",
+    "class": "CODE_CLOSABLE",
+    "reason": "Commit stage produced via queue_private_commitments; Draw and Release unproduced by ADR 0153 decision 2"
+  },
+  {
+    "id": "R12-LEDGER-1164",
+    "class": "DESIGN_OPEN",
+    "reason": "docs/adr/0153 Consequences: closes only on commitments, margin/collateral (rule only) and tax (not built), plus lots and ADR 0130 settlement"
+  },
+  {
+    "id": "R12-LEDGER-5026",
+    "class": "CODE_CLOSABLE",
+    "reason": "qip-financial/src/commerce.rs::CommercePlane::hold_on and clear_break (new); PARTIAL: warehouses unreconciled by decision, commerce plane off in every committed environment"
+  },
+  {
+    "id": "R12-LEDGER-5008",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::apply paper-buy arm; the three coupled changes (shared lot fold across seven oracles, FIFO relief on sell, lot id without ':' or '/') must land in one change"
+  },
+  {
+    "id": "R12-LEDGER-5018",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "docs/adr/0153 decision 9: PhysicalInventory is produced only by the commerce research plane (qip-kernel/src/commerce_research.rs), enabled by QIP_DEEPBRAIN_BREADTH_PLAN, a protected tfvars switch no environment sets"
+  }
+]
