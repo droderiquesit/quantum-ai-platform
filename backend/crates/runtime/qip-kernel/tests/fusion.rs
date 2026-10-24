@@ -174,6 +174,54 @@ fn a_world_event_yields_its_watched_instruments_venues_and_hypothesis_priors() -
     Ok(())
 }
 
+/// Mutation: build the prior's direction from the sign of the posterior
+/// instead of the event's expected direction (or hand over the prior rather
+/// than the posterior) — the direction or the equality assertion fails.
+#[test]
+fn the_fused_state_hands_reason_each_instruments_strongest_directional_posterior() -> Result<()> {
+    let (graph, traces) = episode()?;
+    let state = fuse(&graph, &traces, at(600), &config())?;
+    let posterior = state.posteriors()["obj-ACME"];
+    assert!(
+        posterior > 0.9,
+        "premise: the reaction confirmed the 0.9 prior, so the posterior is above it: {posterior}"
+    );
+    let priors = state.outside_priors();
+    let acme: Vec<_> = priors
+        .iter()
+        .filter(|p| p.subject() == "obj-ACME")
+        .collect();
+    assert_eq!(acme.len(), 1, "one prior per instrument: {priors:?}");
+    // The event expects a fall (-1). A hypothesis that the instrument will
+    // rise is against that posterior and is narrowed by 1 - (2p - 1); one that
+    // it will fall is for it and untouched.
+    assert_eq!(acme[0].narrowing_for(-1.0), 1.0);
+    let against = acme[0].narrowing_for(1.0);
+    assert!(
+        (against - (1.0 - (2.0 * posterior - 1.0))).abs() < 1e-12,
+        "the prior carries the posterior {posterior}, not another figure: multiplier {against}"
+    );
+
+    // Either input removed changes what REASON is handed (R12-TICK-1002):
+    // without the tick traces nothing measured the reaction, so there is no
+    // belief update and no prior; without the world event there is nothing to
+    // fuse. REASON is unnarrowed in both.
+    let without_ticks = fuse(&graph, &[], at(600), &config())?;
+    assert!(
+        without_ticks
+            .outside_priors()
+            .iter()
+            .all(|p| p.subject() != "obj-ACME"),
+        "removing the tick input left a prior for REASON to read"
+    );
+    let without_world = fuse(&KnowledgeGraph::new(), &traces, at(600), &config())?;
+    assert!(
+        without_world.outside_priors().is_empty(),
+        "ticks alone are not a belief about an event"
+    );
+    Ok(())
+}
+
 /// Mutation: measure the reaction from the mid when the event *occurred*
 /// rather than when it was knowable, or skip the belief update — the
 /// measured move or the posterior assertion fails.

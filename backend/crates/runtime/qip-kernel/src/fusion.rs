@@ -600,6 +600,71 @@ pub fn fuse(
     })
 }
 
+/// A belief about one instrument that comes from outside the opportunity
+/// under review, and may only narrow REASON (ADR 0151 decision 3).
+///
+/// A fused posterior is a belief about an instrument reacting, not evidence
+/// the panel weighed. Letting it raise a hypothesis's confidence would put an
+/// unreviewed statistic one approval away from a position size, so the only
+/// effect it has is [`OutsidePrior::narrowing_for`]: a multiplier in `[0, 1]`
+/// that is exactly 1 unless the posterior leans against the hypothesis.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutsidePrior {
+    subject: String,
+    direction: f64,
+    probability: f64,
+}
+
+impl OutsidePrior {
+    /// `direction` is `+1.0` or `-1.0`, the way the posterior expects the
+    /// instrument to move; `probability` is the posterior that it does.
+    ///
+    /// Refused rather than clamped: a probability outside `[0, 1]` or a
+    /// direction of zero is a producer bug, and a silently corrected one would
+    /// survive it.
+    pub fn new(subject: impl Into<String>, direction: f64, probability: f64) -> Result<Self> {
+        let subject = subject.into();
+        if subject.is_empty() {
+            return Err(Error::invalid("an outside prior needs a subject"));
+        }
+        if !matches!(direction, 1.0 | -1.0) {
+            return Err(Error::invalid(
+                "an outside prior's direction is +1 or -1; a posterior with no expected direction has nothing to narrow against",
+            ));
+        }
+        if !(0.0..=1.0).contains(&probability) {
+            return Err(Error::invalid(
+                "an outside prior's probability is a probability: between zero and one",
+            ));
+        }
+        Ok(Self {
+            subject,
+            direction,
+            probability,
+        })
+    }
+
+    /// The instrument the posterior is about.
+    pub fn subject(&self) -> &str {
+        &self.subject
+    }
+
+    /// The multiplier on a hypothesis whose own direction is `sign`.
+    ///
+    /// `m = 1 - max(0, 2p - 1)` with `p` the posterior's probability *against*
+    /// the hypothesis. It is derived from the posterior alone and holds no
+    /// constant. It is 1 whenever `p <= 0.5`, falls to 0 as the posterior
+    /// becomes certain against, and never exceeds 1, so it cannot raise.
+    pub fn narrowing_for(&self, sign: f64) -> f64 {
+        let against = if sign * self.direction > 0.0 {
+            1.0 - self.probability
+        } else {
+            self.probability
+        };
+        1.0 - (2.0f64.mul_add(against, -1.0)).max(0.0)
+    }
+}
+
 impl FusedState {
     /// The posterior per instrument across every event, the strongest kept:
     /// the form the foundry and the asset, capital and risk brains read
@@ -615,6 +680,42 @@ impl FusedState {
             }
         }
         out
+    }
+
+    /// The posteriors as [`OutsidePrior`]s: per instrument, the strongest
+    /// belief among events whose prior stated a direction. An event that
+    /// states none (`expected_direction` of zero) gives REASON nothing to be
+    /// against and is left out.
+    pub fn outside_priors(&self) -> Vec<OutsidePrior> {
+        let mut strongest: BTreeMap<&str, (f64, f64)> = BTreeMap::new();
+        for event in &self.events {
+            for belief in &event.beliefs {
+                let Some(prior) = event
+                    .priors
+                    .iter()
+                    .find(|prior| prior.instrument == belief.instrument)
+                else {
+                    continue;
+                };
+                // Zero states no direction: nothing to be against.
+                if prior.expected_direction == 0.0 {
+                    continue;
+                }
+                let direction = prior.expected_direction.signum();
+                let entry = strongest
+                    .entry(belief.instrument.as_str())
+                    .or_insert((direction, 0.0));
+                if belief.posterior > entry.1 {
+                    *entry = (direction, belief.posterior);
+                }
+            }
+        }
+        strongest
+            .into_iter()
+            .filter_map(|(instrument, (direction, probability))| {
+                OutsidePrior::new(instrument, direction, probability).ok()
+            })
+            .collect()
     }
 
     /// Every mismatch, with its event, in event order.

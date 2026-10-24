@@ -8533,3 +8533,88 @@ fn a_family_cleared_in_the_product_catalogue_but_unrecorded_in_the_compliance_re
         .promote(&id, None, "recorded family", inside_seed())?;
     Ok(())
 }
+
+/// R12-REFLEX-5047, ADR 0133 decision 4: learning takes a cell's fills from
+/// the cell report and nowhere else. The fabric's copy of the same fills is
+/// the ledger's input and the audit record; a learner that also read it would
+/// have two inputs for one fact that disagree on timing and duplication, and
+/// would have to reconcile them.
+///
+/// The positive half drives a fill through `ingest_cell_report` and reads it
+/// back off `live_outcomes`, the path `stage_learn` reads, after asserting the
+/// outcome was absent before the report. The negative half is structural: the
+/// central plane's sources name none of the types the fabric carries a fill
+/// in (`OutcomeRecord`, `PaperFill`, `SegmentLog`, `SpoolReader`), matched as
+/// whole tokens because a substring match would pass on a longer name.
+///
+/// Mutations: dropping the `record_realised` call in `CentralPlane::ingest`
+/// leaves the outcome absent and the positive assertion fails; adding
+/// `use qip_contracts::reflex::OutcomeRecord;` to `central/realised.rs` makes
+/// the token scan name the file.
+#[test]
+fn learning_reads_a_fill_from_the_cell_report_and_the_central_plane_names_no_fabric_fill_type()
+-> Result<()> {
+    let mut platform = platform()?;
+    let id = StrategyId::new("single-source");
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    issue(platform.central_mut(), &id, CELL, start())?;
+    let next_day = start().saturating_add(Duration::from_days(1));
+    assert!(
+        platform
+            .central()
+            .live_outcomes(next_day)
+            .iter()
+            .all(|outcome| outcome.strategy != id),
+        "premise: no outcome exists before a report carries a fill"
+    );
+
+    let (order, fill) = order_filled_away(
+        &id,
+        "ord-single-source",
+        qip_contracts::message::BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        dec!("50.25"),
+        start(),
+    );
+    platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    assert!(
+        platform
+            .central()
+            .live_outcomes(next_day)
+            .iter()
+            .any(|outcome| outcome.strategy == id),
+        "the fill on the cell report did not reach the outcome learning reads"
+    );
+
+    const FABRIC_FILL_TYPES: [&str; 4] =
+        ["OutcomeRecord", "PaperFill", "SegmentLog", "SpoolReader"];
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/central");
+    let mut scanned = 0;
+    for entry in std::fs::read_dir(&dir).expect("the central plane's source directory") {
+        let path = entry.expect("a directory entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        scanned += 1;
+        let source = std::fs::read_to_string(&path).expect("a readable source file");
+        for token in source.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            assert!(
+                !FABRIC_FILL_TYPES.contains(&token),
+                "{} names {token}: learning would read a fill from the fabric as well as the report",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        scanned > 3,
+        "premise: the scan read the central plane's files"
+    );
+    Ok(())
+}

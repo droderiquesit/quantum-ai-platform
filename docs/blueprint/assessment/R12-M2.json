@@ -1679,14 +1679,18 @@
   },
   {
     "id": "R12-TICK-2071",
-    "status": "PARTIAL",
-    "current": "StreamingDrift and degraded_models compute feature drift in deepbrain's learning desk and feed ModelCard drift_score; twin-vs-fill error is recorded per venue as qip_venue_fill_error_bps.",
+    "status": "COMPLETE",
+    "current": "Regime drift is measured through the regime-sensitive model features (volatility_10, momentum_5, via StreamingDrift in deepbrain's learning desk feeding ModelCard drift_score) and through the regime-crossing event: Platform::latest_regime_crossing feeds the verifier society's structural-break critic, which refuses a promotion of a model last evaluated before the market crossed a boundary. Venue change is routed (TickCampaignDetector::observe_venue opens a NewVenue campaign). Twin-vs-fill error is recorded per venue as qip_venue_fill_error_bps. No execution models exist to drift.",
     "evidence": [
       "backend/crates/services/qip-training/src/estimators.rs:450 StreamingDrift",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:136 drift in the desk",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14488 latest_regime_crossing",
+      "backend/crates/services/qip-learning-engine/src/verifier.rs:498 attack_model structural break",
+      "backend/crates/services/qip-expansion/src/campaigns.rs:324 observe_venue",
+      "backend/crates/runtime/qip-kernel/tests/regime_boundary.rs::a_model_evaluated_before_the_market_crossed_a_regime_boundary_is_refused_promotion",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:884 per-venue fill error"
     ],
-    "gap": "Venue changes are already routed (research.rs observes a first-seen venue through TickCampaignDetector::observe_venue and opens a NewVenue campaign; the register text calling it library-only was stale). Regime drift is not measured as such: StreamingDrift runs over the five model features only (volatility_10 and momentum_5 are the regime-sensitive ones), not over the features the platform classifies a regime from, and no execution-model residuals exist to drift (no such models).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1696,10 +1700,10 @@
       "R12-TICK-2068"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-deepbrain learning",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test regime_boundary a_model_evaluated_before; cargo +1.94.1 test -p qip-deepbrain learning",
     "work_item": "",
     "size": "M",
-    "notes": "Checked 2026-10-18 against learning.rs stream_drift and research.rs sweep_over. Not changed: volatility_10 already drifts the models that read it, and a second regime column would measure the same series twice."
+    "notes": "Checked 2026-10-18 against learning.rs stream_drift and research.rs sweep_over. Closed 2026-10-24 by lane N3-MODEL-EDGE-INFRA per ADR 0149: no second regime column is added (it would measure the same prices as volatility_10) and no execution-model residual drift is built (no such models); the regime change is an event the promotion gate reads. The test drives a real causal-edge subject through a spread blow-out and promotes the same model three ways (no crossing: promoted; evaluated before the crossing: refused with structural_break; evaluated after: promoted). Mutation fired: Platform::latest_regime_crossing returning None promotes the stale model and the refusal assertion fails; restored, test result: ok. 2 passed."
   },
   {
     "id": "R12-TICK-2072",

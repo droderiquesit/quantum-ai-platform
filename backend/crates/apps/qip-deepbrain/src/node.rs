@@ -495,6 +495,13 @@ pub fn run_with(
             .as_deref_mut()
             .map(|watch| watch.refresh(platform));
 
+        // The tick desk's fused beliefs, as the only thing they may be to
+        // REASON: a reason to be less sure (ADR 0151 decision 3). Replaced each
+        // cycle, so a desk that stops producing stops narrowing.
+        if let Some(desk) = loops.tick.as_deref() {
+            platform.set_outside_priors(desk.outside_priors().to_vec())?;
+        }
+
         let mut outcome = step(platform, now, config.cycle_interval);
         outcome.observed = observed;
         if let Some(shipper) = loops.desk.as_deref_mut()

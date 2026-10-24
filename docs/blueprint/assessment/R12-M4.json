@@ -1393,17 +1393,17 @@
   },
   {
     "id": "R12-QUANT-4064",
-    "status": "PARTIAL",
-    "current": "An acceptance test makes a scripted provider win routing, sizes an order from the winning weight by hand and shows OrderManager/PreTradeChecker refuse it on max_position_weight before the simulated broker fills.",
+    "status": "COMPLETE",
+    "current": "arch_033_quantum_path.rs drives the real router chain (classical baseline solved first, a quantum answer inside the margin never chosen, no provider records the reason); quantum_pretrade.rs makes a scripted provider win routing, sizes an order from the winning weight and shows OrderManager/PreTradeChecker refuse it on max_position_weight before the simulated broker fills. The quantum arm stays off in every default composition (quantum_enabled false; QAOA runs on SimulatedProvider only; no hosted provider is wired).",
     "evidence": [
       "backend/crates/services/qip-execution-engine/src/oms.rs:735 checker.check before broker",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4789 OrderManager::new(PreTradeChecker)",
-      "backend/crates/tests/qip-acceptance/tests/arch_033_quantum_path.rs:11-40 vacuous/text-search tests",
+      "backend/crates/libs/qip-risk/src/limits.rs:1633 MaxPositionWeight evaluation",
+      "backend/crates/tests/qip-acceptance/tests/arch_033_quantum_path.rs:117 baseline solved first",
       "backend/crates/tests/qip-acceptance/tests/quantum_pretrade.rs::a_position_sized_from_a_winning_quantum_answer_is_still_refused_by_pre_trade_risk"
     ],
-    "gap": "No kernel cycle hands the router a problem the quantum arm can take. Measured 2026-10-18 in a throwaway probe (not committed): a Platform with PlatformConfig::with_quantum(), RoutingPolicy { minimum_assets_for_quantum: 4, exact_enumeration_limit: 2 }, a four-name universe with bars observed for all four and a holdings cap of two journaled solver_routing for six consecutive cycles with compute.task.variables = 1 and ran = [exact_enumeration] every time ('1 assets is below the 4 at which a quantum formulation could pay'). The problem has one variable per approved thesis and a cycle approved one, so the triage's closure (a 4+ asset universe and a policy of 4) does not reach the arm. Closing needs a fixture that yields four simultaneous approved theses in one DECIDE, or a seam handing the router the held book plus the thesis; then the end-to-end assertions the row names (both runs journaled; a cardinality-violating or limit-breaching quantum answer refused by PreTradeChecker before the broker). The quantum arm also stays off in every default composition (quantum_enabled false; QAOA runs on SimulatedProvider only; no hosted provider is wired).",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
@@ -1411,10 +1411,10 @@
       "R12-RISK-4093"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test quantum_pretrade; cargo +1.94.1 test -p qip-acceptance --test arch_033_quantum_path",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed."
+    "notes": "Lane L07, 2026-10-18: re-read, gap corrected. Closed 2026-10-24 by lane N3-MODEL-EDGE-INFRA per ADR 0150 decision 3: the end-to-end evidence for a quantum answer reaching PreTradeChecker is the scripted-provider acceptance test, and no kernel cycle is engineered to reach the quantum arm by default (the probe's finding stands: a cycle approves one thesis, so the problem has one variable). Mutation fired: breaking the MaxPositionWeight arm of the limit evaluation (limits.rs) sends the quantum-sized order and the test fails at quantum_pretrade.rs:230 'a quantum-sized order breaching the single-name cap was sent'; restored, test result: ok. 1 passed. The vacuous text-search tests the row once cited no longer exist."
   },
   {
     "id": "R12-ASSET-4065",

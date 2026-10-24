@@ -1,0 +1,72 @@
+[
+  {
+    "id": "R12-REFLEX-9180",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "Shard assignment is ADR 0136's centre-signed book ownership: grep -rn 'BookOwnership\\|books: Slot' backend/crates finds nothing, and the Terraform side needs infrastructure/terraform/variables.tf (protected); execution_nodes = {} everywhere."
+  },
+  {
+    "id": "R12-RES-10148",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "Canary packages and game-day use need a stage workload; stage has gitops off and no workloads (infrastructure/environments/stage/terraform.tfvars, a protected path)."
+  },
+  {
+    "id": "R12-RES-10155",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "rollback_model exists in-process (qip-kernel/src/model_serving.rs::rollback_model); the missing half is a staged drill, verified by 'game-day: promote degraded candidate in stage', and it depends on R12-RES-10119 (SLO-driven rollback, PARTIAL)."
+  },
+  {
+    "id": "R12-SEC-10013",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "The Envoy egress proxy renders (infrastructure/egress/envoy.yaml, main.tf module egress_proxy) but nothing is applied; agent workers under scripts/fleet run outside it."
+  },
+  {
+    "id": "R12-SEC-9060",
+    "class": "PROTECTED_PATCH",
+    "reason": "pam_entitlements is declared (variables.tf:1821, security.tf:55) and empty in every tfvars; enabling needs infrastructure/environments/** and depends on R12-SEC-9123, itself PARTIAL."
+  },
+  {
+    "id": "R12-SEC-9064",
+    "class": "DESIGN_OPEN",
+    "reason": "Owner decision O17 (design-decisions-2026-10-18.json) is the gap: whether to split scouts and engineering into their own projects; no agent writes the ADR."
+  },
+  {
+    "id": "R12-TICK-2047",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "ADR 0151 d7 decided OutcomeRecord gains no field (no-code restate); queue_estimate and hedge_leg have no producer and desk shipping is loopback-tested only (grep -rn 'DeskShipper' backend/crates/apps/qip-deepbrain/src)."
+  },
+  {
+    "id": "R12-CAPITAL-10122",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "'No capital society' is a new stage over ForecastState; depends on R12-CAPITAL-10097 whose consumer was declined by decision (ADR 0159 F)."
+  },
+  {
+    "id": "R12-EXEC-5080",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "Inventory management needs SimulatedBroker::fill_price (qip-execution-engine broker.rs) to consume the listed book and the kernel to route a fill on a created product to MarketFactory; two crates plus a settle_fill."
+  },
+  {
+    "id": "R12-EXPAND-1014",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "Source, ontology, tool and brain promotion each need their own benchmark gate; only model/strategy promotion is gated (qip-kernel/src/central/models.rs::require_calibrated_baseline) and signal_mapper.rs is never called."
+  },
+  {
+    "id": "R12-TICK-1002",
+    "class": "CODE_CLOSABLE",
+    "reason": "ADR 0151 d3: Platform::reason_about_the_queue held no outside-prior seam (grep -n 'outside_priors' platform.rs found none before this lane)."
+  },
+  {
+    "id": "R12-WORLD-10090",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "Typed Fabric knowledge events from scout workers need producers outside the cycle; NowStage::run reads in-process bar history (qip-kernel/src/now_stage.rs)."
+  },
+  {
+    "id": "R12-CAPITAL-4092",
+    "class": "CODE_CLOSABLE",
+    "reason": "ADR 0148 closure: AttributionLineage::note_release (qip-kernel/src/attribution.rs) stamps strategy, policy, rule, path and spread only; the three quantities are not stamped, grep -n 'q_ref' finds none."
+  },
+  {
+    "id": "R12-CONTRACT-6110",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "ADR 0151 d5 decided stage_simulate grows no tree; the caller belongs on the tick desk path, which grows a FutureTree (apps/qip-deepbrain/src/tick_desk.rs) but never calls to_world_branch (grep -rn to_world_branch finds only qip-twin)."
+  }
+]
