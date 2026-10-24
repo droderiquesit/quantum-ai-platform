@@ -1268,7 +1268,7 @@
   },
   {
     "id": "R12-EXPAND-6057",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-agents MemoryRegistry values every resolved analyst episode by calibration surprise |outcome - conviction| against a positive threshold (refused at 0, negative, >1, non-finite): below it the episode is counted into a per-analyst CompressedSummary, never dropped. Platform::write_research_memory consults it for every stance LEARN charges and still records the episode in ResearchMemory, so hit_rate is computed over all resolved episodes (ADR 0152 d8).",
     "evidence": [
       "backend/crates/libs/qip-agents/src/memory.rs::MemoryRegistry",
@@ -1276,7 +1276,7 @@
       "backend/crates/libs/qip-agents/tests/expansion_registries.rs::memory_registry::a_below_threshold_episode_is_kept_compressed_and_still_counts_in_the_hit_rate",
       "backend/crates/runtime/qip-kernel/src/platform.rs::an_unsurprising_call_is_compressed_by_the_registry_and_still_counts_in_the_analysts_hit_rate"
     ],
-    "gap": "",
+    "gap": "2026-10-24: requirement is a registry recording semantic knowledge, episodes, procedures, failures, simulations and abstractions with declared fields, refusing an entry that misses one; MemoryRegistry holds per-analyst retained and compressed episode counts only, has no entry type with declared fields to refuse, and does not classify procedures, simulations or abstractions",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1287,7 +1287,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-kernel --lib an_unsurprising_call",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d8. Mutations fired: recording only Retained episodes in write_research_memory fails the kernel test (compression drops nothing: left 1, right 4); inverting the registry threshold comparison fails the qip-agents test (retained 9, expected 1). Default threshold 0.3 is DEFAULT_IMPORTANCE_THRESHOLD; the registry is not yet persisted or journaled, only counted in memory."
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d8. Mutations fired: recording only Retained episodes in write_research_memory fails the kernel test (compression drops nothing: left 1, right 4); inverting the registry threshold comparison fails the qip-agents test (retained 9, expected 1). Default threshold 0.3 is DEFAULT_IMPORTANCE_THRESHOLD; the registry is not yet persisted or journaled, only counted in memory. AUDIT-2 2026-10-24: regraded, requirement is a registry recording semantic knowledge, episodes, procedures, failures, simulations and abstractions with declared fields, refusing an entry that misses one; MemoryRegistry holds per-analyst retained and compressed episode counts only, has no entry type with declared fields to refuse, and does not classify procedures, simulations or abstractions"
   },
   {
     "id": "R12-EXPAND-6058",
@@ -1360,7 +1360,7 @@
   },
   {
     "id": "R12-EXPAND-6061",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "A research campaign is identified by qip_agents::research::campaign_id, the SHA-256 of its normalised question (ResearchCampaign::id), and each stage that ran is an experiment reference `<campaign id>/<stage>` (ResearchCampaign::experiment_refs). ResearchRegistry::record_concluded refuses a Null or Supported verdict that cites no experiment or one belonging to another question, and stores the sorted unique references on ResearchVersion.experiments; ExpansionDesk::conclude records through it on both the promotion and the null arm. No free-text benchmark_suite is added (ADR 0152 d11).",
     "evidence": [
       "backend/crates/libs/qip-agents/src/research.rs::campaign_id",
@@ -1370,7 +1370,7 @@
       "backend/crates/libs/qip-agents/tests/expansion_registries.rs::campaign_identity::a_campaign_has_a_stable_id_and_a_verdict_cites_its_experiment_references",
       "backend/crates/services/qip-expansion/tests/executor.rs::a_concluded_null_cites_the_campaigns_own_experiment_references"
     ],
-    "gap": "",
+    "gap": "2026-10-24: requirement is a registry of hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions; the row states open questions, an unresolved-contradictions list and a benchmark_suite are not recorded (ADR 0152 d11 declines them), so three of the six named record kinds are absent",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1381,7 +1381,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-expansion --test executor",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d11. Mutations fired: skipping normalise in campaign_id makes the same question two ids (left eb21c939.., right ef8b9a5e..); recording &[] in the null arm leaves nothing recorded (held.len left 0, right 1). Not added, per the ADR: a list of open questions and an unresolved-contradictions list (needs a variable-to-subject map ADR 0151 declines to invent). ResearchRegistry::record still exists for Open verdicts."
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d11. Mutations fired: skipping normalise in campaign_id makes the same question two ids (left eb21c939.., right ef8b9a5e..); recording &[] in the null arm leaves nothing recorded (held.len left 0, right 1). Not added, per the ADR: a list of open questions and an unresolved-contradictions list (needs a variable-to-subject map ADR 0151 declines to invent). ResearchRegistry::record still exists for Open verdicts. AUDIT-2 2026-10-24: regraded, requirement is a registry of hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions; the row states open questions, an unresolved-contradictions list and a benchmark_suite are not recorded (ADR 0152 d11 declines them), so three of the six named record kinds are absent"
   },
   {
     "id": "R12-EXPAND-6062",

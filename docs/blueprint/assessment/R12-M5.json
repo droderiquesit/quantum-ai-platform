@@ -1083,7 +1083,7 @@
   },
   {
     "id": "R12-REFLEX-5047",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Spool drain to P1 and ledgerd booking are both wired and each tested (the overlap is the OutcomeRecord); learning takes a cell's fills from the cell report only, by ADR 0133 decision 4, and a kernel test pins that: a fill on a report reaches live_outcomes (what stage_learn reads) and the central plane's sources name none of the fabric's fill carriers.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:66-72",
@@ -1092,7 +1092,7 @@
       "backend/crates/runtime/qip-kernel/src/central/plane.rs:2187 record_realised from the report",
       "backend/crates/runtime/qip-kernel/tests/central.rs::learning_reads_a_fill_from_the_cell_report_and_the_central_plane_names_no_fabric_fill_type"
     ],
-    "gap": "",
+    "gap": "2026-10-24: requirement is a fill journaled at the node being booked by qip-ledgerd; ledgerd and the event fabric broker are in no committed environment (var.ledgerd and var.event_fabric_broker are null), the node ships to the fabric only with QIP_FABRIC_URL, and no test runs node -> fabricd -> ledgerd in one process; only the learning-from-report leg runs by default",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1106,7 +1106,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test central learning_reads_a_fill; cargo +1.94.1 test -p qip-acceptance --test vertical_slice_cell_ledger",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-17: ledger leg wired, learning leg absent. ADR lane 2026-10-18: ADR 0133 decision 4 settles learning's source (the report; the fabric copy is the ledger's input and audit record) and leaves only a pinning test. Closed 2026-10-24 by lane N3-MODEL-EDGE-INFRA with that test. Mutations fired: removing the record_realised call in CentralPlane::ingest leaves no outcome (positive assertion fails); adding a use of OutcomeRecord to central/realised.rs fails the token scan naming the file; both restored, test result: ok. 1 passed. Not claimed: there is still no single test running node -> fabricd -> ledgerd in one process; the two halves overlap on OutcomeRecord (e2e stays false)."
+    "notes": "Re-graded 2026-10-17: ledger leg wired, learning leg absent. ADR lane 2026-10-18: ADR 0133 decision 4 settles learning's source (the report; the fabric copy is the ledger's input and audit record) and leaves only a pinning test. Closed 2026-10-24 by lane N3-MODEL-EDGE-INFRA with that test. Mutations fired: removing the record_realised call in CentralPlane::ingest leaves no outcome (positive assertion fails); adding a use of OutcomeRecord to central/realised.rs fails the token scan naming the file; both restored, test result: ok. 1 passed. Not claimed: there is still no single test running node -> fabricd -> ledgerd in one process; the two halves overlap on OutcomeRecord (e2e stays false). AUDIT-2 2026-10-24: regraded, requirement is a fill journaled at the node being booked by qip-ledgerd; ledgerd and the event fabric broker are in no committed environment (var.ledgerd and var.event_fabric_broker are null), the node ships to the fabric only with QIP_FABRIC_URL, and no test runs node -> fabricd -> ledgerd in one process; only the learning-from-report leg runs by default"
   },
   {
     "id": "R12-MESH-5048",
@@ -1641,13 +1641,13 @@
   },
   {
     "id": "R12-EXEC-5071",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "RestOrderEntryAdapter declares no native extension (VenueAdapter::native_extensions default, empty) and submit_native refuses an instruction it did not declare before any request is built, never downgrading it to a plain order; the clause each adapter exposes its native extension holds with a truthfully empty declaration, pinned by a test. No DEX adapter exists to extend (ADR 0155 section 20).",
     "evidence": [
       "backend/crates/services/qip-brokers/tests/rest.rs::a_generic_rest_adapter_declares_no_native_extension_and_refuses_one_rather_than_sending_it_plain",
       "backend/crates/services/qip-brokers/src/adapter.rs::VenueAdapter::submit_native"
     ],
-    "gap": "",
+    "gap": "2026-10-24: requirement is adapters exposing a common contract while retaining venue-native features; the named test proves only that the generic REST adapter declares none and refuses one, submit_native is called by no production code, and the single declared extension (SimulatedExchange post_only) is not covered by the named test",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1658,7 +1658,7 @@
     "verification": "cargo test -p qip-brokers --test rest",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 lane. Mutation fired: declaring post_only on RestOrderEntryAdapter and routing submit_native_order to submit_order failed the empty-declaration premise assertion."
+    "notes": "2026-10-24 ADR 0155 lane. Mutation fired: declaring post_only on RestOrderEntryAdapter and routing submit_native_order to submit_order failed the empty-declaration premise assertion. AUDIT-2 2026-10-24: regraded, requirement is adapters exposing a common contract while retaining venue-native features; the named test proves only that the generic REST adapter declares none and refuses one, submit_native is called by no production code, and the single declared extension (SimulatedExchange post_only) is not covered by the named test"
   },
   {
     "id": "R12-EXEC-5072",

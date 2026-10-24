@@ -1393,7 +1393,7 @@
   },
   {
     "id": "R12-CONTRACT-7062",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "EvidencePacket is a typed, strict-decoding contract (qip-contracts evidence_packet.rs) and CheckedEvidence::packet derives one from any admitted claim on demand. By ADR 0152 decision 3 it is a derived export and is not journaled: ConnectorRuntime::poll still forms the packet once per claim as a refusal gate (a claim that cannot state source, licence and content hash is quarantined) and no longer carries it on PollReport, which had no reader.",
     "evidence": [
       "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs CheckedEvidence::packet",
@@ -1401,7 +1401,7 @@
       "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs::a_poll_report_carries_no_packet_until_a_consumer_asks_for_one",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs an_evidence_packet_round_trips_and_refuses_a_missing_unknown_or_foreign_field"
     ],
-    "gap": "",
+    "gap": "2026-10-24: requirement is a typed EvidencePacket between brains; the type and its decode refusals exist and are tested, but no deployed process builds one (the connector poll is not enabled in any committed environment) and by decision none is sent or journaled, so the contract is exchanged by no brain",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1412,11 +1412,11 @@
     "verification": "cargo test -p qip-market-ingestion --test evidence_stage; cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 N2-FABRIC-DATA: closed per ADR 0152 decision 3 (the register clause was a packet no consumer decodes; the decision is that none is built ahead of a consumer, ADR 0133). Mutation: add a packets field back to PollReport - the test's exhaustive PollReport destructuring fails to compile (E0027), restored byte for byte. Gap prose of 2026-10-18 superseded."
+    "notes": "2026-10-24 N2-FABRIC-DATA: closed per ADR 0152 decision 3 (the register clause was a packet no consumer decodes; the decision is that none is built ahead of a consumer, ADR 0133). Mutation: add a packets field back to PollReport - the test's exhaustive PollReport destructuring fails to compile (E0027), restored byte for byte. Gap prose of 2026-10-18 superseded. AUDIT-2 2026-10-24: regraded, requirement is a typed EvidencePacket between brains; the type and its decode refusals exist and are tested, but no deployed process builds one (the connector poll is not enabled in any committed environment) and by decision none is sent or journaled, so the contract is exchanged by no brain"
   },
   {
     "id": "R12-CONTRACT-7063",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "The contract BeliefState (six fields) is constructed in production by central/belief.rs::belief_state and gates what ships to cells. The reasoning engine's freshness type is now qip_reasoning_engine::BeliefClock (belief.rs, accessor ReasoningEngine::belief_clock, read by platform.rs for Capability::BeliefState), so the contract owns the name. No wire carries either name; what crosses to cells stays ADR 0088's Beliefs slot beside BeliefPriors.",
     "evidence": [
       "backend/crates/services/qip-reasoning-engine/src/belief.rs::BeliefClock",
@@ -1425,7 +1425,7 @@
       "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_does",
       "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:274 a_belief_state_missing_any_of_its_six_fields_is_refused_on_decode"
     ],
-    "gap": "",
+    "gap": "2026-10-24: the contract is constructed in production only by the mesh policy dispatch, which is off in every committed deployment (QIP_MESH_CELLS unset, no execution node), so no BeliefState gates what ships to a cell; and the named section27_partial_contracts test does not fail when the causal_path refusal is removed",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1436,7 +1436,7 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoning forming_a_hypothesis_moves; cargo test -p qip-contracts --test section27_partial_contracts",
     "work_item": "",
     "size": "S",
-    "notes": "Rename landed in 4c1fe46a (ADR 0149 d19); regraded 2026-10-24 lane T6-MODEL-AGENTS after re-running the test. Mutation re-fired: last_updated() returning Some(1ms) before any hypothesis formed failed the test at reasoning.rs:1551 (left Some(1970-01-01T00:00:00.001Z), right None); restored byte for byte, passes."
+    "notes": "Rename landed in 4c1fe46a (ADR 0149 d19); regraded 2026-10-24 lane T6-MODEL-AGENTS after re-running the test. Mutation re-fired: last_updated() returning Some(1ms) before any hypothesis formed failed the test at reasoning.rs:1551 (left Some(1970-01-01T00:00:00.001Z), right None); restored byte for byte, passes. AUDIT-2 2026-10-24: regraded, the contract is constructed in production only by the mesh policy dispatch, which is off in every committed deployment (QIP_MESH_CELLS unset, no execution node), so no BeliefState gates what ships to a cell; and the named section27_partial_contracts test does not fail when the causal_path refusal is removed"
   },
   {
     "id": "R12-CONTRACT-7064",
@@ -2393,7 +2393,7 @@
   },
   {
     "id": "R12-RES-7106",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Contradiction narrows the confidence a position is sized on and is deliberately not folded into the action bar (Hypothesis::confidence_for_sizing, read at platform.rs where the proposal's conviction is built); a contested thesis is held small and scored, not blocked. Agency plans with prohibited methods are infeasible; expansion has a Contradiction gap class. ContradictionResolution has one consumer (trust_score).",
     "evidence": [
       "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs::Hypothesis::confidence_for_sizing",
@@ -2401,7 +2401,7 @@
       "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on",
       "backend/crates/runtime/qip-kernel/tests/kernel.rs::the_reason_stage_names_the_evidence_posture_so_a_small_size_can_be_told_from_an_absent_one"
     ],
-    "gap": "",
+    "gap": "2026-10-24: requirement is a contradictory derivation yielding infeasible/unresolved with the trace kept and money movement blocked (fail closed); the row withdraws the blocking clause by ADR 0150 d14, a contradicted thesis is still sized (only smaller) and nothing marks it infeasible, so the named tests prove narrowing, not the requirement",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2414,7 +2414,7 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoning contradiction_only_ever; cargo test -p qip-kernel --test kernel the_reason_stage_names",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed by ADR 0150 d14: the closure clause that an unresolved contradiction blocks a proposal is withdrawn; a ContradictionResolution trace is advisory and waits for a named consumer. Mutation fired: confidence_for_sizing multiplying by (2.0 - dissent) instead of dissent failed contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on at reasoning.rs:1086; restored, it passed."
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed by ADR 0150 d14: the closure clause that an unresolved contradiction blocks a proposal is withdrawn; a ContradictionResolution trace is advisory and waits for a named consumer. Mutation fired: confidence_for_sizing multiplying by (2.0 - dissent) instead of dissent failed contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on at reasoning.rs:1086; restored, it passed. AUDIT-2 2026-10-24: regraded, requirement is a contradictory derivation yielding infeasible/unresolved with the trace kept and money movement blocked (fail closed); the row withdraws the blocking clause by ADR 0150 d14, a contradicted thesis is still sized (only smaller) and nothing marks it infeasible, so the named tests prove narrowing, not the requirement"
   },
   {
     "id": "R12-RES-7107",
@@ -3700,14 +3700,14 @@
   },
   {
     "id": "R12-COVERAGE-7163",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "AssetClassRegistry::shipped holds all 15 AssetClass variants. Platform::new assembles over one instrument of each of the ten classes that need no maturity record, and over a FixedIncome bond, a Credit loan and a Derivative option built with the maturity or extension record their types require (test inputs, not catalogue data). Prediction and PhysicalProduct have no InstrumentType by decision (ADR 0155 section 18): physical goods are commerce units and a prediction market is VenueClass::PredictionMarket.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs::an_instrument_of_each_dated_class_assembles_through_platform_new_with_a_stated_maturity",
       "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs::an_instrument_of_each_constructible_class_assembles_through_platform_new",
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs::AssetClassRegistry::shipped"
     ],
-    "gap": "",
+    "gap": "2026-10-24: acceptance clause is that every constituent obligation is COMPLETE and a suite proves the composite; the eight constituents R12-COVERAGE-5099 to 5106 are all PARTIAL (trading-path integration), so the composite cannot be COMPLETE; the suite proves only that the classes are constructible",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3718,7 +3718,7 @@
     "verification": "cargo test -p qip-acceptance --test asset_class_registry",
     "work_item": "",
     "size": "XL",
-    "notes": "2026-10-24 ADR 0155 section 18. Mutation fired: deleting the FixedIncome record from AssetClassRegistry::shipped made the dated-class assembly test fail (premise: the fixtures build with their maturity records). Constituent rows R12-COVERAGE-5099..5106 stay PARTIAL on trading-path integration; this composite closes on what is constructible."
+    "notes": "2026-10-24 ADR 0155 section 18. Mutation fired: deleting the FixedIncome record from AssetClassRegistry::shipped made the dated-class assembly test fail (premise: the fixtures build with their maturity records). Constituent rows R12-COVERAGE-5099..5106 stay PARTIAL on trading-path integration; this composite closes on what is constructible. AUDIT-2 2026-10-24: regraded, acceptance clause is that every constituent obligation is COMPLETE and a suite proves the composite; the eight constituents R12-COVERAGE-5099 to 5106 are all PARTIAL (trading-path integration), so the composite cannot be COMPLETE; the suite proves only that the classes are constructible"
   },
   {
     "id": "R12-COVERAGE-7164",
