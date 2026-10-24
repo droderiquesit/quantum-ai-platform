@@ -1338,7 +1338,7 @@
   },
   {
     "id": "R12-REASON-3060",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "causal.abduce runs on each anomaly surprise in REASON and the ranked explanations are journaled, including an empty set kept as a result.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
@@ -1347,7 +1347,7 @@
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:556 causal.abduce",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:751 a_surprise_with_no_causal_claim_into_it_is_abduced_to_no_candidates_and_kept"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when the row's verification or evidence names a test that fails when the abduce ranking is mutated (qip-world-model tests/ abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions does: cd backend && cargo test -p qip-world-model), or a kernel test pins the ranking through derive.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1358,7 +1358,7 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoners",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. abduce now called in the cycle."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. abduce now called in the cycle. AUDIT-4 2026-10-24: regraded, the acceptance is that mutating the reasoner's core rule fails the test, and the abduction ranking (qip-world-model inference.rs abduce, score `edge.confidence / (1.0 + miss)`) is pinned by no named test: qip-reasoning-engine reasoners never calls abduce, and symbolic_federation and the kernel symbolic_stage lib tests pass with the ranking reduced to the edge confidence. Only qip-world-model's abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions fails, and no field of the row names it. The wiring (derive passing the observed moves to abduce) is pinned by symbolic_federation"
   },
   {
     "id": "R12-REASON-3061",

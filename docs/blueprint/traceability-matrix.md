@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 518 | 34.1% |
+| Blueprint completion (COMPLETE) | 516 | 34.0% |
 | Implemented (behaviour exists in code) | 1333 | 87.8% |
 | Tested (a named test demonstrates it) | 1235 | 81.4% |
 | Integrated (reached from a composition root) | 891 | 58.7% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 518 |
-| PARTIAL | 860 |
+| COMPLETE | 516 |
+| PARTIAL | 862 |
 | MISSING | 108 |
 | BLOCKED | 31 |
 | NEEDS-VALIDATION | 1 |
@@ -39,9 +39,9 @@ register (ADR 0099), and there is no second one.
 | [LEDGER](#ledger) | 50 | 14 | 28 | 5 | 3 | 0 | 41 | 33 | 0 |
 | [DATA](#data) | 95 | 23 | 62 | 10 | 0 | 0 | 83 | 75 | 1 |
 | [EVID](#evid) | 25 | 2 | 23 | 0 | 0 | 0 | 24 | 21 | 0 |
-| [TICK](#tick) | 97 | 22 | 72 | 3 | 0 | 0 | 93 | 84 | 1 |
+| [TICK](#tick) | 97 | 21 | 73 | 3 | 0 | 0 | 93 | 84 | 1 |
 | [WORLD](#world) | 69 | 33 | 31 | 5 | 0 | 0 | 62 | 57 | 1 |
-| [REASON](#reason) | 41 | 16 | 23 | 2 | 0 | 0 | 39 | 39 | 0 |
+| [REASON](#reason) | 41 | 15 | 24 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 26 | 20 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 39 | 23 | 0 | 7 | 0 | 63 | 61 | 0 |
 | [MODEL](#model) | 81 | 28 | 49 | 3 | 1 | 0 | 76 | 71 | 0 |
@@ -695,7 +695,7 @@ register (ADR 0099), and there is no second one.
 | R12-TICK-1053 | Prevent timestamp contamination | TickDesk::round excludes and counts any tick knowable before its event time from both replay and training; features read only what was knowable at the decision instant. | PARTIAL | None for the requirement; not deployed (desk off unless configured). |  | P0 | cargo test -p qip-simulation-engine; cargo test -p qip-execution-engine |  |
 | R12-TICK-1054 | Prevent impossible fills in replay | Limit orders do not fill through price; flash events cannot fill beyond collapsed depth; arbitrage legs the book cannot fill are refused. | COMPLETE | None for the guard. |  | P0 | cargo test -p qip-simulation-engine; cargo test -p qip-execution-engine |  |
 | R12-TICK-1121 | Tick Learning Fabric provides immutable tick/order-book history | Lake segments write-once, checksummed; not opened by any composition root. | PARTIAL | Implement/integrate immutable tick/order-book history. |  | P2 | cargo test -p qip-acceptance --test tick_replay |  |
-| R12-TICK-1122 | Tick Learning Fabric provides clock normalization | Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool. | COMPLETE | None for the requirement; not deployed (no execution node exists). |  | P2 | cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock |  |
+| R12-TICK-1122 | Tick Learning Fabric provides clock normalization | Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool. | PARTIAL | 2026-10-24: Closes when the replay digest (tick_replay.rs) or a named test covers the disciplined normalized_time and uncertainty from a recorded session, failing when qip-sequencing clock.rs:275 is mutated. |  | P2 | cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock |  |
 | R12-TICK-1123 | Tick Learning Fabric provides book reconstruction | qip-orderbook books rebuilt deterministically from recorded venue bytes in replay. | COMPLETE | None for the in-process stage; replay runs in tests and CLI, not a deployed service. |  | P2 | cargo test -p qip-acceptance --test tick_replay |  |
 | R12-TICK-1124 | Tick Learning Fabric provides cross-venue alignment | No code for cross-venue alignment. | MISSING | Implement/integrate cross-venue alignment. |  | P2 | cargo test -p qip-acceptance --test tick_replay |  |
 | R12-TICK-1125 | Tick Learning Fabric provides replay/simulation | Deterministic tick replay and simulation engine; edge-node replay module. | PARTIAL | Implement/integrate replay/simulation. |  | P2 | cargo test -p qip-acceptance --test tick_replay |  |
@@ -882,7 +882,7 @@ register (ADR 0099), and there is no second one.
 | R12-REASON-3057 | Rule and policy engines | The kernel loads a versioned rule pack (v2) and evaluates it per hypothesis; replay re-evaluates and refuses a non-reproducing verdict. Besides eligibility and the paper-boundary/kill-switch invariants, v2 carries a market-structure fact (lot_headroom: the position budget left after buying one lot at the last price, from the instrument's lot and multiplier and the tightest MaxPositionWeight) and an accounting fact (cash_headroom: cash left after one lot), each gating r10-eligible, with rules r60/r61 naming the breach and invariant i30 forbidding eligibility on negative cash. | PARTIAL | Tick-grid and contract-specification rules (expiry, deliverability, multiplier) are not in the pack: the tape the platform holds is f64-derived, so an on-tick rule would rule against every synthetic price, and a contract rule needs the derivative extension's expiry carried into SymbolicInput. Accounting is one invariant (no negative cash after the smallest lot), not a double-entry check. |  | P1 | cargo test -p qip-kernel --lib symbolic_stage && cargo test -p qip-kernel --test symbolic_federation |  |
 | R12-REASON-3058 | Constraint reasoning | Constraint solver (CSP/SAT/bounded linear integer, minimise, QUBO export) returns an assignment or a minimal unsatisfiable conflict; runs per hypothesis as the acting problem. | PARTIAL | Owner decision O12 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit an SMT/MILP solver crate (Z3 refused by ADR 0099 C5). Enables: SMT theories and MILP in constraint.rs. Costs: A large native dependency or a long in-tree solver. |  | P2 | cargo test -p qip-reasoning-engine --test reasoners |  |
 | R12-REASON-3059 | Probabilistic symbolic reasoning | Bayesian network posterior computed per hypothesis from declared tables and panel evidence, journaled. | COMPLETE |  |  | P2 | cargo test -p qip-reasoning-engine --test reasoners |  |
-| R12-REASON-3060 | Abductive reasoning | causal.abduce runs on each anomaly surprise in REASON and the ranked explanations are journaled, including an empty set kept as a result. | COMPLETE |  |  | P2 | cargo test -p qip-reasoning-engine --test reasoners |  |
+| R12-REASON-3060 | Abductive reasoning | causal.abduce runs on each anomaly surprise in REASON and the ranked explanations are journaled, including an empty set kept as a result. | PARTIAL | 2026-10-24: Closes when the row's verification or evidence names a test that fails when the abduce ranking is mutated (qip-world-model tests/ abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions does: cd backend && cargo test -p qip-world-model), or a kernel test pins the ranking through derive. |  | P2 | cargo test -p qip-reasoning-engine --test reasoners |  |
 | R12-REASON-3061 | Planning/program synthesis | ResearchLoop::plan_sweep compiles each sweep's started items into a qip_agency InterventionPlan (research_plan.rs): a Research GoalSpec with the sweep's compute budget and a zero risk envelope, an affordance graph of the registered tools, the planner identity holding only the research authority. The proven plan is carried on ResearchRound::plan and journaled as AmbientRecord::SweepPlan beside the sweep's signals; a plan over budget is an error recorded in plan_refused, not a trimmed plan. | COMPLETE |  |  | P2 | cargo test -p qip-deepbrain --test research_market -- a_sweep_compiles |  |
 | R12-REASON-3062 | Proof/derivation artifacts | Every SymbolicDerivation REASON journals carries violated_assumptions (the rule pack's refusal, each refused timeline link, each constraint in the acting conflict) and uncertainty (normalised entropy of P(claim_holds), None when the posterior was refused), beside the machine-readable derivation and its cited evidence; symbolic_stage::verify recomputes both from the record's parts and refuses an edited one. | COMPLETE |  |  | P1 | cargo test -p qip-kernel --test symbolic_federation |  |
 | R12-REASON-3063 | Neural-to-symbolic compilation | Nothing converts a validated discovery into a rule/predicate; StrategyCompiler compiles grammar-generated strategies, not discoveries. | MISSING | Build the discovery-to-rule path. |  | P2 | cargo test -p qip-reasoning-engine --test reasoners |  |
