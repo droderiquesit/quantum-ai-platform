@@ -1856,3 +1856,43 @@ fn a_recall_needs_a_positive_window_and_an_outstanding_order_to_acknowledge() ->
     ));
     Ok(())
 }
+
+/// R12-CAPITAL-4088: every grant the issuer signs carries all five bounds the
+/// requirement names — exposure (gross and order limits), liquidity and
+/// leverage (the exposure bounds), drawdown and loss budget — and the
+/// drawdown stop sits at the loss limit, the loosest ADR 0126 decision 2
+/// admits, so issuing it invents no tighter limit. The stop is inside the
+/// signed payload, so the issued signature still verifies.
+///
+/// Mutation: drop `.with_drawdown(..)` from `EnvelopeIssuer::issue` — the
+/// grant carries no stop.
+#[test]
+fn an_issued_grant_carries_all_five_bounds_and_its_drawdown_stop_is_its_loss_limit() -> Result<()> {
+    let issuer = issuer()?;
+    let envelope = issuer.issue(
+        &terms(dec!("1000000"), Duration::from_hours(1)),
+        &approval(start())?,
+        start(),
+    )?;
+    assert!(envelope.gross_limit().is_positive());
+    assert!(envelope.order_limit().is_positive());
+    assert!(
+        envelope.exposure().is_some(),
+        "no liquidity or leverage bound"
+    );
+    assert_eq!(
+        envelope.loss_limit(),
+        dec!("200000"),
+        "premise: 0.2 of the gross"
+    );
+    let stop = envelope
+        .drawdown()
+        .expect("the issued grant carries no drawdown stop");
+    assert_eq!(stop.max_drawdown, envelope.loss_limit());
+    assert!(
+        envelope.signing_payload().contains("|drawdown.v1|200000"),
+        "the stop is outside the signed payload: {}",
+        envelope.signing_payload()
+    );
+    issuer.verify(&envelope, start())
+}

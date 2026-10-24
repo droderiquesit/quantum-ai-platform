@@ -135,6 +135,9 @@ struct Owner {
     realised_at: Option<Timestamp>,
     /// The latest leg this owner could not price, while the latch holds.
     unpriced: Option<Unpriced>,
+    /// The highest `realised` has stood since the last reset, never below
+    /// zero: a grant begins at its own high-water mark (ADR 0126 decision 2).
+    high_water: Decimal,
 }
 
 /// What one leg did to one position, before the owner's figure is touched.
@@ -196,9 +199,23 @@ impl RealisedLedger {
             ));
         };
         owner.realised = total;
+        owner.high_water = owner.high_water.max(total);
         owner.unit = Some(unit);
         owner.realised_at = Some(at);
         Booking::Priced
+    }
+
+    /// How far `owner`'s realised P&L stands below its high-water mark since
+    /// the last reset: what the envelope's drawdown stop reads (ADR 0126
+    /// decision 2). Zero for an owner at its high. A gap too large to
+    /// represent is read as the largest there is, never as none.
+    pub(crate) fn drawdown(&self, owner: &str) -> Decimal {
+        self.owners.get(owner).map_or(Decimal::ZERO, |owner| {
+            owner
+                .high_water
+                .checked_sub(owner.realised)
+                .map_or(Decimal::MAX, |gap| gap.max(Decimal::ZERO))
+        })
     }
 
     /// The loss an envelope reads for `owner`: `max(0, −realised)`.
@@ -251,6 +268,7 @@ impl RealisedLedger {
         };
         if owner.realised_at.is_some_and(&granted_after) {
             owner.realised = Decimal::ZERO;
+            owner.high_water = Decimal::ZERO;
             owner.unit = None;
             owner.realised_at = None;
         }

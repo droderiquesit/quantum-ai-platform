@@ -59,7 +59,7 @@ use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::trust::{ArtefactClass, ArtefactSigner, ArtefactVerifier, sign_artefact};
 use qip_contracts::venue::VenueId;
-use qip_contracts::{CapitalEnvelope, ExposureBounds};
+use qip_contracts::{CapitalEnvelope, DrawdownBounds, ExposureBounds};
 use qip_core::error::{Error, Result};
 use qip_core::hash::{constant_time_eq, from_hex, to_hex};
 use qip_core::{Decimal, Duration, Timestamp, hmac_sha256};
@@ -355,7 +355,13 @@ impl EnvelopeIssuer {
             approval.approver.clone(),
             String::new(),
         )?
-        .with_exposure(exposure)?;
+        .with_exposure(exposure)?
+        // The drawdown stop at the loss limit: the loosest ADR 0126 decision
+        // 2 admits, so issuing it states the fifth bound without inventing a
+        // tighter limit nobody set. A grant's realised give-back from its
+        // high-water mark can then never exceed what its loss limit already
+        // allows from zero, which the loss limit alone did not ensure.
+        .with_drawdown(DrawdownBounds::bounded(loss_limit)?)?;
         let signature = self.sign(&unsigned.signing_payload())?;
         Ok(unsigned.signed(signature))
     }

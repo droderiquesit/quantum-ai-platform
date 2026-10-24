@@ -506,6 +506,13 @@ pub const GATE_ENVELOPE_LEVERAGE: &str = "envelope_leverage";
 /// minted without them (R12-CAPITAL-4088).
 pub const GATE_ENVELOPE_UNBOUNDED: &str = "envelope_unbounded";
 
+/// The gate an order is refused under when its strategy's realised P&L has
+/// fallen from its high-water mark within the grant to the envelope's
+/// drawdown stop (ADR 0126 decision 2, R12-CAPITAL-4088). Its own gate, not
+/// `capital`: a strategy stopped on its give-back while under its loss limit
+/// is a different fact from one past its loss limit.
+pub const GATE_ENVELOPE_DRAWDOWN: &str = "envelope_drawdown";
+
 /// How long a disposition's intent is good for once built. It enters the
 /// netting set in the same pass, so this is documentation of the intent's
 /// scope rather than a bound anything waits on: the instruction is re-read
@@ -5869,6 +5876,14 @@ impl Cell {
             return Ok(None);
         }
 
+        if let Err(reason) = deployed
+            .envelope
+            .check_drawdown(self.realised.drawdown(&key))
+        {
+            self.refuse(report, GATE_ENVELOPE_DRAWDOWN, &reason, now);
+            return Ok(None);
+        }
+
         let quantity = match deployed
             .envelope
             .admit(&venue, notional, &deployed.utilisation, now)
@@ -8966,6 +8981,16 @@ impl Cell {
         });
         if let Some(reason) = latched {
             self.refuse(report, "capital", &reason, now);
+            return None;
+        }
+        let drawn = self.desk.as_ref().and_then(|installed| {
+            let desk = &installed.desk;
+            desk.envelope()
+                .check_drawdown(self.realised.drawdown(desk.strategy().as_str()))
+                .err()
+        });
+        if let Some(reason) = drawn {
+            self.refuse(report, GATE_ENVELOPE_DRAWDOWN, &reason, now);
             return None;
         }
 

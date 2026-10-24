@@ -1300,3 +1300,155 @@ fn an_arbitrage_desk_stopped_on_a_fill_it_could_not_price_resumes_only_on_a_rene
     );
     Ok(())
 }
+
+/// A grant for `id` carrying a drawdown stop beside its loss limit (ADR 0126
+/// decision 2), signed over both.
+fn grant_with_stop(
+    id: &str,
+    loss_limit: &str,
+    stop: &str,
+    granted: i64,
+) -> Result<VerifiedEnvelope> {
+    let unsigned = CapitalEnvelope::new(
+        strategy(id),
+        CELL,
+        d("1000000"),
+        d("100000"),
+        d(loss_limit),
+        vec![venue()],
+        t(granted),
+        t(3600),
+        "alice@example.com",
+        "unsigned",
+    )?
+    .with_drawdown(qip_contracts::DrawdownBounds::bounded(d(stop))?)?;
+    let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(
+        unsigned.signed(signature),
+        ENVELOPE_KEY,
+        CELL,
+        t(granted + 1),
+    )
+}
+
+/// One winning round trip for alpha: buy ten at 101, sell them at the bid of
+/// 119 / 121. Makes (119 − 101) × 10 = 180.
+fn winning_round_trip(
+    cell: &mut Cell,
+    gateway: &mut FillingVenue,
+    envelope: &VerifiedEnvelope,
+    start: i64,
+) -> Result<WorkReport> {
+    quote(cell, "99", "101")?;
+    deploy(cell, ALPHA, SignalKind::Enter, SIZE, envelope)?;
+    let bought = cell.work(t(start), gateway)?;
+    assert_traded(&bought, "the winning buy");
+    quote(cell, "119", "121")?;
+    deploy(cell, ALPHA, SignalKind::Exit, SIZE, envelope)?;
+    let sold = cell.work(t(start + 10), gateway)?;
+    assert_traded(&sold, "the winning sell");
+    assert_eq!(sold.fills[0].price, d("119"));
+    Ok(sold)
+}
+
+/// R12-CAPITAL-4088's drawdown bound (ADR 0126 decision 2): a strategy that
+/// made 180, then gave back 240 in two losing trips, stands at a realised
+/// loss of only 60 — far under its 1,000 loss limit — and 240 below its
+/// high-water mark, past its 150 drawdown stop. The next commitment is
+/// refused under the drawdown gate, and not under `capital`.
+///
+/// The failure this prevents: the loss limit is measured from zero, so a
+/// strategy that first made money could give back its gains and then the
+/// whole loss limit on top before anything stopped it.
+///
+/// Mutation: make `CapitalEnvelope::check_drawdown` return `Ok(())` — the
+/// order goes out.
+#[test]
+fn a_strategy_past_its_drawdown_but_under_its_loss_limit_is_refused() -> Result<()> {
+    let envelope = grant_with_stop(ALPHA, "1000", "150", 0)?;
+    let mut cell = cell()?;
+    let mut gateway = FillingVenue::default();
+    winning_round_trip(&mut cell, &mut gateway, &envelope, 10)?;
+    // The first give-back, 120, is inside the 150 stop: the second losing
+    // trip's orders must still go out, or the refusal below proves nothing.
+    losing_round_trip(&mut cell, &mut gateway, &envelope, 30)?;
+    let last = losing_round_trip(&mut cell, &mut gateway, &envelope, 50)?;
+    let loss = reported_loss(&cell, &last, ALPHA, t(61))?;
+    assert_eq!(
+        loss,
+        d("60"),
+        "premise: +180 then -240 realises a loss of 60"
+    );
+    assert!(loss < d("1000"), "premise: under the loss limit");
+    let sent = gateway.placed.len();
+    assert_eq!(sent, 6, "premise: every order before the breach went out");
+
+    let next = cell.work(t(80), &mut gateway)?;
+    assert_eq!(next.signals.len(), 1, "premise: the strategy still signals");
+    assert!(
+        next.orders.is_empty() && gateway.placed.len() == sent,
+        "an order went out 240 below the high-water mark against a 150 stop: {:?}",
+        next.orders
+    );
+    let drawdown = refused_under(&next, qip_edge::cell::GATE_ENVELOPE_DRAWDOWN);
+    assert_eq!(
+        drawdown.len(),
+        1,
+        "not refused once under the drawdown gate: {:?}",
+        next.refusals
+    );
+    let words = tokens(drawdown[0]);
+    assert!(
+        words.contains(&"240") && words.contains(&"150"),
+        "the refusal does not name the drawdown and the stop: {}",
+        drawdown[0]
+    );
+    assert!(
+        refused_under(&next, CAPITAL).is_empty(),
+        "the loss limit answered instead of the drawdown stop: {:?}",
+        next.refusals
+    );
+    Ok(())
+}
+
+/// A drawdown stop wider than the loss limit that arrives decoded — so
+/// `with_drawdown`'s refusal never ran on it — is refused at the cell's
+/// verification, signature valid or not: a stop that could never fire before
+/// the loss limit is not a bound (ADR 0126 d2).
+///
+/// Mutation: drop the `drawdown_within_loss_limit` call from
+/// `VerifiedEnvelope::verify` — the decoded wide stop verifies.
+#[test]
+fn a_decoded_drawdown_stop_wider_than_the_loss_limit_is_refused_at_verification() -> Result<()> {
+    let at_limit = CapitalEnvelope::new(
+        strategy(ALPHA),
+        CELL,
+        d("1000000"),
+        d("100000"),
+        d("100"),
+        vec![venue()],
+        t(0),
+        t(3600),
+        "alice@example.com",
+        "unsigned",
+    )?
+    .with_drawdown(qip_contracts::DrawdownBounds::bounded(d("100"))?)?;
+    let mut wire = serde_json::to_value(&at_limit).map_err(|e| Error::invalid(e.to_string()))?;
+    wire["drawdown"]["max_drawdown"] = serde_json::json!("150");
+    let widened: CapitalEnvelope =
+        serde_json::from_value(wire).map_err(|e| Error::invalid(e.to_string()))?;
+    assert_eq!(
+        widened.drawdown().map(|stop| stop.max_drawdown),
+        Some(d("150")),
+        "premise: the wide stop decoded, so only verification can refuse it"
+    );
+    let signature = sign_payload(ENVELOPE_KEY, &widened.signing_payload());
+    let refused = VerifiedEnvelope::verify(widened.signed(signature), ENVELOPE_KEY, CELL, t(1))
+        .expect_err("a decoded 150 stop on a 100 loss limit verified");
+    assert!(
+        refused.message().contains("looser than the 100 loss limit"),
+        "{}",
+        refused.message()
+    );
+    Ok(())
+}

@@ -54,6 +54,61 @@ pub struct CapitalEnvelope {
     /// deployment does not grow by the bounds' size for every envelope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     exposure: Option<Box<ExposureBounds>>,
+    /// ADR 0126 decision 2 (R12-CAPITAL-4088): the drawdown stop, inside the
+    /// signed payload when present. Absent on an envelope issued before it
+    /// existed, which behaves as it always did — the loss limit is then the
+    /// only stop on realised losses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    drawdown: Option<Box<DrawdownBounds>>,
+}
+
+/// The fields of [`DrawdownBounds`] (ADR 0126 decision 2, R12-CAPITAL-4088).
+///
+/// The loss limit stops a strategy whose realised P&L has fallen a given
+/// amount below where its grant began. It does not stop one that made money
+/// and then gave it back: a strategy up 9 on a loss limit of 10 can lose 19
+/// before the loss limit notices. The drawdown stop is measured from the
+/// realised P&L's high-water mark within the grant, so the give-back is what
+/// it bounds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DrawdownBoundsFields {
+    pub schema_version: u32,
+    /// The largest fall of realised P&L from its high-water mark within the
+    /// grant, in the account currency, that the strategy may take.
+    pub max_drawdown: Decimal,
+}
+
+/// A validated drawdown stop. Built only through [`Validated::new`]; decode
+/// runs the same refusal. Whether it is within the envelope's loss limit is
+/// a fact about the pair, refused by [`CapitalEnvelope::with_drawdown`] and,
+/// for an envelope decoded off the wire, by the cell's verification.
+pub type DrawdownBounds = Validated<DrawdownBoundsFields>;
+
+impl Contract for DrawdownBoundsFields {
+    const NAME: &'static str = "DrawdownBounds";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Refuses a stop that is not positive: a drawdown stop of zero stops a
+    /// strategy before its first loss, which is a grant of nothing stated in
+    /// the wrong field.
+    fn check(&self) -> Result<()> {
+        positive(Self::NAME, "max_drawdown", self.max_drawdown)
+    }
+}
+
+impl DrawdownBounds {
+    /// The stop at the current schema version.
+    pub fn bounded(max_drawdown: Decimal) -> Result<Self> {
+        Validated::new(DrawdownBoundsFields {
+            schema_version: DrawdownBoundsFields::SCHEMA_VERSION,
+            max_drawdown,
+        })
+    }
 }
 
 /// The fields of [`ExposureBounds`] (R12-CAPITAL-4088).
@@ -267,7 +322,60 @@ impl CapitalEnvelope {
             signature: signature.into(),
             bounds: None,
             exposure: None,
+            drawdown: None,
         })
+    }
+
+    /// This envelope with a drawdown stop, and its signature cleared: the
+    /// stop enters the signed payload. Refuses an envelope already carrying
+    /// one — a changed stop is a new envelope — and a stop looser than the
+    /// loss limit, which would never fire before the loss limit did and so
+    /// is not a bound (ADR 0126 decision 2).
+    pub fn with_drawdown(mut self, drawdown: DrawdownBounds) -> Result<Self> {
+        if self.drawdown.is_some() {
+            return Err(Error::denied(
+                "this envelope already carries a drawdown stop; a changed stop is a new \
+                 envelope, signed anew",
+            ));
+        }
+        self.drawdown_within_loss_limit(&drawdown)?;
+        self.drawdown = Some(Box::new(drawdown));
+        self.signature = String::new();
+        Ok(self)
+    }
+
+    pub fn drawdown(&self) -> Option<&DrawdownBounds> {
+        self.drawdown.as_deref()
+    }
+
+    /// Refuse a drawdown stop above this envelope's loss limit. Public so a
+    /// cell can run it on an envelope decoded off the wire, where
+    /// [`Self::with_drawdown`] never ran.
+    pub fn drawdown_within_loss_limit(&self, drawdown: &DrawdownBounds) -> Result<()> {
+        if drawdown.max_drawdown > self.loss_limit {
+            return Err(Error::invalid(format!(
+                "a drawdown stop of {} is looser than the {} loss limit, so it could never fire \
+                 first; state one no wider than the loss limit",
+                drawdown.max_drawdown, self.loss_limit
+            )));
+        }
+        Ok(())
+    }
+
+    /// Refuse when `drawdown` — the strategy's realised P&L high-water mark
+    /// within the grant less its current realised P&L — has reached the
+    /// envelope's stop. An envelope with no stop refuses nothing here.
+    /// Separate from [`Self::admit`] so the cell journals it under its own
+    /// gate (ADR 0126 decision 2).
+    pub fn check_drawdown(&self, drawdown: Decimal) -> std::result::Result<(), String> {
+        match &self.drawdown {
+            Some(stop) if drawdown >= stop.max_drawdown => Err(format!(
+                "realised P&L has fallen {drawdown} from its high-water mark within the grant, \
+                 reaching the {} drawdown stop",
+                stop.max_drawdown
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// This envelope with liquidity and leverage bounds, and its signature
@@ -515,7 +623,7 @@ impl CapitalEnvelope {
         // bounds cannot be verified as this one: a cell that reads version 1
         // and is handed version 2's bytes refuses the signature rather than
         // enforcing a subset of what was signed.
-        match &self.exposure {
+        let base = match &self.exposure {
             None => base,
             Some(exposure) => format!(
                 "{base}|exposure.v{}|{}|{}|{}",
@@ -523,6 +631,13 @@ impl CapitalEnvelope {
                 exposure.max_participation_bp,
                 exposure.max_leverage,
                 exposure.capital
+            ),
+        };
+        match &self.drawdown {
+            None => base,
+            Some(stop) => format!(
+                "{base}|drawdown.v{}|{}",
+                stop.schema_version, stop.max_drawdown
             ),
         }
     }
