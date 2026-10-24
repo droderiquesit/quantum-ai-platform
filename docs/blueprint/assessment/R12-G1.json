@@ -1268,15 +1268,15 @@
   },
   {
     "id": "R12-GCP-8057",
-    "status": "PARTIAL",
-    "current": "modules/ncc declares a MESH preset-topology hub (google_network_connectivity_hub.latency) and one VPC spoke per Reflex/Fabric network exporting only its named prefixes (include_export_ranges), refused at plan unless every spoke names prefixes and each is /24 or narrower. Declared only when latency_spokes names spokes; tests/hubs.tftest.hcl plans it against mocks.",
+    "status": "MISSING",
+    "current": "No google_network_connectivity_* resource in the tree. Lane L6 wrote modules/ncc with the MESH latency hub and a mocked harness (5 runs). The parent session parked it on 2026-10-24 as docs/blueprint/lanes/l6-ncc-hubs-parked.patch, because the guard refuses the declaration itself, even gated off.",
     "evidence": [
-      "infrastructure/terraform/modules/ncc/main.tf google_network_connectivity_hub.latency, google_network_connectivity_spoke.latency",
-      "infrastructure/terraform/modules/ncc/tests/hubs.tftest.hcl"
+      "docs/blueprint/lanes/l6-ncc-hubs-parked.patch",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region"
     ],
-    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the module is not instantiated from the root (a root variable is a change to the protected infrastructure/terraform/variables.tf) and there is one region and no per-region Reflex/Fabric VPC to join (R12-GCP-8035, 8044, 8045); no real plan.",
-    "implemented": true,
-    "tested": true,
+    "gap": "2026-10-24: ADR 0035 runs one execution node in one region, so there is nothing to join, and the guard in gcp_placement.rs refuses a hub even when it is gated off. Landing the parked module needs an ADR that supersedes 0035 (the hub and its transfer are billed, so it is the owner's decision); after that, git apply the patch. This is the second time the module has been written and withdrawn: T5-MESH-INFRA did the same on PR 239.",
+    "implemented": false,
+    "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1284,22 +1284,22 @@
       "R12-GCP-8056"
     ],
     "blocked_by": "",
-    "verification": "scratch copy: cd infrastructure/terraform/modules/ncc && terraform init -backend=false && terraform test",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement (the guard); after the superseding ADR: git apply docs/blueprint/lanes/l6-ncc-hubs-parked.patch, then terraform init -backend=false && terraform test in a scratch copy of modules/ncc",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused."
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused. 2026-10-24 parent session: back to MISSING, and the module was parked as a patch. CI on 2105c7f2 failed the guard with 'infrastructure/terraform/modules/ncc/main.tf: `google_network_connectivity_hub.latency` joins networks. ADR 0035 runs one execution node in one region'. L6 had run the infrastructure, gitops, terraform_plan and documentation suites, but not gcp_placement. The guard is not edited."
   },
   {
     "id": "R12-GCP-8058",
-    "status": "PARTIAL",
-    "current": "modules/ncc declares a STAR preset-topology hub (google_network_connectivity_hub.services) with VPC spokes in center and edge groups, refused at plan unless at least one center and one edge spoke are named. Declared only when star_spokes names spokes; tests/hubs.tftest.hcl plans it against mocks.",
+    "status": "MISSING",
+    "current": "No google_network_connectivity_* resource in the tree. Lane L6 wrote modules/ncc with the STAR service hub and a mocked harness (5 runs). The parent session parked it on 2026-10-24 as docs/blueprint/lanes/l6-ncc-hubs-parked.patch, because the guard refuses the declaration itself, even gated off.",
     "evidence": [
-      "infrastructure/terraform/modules/ncc/main.tf google_network_connectivity_hub.services, google_network_connectivity_spoke.services",
-      "infrastructure/terraform/modules/ncc/tests/hubs.tftest.hcl"
+      "docs/blueprint/lanes/l6-ncc-hubs-parked.patch",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region"
     ],
-    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): not instantiated from the root (protected variables.tf) and the service, data and AI planes share one VPC per environment today, so there is nothing to make spokes of (R12-GCP-8046, 8049, 8050); 'stronger centralised inspection' needs an inspection appliance or Cloud NGFW endpoint in the centre VPC, which is not declared; no real plan.",
-    "implemented": true,
-    "tested": true,
+    "gap": "2026-10-24: ADR 0035 runs one execution node in one region, so there is nothing to join, and the guard in gcp_placement.rs refuses a hub even when it is gated off. Landing the parked module needs an ADR that supersedes 0035 (the hub and its transfer are billed, so it is the owner's decision); after that, git apply the patch. This is the second time the module has been written and withdrawn: T5-MESH-INFRA did the same on PR 239.",
+    "implemented": false,
+    "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1307,10 +1307,10 @@
       "R12-GCP-8056"
     ],
     "blocked_by": "",
-    "verification": "scratch copy: cd infrastructure/terraform/modules/ncc && terraform init -backend=false && terraform test",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement (the guard); after the superseding ADR: git apply docs/blueprint/lanes/l6-ncc-hubs-parked.patch, then terraform init -backend=false && terraform test in a scratch copy of modules/ncc",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused."
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused. 2026-10-24 parent session: back to MISSING, and the module was parked as a patch. CI on 2105c7f2 failed the guard with 'infrastructure/terraform/modules/ncc/main.tf: `google_network_connectivity_hub.latency` joins networks. ADR 0035 runs one execution node in one region'. L6 had run the infrastructure, gitops, terraform_plan and documentation suites, but not gcp_placement. The guard is not edited."
   },
   {
     "id": "R12-GCP-8059",

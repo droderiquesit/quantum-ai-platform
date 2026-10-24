@@ -414,6 +414,43 @@ fn an_ensemble_forecast_is_charged_by_the_side_it_took_and_never_freshens_the_se
     // 0.7 says true; true for eight of the twelve.
     assert_eq!(estimate.hits(), 8);
     assert_eq!(model.sample_facts().count(), 0);
+
+/// R12-MODEL-6016: an ensemble's record, like a member's, never reaches the
+/// freshness facts. This is not hypothetical. When `ComponentKind::Ensemble`
+/// landed, the filter named only world-model members. The federation's
+/// arbitrated probability, charged on every resolution, then read the
+/// self-model fresh on the fast brain's demonstration tape before LEARN had
+/// graded anything. DECIDE sized against the whole book, 10,000,000, where
+/// the self-model's staleness holds it to 5,000,000
+/// (`qip-fastbrain/tests/tape.rs::the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_budget`).
+/// Mutation: dropping `Ensemble` from the `sample_facts` filter lists both
+/// ensembles and fails the last assertion.
+#[test]
+fn an_ensembles_resolved_forecasts_never_freshen_the_self_model() -> Result<()> {
+    let mut model = SelfModel::new();
+    let federation = ComponentKey::new(ComponentKind::Ensemble, "world-model-federation")?;
+    let tournament = ComponentKey::new(ComponentKind::Ensemble, "model-tournament")?;
+    let detector = ComponentKey::detector("vol-spike")?;
+    for n in 0..MINIMUM_SAMPLE {
+        assert!(model.absorb_forecast(federation.clone(), format!("p{n}"), 0.8, true, at(n))?);
+        assert!(model.absorb_forecast(tournament.clone(), format!("q{n}"), 0.3, false, at(n))?);
+        model.record(detector.clone(), outcome(n, true));
+    }
+
+    // Premise: each ensemble holds a full, recent sample. So it is the filter
+    // that keeps it out, not a sample too thin to count.
+    for ensemble in [&federation, &tournament] {
+        assert_eq!(
+            model
+                .get(ensemble)
+                .expect("the ensemble was charged")
+                .sample_count(),
+            MINIMUM_SAMPLE
+        );
+    }
+    let facts: Vec<String> = model.sample_facts().map(|(key, _, _)| key).collect();
+    // Premise: a component charged alongside them does reach the table.
+    assert_eq!(facts, vec![detector.to_string()]);
     Ok(())
 }
 
