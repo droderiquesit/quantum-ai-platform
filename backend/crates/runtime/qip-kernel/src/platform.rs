@@ -10361,6 +10361,22 @@ impl Platform {
         self.capital.cash
     }
 
+    /// What each belief class's error is applied to (R12-AMBIENT-3113, ADR
+    /// 0158 decisions 7-8): the book's gross notional at cost, split by which
+    /// class alone holds an open thesis on the instrument. Open theses are
+    /// the platform's own unresolved predictions that carry a claim; one
+    /// recorded before claims were kept names no class and holds nothing.
+    pub fn class_exposure(&self) -> crate::class_exposure::ClassExposure {
+        crate::class_exposure::attribute(
+            self.predictions
+                .iter()
+                .filter(|prediction| prediction.is_open())
+                .filter_map(|prediction| prediction.claim.as_ref())
+                .map(|claim| (claim.class.as_str(), claim.subject.as_str())),
+            &self.positions_at_cost(),
+        )
+    }
+
     /// The desk's open positions as the book holds them: signed quantity
     /// and average entry cost, by instrument.
     pub fn positions_at_cost(&self) -> BTreeMap<String, (Decimal, Decimal)> {
