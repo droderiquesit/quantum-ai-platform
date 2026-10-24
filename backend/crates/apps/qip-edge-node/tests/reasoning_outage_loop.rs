@@ -285,15 +285,14 @@ fn share_policy(grants: Vec<String>) -> Result<VerifiedPolicy> {
 fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
+    // List and seed: the run seeds the touch it trades against, and
+    // permission to list is not permission to seed (R12-COVERAGE-5107).
     for object in objects {
-        let request = CreationRequest::new(
-            CreationAction::List,
-            venue.as_str(),
-            object.as_str(),
-            "paper",
-        );
-        for authority in CreationAuthority::ALL {
-            permissions.record(authority, &request, "test fixture")?;
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
         }
     }
     gateway.with_listing_permissions(permissions, "paper")
