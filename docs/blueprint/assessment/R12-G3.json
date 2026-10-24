@@ -1838,7 +1838,7 @@
       "backend/crates/libs/qip-contracts/src/policy.rs:295 ModelPack",
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:242 ModelPack"
     ],
-    "gap": "Package publication path.",
+    "gap": "No publisher exists: nothing in the tree writes a ModelPack to a registry. Three things are missing and none is a kernel change. (1) A pack repository: modules/registry declares DOCKER (qip-<env>), GENERIC qip-rust-<env> and GENERIC qip-deployments-<env>, none for model packs, and a new repository is a billed Artifact Registry resource. (2) A publish step authenticated by workload identity in a workflow, which is a protected path (.github/**). (3) The prerequisite R12-CICD-10046 (replica/local-copy guarantee) is itself PARTIAL. The kernel side (ModelPack digest, signature, rollback parent, promotion journal by digest) is complete. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
