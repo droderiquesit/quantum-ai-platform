@@ -14,7 +14,7 @@ use qip_core::error::Result;
 use qip_evidence::EvidenceFabric;
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_market_ingestion::connector::emulator::{RecordedAnswer, RecordedExchange, SourceEmulator};
-use qip_market_ingestion::connector::runtime::ConnectorRuntime;
+use qip_market_ingestion::connector::runtime::{ConnectorRuntime, PollReport};
 use qip_market_ingestion::connector::transport::SourceTransport;
 use qip_market_ingestion::connector::{
     MAX_RAW_PAYLOAD_BYTES, RawPayload, RuntimeConfig, SourceManifest,
@@ -111,14 +111,16 @@ fn every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_
     Ok(())
 }
 
-/// The audit found `EvidencePacket` had no producer outside `qip-contracts`:
-/// a claim left the connector as an `EvidenceRecord` and nothing stated it in
-/// the contract another brain receives. Mutation: drop `Public`'s
-/// `Redistribute` grant in `permitted_uses`, or hand the packet an empty
-/// `content_hash` — the licence and hash assertions fail.
+/// ADR 0152 decision 3: a packet is a derived export, not a report field no
+/// one reads. The destructuring below names every field of `PollReport`
+/// without `..`, so a `packets` field returning to the report stops this file
+/// compiling; the packet is still formable on demand from each checked claim
+/// with its source, licence and content hash. Mutation: add `packets` back to
+/// `PollReport` and push `checked.packet(..)` onto it in `poll` — this test no
+/// longer compiles, and with the destructuring patched it sees a non-empty
+/// vector.
 #[test]
-fn every_admitted_claim_leaves_the_connector_as_an_evidence_packet_with_source_licence_and_hash()
--> Result<()> {
+fn a_poll_report_carries_no_packet_until_a_consumer_asks_for_one() -> Result<()> {
     use qip_contracts::governance::Usage;
     let text = body(&[
         ("e1", "2026-08-24T14:59:00Z", "101.25"),
@@ -130,10 +132,28 @@ fn every_admitted_claim_leaves_the_connector_as_an_evidence_packet_with_source_l
     let transport: &mut dyn SourceTransport = &mut emulator;
     let report = runtime.poll(&mut connector, transport, now())?;
 
-    assert_eq!(report.evidence.len(), 2, "premise: two claims were checked");
-    assert_eq!(report.packets.len(), 2, "one packet per admitted claim");
+    let PollReport {
+        evidence,
+        admitted,
+        outcome: _,
+        duplicates: _,
+        withheld: _,
+        quarantined: _,
+        attempts: _,
+        waited: _,
+        liveness: _,
+        digest: _,
+        unreferenced: _,
+        refused_evidence: _,
+        knowledge_delta: _,
+        knowledge_pack: _,
+        knowledge_footprint: _,
+    } = report;
+    assert_eq!(evidence.len(), 2, "premise: two claims were checked");
+    assert_eq!(admitted.len(), 2, "premise: both were admitted");
     let document = qip_core::sha256_hex(text.as_bytes());
-    for (packet, checked) in report.packets.iter().zip(&report.evidence) {
+    for checked in &evidence {
+        let packet = checked.packet(&manifest())?;
         assert_eq!(packet.packet_id, checked.record.id);
         assert_eq!(packet.content_hash, document);
         assert_eq!(packet.source.source_id, checked.record.source_identity);
