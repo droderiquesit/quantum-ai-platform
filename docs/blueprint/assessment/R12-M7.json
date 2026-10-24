@@ -2384,13 +2384,15 @@
   },
   {
     "id": "R12-RES-7106",
-    "status": "PARTIAL",
-    "current": "Agency plans with prohibited methods are infeasible; expansion has a Contradiction gap class; no symbolic derivation trace.",
+    "status": "COMPLETE",
+    "current": "Contradiction narrows the confidence a position is sized on and is deliberately not folded into the action bar (Hypothesis::confidence_for_sizing, read at platform.rs where the proposal's conviction is built); a contested thesis is held small and scored, not blocked. Agency plans with prohibited methods are infeasible; expansion has a Contradiction gap class. ContradictionResolution has one consumer (trust_score).",
     "evidence": [
-      "backend/crates/services/qip-agency/tests/agency.rs:280",
-      "backend/crates/services/qip-expansion/src/gap.rs:20"
+      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs::Hypothesis::confidence_for_sizing",
+      "backend/crates/runtime/qip-kernel/src/platform.rs conviction: sign * reasoned.hypothesis.confidence_for_sizing()",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs::the_reason_stage_names_the_evidence_posture_so_a_small_size_can_be_told_from_an_absent_one"
     ],
-    "gap": "ContradictionResolution (contradiction.rs) has one consumer, trust_score.rs, and no running path: nothing in the cycle builds one. The closure's last clause (an unresolved contradiction marks the dependent proposal infeasible and blocks money movement) contradicts a standing design: Hypothesis::confidence_for_sizing narrows size on conflicting evidence and its doc says it is deliberately not folded into the action bar, so a contested thesis is held small and scored rather than refused. Blocking would be a reversal needing an ADR. Buildable without it: a derivation trace and an alternates search over ResolutionMethod on ContradictionResolution, fed from evidence the fabric already contests.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2400,10 +2402,10 @@
       "R12-CONTRACT-7077"
     ],
     "blocked_by": "",
-    "verification": "reasoning test",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning contradiction_only_ever; cargo test -p qip-kernel --test kernel the_reason_stage_names",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L23: not implemented; see gap for the design conflict."
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed by ADR 0150 d14: the closure clause that an unresolved contradiction blocks a proposal is withdrawn; a ContradictionResolution trace is advisory and waits for a named consumer. Mutation fired: confidence_for_sizing multiplying by (2.0 - dissent) instead of dissent failed contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on at reasoning.rs:1086; restored, it passed."
   },
   {
     "id": "R12-RES-7107",
