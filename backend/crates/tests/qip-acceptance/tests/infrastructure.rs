@@ -4991,7 +4991,7 @@ fn no_cloud_run_workload_is_given_the_venue_credential_by_mount_or_by_environmen
     for wanted in [
         "[for mount in values(var.secret_mounts) : mount.secret_id],",
         "[for secret in values(var.secret_env) : secret.secret_id],",
-        "!startswith(secret_id, \"qip-venue-credential\")",
+        "!can(regex(\"(^|/)qip-venue-credential\", secret_id))",
     ] {
         assert!(
             lines.iter().any(|line| line == wanted),
@@ -5011,9 +5011,9 @@ fn no_cloud_run_workload_is_given_the_venue_credential_by_mount_or_by_environmen
         harness
             .matches("expect_failures = [google_service_account.workload]")
             .count(),
-        3,
-        "the cloudrun harness no longer plans the three refusals (platform mount, \
-         environment value, customer mount)"
+        4,
+        "the cloudrun harness no longer plans the four refusals (platform mount, \
+         environment value, customer mount, full-path id)"
     );
     assert!(
         harness.contains("run \"a_workload_mounting_another_secret_is_admitted\""),
@@ -5101,6 +5101,129 @@ fn no_project_folder_or_organisation_grant_hands_out_secret_manager_beyond_the_t
                     == "member = \"serviceAccount:${google_service_account.kcc.email}\""),
         "Config Connector's Secret Manager grant is no longer metadata-only for its own \
          account: {kcc:?}"
+    );
+}
+
+#[test]
+fn every_secret_level_grant_in_the_tree_is_pinned_and_names_its_secret_by_a_reviewed_route() {
+    // R12-GCP-8114, the route a text walk cannot see. A grant written
+    // `for_each = module.secrets.secret_ids` with a Cloud Run account as its
+    // member hands that account every secret in the deployment, the venue
+    // credential included, and no line of it names the credential. The
+    // second independent skeptic of the promotion found that every test here
+    // passed on one. So every secret-level grant in the tree is pinned by
+    // file and name, and each one's `for_each` and `secret_id` lines are
+    // pinned too: a new grant, or an existing grant re-keyed onto a map of
+    // secrets, fails until somebody reviews which secrets it reaches.
+    //
+    // The routes, and what holds each one:
+    // * the root's `committed_file`: a literal map of named, non-venue secrets
+    //   (checked entry by entry below);
+    // * the cloudrun module's `mounted` and `env`: the catalogue's inputs, which
+    //   name the credential nowhere, behind a precondition that refuses it
+    //   (the two tests above);
+    // * the execution node's `venue_credential`: the one reader, named by the
+    //   root from a literal;
+    // * the controllers' and the console's own secrets: literals, through a
+    //   variable the root fills with a literal.
+    //
+    // Mutation: add a root grant `for_each = module.secrets.secret_ids` for a
+    // Cloud Run account, or re-key `committed_file` onto it.
+    let kinds = [
+        "google_secret_manager_secret_iam_member",
+        "google_secret_manager_secret_iam_binding",
+        "google_secret_manager_secret_iam_policy",
+        "google_secret_manager_regional_secret_iam_member",
+        "google_secret_manager_regional_secret_iam_binding",
+        "google_secret_manager_regional_secret_iam_policy",
+    ];
+    let mut found: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (file, name, block) in kinds.into_iter().flat_map(resource_blocks_in_tree) {
+        let mut routing: Vec<String> = block
+            .lines()
+            .map(collapsed)
+            .filter(|line| line.starts_with("for_each =") || line.starts_with("secret_id ="))
+            .collect();
+        routing.sort();
+        routing.dedup();
+        found.insert(format!("{file}:{name}"), routing);
+    }
+    let pinned: std::collections::BTreeMap<String, Vec<String>> = [
+        (
+            "infrastructure/terraform/main.tf:committed_file",
+            vec![
+                "for_each = {",
+                "secret_id = each.value.secret_id",
+                "secret_id = module.secrets.secret_ids[\"qip-egress-bootstrap\"]",
+                "secret_id = module.secrets.secret_ids[\"qip-universe-catalogue\"]",
+            ],
+        ),
+        (
+            "infrastructure/terraform/modules/cloudrun/main.tf:env",
+            vec!["for_each = var.secret_env", "secret_id = each.value.secret_id"],
+        ),
+        (
+            "infrastructure/terraform/modules/cloudrun/main.tf:mounted",
+            vec!["for_each = var.secret_mounts", "secret_id = each.value.secret_id"],
+        ),
+        (
+            "infrastructure/terraform/modules/execution-node/main.tf:venue_credential",
+            vec!["secret_id = var.venue_credential_secret_id"],
+        ),
+        (
+            "infrastructure/terraform/modules/gitops-control-plane/main.tf:argocd_reads_its_app",
+            vec!["secret_id = var.argocd_app_secret_id"],
+        ),
+        (
+            "infrastructure/terraform/modules/gitops-control-plane/main.tf:kargo_reads_its_app",
+            vec!["secret_id = var.kargo_app_secret_id"],
+        ),
+        (
+            "infrastructure/terraform/modules/secrets/main.tf:console_session_secret",
+            vec![
+                "secret_id = google_secret_manager_secret.platform[\"qip-session-secret\"].secret_id",
+            ],
+        ),
+        (
+            "infrastructure/terraform/modules/secrets/main.tf:console_viewer_token",
+            vec!["secret_id = google_secret_manager_secret.platform[\"qip-token-viewer\"].secret_id"],
+        ),
+    ]
+    .into_iter()
+    .map(|(key, lines)| {
+        (
+            key.to_string(),
+            lines.into_iter().map(str::to_string).collect(),
+        )
+    })
+    .collect();
+    assert_eq!(
+        found, pinned,
+        "the set of secret-level grants, or the way one names its secrets, changed; review \
+         which secrets the changed grant reaches and whether the venue credential is among \
+         them, then pin it here"
+    );
+
+    // The variables routed to a module are filled by the root from literals,
+    // and only the execution node's names the venue credential.
+    let root = without_comments(&read("infrastructure/terraform/main.tf"));
+    let root_lines: Vec<String> = root.lines().map(collapsed).collect();
+    for wanted in [
+        "venue_credential_secret_id = module.secrets.secret_ids[\"qip-venue-credential\"]",
+        "argocd_app_secret_id = module.secrets.secret_ids[\"qip-github-app-argocd\"]",
+        "kargo_app_secret_id = module.secrets.secret_ids[\"qip-github-app-kargo\"]",
+    ] {
+        assert!(
+            root_lines.iter().any(|line| line == wanted),
+            "the root no longer fills a module's secret variable from the literal `{wanted}`"
+        );
+    }
+    assert_eq!(
+        root.matches("\"qip-venue-credential\"]").count(),
+        1,
+        "the root routes the venue credential somewhere beside the execution node's \
+         `venue_credential_secret_id`"
     );
 }
 

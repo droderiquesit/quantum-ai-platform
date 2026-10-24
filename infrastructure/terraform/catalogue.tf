@@ -421,9 +421,11 @@ locals {
 
     # The fast path: market data, microstructure, real-time risk, execution
     # against the simulator. Trading traffic, reachable from inside the VPC
-    # only, and the one workload that could ever hold the venue credential —
-    # `modules/secrets` binds it to this identity where the ceiling permits,
-    # which no environment a plan can carry does.
+    # only. It holds no venue credential and can be given none: until
+    # 2026-10-24 `modules/secrets` bound the credential to this identity
+    # behind the ceiling predicate, and that grant was removed because no
+    # Cloud Run workload may read it (R12-GCP-8114, ADR 0108 E3). Its one
+    # reader is the execution node.
     #
     # No egress proxy, deliberately. ADR 0008, consequence 3: nothing on the
     # hot path consults a model. The fast brain links `qip-ai` transitively

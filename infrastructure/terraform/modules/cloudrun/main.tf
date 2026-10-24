@@ -232,16 +232,18 @@ resource "google_service_account" "workload" {
     # creates this module's own accessor grant below (`mounted` or `env`) at
     # any ceiling, because neither grant reads the ceiling, so a mount list
     # copied from the service next door would have handed a Cloud Run account
-    # the key to a venue. Matched on the secret's own prefix rather than a
-    # substring of anything, because this repository has already been bitten
-    # by a check that matched a neighbouring token.
+    # the key to a venue. Matched on the secret's own name, at the start of
+    # the id or after its last `/`, rather than a substring of anything:
+    # this repository has already been bitten by a check that matched a
+    # neighbouring token, and a bare-prefix check passed the same secret
+    # named by its full `projects/…/secrets/…` path.
     precondition {
       condition = alltrue([
         for secret_id in concat(
           [for mount in values(var.secret_mounts) : mount.secret_id],
           [for secret in values(var.secret_env) : secret.secret_id],
         ) :
-        !startswith(secret_id, "qip-venue-credential")
+        !can(regex("(^|/)qip-venue-credential", secret_id))
       ])
       error_message = "No Cloud Run workload may read the venue credential, by secret_mounts or secret_env. Its only reader is the execution node's own account (modules/execution-node); a workload that needs to reach a venue is not a Cloud Run workload."
     }

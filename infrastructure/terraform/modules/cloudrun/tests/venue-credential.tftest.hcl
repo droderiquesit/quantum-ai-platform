@@ -1,8 +1,9 @@
 # No Cloud Run workload reads the venue credential, planned (R12-GCP-8114).
 #
 # The precondition on `google_service_account.workload` refuses the secret by
-# either input and in every traffic class. It used to refuse only a
-# customer-class mount, and an acceptance test reading the text could not
+# either input, in every traffic class, and by its bare id or its full path.
+# It used to refuse only a customer-class mount, and an acceptance test
+# reading the text could not
 # tell that from a refusal of every class; only a plan shows the
 # precondition fire on each way in and stay quiet on a secret that is not
 # the venue's.
@@ -81,6 +82,22 @@ run "a_customer_workload_mounting_the_venue_credential_is_still_refused" {
     secret_mounts = {
       venue = {
         secret_id         = "qip-venue-credential"
+        file_name         = "credential"
+        env_file_variable = "QIP_VENUE_CREDENTIAL_FILE"
+      }
+    }
+  }
+
+  expect_failures = [google_service_account.workload]
+}
+
+run "a_workload_naming_the_venue_credential_by_its_full_path_is_refused" {
+  command = plan
+
+  variables {
+    secret_mounts = {
+      venue = {
+        secret_id         = "projects/cloudrun-plan-harness/secrets/qip-venue-credential"
         file_name         = "credential"
         env_file_variable = "QIP_VENUE_CREDENTIAL_FILE"
       }
