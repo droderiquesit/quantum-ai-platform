@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 492 | 32.4% |
+| Blueprint completion (COMPLETE) | 493 | 32.5% |
 | Implemented (behaviour exists in code) | 1333 | 87.8% |
 | Tested (a named test demonstrates it) | 1235 | 81.4% |
 | Integrated (reached from a composition root) | 891 | 58.7% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 492 |
-| PARTIAL | 886 |
+| COMPLETE | 493 |
+| PARTIAL | 885 |
 | MISSING | 108 |
 | BLOCKED | 31 |
 | NEEDS-VALIDATION | 1 |
@@ -42,7 +42,7 @@ register (ADR 0099), and there is no second one.
 | [TICK](#tick) | 97 | 21 | 73 | 3 | 0 | 0 | 93 | 84 | 1 |
 | [WORLD](#world) | 69 | 32 | 32 | 5 | 0 | 0 | 62 | 57 | 1 |
 | [REASON](#reason) | 41 | 16 | 23 | 2 | 0 | 0 | 39 | 39 | 0 |
-| [AMBIENT](#ambient) | 48 | 24 | 22 | 2 | 0 | 0 | 46 | 45 | 9 |
+| [AMBIENT](#ambient) | 48 | 25 | 21 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 39 | 23 | 0 | 7 | 0 | 63 | 61 | 0 |
 | [MODEL](#model) | 81 | 25 | 52 | 3 | 1 | 0 | 76 | 71 | 0 |
 | [QUANT](#quant) | 78 | 25 | 27 | 26 | 0 | 0 | 52 | 52 | 0 |
@@ -915,7 +915,7 @@ register (ADR 0099), and there is no second one.
 | R12-AMBIENT-1141 | Ambient mesh maintains anomaly/opportunity scans | The deep-brain research sweep (ResearchLoop::sweep_over, run every cycle by default from node::run_with) feeds flagged subjects to PersistenceTracker; a discrepancy persisting PERSIST_SWEEPS (3) sweeps raises GapTrigger::MissedOpportunity, research::signal_class maps it to SignalClass::Opportunity, and AmbientJournal::record journals it on the hash-chained ambient journal alongside the anomaly scans. | COMPLETE | None for the requirement; not deployed. | R12-AMBIENT-1005 | P2 | cargo test -p qip-deepbrain --test ambient_journal |  |
 | R12-AMBIENT-1142 | Ambient mesh maintains scenario branches | No always-running ambient process maintains scenario branches; kernel forecasts are computed per cycle on request. | MISSING | An ambient loop in deepbrain. | R12-AMBIENT-1005 | P2 | cargo test -p qip-contracts --test ambient |  |
 | R12-AMBIENT-1143 | Ambient mesh maintains assumption health | ResearchLoop keeps an assumption-health table keyed by the research question each Assumption-class challenge (low_confidence, model_drift, unsupported_request) raised, bounded at RETAINED with the longest-held entry evicted first. Every sweep advances each entry's sweeps-since-challenge, folds this sweep's challenges in, gauges qip_ambient_assumptions{state=challenged\|holding}, and puts the whole table on the round, which the ambient journal writes as an AssumptionHealth record — so a sweep that raised no gap still records what is holding. | COMPLETE |  | R12-AMBIENT-1005 | P2 | cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_sweep_with_no_new_gap_still_journals_the_held_assumption_health |  |
-| R12-AMBIENT-1144 | Ambient mesh maintains automatic waking of specialist brains | The scheduled research sweep routes NOW surprises through AttentionRouter; an Activated event wakes a registered BrainSpec specialist (adversarial/forecast/risk/sensing), and the ambient journal records which specialist each event woke. | PARTIAL | 2026-10-24: The named tests prove the loop journals signals and attention on a schedule but never assert which specialist an Activated event woke (it asserts no woke value). Closing: name ambient_journal.rs::a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist in evidence and verification, or assert woke in the_run_loop test. 2026-10-24 (AUDIT-5 verification): the cited test calls sweep and record itself, so it never runs the loop on its schedule; the run-loop test (the_run_loop_journals_each_sweeps_signals_and_attention_unprompted_and_a_disabled_loop_none) raises no NOW surprise, so no test asserts that the scheduled, unprompted loop journals a named wake. Recording a copy of the round with woken cleared at node.rs journal.record would pass every test. Closes with an integration test that runs node::run_with over bars that raise a NOW surprise and asserts the journaled woke specialist. | R12-AMBIENT-1005 | P2 | cargo test -p qip-contracts --test ambient |  |
+| R12-AMBIENT-1144 | Ambient mesh maintains automatic waking of specialist brains | The scheduled research sweep routes NOW surprises through AttentionRouter; an Activated event wakes a registered BrainSpec specialist (adversarial/forecast/risk/sensing), and the ambient journal records which specialist each event woke. | COMPLETE |  | R12-AMBIENT-1005 | P2 | cargo test -p qip-deepbrain --test ambient_journal the_scheduled_loop_wakes_a_named_specialist_for_a_now_surprise_and_journals_it_unprompted |  |
 | R12-AMBIENT-1180 | Ambient proactive model mesh capability scope | Research sweep (gaps, NOW surprises), attention router and ambient journal run in deepbrain. | PARTIAL | No always-on forecast, path-simulation, weak-signal or precursor models. |  | P2 | inspection + crate tests per scope item |  |
 | R12-AMBIENT-3024 | Meta Brain | MetaIntelligence market allocates research attention and keeps a reputation book in deepbrain. | PARTIAL | No meta manifest or agent. Resolving disagreement needs the panel's findings, which Organisation::dispatch never shows an agent (each runs on the brief alone), so it needs a second dispatch phase run after the panel when report.is_contested(). Per-regime reliability needs SelfModel or a fed ResearchMemory on the desk; the desk's memory is ResearchMemory::new() fixed at assembly. |  | P2 | cargo test -p qip-investment-agents --test organisation |  |
 | R12-AMBIENT-3027 | Ambient Attention Brain | AttentionRouter (the Ambient Attention Brain) is built by ResearchLoop::new and runs every deep-brain sweep, combining surprise/opportunity/risk/assumption signals and waking specialists; its attention events are on every ResearchRound. It is registered as `ambient/attention` in the deep brain's Brain Registry (brains.rs), built at start-up, and it is the only entry covering the `attention-routing` scope. | PARTIAL | Not an agent of the production Organisation (qip-investment-agents standard_agents): the router emits attention events, not Organisation findings, so coverage::covered_scopes, which reads findings, cannot count it; removing it drops its scope from the Brain Registry only. Closing needs a decision, not a registration: either the router becomes an Organisation agent (it has no Desk input; it reads a research sweep) or coverage::Scope gains an ambient scope evidenced by findings qip-deepbrain composes from the sweep. The second changes the organisation test that asserts every Scope is covered by the standard organisation on a populated desk, so it needs an ADR. The grader's proposal to register a BrainSpec in now.rs::specialist_registry is already done (brains.rs holds ambient/attention). |  | P2 | cargo test -p qip-investment-agents --test organisation |  |
