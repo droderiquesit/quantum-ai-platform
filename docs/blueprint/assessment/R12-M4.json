@@ -2143,13 +2143,15 @@
   {
     "id": "R12-RISK-4096",
     "status": "PARTIAL",
-    "current": "MinLiquidity and MaxDaysToLiquidate limits; margin.rs days-to-exit; crowded() across cells; depth feasibility gate at the edge. No quote/borrow availability.",
+    "current": "MinLiquidity and MaxDaysToLiquidate limits; margin.rs days-to-exit; crowded() across cells; depth feasibility gate at the edge. Borrow availability is a fail-closed deterministic gate: Platform::submit_order refuses any sell that takes the book short without a fresh (<= 1 day) lender reading covering the shorted quantity (short_without_borrow, journaled under control 'borrow-availability'); quote availability has no gate on any path.",
     "evidence": [
       "backend/crates/libs/qip-risk/src/limits.rs:167-169",
       "backend/crates/services/qip-capital/src/margin.rs",
-      "backend/crates/libs/qip-contracts/src/feasibility.rs:31 GATE_DEPTH"
+      "backend/crates/libs/qip-contracts/src/feasibility.rs:31 GATE_DEPTH",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::short_without_borrow, observe_borrow; called from submit_order",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_short_nobody_has_said_is_borrowable_is_refused_and_a_covered_one_is_admitted"
     ],
-    "gap": "No borrow or quote availability datum exists anywhere in the tree: TransactionCostModel.short_borrow_bps_annual is a price, not availability, and no catalogue field says whether an instrument can be borrowed. Needs a borrow-availability source evaluated by qip-data-finder for licensing posture, a catalogue/wire field with no default (an unknown must not read as borrowable), and a RiskState map the kernel fills; quote presence needs the book-side quote read at the gate.",
+    "gap": "Corrected 2026-10-24 (lane L1-MONEY): the earlier text said no borrow datum exists anywhere; that was stale. A borrow limit exists and fires on the default order path: submit_order refuses every short not covered by a fresh reading, and nothing defaults to borrowable. What is missing is the measurement: Platform::observe_borrow has no production caller, because no borrow-availability source has been evaluated by qip-data-finder for licensing posture, so in every binary every short is refused rather than measured (fail-closed, not covered). Quote availability is unmet: qip_capital::margin::estimate_exit's quote_available/borrow_available arms have no production caller (grep finds none outside tests), and no gate refuses an order on an instrument with no live quote. Closes with an admitted borrow source feeding observe_borrow and a quote-presence read at submit_order with a test driving each.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2160,7 +2162,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL. 2026-10-24 lane L1-MONEY: gap corrected in both directions (borrow gate exists and is tested; quote availability and a borrow source remain). No code changed for this row."
   },
   {
     "id": "R12-RISK-4097",
