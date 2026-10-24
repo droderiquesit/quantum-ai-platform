@@ -9,8 +9,8 @@ register (ADR 0099), and there is no second one.
 | Measure | Count | Share of applicable |
 |---|---|---|
 | Blueprint completion (COMPLETE) | 540 | 35.6% |
-| Implemented (behaviour exists in code) | 1333 | 87.8% |
-| Tested (a named test demonstrates it) | 1233 | 81.2% |
+| Implemented (behaviour exists in code) | 1331 | 87.7% |
+| Tested (a named test demonstrates it) | 1231 | 81.1% |
 | Integrated (reached from a composition root) | 885 | 58.3% |
 | Deployable (provisionable from committed config) | 206 | 13.6% |
 | End-to-end demonstrated | 20 | 1.3% |
@@ -18,8 +18,8 @@ register (ADR 0099), and there is no second one.
 | Status | Requirements |
 |---|---|
 | COMPLETE | 540 |
-| PARTIAL | 836 |
-| MISSING | 110 |
+| PARTIAL | 834 |
+| MISSING | 112 |
 | BLOCKED | 31 |
 | NEEDS-VALIDATION | 1 |
 
@@ -53,7 +53,7 @@ register (ADR 0099), and there is no second one.
 | [SEC](#sec) | 57 | 20 | 33 | 4 | 0 | 0 | 50 | 41 | 0 |
 | [OBS](#obs) | 50 | 22 | 22 | 6 | 0 | 0 | 44 | 43 | 1 |
 | [CICD](#cicd) | 60 | 21 | 28 | 3 | 8 | 0 | 44 | 36 | 0 |
-| [GCP](#gcp) | 54 | 10 | 25 | 13 | 6 | 0 | 35 | 26 | 0 |
+| [GCP](#gcp) | 54 | 10 | 23 | 15 | 6 | 0 | 33 | 24 | 0 |
 | [API](#api) | 8 | 1 | 7 | 0 | 0 | 0 | 8 | 7 | 0 |
 | [RES](#res) | 61 | 21 | 33 | 7 | 0 | 0 | 47 | 41 | 0 |
 | [FINOPS](#finops) | 15 | 3 | 8 | 4 | 0 | 0 | 11 | 8 | 0 |
@@ -1534,7 +1534,7 @@ register (ADR 0099), and there is no second one.
 | R12-GCP-8052 | Non-prod mirrors production boundaries | dev/stage/test/prod share one root module with per-environment tfvars, so module shape is identical; the boundaries themselves (projects/folders) do not exist. | PARTIAL | Folder/project model replicated per environment. |  | P2 | terraform plan |  |
 | R12-GCP-8053 | No single giant Shared VPC; separated VPCs joined by NCC | Acceptance tests refuse any Shared VPC declaration and any Network Connectivity hub, spoke or VPC peering: reflex/fabric/service (plus data/engineering) VPCs are separate and not joined at all, which is today's correct state with one execution node in one region (ADR 0035). The topology rule for the record that supersedes ADR 0035's 'one' is decided (ADR 0156 6c): the hub joins VPC spokes (Shared VPC stays refused), route export is deny by default per pair, the only prefix a spoke may export is its control-fabric subnet and only to the other regions' control-fabric spokes, and the reflex and service VPCs are never exported to the hub. | PARTIAL | The NCC hub, spokes and the per-pair export filters are not built: they wait for the record superseding ADR 0035, and the hub, its attachments and its data transfer are billed and the owner's. When that record arrives the scan above is replaced by one checking the rule. (Corrected 2026-10-19.) | R12-GCP-8056 | P1 | cargo test -p qip-acceptance --test gcp_placement |  |
 | R12-GCP-8055 | Regional warm services via internal LB/mesh with mTLS, never in Reflex path | ADR 0112 reads mTLS between warm services as IAM-authenticated invocation. The only warm-to-warm hop is the console dialling the API; the console's service account is the API's named invoker (invokers.yaml, catalogue.tf api.invokers) and the portal mints audience-bound Google ID tokens (google-credentials.ts identityToken). console_route.rs::every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience walks every environment's RunService manifests and requires each caller to be a named invoker of what it dials. | COMPLETE |  |  | P1 | cd backend && cargo test -p qip-acceptance --test console_route -- every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience |  |
-| R12-GCP-8056 | VPC-to-VPC via NCC spokes with route filters | infrastructure/terraform/modules/ncc declares google_network_connectivity_hub and a VPC spoke per plane; the root instantiates it with enabled = false and spokes for the reflex, fabric, service, data and engineering networks. Nothing is planned or enabled. | PARTIAL | 2026-10-24: no terraform binary in the lane's session, so ncc.tftest.hcl and terraform validate have not run; networkconnectivity.googleapis.com is not in modules/services; enabling needs a plan shown to a person, and each VPC spoke bills for inter-spoke data. |  | P1 | cd backend && cargo test -p qip-acceptance --test infrastructure the_ncc; terraform test in infrastructure/terraform/modules/ncc |  |
+| R12-GCP-8056 | VPC-to-VPC via NCC spokes with route filters | No google_network_connectivity_* resource in the tree. A gated-off modules/ncc was declared and removed on 2026-10-24 because gcp_placement::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region refuses the declaration itself. | MISSING | 2026-10-24: ADR 0035 runs one execution node in one region, so there is nothing to join; the guard in gcp_placement.rs refuses a hub even gated off. Needs a new ADR superseding 0035 (hub is billed, owner's decision); then modules/ncc can be declared. |  | P1 | cd backend && cargo test -p qip-acceptance --test gcp_placement |  |
 | R12-GCP-8057 | Dedicated NCC latency mesh hub for Reflex/Fabric | No NCC resources. | MISSING | Latency hub module. | R12-GCP-8056 | P2 | terraform plan |  |
 | R12-GCP-8058 | Service/data NCC star hub with central inspection | No NCC resources. | MISSING | Star hub module. | R12-GCP-8056 | P2 | terraform plan |  |
 | R12-GCP-8059 | Market/custody connectivity via direct path, Interconnect, HA VPN fallback | connectivity module defines Cloud Router, Partner Interconnect attachment and HA VPN fallback (enable_partner_interconnect = true in dev); execution node has a separate venue firewall path. | PARTIAL | An ordered circuit (external action) and a venue that supports private connectivity. |  | P2 | terraform test in modules/connectivity |  |
@@ -1553,7 +1553,7 @@ register (ADR 0099), and there is no second one.
 | R12-GCP-9183 | GKE services autoscale via HPA/VPA, lag metrics, Cluster Autoscaler | Cloud Run services scale by Cloud Run's own settings in RunService manifests. | BLOCKED | HPA/VPA and Cluster Autoscaler are the requirement; refused. Lag-scaled consumers are FABRIC-8109 on a Compute Engine MIG. |  | P2 | n/a |  |
 | R12-GCP-10001 | Projects and folders isolate blast radius per environment | Every environment has its own project id in committed tfvars and an acceptance test refuses sharing; no folder structure is declared in code (organisation scope). | PARTIAL | No folders or per-plane project split; one project per environment holds every plane. |  | P1 | cargo test -p qip-acceptance --test infrastructure every_environment_names_a_project_of_its_own |  |
 | R12-GCP-10008 | Isolated Reflex, Fabric, Service, Data and Engineering VPCs | modules/network declares five VPCs (reflex, fabric, service from local.networks; data_vpc and engineering_vpc standalone), each bound to a catch-all INGRESS deny (protocol all, 0.0.0.0/0, priority 65534); the module tftests plan them and the acceptance suite walks the map and both standalone resources and pairs every network with its deny rule. | COMPLETE |  |  | P1 | cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- the_network_module_declares_five_vpcs_each_with_a_deny_ingress_rule; terraform test in infrastructure/terraform/modules/network |  |
-| R12-GCP-10009 | Network Connectivity Center hub-spoke with route filters | modules/ncc declares the hub and VPC spokes for the five planes, gated off (R12-GCP-8056). Hybrid spokes exist as interconnect_spokes, empty because no attachment is ordered. | PARTIAL | 2026-10-24: interconnect_spokes is empty until a partner circuit exists (modules/connectivity/NOT-ORDERED.md); no plan has been shown; terraform not installed in the lane session. | R12-GCP-10008 | P2 | cd backend && cargo test -p qip-acceptance --test infrastructure the_ncc |  |
+| R12-GCP-10009 | Network Connectivity Center hub-spoke with route filters | No google_network_connectivity_* resource in Terraform; a gated-off declaration is refused by gcp_placement.rs. | MISSING | 2026-10-24: blocked by ADR 0035 (one node, one region) and its guard in gcp_placement.rs; hybrid spokes also need interconnect attachments that are out of band (modules/connectivity/NOT-ORDERED.md). Needs an ADR superseding 0035. | R12-GCP-10008 | P2 | terraform plan shows google_network_connectivity_hub/spoke |  |
 | R12-GCP-10010 | Cloud Router provides dynamic BGP for Interconnect and VPN | modules/connectivity declares an interconnect router and a VPN BGP peer; dev declares a partner interconnect attachment with admin_enabled=false. | PARTIAL | 2026-10-24: a partner contract and physical circuit are out of band (modules/connectivity/NOT-ORDERED.md); no BGP session can establish until then. |  | P2 | terraform test modules/connectivity |  |
 | R12-GCP-10011 | Private provider connectivity with HA VPN fallback | Partner interconnect attachment and HA VPN gateway exist in modules/connectivity; dev enables one test attachment administratively disabled. | PARTIAL | No provider circuit; attachment disabled. | R12-GCP-10010 | P2 | terraform test modules/connectivity |  |
 | R12-GCP-10012 | Cloud NAT controls egress for non-latency-critical workloads | Trust-zone and execution-node NATs translate named subnets to reserved IPs with logging, tested. The execution node can have its own optional NAT (create_egress_nat), separate from the trust-zone NAT. | PARTIAL | Reflex venue egress via a NAT is not benchmarked (see §28 anti-pattern); no workload is deployed to exercise it. |  | P1 | cargo test -p qip-acceptance --test gcp_placement --test security_controls |  |
