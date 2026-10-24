@@ -3329,23 +3329,25 @@
   },
   {
     "id": "R12-OBS-9146",
-    "status": "MISSING",
-    "current": "Single-node broker; append latency recorded (qip_event_fabric_append_latency_ms) but no quorum.",
+    "status": "PARTIAL",
+    "current": "qip_event_fabric_quorum_ack_ms{class,outcome} (qip-observability metrics.rs EVENT_FABRIC_QUORUM_ACK_MS) is a histogram recorded by qip-fabricd's TimedManagedLog (src/quorum.rs), which wraps the managed log (ADR 0111's Spanner commit) and times every commit; class comes from the stream catalogue (undeclared otherwise), outcome is committed | fenced | conflict | error. Both managed-log arms in start_composed are wrapped, and the series lands in the registry the broker's /metrics serves. It feeds the fabric-publish-quorum-p99 objective.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/telemetry.rs:34"
+      "backend/crates/apps/qip-fabricd/src/quorum.rs TimedManagedLog",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_managed_produce_moves_the_quorum_ack_series_and_the_publish_quorum_objective",
+      "backend/crates/apps/qip-fabricd/src/quorum.rs tests::every_commit_answer_is_timed_by_class_and_outcome_and_the_lease_calls_pass_through"
     ],
-    "gap": "Record the Spanner commit latency on the P0/P1 produce path per class as the quorum-acknowledgement latency (ADR 0111 Amendment 1), with a test that the series moves.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): recorded only when a managed log is configured (QIP_EVENT_FABRIC_MANAGED_LOG=spanner, written by the broker module's startup template only when managed_log is non-null), and no broker is deployed in any environment, so a default broker records no quorum ack (bar part 2); no collector scrapes qip-fabricd.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cd backend && cargo test -p qip-fabricd --test managed a_managed_produce_moves_the_quorum_ack_series_and_the_publish_quorum_objective",
     "work_item": "",
     "size": "S",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). 2026-10-24 lane L6 (implemented by a delegated agent, re-verified here): deleting the quorum_ack_ms call in TimedManagedLog::commit failed the managed.rs test at :771 ('the two managed commits were never timed', '8 passed; 1 failed'); restored by cp and cmp, 9 passed. The agent reported ten further mutations (critical_paths.rs, telemetry.rs, lib.rs's timed() wrapping), each failing a named assertion. qip-observability + qip-fabricd --no-fail-fast: 14 result lines, 119 passed, 0 failed."
   },
   {
     "id": "R12-OBS-9147",
@@ -3648,11 +3650,15 @@
   {
     "id": "R12-OBS-9160",
     "status": "PARTIAL",
-    "current": "Append latency, group lag, archive lag, refusals recorded by fabricd; quorum/under-replication/mirror lag impossible on a single node; no declared Fabric SLOs.",
+    "current": "qip-observability critical_paths::fabric_objectives declares the seven named objectives with targets: publish quorum p99 (quorum ack histogram, 100 ms at 0.99/day), broker availability (serving checks, 0.999/day), consumer lag (group-lag checks against 1000 records, 0.99/hour), archive lag (archive backlog checks, existing), schema reject rate (appends less schema_refused refusals, 0.999/day), and partition under-replication and mirror lag as SourceRule::Unbuilt with the reason each has no series. qip-fabricd evaluates and records all seven on every archiver pass, on its default path.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/telemetry.rs:34-78"
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs:34-78",
+      "backend/crates/libs/qip-observability/src/critical_paths.rs fabric_objectives",
+      "backend/crates/libs/qip-observability/tests/critical_paths.rs::each_measurable_fabric_objective_is_observed_and_reads_unmeasured_once_its_series_is_gone",
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs tests::an_archive_pass_publishes_every_fabric_objective_from_the_series_this_process_records",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_broker_with_no_managed_log_publishes_its_objectives_and_reads_publish_quorum_unmeasured"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "2026-10-24 (lane L6): declared and recorded; two objectives stay unmeasured by construction: partition under-replication (a default broker is one disk at RF1, ADR 0100 §3, and a managed stream's replicas are Spanner's, whose health no commit answer reports) and mirror lag (the ADR 0119 mirror runs in no binary and StreamPolicy refuses mirroring). Ingestion is unproven: nothing scrapes qip-fabricd and no broker is deployed. Targets and ceilings are declared, not measured.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3660,10 +3666,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cd backend && cargo test -p qip-observability --test critical_paths; cargo test -p qip-fabricd",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6 (delegated agent, re-verified here: 119 passed, 0 failed across qip-observability and qip-fabricd). Agent-reported mutations: TotalLessLabelled returning (0,0) failed critical_paths.rs:360; consumer-lag entry deleted failed :299; schema values changed failed :415; group_lag check deleted failed telemetry.rs:805; serving count deleted failed :806; evaluate_objectives removed from archive_lag failed managed.rs. Stays PARTIAL."
   },
   {
     "id": "R12-OBS-9161",
