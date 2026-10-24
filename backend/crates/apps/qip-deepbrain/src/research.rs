@@ -273,7 +273,16 @@ impl Uncertainty {
     /// reduction, except the one honest case of a fill estimate that went
     /// from unmeasurable to measured, which is the whole of the uncertainty
     /// it started with.
+    #[cfg(test)]
     fn reduction_from(&self, before: &Self) -> f64 {
+        self.measured_reduction(before).unwrap_or(0.0)
+    }
+
+    /// [`Self::reduction_from`] where both readings could be formed, and
+    /// `None` where one could not: a purchase that measurably bought nothing
+    /// is `Some(0.0)` and one that could not be measured is `None`, which
+    /// the information request tells apart (ADR 0158 decision 11).
+    fn measured_reduction(&self, before: &Self) -> Option<f64> {
         match (before, self) {
             (
                 Self::FillBias {
@@ -282,7 +291,7 @@ impl Uncertainty {
                 Self::FillBias {
                     standard_error: Some(a),
                 },
-            ) if *b > 0.0 && b.is_finite() && a.is_finite() => ((b - a) / b).clamp(0.0, 1.0),
+            ) if *b > 0.0 && b.is_finite() && a.is_finite() => Some(((b - a) / b).clamp(0.0, 1.0)),
             (
                 Self::FillBias {
                     standard_error: None,
@@ -290,13 +299,13 @@ impl Uncertainty {
                 Self::FillBias {
                     standard_error: Some(a),
                 },
-            ) if a.is_finite() => 1.0,
+            ) if a.is_finite() => Some(1.0),
             (Self::Calibration { hit_rate: Some(b) }, Self::Calibration { hit_rate: Some(a) })
                 if *b < 1.0 && b.is_finite() && a.is_finite() =>
             {
-                ((a - b) / (1.0 - b)).clamp(0.0, 1.0)
+                Some(((a - b) / (1.0 - b)).clamp(0.0, 1.0))
             }
-            _ => 0.0,
+            _ => None,
         }
     }
 }
@@ -981,6 +990,13 @@ pub struct ResearchLoop {
     charged: BTreeMap<String, Decimal>,
     /// Last sweep's grants, awaiting this sweep's measurement.
     granted: BTreeMap<String, Granted>,
+    /// What this sweep's acquisition budget had left after the ranked launch
+    /// (`launch_ranked`), which a re-acquisition is charged to (ADR 0158
+    /// decision 11).
+    acquisition_left_bp: u32,
+    /// The entities each launched request's gap named, kept so a
+    /// re-acquisition scouts the same subjects. Bounded by [`RETAINED`].
+    launched_entities: BTreeMap<String, Vec<String>>,
     /// Realised and expected basis points per reputation cell — domain,
     /// horizon bucket and regime — the record the reputation book is filled
     /// from (R12-AMBIENT-3111).
@@ -1182,6 +1198,8 @@ impl ResearchLoop {
             info_requests: VecDeque::new(),
             candidates: Vec::new(),
             candidate_entities: BTreeMap::new(),
+            acquisition_left_bp: 0,
+            launched_entities: BTreeMap::new(),
             meta: MetaIntelligence::new(MetaPolicy::default())?,
             compiler: CognitiveCompiler::new(CompilerBounds::default())?,
             signer: None,
@@ -2048,7 +2066,18 @@ impl ResearchLoop {
         }
         // A request launched as a re-sweep was answered by this sweep's
         // reading; one past its deadline halts.
+        // A request launched or re-acquired in this very sweep waits for the
+        // next sweep's reading to say what it bought (ADR 0158 decision 11);
+        // one with no measurement then completes, as before.
+        let fresh: BTreeSet<String> = round
+            .scouted
+            .iter()
+            .map(|scout| scout.request_id.clone())
+            .collect();
         for request in &mut self.info_requests {
+            if fresh.contains(request.id()) {
+                continue;
+            }
             if request.status() == qip_contracts::ambient::AcquisitionStatus::InProgress {
                 request.complete()?;
             } else if request.should_halt(now, MIN_VIABLE_BP) && request.halt() {
@@ -2640,11 +2669,16 @@ impl ResearchLoop {
                 let rank_bp = request.criteria().net_value_bp();
                 request.record_acquisition(cost)?;
                 round.info_launched += 1;
+                let named = entities.remove(id).unwrap_or_default();
+                if self.launched_entities.len() >= RETAINED {
+                    self.launched_entities.pop_first();
+                }
+                self.launched_entities.insert(id.clone(), named.clone());
                 round.scouted.push(ScoutRequest {
                     request_id: id.clone(),
                     question: request.decision_id().to_string(),
                     rank_bp,
-                    entities: entities.remove(id).unwrap_or_default(),
+                    entities: named,
                 });
                 let source = sources.get(id).copied().unwrap_or("acquisition");
                 metrics.count(
@@ -2658,6 +2692,7 @@ impl ResearchLoop {
             }
             self.retain_request(request);
         }
+        self.acquisition_left_bp = remaining;
         // Anything the ranker left out has a zero rank, which the viability
         // floor already refused; halted rather than dropped if one appears.
         for (_, mut request) in by_id {
@@ -2666,6 +2701,72 @@ impl ResearchLoop {
             metrics.count(names::INFO_REQUESTS, labels([("outcome", "halted")]));
             self.retain_request(request);
         }
+        Ok(())
+    }
+
+    /// Feed back what a window measurably bought to the information request
+    /// raised on the question (R12-AMBIENT-3107, ADR 0158 decision 11).
+    ///
+    /// `measured` is the fall in the question's uncertainty reading over the
+    /// window, or `None` where the reading could not be formed on one side —
+    /// then nothing is fed back and the request completes at the end of the
+    /// sweep, as it did before. A purchase that measurably bought nothing
+    /// halts the request as `no_gain` and is not bought again; one that did
+    /// shrinks what is left and, while the request is still viable, is
+    /// re-acquired once, charged to what the sweep's acquisition budget had
+    /// left after the ranked launch. A request launched in this sweep is
+    /// skipped: this window's reading predates it.
+    fn feed_back_realised_gain(
+        &mut self,
+        question: &str,
+        measured: Option<f64>,
+        now: Timestamp,
+        metrics: &Metrics,
+        round: &mut ResearchRound,
+    ) -> Result<()> {
+        let Some(fall) = measured else {
+            return Ok(());
+        };
+        let fresh: BTreeSet<&str> = round
+            .scouted
+            .iter()
+            .map(|s| s.request_id.as_str())
+            .collect();
+        let Some(request) = self.info_requests.iter_mut().find(|r| {
+            r.decision_id() == question
+                && r.status() == qip_contracts::ambient::AcquisitionStatus::InProgress
+                && !fresh.contains(r.id())
+        }) else {
+            return Ok(());
+        };
+        // Statistic to integer basis points: a fall already in [0, 1].
+        request.record_realised_gain((fall * 10_000.0).round() as u32)?;
+        if request.halted_for_no_gain() {
+            round.info_halted += 1;
+            metrics.count(names::INFO_REQUESTS, labels([("outcome", "no_gain")]));
+            return Ok(());
+        }
+        if request.should_halt(now, MIN_VIABLE_BP) {
+            if request.halt() {
+                round.info_halted += 1;
+                metrics.count(names::INFO_REQUESTS, labels([("outcome", "halted")]));
+            }
+            return Ok(());
+        }
+        let cost = request.criteria().acquisition_cost_bp;
+        if cost == 0 || cost > self.acquisition_left_bp {
+            return Ok(());
+        }
+        self.acquisition_left_bp -= cost;
+        request.record_acquisition(cost)?;
+        let id = request.id().to_string();
+        round.scouted.push(ScoutRequest {
+            request_id: id.clone(),
+            question: question.to_string(),
+            rank_bp: request.criteria().net_value_bp(),
+            entities: self.launched_entities.get(&id).cloned().unwrap_or_default(),
+        });
+        metrics.count(names::INFO_REQUESTS, labels([("outcome", "reacquired")]));
         Ok(())
     }
 
@@ -2771,7 +2872,9 @@ impl ResearchLoop {
             }
             let uncertainty_now =
                 Self::uncertainty_of(platform, &lineage, &grant.domain, residuals);
-            let reduction = uncertainty_now.reduction_from(&grant.uncertainty);
+            let measured_reduction = uncertainty_now.measured_reduction(&grant.uncertainty);
+            let reduction = measured_reduction.unwrap_or(0.0);
+            self.feed_back_realised_gain(&question, measured_reduction, now, metrics, round)?;
             let realised = grant.expected_bp * reduction;
             let measured = self.meta.record_outcome(
                 &question,
@@ -3925,5 +4028,126 @@ mod tests {
         assert_eq!(request.status(), AcquisitionStatus::InProgress);
         assert_eq!(round.info_launched, 1);
         assert_eq!(round.scouted.len(), 1);
+    }
+
+    /// R12-AMBIENT-3107, ADR 0158 decision 11. A request raised on a granted
+    /// question is bought once at launch; the next window measured a fall in
+    /// the question's uncertainty, so it is bought again; the window after
+    /// that measured none, so it halts as `no_gain` and is never bought again.
+    /// Before this the cost proxy alone shrank a request, production made
+    /// exactly one acquisition per request, and the marginal-value halt gated
+    /// nothing. The request is injected on the fill-bias question the market
+    /// grants because that gap states no economic value of its own; everything
+    /// after the injection is the production path (`measure_last_round`).
+    ///
+    /// Mutation: return before `record_realised_gain` in
+    /// `feed_back_realised_gain` — the zero-gain request is never halted as
+    /// `no_gain` and the third-window assertion fails.
+    #[test]
+    fn a_purchase_that_measurably_bought_nothing_is_halted_and_not_repeated() {
+        use qip_core::Context;
+        let start = Timestamp::from_secs(1_800_000_000);
+        let config = qip_kernel::PlatformConfig::default();
+        let (context, _clock) = Context::deterministic(start, config.seed);
+        let platform = qip_kernel::Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            qip_risk::limits::LimitSet::conservative_default(),
+        )
+        .unwrap_or_else(|e| panic!("the platform assembles: {e}"));
+        let fills = |post: usize| -> Vec<FillObservation> {
+            let at = |mins: i64| start.saturating_add(Duration::from_mins(mins));
+            let make = |filled_at: Timestamp, error: f64| FillObservation {
+                venue: "XSIM".to_string(),
+                object_id: "BTC-USD".to_string(),
+                filled_at,
+                trade_error_bps: Some(error),
+            };
+            let mut out: Vec<FillObservation> = (0..10)
+                .map(|i| make(at(i - 60), if i % 2 == 0 { 35.0 } else { 45.0 }))
+                .collect();
+            out.extend(
+                (0..post as i64).map(|i| make(at(i + 1), if i % 2 == 0 { 38.0 } else { 42.0 })),
+            );
+            out
+        };
+        let sweep = |research: &mut ResearchLoop, post: usize, mins: i64| {
+            research
+                .sweep_over(
+                    &platform,
+                    &fills(post),
+                    &[],
+                    start.saturating_add(Duration::from_mins(mins)),
+                    &BTreeSet::new(),
+                    &["US".to_string()].into(),
+                )
+                .unwrap_or_else(|e| panic!("{e}"))
+        };
+        let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
+            .unwrap_or_else(|e| panic!("{e}"));
+        let first = sweep(&mut research, 0, 0);
+        let question = first
+            .desk
+            .started
+            .iter()
+            .find(|q| q.contains("XSIM"))
+            .cloned()
+            .unwrap_or_else(|| panic!("premise: the residual gap started: {first:?}"));
+
+        // A request raised on that question, bought once as `launch_ranked`
+        // buys one.
+        let criteria = AcquisitionCriteria::new(10_000, 9_000, 10_000, 1_000).expect("criteria");
+        let mut injected = InfoRequest::new(
+            "info-injected",
+            question.clone(),
+            criteria,
+            start.saturating_add(Duration::from_hours(6)),
+            start,
+        )
+        .expect("request");
+        injected.record_acquisition(1_000).expect("bought once");
+        research.retain_request(injected);
+        let held = |research: &ResearchLoop| {
+            research
+                .info_requests()
+                .find(|r| r.id() == "info-injected")
+                .cloned()
+                .expect("held")
+        };
+        assert_eq!(held(&research).status(), AcquisitionStatus::InProgress);
+
+        // Two new residuals narrowed the bias estimate: a measured gain, so
+        // the request is bought again and stays in progress.
+        let second = sweep(&mut research, 2, 10);
+        assert_eq!(second.measured, 1, "premise: a window measured: {second:?}");
+        let gained = held(&research);
+        assert!(gained.realised_gain_bp() > 0, "{gained:?}");
+        assert_eq!(gained.status(), AcquisitionStatus::InProgress, "{gained:?}");
+        assert_eq!(gained.cumulative_cost_bp(), 2_000, "bought again, once");
+        assert!(
+            second
+                .scouted
+                .iter()
+                .any(|s| s.request_id == "info-injected")
+        );
+
+        // The next window gathered nothing and narrowed nothing: no gain.
+        let third = sweep(&mut research, 2, 20);
+        assert_eq!(third.measured, 1, "{third:?}");
+        let stopped = held(&research);
+        assert!(stopped.halted_for_no_gain(), "{stopped:?}");
+        assert_eq!(stopped.status(), AcquisitionStatus::Halted);
+        assert_eq!(stopped.cumulative_cost_bp(), 2_000, "not bought again");
+
+        let fourth = sweep(&mut research, 2, 30);
+        assert_eq!(held(&research).cumulative_cost_bp(), 2_000);
+        assert!(
+            fourth
+                .scouted
+                .iter()
+                .all(|s| s.request_id != "info-injected")
+        );
     }
 }
