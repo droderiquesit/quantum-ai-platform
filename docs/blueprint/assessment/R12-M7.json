@@ -1444,7 +1444,7 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:288 a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode"
     ],
-    "gap": "Not a single canonical type; the contract ModelPack has no production constructor. qip_contracts::policy::ModelPack carries an ECDSA signature over its signing payload and a two-person Publication (ADR 0110, ADR 0121), which the kernel cannot supply: model_serving.rs builds its own unsigned ModelPack from the promotion records. Retiring the local struct needs the release path that signs and publishes (per-person credentials) to feed the kernel, or the contract split into an unsigned body and a signed envelope.",
+    "gap": "Decided (ADR 0149): keep one signed contract ModelPack, no body/envelope split; Platform::admit_model_packs already feeds the kernel from QIP_MODEL_PACKS_PATH, failing closed. Not built: the kernel's lineage struct is still named ModelPack (model_serving.rs:307, Platform::model_pack_lineage) rather than ModelSetVersion; LearningDesk::promote_candidate writes no unsigned draft pack; and qip-cli has no model-pack verbs (signing-message, attach-signature, verify) for the publish workflow to call (grep -n 'model-pack' backend/crates/apps/qip-cli/src/main.rs finds nothing). The workflow edit that calls them is a person's. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1455,7 +1455,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Per-field test added; duplicate type remains. 2026-10-18 lane L06: not implemented; building the contract type in the kernel would require fabricating a signature and two publishers. Left PARTIAL with the corrected gap."
+    "notes": "2026-10-18 lane L06 and 2026-10-24 lane T6-MODEL-AGENTS: not implemented. The rename touches the kernel's lineage API and every caller; the CLI verbs need the per-person signing credentials ADR 0110 and 0121 reserve for the release. Test the closure names: an_unsigned_draft_pack_written_at_promotion_is_refused_by_admit_model_packs_and_a_cli_signed_pack_over_the_same_bytes_is_admitted (qip-kernel/tests/release_packs.rs). Kept PARTIAL."
   },
   {
     "id": "R12-CONTRACT-7065",
@@ -2060,7 +2060,7 @@
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:931 a_control_pack_announcement_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:945 a_control_pack_announcement_refuses_each_broken_invariant"
     ],
-    "gap": "No production seam constructs or consumes ControlPackAnnouncement. The contract requires a signer, an attestation digest, target regions and nodes, an activation window and an acknowledgement quorum; the promotion path holds none of them (nothing signs, and the target cells and window are the release workflow decision), so a kernel-built announcement would invent them. The announcement belongs to the release path that signs a ModelPack and chooses its targets.",
+    "gap": "Decided (ADR 0149 decisions 1-4): the announcement is the release's rollout record, never built by the kernel, and the centre only narrows by it. Not built: no ControlPackAnnouncement producer or reader exists outside qip-contracts (grep), and Platform::model_manifest_for(location) takes neither a node identity nor a time, so there is nothing to narrow by target_nodes or the activation window; its only callers (qip-api mesh.rs, qip-deepbrain learning.rs) pass no location at all and ship one manifest for every cell. Closing needs (1) a per-node manifest request that carries the cell's node id, (2) model_trust.rs admitting announcements beside packs with attestation equal to the signed pack's digest, (3) model_manifest_for narrowing by target_regions, target_nodes and the window, and (4) the reviewed release file that emits the announcement, which is a protected workflow edit left to a person. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2071,7 +2071,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding ControlPackAnnouncement exists and is tested; nothing in production constructs or decodes it. 2026-10-18 lane L06: not implemented; the kernel would have to fabricate signer, attestation, targets and quorum. Left PARTIAL with the corrected gap."
+    "notes": "Re-graded 2026-10-11, 2026-10-18 (lane L06). 2026-10-24 lane T6-MODEL-AGENTS: not implemented; a kernel-only slice with no per-node caller would sit on no running path, and an announcement admitted with none narrowing must never withhold a model from a deployment that admitted none. Kept PARTIAL."
   },
   {
     "id": "R12-CONTRACT-7092",

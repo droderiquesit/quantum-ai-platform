@@ -2392,7 +2392,7 @@
       "backend/crates/apps/qip-deepbrain/tests/research.rs:171 a_gap_worth_less_than_its_cheapest_observation_launches_no_information_request",
       "backend/crates/apps/qip-deepbrain/src/node.rs:450 maybe_sweep runs in the deep brain run loop"
     ],
-    "gap": "VOI is priced for research gaps only. The urgency constant and the launch-only record in this row are closed (urgency_bp from the signal deadline, R12-AMBIENT-3106; launch hands scout jobs, R12-AMBIENT-9033), but DECIDE emits no decision-uncertainty gap: platform.rs reads a proposal's confidence and nothing carries a low-confidence decision, its deadline and its value at stake to the research intake. That needs a new intake type in qip-kernel and a hand-off in node.rs, which is a kernel change this lane does not make.",
+    "gap": "VOI is priced for research gaps, and since 2026-10-24 for the federation's own questions (R12-AMBIENT-10093: Platform::federation_information_requests admitted by ResearchLoop::admit_federation_requests). Still missing: DECIDE emits no decision-uncertainty gap: grep -rn 'decision_uncertainty|DecisionUncertainty' backend/crates finds nothing, platform.rs reads a proposal's confidence and nothing carries a low-confidence decision, its deadline and its value at stake to the research intake. That needs a new intake type in qip-kernel (platform.rs, outside this lane's territory) and a hand-off in qip-deepbrain node.rs, which IMPL-B is editing under ADR 0145. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2403,7 +2403,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": "Checked 2026-10-18 against research.rs admit (urgency_bp, cheapest_viable) and launch_ranked."
+    "notes": "Checked 2026-10-18 against research.rs admit; 2026-10-24 lane T6-MODEL-AGENTS graded it LARGE_SPLITTABLE (docs/blueprint/lanes/T6-MODEL-AGENTS-triage.json) and left it to the ADR 0145 lane to avoid a conflicting edit of node.rs. Kept PARTIAL."
   },
   {
     "id": "R12-DATA-3105",
