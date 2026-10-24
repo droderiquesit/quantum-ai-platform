@@ -781,6 +781,13 @@ impl CommerceResearch {
             if !matches!(state, Some(UnitState::Held)) {
                 continue;
             }
+            // A unit an open reconciliation break holds is neither repriced
+            // nor sold (ADR 0153 decision 8). Skipped and named rather than
+            // sent to `sell`, whose refusal would end the whole pass.
+            if let Some(hold) = self.plane.hold_on(&unit) {
+                run.refusals.push(format!("holding {unit}: {hold}"));
+                continue;
+            }
             let elapsed = self.day.saturating_sub(held.listed_day);
             let Some(listed) = self.resale.listed(&unit).cloned() else {
                 continue;

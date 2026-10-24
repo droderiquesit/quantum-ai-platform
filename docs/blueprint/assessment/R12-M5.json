@@ -591,9 +591,12 @@
       "backend/crates/libs/qip-financial/src/commerce.rs:1010 CommercePlane::reconcile",
       "backend/crates/runtime/qip-kernel/src/commerce_research.rs:613 reconciled every SIMULATE pass",
       "backend/crates/libs/qip-financial/tests/commerce.rs:686 a_seeded_difference_between_the_ledger_and_the_marketplaces_record_is_recorded_as_a_break",
-      "backend/crates/runtime/qip-kernel/tests/breadth.rs:624 commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_cycle asserts one reconciliation per SIMULATE and no breaks"
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs:624 commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_cycle asserts one reconciliation per SIMULATE and no breaks",
+      "backend/crates/libs/qip-financial/src/commerce.rs::CommercePlane::hold_on",
+      "backend/crates/libs/qip-financial/tests/commerce.rs::a_unit_with_an_open_reconciliation_break_is_not_listed_or_sold_until_corrected",
+      "backend/crates/runtime/qip-kernel/src/commerce_research.rs::CommerceResearch::work_listed skips a held unit"
     ],
-    "gap": "Warehouses are not reconciled: the ledger's custody facts (received, moved, reserved, location) are compared with no warehouse record, because no warehouse keeps one in-tree. And a break is recorded and reported on the pass but not acted on: nothing holds the unit or the venue while a break is open.",
+    "gap": "2026-10-24: a break is now acted on: an open break holds the units it is about (CommercePlane::sell refuses them, hold_on names the sale and finding, and CommerceResearch::work_listed skips and reports a held unit instead of sending it to a refusal that would end the pass); it clears only by a recorded correction on one side (restate_marketplace_line or adjust_settlement) followed by clear_break finding the sale in agreement, never by a later pass that happens to agree. Still open: warehouses are not reconciled, by decision (ADR 0153 decision 8: no warehouse keeps a record in the tree and none is built); the venue is not held, by decision; the kernel's skip in work_listed is not exercised by a kernel test, because CommerceResearch exposes the plane read-only and no break can be seeded through it; and the whole path runs only when QIP_DEEPBRAIN_BREADTH_PLAN installs commerce research, which no committed environment sets.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -601,10 +604,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial --test commerce a_seeded_difference_between_the_ledger_and_the_marketplaces_record_is_recorded_as_a_break && cargo test -p qip-kernel --test breadth commerce_research",
+    "verification": "cargo test -p qip-financial --test commerce a_unit_with_an_open_reconciliation_break; cargo test -p qip-financial --test commerce a_seeded_dif",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18: marketplace-side reconciliation added. Mutations: skipping the net comparison in reconcile fails the seeded test (no break for the short payment); dropping the reconcile call from simulate fails breadth.rs (reconciliations 0, expected 6). Restored, both pass. Kept PARTIAL for the warehouse side and for acting on a break."
+    "notes": "Lane T4-LEDGER 2026-10-24 (ADR 0153 decision 8). Mutations that fired: removing the hold_on check from CommercePlane::sell (test failed 'a held unit is not sold'); making a clean reconcile pass clear every open break (test failed 'a clean pass is not a correction'). Kept PARTIAL: warehouse reconciliation not built by decision, and the commerce plane is not enabled in any committed environment."
   },
   {
     "id": "R12-LEDGER-5027",

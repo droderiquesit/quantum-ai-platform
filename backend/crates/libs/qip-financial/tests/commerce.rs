@@ -739,3 +739,90 @@ fn a_seeded_difference_between_the_ledger_and_the_marketplaces_record_is_recorde
         "every break found is recorded"
     );
 }
+
+/// A difference the ledger and the marketplace have not resolved holds the
+/// unit it is about (ADR 0153 decision 8).
+///
+/// The failure this prevents is acting on a guess: a recorded break that
+/// nothing acts on lets the unit be sold again while nobody knows which side
+/// is right, and the next reconciliation reads as though the first never
+/// found anything. A break is acted on by refusing. It clears only by a
+/// correction recorded on one side after which the two agree again — not by
+/// a later pass that happens to agree, which says nothing about who was
+/// wrong.
+///
+/// Mutation (run, failed, restored): removing the `hold_on` check from
+/// `CommercePlane::sell` — the unit is sold with the break open.
+#[test]
+fn a_unit_with_an_open_reconciliation_break_is_not_listed_or_sold_until_corrected() {
+    let mut p = plane();
+    p.sell("s1", "u1", "buyer", dec!("40"), None).expect("sold");
+    p.settle("s1").expect("settled");
+    p.return_unit("s1", Condition::Used, "Berlin-DC2", "platform")
+        .expect("returned");
+    let agreed = p.marketplace_statement().clone();
+    assert!(
+        p.reconcile(&agreed).is_empty(),
+        "premise: the two records agree before anything is seeded"
+    );
+    assert!(p.hold_on("u1").is_none(), "premise: nothing is held yet");
+    assert!(
+        p.clone()
+            .sell("s2", "u1", "buyer-2", dec!("40"), None)
+            .is_ok(),
+        "premise: the returned unit is sellable while no break is open"
+    );
+
+    // The marketplace paid a cent short.
+    let mut disagreeing = agreed.clone();
+    if let Some(line) = disagreeing.lines.get_mut("s1") {
+        line.net = dec!("-2.51");
+    }
+    assert_eq!(p.reconcile(&disagreeing).len(), 1, "one seeded break");
+    assert_eq!(p.open_breaks(), vec!["s1"]);
+    let hold = p.hold_on("u1").expect("the unit is held");
+    assert!(hold.contains("u1") && hold.contains("s1"), "{hold}");
+
+    let before = p.ledger().clone();
+    let refusal = p
+        .sell("s2", "u1", "buyer-2", dec!("40"), None)
+        .expect_err("a held unit is not sold");
+    assert_eq!(refusal.code(), "denied", "got {refusal:?}");
+    assert_eq!(p.ledger(), &before, "a refused sale moves nothing");
+
+    // A later pass against the marketplace's own, agreeing, record clears
+    // nothing: nobody found out which side was wrong.
+    assert!(p.reconcile_with_marketplace().is_empty());
+    assert!(
+        p.hold_on("u1").is_some(),
+        "a clean pass is not a correction"
+    );
+
+    // No correction recorded: refused. A correction that does not make the
+    // sides agree: refused, naming the difference.
+    let uncorrected = p.clear_break("s1").expect_err("nothing was corrected");
+    assert_eq!(uncorrected.code(), "denied", "got {uncorrected:?}");
+    p.restate_marketplace_line(
+        "s1",
+        StatementLine {
+            unit: "u1".to_string(),
+            net: dec!("-2.51"),
+            returned: true,
+        },
+        "the marketplace confirmed the short payment",
+    )
+    .expect("recorded");
+    let still = p.clear_break("s1").expect_err("the sides still disagree");
+    assert!(still.message().contains("-2.5"), "{still}");
+    assert!(p.hold_on("u1").is_some());
+
+    // The ledger side is corrected to the marketplace's figure: they agree,
+    // the break clears and the unit is free.
+    p.adjust_settlement("s1", "the marketplace short-paid by a cent", dec!("-0.01"))
+        .expect("recorded");
+    p.clear_break("s1").expect("corrected and agreeing");
+    assert!(p.hold_on("u1").is_none(), "the hold is released");
+    assert!(p.open_breaks().is_empty());
+    p.sell("s2", "u1", "buyer-2", dec!("40"), None)
+        .expect("a cleared unit sells");
+}
