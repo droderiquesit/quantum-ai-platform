@@ -31,11 +31,17 @@
 //!
 //! # What it does not do
 //!
-//! It does not journal the verdicts to the event log. The only topic for
-//! evidence, `EvidenceAttached`, already carries the symbolic stage's
-//! derivations, and a second body on one topic is the decode failure
-//! `references.rs` records having shipped once. The fabric is in-memory and
-//! bounded; durability of its links (R12-EVID-2032) is not claimed here.
+//! It does not journal the verdicts or the links. `EvidenceAttached` carries
+//! the symbolic stage's derivations, and a second body on one topic is the
+//! decode failure `references.rs` records having shipped once, so each
+//! admitted claim goes to its own topic, `evidence.admitted` (ADR 0152 §2):
+//! the record, its document hash and the instant of admission, which are
+//! the whole input of `EvidenceFabric::admit`. Links, contests and
+//! resolutions are derived: [`Platform::journaled_evidence`] reads the claims
+//! back in log order and `EvidenceFabric::rebuild` re-admits them. The fabric
+//! is still in-memory and bounded; what a restart would rebuild is the window
+//! the journal retains (`DerivedState`), and no composition root performs
+//! that rebuild at start-up yet.
 
 use crate::platform::Platform;
 use qip_contracts::knowledge_delta::{
@@ -46,7 +52,7 @@ use qip_core::error::{Error, Result};
 use qip_events::{EventBody, Topic};
 use qip_market_ingestion::connector::evidence::CheckedEvidence;
 use qip_observability::metrics::labels;
-use qip_world_model::fabric::{ClaimKey, KeyOutcome};
+use qip_world_model::fabric::{ClaimKey, JournaledClaim, KeyOutcome};
 pub use qip_world_model::poisoning::{
     PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning,
 };
@@ -77,6 +83,29 @@ const KNOWLEDGE_DELTA_PREFIX: &str = "knowledge-delta/";
 /// kernel absorbs the evidence and the home region is where it runs.
 const DELTA_BRAIN: &str = "qip-kernel";
 const DELTA_REGION: &str = "home";
+
+const EVIDENCE_ADMITTED_PREFIX: &str = "evidence-admitted/";
+
+/// Origin of an `evidence.admitted` record in the log.
+pub const EVIDENCE_ADMITTED_ORIGIN: &str = "kernel/evidence-admitted";
+
+/// One claim the world fabric admitted, as the log holds it (ADR 0152 §2).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EvidenceAdmittedRecord {
+    pub claim: JournaledClaim,
+}
+
+impl EventBody for EvidenceAdmittedRecord {
+    const TOPIC: Topic = Topic::EvidenceAdmitted;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!(
+            "{EVIDENCE_ADMITTED_PREFIX}{}",
+            self.claim.record.id
+        ))
+    }
+}
 
 /// One world-model change as the log holds it (R12-EXPAND-6039): the
 /// contract's [`KnowledgeDeltaFields`], which a receiver re-admits through
@@ -175,6 +204,11 @@ pub struct EvidenceIntake {
     /// Admitted claims whose delta the contract or the log refused. Counted,
     /// never fatal: the claim is already in the fabric.
     pub deltas_refused: usize,
+    /// Of `admitted`, claims journaled to `evidence.admitted`.
+    pub claims_journaled: usize,
+    /// Admitted claims the log refused. Counted, never fatal: the claim is
+    /// already in the fabric, but a restart would not rebuild it.
+    pub journal_refused: usize,
     /// The first [`REFUSALS_RETAINED`] refusal reasons.
     pub refusals: Vec<String>,
 }
@@ -211,6 +245,7 @@ impl Platform {
         }
         let metrics = self.telemetry.metrics.clone();
         let mut deltas: Vec<KnowledgeDelta> = Vec::new();
+        let mut admitted_claims: Vec<JournaledClaim> = Vec::new();
         self.world.update(|world| {
             for checked in batch {
                 if world.evidence().get(&checked.record.id).is_some() {
@@ -221,9 +256,15 @@ impl Platform {
                 let id = checked.record.id.clone();
                 let claim = ClaimKey::of(&checked.record);
                 let before = world.evidence().version();
+                let journaled = JournaledClaim {
+                    record: checked.record.clone(),
+                    document_hash: Some(checked.document_hash.clone()),
+                    admitted_at: now,
+                };
                 match world.absorb_evidence(checked.record, Some(&checked.document_hash), now) {
                     Ok((verdict, outcome)) => {
                         intake.admitted += 1;
+                        admitted_claims.push(journaled);
                         // Only an admissible claim with a checkable key moves
                         // what the fabric believes; an inadmissible one is
                         // held so the detector sees it and weighs nothing.
@@ -265,6 +306,16 @@ impl Platform {
                 }
             }
         });
+        for claim in admitted_claims {
+            match self.journal_record(
+                EvidenceAdmittedRecord { claim },
+                EVIDENCE_ADMITTED_ORIGIN,
+                now,
+            ) {
+                Ok(()) => intake.claims_journaled += 1,
+                Err(_) => intake.journal_refused += 1,
+            }
+        }
         for delta in deltas {
             let record = KnowledgeDeltaRecord {
                 delta: delta.into_fields(),
@@ -275,6 +326,22 @@ impl Platform {
             }
         }
         intake
+    }
+
+    /// The claims the log holds as admitted, in the order they were admitted:
+    /// the input `EvidenceFabric::rebuild` needs to derive the fabric again.
+    /// A record that does not decode is an error, not a skipped claim — a
+    /// rebuild that silently dropped one would hold a different belief from
+    /// the fabric that wrote the journal.
+    pub fn journaled_evidence(&self) -> Result<Vec<JournaledClaim>> {
+        self.event_log()
+            .by_topic(Topic::EvidenceAdmitted)
+            .into_iter()
+            .map(|frame| {
+                let envelope = qip_streaming::envelope::StreamEnvelope::from_frame(frame)?;
+                Ok(envelope.decode::<EvidenceAdmittedRecord>()?.body.claim)
+            })
+            .collect()
     }
 
     /// Scan the world fabric for coordinated, poisoned, spoofed, synthetic

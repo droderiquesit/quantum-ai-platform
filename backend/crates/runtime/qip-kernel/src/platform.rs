@@ -690,6 +690,11 @@ pub struct Platform {
     /// What the latest federation review earns each instrument in DECIDE's
     /// caps (ADR 0125 decision 4), with the spread behind it.
     federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
+    /// The active-sensing requests the latest federation pass issued, each
+    /// with the disagreement spread behind it in basis points (ADR 0158
+    /// decisions 9-10), replaced wholesale each pass so a disagreement that
+    /// has resolved stops asking. Read by the deep brain's research sweep.
+    federation_requests: Vec<(qip_contracts::control::InformationRequest, u32)>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -4370,6 +4375,11 @@ impl EventBody for CapitalGrantFunded {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+impl EventBody for PrivateCommitmentMade {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 /// The journalled record that the central treasury recalled the deployable
 /// capital of a grant it had funded (ADR 0123, Amendment 1): the whole
 /// `CapitalGrantRecalled` [`qip_contracts::ledger_operation::LedgerOperation`]
@@ -4397,6 +4407,28 @@ pub struct CapitalGrantRecalled {
 /// [`CAPITAL_GRANT_FUNDING_ORIGIN`], so a reader of either stream of records
 /// decodes one body shape and never meets the other's.
 const CAPITAL_GRANT_RECALL_ORIGIN: &str = "kernel/capital-grant-recall";
+
+/// The journalled record that a private commitment was made (ADR 0153
+/// decision 2): the whole
+/// [`qip_contracts::ledger_operation::LedgerOperation`] the ledger books as
+/// `Commitment { stage: Commit }`, written once, at the first assembly that
+/// saw the fund's universe record, and before the operation is queued.
+///
+/// The operation is journalled, not the universe record it came from,
+/// because the universe record's `updated_at` moves and a rebuilt operation
+/// at a restart's clock would be a second digest under the same id, which the
+/// ledger refuses as a conflict. Replaying the record as written re-sends the
+/// bytes the first process sent, and a universe record whose amount later
+/// differs is reported rather than rebooked: the commitment that was made is
+/// the one that was booked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PrivateCommitmentMade {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+/// The producer of [`PrivateCommitmentMade`]. Its own origin so a reader of
+/// the other `LedgerOperationRecorded` producers never meets this body.
+const PRIVATE_COMMITMENT_ORIGIN: &str = "kernel/private-commitment";
 
 impl EventBody for CapitalGrantRecalled {
     const TOPIC: Topic = Topic::LedgerOperationRecorded;
@@ -5497,6 +5529,7 @@ impl Platform {
             pending_routing: None,
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
+            federation_requests: Vec::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -5703,6 +5736,9 @@ impl Platform {
         // ledger is the authority for (ADR 0123). Journaled once, so every
         // restart re-derives the same operation with the same digest.
         platform.queue_treasury_funding(now)?;
+        // Each private commitment the universe holds, booked once as a
+        // journalled `Commit` operation (ADR 0153 decision 2).
+        platform.queue_private_commitments(now)?;
         // Every capital grant this log funded or recalled, re-queued as
         // written and in the order written: the plane's envelopes do not
         // survive a restart but the ledger's debt to the books they funded
@@ -12767,6 +12803,12 @@ impl Platform {
         // not.
         self.federation.set_stakes(self.capital.exposure_at_cost());
         let review = self.federation.run(&inputs, now);
+        self.federation_requests = review
+            .information_requests
+            .iter()
+            .cloned()
+            .zip(review.request_spreads_bp.iter().copied())
+            .collect();
         // What this review's disagreements earn each instrument in DECIDE
         // (ADR 0125 decision 4), replaced wholesale so a disagreement that
         // has resolved stops narrowing on the next pass.
@@ -12823,6 +12865,14 @@ impl Platform {
         &self,
     ) -> &BTreeMap<String, (crate::federation_stage::Narrowing, f64)> {
         &self.federation_narrowing
+    }
+
+    /// The active-sensing requests the latest federation pass issued, with
+    /// the disagreement spread behind each in basis points.
+    pub fn federation_information_requests(
+        &self,
+    ) -> &[(qip_contracts::control::InformationRequest, u32)] {
+        &self.federation_requests
     }
 
     /// The World Model Federation as the UNDERSTAND stage runs it.
@@ -20989,6 +21039,110 @@ impl Platform {
             },
         })?;
         self.desk_operations.push(operation);
+        Ok(())
+    }
+
+    /// Queue the `Commit`-stage booking of every private commitment this
+    /// assembly holds, journalling each first if this log has never recorded
+    /// it (ADR 0153 decision 2, R12-LEDGER-5006 and 5020).
+    ///
+    /// The observer is the universe record, which `private_holdings_of`
+    /// already turned into a [`qip_financial::cashflow::Commitment`]; the
+    /// operation id is `<chain>:commitment:<commitment id>`, so a commitment
+    /// books once however many assemblies see it. `recorded_at` is the
+    /// instant of the first assembly that journalled it, read back from the
+    /// record on every later one — never `now`, and never the universe
+    /// record's `updated_at`, which moves.
+    ///
+    /// A record whose committed amount later differs from the journalled one
+    /// is **not rebooked**: the original stands and the difference is
+    /// reported as a problem naming the commitment, because a second
+    /// operation under the same id with another digest is a conflict the
+    /// ledger refuses, and a silent overwrite would edit a fact already
+    /// booked. No `Draw` or `Release` is produced: no capital-call observer
+    /// exists in the tree, and a draw inferred from a cash-flow schedule is a
+    /// forecast, not an event.
+    ///
+    /// A commitment the contract refuses (an id the ledger's account text
+    /// cannot carry) is reported and skipped rather than stopping assembly:
+    /// the ledger queue is not the platform's start condition, and nothing is
+    /// journalled for it, so a corrected id books on a later start.
+    fn queue_private_commitments(&mut self, now: Timestamp) -> Result<()> {
+        use qip_contracts::ledger_operation::{
+            Book, CommitmentStage, LedgerOperationFields, OperationKind,
+        };
+        let mut journalled: BTreeMap<String, qip_contracts::ledger_operation::LedgerOperation> =
+            BTreeMap::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer == PRIVATE_COMMITMENT_ORIGIN
+                && record.event.topic == PrivateCommitmentMade::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                let made = frame.decode::<PrivateCommitmentMade>()?.body;
+                journalled.insert(made.operation.operation_id.clone(), made.operation);
+            }
+        }
+        let chain = self.desk_ledger.chain().to_string();
+        let mut sequence = journalled.len() as u64;
+        let commitments: Vec<(String, Decimal)> = self
+            .commitments
+            .iter()
+            .map(|commitment| (commitment.subject().to_string(), commitment.committed()))
+            .collect();
+        for (subject, committed) in commitments {
+            let operation_id = format!("{chain}:commitment:{subject}");
+            if let Some(booked) = journalled.get(&operation_id) {
+                if let OperationKind::Commitment { amount, .. } = &booked.kind
+                    && *amount != committed
+                {
+                    self.capture_problems.push(format!(
+                        "private commitment {subject} is {committed} in the universe record but \
+                         was booked at {amount}; the original booking stands and nothing was \
+                         rebooked"
+                    ));
+                }
+                self.desk_operations.push(booked.clone());
+                continue;
+            }
+            sequence += 1;
+            let built = qip_contracts::validated::Validated::new(LedgerOperationFields {
+                schema_version: 1,
+                operation_id,
+                origin: chain.clone(),
+                sequence,
+                recorded_at: now,
+                settlement: qip_contracts::ledger::Settlement::Simulated,
+                kind: OperationKind::Commitment {
+                    commitment: subject.clone(),
+                    counterparty: subject.clone(),
+                    book: Book {
+                        cell: chain.clone(),
+                        strategy: DESK_STRATEGY.to_string(),
+                    },
+                    unit: crate::desk_ledger::DESK_QUOTE_UNIT.to_string(),
+                    amount: committed,
+                    stage: CommitmentStage::Commit,
+                },
+            });
+            let operation = match built {
+                Ok(operation) => operation,
+                Err(error) => {
+                    self.capture_problems.push(format!(
+                        "private commitment {subject} could not be booked at the ledger: {}",
+                        error.message()
+                    ));
+                    continue;
+                }
+            };
+            self.journal_record(
+                PrivateCommitmentMade {
+                    operation: operation.clone(),
+                },
+                PRIVATE_COMMITMENT_ORIGIN,
+                now,
+            )?;
+            self.desk_operations.push(operation);
+        }
         Ok(())
     }
 
