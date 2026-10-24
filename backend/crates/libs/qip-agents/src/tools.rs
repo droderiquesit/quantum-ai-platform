@@ -85,10 +85,16 @@ impl ToolName {
     /// broke. Nothing is trimmed: a name with whitespace around it is a caller
     /// bug, and correcting it silently would let the bug survive.
     pub fn parse(name: &str) -> Result<Self> {
-        let Some(first) = name.bytes().next() else {
-            return Err(Error::invalid(
-                "a tool needs a name; register it under the name callers will resolve it by",
-            ));
+        // A name that is only whitespace is no name: refused with the same
+        // words as an empty one, so a caller that trimmed a typo to nothing
+        // hears what is missing rather than a grammar rule.
+        let first = match name.bytes().next() {
+            Some(first) if !name.trim().is_empty() => first,
+            _ => {
+                return Err(Error::invalid(
+                    "a tool needs a name; register it under the name callers will resolve it by",
+                ));
+            }
         };
         if name.len() > Self::MAX_LEN {
             return Err(Error::invalid(format!(

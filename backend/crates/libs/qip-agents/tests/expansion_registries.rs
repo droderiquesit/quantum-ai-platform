@@ -42,9 +42,12 @@ fn a_tool_proposed_or_registered_without_a_name_is_refused_and_nothing_is_regist
     let empty = ToolName::parse("").unwrap_err();
     assert!(empty.to_string().contains("a tool needs a name"), "{empty}");
     for blank in ["   ", "\t\n"] {
+        let refused = ToolName::parse(blank)
+            .err()
+            .unwrap_or_else(|| panic!("a whitespace-only name {blank:?} became a ToolName"));
         assert!(
-            ToolName::parse(blank).is_err(),
-            "a whitespace-only name {blank:?} became a ToolName"
+            refused.to_string().contains("a tool needs a name"),
+            "{refused}"
         );
         assert!(registry.get(blank).is_none());
     }
