@@ -508,13 +508,20 @@ impl ConnectorArm {
             .poll_referencing_identified(until, &mut |digest| {
                 platform.reference_fetch(digest, until).map(|_| ())
             })?;
-        let released = identified.len();
-        self.last_evidence = platform.absorb_evidence(self.feed.drain_evidence(), until);
         // A record is handed up for observation only if the world fabric
         // stood behind its claim (R12-EVID-1200): the connector's own check
         // ran against one source's private fabric, the world's against all.
-        let records = self.last_evidence.release(identified);
-        self.last_withheld = released - records.len();
+        let released = platform.admit_world_records(
+            self.feed.drain_evidence(),
+            identified
+                .into_iter()
+                .map(|(record, claim)| (record, Some(claim)))
+                .collect(),
+            until,
+        );
+        self.last_evidence = released.intake;
+        self.last_withheld = released.withheld;
+        let records = released.records;
         self.persist_packs();
         Ok(records)
     }
