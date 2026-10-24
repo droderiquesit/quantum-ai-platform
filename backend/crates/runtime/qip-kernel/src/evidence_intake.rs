@@ -57,6 +57,7 @@ pub use qip_world_model::poisoning::{
     PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 /// Claims a connector forwarded into the world fabric, by `outcome`:
 /// `admitted`, `contested` (admitted and opened or joined a contest),
@@ -211,9 +212,29 @@ pub struct EvidenceIntake {
     pub journal_refused: usize,
     /// The first [`REFUSALS_RETAINED`] refusal reasons.
     pub refusals: Vec<String>,
+    /// Ids of the claims in this batch the world fabric would not stand
+    /// behind: refused, held inadmissible, or judged spoofed (R12-EVID-1200).
+    /// Bounded by the batch, which the feed bounds. [`Self::release`] drops
+    /// the records these name, so a claim the world refused is not observed.
+    pub withheld: BTreeSet<String>,
 }
 
 impl EvidenceIntake {
+    /// The items whose claim the world fabric did not withhold, in order.
+    ///
+    /// The kernel-level half of the truth loop: a record reaches `observe`
+    /// only after the claim it rests on was admitted by the fabric every
+    /// source shares, not merely by the one connector's private check. An
+    /// id this intake never saw (a duplicate, already held) is released:
+    /// the fabric holds it and has not judged it again.
+    pub fn release<T>(&self, items: Vec<(T, String)>) -> Vec<T> {
+        items
+            .into_iter()
+            .filter(|(_, id)| !self.withheld.contains(id))
+            .map(|(item, _)| item)
+            .collect()
+    }
+
     /// Whether the batch carried anything.
     pub const fn is_empty(&self) -> bool {
         self.admitted + self.duplicate + self.refused == 0
@@ -283,6 +304,9 @@ impl Platform {
                                 Err(_) => intake.deltas_refused += 1,
                             }
                         }
+                        if !verdict.admissible || verdict.authenticity.spoofed {
+                            intake.withheld.insert(id.clone());
+                        }
                         let label = if !verdict.admissible {
                             intake.inadmissible += 1;
                             "inadmissible"
@@ -298,6 +322,7 @@ impl Platform {
                     }
                     Err(error) => {
                         intake.refused += 1;
+                        intake.withheld.insert(id.clone());
                         if intake.refusals.len() < REFUSALS_RETAINED {
                             intake.refusals.push(format!("`{id}`: {}", error.message()));
                         }

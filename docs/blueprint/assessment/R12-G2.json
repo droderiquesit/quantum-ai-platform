@@ -1333,7 +1333,7 @@
       "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl",
       "infrastructure/environments/dev/terraform.tfvars:514 (commented)"
     ],
-    "gap": "Enable in an environment and prove with a plan.",
+    "gap": "2026-10-24 (owner decision, billed): enabling public_edge means a global address, a forwarding rule on 443 and a hostname the owner controls; environments/dev/terraform.tfvars:572 leaves it absent on purpose (the 2026-10-06 placeholder hostname was removed 2026-10-07) and qip-acceptance terraform_plan::no_environment_opens_a_public_address records the decision. A patch with an invented hostname would publish a surface nobody chose. Needs: the owner's hostname and approval; then a plan, which this lane may not run against a real project. The module's refusals are already proven by modules/public-edge/tests/public-edge.tftest.hcl.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1344,7 +1344,7 @@
     "verification": "terraform -chdir=infrastructure/terraform test",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 M2-DATA-AGENTS: classified PROTECTED_PATCH then downgraded to owner decision; no patch written. No code changed."
   },
   {
     "id": "R12-API-9058",
@@ -3885,7 +3885,7 @@
       "infrastructure/terraform/modules/gitops-control-plane/main.tf:131",
       "infrastructure/gitops/argocd/overlays/dev/application.yaml"
     ],
-    "gap": "Drill.",
+    "gap": "2026-10-24 (deployment-dependent): a rebuild drill needs a control-plane cluster to rebuild; dev's was suspended by ADR 0093 and nothing is applied that this lane may plan against. The drill is a person-run game day against a real project; no in-repo code stands in for it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -3896,7 +3896,7 @@
     "verification": "game day",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed."
   },
   {
     "id": "R12-RES-9172",

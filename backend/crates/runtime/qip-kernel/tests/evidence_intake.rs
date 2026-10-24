@@ -695,6 +695,38 @@ fn an_unchecked_claim_under_a_forged_admissible_verdict_is_held_inadmissible_and
     assert_eq!(held.belief_weight, 0.0);
 }
 
+/// R12-EVID-1200. The connector's check ran against one source's private
+/// fabric; a record reaches `observe` only if the fabric every source shares
+/// also stood behind its claim. A claim the world holds inadmissible is named
+/// on `withheld` and `release` drops the record it rests on, while the honest
+/// record beside it passes. Mutation: delete the `withheld.insert` in the
+/// inadmissible branch of `absorb_evidence` — the forged record is released
+/// and the first assertion fails.
+#[test]
+fn a_record_whose_claim_the_world_fabric_holds_inadmissible_is_not_released_for_observation() {
+    let mut platform = platform();
+    let honest = checked("h1", "https://a.example", "rate 1.10", "1.10", &hash('a'));
+    let mut forged = checked("f1", "https://b.example", "rate 1.12", "1.10", &hash('b'));
+    forged.record.ingestion_timestamp = at(5);
+    forged.verdict = honest.verdict.clone();
+    // The premise: the forwarded verdict called both admissible, so any
+    // difference below is the world fabric's own judgement.
+    assert!(honest.verdict.admissible && forged.verdict.admissible);
+
+    let intake = platform.absorb_evidence(vec![honest, forged], at(30));
+
+    assert_eq!(intake.admitted, 2, "{intake:?}");
+    assert_eq!(
+        intake.withheld.iter().cloned().collect::<Vec<_>>(),
+        vec!["f1".to_string()]
+    );
+    let released = intake.release(vec![
+        ("honest-record", "h1".to_string()),
+        ("forged-record", "f1".to_string()),
+    ]);
+    assert_eq!(released, vec!["honest-record"]);
+}
+
 /// Every knowledge delta the kernel has journalled, re-admitted through the
 /// contract the way a receiving brain would read it.
 fn journalled_deltas(platform: &Platform) -> Vec<KnowledgeDelta> {

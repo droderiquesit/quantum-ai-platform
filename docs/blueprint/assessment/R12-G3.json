@@ -3114,7 +3114,7 @@
       "infrastructure/terraform/modules/data/tests/retention_classes.tftest.hcl",
       "backend/crates/libs/qip-events/src/retention.rs"
     ],
-    "gap": "Active tiers.",
+    "gap": "2026-10-24 (deployment-dependent, billed): the retention and lifecycle rules and Fabric retention classes exist and are tested; active Bigtable/BigQuery tiers need the data module provisioned in an environment, which nothing has applied. Needs the owner to enable the tiers and a plan this lane may not run.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3128,7 +3128,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed."
   },
   {
     "id": "R12-FINOPS-10139",
@@ -4717,7 +4717,7 @@
       "infrastructure/terraform/modules/execution-node/variables.tf:118-150",
       "backend/crates/libs/qip-storage/tests/fabric_bench.rs"
     ],
-    "gap": "Venue benchmarks.",
+    "gap": "2026-10-24 (deployment-dependent): venue benchmarks are measurements on a deployed execution node; execution_nodes = {} in test, stage and prod and dev declares newyork-1 with execution_nodes_enabled = false, so no shape can be measured. qip-storage/tests/fabric_bench.rs measures the in-process fabric only and is not a venue record. Needs a node (billed) and a benchmark record committed from it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -4730,7 +4730,7 @@
     "verification": "benchmark record",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed."
   },
   {
     "id": "R12-DATA-10206",

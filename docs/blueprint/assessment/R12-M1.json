@@ -4525,12 +4525,16 @@
   {
     "id": "R12-EVID-1200",
     "status": "PARTIAL",
-    "current": "Truth loop acceptance tests show the gate order and refusal; reached from the central cycle.",
+    "current": "Truth loop acceptance tests show the gate order and refusal; reached from the central cycle. Slice 1 (2026-10-24): ConnectorFeed::poll_referencing_identified pairs each released SensedRecord with its evidence claim id (refusing a length mismatch), Platform::absorb_evidence names the claims the world fabric refused, held inadmissible or judged spoofed on EvidenceIntake::withheld, and qip-deepbrain ConnectorArm::poll releases only EvidenceIntake::release(..) of its records, counting the rest in last_withheld.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:475 one event travels all stages",
-      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:682 failing record never reaches the world model"
+      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:682 failing record never reaches the world model",
+      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs::ConnectorFeed::poll_referencing_identified",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::EvidenceIntake::release",
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs::ConnectorArm::poll",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_record_whose_claim_the_world_fabric_holds_inadmissible_is_not_released_for_observation"
     ],
-    "gap": "Truth-loop order is proven by a test-local pipeline; no global-scout stage. The connector runtime already quarantines a record whose evidence is refused, impossible or from an altered document (connector/runtime.rs check_evidence), so a record reaching Platform::sense via ConnectorFeed::poll has passed a per-source check. What is missing is the kernel-level gate: a SensedRecord carries no evidence id (the id is the event fingerprint minted inside the connector runtime), so Platform::absorb_evidence cannot hand back which records the world fabric admitted and node.rs / connectors.rs cannot gate observe on it; ConnectorFeed::poll would have to return (record, evidence id) pairs first (qip-market-ingestion, outside the model lane).",
+    "gap": "2026-10-24 remaining slices: (1) qip-fastbrain node.rs and qip-api feed.rs still poll through poll_referencing and observe every released record; they need the identified poll and EvidenceIntake::release as qip-deepbrain now does. (2) The deepbrain arm's own withheld path has no end-to-end test: no connector fixture yields a claim the connector accepts and the world fabric holds inadmissible, so the release call in ConnectorArm::poll is covered by the kernel test of release/withheld and not by a mutated arm test. (3) There is still no global-scout stage ahead of truth: the scout->truth->world-model order is enforced per arm, not by one kernel stage.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4538,10 +4542,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test truth_loop",
+    "verification": "cargo test -p qip-kernel --test evidence_intake; cargo test -p qip-market-ingestion --lib each_released_record; cargo test -p qip-acceptance --test truth_loop",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Gate order is asserted on a test-local composition; no scout stage and no production path enforcing scout->truth->world model. 2026-10-18 lane L06: not implemented; the closure needs ConnectorFeed to return evidence ids with its records, a change in qip-market-ingestion. Left PARTIAL with the corrected gap."
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10). 2026-10-18 lane L06: not implemented. 2026-10-24 M2-DATA-AGENTS: slice 1 landed, kept PARTIAL. Mutations fired: reversing the evidence ids before the zip fails the pairing test (ids reversed); deleting the withheld.insert for inadmissible claims fails the kernel test (left [], right [\"f1\"])."
   },
   {
     "id": "R12-TICK-1201",
