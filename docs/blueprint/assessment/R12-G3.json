@@ -3480,7 +3480,7 @@
     "verification": "game-day",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: inconclusive by its own verdict. Re-graded 2026-10-17: record does not show the property. Gap corrected 2026-10-18 by lane L17 from strategies.rs and the stale-policy scenario's own drill text ('no local binary is a policy publisher'); nothing in the code changed. Lane W8-156, 2026-10-19 (ADR 0156) §4f. Stopped at the evidence rather than building a publisher that cannot change the verdict. Scenario change proposed, not made: add QIP_DEPLOYMENT=local and QIP_TLS_MODE=plaintext to fabricd, cell and ledgerd, and QIP_LEDGER_ENVIRONMENT=workstation to ledgerd."
+    "notes": "Re-read 2026-10-24: ADR 0156 4f plan (fixture publisher in the ledgerd-loss scenario) touches scripts/game-day and qip-cli grant.rs, outside the fabric territory, and the existing gap says it cannot make the cell fire an order in a process. Not attempted in the T3-FABRIC lane; stays PARTIAL."
   },
   {
     "id": "R12-RES-10155",
