@@ -1482,7 +1482,7 @@
   },
   {
     "id": "R12-TICK-2063",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-feature-dag implements every named family: spread (Spread), depth and imbalance (BookPressure), queue (TouchQueueDepth, bid and ask), flow (OrderFlowImbalance), toxicity (FlowToxicity, one-bucket VPIN over signed prints), volatility (RealisedVolatility), liquidity (SweepCost, basis points to take a quantity, undefined when the book cannot fill it), lead/lag (LeadLagCorrelation, lagged correlation of grid-aligned returns) and cross-venue (CrossVenueSpread, mid dislocation in basis points). Queue, toxicity and liquidity are in standard_suite, which qip-edge-node registers for every strategy subject; lead/lag and cross-venue are two-subject definitions registered per pair, like RollingCorrelation.",
     "evidence": [
       "backend/crates/edge/qip-feature-dag/src/features.rs:770 TouchQueueDepth",
@@ -1496,7 +1496,7 @@
       "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:1111 the_standard_suite_carries_the_queue_toxicity_and_liquidity_families",
       "backend/crates/apps/qip-edge-node/src/strategies.rs:505 registers standard_suite per strategy subject"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when a production composition root registers LeadLagCorrelation and CrossVenueSpread for the configured venue pairs, and a committed deployment runs a node that installs a strategy so the feature engine computes the families, or the row is narrowed to the feature library.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1507,7 +1507,7 @@
     "verification": "cargo test -p qip-feature-dag --test feature_dag",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18: five families added with hand-computed values. Mutations, each failing its assertion: toxicity numerator as buys only; bid queue reading the ask; sweep cost forced to zero; lead/lag ignoring the lag; cross-venue sign flipped; FlowToxicity removed from standard_suite. All restored, 26 passed; qip-edge and qip-edge-node suites (80 test binaries) still pass with the larger suite."
+    "notes": "Lane L24 2026-10-18: five families added with hand-computed values. Mutations, each failing its assertion: toxicity numerator as buys only; bid queue reading the ask; sweep cost forced to zero; lead/lag ignoring the lag; cross-venue sign flipped; FlowToxicity removed from standard_suite. All restored, 26 passed; qip-edge and qip-edge-node suites (80 test binaries) still pass with the larger suite. AUDIT-3 2026-10-24: regraded, the requirement is a feature engine that generates ten named families; two of them (lead/lag, cross-venue) are constructed by no production code, and the other eight are registered only for an installed strategy, which no committed deployment has; the hand-computed unit tests are real and mutation-checked"
   },
   {
     "id": "R12-TICK-2064",
