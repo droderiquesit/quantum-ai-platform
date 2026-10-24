@@ -1338,7 +1338,7 @@
   },
   {
     "id": "R12-REASON-3060",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "causal.abduce runs on each anomaly surprise in REASON and the ranked explanations are journaled, including an empty set kept as a result.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
@@ -1347,7 +1347,7 @@
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:556 causal.abduce",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:751 a_surprise_with_no_causal_claim_into_it_is_abduced_to_no_candidates_and_kept"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when the row's verification or evidence names a test that fails when the abduce ranking is mutated (qip-world-model tests/ abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions does: cd backend && cargo test -p qip-world-model), or a kernel test pins the ranking through derive.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1358,7 +1358,7 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoners",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. abduce now called in the cycle."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. abduce now called in the cycle. AUDIT-4 2026-10-24: regraded, the acceptance is that mutating the reasoner's core rule fails the test, and the abduction ranking (qip-world-model inference.rs abduce, score `edge.confidence / (1.0 + miss)`) is pinned by no named test: qip-reasoning-engine reasoners never calls abduce, and symbolic_federation and the kernel symbolic_stage lib tests pass with the ranking reduced to the edge confidence. Only qip-world-model's abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions fails, and no field of the row names it. The wiring (derive passing the observed moves to abduce) is pinned by symbolic_federation"
   },
   {
     "id": "R12-REASON-3061",
@@ -2429,14 +2429,14 @@
   },
   {
     "id": "R12-AMBIENT-3106",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Urgency is derived from the gap's deadline in production: ResearchLoop::admit computes urgency_bp(now, signal expiry, signal_ttl) — half scale with the whole window ahead (URGENCY_FLOOR_BP), full scale at the deadline, linear between — and passes it to cheapest_viable, so a gap the router deferred ranks ahead of the same gap raised this instant; the information request's deadline is the signal's expiry rather than now + ttl. The pending map keeps each routed signal's expiry for that purpose. rank_acquisitions' product then reads significance x uncertainty x urgency x (1 - cost) with every factor measured.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/research.rs:136-157 URGENCY_FLOOR_BP and urgency_bp",
       "backend/crates/apps/qip-deepbrain/src/research.rs:1515-1524 admit derives urgency from the deadline and passes it",
       "backend/crates/apps/qip-deepbrain/src/research.rs:2431 two_gaps_equal_in_every_other_factor_rank_the_nearer_deadline_first (mutation: urgency_bp ignores the deadline; the test fails)"
     ],
-    "gap": "",
+    "gap": "2026-10-24: The named test calls urgency_bp directly, so it proves the helper but not that admit passes the gap's deadline through to the ranking. Closing: a test that admits a deferred gap and a fresh one through ResearchLoop::admit and asserts the deferred one ranks first (it must fail the line-2176 mutation); also state the monotone-in-each-factor and zero-factor property test the requirement asks for.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2449,7 +2449,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib two_gaps_equal_in_every_other_factor_rank_the_nearer_deadline_first",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L03: closed. The (1 - cost) form is a register wording note, not a defect. The desk's research queue is still ordered by the curriculum; that is the queue's own ranking, not the acquisition rank this row checks."
+    "notes": "2026-10-18 lane L03: closed. The (1 - cost) form is a register wording note, not a defect. The desk's research queue is still ordered by the curriculum; that is the queue's own ranking, not the acquisition rank this row checks. AUDIT-4: 2026-10-24 regraded, the named test calls urgency_bp directly; replacing ResearchLoop::admit's urgency with the floor leaves it and the whole qip-deepbrain suite green, so the production derivation from the gap's deadline is unproved."
   },
   {
     "id": "R12-AMBIENT-3107",

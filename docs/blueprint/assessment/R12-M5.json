@@ -656,7 +656,7 @@
   },
   {
     "id": "R12-REFLEX-5029",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Cell::work does no I/O; the node's Scheduler::apply_mesh drains MeshLink::take_inbound through try_recv off the link's own thread, so a slow or dead centre cannot hold a pass. With the centre unreachable the node works the same passes, sends the same orders and refuses the same, and a cell cut off from everything keeps placing paper orders inside its envelope and journals that it is degraded. The check is met.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs Cell::work",
@@ -665,7 +665,7 @@
       "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:350 a_node_works_the_same_passes_sends_the_same_orders_and_refuses_the_same_when_the_centre_stops_answering",
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:253 a_cell_cut_off_from_everything_keeps_placing_paper_orders_inside_its_envelope_and_journals_that_it_is_degraded"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when verification names a test through DecisionLoop::turn with the centre silent that hangs or fails under `try_recv` -> `recv` (decision_loop.rs does), or reasoning_outage drives the loop instead of exchange.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -676,7 +676,7 @@
     "verification": "cargo test -p qip-edge-node --test reasoning_outage; cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap (a synchronous mesh exchange before each pass) predated Scheduler::apply_mesh and the off-thread link. No mutation run by this lane. Not deployed, so deployable stays false."
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap (a synchronous mesh exchange before each pass) predated Scheduler::apply_mesh and the off-thread link. No mutation run by this lane. Not deployed, so deployable stays false. AUDIT-4 2026-10-24: regraded, the named tests drive MeshLink::exchange, a synchronous exchange the shipped node never calls; the production read (DecisionLoop::turn apply_mesh -> mesh.rs take_inbound_at_most) is proven only by tests/decision_loop.rs, which the row does not name."
   },
   {
     "id": "R12-REFLEX-5030",

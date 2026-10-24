@@ -329,13 +329,13 @@
   },
   {
     "id": "R12-ASSET-1015",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Every AssetClassRecord in the shipped registry carries a LifecycleEngine derived from its class by an exhaustive match (PortfolioStages = qip_portfolio::LifeStage for listed/event/tokenized/cash/fund classes, PrivateStages = PrivateStage for PrivateMarket and RealAsset, CommerceLedger = qip_financial::commerce::Ledger for PhysicalProduct). AssetClassRegistry::lifecycle_of resolves it and refuses a class with no record; a new AssetClass variant does not compile until it names an engine. The registry is built by Platform::new on every start.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs LifecycleEngine::for_class, AssetClassRecord::lifecycle, AssetClassRegistry::lifecycle_of",
       "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs every_asset_class_resolves_its_lifecycle_engine_and_an_unregistered_class_is_refused"
     ],
-    "gap": "",
+    "gap": "2026-10-24: The requirement maps each class to an adapter AND a lifecycle engine; the row's own notes withdraw the consumer ('does not claim a runtime path drives a position through the engine'), no record carries an adapter (grep adapter in asset_class_registry.rs finds none), and lifecycle_of has no production caller. Closing: an adapter per class in AssetClassRecord plus a production consumer that resolves the lifecycle engine/adapter (e.g. position booking or order routing by class) with a test that fails when that call is removed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -346,7 +346,7 @@
     "verification": "cargo test -p qip-acceptance --test asset_class_registry",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE on the clause as written (the registry maps each class to an engine). It does not claim a runtime path drives a position through the engine the registry names: that consumer is a separate item. Mutation fired: mapping PrivateMarket/RealAsset to PortfolioStages -> the three-engines premise assertion fails ({PortfolioStages, CommerceLedger})."
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE on the clause as written (the registry maps each class to an engine). It does not claim a runtime path drives a position through the engine the registry names: that consumer is a separate item. Mutation fired: mapping PrivateMarket/RealAsset to PortfolioStages -> the three-engines premise assertion fails ({PortfolioStages, CommerceLedger}). AUDIT-4: 2026-10-24 regraded, no class record carries an adapter, lifecycle_of and AssetClassRecord::lifecycle have no caller outside tests, and the row's own notes withdraw the runtime consumer; the requirement asks for adapters and lifecycle engines per class."
   },
   {
     "id": "R12-WORLD-1016",
@@ -586,14 +586,14 @@
   },
   {
     "id": "R12-AMBIENT-1026",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "The deep-brain research loop forecasts (NowEstimator), simulates (fill-bias campaign bootstrap), raises assumption and weak-signal gaps, and routes them; an AttentionEvent wakes a named registered specialist and is journaled.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter",
       "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over",
       "backend/crates/apps/qip-deepbrain/src/now.rs::surprise_signals"
     ],
-    "gap": "None for the requirement; not deployed.",
+    "gap": "2026-10-24: The row's evidence lists no test and its verification (cargo test -p qip-contracts --test ambient) covers the router alone, not 'wakes a named specialist and is journaled'. Closing: add qip-deepbrain --test ambient_journal a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (fails the woke mutation) to evidence and verification.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -606,7 +606,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "L",
-    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare."
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare. AUDIT-4: 2026-10-24 regraded, the named test (qip-contracts ambient) covers the router alone; the journaled specialist wake is proved only by a deepbrain test the row does not name, and the woke mutation leaves the named test green."
   },
   {
     "id": "R12-FABRIC-1027",
@@ -2791,7 +2791,7 @@
   },
   {
     "id": "R12-TICK-1122",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:645 LakeSink::deliver disciplines every applied tick through CaptureStream",
@@ -2799,7 +2799,7 @@
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
       "backend/crates/edge/qip-sequencing/src/capture.rs CaptureStream::capture"
     ],
-    "gap": "None for the requirement; not deployed (no execution node exists).",
+    "gap": "2026-10-24: Closes when the replay digest (tick_replay.rs) or a named test covers the disciplined normalized_time and uncertainty from a recorded session, failing when qip-sequencing clock.rs:275 is mutated.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2810,7 +2810,7 @@
     "verification": "cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 by lane L09: clock normalization now runs on the node's production drain. The test recomputes every lake line's clock block with an independent CaptureStream over the line's own event and requires equality, plus an offset estimate once the discipline holds its minimum samples. Mutation: a fresh CaptureStream per tick in LakeSink::deliver (no discipline state) made the lake line's correction lineage differ from the independent discipline's and the test fail; restored byte for byte."
+    "notes": "Re-graded 2026-10-18 by lane L09: clock normalization now runs on the node's production drain. The test recomputes every lake line's clock block with an independent CaptureStream over the line's own event and requires equality, plus an offset estimate once the discipline holds its minimum samples. Mutation: a fresh CaptureStream per tick in LakeSink::deliver (no discipline state) made the lake line's correction lineage differ from the independent discipline's and the test fail; restored byte for byte. AUDIT-4 2026-10-24: regraded, the requirement asks that a mutation of the clock-normalization stage change the replay digest. The named test compares the lake line with a second CaptureStream built from the same qip-sequencing code, so removing the offset correction from ClockDiscipline changes both sides alike and it still passes; the tick_replay digest does not cover CaptureStream output, so it does not move either"
   },
   {
     "id": "R12-TICK-1123",
@@ -3282,7 +3282,7 @@
   },
   {
     "id": "R12-AMBIENT-1144",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "The scheduled research sweep routes NOW surprises through AttentionRouter; an Activated event wakes a registered BrainSpec specialist (adversarial/forecast/risk/sensing), and the ambient journal records which specialist each event woke.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:94 Detection",
@@ -3291,7 +3291,7 @@
       "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs::AmbientRecord",
       "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs::the_run_loop_journals_each_sweeps_signals_and_attention_unprompted_and_a_disabled_loop_none"
     ],
-    "gap": "None for the requirement; not deployed.",
+    "gap": "2026-10-24: The named tests prove the loop journals signals and attention on a schedule but never assert which specialist an Activated event woke (it asserts no woke value). Closing: name ambient_journal.rs::a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist in evidence and verification, or assert woke in the_run_loop test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3304,7 +3304,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "L",
-    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare."
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare. AUDIT-4: 2026-10-24 regraded, the named run-loop test asserts signals and attention are journaled but never which specialist an Activated event woke; the woke mutation leaves it green and only a_now_surprise_is_journaled (not named) fails."
   },
   {
     "id": "R12-QUANT-1145",
