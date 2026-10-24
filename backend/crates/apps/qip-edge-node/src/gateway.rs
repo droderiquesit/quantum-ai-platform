@@ -581,14 +581,13 @@ impl SimulatedGateway {
         at: Timestamp,
     ) -> Result<()> {
         // Seed before list: a seed the register refuses must not leave the
-        // instrument listed behind it. The admission is asked for and not
-        // carried further because the venue's seed path takes none — so the
-        // refusal on this line is the whole of the control, and nothing
-        // below it may run first.
-        self.admission(CreationAction::Seed, object_id)?;
+        // instrument listed behind it. The admission is carried to the venue,
+        // whose seed path demands it too (R12-EXEC-5079), so this line is no
+        // longer the whole of the control — but it still runs first.
+        let seeding = self.admission(CreationAction::Seed, object_id)?;
         self.ensure_listed(object_id, price, at)?;
         self.exchange
-            .seed_liquidity(object_id, side, price, quantity, at)
+            .seed_liquidity(object_id, side, price, quantity, at, &seeding)
     }
 
     /// Take from the book with flow belonging to somebody else, returning

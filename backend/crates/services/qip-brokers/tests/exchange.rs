@@ -114,7 +114,14 @@ fn live_venue(settings: ExchangeSettings, seed: u64) -> Result<SimulatedExchange
         (Side::Buy, dec!("99.97"), 40),
         (Side::Buy, dec!("99.95"), 80),
     ] {
-        exchange.seed_liquidity(&object(), side, price, Decimal::from_int(size), start())?;
+        exchange.seed_liquidity(
+            &object(),
+            side,
+            price,
+            Decimal::from_int(size),
+            start(),
+            &seeding(VENUE, &object()),
+        )?;
     }
     exchange.bring_up(&credential(), start())?;
     Ok(exchange)
@@ -927,6 +934,7 @@ fn the_broker_port_cannot_reach_a_venue_that_is_not_ready() -> Result<()> {
         dec!("100.02"),
         Decimal::from_int(50),
         start(),
+        &seeding(VENUE, &object()),
     )?;
 
     // Never brought up: the narrow OMS port mints its own ticket and fails to.
@@ -1104,7 +1112,14 @@ fn venue_with_native(post_only: bool) -> Result<SimulatedExchange> {
         (Side::Sell, dec!("100.02"), 20),
         (Side::Buy, dec!("99.98"), 20),
     ] {
-        exchange.seed_liquidity(&object(), side, price, Decimal::from_int(size), start())?;
+        exchange.seed_liquidity(
+            &object(),
+            side,
+            price,
+            Decimal::from_int(size),
+            start(),
+            &seeding(VENUE, &object()),
+        )?;
     }
     exchange.bring_up(&credential(), start())?;
     Ok(exchange)
@@ -1420,5 +1435,91 @@ fn a_ledger_refuses_a_second_record_of_an_instrument_it_already_books() -> Resul
         Some(instrument().lot_size),
         "the refused record changed the one that stands"
     );
+    Ok(())
+}
+
+/// An admission to seed `object` at `venue`, minted the one way there is:
+/// every authority's permission recorded, then `CreationPermissions::admit`.
+/// Seeding is governed like listing (R12-EXEC-5079), so a fixture that
+/// seeds a book carries one.
+fn seeding(venue: &str, object: &ObjectId) -> CreationAdmission {
+    let request = CreationRequest::new(CreationAction::Seed, venue, object.as_str(), "paper");
+    let mut permissions = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        permissions
+            .record(authority, &request, "test fixture")
+            .expect("a fixture permission with a reference is recorded");
+    }
+    permissions
+        .admit(&request)
+        .expect("all three authorities are recorded")
+}
+
+/// R12-EXEC-5079: the venue seeds a book only under an admission to seed
+/// exactly this instrument at exactly this venue. A listing admission is not
+/// one, nor is a seeding admission for another instrument or another venue,
+/// and each refusal leaves the book as it was.
+///
+/// Until 2026-10-24 the one `Seed` check was in a caller — the edge node's
+/// `seed_touch` — and `seed_liquidity` itself took no admission, so any
+/// other holder of the venue could seed a listed book with no seeding
+/// permission recorded anywhere.
+///
+/// Mutation: delete `self.admits(CreationAction::Seed, object_id, admission)?;`
+/// from `seed_liquidity` — every refusal below becomes a seed.
+#[test]
+fn seeding_needs_an_admission_to_seed_exactly_this_instrument_at_exactly_this_venue() -> Result<()>
+{
+    let mut exchange = SimulatedExchange::new(venue(), ExchangeSettings::orderly(), 7, start());
+    list_admitted(&mut exchange, VENUE, instrument())?;
+    let depth = |exchange: &SimulatedExchange| {
+        exchange
+            .quotes()
+            .into_iter()
+            .map(|quote| quote.asks.len() + quote.bids.len())
+            .sum::<usize>()
+    };
+    assert_eq!(
+        depth(&exchange),
+        0,
+        "premise: a fresh listing rests nothing"
+    );
+
+    let elsewhere = ObjectId::from_string("obj-ELSEWHERE");
+    let wrong: [(&str, CreationAdmission); 3] = [
+        ("a listing admission", admission_to_list(VENUE, &object())?),
+        ("another instrument's", seeding(VENUE, &elsewhere)),
+        ("another venue's", seeding("XOTHER", &object())),
+    ];
+    for (label, admission) in &wrong {
+        let error = exchange
+            .seed_liquidity(
+                &object(),
+                Side::Sell,
+                dec!("100.02"),
+                Decimal::from_int(10),
+                start(),
+                admission,
+            )
+            .expect_err("a seed under the wrong admission was taken");
+        assert!(
+            error
+                .message()
+                .contains("seed exactly this instrument at exactly this venue"),
+            "{label} was refused for the wrong reason: {}",
+            error.message()
+        );
+        assert_eq!(depth(&exchange), 0, "{label} left liquidity behind");
+    }
+
+    exchange.seed_liquidity(
+        &object(),
+        Side::Sell,
+        dec!("100.02"),
+        Decimal::from_int(10),
+        start(),
+        &seeding(VENUE, &object()),
+    )?;
+    assert_eq!(depth(&exchange), 1, "the admitted seed did not rest");
     Ok(())
 }

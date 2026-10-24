@@ -453,16 +453,15 @@
   },
   {
     "id": "R12-RISK-3021",
-    "status": "PARTIAL",
-    "current": "RiskControl, constructed in Organisation::standard, reports limit breaches and, since 2026-10-18, the forecast tail (VaR/ES at the highest confidence the risk state carries), a generated three-sigma stress day scaled by leverage, and a recommended gross reduction that clears every blocking limit scaling with the book. Removing it drops all three scopes from OrganisationReport::covered_scopes.",
+    "status": "COMPLETE",
+    "current": "The risk control is constructed in the production organisation (Organisation::standard over the platform's desk) and, since commit 8bf45381, reads the book: Platform holds the desk's risk facility as an Upstream<RiskView> and stage_reason writes risk_state() and the monitor's limits into it every cycle before the panel can convene, so in a running binary the control emits forecast VaR/ES and a stress day from the kernel's own figures, plus its gross-reduction recommendation. Removing the control drops all three scopes from coverage.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/control.rs:166 forecast VaR/ES facts",
-      "backend/crates/agents/qip-investment-agents/src/control.rs:191 stress_loss_3sd_day",
-      "backend/crates/agents/qip-investment-agents/src/control.rs:214 recommended_gross_reduction",
-      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:2371 removing_the_risk_control_drops_forecast_stress_and_recommendation_from_coverage",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new with a RiskView fixed at assembly"
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::brief_the_desk_on_risk, called from stage_reason",
+      "backend/crates/runtime/qip-kernel/src/platform.rs retention_tests::reason_briefs_the_desk_risk_control_on_the_book_and_it_forecasts_and_stresses_it",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs removing_the_risk_control_drops_forecast_stress_and_recommendation_from_coverage",
+      "backend/crates/agents/qip-investment-agents/src/control.rs forecast/stress/recommendation facts"
     ],
-    "gap": "The production desk's RiskView is a value fixed at assembly (platform.rs Desk::new: RiskState with equity and cash only), never refreshed from Platform::risk_state, so in a running binary the VaR/ES maps are empty and volatility is zero: forecast and stress are never emitted outside tests. Needs the kernel (lane L01) to hold the risk facility as an Upstream<RiskView>, as it already does for world and market, and write risk_state() into it before each dispatch.",
+    "gap": "None for the requirement's check. Recorded by the skeptic, not disqualifying: the kernel test's book holds no gross, so its stress value is 0 and that assertion proves presence and the formula at zero leverage, not a wrong sigma multiple (the investment-agents test pins the multiple at 3x leverage); the removal test hand-builds the desk but uses the production agent set; the tail maps fill from the third cycle (with_tail_risk needs two returns).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -470,10 +469,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation removing_the_risk_control_drops_forecast_stress_and_recommendation_from_coverage",
+    "verification": "cargo +1.94.1 test -p qip-kernel --lib reason_briefs_the_desk_risk_control_on_the_book_and_it_forecasts_and_stresses_it && cargo +1.94.1 test -p qip-investment-agents --test organisation removing_the_risk_control_drops_forecast_stress_and_recommendation_from_coverage",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: agent side done and mutation-verified (inverting bound/observed in the recommendation made it 0 and failed the test); kept PARTIAL because the default path feeds the agent a frozen risk state."
+    "notes": "Lane L16, 2026-10-18: agent side done and mutation-verified (inverting bound/observed in the recommendation made it 0 and failed the test); kept PARTIAL because the default path feeds the agent a frozen risk state. 2026-10-24 lane L1-MONEY (commit 8bf45381): RiskView became an Upstream fed from risk_state() before each REASON. Mutation: deleting self.brief_the_desk_on_risk() from stage_reason FAILED the kernel test at 'REASON did not write the kernel's risk state into the desk'; restored with cp+cmp, passes. qip-kernel --no-fail-fast 1051 passed 0 failed. Independent security-engineer skeptic (read-only, default refuted): HOLDS — fastbrain/deepbrain/api run_cycle -> stage_reason unconditionally, record_equity grows equity_history every cycle, the organisation is built over the gated desk, the pre-trade gate still reads risk_state() and the survival-ceiling carry-over only affects the advisory view."
   },
   {
     "id": "R12-RISK-3022",
@@ -484,9 +483,10 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::submit_order",
       "backend/crates/runtime/qip-kernel/tests/pretrade_determinism.rs::an_accepted_order_was_guarded_by_a_deterministic_routing_that_names_no_model",
       "backend/crates/services/qip-cost-router/tests/determine.rs::a_determined_routing_is_deterministic_code_in_every_regime_and_horizon",
-      "backend/crates/tests/qip-acceptance/tests/order_placement_paths.rs"
+      "backend/crates/tests/qip-acceptance/tests/order_placement_paths.rs",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs SAFETY_CRITICAL (now names backend/crates/libs/qip-risk) and no_safety_critical_engine_can_reach_a_language_model"
     ],
-    "gap": "Independently graded COMPLETE as the weakest case, and held at PARTIAL here: Router::determine is now constructed on every Platform::submit_order and fails the order closed, but the routing it returns is a witness no limit code reads, only order admission is routed, and the kill-switch, sign-off and monitor-side LimitSet::check paths are not. Making the limit decision a function of the DeterministicRouting, and covering those paths, would close it.",
+    "gap": "Independently graded COMPLETE as the weakest case, and held at PARTIAL here: Router::determine is now constructed on every Platform::submit_order and fails the order closed, but the routing it returns is a witness no limit code reads, only order admission is routed, and the kill-switch, sign-off and monitor-side LimitSet::check paths are not. Making the limit decision a function of the DeterministicRouting, and covering those paths, would close it. Corrected 2026-10-24 (lane L1-MONEY): the grader's note 'nothing fails if the limits were changed to call a model' is false for the limit evaluation itself — giving qip-risk (LimitSet::check) a qip-ai dependency fails architecture::no_safety_critical_engine_can_reach_a_language_model, transitively through qip-execution-engine and qip-risk-engine, and qip-risk is now listed by name. What stays open is the gap as written: the kill-switch, sign-off and monitor-side paths are not made a function of a DeterministicRouting, and the decision to call them sits in qip-kernel, which can reach a model.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -497,7 +497,7 @@
     "verification": "cargo test -p qip-cost-router --test cost_router",
     "work_item": "",
     "size": "S",
-    "notes": "Limit-firing proofs belong to the RISK slice. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The structural arm is real but unused by production; the Risk-Brain-recommends/gates-enforce split is asserted, not shown. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The Required arm is now constructed by a running path and the test fails if the call is removed (pretrade_routing stays None). The gate-bypass concern is covered by a2ca740d. Weakest COMPLETE: nothing fails if the limits were changed to call a model."
+    "notes": "Limit-firing proofs belong to the RISK slice. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The structural arm is real but unused by production; the Risk-Brain-recommends/gates-enforce split is asserted, not shown. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The Required arm is now constructed by a running path and the test fails if the call is removed (pretrade_routing stays None). The gate-bypass concern is covered by a2ca740d. Weakest COMPLETE: nothing fails if the limits were changed to call a model. 2026-10-24 lane L1-MONEY: added libs/qip-risk to SAFETY_CRITICAL. Mutation: qip-ai.workspace = true in qip-risk/Cargo.toml FAILED no_safety_critical_engine_can_reach_a_language_model (it fired through qip-execution-engine before the list entry too, so the entry names an already-held property); Cargo.toml and Cargo.lock restored, cmp clean. architecture: 56 passed 0 failed. Kept PARTIAL."
   },
   {
     "id": "R12-REASON-3023",

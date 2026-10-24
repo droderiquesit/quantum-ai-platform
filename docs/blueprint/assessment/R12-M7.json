@@ -1233,13 +1233,15 @@
   },
   {
     "id": "R12-FABRIC-7055",
-    "status": "PARTIAL",
-    "current": "StreamPolicy requires byte/message quotas, lag limit and overload policy; a stream missing any declaration is refused by name.",
+    "status": "COMPLETE",
+    "current": "Every stream enters the broker only through Catalogue::parse (qip-fabricd parses the required QIP_EVENT_FABRIC_CATALOGUE at startup and on reload), and parse_stream refuses a stream missing byte_quota_per_producer, message_quota_per_producer, lag_limit or overload_policy, naming the field; StreamPolicy holds each as a non-optional value, so a stream without them cannot be represented.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:264-400 StreamPolicySpec/StreamPolicy: qos, partition key, ordering, retention, RF, mirroring, overload, ack, byte/message quotas, lag limit, entitlement",
-      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs:153,604 a stream missing any declaration is refused naming it"
+      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs:153,604 a stream missing any declaration is refused naming it",
+      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs::a_stream_missing_a_byte_or_message_quota_lag_limit_or_overload_policy_is_refused_naming_it",
+      "backend/crates/apps/qip-fabricd/src/lib.rs parse_catalogue; config.rs CATALOGUE required at startup"
     ],
-    "gap": "2026-10-24: Closes when a catalogue test removes byte_quota_per_producer and message_quota_per_producer in turn and asserts each refusal names the field (today only lag_limit, event_fabric_policy.rs:163, and the seven declarations at :614 are driven), so that `required(raw.byte_quota_per_producer ..)` in catalogue.rs parse_stream cannot become a default without a test failing.",
+    "gap": "None for the requirement's check. Caveat recorded by the skeptic: no fabricd-level test starts the binary on a catalogue missing a field; that refusal is inferred from fabricd parsing through the same Catalogue::parse the test drives.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1247,10 +1249,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-events --test event_fabric_policy",
+    "verification": "cargo +1.94.1 test -p qip-events --test event_fabric_policy a_stream_missing_a_byte_or_message_quota_lag_limit_or_overload_policy_is_refused_naming_it",
     "work_item": "",
     "size": "S",
-    "notes": "Declaration is complete; enforcement at the broker is f_bp. AUDIT-4 2026-10-24: regraded, the named event_fabric_policy suite does not fail when catalogue.rs parse_stream defaults byte_quota_per_producer or message_quota_per_producer to 1 (20 passed under each mutation); only the lag_limit mutation fires (event_fabric_policy.rs:172). The requirement names a quota, lag limit or overload policy; the two quotas are untested."
+    "notes": "Declaration is complete; enforcement at the broker is f_bp. AUDIT-4 2026-10-24: regraded, the named event_fabric_policy suite does not fail when catalogue.rs parse_stream defaults byte_quota_per_producer or message_quota_per_producer to 1 (20 passed under each mutation); only the lag_limit mutation fires (event_fabric_policy.rs:172). The requirement names a quota, lag limit or overload policy; the two quotas are untested. 2026-10-24 lane L1-MONEY (commit e15ceaa8): added the test driving both quotas, lag limit and overload policy. Mutation: parse_stream's required(raw.byte_quota_per_producer ..) -> raw.byte_quota_per_producer.unwrap_or(1) FAILED the new test at event_fabric_policy.rs:702 (20 passed 1 failed); same for message_quota_per_producer; restored with cp+cmp, 21 passed. Independent code-reviewer skeptic (read-only, default refuted): HOLDS — Catalogue's only constructor is parse, StreamPolicy has no Default/Deserialize and non-optional quotas, Broker::declare_stream's only non-test caller is apply_catalogue over a parsed catalogue, both committed catalogues declare all four fields, fabricd requires the catalogue at startup; a zero quota refuses every message (fail-closed)."
   },
   {
     "id": "R12-FABRIC-7056",

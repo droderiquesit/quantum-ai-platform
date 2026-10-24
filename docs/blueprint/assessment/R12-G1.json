@@ -2006,9 +2006,11 @@
       "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1074 refuse_when_a_group_lags, :1105 charge_quota",
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:153 OverloadPolicy",
       "backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:112",
-      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs::over_quota_telemetry_is_shed_visibly_and_an_outcome_is_only_ever_told_to_wait"
+      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs::over_quota_telemetry_is_shed_visibly_and_an_outcome_is_only_ever_told_to_wait",
+      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs::under_a_telemetry_flood_p4_is_shed_while_p0_and_p1_still_commit_and_p1_excess_backs_off",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::partition_state (first open serialised, commit db606202)"
     ],
-    "gap": "No credit-window flow control across classes or priority scheduler; no overload test proving P0/P1 commit while P4 shed concurrently.",
+    "gap": "2026-10-24 (lane L1-MONEY, skeptic REFUTED on db606202): the broker-level half now holds and is proven concurrently — four threads flood a P4 stream past its quota while the same producer ids commit every P0/P1 batch, P4 is shed (never told to retry), and P1 excess gets Quota{retry_after_ms>0}. Writing that test found and fixed a first-open race in Broker::partition_state that refused valid appends under concurrent connections. Still missing, per the requirement's own clauses: (1) producer-side credit/window flow control — the only credit window is the consumer's fetch_credit_bytes (qip-transport consumer.rs; one shipped user, qip-ledgerd); per-second quotas are rate limits, not windows; (2) topic priority on a shared resource — fabricd's data server cap ServerLimits::max_concurrent (64, qip-transport server.rs) is class-blind, so P4 producer connections can take every slot and P0/P1 get 503 while every stream quota holds; StreamPolicy.peak_bytes_per_second is declared but enforced nowhere; (3) bounded per-class queues between a connection and the log do not exist (connections over the cap are refused, one unpooled thread each). Closes with producer credit windows, class-aware reserved capacity or a priority-ordered byte budget at fabricd's connection layer, and an overload test through fabricd's Server proving P0/P1 commit while P4 connections saturate it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2016,10 +2018,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new overload integration test against fabricd",
+    "verification": "cargo +1.94.1 test -p qip-streaming --test event_fabric_quota",
     "work_item": "",
     "size": "M",
-    "notes": "event_fabric_infrastructure.rs:170 fabric_080 is a fixture test. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "event_fabric_infrastructure.rs:170 fabric_080 is a fixture test. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L1-MONEY (db606202): concurrent overload test added; mutations fired: charge_quota keyed by producer alone (control/outcomes refused), SampleOrShed answered as Quota (telemetry told to retry), partition_state reverted (3/3 runs 'already open in this process'); all restored with cp+cmp. Independent code-reviewer skeptic: REFUTED for the three clauses in gap; it confirmed the race fix introduces no lock nesting (declared released before partitions; recover_producers already ran under partitions)."
   },
   {
     "id": "R12-FABRIC-8090",

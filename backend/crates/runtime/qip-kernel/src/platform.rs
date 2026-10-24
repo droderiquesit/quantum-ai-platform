@@ -988,6 +988,18 @@ pub struct Platform {
     /// desk that grew with uptime would be the failure [`SERIES_HISTORY`]
     /// documents, reached by a second road.
     market: Upstream<MarketView>,
+    /// The risk view the desk's risk control reads through its
+    /// `read_risk_state` gate (R12-RISK-3021).
+    ///
+    /// Until this was an [`Upstream`] the desk held the `RiskState` built at
+    /// assembly — equity and cash, nothing else — so in every running binary
+    /// the risk control read empty value-at-risk and expected-shortfall maps
+    /// and a zero volatility, and never emitted a forecast or a stress day
+    /// outside a test that handed it a populated state by hand. The scope was
+    /// "covered" by an agent that could not see the book. REASON writes
+    /// [`Platform::risk_state`] here before the panel is convened; see
+    /// [`Self::brief_the_desk_on_risk`].
+    risk: Upstream<RiskView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -5254,6 +5266,20 @@ impl Platform {
             snapshot: MarketSnapshot::new(now),
             universe,
         });
+        let risk = Upstream::new(RiskView {
+            state: RiskState {
+                equity: initial_equity,
+                cash: initial_equity,
+                // The empty book's survival ceiling at assembly: its whole
+                // equity, which is what the seed below derives before any
+                // reserve is configured. Without it the desk's risk agent
+                // would read the installed survival limit against no
+                // ceiling and veto every thesis on a book holding nothing.
+                survival_gross_ceiling: Some(initial_equity),
+                ..RiskState::default()
+            },
+            limits: limits.clone(),
+        });
         let mut desk = Desk::new(
             MarketView {
                 snapshot: MarketSnapshot::new(now),
@@ -5290,6 +5316,7 @@ impl Platform {
         );
         desk.world = world.gate(desk.world.required(), desk.world.label());
         desk.market = market.gate(desk.market.required(), desk.market.label());
+        desk.risk = risk.gate(desk.risk.required(), desk.risk.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -5689,6 +5716,7 @@ impl Platform {
             observation_history: BTreeMap::new(),
             world,
             market,
+            risk,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -10327,7 +10355,39 @@ impl Platform {
     /// before this seam existed — is a `false` here and not a `no_data`
     /// finding somebody has to notice in a cycle report.
     pub fn desk_is_fed(&self) -> bool {
-        self.world.feeds(&self.desk.world) && self.market.feeds(&self.desk.market)
+        self.world.feeds(&self.desk.world)
+            && self.market.feeds(&self.desk.market)
+            && self.risk.feeds(&self.desk.risk)
+    }
+
+    /// The risk view the desk's risk control reads through its
+    /// `read_risk_state` gate, as REASON last wrote it.
+    pub fn desk_risk_view(&self) -> Reading<'_, RiskView> {
+        self.risk.read()
+    }
+
+    /// Write the book's current risk state and limits into the slot the
+    /// desk's risk control reads, before the panel is convened.
+    ///
+    /// One carry-over is deliberate. Before the survival kernel's first
+    /// construction [`Platform::risk_state`] has no gross ceiling, and the
+    /// pre-trade gate refuses on that; the desk's risk control, reading the
+    /// same `None` against the installed survival limit, would veto every
+    /// thesis, so no construction would ever happen to supply a ceiling.
+    /// Until one exists the view keeps the ceiling it already held — the
+    /// assembly seed, the empty book's whole equity — rather than a figure
+    /// nobody derived. The pre-trade gate is untouched: it reads
+    /// `risk_state()`, not this view.
+    fn brief_the_desk_on_risk(&self) {
+        let mut state = self.risk_state();
+        let limits = self.monitor.limits().clone();
+        self.risk.update(|view| {
+            if state.survival_gross_ceiling.is_none() {
+                state.survival_gross_ceiling = view.state.survival_gross_ceiling;
+            }
+            view.state = state;
+            view.limits = limits;
+        });
     }
 
     /// Where liquidity lives, per instrument across venues, as fed from the
@@ -13944,6 +14004,7 @@ impl Platform {
             labels([]),
             expired.len() as f64,
         );
+        self.brief_the_desk_on_risk();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
             return outcome;
@@ -27331,6 +27392,112 @@ mod retention_tests {
         assert_eq!(closes.last().map(|value| value.value), Some(newest));
     }
 
+    /// R12-RISK-3021: the production organisation's risk control forecasts
+    /// the book's tail and generates a stress day from the book the platform
+    /// actually holds, not from the state taken at assembly.
+    ///
+    /// The failure this prevents shipped: the desk held a `RiskState` with
+    /// equity and cash only, so in every binary the value-at-risk and
+    /// expected-shortfall maps were empty, volatility was zero, and the risk
+    /// control's forecast and stress facts were never emitted outside a test
+    /// that built the state by hand.
+    ///
+    /// Mutation: delete `self.brief_the_desk_on_risk();` from `stage_reason`
+    /// — the desk then still reads the assembly state, the premise-checked
+    /// tail below never reaches it, and the forecast facts are absent.
+    #[test]
+    fn reason_briefs_the_desk_risk_control_on_the_book_and_it_forecasts_and_stresses_it() {
+        let mut platform = platform();
+        assert!(
+            platform.desk_is_fed(),
+            "the desk's risk gate is not wired to the platform's upstream"
+        );
+        // An equity path with a left tail, so the kernel's own risk state has
+        // a value at risk, an expected shortfall and a volatility to give.
+        for equity in [
+            100_000.0, 100_400.0, 100_900.0, 101_200.0, 101_500.0, 101_100.0, 101_600.0, 102_000.0,
+            101_800.0, 102_300.0, 96_000.0, 90_500.0, 84_000.0,
+        ] {
+            platform.equity_history.push(equity);
+        }
+        let kernel = platform.risk_state();
+        // The premise: the kernel computed a tail and a volatility. Without
+        // it the assertions below would be about nothing.
+        assert!(
+            !kernel.value_at_risk.is_empty(),
+            "the kernel computed no VaR"
+        );
+        assert!(
+            !kernel.expected_shortfall.is_empty(),
+            "the kernel computed no expected shortfall"
+        );
+        assert!(kernel.volatility > 0.0, "the kernel computed no volatility");
+        // And the desk did not already hold it: assembly gave it none.
+        assert!(platform.desk_risk_view().state.value_at_risk.is_empty());
+
+        let now = start();
+        let lineage = Lineage::root(CorrelationId::from_string("risk-brief"), "kernel/test");
+        let _ = platform.stage_reason(now, &lineage);
+
+        assert_eq!(
+            platform.desk_risk_view().state.value_at_risk,
+            kernel.value_at_risk,
+            "REASON did not write the kernel's risk state into the desk"
+        );
+
+        // The production organisation, dispatched against the desk REASON
+        // briefed: its risk control now emits the forecast and the stress
+        // day, read from the kernel's figures.
+        let brief = qip_agents::finding::AgentBrief::new(
+            "is the book's tail acceptable",
+            now,
+            Duration::from_days(30),
+        );
+        let report = platform.organisation.dispatch(&brief, now, &lineage);
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.agent_id == qip_investment_agents::manifests::ids::RISK)
+            .expect("premise: the production organisation runs the risk control");
+        let fact = |label: &str| {
+            finding
+                .facts
+                .iter()
+                .find(|fact| fact.label == label)
+                .map(|fact| fact.value)
+        };
+        let highest = |tail: &BTreeMap<String, f64>| {
+            tail.iter()
+                .max_by(|a, b| a.0.cmp(b.0))
+                .map(|(_, value)| *value)
+        };
+        assert_eq!(
+            fact("forecast_value_at_risk"),
+            highest(&kernel.value_at_risk),
+            "the risk control's forecast is not the kernel's VaR"
+        );
+        assert_eq!(
+            fact("forecast_expected_shortfall"),
+            highest(&kernel.expected_shortfall),
+            "the risk control's forecast is not the kernel's expected shortfall"
+        );
+        // The stress day is emitted only where the book has a volatility, so
+        // its presence is the proof the kernel's figure arrived; its value is
+        // three of the kernel's daily sigmas at the kernel's own leverage
+        // (zero gross here, so zero — a book with no position loses nothing).
+        let leverage = kernel.gross_exposure.to_f64() / kernel.equity.to_f64();
+        let stress = fact("stress_loss_3sd_day").unwrap_or_else(|| {
+            panic!(
+                "the risk control generated no stress day: {:?}",
+                finding.facts
+            )
+        });
+        assert!(
+            (stress - 3.0 * kernel.volatility / 252.0_f64.sqrt() * leverage).abs() < 1e-12,
+            "the stress day {stress} is not three daily sigmas of the kernel's volatility"
+        );
+    }
+
     /// The other market records reach the desk too, so an agent reading the
     /// book or the last trade is reading what the platform absorbed.
     #[test]
@@ -27974,6 +28141,180 @@ mod central_sizing_tests {
                 .freshness(Capability::CausalGraph),
             Freshness::Stale,
             "the demo seed's year-old claims read stale at the centre"
+        );
+    }
+
+    /// One platform sized as `size` sizes it, with `trigger` applied to its
+    /// confidence signals first, and the grant the next capital grant would
+    /// be narrowed by afterwards — the multiplier `Platform::issue_capital`
+    /// hands `CentralPlane::issue_narrowed`.
+    fn sized_and_granted(
+        trigger: impl FnOnce(&mut Platform),
+        now: Timestamp,
+    ) -> (
+        Decimal,
+        Decimal,
+        crate::confidence::ConfidenceDecision,
+        Platform,
+    ) {
+        let mut platform = platform();
+        trigger(&mut platform);
+        let (budget, notional) = size(&mut platform, now);
+        let grant = platform
+            .grant_narrowing(now)
+            .expect("the grant narrowing reads");
+        (budget, notional, grant, platform)
+    }
+
+    /// R12-RISK-4112 through the kernel: a split panel on a thesis the desk is
+    /// about to size narrows the construction budget and the next capital
+    /// grant, by the disagreement schedule, and nothing else moves.
+    ///
+    /// Until this test the property was proven only in `confidence.rs`'s unit
+    /// tests, against a `ConfidenceSignals` built by hand: nothing showed the
+    /// platform's DECIDE stage reading the dissent REASON records, or the
+    /// grant `issue_capital` signs reading the construction that followed.
+    ///
+    /// Mutations that fail it: skip the disagreement block in
+    /// `ConfidenceSignals::decide` (budget unchanged); skip the
+    /// `Trigger::Disagreement` arm in `decide_for_grant` (grant unchanged).
+    #[test]
+    fn a_split_panel_narrows_the_construction_budget_and_the_next_grant() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let (calm_budget, calm_notional, calm_grant, _) = sized_and_granted(|_| {}, now);
+        assert!(
+            calm_notional.is_positive(),
+            "premise: the undisputed platform sized something"
+        );
+        assert!(
+            !calm_grant
+                .contractions
+                .iter()
+                .any(|c| c.trigger == crate::confidence::Trigger::Disagreement),
+            "premise: no disagreement narrows a grant on an undisputed platform: {calm_grant:?}"
+        );
+
+        // Three of four agents argued against the AAPL thesis.
+        let (split_budget, split_notional, split_grant, _) = sized_and_granted(
+            |platform| {
+                platform
+                    .governor
+                    .signals_mut()
+                    .observe_dissent("HYP-AAPL", 3, 4);
+            },
+            now,
+        );
+        let floor = crate::confidence::DISAGREEMENT_FLOOR;
+        assert_eq!(
+            split_budget,
+            calm_budget * floor,
+            "the construction budget is not narrowed by the disagreement schedule"
+        );
+        assert!(
+            split_notional < calm_notional,
+            "the split panel traded as much"
+        );
+        assert_eq!(
+            split_grant.multiplier,
+            calm_grant.multiplier * floor,
+            "the next grant is not narrowed by the disagreement schedule: {split_grant:?}"
+        );
+        assert!(
+            split_grant
+                .contractions
+                .iter()
+                .any(|c| c.trigger == crate::confidence::Trigger::Disagreement),
+            "the grant does not name the disagreement that narrowed it: {split_grant:?}"
+        );
+        assert!(
+            split_grant.multiplier <= Decimal::ONE && calm_grant.multiplier <= Decimal::ONE,
+            "a grant multiplier exceeded one"
+        );
+    }
+
+    /// R12-RISK-4115 through the kernel: a thesis whose instrument is in a
+    /// regime no resolved claim was graded in narrows the construction budget
+    /// and the next capital grant by the regime-mismatch factor, and a
+    /// platform graded in that regime sizes exactly as one graded in nothing.
+    ///
+    /// Mutations that fail it: make `regime_multiplier` return one always
+    /// (budget and grant unchanged); skip the `Trigger::RegimeMismatch` arm
+    /// in `decide_for_grant` (grant unchanged).
+    #[test]
+    fn a_regime_no_claim_was_graded_in_narrows_the_construction_budget_and_the_next_grant() {
+        use qip_cost_router::context::MarketRegime;
+        let now = Timestamp::from_secs(1_760_000_100);
+        let (calm_budget, calm_notional, calm_grant, calm) = sized_and_granted(|_| {}, now);
+        assert!(calm_notional.is_positive(), "premise: something was sized");
+        // The regimes the two theses are sized in, read the way DECIDE reads
+        // them; every other regime is one the mismatched platform is graded in.
+        let present: BTreeSet<MarketRegime> = ["AAPL", "MSFT"]
+            .into_iter()
+            .map(|object| calm.market_regime(object))
+            .collect();
+        let elsewhere: Vec<MarketRegime> = [
+            MarketRegime::Trending,
+            MarketRegime::MeanReverting,
+            MarketRegime::Crisis,
+            MarketRegime::Illiquid,
+            MarketRegime::Quiet,
+        ]
+        .into_iter()
+        .filter(|regime| !present.contains(regime))
+        .collect();
+        assert!(
+            !elsewhere.is_empty(),
+            "premise: some regime is not the one the theses sit in"
+        );
+
+        // A calibration good enough to earn one on its own, so the only
+        // contraction the grading adds is the regime's.
+        let (away_budget, away_notional, away_grant, _) = sized_and_granted(
+            |platform| {
+                platform
+                    .governor
+                    .signals_mut()
+                    .observe_calibration(0.0, 60, elsewhere.clone());
+            },
+            now,
+        );
+        let mismatch = crate::confidence::REGIME_MISMATCH;
+        assert_eq!(
+            away_budget,
+            calm_budget * mismatch,
+            "the construction budget is not narrowed by the regime mismatch"
+        );
+        assert!(
+            away_notional < calm_notional,
+            "the mismatched platform traded as much"
+        );
+        assert_eq!(
+            away_grant.multiplier,
+            calm_grant.multiplier * mismatch,
+            "the next grant is not narrowed by the regime mismatch: {away_grant:?}"
+        );
+        assert!(
+            away_grant.multiplier <= Decimal::ONE,
+            "a grant multiplier exceeded one"
+        );
+
+        // Graded in the very regimes the theses sit in: no contraction.
+        let (home_budget, _, home_grant, _) = sized_and_granted(
+            |platform| {
+                platform
+                    .governor
+                    .signals_mut()
+                    .observe_calibration(0.0, 60, present.clone());
+            },
+            now,
+        );
+        assert_eq!(
+            home_budget, calm_budget,
+            "a graded regime narrowed the budget"
+        );
+        assert_eq!(
+            home_grant.multiplier, calm_grant.multiplier,
+            "a graded regime narrowed the grant"
         );
     }
 }
