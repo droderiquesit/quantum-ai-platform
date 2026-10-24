@@ -344,6 +344,102 @@ fn a_plan_refused_part_way_through_leaves_nothing_listed_on_the_venue() -> Resul
     Ok(())
 }
 
+/// R12-COVERAGE-5107: installation never replaces, and never withdraws, a
+/// book it did not put on the shared venue. `SimulatedBroker::list_book`
+/// replaces whatever rests under the product, so without the check a plan
+/// naming a product that already rests would overwrite that ladder with an
+/// empty book, and a refusal later in the plan would then withdraw a book
+/// this installation never owned. The plan here is fully permitted and its
+/// second market is the product already resting.
+///
+/// Mutation: make the `venue.listed_book(..).is_some()` check in
+/// `FactoryStage::take_through` never fire and the plan installs over the
+/// resting book (found by the round-5 skeptic: until then unpinned).
+#[test]
+fn a_plan_naming_a_product_that_already_rests_on_the_venue_is_refused_and_leaves_that_book_alone()
+-> Result<()> {
+    use qip_execution_engine::broker::{ListingVenue, SimulatedBroker, SimulationSettings};
+    use qip_execution_engine::creation::{CreationAction, CreationAuthority, CreationRequest};
+    use qip_execution_engine::market_creation::PricingRule;
+    use qip_kernel::market_factory_stage::FactoryStage;
+    const RESTING: &str = "obj-RESTING";
+
+    let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 7);
+    let rule = PricingRule::new(
+        dec!("100"),
+        dec!("0.5"),
+        dec!("0.25"),
+        dec!("10"),
+        3,
+        dec!("0.05"),
+    )?;
+    let foreign = rule.book(RESTING, VENUE, start())?;
+    let request = CreationRequest::new(CreationAction::List, VENUE, RESTING, "GB");
+    let mut register = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        register.record(authority, &request, "resting before the plan")?;
+    }
+    broker.list_book(foreign, &register.admit(&request)?)?;
+    let depth = broker
+        .listed_book(RESTING)
+        .map(|book| book.total_depth())
+        .expect("premise: the foreign book rests");
+    assert!(depth.is_positive(), "premise: the foreign book has depth");
+
+    let mut plan = factory_plan("obj-NEVER-OBSERVED");
+    let resting: Vec<PermissionEntry> = plan
+        .permissions
+        .iter()
+        .map(|entry| PermissionEntry {
+            product: RESTING.to_string(),
+            ..entry.clone()
+        })
+        .collect();
+    plan.permissions.extend(resting);
+    let mut second = plan.markets[0].clone();
+    second.product = RESTING.to_string();
+    plan.markets.push(second);
+
+    let mut ladders = |product: &str, venue: &str, rule: &PricingRule| {
+        let mut manager = qip_execution_engine::oms::OrderManager::new(
+            qip_risk_engine::pretrade::PreTradeChecker::new(LimitSet::new("breadth-test")),
+        );
+        let state = qip_risk::limits::RiskState {
+            equity: dec!("1000000"),
+            cash: dec!("1000000"),
+            ..qip_risk::limits::RiskState::default()
+        };
+        manager.admit_ladder(
+            product,
+            venue,
+            rule,
+            "market-factory",
+            &qip_risk_engine::autonomy::AutonomyController::new(),
+            &state,
+            start(),
+        )
+    };
+    let refused = FactoryStage::install(&plan, &mut broker, &mut ladders, start())
+        .expect_err("a plan was installed over a book already resting on the venue");
+    assert!(
+        refused
+            .message()
+            .contains("already rests a book for obj-RESTING"),
+        "refused for another reason: {}",
+        refused.message()
+    );
+    assert_eq!(
+        broker.listed_book(RESTING).map(|book| book.total_depth()),
+        Some(depth),
+        "the book that rested before the plan was replaced or withdrawn"
+    );
+    assert!(
+        broker.listed_book(PRODUCT).is_none(),
+        "the plan's first market was left on the venue after the refusal"
+    );
+    Ok(())
+}
+
 /// The event plane's own market and the instrument each of its outcomes
 /// trades as: everything the synthetic venue brings into existence, so
 /// everything that needs a creation admission.
@@ -1230,29 +1326,32 @@ fn the_event_plane_lists_only_under_list_and_quotes_only_under_seed() -> Result<
 /// deleted the legal opinion an event market was listed under left it
 /// priced, quoted and traded for as long as the process ran.
 ///
-/// Revoking one outcome instrument's `list` permission withdraws the whole
-/// market at the next cycle — a complete set with a leg the plane may not
+/// Revoking one outcome instrument's `list` permission, or its `create`
+/// permission, withdraws the whole market at the next cycle — a complete set with a leg the plane may not
 /// hold is not a market it may make — and the withdrawal is journaled with
 /// the refusal. Revoking everything does the same through the fail-closed
 /// path.
 ///
 /// Mutations: (1) make `withdraw_lapsed` keep every market (`if true {
-/// continue; }`) and the revoked market is still quoted; (2) make
+/// continue; }`) and the revoked market is still quoted; (1a) replace its
+/// `create` refusals with an empty list and the create-revoked case is
+/// still quoted (found by the round-5 skeptic: until then only the `list`
+/// half was pinned); (2) make
 /// `revise_event_market_permissions` skip `set_creation_permissions` and
 /// the revocation never reaches the plane.
 #[test]
 fn a_revoked_event_permission_withdraws_the_market_at_the_next_cycle() -> Result<()> {
-    for revoke_all in [false, true] {
+    // `Some(action)` revokes one authority's permission for that action on
+    // one outcome instrument; `None` revokes the whole register.
+    for revoked in [Some("list"), Some("create"), None] {
         let (mut platform, first) = run_event_cycle(eligible()?, VenueKind::Event)?;
         // Premise: the fully permitted market is quoted on every outcome.
         assert_eq!(first.quotes.len(), 3, "{first:?}");
-        if revoke_all {
-            platform.revoke_event_market_permissions();
-        } else {
+        if let Some(action) = revoked {
             let entries: Vec<PermissionEntry> = event_permissions()
                 .into_iter()
                 .filter(|entry| {
-                    !(entry.action == "list"
+                    !(entry.action == action
                         && entry.authority == "jurisdiction"
                         && entry.product == "SYNTH-PREDICT-CUT")
                 })
@@ -1261,6 +1360,8 @@ fn a_revoked_event_permission_withdraws_the_market_at_the_next_cycle() -> Result
                 platform.revise_event_market_permissions(&entries)?,
                 event_permissions().len() - 1
             );
+        } else {
+            platform.revoke_event_market_permissions();
         }
         let later = start().saturating_add(Duration::from_hours(1));
         platform.run_cycle(later);
@@ -1269,12 +1370,12 @@ fn a_revoked_event_permission_withdraws_the_market_at_the_next_cycle() -> Result
             .expect("SIMULATE journaled the event markets");
         assert!(
             after.quotes.is_empty() && after.fills.is_empty() && after.valuations.is_empty(),
-            "revoke_all={revoke_all}: a revoked market was still priced or quoted: {after:?}"
+            "revoked={revoked:?}: a revoked market was still priced or quoted: {after:?}"
         );
         let plane = platform.event_markets().expect("installed");
         assert!(
             plane.is_withdrawn(&qip_core::ObjectId::from_string(EVENT_MARKET)),
-            "revoke_all={revoke_all}: the market was not withdrawn"
+            "revoked={revoked:?}: the market was not withdrawn"
         );
         let discovered: Vec<EventMarketsDiscovered> = platform
             .event_log()
@@ -1292,16 +1393,17 @@ fn a_revoked_event_permission_withdraws_the_market_at_the_next_cycle() -> Result
             .iter()
             .flat_map(|record| record.withdrawn.iter())
             .collect();
-        assert_eq!(withdrawn.len(), 1, "revoke_all={revoke_all}: {withdrawn:?}");
-        let cut = if revoke_all {
-            "SYNTH-PREDICT-MARKET"
-        } else {
-            "SYNTH-PREDICT-CUT"
+        assert_eq!(withdrawn.len(), 1, "revoked={revoked:?}: {withdrawn:?}");
+        let (cut, action) = match revoked {
+            Some(action) => ("SYNTH-PREDICT-CUT", action),
+            None => ("SYNTH-PREDICT-MARKET", "create"),
         };
         assert!(
             withdrawn[0].contains(EVENT_MARKET)
-                && withdrawn[0].contains(&format!("{cut}: no market may be created")),
-            "revoke_all={revoke_all}: the withdrawal does not carry the refusal: {}",
+                && withdrawn[0].contains(&format!(
+                    "{cut}: no market may be created here: to {action} {cut}"
+                )),
+            "revoked={revoked:?}: the withdrawal does not carry the refusal: {}",
             withdrawn[0]
         );
     }
