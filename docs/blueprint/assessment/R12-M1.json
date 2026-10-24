@@ -24,7 +24,7 @@
   },
   {
     "id": "R12-TICK-1002",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip_kernel::fusion::fuse joins knowledge-graph events with knowable tick traces into FusedState; FusedState::outside_priors hands each instrument's strongest directional posterior to the platform (qip-deepbrain node.rs sets them every cycle from TickDesk::outside_priors), and Platform::reason_about_the_queue multiplies the hypothesis confidence by m = 1 - max(0, 2p - 1), p being the posterior against the hypothesis's direction (ADR 0151 decision 3): it can narrow and never raise. The tick desk itself stays behind QIP_DEEPBRAIN_TICK_EVERY, which no committed deployment sets, so the seam is inert there until the desk is on.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/fusion.rs::OutsidePrior",
@@ -35,7 +35,7 @@
       "backend/crates/runtime/qip-kernel/tests/outside_prior.rs::a_posterior_against_the_hypothesis_narrows_its_confidence_and_one_for_it_changes_nothing",
       "backend/crates/runtime/qip-kernel/tests/fusion.rs::the_fused_state_hands_reason_each_instruments_strongest_directional_posterior"
     ],
-    "gap": "",
+    "gap": "2026-10-24 (parent regrade): the row is a capability (world and tick streams fused into one decision; removing either input changes the decision), and the tick stream reaches REASON only while the tick desk runs. QIP_DEEPBRAIN_TICK_EVERY is unset in every committed deployment, so no default path fuses the two streams. The narrowing seam itself is built and tested (ADR 0151 decision 3). Closes when a committed deployment turns the desk on, with a test that a cycle on that configuration consumes a tick-derived posterior.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -48,7 +48,7 @@
     "verification": "cargo test -p qip-kernel --test outside_prior --test fusion",
     "work_item": "",
     "size": "XL",
-    "notes": "Lane N1-KERNEL-ACCEPT 2026-10-24: closed per ADR 0151 decision 3 (closure plan adr-c-2026-10-19.json). Mutations: m = 1 + (2p-1) fails the REASON-level test (a posterior for the hypothesis moved confidence) and the multiplier sweep (multiplier 2); dropping the confidence multiply fails the narrowing test; negating the prior direction fails the fusion test. Tick desk off by default by the ADR."
+    "notes": "Lane N1-KERNEL-ACCEPT 2026-10-24: closed per ADR 0151 decision 3 (closure plan adr-c-2026-10-19.json). Mutations: m = 1 + (2p-1) fails the REASON-level test (a posterior for the hypothesis moved confidence) and the multiplier sweep (multiplier 2); dropping the confidence multiply fails the narrowing test; negating the prior direction fails the fusion test. Tick desk off by default by the ADR. Parent session 2026-10-24: regraded COMPLETE -> PARTIAL because the README rule requires the behaviour on a default production path, and the lane itself flagged that the desk is off by default."
   },
   {
     "id": "R12-WORLD-1003",

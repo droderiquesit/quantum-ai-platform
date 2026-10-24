@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 553 | 36.4% |
+| Blueprint completion (COMPLETE) | 552 | 36.4% |
 | Implemented (behaviour exists in code) | 1333 | 87.8% |
 | Tested (a named test demonstrates it) | 1235 | 81.4% |
 | Integrated (reached from a composition root) | 891 | 58.7% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 553 |
-| PARTIAL | 825 |
+| COMPLETE | 552 |
+| PARTIAL | 826 |
 | MISSING | 108 |
 | BLOCKED | 31 |
 | NEEDS-VALIDATION | 1 |
@@ -39,7 +39,7 @@ register (ADR 0099), and there is no second one.
 | [LEDGER](#ledger) | 50 | 17 | 25 | 5 | 3 | 0 | 41 | 33 | 0 |
 | [DATA](#data) | 95 | 24 | 61 | 10 | 0 | 0 | 83 | 75 | 1 |
 | [EVID](#evid) | 25 | 5 | 20 | 0 | 0 | 0 | 24 | 21 | 0 |
-| [TICK](#tick) | 97 | 25 | 69 | 3 | 0 | 0 | 93 | 84 | 1 |
+| [TICK](#tick) | 97 | 24 | 70 | 3 | 0 | 0 | 93 | 84 | 1 |
 | [WORLD](#world) | 69 | 34 | 30 | 5 | 0 | 0 | 62 | 57 | 1 |
 | [REASON](#reason) | 41 | 16 | 23 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 27 | 19 | 2 | 0 | 0 | 46 | 45 | 9 |
@@ -684,7 +684,7 @@ register (ADR 0099), and there is no second one.
 | R12-TICK-10172 | Build phase 13: Digital Twins | qip-twin counterfactual/regret and simulation engine; no future-state tree or rare-event factory. | PARTIAL | Remaining twins. | R12-TICK-10121 | P3 | per-deliverable checks above |  |
 | R12-TICK-10184 | Replay reconstructs history from Fabric/GCS to test strategies and explain incidents | Venue-bytes replay exists and is deterministic: qip-orderbook::replay re-decodes, re-sequences and re-books a recorded ITCH session and reproduces every event, book, fill and flag, twice and from a checkpoint, against a committed digest (backend/crates/tests/qip-acceptance/tests/tick_replay.rs). The node-level replay the earlier text described does not exist: backend/crates/apps/qip-edge-node/src/replay.rs is a three-line module doc (ADR 0100 §8, SLICE-39) with no code, so nothing re-drives run_pass from recorded tape, control and clock inputs. The recorded inputs it would read exist: PassInputs {marker: PassMarker, applied} reach the fabric spool (event_fabric::inputs). | PARTIAL | Build the node replay (ADR 0100 §8 SLICE-39): read PassInputs and control frames from spool or archived segments (qip_storage::segment::archive::ArchiveReader over a BlobStore), rebuild the cell from the marker's config and plan digests, re-drive run_pass over ManualClock and compare the reproduced journal; then source it from the GCS archive, which needs enable_cloud_storage. Decision and outcome history are not reconstructed by anything today. | R12-DATA-10079, R12-FABRIC-10102 | P0 | cargo test -p qip-acceptance --test tick_replay |  |
 | R12-TICK-10191 | Twin and synthetic jobs can fail without affecting live trading | lane_placement walks the transitive closure of qip-edge-node (premise: contains qip-edge) and asserts qip-simulation-engine, qip-training, qip-twin, qip-world-model are absent and registered Lane 3; fast lanes may not depend on slower lanes. | COMPLETE | None for the requirement; not deployed. |  | P1 | cargo test -p qip-acceptance --test arch_001_independent_reflex |  |
-| R12-TICK-1002 | Dual-stream learning fused into one decision model | qip_kernel::fusion::fuse joins knowledge-graph events with knowable tick traces into FusedState; FusedState::outside_priors hands each instrument's strongest directional posterior to the platform (qip-deepbrain node.rs sets them every cycle from TickDesk::outside_priors), and Platform::reason_about_the_queue multiplies the hypothesis confidence by m = 1 - max(0, 2p - 1), p being the posterior against the hypothesis's direction (ADR 0151 decision 3): it can narrow and never raise. The tick desk itself stays behind QIP_DEEPBRAIN_TICK_EVERY, which no committed deployment sets, so the seam is inert there until the desk is on. | COMPLETE |  | R12-TICK-1177 | P2 | cargo test -p qip-kernel --test outside_prior --test fusion |  |
+| R12-TICK-1002 | Dual-stream learning fused into one decision model | qip_kernel::fusion::fuse joins knowledge-graph events with knowable tick traces into FusedState; FusedState::outside_priors hands each instrument's strongest directional posterior to the platform (qip-deepbrain node.rs sets them every cycle from TickDesk::outside_priors), and Platform::reason_about_the_queue multiplies the hypothesis confidence by m = 1 - max(0, 2p - 1), p being the posterior against the hypothesis's direction (ADR 0151 decision 3): it can narrow and never raise. The tick desk itself stays behind QIP_DEEPBRAIN_TICK_EVERY, which no committed deployment sets, so the seam is inert there until the desk is on. | PARTIAL | 2026-10-24 (parent regrade): the row is a capability (world and tick streams fused into one decision; removing either input changes the decision), and the tick stream reaches REASON only while the tick desk runs. QIP_DEEPBRAIN_TICK_EVERY is unset in every committed deployment, so no default path fuses the two streams. The narrowing seam itself is built and tested (ADR 0151 decision 3). Closes when a committed deployment turns the desk on, with a test that a cycle on that configuration consumes a tick-derived posterior. | R12-TICK-1177 | P2 | cargo test -p qip-kernel --test outside_prior --test fusion |  |
 | R12-TICK-1009 | Raw ticks normalized, reconstructed, replayed, distilled | Deterministic tick replay of recorded venue bytes into books exists and is tested; distillation (qip_training::distill::distil) is called from qip-deepbrain's learning desk; there is no learned microstructure representation/embedding stage between them. | PARTIAL | Microstructure representation learning on replayed books and distillation from it into reflex models. |  | P2 | cargo test -p qip-acceptance --test tick_replay; cargo test -p qip-training |  |
 | R12-TICK-1022 | Dual streams joined through time-aligned state | qip_kernel::fusion::fuse joins knowledge-graph events (occurred and recorded by as_of) with knowable tick traces into FusedState (posteriors, mismatches, opportunity_map); tests/fusion.rs covers it; called by qip-deepbrain tick_desk, which is off unless QIP_DEEPBRAIN_TICK_EVERY is set (no committed deployment sets it). | PARTIAL | Tick embeddings are not joined (fusion reads mid and spread only); the desk that calls fuse is off unless QIP_DEEPBRAIN_TICK_EVERY is set and no committed deployment sets it. | R12-TICK-1002 | P2 | cargo test -p qip-kernel --test fusion |  |
 | R12-TICK-1048 | Market-data training preserves event time | Trades/ticks preserve event time distinct from capture time; truth loop keeps both timestamps through every stage. | COMPLETE | None for the property; training not deployed. |  | P0 | cargo test -p qip-acceptance --test temporal_correctness --test truth_loop; cargo test -p qip-training |  |
