@@ -2510,7 +2510,7 @@
       "backend/crates/apps/qip-api/src/main.rs:306",
       "backend/crates/edge/qip-edge/tests/trust_bundle.rs"
     ],
-    "gap": "Write the four HSM signing keys and the publish workflow in Terraform, apply to dev through infra.yml with the plan shown, set QIP_ARTEFACT_SIGNER=kms in dev after a real-key verification (ADR 0110 Amendment 1).",
+    "gap": "2026-10-24: HSM signing keys are billed and need an infra.yml apply with the plan shown, then QIP_ARTEFACT_SIGNER=kms in dev after a real-key check; only modules/binaryauthorization declares an ASYMMETRIC_SIGN key today.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3992,7 +3992,7 @@
       "infrastructure/terraform/modules/gitops-control-plane/main.tf:131",
       "infrastructure/terraform/modules/cloudrun/main.tf:1-40"
     ],
-    "gap": "Drill.",
+    "gap": "2026-10-24: a game day needs a deployed environment; no Cloud Run service exists in dev (ADR 0093).",
     "implemented": true,
     "tested": false,
     "integrated": false,
