@@ -714,7 +714,7 @@
       "qip-market-ingestion/tests/evidence_stage.rs::every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
       "qip-evidence/src/evidence.rs::tests::an_evidence_record_refuses_empty_license"
     ],
-    "gap": "A world-model fact does not carry its evidence id, and observe is not gated on world-fabric admission. The connector runtime already quarantines a record whose evidence is refused, impossible or from an altered document (connector/runtime.rs check_evidence), so a record reaching Platform::sense via ConnectorFeed::poll has passed a per-source check. What is missing is the kernel-level gate: a SensedRecord carries no evidence id (the id is the event fingerprint minted inside the connector runtime), so Platform::absorb_evidence cannot hand back which records the world fabric admitted and node.rs / connectors.rs cannot gate observe on it; ConnectorFeed::poll would have to return (record, evidence id) pairs first (qip-market-ingestion, outside the model lane).",
+    "gap": "Unchanged on 2026-10-24 (lane T8-RESIDUAL), graded LARGE_SPLITTABLE. The slices, in order: (1) qip-market-ingestion: ConnectorFeed::poll returns each accepted record with the evidence id minted in connector/runtime.rs; (2) qip-kernel: Platform::absorb_evidence reports which ids the world fabric admitted; (3) qip-fastbrain node.rs and qip-deepbrain connectors.rs gate observe on that set; (4) give a world-model fact its evidence id; (5) non-connector feeds (synthetic, replay, tape, live) forward evidence at all (fastbrain feed.rs). None is started: slice 1 changes a public return type in two apps and the kernel's intake together.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -727,7 +727,7 @@
     "verification": "an integration test that a narrative poll produces EvidenceRecords",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop. 2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap."
+    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop. 2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap. 2026-10-24 (lane T8-RESIDUAL): re-read, no change."
   },
   {
     "id": "R12-EVID-2032",

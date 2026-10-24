@@ -149,7 +149,18 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    assert_eq!(first.population.len(), 10, "{:?}", first.population);
+    // Ten members plus the one domain member the platform now declares for
+    // the universe's single asset class (MODEL-4009): the composition names
+    // the classes itself, so a deployed cycle carries the member too.
+    assert_eq!(first.population.len(), 11, "{:?}", first.population);
+    assert!(
+        first
+            .population
+            .iter()
+            .any(|m| m.id == federation_stage::FederationStage::domain_member("equity")),
+        "no domain member for the universe's asset class: {:?}",
+        first.population
+    );
     for family in REQUIRED_FAMILIES {
         assert!(
             !first.uncovered.contains(&family.to_string()),
@@ -166,7 +177,7 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
         .collect();
     assert_eq!(instrument.len(), 2, "one proposition per instrument");
     for a in &instrument {
-        assert_eq!(a.disagreement.views.len(), 8, "{a:?}");
+        assert_eq!(a.disagreement.views.len(), 9, "{a:?}");
         // Unscored members cannot be weighed, and the record says so rather
         // than averaging them.
         assert!(matches!(a.decision, Decision::RequestMoreInformation(_)));
@@ -474,7 +485,7 @@ fn competing_world_models_are_scored_against_reality_and_a_material_disagreement
             .iter()
             .filter(|v| v.lineage.parents.is_empty())
             .count();
-        assert_eq!(roots, 8, "{a:?}");
+        assert_eq!(roots, 9, "{a:?}");
         for v in &a.disagreement.views {
             assert!(v.evidence_fit.is_finite() && v.causal_coherence.is_finite());
             assert!(v.uncertainty.is_finite() && v.composite.is_some(), "{v:?}");
