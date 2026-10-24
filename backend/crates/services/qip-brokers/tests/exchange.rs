@@ -34,6 +34,9 @@ use qip_core::testing::Property;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Currency, Decimal, dec};
 use qip_execution_engine::broker::Broker;
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::object::FinancialObject;
@@ -102,7 +105,7 @@ fn credential() -> VenueCredential {
 /// A venue listed, seeded on both sides, logged on and heartbeating.
 fn live_venue(settings: ExchangeSettings, seed: u64) -> Result<SimulatedExchange> {
     let mut exchange = SimulatedExchange::new(venue(), settings, seed, start());
-    exchange.list(instrument());
+    list_admitted(&mut exchange, VENUE, instrument())?;
     for (side, price, size) in [
         (Side::Sell, dec!("100.02"), 20),
         (Side::Sell, dec!("100.03"), 40),
@@ -917,7 +920,7 @@ fn market_data_shows_the_book_that_is_actually_resting() -> Result<()> {
 #[test]
 fn the_broker_port_cannot_reach_a_venue_that_is_not_ready() -> Result<()> {
     let mut exchange = SimulatedExchange::new(venue(), ExchangeSettings::orderly(), 37, start());
-    exchange.list(instrument());
+    list_admitted(&mut exchange, VENUE, instrument())?;
     exchange.seed_liquidity(
         &object(),
         Side::Sell,
@@ -1096,7 +1099,7 @@ fn venue_with_native(post_only: bool) -> Result<SimulatedExchange> {
     if post_only {
         exchange = exchange.with_post_only();
     }
-    exchange.list(instrument());
+    list_admitted(&mut exchange, VENUE, instrument())?;
     for (side, price, size) in [
         (Side::Sell, dec!("100.02"), 20),
         (Side::Buy, dec!("99.98"), 20),
@@ -1265,4 +1268,25 @@ fn a_post_only_instruction_on_an_order_with_no_price_is_refused_rather_than_sent
         "a post-only market order took liquidity"
     );
     Ok(())
+}
+
+/// List `object` at `venue` under an admission with all three permissions
+/// recorded. A fixture: the gate itself is proven by qip-execution-engine's
+/// creation tests and qip-acceptance's `market_creation` suite.
+fn list_admitted(
+    exchange: &mut SimulatedExchange,
+    venue: &str,
+    object: FinancialObject,
+) -> Result<()> {
+    let request = CreationRequest::new(
+        CreationAction::List,
+        venue,
+        object.object_id.as_str(),
+        "paper",
+    );
+    let mut permissions = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        permissions.record(authority, &request, "test fixture")?;
+    }
+    exchange.list(object, &permissions.admit(&request)?)
 }

@@ -133,7 +133,12 @@ for pattern in "${PATTERNS[@]}"; do
   # annotation key rather than excluding the vendored file, so a real
   # credential pasted into that file would still be caught. The acceptance
   # suite's copy of this check carries the same single exemption.
-  if matches=$(git grep -n -I -E "$pattern" -- . "${EXCLUDE_PATHS[@]}" 2>/dev/null \
+  # `-e`, because the first pattern begins with dashes: without it git grep
+  # read '-----BEGIN ... PRIVATE KEY-----' as an option, exited 129 with
+  # "unknown option", and `2>/dev/null` plus this `if` turned that into "no
+  # match", so the tree scan could not find a private key at all
+  # (R12-CICD-8031, AUDIT-5 verification, 2026-10-24).
+  if matches=$(git grep -n -I -E -e "$pattern" -- . "${EXCLUDE_PATHS[@]}" 2>/dev/null \
     | grep -v 'cert-manager\.io/inject-ca-from-secret:'); then
     echo "possible secret matching /$pattern/:" >&2
     echo "$matches" >&2

@@ -169,28 +169,18 @@ resource "google_secret_manager_secret" "platform" {
   }
 }
 
-# The venue credential is readable only where live trading is permitted at all.
+# No grant on the venue credential is made here (R12-GCP-8114, ADR 0108 E3).
 #
-# This is the infrastructure half of the live-trading control. The application
-# refuses to send a live order below a live autonomy level; this makes the
-# credential unreadable in an environment that could not use it anyway, so a
-# misconfigured application in a paper environment still cannot authenticate to
-# a venue.
-#
-# The reader is the fast brain's Cloud Run identity, passed in by the root
-# from the catalogue rather than created here: every workload's account is
-# created by `modules/cloudrun` beside the workload, and this module holds
-# only the one grant whose condition is the environment's ceiling. `count`
-# on the root's predicate is the shape three acceptance tests evaluate rung
-# by rung; keep it.
-resource "google_secret_manager_secret_iam_member" "venue_credential" {
-  count = var.venue_credential_readable ? 1 : 0
-
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.platform["qip-venue-credential"].secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${var.venue_credential_reader}"
-}
+# This module used to bind it to the fast brain's Cloud Run identity whenever
+# the ceiling could reach a venue. That was a second reader beside the one the
+# execution node binds to its own account in `modules/execution-node`, and it
+# was the wrong one: the requirement is that no Cloud Run workload can read
+# the venue credential and only the execution node can, and ADR 0108's E3
+# mounts venue credentials only to the Stage 2 execution node. The grant was
+# never created (its predicate is false at every ceiling a plan can carry), so
+# removing it destroys nothing. What remains is one grant, on the node,
+# conditional on the same ceiling predicate and on the node being out of
+# shadow mode.
 
 # Every other grant a workload needs — its mounted secrets, telemetry,
 # logging — is made by `modules/cloudrun` on the identity it creates, in the

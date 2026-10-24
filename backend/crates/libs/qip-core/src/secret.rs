@@ -42,6 +42,7 @@
 //! secret into a disabled control.
 
 use crate::error::{Error, Result};
+use std::fmt;
 
 /// The suffix naming the file variant of a credential variable.
 pub const FILE_SUFFIX: &str = "_FILE";
@@ -120,6 +121,81 @@ fn read_file(file_variable: &str, path: &str) -> Result<String> {
     }
 
     Ok(value.to_string())
+}
+
+// --- the redacting value ----------------------------------------------------
+
+// Here rather than in `qip-brokers`, where it was defined until 2026-10-24,
+// so a workload can hold a credential in it without linking the crate that
+// holds the REST order-entry adapter (R12-GCP-8114). `qip_brokers::Secret`
+// re-exports it, so no adapter changed.
+
+/// A secret value, which can be handed on but not looked at by accident.
+///
+/// The three ways a secret escapes are a log line, a serialised event and a
+/// panic message, and all three go through the same two traits. So `Debug` and
+/// `Display` are written by hand and redact, and neither is derived: a derive
+/// here would print the value, and it would do it in the one place nobody
+/// re-reads — an error path.
+///
+/// `Serialize` and `Deserialize` are not implemented *at all*, which is the
+/// stronger statement. A struct holding a `Secret` cannot derive them either,
+/// so the compiler refuses the snapshot rather than emitting one with a token
+/// in it.
+///
+/// The bytes are zeroed on drop. That is best-effort — a `Clone`, a reallocated
+/// `Vec` or a core dump can still hold a copy — but it costs one safe line and
+/// shortens the window, and this workspace forbids the `unsafe` a stronger
+/// guarantee would need.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret {
+    bytes: Vec<u8>,
+}
+
+impl Secret {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self {
+            bytes: value.into().into_bytes(),
+        }
+    }
+
+    /// Hand the value out.
+    ///
+    /// Named to be conspicuous: a reviewer scanning a diff should see the word
+    /// `expose` at every point a secret leaves this type, and every such point
+    /// should be a transport writing an authentication frame.
+    pub fn expose_str(&self) -> Result<&str> {
+        std::str::from_utf8(&self.bytes).map_err(|_| {
+            Error::invalid("this secret is not valid UTF-8 and cannot be read as text")
+        })
+    }
+
+    /// Whether anything was supplied. One bit, and the bit an operator needs:
+    /// an environment variable set to the empty string is the failure that
+    /// looks exactly like success.
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Deliberately not `debug_struct`: no field, no length, no prefix. A
+        // length is a hint and a prefix is a head start.
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
+impl fmt::Display for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.bytes.fill(0);
+    }
 }
 
 #[cfg(test)]

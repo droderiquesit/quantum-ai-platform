@@ -206,6 +206,112 @@ fn the_exemption_list_holds_only_crates_that_are_still_unreachable() {
     }
 }
 
+/// The binaries the Cloud Run catalogue deploys, read from its `binary =`
+/// lines so a workload added to the catalogue is covered the day it lands.
+fn cloud_run_binaries() -> Vec<String> {
+    let catalogue =
+        fs::read_to_string(crates_root().join("../../infrastructure/terraform/catalogue.tf"))
+            .expect("infrastructure/terraform/catalogue.tf is readable");
+    catalogue
+        .lines()
+        .filter_map(|line| {
+            let value = line
+                .trim()
+                .strip_prefix("binary")?
+                .trim_start()
+                .strip_prefix('=')?;
+            Some(value.trim().trim_matches('"').to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn no_cloud_run_binary_links_code_that_constructs_a_connection_to_a_venue() {
+    // R12-GCP-8114: no Cloud Run workload can place an order at a venue; only
+    // the execution node can. Read as *venue* placement, because the
+    // requirement's own heading is "never venue execution" and paper
+    // placement against the in-process `SimulatedBroker` is what the platform
+    // is (ADR 0003). An independent skeptic of the promotion found nothing
+    // guarding it: qip-fastbrain depends on qip-brokers, which exports the
+    // REST order-entry adapter, and no test refused a Cloud Run binary
+    // constructing one.
+    //
+    // Structural first: no catalogue binary links qip-brokers, the crate that
+    // holds the REST order-entry adapter, or qip-edge-node, whose gateways
+    // wrap it. The fast brain linked qip-brokers for its `Secret` type alone
+    // until that type moved to `qip_core::secret` (2026-10-24). A second
+    // skeptic showed why the structural half matters: a name scan alone is a
+    // deny-list that an alias or a new adapter type walks round.
+    //
+    // Then a backstop over every crate the binaries do link: no production
+    // source outside the type's own crate names `RestOrderEntryAdapter` or
+    // `LiveBroker` at all, aliased or not.
+    //
+    // Mutation: `qip-brokers` or `qip-edge-node` added to the fast brain's
+    // [dependencies], or a production line naming `RestOrderEntryAdapter`
+    // anywhere under `qip-fastbrain/src`.
+    let root = crates_root();
+    let crates = load_crates(&root);
+    let binaries = cloud_run_binaries();
+    assert!(
+        binaries.len() >= 3 && binaries.iter().all(|b| crates.contains_key(b)),
+        "premise: the catalogue's binaries {binaries:?} are not the workspace crates it deploys"
+    );
+    let reach = closure(&crates, &binaries);
+    assert!(
+        reach.contains("qip-execution-engine") && reach.contains("qip-kernel"),
+        "premise: the Cloud Run closure no longer links the desk's crates, so the walk is \
+         not reading the graph the binaries are built from: {reach:?}"
+    );
+    for venue_crate in ["qip-brokers", "qip-edge-node"] {
+        assert!(
+            crates.contains_key(venue_crate),
+            "premise: {venue_crate} is not a workspace crate, so its absence below proves nothing"
+        );
+        assert!(
+            !reach.contains(venue_crate),
+            "a Cloud Run binary links {venue_crate}, which holds a path to a venue outside the \
+             process"
+        );
+    }
+
+    let sources = production_sources(&root, &crates);
+    // Premise: the scan sees a constructor where one is used today.
+    assert!(
+        sources.iter().any(|(rel, text)| {
+            rel == "apps/qip-edge-node/src/gateway.rs"
+                && text.contains("RestOrderEntryAdapter::new")
+        }),
+        "premise: the scan no longer finds the edge node's own RestOrderEntryAdapter::new"
+    );
+    let linked: Vec<String> = reach
+        .iter()
+        .filter_map(|name| crates.get(name))
+        .filter_map(|info| info.dir.strip_prefix(&root).ok())
+        .map(|dir| format!("{}/", dir.to_string_lossy()))
+        .collect();
+    let mut found = Vec::new();
+    for (rel, text) in &sources {
+        if !linked.iter().any(|dir| rel.starts_with(dir.as_str())) {
+            continue;
+        }
+        for (needle, defined_in) in [
+            // Each type's own crate may name it, re-exports included;
+            // `LiveBroker` has no transport and reports itself unavailable.
+            ("RestOrderEntryAdapter", "services/qip-brokers/src/"),
+            ("LiveBroker", "services/qip-execution-engine/src/"),
+        ] {
+            if !rel.starts_with(defined_in) && text.contains(needle) {
+                found.push(format!("{rel}: {needle}"));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "code a Cloud Run binary links constructs a connection to a venue: {found:?}"
+    );
+}
+
 #[test]
 fn the_manifest_parser_ignores_dev_dependencies_and_follows_tables() {
     // Premise for the gate: a dev-dependency edge must not make a crate look

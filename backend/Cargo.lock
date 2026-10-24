@@ -592,7 +592,6 @@ name = "qip-fastbrain"
 version = "0.1.0"
 dependencies = [
  "qip-agents",
- "qip-brokers",
  "qip-contracts",
  "qip-core",
  "qip-data-finder",

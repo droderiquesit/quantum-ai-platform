@@ -99,6 +99,48 @@ fn repository_with_a_deleted_secret(name: &str) -> (PathBuf, String, String) {
     (dir, introduced, secret)
 }
 
+/// The failure this prevents: the tree scan could not see a private key.
+/// Its first pattern begins with dashes, so `git grep` read it as an option,
+/// exited 129 ("unknown option"), and the script's `2>/dev/null` and `if`
+/// reported that as "no match". `make check` said "nothing found" over a
+/// committed PEM key, and only the history scan in ci could catch one
+/// (R12-CICD-8031, found by the AUDIT-5 verification on 2026-10-24).
+///
+/// Mutation: drop the `-e` before `"$pattern"` in the tree scan's `git grep`.
+/// The scan exits 0 and the exit-1 assertion fails.
+#[test]
+fn a_private_key_left_in_the_tree_fails_the_tree_scan() {
+    // Built at run time, as the module comment asks, so this file never
+    // holds the header it tests for.
+    let header = format!("{} RSA PRIVATE KEY{}", "-----BEGIN", "-----");
+    let dir = scratch("private-key-in-tree");
+    git(&dir, &["init", "--quiet"]);
+    std::fs::create_dir_all(dir.join("config")).unwrap();
+    std::fs::write(dir.join("config/signing.pem"), format!("{header}\nMIIE\n")).unwrap();
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "--quiet", "-m", "add a key"]);
+
+    // Premise: the key is in the tree being scanned, outside the `tests/`
+    // exclusion, so a pass here could only mean the pattern never ran.
+    assert!(
+        git(&dir, &["ls-files"])
+            .lines()
+            .any(|l| l == "config/signing.pem"),
+        "the fixture is not tracked"
+    );
+
+    let (code, stdout, stderr) = scan(&dir, &[]);
+    assert_eq!(
+        code,
+        Some(1),
+        "the tree scan passed a committed private key: {stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains("config/signing.pem:1:"),
+        "the finding does not name the file and line: {stderr}"
+    );
+}
+
 /// The failure this prevents: a credential that was committed and then
 /// deleted is invisible to a scan of the tree, so the pipeline went green on
 /// a repository every clone of which still held the key.

@@ -106,9 +106,8 @@ locals {
 
   # The venue credential is bound only where the environment could use it *and*
   # the node has been let out of shadow mode. Two conditions rather than one:
-  # the first is the environment's autonomy ceiling, which `modules/secrets`
-  # already applies to the fast brain, and the second is this node's own
-  # standing. A node nobody has observed yet holding a credential it could
+  # the first is the environment's autonomy ceiling, and the second is this
+  # node's own standing. A node nobody has observed yet holding a credential it could
   # authenticate with is precisely the ordering ADR 0020 step 3 forbids.
   venue_credential_bound = (
     var.venue_credential_readable

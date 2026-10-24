@@ -12,9 +12,9 @@
 //! defaults and the refusals are asserted directly instead of by setting
 //! variables in a process that other tests share.
 
-use qip_brokers::Secret;
 use qip_core::Duration;
 use qip_core::error::{Error, Result};
+use qip_core::secret::Secret;
 use qip_storage::settings::StorageSettings;
 use std::collections::BTreeMap;
 

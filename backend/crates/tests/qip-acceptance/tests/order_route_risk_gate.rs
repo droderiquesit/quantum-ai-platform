@@ -55,6 +55,9 @@ use qip_edge_node::reprice::{Requote, Requoter};
 use qip_edge_node::risk::CellRiskLimits;
 use qip_edge_node::{NodeAssembly, assemble, assemble_with_risk};
 use qip_execution_engine::broker::{SimulatedBroker, SimulationSettings};
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::oms::{OrderManager, RefusalReason};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_feature_dag::engine::FeatureEngine;
@@ -148,7 +151,8 @@ fn share_policy(grants: Vec<String>) -> Result<VerifiedPolicy> {
 
 /// A node assembled the way `main.rs` assembles it — `assemble_with_risk`
 /// under `limits` — funded with one firing strategy's grant, resting its
-/// orders at the mid for a minute.
+/// orders at the mid for a minute. Its venue may list `object()` on demand,
+/// the one instrument this suite seeds and trades, and nothing else.
 fn node(limits: &CellRiskLimits) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
@@ -161,7 +165,7 @@ fn node(limits: &CellRiskLimits) -> Result<(NodeAssembly, SimulatedGateway, Simu
         None,
         limits,
     )?;
-    let gateway = SimulatedGateway::new(venue(), 7, t(0))?;
+    let gateway = permitting(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
     let (compiled, program) = firing_strategy()?;
@@ -837,4 +841,25 @@ fn the_desk_and_the_cell_gate_through_the_same_deterministic_checker() {
             "the cell's risk gate names {forbidden}; a model in the gate is not a gate"
         );
     }
+}
+
+/// `gateway`, permitted to list each of `objects` on demand: a recorded
+/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
+/// A fixture; the refusal without one is proven in qip-edge-node's
+/// tests/gateway.rs.
+fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        let request = CreationRequest::new(
+            CreationAction::List,
+            venue.as_str(),
+            object.as_str(),
+            "paper",
+        );
+        for authority in CreationAuthority::ALL {
+            permissions.record(authority, &request, "test fixture")?;
+        }
+    }
+    gateway.with_listing_permissions(permissions, "paper")
 }

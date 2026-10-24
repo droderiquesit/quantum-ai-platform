@@ -19,33 +19,6 @@ variable "secret_names" {
   type        = list(string)
 }
 
-variable "venue_credential_reader" {
-  description = <<-EOT
-    The identity the venue credential is granted to, when it is granted at
-    all: the fast brain's Cloud Run service account, from the catalogue.
-
-    Required rather than defaulted so the root has to say which workload
-    could ever hold the credential. It is read only inside the conditional
-    binding below, so in every environment a plan can carry — where
-    `venue_credential_readable` is false — the value names nothing that is
-    granted anything.
-  EOT
-  type        = string
-}
-
-variable "venue_credential_readable" {
-  description = <<-EOT
-    Whether the venue credential may be read in this environment.
-
-    False in any environment whose autonomy ceiling is paper trading. A
-    credential that cannot be read cannot be misused by a misconfigured
-    application, which is a stronger guarantee than one the application makes
-    about itself.
-  EOT
-  type        = bool
-  default     = false
-}
-
 variable "project_number" {
   description = <<-EOT
     The project's numeric id, which is not the project id and cannot be derived

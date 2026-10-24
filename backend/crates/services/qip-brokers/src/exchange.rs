@@ -43,6 +43,7 @@ use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Currency, Decimal};
 use qip_execution_engine::broker::{Broker, VenueCapabilities};
+use qip_execution_engine::creation::{CreationAction, CreationAdmission};
 use qip_execution_engine::observation::{
     DeclaredVenueProfile, ObservedVenueFacts, VenueObservation,
 };
@@ -402,8 +403,49 @@ impl SimulatedExchange {
             .remaining(self.venue.as_str(), &self.settings.rate_limits, at)
     }
 
-    /// List an instrument. The venue will not trade anything else.
-    pub fn list(&mut self, object: FinancialObject) {
+    /// List an instrument the market-creation register admitted for listing
+    /// here. The venue will not trade anything else.
+    ///
+    /// An admission rather than a bare instrument (R12-COVERAGE-5107):
+    /// listing is one of the three governed actions, and until 2026-10-24
+    /// this method took any `FinancialObject` from any caller, so the
+    /// permission gate sat beside the venue rather than on it — an
+    /// instrument could be listed here with no venue, product or legal
+    /// permission recorded anywhere. A `CreationAdmission` has one mint,
+    /// `CreationPermissions::admit`, which refuses unless all three are
+    /// recorded; one for another action, venue or product is refused here
+    /// before anything is written.
+    pub fn list(&mut self, object: FinancialObject, admission: &CreationAdmission) -> Result<()> {
+        self.admits_listing(&object.object_id, admission)?;
+        self.register_listing(object);
+        Ok(())
+    }
+
+    /// Refuse `admission` unless it is to list exactly `object_id` at exactly
+    /// this venue. The one check both listing paths make, so neither can
+    /// drift from the other.
+    fn admits_listing(&self, object_id: &ObjectId, admission: &CreationAdmission) -> Result<()> {
+        let request = admission.request();
+        if request.action != CreationAction::List
+            || request.venue != self.venue.as_str()
+            || request.product != object_id.as_str()
+        {
+            return Err(Error::denied(format!(
+                "{} was not listed at {}: the admission offered is to {} {} at {}, and a listing \
+                 needs an admission to list exactly this instrument at exactly this venue",
+                object_id.as_str(),
+                self.venue.as_str(),
+                request.action.as_str(),
+                request.product,
+                request.venue
+            )));
+        }
+        Ok(())
+    }
+
+    /// Write a listing into the venue's books. Private: the two ways in are
+    /// [`Self::list`] and [`Self::list_synthetic`], each behind an admission.
+    fn register_listing(&mut self, object: FinancialObject) {
         self.ledger.register(object.clone());
         self.listings
             .insert(object.object_id.as_str().to_string(), object);
@@ -428,6 +470,14 @@ impl SimulatedExchange {
     /// one-session exit, on a record the simulator invented, in the direction
     /// that permits trading. The composition that decides to run against a
     /// simulated venue is the one that has to say what it is pretending about.
+    ///
+    /// **It demands a `CreationAdmission` like [`Self::list`]**
+    /// (R12-COVERAGE-5107). Until 2026-10-24 it took none, and its caller —
+    /// the edge node's simulated gateway — listed any instrument id it was
+    /// handed on demand, so an instrument nobody had permitted could be
+    /// brought into existence at this venue by placing or seeding against
+    /// it. The admission is checked before the listing is built.
+    #[allow(clippy::too_many_arguments)] // each is a trading fact the listing needs and none has a default
     pub fn list_synthetic(
         &mut self,
         object_id: ObjectId,
@@ -437,7 +487,9 @@ impl SimulatedExchange {
         tick_size: Decimal,
         liquidity: LiquidityProfile,
         at: Timestamp,
+        admission: &CreationAdmission,
     ) -> Result<()> {
+        self.admits_listing(&object_id, admission)?;
         if price <= Decimal::ZERO || lot_size <= Decimal::ZERO || tick_size <= Decimal::ZERO {
             return Err(Error::invalid(format!(
                 "a listing for {symbol} at {} needs a positive price, lot size and tick size; \
@@ -456,7 +508,7 @@ impl SimulatedExchange {
                     at,
                 ))
                 .build(at)?;
-        self.list(listing);
+        self.register_listing(listing);
         Ok(())
     }
 

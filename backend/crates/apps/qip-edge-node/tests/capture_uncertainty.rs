@@ -21,6 +21,9 @@ use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::assemble;
 use qip_edge_node::feed::SimulatedFeed;
 use qip_edge_node::gateway::SimulatedGateway;
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
@@ -41,17 +44,12 @@ fn uncertainties(venue_at: i64, cell_at: i64) -> Result<Vec<Duration>> {
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
-    let mut gateway = SimulatedGateway::new(venue(), 7, t(0))?;
+    let object = ObjectId::from_string("obj-BOOK");
+    let mut gateway = permitting(SimulatedGateway::new(venue(), 7, t(0))?, &[&object])?;
     let mut feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
     gateway.advance_to(t(venue_at))?;
-    gateway.seed_touch(
-        &ObjectId::from_string("obj-BOOK"),
-        Side::Buy,
-        dec!("99"),
-        dec!("500"),
-        t(venue_at),
-    )?;
+    gateway.seed_touch(&object, Side::Buy, dec!("99"), dec!("500"), t(venue_at))?;
     feed.publish(&gateway, &mut node.cell, t(cell_at))?;
     Ok(feed
         .take_captured()
@@ -96,4 +94,25 @@ fn a_venue_stamping_behind_the_cell_is_captured_without_inventing_doubt() -> Res
         "ordinary latency was recorded as clock doubt: {behind:?}"
     );
     Ok(())
+}
+
+/// `gateway`, permitted to list each of `objects` on demand: a recorded
+/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
+/// A fixture; the refusal without one is proven in qip-edge-node's
+/// tests/gateway.rs.
+fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        let request = CreationRequest::new(
+            CreationAction::List,
+            venue.as_str(),
+            object.as_str(),
+            "paper",
+        );
+        for authority in CreationAuthority::ALL {
+            permissions.record(authority, &request, "test fixture")?;
+        }
+    }
+    gateway.with_listing_permissions(permissions, "paper")
 }

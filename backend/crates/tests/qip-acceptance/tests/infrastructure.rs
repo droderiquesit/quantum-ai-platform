@@ -262,10 +262,16 @@ fn the_venue_credential_is_unreadable_where_live_trading_is_impossible() {
     //
     // Asserted per rung, because the failure this exists to catch is a
     // predicate that is the right shape and the wrong way round.
-    let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
+    // The one grant is the execution node's, and it is conditional on the
+    // root's predicate through `venue_credential_bound` (R12-GCP-8114 moved
+    // the check here from `modules/secrets`, which no longer grants it).
+    let node = without_comments(&read(
+        "infrastructure/terraform/modules/execution-node/main.tf",
+    ));
     assert!(
-        secrets.contains("count = var.venue_credential_readable ? 1 : 0"),
-        "the venue credential's IAM binding must be conditional"
+        node.contains("count = local.venue_credential_bound ? 1 : 0")
+            && node.contains("var.venue_credential_readable"),
+        "the venue credential's IAM binding must be conditional on the ceiling predicate"
     );
 
     // The premise: which rungs a plan can actually carry. `variables.tf`
@@ -4850,32 +4856,71 @@ fn every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed() {
 }
 
 #[test]
-fn the_venue_credential_is_bound_to_the_fast_brain_and_only_where_the_ceiling_permits() {
-    // The one workload that could ever hold the venue credential, named by
-    // the root from the catalogue, and the grant still conditional on the
-    // ceiling. `the_venue_credential_is_unreadable_where_live_trading_is_impossible`
-    // evaluates the predicate rung by rung; this pins which identity it
-    // lands on when it ever does.
-    let root = without_comments(&read("infrastructure/terraform/main.tf"));
+fn no_cloud_run_identity_can_be_granted_the_venue_credential_and_only_the_execution_node_holds_its_grant()
+ {
+    // R12-GCP-8114: no Cloud Run workload can read the venue credential;
+    // only the execution node can (ADR 0108 E3 mounts venue credentials only
+    // to the Stage 2 execution node). Until 2026-10-24 `modules/secrets`
+    // bound the credential to the fast brain's Cloud Run identity behind the
+    // ceiling predicate, a second reader beside the node's own grant, and
+    // the test that stood here pinned that binding. The predicate kept the
+    // grant from ever being created, but the identity it named was the one
+    // the requirement forbids, and lifting the plan-time refusal would have
+    // handed the credential to a Cloud Run service.
+    //
+    // Every IAM grant in the tree that names the venue credential is found
+    // by walking every `.tf` file, so a second grant anywhere is a failure.
+    // Mutation: restore a `google_secret_manager_secret_iam_member`
+    // "venue_credential" in `modules/secrets` naming the fast brain, and the
+    // set below gains `modules/secrets/main.tf:venue_credential`.
+    let grants: Vec<(String, String, String)> = [
+        "google_secret_manager_secret_iam_member",
+        "google_secret_manager_secret_iam_binding",
+        "google_secret_manager_secret_iam_policy",
+    ]
+    .into_iter()
+    .flat_map(resource_blocks_in_tree)
+    .filter(|(_, _, block)| {
+        block.contains("qip-venue-credential") || block.contains("venue_credential")
+    })
+    .collect();
+    // Premise: the walk sees grants at all. The tree holds secret-accessor
+    // grants for other secrets, so a walk that found none is broken, not
+    // clean.
+    let all_grants = resource_blocks_in_tree("google_secret_manager_secret_iam_member").len();
     assert!(
-        root.contains(
-            "venue_credential_reader = module.cloud_run[\"fastbrain\"].service_account_email"
-        ),
-        "the venue credential's reader is not the fast brain's Cloud Run identity"
+        all_grants > 1,
+        "premise: the walk found {all_grants} secret IAM member grant(s) in the tree"
     );
+    let located: Vec<String> = grants.iter().map(|(f, n, _)| format!("{f}:{n}")).collect();
+    assert_eq!(
+        located,
+        ["infrastructure/terraform/modules/execution-node/main.tf:venue_credential"],
+        "the venue credential is granted somewhere other than the execution node's own \
+         account; no Cloud Run workload may read it (R12-GCP-8114, ADR 0108 E3)"
+    );
+    let (_, _, node_grant) = &grants[0];
+    let node_lines: Vec<String> = node_grant.lines().map(collapsed).collect();
+    for wanted in [
+        "count = local.venue_credential_bound ? 1 : 0",
+        "member = \"serviceAccount:${google_service_account.node.email}\"",
+    ] {
+        assert!(
+            node_lines.iter().any(|line| line == wanted),
+            "the execution node's venue-credential grant lacks `{wanted}`: {node_grant}"
+        );
+    }
+    // And no root or module names a separate reader for it any more.
+    for path in files_with_extension("infrastructure", "tf") {
+        let text = without_comments(&std::fs::read_to_string(&path).unwrap_or_default());
+        assert!(
+            !text.contains("venue_credential_reader"),
+            "{} still names a `venue_credential_reader`, a reader beside the execution node",
+            path.display()
+        );
+    }
+
     let secrets = without_comments(&read("infrastructure/terraform/modules/secrets/main.tf"));
-    let (_, grant) = terraform_resources(&secrets, "google_secret_manager_secret_iam_member")
-        .into_iter()
-        .find(|(name, _)| name == "venue_credential")
-        .expect("the secrets module holds the venue-credential grant");
-    assert!(
-        grant.contains("count = var.venue_credential_readable ? 1 : 0"),
-        "the venue-credential grant is no longer conditional"
-    );
-    assert!(
-        grant.contains("member    = \"serviceAccount:${var.venue_credential_reader}\""),
-        "the venue-credential grant lands on something other than the named reader"
-    );
     // And nothing else in the secrets module creates an identity to grant it
     // to: the workload accounts left with the cluster. The set is pinned
     // exactly — the two browser surfaces `scripts/deploy-frontends.sh`
@@ -4903,6 +4948,282 @@ fn the_venue_credential_is_bound_to_the_fast_brain_and_only_where_the_ceiling_pe
         !secrets.contains("google_service_account.landing"),
         "the secrets module grants something to the landing's identity, which reads no \
          secret and reaches no platform; the portal's URL is inlined at build time"
+    );
+}
+
+#[test]
+fn no_cloud_run_workload_is_given_the_venue_credential_by_mount_or_by_environment_value() {
+    // R12-GCP-8114, the half the grant walk above cannot see. `modules/cloudrun`
+    // grants each workload `secretAccessor` on whatever its `secret_mounts`
+    // and `secret_env` name, keyed on `each.value.secret_id`, so a grant made
+    // that way carries no literal for a text walk to find and reads no
+    // ceiling. Until 2026-10-24 the module's precondition refused the venue
+    // credential only for a customer-class workload and only as a mount: a
+    // platform-class workload mounting it, or any workload taking it through
+    // `secret_env`, planned an accessor grant at the paper ceiling, and this
+    // suite passed (found by an independent skeptic of the GCP-8114
+    // promotion).
+    //
+    // Mutations: add a mount of `module.secrets.secret_ids["qip-venue-credential"]`
+    // to any catalogue entry, or restore the customer-only precondition.
+    let catalogue = without_comments(&read(CATALOGUE));
+    assert!(
+        catalogue.contains("secret_mounts") && catalogue.contains("module.secrets.secret_ids["),
+        "premise: the catalogue no longer mounts secrets from modules/secrets, so the check \
+         below reads nothing"
+    );
+    assert!(
+        !catalogue.contains("qip-venue-credential"),
+        "catalogue.tf names the venue credential, so a Cloud Run workload is handed it"
+    );
+    for path in files_with_extension("infrastructure/gitops", "yaml") {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            !text.contains("qip-venue-credential"),
+            "{} names the venue credential; no RunService may mount or reference it",
+            path.display()
+        );
+    }
+
+    // The module refuses it by either input, in every traffic class.
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    let lines: Vec<String> = module.lines().map(collapsed).collect();
+    for wanted in [
+        "[for mount in values(var.secret_mounts) : mount.secret_id],",
+        "[for secret in values(var.secret_env) : secret.secret_id],",
+        "!can(regex(\"(^|/)qip-venue-credential\", secret_id))",
+    ] {
+        assert!(
+            lines.iter().any(|line| line == wanted),
+            "modules/cloudrun's venue-credential precondition lacks `{wanted}`"
+        );
+    }
+    assert!(
+        !module.contains("var.traffic_class != \"customer\" ||"),
+        "the venue-credential refusal is conditional on the traffic class again; a platform \
+         workload could then mount the credential"
+    );
+    // And a plan proves it: the harness refuses both inputs and admits a
+    // secret that is not the venue's.
+    let harness =
+        read("infrastructure/terraform/modules/cloudrun/tests/venue-credential.tftest.hcl");
+    assert_eq!(
+        harness
+            .matches("expect_failures = [google_service_account.workload]")
+            .count(),
+        4,
+        "the cloudrun harness no longer plans the four refusals (platform mount, \
+         environment value, customer mount, full-path id)"
+    );
+    assert!(
+        harness.contains("run \"a_workload_mounting_another_secret_is_admitted\""),
+        "the cloudrun harness no longer plans the admitting half, so a precondition that \
+         refused everything would pass it"
+    );
+}
+
+#[test]
+fn no_project_folder_or_organisation_grant_hands_out_secret_manager_beyond_the_two_recorded() {
+    // R12-GCP-8114: a project-level `secretAccessor` reads every secret in the
+    // project, the venue credential included, and no secret-level walk sees
+    // it. The tree holds exactly two grants above the secret that name Secret
+    // Manager:
+    // * the infra pipeline's `secretmanager.admin`, which creates the secrets
+    //   and their IAM and is no workload's;
+    // * Config Connector's `secretmanager.viewer`, which reads metadata and
+    //   never a payload.
+    // A third, for a Cloud Run workload or anyone else, fails here.
+    //
+    // Mutation: add a `google_project_iam_member` granting
+    // `roles/secretmanager.secretAccessor` to the workload account in
+    // `modules/cloudrun`.
+    let kinds = [
+        "google_project_iam_member",
+        "google_project_iam_binding",
+        "google_project_iam_policy",
+        "google_project_iam_custom_role",
+        "google_folder_iam_member",
+        "google_folder_iam_binding",
+        "google_folder_iam_policy",
+        "google_organization_iam_member",
+        "google_organization_iam_binding",
+        "google_organization_iam_policy",
+        "google_organization_iam_custom_role",
+    ];
+    let all: Vec<(String, String, String)> = kinds
+        .into_iter()
+        .flat_map(resource_blocks_in_tree)
+        .collect();
+    assert!(
+        all.len() > 10,
+        "premise: the walk found {} project, folder or organisation IAM blocks",
+        all.len()
+    );
+    let mut secret_manager: Vec<(String, String, String)> = all
+        .into_iter()
+        .filter(|(_, _, block)| block.contains("secretmanager."))
+        .collect();
+    secret_manager.sort();
+    let located: Vec<String> = secret_manager
+        .iter()
+        .map(|(file, name, _)| format!("{file}:{name}"))
+        .collect();
+    assert_eq!(
+        located,
+        [
+            "infrastructure/terraform/modules/cicd/main.tf:infra_roles",
+            "infrastructure/terraform/modules/gitops-control-plane/main.tf:kcc_sees_secrets",
+        ],
+        "a grant above the secret names Secret Manager beyond the infra pipeline's admin and \
+         Config Connector's metadata read; one at the project reads the venue credential too"
+    );
+    let block_of = |name: &str| {
+        secret_manager
+            .iter()
+            .find(|(_, n, _)| n == name)
+            .map(|(_, _, block)| block.lines().map(collapsed).collect::<Vec<String>>())
+            .unwrap_or_default()
+    };
+    assert!(
+        block_of("infra_roles")
+            .iter()
+            .any(|line| line == "member = \"serviceAccount:${google_service_account.infra.email}\""),
+        "the infra pipeline's Secret Manager admin grant names an account other than the \
+         pipeline's own"
+    );
+    let kcc = block_of("kcc_sees_secrets");
+    assert!(
+        kcc.iter()
+            .any(|line| line == "role = \"roles/secretmanager.viewer\"")
+            && kcc
+                .iter()
+                .any(|line| line
+                    == "member = \"serviceAccount:${google_service_account.kcc.email}\""),
+        "Config Connector's Secret Manager grant is no longer metadata-only for its own \
+         account: {kcc:?}"
+    );
+}
+
+#[test]
+fn every_secret_level_grant_in_the_tree_is_pinned_and_names_its_secret_by_a_reviewed_route() {
+    // R12-GCP-8114, the route a text walk cannot see. A grant written
+    // `for_each = module.secrets.secret_ids` with a Cloud Run account as its
+    // member hands that account every secret in the deployment, the venue
+    // credential included, and no line of it names the credential. The
+    // second independent skeptic of the promotion found that every test here
+    // passed on one. So every secret-level grant in the tree is pinned by
+    // file and name, and each one's `for_each` and `secret_id` lines are
+    // pinned too: a new grant, or an existing grant re-keyed onto a map of
+    // secrets, fails until somebody reviews which secrets it reaches.
+    //
+    // The routes, and what holds each one:
+    // * the root's `committed_file`: a literal map of named, non-venue secrets
+    //   (checked entry by entry below);
+    // * the cloudrun module's `mounted` and `env`: the catalogue's inputs, which
+    //   name the credential nowhere, behind a precondition that refuses it
+    //   (the two tests above);
+    // * the execution node's `venue_credential`: the one reader, named by the
+    //   root from a literal;
+    // * the controllers' and the console's own secrets: literals, through a
+    //   variable the root fills with a literal.
+    //
+    // Mutation: add a root grant `for_each = module.secrets.secret_ids` for a
+    // Cloud Run account, or re-key `committed_file` onto it.
+    let kinds = [
+        "google_secret_manager_secret_iam_member",
+        "google_secret_manager_secret_iam_binding",
+        "google_secret_manager_secret_iam_policy",
+        "google_secret_manager_regional_secret_iam_member",
+        "google_secret_manager_regional_secret_iam_binding",
+        "google_secret_manager_regional_secret_iam_policy",
+    ];
+    let mut found: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (file, name, block) in kinds.into_iter().flat_map(resource_blocks_in_tree) {
+        let mut routing: Vec<String> = block
+            .lines()
+            .map(collapsed)
+            .filter(|line| line.starts_with("for_each =") || line.starts_with("secret_id ="))
+            .collect();
+        routing.sort();
+        routing.dedup();
+        found.insert(format!("{file}:{name}"), routing);
+    }
+    let pinned: std::collections::BTreeMap<String, Vec<String>> = [
+        (
+            "infrastructure/terraform/main.tf:committed_file",
+            vec![
+                "for_each = {",
+                "secret_id = each.value.secret_id",
+                "secret_id = module.secrets.secret_ids[\"qip-egress-bootstrap\"]",
+                "secret_id = module.secrets.secret_ids[\"qip-universe-catalogue\"]",
+            ],
+        ),
+        (
+            "infrastructure/terraform/modules/cloudrun/main.tf:env",
+            vec!["for_each = var.secret_env", "secret_id = each.value.secret_id"],
+        ),
+        (
+            "infrastructure/terraform/modules/cloudrun/main.tf:mounted",
+            vec!["for_each = var.secret_mounts", "secret_id = each.value.secret_id"],
+        ),
+        (
+            "infrastructure/terraform/modules/execution-node/main.tf:venue_credential",
+            vec!["secret_id = var.venue_credential_secret_id"],
+        ),
+        (
+            "infrastructure/terraform/modules/gitops-control-plane/main.tf:argocd_reads_its_app",
+            vec!["secret_id = var.argocd_app_secret_id"],
+        ),
+        (
+            "infrastructure/terraform/modules/gitops-control-plane/main.tf:kargo_reads_its_app",
+            vec!["secret_id = var.kargo_app_secret_id"],
+        ),
+        (
+            "infrastructure/terraform/modules/secrets/main.tf:console_session_secret",
+            vec![
+                "secret_id = google_secret_manager_secret.platform[\"qip-session-secret\"].secret_id",
+            ],
+        ),
+        (
+            "infrastructure/terraform/modules/secrets/main.tf:console_viewer_token",
+            vec!["secret_id = google_secret_manager_secret.platform[\"qip-token-viewer\"].secret_id"],
+        ),
+    ]
+    .into_iter()
+    .map(|(key, lines)| {
+        (
+            key.to_string(),
+            lines.into_iter().map(str::to_string).collect(),
+        )
+    })
+    .collect();
+    assert_eq!(
+        found, pinned,
+        "the set of secret-level grants, or the way one names its secrets, changed; review \
+         which secrets the changed grant reaches and whether the venue credential is among \
+         them, then pin it here"
+    );
+
+    // The variables routed to a module are filled by the root from literals,
+    // and only the execution node's names the venue credential.
+    let root = without_comments(&read("infrastructure/terraform/main.tf"));
+    let root_lines: Vec<String> = root.lines().map(collapsed).collect();
+    for wanted in [
+        "venue_credential_secret_id = module.secrets.secret_ids[\"qip-venue-credential\"]",
+        "argocd_app_secret_id = module.secrets.secret_ids[\"qip-github-app-argocd\"]",
+        "kargo_app_secret_id = module.secrets.secret_ids[\"qip-github-app-kargo\"]",
+    ] {
+        assert!(
+            root_lines.iter().any(|line| line == wanted),
+            "the root no longer fills a module's secret variable from the literal `{wanted}`"
+        );
+    }
+    assert_eq!(
+        root.matches("\"qip-venue-credential\"]").count(),
+        1,
+        "the root routes the venue credential somewhere beside the execution node's \
+         `venue_credential_secret_id`"
     );
 }
 
@@ -6302,6 +6623,87 @@ fn reflex_capacity_is_never_scaled_by_a_reactive_autoscaler() {
 }
 
 // --- the registry -----------------------------------------------------------
+
+/// Every `google_artifact_registry_repository` block in the tree, as
+/// `(file, name, block)`, cut by brace depth from its `resource` line.
+fn artifact_repositories() -> Vec<(String, String, String)> {
+    resource_blocks_in_tree("google_artifact_registry_repository")
+}
+
+/// Every `resource "<kind>"` block in every `.tf` file under
+/// `infrastructure/`, as `(file, name, block)`, cut by brace depth from its
+/// `resource` line and stripped of comments. `terraform_resources` runs a
+/// body to the next resource of any kind, so a resource followed by a
+/// `module` block carries that module's arguments; a walk that must name
+/// exactly which blocks mention something needs the block and nothing after.
+fn resource_blocks_in_tree(kind: &str) -> Vec<(String, String, String)> {
+    let marker = format!("resource \"{kind}\" \"");
+    let mut found = Vec::new();
+    for path in files_with_extension("infrastructure", "tf") {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let file = path
+            .strip_prefix(repository_root())
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let mut lines = text.lines();
+        while let Some(line) = lines.next() {
+            let Some(rest) = line.strip_prefix(marker.as_str()) else {
+                continue;
+            };
+            let name = rest.split('"').next().unwrap_or_default().to_string();
+            let mut block = vec![line];
+            let mut depth = line
+                .matches('{')
+                .count()
+                .saturating_sub(line.matches('}').count());
+            while depth > 0 {
+                let Some(next) = lines.next() else { break };
+                depth =
+                    (depth + next.matches('{').count()).saturating_sub(next.matches('}').count());
+                block.push(next);
+            }
+            found.push((file.clone(), name, without_comments(&block.join("\n"))));
+        }
+    }
+    found
+}
+
+/// R12-CICD-10203: no registry in the tree holds a mutable tag. The test
+/// below this one reads `modules/registry` alone, so a second DOCKER
+/// repository was free to leave tags mutable, and one did:
+/// `infrastructure/fleet/main.tf`'s `fleet`, found by the AUDIT-5
+/// verification on 2026-10-24. Walking every `.tf` file makes the next one a
+/// failure rather than a gap.
+///
+/// Mutation: delete the fleet repository's `docker_config` block, and the
+/// assertion naming `fleet` fails.
+#[test]
+fn every_docker_repository_in_the_tree_makes_its_tags_immutable() {
+    let docker: Vec<(String, String, String)> = artifact_repositories()
+        .into_iter()
+        .filter(|(_, _, block)| sets(block, "format", "\"DOCKER\""))
+        .collect();
+    // Premise: the walk found both DOCKER repositories this tree declares,
+    // the platform's images and the fleet worker's, so a broken walk cannot
+    // pass by finding none.
+    for expected in ["images", "fleet"] {
+        assert!(
+            docker.iter().any(|(_, name, _)| name == expected),
+            "premise: no DOCKER repository named `{expected}` was found; found {:?}",
+            docker
+                .iter()
+                .map(|(f, n, _)| format!("{f}:{n}"))
+                .collect::<Vec<_>>()
+        );
+    }
+    for (file, name, block) in &docker {
+        assert!(
+            block.contains("docker_config") && sets(block, "immutable_tags", "true"),
+            "{file}: DOCKER repository `{name}` does not set `immutable_tags = true` in a \
+             `docker_config` block, so one of its tags can be moved onto different bytes"
+        );
+    }
+}
 
 #[test]
 fn the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it() {
@@ -9307,14 +9709,32 @@ fn nothing_added_here_raises_the_autonomy_ceiling_anywhere() {
         );
     }
 
-    // And the binding is still conditional on the ceiling, with nothing new
-    // granting the venue credential unconditionally.
-    let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
-    let bindings = secrets.matches("qip-venue-credential").count();
+    // And the one grant of the venue credential is still conditional on the
+    // ceiling, with nothing new granting it unconditionally. Since
+    // R12-GCP-8114 the secrets module grants it to nobody — the fast brain's
+    // conditional binding that stood there was a Cloud Run reader — so the
+    // only grant is the execution node's, behind `venue_credential_bound`,
+    // which reads the ceiling predicate the root hands every node.
+    let secrets = without_comments(&read("infrastructure/terraform/modules/secrets/main.tf"));
+    let named = secrets.matches("venue_credential").count()
+        + secrets.matches("qip-venue-credential").count();
     assert_eq!(
-        bindings, 1,
-        "the venue credential is named {bindings} times in the secrets module; \
-         exactly one of them is the conditional IAM binding"
+        named, 0,
+        "the secrets module names the venue credential {named} times outside a comment; \
+         it grants it to no identity, and the execution node's grant is the only one"
+    );
+    let node = without_comments(&read(
+        "infrastructure/terraform/modules/execution-node/main.tf",
+    ));
+    let conditional = node
+        .lines()
+        .map(collapsed)
+        .filter(|line| line == "count = local.venue_credential_bound ? 1 : 0")
+        .count();
+    assert_eq!(
+        conditional, 1,
+        "the execution node's venue-credential grant is not counted on \
+         `local.venue_credential_bound` exactly once"
     );
 }
 

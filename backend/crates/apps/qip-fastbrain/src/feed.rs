@@ -975,7 +975,7 @@ mod source_choice_tests {
             // `check-secrets.sh`'s credential pattern and makes the scan
             // report a finding on every run, which is how a scanner stops
             // being read.
-            api_key: qip_brokers::Secret::new("not-a-key"),
+            api_key: qip_core::secret::Secret::new("not-a-key"),
             api_key_header: "x-api-key".into(),
         }
     }
@@ -1080,7 +1080,7 @@ mod connector_feed_tests {
             path: "/v1/market-data".to_string(),
             symbols: vec!["ACME".to_string()],
             venue: "XLON".to_string(),
-            api_key: qip_brokers::Secret::new("a-key"),
+            api_key: qip_core::secret::Secret::new("a-key"),
             api_key_header: "x-api-key".to_string(),
         }
     }

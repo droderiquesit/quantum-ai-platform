@@ -83,7 +83,7 @@ locals {
   #
   # The one definition. Three places answered this question in three
   # spellings — the resource label below, the `live_capable` output, and the
-  # `venue_credential_readable` predicate the secrets module is given — and two
+  # `venue_credential_readable` predicate each execution node is given — and two
   # of the three were the same sentence read backwards. The ladder has six
   # rungs; `variables.tf` refuses the three live ones at plan time, so the only
   # values that reach here are `observation`, `advisory` and `paper_trading`,
@@ -384,39 +384,11 @@ module "secrets" {
     "qip-egress-bootstrap",
   ]
 
-  # The venue credential is readable only by an environment that could use it,
-  # and the only ceilings that could use it are the three live ones.
-  #
-  # This was written `!= "paper_trading"` — see `ceiling_reaches_a_venue` above
-  # for why that is the same sentence read backwards. The concrete failure here
-  # was the worst of the three: an operator hardening dev to `observation` —
-  # the move `variables.tf` explicitly invites — got a plan that *added*
-  # `roles/secretmanager.secretAccessor` on the venue credential to the fast
-  # brain. Lowering autonomy handed out the credential.
-  #
-  # The local is false for every configuration that can pass validation, so no
-  # plan this repository can produce creates the grant at all. That is the
-  # intended state, not an accident of the list: the platform is paper-trading
-  # only and nothing here should hold a venue credential.
-  #
-  # A reference to the membership test rather than a bare `false`, because
-  # `false` records the current answer and loses the question — the next reader
-  # deletes the variable and with it the reason the resource exists. The cost
-  # of saying it this way is stated rather than discovered: anyone who ever
-  # deletes the plan-time refusal in `variables.tf` re-enables this grant as a
-  # side effect, so that change must revisit the local. Three acceptance tests
-  # stand in the way of it happening quietly —
-  # `no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue`,
-  # `the_venue_credential_is_unreadable_where_live_trading_is_impossible` and
-  # `the_label_the_output_and_the_credential_predicate_agree_at_every_rung`,
-  # the last two of which evaluate this predicate for every rung a plan can
-  # carry.
-  venue_credential_readable = local.ceiling_reaches_a_venue
-
-  # The one identity that could ever hold it: the fast brain's Cloud Run
-  # account, from the catalogue. Named here so the grant, when the ceiling
-  # ever permits it, lands on the workload that would use it and on no other.
-  venue_credential_reader = module.cloud_run["fastbrain"].service_account_email
+  # The venue credential is granted nowhere in this module. Its one reader is
+  # the execution node's own account, bound in `modules/execution-node` behind
+  # the same ceiling predicate and the node's shadow mode (module
+  # "execution_node" below; R12-GCP-8114, ADR 0108 E3). The fast brain's Cloud
+  # Run identity was named here as a second reader until 2026-10-24.
 
   # The console's identity and its one grant, created only where the console
   # has a route to the platform at all (ADR 0018).

@@ -50,12 +50,6 @@ qip-events.workspace = true
 # The desk shipper, moved to a runtime crate so qip-api and the deep brain
 # ship their desks' records with the same code. Re-exported as `ship`.
 qip-desk-ship.workspace = true
-# `Secret`, the redacting wrapper the resolved market-data credential now
-# travels in. `FastBrainConfig` derives `Debug`, and until 2026-10-18 the key
-# sat in it as a plain `String`: one `{config:?}` in a banner or a panic
-# message would have printed the vendor credential. Workspace-internal, so an
-# inward edge (app -> service) and not a third-party dependency.
-qip-brokers.workspace = true
 
 [dev-dependencies]
 # `Side`, for the unit tests that build a booked fill by hand.

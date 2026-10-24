@@ -45,6 +45,14 @@ fn attribution() -> Value {
     })
 }
 
+/// The attribution with an observational identification, the variant that
+/// carries a field of its own.
+fn observational_attribution() -> Value {
+    let mut v = attribution();
+    v["identification"] = json!({"observational": {"strategy": "difference in differences"}});
+    v
+}
+
 fn gap() -> Value {
     json!({
         "observation": "surprise on CPI", "affected_domains": ["macro"], "evidence": ["ev-1"],
@@ -93,6 +101,80 @@ fn a_complete_record_of_each_kind_is_accepted_and_a_missing_field_is_refused_by_
             let bytes = serde_json::to_vec(&v).expect("encodes");
             assert!(decode(&bytes).is_err(), "{name} without {key} was accepted");
         }
+    }
+}
+
+/// CONTRACT-7083: the attribution's nested required fields are refused when
+/// missing, as its top-level ones are. The test above removes top-level keys
+/// only, so a `#[serde(default)]` on `Effect::std_dev` decoded an attribution
+/// with no spread as `std_dev = 0`, which `validate` admits. Every test still
+/// passed, and an effect with no stated uncertainty read as a certain one
+/// (the AUDIT-5 verification, 2026-10-24).
+///
+/// Mutation: add `#[serde(default)]` to `Effect::std_dev`. The case naming
+/// `effect.std_dev` is then accepted, and the assertion fails.
+#[test]
+fn an_attribution_missing_a_nested_required_field_is_refused() {
+    let decode = |v: &Value| {
+        serde_json::from_value::<EffectAttribution>(v.clone())
+            .map_err(|e| e.to_string())
+            .and_then(|a| a.validate().map_err(|e| e.message().to_string()))
+    };
+    let observational = observational_attribution();
+    // Premise: both complete fixtures are accepted, so each refusal below is
+    // the missing field's and not a fixture that never decoded.
+    assert!(
+        decode(&attribution()).is_ok(),
+        "the fixture is refused whole"
+    );
+    assert!(
+        decode(&observational).is_ok(),
+        "the observational fixture is refused whole"
+    );
+    let cases: [(&str, Value); 5] = [
+        ("effect.mean", {
+            let mut v = attribution();
+            v["effect"].as_object_mut().expect("object").remove("mean");
+            v
+        }),
+        ("effect.std_dev", {
+            let mut v = attribution();
+            v["effect"]
+                .as_object_mut()
+                .expect("object")
+                .remove("std_dev");
+            v
+        }),
+        ("observations[].horizon_ms", {
+            let mut v = attribution();
+            v["observations"][0]
+                .as_object_mut()
+                .expect("object")
+                .remove("horizon_ms");
+            v
+        }),
+        ("observations[].value", {
+            let mut v = attribution();
+            v["observations"][0]
+                .as_object_mut()
+                .expect("object")
+                .remove("value");
+            v
+        }),
+        ("identification.observational.strategy", {
+            let mut v = observational.clone();
+            v["identification"]["observational"]
+                .as_object_mut()
+                .expect("object")
+                .remove("strategy");
+            v
+        }),
+    ];
+    for (field, v) in cases {
+        assert!(
+            decode(&v).is_err(),
+            "an attribution without {field} was accepted"
+        );
     }
 }
 
@@ -325,7 +407,7 @@ fn an_unidentified_effect_recorded_with_any_identifiability_above_zero_is_refuse
     );
 }
 
-/// CONTRACT-7081, CONTRACT-7085, CONTRACT-7084: a record that decodes must
+/// CONTRACT-7081, CONTRACT-7085, CONTRACT-7084, CONTRACT-7083: a record that decodes must
 /// encode back to the same document, field for field. A field dropped by a
 /// `skip_serializing_if`, renamed on one side, or narrowed to an `Option`
 /// that serialises as absent survives every refusal test above — they only
@@ -347,6 +429,27 @@ fn every_decoded_record_encodes_back_to_the_same_document_field_for_field() {
         ("item", item(), |b| {
             serde_json::to_value(CurriculumItem::decode(b).expect("item decodes")).expect("e")
         }),
+        // CONTRACT-7083's own proof names the round trip beside the refusal,
+        // and until 2026-10-24 the attribution was the one record this test
+        // left out (AUDIT-5 verification).
+        ("attribution", attribution(), |b| {
+            serde_json::to_value(
+                serde_json::from_slice::<EffectAttribution>(b).expect("attribution decodes"),
+            )
+            .expect("e")
+        }),
+        // The experiment fixture never carries `Identification::Observational`,
+        // so its `strategy` was the one attribution field no round trip saw.
+        (
+            "observational attribution",
+            observational_attribution(),
+            |b| {
+                serde_json::to_value(
+                    serde_json::from_slice::<EffectAttribution>(b).expect("attribution decodes"),
+                )
+                .expect("e")
+            },
+        ),
     ];
     for (name, valid, round_trip) in encoders {
         let fields = valid.as_object().expect("object");

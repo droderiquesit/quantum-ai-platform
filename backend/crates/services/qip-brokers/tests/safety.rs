@@ -35,6 +35,9 @@ use qip_core::ids::{FillId, ObjectId, OrderId};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, dec};
 use qip_execution_engine::broker::Broker;
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::order::{Fill, Order, OrderType, Side};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::object::FinancialObject;
@@ -215,7 +218,7 @@ fn a_refusal_names_the_requirement_and_not_the_value() {
 #[test]
 fn an_adapter_that_authenticated_with_a_secret_does_not_hold_it() -> Result<()> {
     let mut exchange = SimulatedExchange::new(venue(), ExchangeSettings::orderly(), 41, start());
-    exchange.list(instrument());
+    list_admitted(&mut exchange, VENUE, instrument())?;
     exchange.bring_up(&credential_holding_a_secret(), start())?;
 
     assert_eq!(exchange.account(), Some(ACCOUNT));
@@ -276,7 +279,7 @@ fn every_class_this_crate_can_be_is_paper() {
 #[test]
 fn every_fill_the_venue_produces_is_marked_simulated() -> Result<()> {
     let mut exchange = SimulatedExchange::new(venue(), ExchangeSettings::orderly(), 42, start());
-    exchange.list(instrument());
+    list_admitted(&mut exchange, VENUE, instrument())?;
     exchange.seed_liquidity(
         &object(),
         Side::Sell,
@@ -538,7 +541,7 @@ fn a_simulator_enforces_only_what_it_can_honestly_check() -> Result<()> {
     assert_eq!(credential.missing(&requirements).len(), 4);
 
     let mut exchange = SimulatedExchange::new(venue(), ExchangeSettings::orderly(), 43, start());
-    exchange.list(instrument());
+    list_admitted(&mut exchange, VENUE, instrument())?;
     assert_eq!(exchange.missing_requirements().len(), 6);
     exchange.bring_up(&credential, start())?;
     assert_eq!(
@@ -577,7 +580,7 @@ fn requirements_say_which_ones_a_deployment_can_satisfy_by_itself() {
 #[test]
 fn authentication_refuses_a_credential_for_another_venue() -> Result<()> {
     let mut exchange = SimulatedExchange::new(venue(), ExchangeSettings::orderly(), 44, start());
-    exchange.list(instrument());
+    list_admitted(&mut exchange, VENUE, instrument())?;
     let elsewhere = VenueId::new("XOTHER");
     let enforceable = requirements_of_kind(
         &standard_requirements(&elsewhere),
@@ -632,4 +635,25 @@ fn order(label: &str, side: Side, quantity: i64) -> Order {
         "scope-under-test",
         start(),
     )
+}
+
+/// List `object` at `venue` under an admission with all three permissions
+/// recorded. A fixture: the gate itself is proven by qip-execution-engine's
+/// creation tests and qip-acceptance's `market_creation` suite.
+fn list_admitted(
+    exchange: &mut SimulatedExchange,
+    venue: &str,
+    object: FinancialObject,
+) -> Result<()> {
+    let request = CreationRequest::new(
+        CreationAction::List,
+        venue,
+        object.object_id.as_str(),
+        "paper",
+    );
+    let mut permissions = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        permissions.record(authority, &request, "test fixture")?;
+    }
+    exchange.list(object, &permissions.admit(&request)?)
 }

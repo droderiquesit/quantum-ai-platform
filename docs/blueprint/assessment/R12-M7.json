@@ -1872,13 +1872,16 @@
   },
   {
     "id": "R12-CONTRACT-7083",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "EffectAttribution carries every field with range validation; attribution without chain/confounders/confidence refused.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/expansion.rs:183-226",
-      "backend/crates/services/qip-agency/tests/agency.rs:458"
+      "backend/crates/services/qip-agency/tests/agency.rs:458",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::a_complete_record_of_each_kind_is_accepted_and_a_missing_field_is_refused_by_every_decoder",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::an_attribution_missing_a_nested_required_field_is_refused",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::every_decoded_record_encodes_back_to_the_same_document_field_for_field (attribution and observational attribution)"
     ],
-    "gap": "2026-10-24: The named test (agency.rs an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused) probes five of the fields; deleting the goal_id, side_effects or counterfactual_method check leaves it and the whole agency suite green. The suite that proves the required-field refusal is qip-contracts tests/expansion.rs. Closing: point evidence and verification at it (cargo test -p qip-contracts --test expansion). 2026-10-24 (AUDIT-5 verification): the requirement names a two-part proof, refusal of a missing field and a round-trip that preserves every field. Only the refusal half is tested: every_decoded_record_encodes_back_to_the_same_document_field_for_field (qip-contracts tests/expansion.rs) lists goal, plan, gap and item but not the attribution, and no test serialises an EffectAttribution and compares it field for field. Closes with that round-trip test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1886,10 +1889,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cargo test -p qip-contracts --test expansion",
     "work_item": "",
     "size": "S",
-    "notes": "Integrated only via qip-cli shadow agency. AUDIT-4: 2026-10-24 regraded, the named agency.rs test probes five of the contract's fields; deleting the goal_id, side_effects or counterfactual_method check leaves the whole qip-agency suite green, and only qip-contracts tests/expansion.rs (not named) fails.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
+    "notes": "Integrated only via qip-cli shadow agency. AUDIT-4: 2026-10-24 regraded, the named agency.rs test probes five of the contract's fields; deleting the goal_id, side_effects or counterfactual_method check leaves the whole qip-agency suite green, and only qip-contracts tests/expansion.rs (not named) fails.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL; 2026-10-24 parent session: both halves of the requirement's proof are now tested. Refusal: top-level fields, and nested fields effect.mean/std_dev, observations[].horizon_ms/value and identification.observational.strategy (92260a7a). Round trip: the experiment and observational attributions, field for field and byte-stable (92260a7a, b1fe4715). Mutations that fired: #[serde(rename(serialize = \"goal\"))] on goal_id; #[serde(default)] on Effect::std_dev; #[serde(rename(serialize = \"strat\"))] on Observational.strategy. An independent skeptic refuted promotion twice, first on the nested refusals and then on the observational round trip; both are fixed. Its third verdict is HOLDS: 17 passed on b1fe4715, the default path holds (qip agency decodes and validates operator attributions, autonomy.rs:129), and multi-horizon names the field's shape, not a count."
   },
   {
     "id": "R12-CONTRACT-7084",

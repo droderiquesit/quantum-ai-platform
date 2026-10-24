@@ -256,6 +256,14 @@ resource "google_artifact_registry_repository" "fleet" {
   description   = "The fleet worker image (ADR 0102). Pushed by a person or CI, never by a worker."
   labels        = local.labels
 
+  # Immutable, as modules/registry's `images` repository is (R12-CICD-10203).
+  # The Job runs an image pinned by digest (variables.tf refuses a tag), but a
+  # tag in this repository could still be moved onto new bytes, and "the
+  # worker image a person pushed" would then name whatever was pushed last.
+  docker_config {
+    immutable_tags = true
+  }
+
   depends_on = [google_project_service.api]
 }
 
