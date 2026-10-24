@@ -948,6 +948,13 @@ impl DataReference {
         self.compare_hash(qip_core::sha256_hex(bytes))
     }
 
+    /// [`Self::verify`] for bytes this platform holds only as a digest — a
+    /// re-fetch's body, which arrives untrusted and is never unwrapped to be
+    /// hashed.
+    pub fn verify_hash(&self, sha256_hex: String) -> RevisionCheck {
+        self.compare_hash(sha256_hex)
+    }
+
     /// Whether a later reference to the same extent still hashes the same.
     ///
     /// For a ledger that keeps references and not bytes: the bytes a

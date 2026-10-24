@@ -128,7 +128,7 @@ impl RecordedAnswer {
         let mut response = SourceResponse {
             status: self.status,
             media_type: self.media_type.clone(),
-            body: self.body.clone(),
+            body: qip_core::untrusted::Untrusted::new("a recorded fixture", self.body.clone()),
             latency: Duration::from_millis(self.latency_ms),
             retry_after: None,
             etag: self.etag.clone(),

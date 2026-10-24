@@ -9,7 +9,9 @@
 
 use crate::gap::RaisedGap;
 use qip_agents::research::{ResearchRegistry, Screening};
-use qip_agents::tools::{CapabilityPack, ToolKind, ToolPermission, ToolRegistry, ToolSpec};
+use qip_agents::tools::{
+    CapabilityPack, ToolKind, ToolName, ToolPermission, ToolRegistry, ToolSpec,
+};
 use qip_contracts::expansion::CurriculumItem;
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -366,7 +368,9 @@ impl ResearchQueue {
                     permission,
                 } => match bounds.tools.get(name) {
                     Some(_) => bounds.tools.authorise(name.trim(), *permission)?,
-                    None => missing.push(bounds.tools.propose(name, *kind)?),
+                    None => {
+                        missing.push(bounds.tools.propose(ToolName::parse(name.trim())?, *kind)?)
+                    }
                 },
             }
         }
