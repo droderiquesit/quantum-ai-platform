@@ -1757,6 +1757,10 @@ pub struct Cell {
     /// What each venue has done with the orders sent to it, when the
     /// composition root armed the quarantine. `None` records nothing.
     venue_health: Option<HealthTracker>,
+    /// What each input this cell reads does to its size as it ages or is
+    /// lost, validated at assembly so no input goes without one
+    /// (R12-RES-8026). The pass reads the clock row's multiplier from it.
+    degradation: crate::degradation::DegradationEnvelope,
     /// The venues currently journaled as quarantined, and until when — the
     /// same once-only bookkeeping as `feed_silent`.
     quarantined: BTreeMap<VenueId, Timestamp>,
@@ -1814,6 +1818,10 @@ impl Cell {
     /// unexamined, so no input could make assembly refuse.
     pub fn new(config: CellConfig, features: FeatureEngine) -> Result<Self> {
         config.validate()?;
+        // Before anything is built from the configuration: a cell that reads
+        // an input whose loss nobody decided is refused here, by name, not
+        // discovered at the pass where that input first goes quiet.
+        let degradation = crate::degradation::DegradationEnvelope::for_cell(&config)?;
         // Both are built from the validated venue list, so the bucket set
         // and the fill-time history are exactly the venues this cell may
         // reach: neither can be grown by an admission naming a venue the
@@ -1887,6 +1895,7 @@ impl Cell {
             feed_silent: BTreeMap::new(),
             feed_loss_handled: BTreeSet::new(),
             venue_health,
+            degradation,
             quarantined: BTreeMap::new(),
             unwithdrawable: BTreeSet::new(),
             open_gaps: BTreeMap::new(),
@@ -1898,6 +1907,13 @@ impl Cell {
 
     pub fn config(&self) -> &CellConfig {
         &self.config
+    }
+
+    /// The degradation envelope this cell was assembled with: one row per
+    /// input it reads, each with a freshness bound and its stale and
+    /// unavailable multipliers.
+    pub fn degradation_envelope(&self) -> &crate::degradation::DegradationEnvelope {
+        &self.degradation
     }
 
     /// Get access to the funding state for inspection.
@@ -5079,7 +5095,10 @@ impl Cell {
             .sizing_multiplier()
             .checked_mul(self.journal_sizing_multiplier())
             .and_then(|size| {
-                size.checked_mul(narrowing.dependency_row_multiplier(Capability::Clock))
+                size.checked_mul(
+                    self.degradation
+                        .multiplier(Capability::Clock, narrowing.observed(Capability::Clock)),
+                )
             })
             .unwrap_or(Decimal::ZERO);
         // Freshness is a function of `now`, so this is the instant it becomes

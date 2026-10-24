@@ -1,0 +1,31 @@
+diff --git a/.claude/rules/domains/observability.md b/.claude/rules/domains/observability.md
+index 3f42b51..9a2912c 100644
+--- a/.claude/rules/domains/observability.md
++++ b/.claude/rules/domains/observability.md
+@@ -61,10 +61,22 @@ still answers the JSON health body. The series and what each is keyed on:
+   `grep -n 'with("source", "journal")' backend/crates/edge/qip-edge/src/telemetry.rs`.
+ - `qip_edge_capability_freshness{capability}` and `qip_edge_sizing_multiplier`
+   — the §6.2 table as the pass actually sized against it, recorded per pass.
+-  Only the three policy-fed capabilities are published; `ingestion` and
+-  `counterfactual_scoring` are deliberately absent because the cell never
+-  measures them and a permanent `unavailable` would be a number nobody
+-  computed.
++  The three policy-fed capabilities are published on every pass. Since
++  R12-RES-8026 three dependency rows the cell measures itself are published
++  beside them — `feed`, `venue_session` and `clock` — **each only once the
++  cell has observed it** (`DegradationState::observed`, not `freshness`):
++  absent before any venue has been heard or any venue time measured, and
++  absent for `venue_session` on a cell built without venue health, because an
++  unobserved row's `unavailable` is a default, not a measurement. So the
++  `capability` label takes at most six values per cell. `ingestion` and
++  `counterfactual_scoring` remain deliberately absent: the cell never measures
++  either as a capability, and ingestion's envelope is the per-book
++  `stale_book` gate, stated as a `PerBook` row of the cell's
++  `qip_edge::degradation::DegradationEnvelope` and refused at assembly if
++  omitted. `ledger` is the halt gauge's `journal` source and `fabric` is
++  derived from the policy-fed rows, so neither is charted here twice. Locate
++  the recording site with
++  `grep -n 'state.observed(capability)' backend/crates/edge/qip-edge/src/telemetry.rs`.
+ - `qip_edge_policy_sequence` — the payload the cell has *applied*, for
+   correlation against what the centre believes it published.
+ - `qip_edge_region_share_bound` and `qip_edge_region_share_applied_total{outcome}`
