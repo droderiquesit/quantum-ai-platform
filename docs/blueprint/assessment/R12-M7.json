@@ -1233,13 +1233,13 @@
   },
   {
     "id": "R12-FABRIC-7055",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "StreamPolicy requires byte/message quotas, lag limit and overload policy; a stream missing any declaration is refused by name.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:264-400 StreamPolicySpec/StreamPolicy: qos, partition key, ordering, retention, RF, mirroring, overload, ack, byte/message quotas, lag limit, entitlement",
       "backend/crates/libs/qip-events/tests/event_fabric_policy.rs:153,604 a stream missing any declaration is refused naming it"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when a catalogue test removes byte_quota_per_producer and message_quota_per_producer in turn and asserts each refusal names the field (today only lag_limit, event_fabric_policy.rs:163, and the seven declarations at :614 are driven), so that `required(raw.byte_quota_per_producer ..)` in catalogue.rs parse_stream cannot become a default without a test failing.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1250,7 +1250,7 @@
     "verification": "cargo test -p qip-events --test event_fabric_policy",
     "work_item": "",
     "size": "S",
-    "notes": "Declaration is complete; enforcement at the broker is f_bp."
+    "notes": "Declaration is complete; enforcement at the broker is f_bp. AUDIT-4 2026-10-24: regraded, the named event_fabric_policy suite does not fail when catalogue.rs parse_stream defaults byte_quota_per_producer or message_quota_per_producer to 1 (20 passed under each mutation); only the lag_limit mutation fires (event_fabric_policy.rs:172). The requirement names a quota, lag limit or overload policy; the two quotas are untested."
   },
   {
     "id": "R12-FABRIC-7056",
