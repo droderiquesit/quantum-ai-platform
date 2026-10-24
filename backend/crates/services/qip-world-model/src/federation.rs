@@ -989,7 +989,9 @@ impl Federation {
     /// named world model and journals the update with citation to the
     /// attribution ID. The effect's mean and standard deviation are recorded as
     /// evidence the model can use; the identifiability marker tells whether the
-    /// effect is causal or merely correlational.
+    /// effect is causal or merely correlational. A merely correlational
+    /// attribution is refused (ADR 0145), because the journal record drops
+    /// the marker.
     ///
     /// Returns the position in the journal of the update record.
     pub fn update_from_attribution(
@@ -1002,6 +1004,18 @@ impl Federation {
         // updates) rather than journal it: a record the contract would not
         // admit cannot be replayed into anything the platform trusts.
         attribution.validate()?;
+        // An effect no experiment or named strategy identified is a
+        // correlation, and `AttributionApplied` carries the effect's mean and
+        // deviation but not the identification marker, so once journaled it
+        // reads as evidence about the model. The refusal lives here, not in a
+        // caller, so a future caller cannot reach the journal by forgetting a
+        // check it held (ADR 0145 decision 2).
+        if !attribution.identification.is_identified() {
+            return Err(Error::invalid(format!(
+                "attribution for goal `{}` is not identified, and an unidentified effect updates                  no world model (ADR 0145); identify it with an experiment or a named strategy                  first",
+                attribution.goal_id
+            )));
+        }
         // And refuse an update to a model the federation does not hold live.
         // `model_id` is the goal id, so without this lookup an attribution
         // citing a model that never existed, or one already closed or merged,
