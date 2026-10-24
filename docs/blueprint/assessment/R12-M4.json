@@ -99,9 +99,11 @@
       "backend/crates/services/qip-training/src/distill.rs:311 distil",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1501 production call",
       "backend/crates/services/qip-training/tests/training.rs:1118 a_distilled_tree_is_bounded_and_evaluable_everywhere",
-      "backend/crates/services/qip-training/tests/training.rs:1607 a_distillation_only_exists_with_its_fidelity_already_measured"
+      "backend/crates/services/qip-training/tests/training.rs:1607 a_distillation_only_exists_with_its_fidelity_already_measured",
+      "backend/crates/services/qip-training/tests/training.rs a_distillation_reports_the_gap_its_student_actually_has_on_every_axis (a linear student of a boosted teacher on a humped target: mean and max gap, R2, Spearman rank and decision agreement recomputed independently from both models' outputs and required to equal the report; premises assert the gap is nonzero on every axis)",
+      "backend/crates/services/qip-training/tests/training.rs each_fidelity_bar_alone_refuses_a_student_that_misses_only_it (R2, rank, decision agreement and mean gap each fire alone, by name)"
     ],
-    "gap": "2026-10-24: Closes when a test asserts the measured fidelity values themselves: a student with a known gap reports that mean and maximum gap, R2, rank correlation and decision agreement, and FidelityPolicy::shortfalls refuses a student for each of R2, rank, decision agreement and mean gap in turn. Today only the failure-mode and parameter-byte shortfalls are driven.",
+    "gap": "2026-10-24 (lane L2-INTEL): the closure AUDIT-4 named is built: the measured fidelity values themselves are asserted against an independent recomputation for a student with a known nonzero gap, and FidelityPolicy::shortfalls is driven on each of R2, rank, decision agreement and mean gap in turn. Note for a reader: the deep brain judges promotability under FidelityPolicy::default(), whose maximum_mean_gap is infinite, so on the default path the mean-gap bar never fires; the other three bars do. Promotion awaits the independent skeptic.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -109,10 +111,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training --test training",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-training --test training -- a_distillation_reports_the_gap_its_student_actually_has_on_every_axis each_fidelity_bar_alone_refuses_a_student_that_misses_only_it",
     "work_item": "",
     "size": "S",
-    "notes": "AUDIT-4 2026-10-24: regraded, overwriting the measured fidelity with a perfect report (R2, rank and decision agreement 1.0, gaps 0.0) after measure_fidelity passes the named qip-training training suite (55 passed), the whole qip-training crate and qip-deepbrain's learning tests; so do `false &&` on the mean-gap and R2 shortfalls and forcing every decision to agree. a_distillation_only_exists_with_its_fidelity_already_measured asserts gap >= 0, max >= mean and agreement within [0,1], all true of zeros."
+    "notes": "AUDIT-4 2026-10-24: regraded, overwriting the measured fidelity with a perfect report (R2, rank and decision agreement 1.0, gaps 0.0) after measure_fidelity passes the named qip-training training suite (55 passed), the whole qip-training crate and qip-deepbrain's learning tests; so do `false &&` on the mean-gap and R2 shortfalls and forcing every decision to agree. a_distillation_only_exists_with_its_fidelity_already_measured asserts gap >= 0, max >= mean and agreement within [0,1], all true of zeros. 2026-10-24 L2-INTEL: mutations fired, each restored byte-for-byte (cp + cmp): AUDIT-4's overwrite with a perfect report after measure_fidelity; `rank_correlation: 1.0`; dropping `.abs()` from the gap; `!=` for the decision agreement; R2 total against zero instead of the mean: all fail a_distillation_reports_the_gap_its_student_actually_has_on_every_axis. `false &&` on each of the R2, rank, decision-agreement and mean-gap comparisons in shortfalls fails each_fidelity_bar_alone_refuses_a_student_that_misses_only_it."
   },
   {
     "id": "R12-MODEL-4006",
