@@ -591,6 +591,25 @@ impl NwsStationObservationsConnector {
         Ok(())
     }
 
+    /// The station's coordinates as the publisher states them, copied
+    /// verbatim as `geo:lat,lon` (GeoJSON orders a point longitude first).
+    ///
+    /// `None` when the feature carries no point or one outside the earth's
+    /// range: the claim is then unlocated rather than placed on a guess. The
+    /// coordinates are never used for `REGION` (see there); they only let
+    /// two claims about one place be compared.
+    fn published_location(feature: &Value) -> Option<String> {
+        let geometry = feature.get("geometry")?;
+        if geometry.get("type").and_then(Value::as_str) != Some("Point") {
+            return None;
+        }
+        let coordinates = geometry.get("coordinates")?.as_array()?;
+        let longitude = coordinates.first()?.as_f64()?;
+        let latitude = coordinates.get(1)?.as_f64()?;
+        let location = format!("geo:{latitude},{longitude}");
+        qip_evidence::GeoPoint::parse(&location).map(|_| location)
+    }
+
     /// The instant an observation was taken, refusing a non-UTC offset.
     ///
     /// `qip_core::Timestamp::parse_rfc3339` splits the time at the first `+`
@@ -726,6 +745,7 @@ impl SourceConnector for NwsStationObservationsConnector {
                     )
                 })?;
             let observed_at = Self::observed_at(stamp)?;
+            let location = Self::published_location(feature);
             for entry in READINGS {
                 let Some(measurement) = properties.get(entry.field) else {
                     // A station that does not report this reading omits the
@@ -768,6 +788,7 @@ impl SourceConnector for NwsStationObservationsConnector {
                         "value": value,
                         "grade": grade.letter(),
                         "observed_at": observed_at.to_rfc3339(),
+                        "location": location,
                     }),
                 ));
             }
@@ -850,6 +871,14 @@ impl SourceConnector for NwsStationObservationsConnector {
                 evidence_unretrievable: false,
             },
         )))
+    }
+
+    fn location_of(&self, event: &RawEvent) -> Option<String> {
+        event
+            .body
+            .get("location")
+            .and_then(Value::as_str)
+            .map(str::to_string)
     }
 
     /// The publisher's grade, carried rather than assumed.

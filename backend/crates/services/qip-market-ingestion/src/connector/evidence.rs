@@ -323,6 +323,7 @@ pub fn evidence_of(
     feed_sequence: Option<&(String, u64)>,
     cause: Option<String>,
     confidence: f64,
+    location: Option<String>,
 ) -> Result<EvidenceRecord> {
     let topic = record.topic();
     let subject = record.subject_id().map(str::to_string);
@@ -354,9 +355,15 @@ pub fn evidence_of(
         confidence,
     )?
     .with_claimed_at(claimed_at(record))
-    .with_location(format!("region:{:?}", manifest.region))
+    // The manifest's region is where the *source* is filed, not where the
+    // claim is about, so it travels as metadata; a `location` is only ever
+    // the publisher's own coordinates (R12-EVID-2037).
+    .with_metadata("region".into(), format!("{:?}", manifest.region))
     .with_metadata("provider".into(), manifest.provider.clone())
     .with_metadata("upstream_key".into(), upstream_key.to_string());
+    if let Some(location) = location {
+        evidence = evidence.with_location(location);
+    }
     if let Some(digest) = declared_digest.filter(|digest| !digest.matched) {
         evidence = evidence.with_authenticity_signal(AuthenticitySignal::HashVerified {
             algorithm: "sha256".into(),

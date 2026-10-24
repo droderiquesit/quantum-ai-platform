@@ -894,6 +894,7 @@ impl ConnectorRuntime {
             declared_digest,
             feed_sequence.as_ref(),
             quality.confidence,
+            connector.location_of(event),
             report,
         ) {
             Ok(checked) => checked,
@@ -970,6 +971,7 @@ impl ConnectorRuntime {
         declared_digest: Option<&ContentDigest>,
         feed_sequence: Option<&(String, u64)>,
         confidence: f64,
+        location: Option<String>,
         report: &mut PollReport,
     ) -> std::result::Result<CheckedEvidence, String> {
         let mut fabric = self.evidence.lock().map_err(|_| {
@@ -997,6 +999,7 @@ impl ConnectorRuntime {
             feed_sequence,
             cause,
             confidence,
+            location,
         )
         .map_err(|error| format!("evidence could not be formed: {}", error.message()))?;
         if let Some(held) = fabric.get(&evidence.id) {

@@ -213,6 +213,21 @@ pub trait SourceConnector: std::fmt::Debug {
         runtime::measured_quality()
     }
 
+    /// Where the source says this event happened, as a `geo:lat,lon` location.
+    ///
+    /// Default: `None`. A connector returns a position only when the
+    /// publisher's own payload states coordinates and it copies them
+    /// verbatim; a position derived from a region, a name or free text is
+    /// this platform's geocoding rather than the publisher's statement, and
+    /// would let `check_geographic_consistency` reject a claim on a guess
+    /// (ADR 0157 decision 9). Until 2026-10-24 every claim's location was
+    /// its manifest's region name, which never parses as a position, so the
+    /// check could not fire on any production claim.
+    fn location_of(&self, event: &envelope::RawEvent) -> Option<String> {
+        let _ = event;
+        None
+    }
+
     /// The source's own position for one event in its numbered stream, where
     /// the record the connector maps carries none: a trade id the venue
     /// assigns in order, say. The evidence check names the event at the

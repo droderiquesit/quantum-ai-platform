@@ -862,28 +862,28 @@
   },
   {
     "id": "R12-EVID-2037",
-    "status": "PARTIAL",
-    "current": "check_geographic_consistency records location/routing/weather/jurisdiction disagreement (evidence.rs:293-360) and the fabric runs it on admit (fabric.rs:647). On the production path every claim's location is its source manifest's region (connector/evidence.rs:183, `region:{:?}`), so two claims about one entity can never carry incompatible coordinates from the evidence itself.",
+    "status": "COMPLETE",
+    "current": "A claim carries a geo:lat,lon location only where the publisher's own payload states coordinates: NwsStationObservationsConnector::published_location copies the station point verbatim into the event body and SourceConnector::location_of hands it to evidence_of (connector/runtime.rs check_evidence), so check_geographic_consistency now has a parseable position to compare on the shipped NWS source (reached from qip-deepbrain evolution). Every other source carries no location; the manifest region moved to the `region` metadata key. Coordinates from free text are refused (ADR 0157 d9).",
     "evidence": [
-      "backend/crates/libs/qip-evidence/src/evidence.rs:293-360",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:647",
-      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:183",
-      "qip-evidence/src/evidence.rs::tests::a_record_with_geographic_location_contradiction_records_the_specific_violation"
+      "backend/crates/services/qip-market-ingestion/src/connectors/nws_station_observations.rs::published_location",
+      "backend/crates/services/qip-market-ingestion/src/connector/mod.rs::SourceConnector::location_of",
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs::evidence_of",
+      "backend/crates/services/qip-market-ingestion/tests/connector_contract.rs::a_weather_reading_carries_the_stations_published_coordinates_as_its_claim_location_and_a_rate_reading_carries_none"
     ],
-    "gap": "Extract claim locations from the content (or a geo source) so the check can detect a real disagreement in production.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-EVID-2031"
     ],
     "blocked_by": "",
-    "verification": "a unit test with contradictory locations",
+    "verification": "cargo test -p qip-market-ingestion --test connector_contract a_weather_reading_carries_the_stations_published_coordinates",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Check implemented and tested; production input makes it vacuous."
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0157 d9. Mutations fired: restoring with_location(region string) fails the rate-reading absence assertion (left: Some(\"region:NorthAmerica\")); writing a None location in the NWS decode fails the weather assertion (left: None). Only sources whose payload states coordinates can make the check bite; no free-text extractor is built or wanted."
   },
   {
     "id": "R12-EVID-2038",
