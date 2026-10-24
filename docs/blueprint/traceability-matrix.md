@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 551 | 36.3% |
+| Blueprint completion (COMPLETE) | 552 | 36.4% |
 | Implemented (behaviour exists in code) | 1333 | 87.8% |
 | Tested (a named test demonstrates it) | 1235 | 81.4% |
-| Integrated (reached from a composition root) | 890 | 58.6% |
+| Integrated (reached from a composition root) | 891 | 58.7% |
 | Deployable (provisionable from committed config) | 206 | 13.6% |
 | End-to-end demonstrated | 20 | 1.3% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 551 |
-| PARTIAL | 827 |
+| COMPLETE | 552 |
+| PARTIAL | 826 |
 | MISSING | 108 |
 | BLOCKED | 31 |
 | NEEDS-VALIDATION | 1 |
@@ -46,7 +46,7 @@ register (ADR 0099), and there is no second one.
 | [AGENCY](#agency) | 69 | 42 | 20 | 0 | 7 | 0 | 63 | 61 | 0 |
 | [MODEL](#model) | 81 | 28 | 49 | 3 | 1 | 0 | 76 | 71 | 0 |
 | [QUANT](#quant) | 78 | 25 | 27 | 26 | 0 | 0 | 52 | 52 | 0 |
-| [EXPAND](#expand) | 68 | 31 | 35 | 2 | 0 | 0 | 65 | 64 | 3 |
+| [EXPAND](#expand) | 68 | 32 | 34 | 2 | 0 | 0 | 65 | 64 | 3 |
 | [EVENT](#event) | 11 | 3 | 8 | 0 | 0 | 0 | 11 | 11 | 0 |
 | [COMMERCE](#commerce) | 17 | 2 | 15 | 0 | 0 | 0 | 17 | 17 | 0 |
 | [GOV](#gov) | 26 | 12 | 9 | 3 | 2 | 0 | 21 | 21 | 2 |
@@ -1244,7 +1244,7 @@ register (ADR 0099), and there is no second one.
 | R12-EXPAND-6058 | Brain Registry with declared fields | qip-deepbrain brains.rs holds the Brain Registry the node starts on: BrainRegistry::register validates every BrainSpec (competency domains, tools, source permissions, memory scope, model stack, evaluations, abstention rules, authority envelope, calibration, version and parent lineage) and refuses an entry missing a declared field or an id registered twice. brains::standard registers one entry per agent on the organisation the platform convened (Platform::organisation().roster(), read rather than listed), the four NOW specialists and the two ambient brains; main.rs builds it after the platform is assembled and before anything is served, so a convened agent without a valid entry stops the process, and prints the count on the banner. Models remain recorded in qip-ai's ModelRegistry (ModelCard), the registry the learning desk registers every fit in. | COMPLETE |  |  | P2 | cd backend && cargo +1.94.1 test -p qip-deepbrain --test brains |  |
 | R12-EXPAND-6059 | Tool Registry with declared fields | qip-agents ToolRegistry with ten ToolKinds, read-only start. qip-deepbrain registers the three desks (source-discovery, model-fit, stress-simulator) and, from the settings main.rs parsed, what the process runs: research::node_tools adds the classical solver always, the quantum-backend only where ComputeSettings attached the in-tree simulator, and one connector per catalogued source the node polls; ResearchLoop::new_for_node (called from main.rs) checks the desk and every BrainSpec against it. tick-replay and venue-adapter stay unregistered because the node holds neither (R12-EXPAND-6037). | COMPLETE |  |  | P2 | cargo test -p qip-deepbrain --test research the_node_registers_every_tool_kind_it_actually_runs |  |
 | R12-EXPAND-6060 | Model Registry with declared fields | ModelClass records Foundation, Policy, Ensemble and Reflex beside Generic, the specialists and the reasoners (ALL is sixteen). ModelCard::decision_eligibility, which ModelRegistry::require_for_decision applies to every decision lookup, adds per-class rules: a foundation model is never decision-eligible; a policy or ensemble needs a named benchmark; a reflex model needs a resource budget. Generic and Reflex are the only classes admitted to the hot lane. ResourceBudget already existed on the card. | COMPLETE |  |  | P2 | cargo test -p qip-ai --test registry |  |
-| R12-EXPAND-6061 | Research Registry with declared fields | ExpansionDesk holds a ResearchRegistry on the deep-brain sweep; a concluded null is recorded and a re-raised question is refused at admission. | PARTIAL | The registry stores hypothesis plus Verdict, and a Null or Supported verdict already must cite non-empty evidence (research.rs record_version), so the 'refuse a verdict without an experiment' half exists as free text. Missing: structured experiment ids (ResearchCampaign has none - it holds a question and per-stage provenance), a list of open questions, a benchmark-suite field, and unresolved contradictions. Widening needs a campaign identity first, and the desk's two record() call sites (qip-expansion desk.rs conclude) and the tests that call record() change with the signature. |  | P2 | cargo test -p qip-agents --test expansion_registries |  |
+| R12-EXPAND-6061 | Research Registry with declared fields | A research campaign is identified by qip_agents::research::campaign_id, the SHA-256 of its normalised question (ResearchCampaign::id), and each stage that ran is an experiment reference `<campaign id>/<stage>` (ResearchCampaign::experiment_refs). ResearchRegistry::record_concluded refuses a Null or Supported verdict that cites no experiment or one belonging to another question, and stores the sorted unique references on ResearchVersion.experiments; ExpansionDesk::conclude records through it on both the promotion and the null arm. No free-text benchmark_suite is added (ADR 0152 d11). | COMPLETE |  |  | P2 | cargo test -p qip-agents --test expansion_registries; cargo test -p qip-expansion --test executor |  |
 | R12-EXPAND-6062 | Capability Registry with declared fields | qip-agents CapabilityRegistry with versioned CapabilityEntry (confidence, eligibility); library-only. | PARTIAL | CapabilityRegistry (registries.rs) has no caller outside qip-agents tests and none was added: the UnsupportedRequest arm of the sweep is the coverage detector over asset-class and venue keys (detectors.rs coverage), which is not a request for a capability verb, so there is no input there to look up in a registry of the ten verbs. Populating it from the configured venues and the simulated broker's modes is mechanical; what it would be consulted against is the missing piece, and is a design decision for the expansion loop rather than a wiring one. |  | P2 | cargo test -p qip-agents --test expansion_registries |  |
 | R12-EXPAND-6063 | Curriculum scored on eight criteria, never novelty alone | backend/crates/services/qip-expansion/src/desk.rs:115 every candidate scored on the eight criteria plus novelty/failure/urgency; curriculum rank in backend/crates/services/qip-expansion/src/curriculum.rs:166 gives novelty no standalone weight | COMPLETE |  |  | P2 | cargo test -p qip-expansion |  |
 | R12-EXPAND-6064 | Unknown-unknown surfacing | backend/crates/services/qip-expansion/src/detectors.rs:422 anomaly_clusters raises one investigation for several subjects sharing a symptom, called in the sweep (backend/crates/apps/qip-deepbrain/src/research.rs:446) | COMPLETE |  |  | P2 | cargo test -p qip-expansion |  |
