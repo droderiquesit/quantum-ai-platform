@@ -1446,7 +1446,7 @@
     "status": "MISSING",
     "current": "No TPU rung or benchmark memory for accelerators.",
     "evidence": [],
-    "gap": "Accelerator rungs with benchmark gating.",
+    "gap": "Corrected 2026-10-24. The ladder (qip-cost-router tier.rs IntelligenceTier::LADDER) has nine rungs and none is an accelerator; no TPU or GPU is provisioned in any environment. Adding a rung reorders a ladder whose derived Ord is the cost order (a behaviour change for every router caller) and needs an ADR, a billed accelerator the owner provisions, and a measured benchmark per size before the router may choose it; a rung with no provider would be a rung that can never be chosen. The solver benchmark memory the quantum path publishes (keyed by family and size) is the nearest existing gate.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1457,7 +1457,7 @@
     "verification": "cargo test -p qip-cost-router",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane N3-MODEL-EDGE-INFRA: re-read against tier.rs; no code changed, nothing launched."
   },
   {
     "id": "R12-QUANT-10067",

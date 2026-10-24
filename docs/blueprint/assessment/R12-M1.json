@@ -404,7 +404,7 @@
       "backend/crates/services/qip-mesh/src/peer.rs:314 PeerMessage",
       "backend/crates/apps/qip-edge-node/src/mesh.rs:317 exchange with centre only"
     ],
-    "gap": "Peer link on by default or set by committed deployment.",
+    "gap": "Corrected 2026-10-24. The node spawns the peer mesh when QIP_PEER_MESH_LISTEN / QIP_PEER_MESH_PEERS are set and announces that it coordinates with no other cell directly when they are unset; a committed deployment cannot set them yet because a peer is another execution node: execution_nodes = {} in test, stage and prod, and dev declares one node (newyork-1) with execution_nodes_enabled = false, so there is no peer address to name and no peer workload certificate to admit. manifest_wiring.rs::THE_PEER_MESH_HAS_NO_DEPLOYED_PEER records exactly this and must change together with the first two-node deployment. Making the mesh default-on would invent a peer, so it is not done.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -417,7 +417,7 @@
     "verification": "cargo test -p qip-mesh",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). 2026-10-24 lane N3-MODEL-EDGE-INFRA: gap restated with the deployment facts (grep -rn execution_nodes infrastructure/environments/*/terraform.tfvars); no code changed. Held PARTIAL on deployment evidence."
   },
   {
     "id": "R12-QUANT-1019",
