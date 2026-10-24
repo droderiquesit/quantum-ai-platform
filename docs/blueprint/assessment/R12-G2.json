@@ -699,7 +699,7 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs:341-465 EvolutionEngine",
       "backend/crates/services/qip-evolution/tests/evolution.rs"
     ],
-    "gap": "Score against ForecastState; tie challenger promotion to tournament comparison. The tournament scores forecasters on resolved questions (probabilities and, since ed9e3e8f, quantiles); qip-evolution promotes strategy challengers on their own backtest and lifecycle evidence. No identity joins a strategy challenger to a tournament forecaster, so a promotion gate on a tournament win would have nothing to compare, and ForecastState scoring needs the contract produced by a forecaster first.",
+    "gap": "Not adopted, by decision (ADR 0149/0140): scoring against ForecastState and a tournament-win promotion gate are declined. A strategy joins the tournament as strategy:<StrategyId> only once its shadow output states a direction and a probability as a Forecast (a Signal states no side, so no direction is invented from SignalKind::Enter); that admission is not built and no strategy is admitted. qip-evolution promotion keeps its one path (deflated Sharpe and gates) with the tournament record attached as read-only context. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -710,7 +710,7 @@
     "verification": "cargo test -p qip-evolution",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; no key joins a strategy challenger to a forecaster. Left PARTIAL with the corrected gap."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). 2026-10-18 lane L06: not implemented; no key joins a strategy challenger to a forecaster. 2026-10-24 lane N3-MODEL-EDGE-INFRA: gap restated against the ADR; nothing in the tree produces strategy:<id> (grep for the id and for a Signal-to-Forecast mapping finds none), so the admission test the ADR names (a_strategy_signal_without_a_stated_direction_is_not_submitted_to_the_tournament_as_a_forecast) cannot be written until the admission exists. Held PARTIAL; no code changed."
   },
   {
     "id": "R12-MODEL-9031",
