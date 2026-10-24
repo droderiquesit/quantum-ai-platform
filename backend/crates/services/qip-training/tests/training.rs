@@ -962,6 +962,52 @@ fn a_linear_teacher_distils_into_a_faithful_linear_student() -> Result<()> {
     Ok(())
 }
 
+/// ADR 0149 decision 17. The cell applies a model's calibration after its raw
+/// score, so a student that fitted the teacher's *calibrated* outputs and also
+/// shipped the calibration would apply it twice, and one that dropped it would
+/// ship a teacher's raw scale. The student of a calibrated teacher fits the raw
+/// scores and carries the calibration; the student of an uncalibrated one
+/// carries none, so its digest is the one it had before the field existed.
+/// Mutation: drop the `with_calibration` call in `distil` (the carried
+/// calibration is lost) or fit the calibrated outputs (it is applied twice).
+#[test]
+fn a_student_of_a_calibrated_teacher_carries_its_calibration_and_one_of_an_uncalibrated_teacher_carries_none()
+-> Result<()> {
+    let data = linear_dataset("calibrated-teacher", 300, 0.25, &[1.5, -0.75], 0.05, 91)?;
+    let probe = linear_dataset("calibrated-probe", 200, 0.25, &[1.5, -0.75], 0.05, 93)?;
+    let mut teacher = fit(ModelFamily::Linear { ridge: 0.0 }, &data)?;
+    assert!(teacher.calibration().is_identity(), "premise: uncalibrated");
+
+    let plain = distil(&teacher, &probe, StudentForm::Linear { ridge: 0.0 }, 0.0)?;
+    assert_eq!(plain.student().calibration(), None);
+
+    let update = TrainingCadence::SecondsToMinutes.authorise(
+        UpdatePayload::Calibration {
+            scale: 2.0,
+            offset: 0.5,
+        },
+        day(101),
+        None,
+        "recalibrating onto the decision layer's scale",
+    )?;
+    teacher.apply(&update)?;
+    assert!(!teacher.calibration().is_identity(), "premise: calibrated");
+
+    let distillation = distil(&teacher, &probe, StudentForm::Linear { ridge: 0.0 }, 0.0)?;
+    let student = distillation.student();
+    let carried = student.calibration().expect("the calibration is carried");
+    assert!(approx_eq(carried.scale, 2.0, 1e-12) && approx_eq(carried.offset, 0.5, 1e-12));
+    assert_ne!(student.digest(), plain.student().digest());
+    // Applied once: the student evaluates to the teacher's calibrated output.
+    for row in probe.rows().iter().take(20) {
+        let want = teacher.predict(row)?;
+        let got = student.evaluate(row)?;
+        assert!(approx_eq(got, want, 1e-6), "{got} != {want}");
+    }
+    assert!(distillation.fidelity().maximum_absolute_gap < 1e-6);
+    Ok(())
+}
+
 #[test]
 fn decision_agreement_is_measured_at_the_threshold_it_was_given() -> Result<()> {
     let training = linear_dataset("threshold", 300, 0.0, &[1.0, 0.0], 0.02, 79)?;

@@ -913,13 +913,15 @@
   {
     "id": "R12-REFLEX-5040",
     "status": "PARTIAL",
-    "current": "DistilledModel inline in compiled plans (qip-strategy model.rs), admitted only when the trained_models manifest names it (backend/crates/edge/qip-edge/src/cell.rs:3318); test a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose (backend/crates/edge/qip-edge/tests/model_manifest.rs:227).",
+    "current": "DistilledModel inline in compiled plans (qip-strategy model.rs), admitted only when the trained_models manifest names it (backend/crates/edge/qip-edge/src/cell.rs); test a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose (backend/crates/edge/qip-edge/tests/model_manifest.rs). Since 05f17d18 DistilledModel carries an optional ModelCalibration that enters digest() only under a calibration/v1 tag, so no existing digest moves, and the cell's program evaluates through DistilledModel::evaluate, which applies it after the raw score (qip-strategy program.rs). Since 2026-10-24 qip_training::distill::distil fits a calibrated teacher's raw scores and carries the teacher's calibration; an uncalibrated teacher's student carries none and digests as before.",
     "evidence": [
-      "backend/crates/edge/qip-strategy/src/model.rs",
-      "backend/crates/edge/qip-edge/src/cell.rs:3318",
+      "backend/crates/edge/qip-strategy/src/model.rs::DistilledModel::with_calibration, digest",
+      "backend/crates/edge/qip-strategy/tests/strategy.rs a calibrated model digests differently and an uncalibrated one exactly as before",
+      "backend/crates/services/qip-training/src/distill.rs::distil",
+      "backend/crates/services/qip-training/tests/training.rs::a_student_of_a_calibrated_teacher_carries_its_calibration_and_one_of_an_uncalibrated_teacher_carries_none",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs:227"
     ],
-    "gap": "DistilledModel (qip-strategy model.rs) has no calibration: it returns the raw tree or linear score, and there is no calibration table in the struct, its digest or the training distillation (qip-training distill.rs); the kernel manifest producer (model_serving.rs) is still not shipped to nodes by a deployed path. DistilledModel is constructed or matched at over a hundred sites, so a new field changes every model digest and manifest.",
+    "gap": "No production caller of distil yet: grep finds it only in qip-training tests, so no deployed binary produces a calibrated student; and the kernel manifest producer (model_serving.rs) is still not shipped to nodes by a deployed path (the signed release path of ADR 0149 decisions 1-4, R12-CONTRACT-7064 and R12-CONTRACT-7091). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -927,10 +929,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test model_manifest",
+    "verification": "cargo test -p qip-training --test training a_student_of_a_calibrated; cargo test -p qip-strategy; cargo test -p qip-edge --test model_manifest",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: not attempted; the change alters digests that manifests pin. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 did not attempt it; 05f17d18 built the strategy half (ADR 0149 d17); lane T6-MODEL-AGENTS 2026-10-24 built the distil half. Mutations that fired: dropping with_calibration in distil failed 'the calibration is carried'; fitting the calibrated outputs (applied twice) failed 3.352 != 1.426. Kept PARTIAL on the two deployment gaps above."
   },
   {
     "id": "R12-REFLEX-5041",
