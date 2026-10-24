@@ -586,26 +586,27 @@
   },
   {
     "id": "R12-FABRIC-10027",
-    "status": "MISSING",
-    "current": "qip-fabricd is one broker with one disk, RF1, no follower, no replication, not deployed; broker_count is 0/1. Acceptance tests fabric_010/fabric_055 assert hand-built fixtures and exercise no code.",
+    "status": "PARTIAL",
+    "current": "Re-graded 2026-10-24: the MISSING verdict described a tree that no longer exists. ADR 0111 replication is built: P0/P1 batches commit to a Spanner-shaped managed log under a fenced lease before the producer is answered, followers catch up onto their own disks and the survivor takes the lease after a kill (qip-streaming event_fabric/managed.rs, broker.rs; qip-fabricd src/spanner.rs, lib.rs). StreamPolicy::new admits RF3 only for P0/P1 acknowledged managed_majority (policy.rs:419-449). The broker module admits up to three brokers, one per zone, only with a managed log (event-fabric-broker/variables.tf broker_internal_addresses, broker_zones). Killing a leader after acknowledgement loses nothing in qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost, and the admission rule is pinned by event_fabric_infrastructure_basics::fabric_010_a_stream_is_admitted_at_rf3_only_for_p0_and_p1_acknowledged_managed_majority (mutation: drop the P0/P1 guard in StreamPolicy::new; the P2 expect_err fires). Replication is delegated to Spanner by decision (ADR 0111, Amendment 1), not written in tree.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/lib.rs:28-31 one broker, no replication",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:16 broker_count RF1 (FABRIC-086 blocked C2)",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs:316 fabric_010 (fixture-only)",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_operational.rs:285 fabric_055 (fixture-only)"
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:419",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs::fabric_010_a_stream_is_admitted_at_rf3_only_for_p0_and_p1_acknowledged_managed_majority",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:143",
+      "backend/crates/apps/qip-fabricd/src/lib.rs:30"
     ],
-    "gap": "Replication protocol, followers, quorum ack, zone spread.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Remaining slices, none in-tree code: (1) deployment: fabricd is not deployed and enable_spanner is false in every tfvars, so no zone spread runs anywhere; (2) the kill test runs on MemoryManagedLog, so 'a replica killed' kills a fabricd instance, not a Spanner replica, and the Spanner majority property is assumed from the vendor; (3) the SpannerManagedLog adapter is untested against the Spanner emulator; (4) cross-region mirroring (R12-FABRIC-10062, 7038) is refused by StreamPolicy until ADR 0120's mirror is built. Corrected 2026-10-24.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "consensus replication blocked on ADR 0099 C2 / dependency decision",
-    "verification": "a qip-fabricd multi-broker test killing a replica after ack",
+    "verification": "cargo test -p qip-fabricd --test managed && cargo test -p qip-acceptance --test event_fabric_infrastructure_basics",
     "work_item": "",
     "size": "XL",
-    "notes": "Several event_fabric_* acceptance tests are tautological (assert their own fixtures); they would pass with the feature deleted."
+    "notes": "fabric_010 and fabric_055 in the event_fabric acceptance suites were fixture or gap pins written when RF1 was the whole story; fabric_010 now has a sibling that drives StreamPolicy::new for the admitted claim. fabric_055 still pins only the rendezvous move and its comment about 'no followers' describes the P2-P4 local path."
   },
   {
     "id": "R12-FINOPS-10028",
