@@ -2520,9 +2520,10 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:12497-12501",
       "backend/crates/runtime/qip-kernel/src/confidence.rs:452-462",
       "runtime/qip-kernel/src/confidence.rs::tests::a_split_panel_shrinks_the_size_of_the_thesis_it_split_on",
-      "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
+      "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant",
+      "backend/crates/runtime/qip-kernel/src/platform.rs central_sizing_tests::a_split_panel_narrows_the_construction_budget_and_the_next_grant"
     ],
-    "gap": "Not reached in this session; the gap stands as graded: split-panel dissent driven through REASON into SurvivalGovernor::size and Platform::issue_capital is covered by unit tests only.",
+    "gap": "2026-10-24: the kernel test the check names now exists and holds (central_sizing_tests::a_split_panel_narrows_the_construction_budget_and_the_next_grant): the trigger narrows the platform's construction budget by the schedule and Platform::grant_narrowing — the multiplier issue_capital hands CentralPlane::issue_narrowed — by the same factor, the multiplier stays at or under one, and a platform without the trigger sizes unchanged. What remains is bar part 2 for the grant half: Platform::issue_capital is reached only from qip-api's capital-grant route, which requires attested operator presence, and Principal::presence always returns Unattested (qip-api auth.rs), so no shipped binary ever issues a narrowed grant. That closes with ADR 0120's per-person WebAuthn credential, an owner/deploy step, not code in this lane. The sizing half runs on the default cycle.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2530,10 +2531,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo +1.94.1 test -p qip-kernel --lib central_sizing_tests::a_split_panel_narrows_the_construction_budget_and_the_next_grant",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. 2026-10-24 lane L1-MONEY: added the kernel test; mutations: skipping the disagreement block in ConfidenceSignals::decide FAILED it at 'the construction budget is not narrowed by the disagreement schedule' (37500 vs 9375); emptying decide_for_grant's [Disagreement, RegimeMismatch] loop FAILED it at 'the next grant is not narrowed' (0.1875 vs 0.046875); each restored with cp+cmp and the test passes. Kept PARTIAL on bar part 2 (grant half unreachable in a shipped binary), so no skeptic was run for promotion."
   },
   {
     "id": "R12-RISK-4113",
@@ -2592,9 +2593,10 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:9176-9187",
       "backend/crates/runtime/qip-kernel/src/confidence.rs:161",
       "runtime/qip-kernel/src/confidence.rs::tests::a_regime_never_graded_in_shrinks_the_size",
-      "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
+      "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant",
+      "backend/crates/runtime/qip-kernel/src/platform.rs central_sizing_tests::a_regime_no_claim_was_graded_in_narrows_the_construction_budget_and_the_next_grant"
     ],
-    "gap": "Not reached in this session; the gap stands as graded: the regime-mismatch narrowing of size and the next grant is covered by unit tests only.",
+    "gap": "2026-10-24: the kernel test the check names now exists and holds (central_sizing_tests::a_regime_no_claim_was_graded_in_narrows_the_construction_budget_and_the_next_grant): the trigger narrows the platform's construction budget by the schedule and Platform::grant_narrowing — the multiplier issue_capital hands CentralPlane::issue_narrowed — by the same factor, the multiplier stays at or under one, and a platform without the trigger sizes unchanged. What remains is bar part 2 for the grant half: Platform::issue_capital is reached only from qip-api's capital-grant route, which requires attested operator presence, and Principal::presence always returns Unattested (qip-api auth.rs), so no shipped binary ever issues a narrowed grant. That closes with ADR 0120's per-person WebAuthn credential, an owner/deploy step, not code in this lane. The sizing half runs on the default cycle.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2602,10 +2604,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo +1.94.1 test -p qip-kernel --lib central_sizing_tests::a_regime_no_claim_was_graded_in_narrows_the_construction_budget_and_the_next_grant",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. 2026-10-24 lane L1-MONEY: added the kernel test; mutations: making regime_multiplier return one FAILED it at 'the construction budget is not narrowed by the regime mismatch' (37500 vs 18750); emptying decide_for_grant's [Disagreement, RegimeMismatch] loop FAILED it at 'the next grant is not narrowed' (0.1875 vs 0.09375); each restored with cp+cmp and the test passes. Kept PARTIAL on bar part 2 (grant half unreachable in a shipped binary), so no skeptic was run for promotion."
   },
   {
     "id": "R12-RISK-4116",

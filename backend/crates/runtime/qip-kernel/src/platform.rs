@@ -28143,6 +28143,180 @@ mod central_sizing_tests {
             "the demo seed's year-old claims read stale at the centre"
         );
     }
+
+    /// One platform sized as `size` sizes it, with `trigger` applied to its
+    /// confidence signals first, and the grant the next capital grant would
+    /// be narrowed by afterwards — the multiplier `Platform::issue_capital`
+    /// hands `CentralPlane::issue_narrowed`.
+    fn sized_and_granted(
+        trigger: impl FnOnce(&mut Platform),
+        now: Timestamp,
+    ) -> (
+        Decimal,
+        Decimal,
+        crate::confidence::ConfidenceDecision,
+        Platform,
+    ) {
+        let mut platform = platform();
+        trigger(&mut platform);
+        let (budget, notional) = size(&mut platform, now);
+        let grant = platform
+            .grant_narrowing(now)
+            .expect("the grant narrowing reads");
+        (budget, notional, grant, platform)
+    }
+
+    /// R12-RISK-4112 through the kernel: a split panel on a thesis the desk is
+    /// about to size narrows the construction budget and the next capital
+    /// grant, by the disagreement schedule, and nothing else moves.
+    ///
+    /// Until this test the property was proven only in `confidence.rs`'s unit
+    /// tests, against a `ConfidenceSignals` built by hand: nothing showed the
+    /// platform's DECIDE stage reading the dissent REASON records, or the
+    /// grant `issue_capital` signs reading the construction that followed.
+    ///
+    /// Mutations that fail it: skip the disagreement block in
+    /// `ConfidenceSignals::decide` (budget unchanged); skip the
+    /// `Trigger::Disagreement` arm in `decide_for_grant` (grant unchanged).
+    #[test]
+    fn a_split_panel_narrows_the_construction_budget_and_the_next_grant() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let (calm_budget, calm_notional, calm_grant, _) = sized_and_granted(|_| {}, now);
+        assert!(
+            calm_notional.is_positive(),
+            "premise: the undisputed platform sized something"
+        );
+        assert!(
+            !calm_grant
+                .contractions
+                .iter()
+                .any(|c| c.trigger == crate::confidence::Trigger::Disagreement),
+            "premise: no disagreement narrows a grant on an undisputed platform: {calm_grant:?}"
+        );
+
+        // Three of four agents argued against the AAPL thesis.
+        let (split_budget, split_notional, split_grant, _) = sized_and_granted(
+            |platform| {
+                platform
+                    .governor
+                    .signals_mut()
+                    .observe_dissent("HYP-AAPL", 3, 4);
+            },
+            now,
+        );
+        let floor = crate::confidence::DISAGREEMENT_FLOOR;
+        assert_eq!(
+            split_budget,
+            calm_budget * floor,
+            "the construction budget is not narrowed by the disagreement schedule"
+        );
+        assert!(
+            split_notional < calm_notional,
+            "the split panel traded as much"
+        );
+        assert_eq!(
+            split_grant.multiplier,
+            calm_grant.multiplier * floor,
+            "the next grant is not narrowed by the disagreement schedule: {split_grant:?}"
+        );
+        assert!(
+            split_grant
+                .contractions
+                .iter()
+                .any(|c| c.trigger == crate::confidence::Trigger::Disagreement),
+            "the grant does not name the disagreement that narrowed it: {split_grant:?}"
+        );
+        assert!(
+            split_grant.multiplier <= Decimal::ONE && calm_grant.multiplier <= Decimal::ONE,
+            "a grant multiplier exceeded one"
+        );
+    }
+
+    /// R12-RISK-4115 through the kernel: a thesis whose instrument is in a
+    /// regime no resolved claim was graded in narrows the construction budget
+    /// and the next capital grant by the regime-mismatch factor, and a
+    /// platform graded in that regime sizes exactly as one graded in nothing.
+    ///
+    /// Mutations that fail it: make `regime_multiplier` return one always
+    /// (budget and grant unchanged); skip the `Trigger::RegimeMismatch` arm
+    /// in `decide_for_grant` (grant unchanged).
+    #[test]
+    fn a_regime_no_claim_was_graded_in_narrows_the_construction_budget_and_the_next_grant() {
+        use qip_cost_router::context::MarketRegime;
+        let now = Timestamp::from_secs(1_760_000_100);
+        let (calm_budget, calm_notional, calm_grant, calm) = sized_and_granted(|_| {}, now);
+        assert!(calm_notional.is_positive(), "premise: something was sized");
+        // The regimes the two theses are sized in, read the way DECIDE reads
+        // them; every other regime is one the mismatched platform is graded in.
+        let present: BTreeSet<MarketRegime> = ["AAPL", "MSFT"]
+            .into_iter()
+            .map(|object| calm.market_regime(object))
+            .collect();
+        let elsewhere: Vec<MarketRegime> = [
+            MarketRegime::Trending,
+            MarketRegime::MeanReverting,
+            MarketRegime::Crisis,
+            MarketRegime::Illiquid,
+            MarketRegime::Quiet,
+        ]
+        .into_iter()
+        .filter(|regime| !present.contains(regime))
+        .collect();
+        assert!(
+            !elsewhere.is_empty(),
+            "premise: some regime is not the one the theses sit in"
+        );
+
+        // A calibration good enough to earn one on its own, so the only
+        // contraction the grading adds is the regime's.
+        let (away_budget, away_notional, away_grant, _) = sized_and_granted(
+            |platform| {
+                platform
+                    .governor
+                    .signals_mut()
+                    .observe_calibration(0.0, 60, elsewhere.clone());
+            },
+            now,
+        );
+        let mismatch = crate::confidence::REGIME_MISMATCH;
+        assert_eq!(
+            away_budget,
+            calm_budget * mismatch,
+            "the construction budget is not narrowed by the regime mismatch"
+        );
+        assert!(
+            away_notional < calm_notional,
+            "the mismatched platform traded as much"
+        );
+        assert_eq!(
+            away_grant.multiplier,
+            calm_grant.multiplier * mismatch,
+            "the next grant is not narrowed by the regime mismatch: {away_grant:?}"
+        );
+        assert!(
+            away_grant.multiplier <= Decimal::ONE,
+            "a grant multiplier exceeded one"
+        );
+
+        // Graded in the very regimes the theses sit in: no contraction.
+        let (home_budget, _, home_grant, _) = sized_and_granted(
+            |platform| {
+                platform
+                    .governor
+                    .signals_mut()
+                    .observe_calibration(0.0, 60, present.clone());
+            },
+            now,
+        );
+        assert_eq!(
+            home_budget, calm_budget,
+            "a graded regime narrowed the budget"
+        );
+        assert_eq!(
+            home_grant.multiplier, calm_grant.multiplier,
+            "a graded regime narrowed the grant"
+        );
+    }
 }
 
 #[cfg(test)]
