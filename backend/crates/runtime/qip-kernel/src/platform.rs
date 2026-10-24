@@ -376,8 +376,9 @@ pub struct Platform {
     /// still exactly one place that knows how the pieces fit together, and
     /// touched by nothing in [`Platform::run_cycle`] — the loop above runs one
     /// process against the market in front of it, and the centre reasons about
-    /// every cell on its own schedule.
-    central: CentralPlane,
+    /// every cell on its own schedule. `pub(crate)` for
+    /// `crate::model_serving`, which signs promotion records with its key.
+    pub(crate) central: CentralPlane,
     /// The confidential gate between the plane's per-cell state and any
     /// aggregate that leaves it as insight. Held here rather than constructed
     /// per query, because its privacy budget and its release record are the

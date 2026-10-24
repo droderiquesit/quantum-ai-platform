@@ -209,6 +209,33 @@ impl ClassicalValidator {
             validation,
         })
     }
+
+    /// Validate an answer a quantum provider returned, typically through the
+    /// gateway, as the claim it is (R12-QUANT-1012).
+    ///
+    /// A [`QaoaResult`] has public fields, so a caller could read its
+    /// assignment and act on it. This is the door that makes that
+    /// unnecessary: the provider's energy becomes the candidate's *claimed*
+    /// objective and [`Self::validate`] discards it, so the only thing that
+    /// comes out is a [`ValidatedSolution`] carrying the recomputed one.
+    ///
+    /// [`QaoaResult`]: crate::qaoa::QaoaResult
+    pub fn validate_qaoa(
+        &self,
+        qubo: &Qubo,
+        solver: &str,
+        result: &crate::qaoa::QaoaResult,
+    ) -> Result<ValidatedSolution> {
+        let candidate = SolverCandidate {
+            solver: solver.to_string(),
+            kind: SolverKind::Quantum,
+            assignment: result.assignment.clone(),
+            claimed_objective: result.energy,
+            evaluations: result.evaluations,
+            trace: crate::solver::SearchTrace::new("qaoa"),
+        };
+        self.validate(qubo, &candidate)
+    }
 }
 
 /// How a solver's answer compared to the baseline.

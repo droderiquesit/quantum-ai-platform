@@ -113,10 +113,30 @@ fn a_learning_round_writes_one_trained_artifact_named_by_the_digest_its_promotio
         "premise: the fit cleared the skill bar"
     );
 
-    let outcome = desk
+    // R12-EXPAND-6070: a self-fitted model enters shadow first and is
+    // promoted only after it has won its shadow rounds, each one a later fit.
+    let mut outcome = desk
         .promote_candidate(&mut platform, at())
         .expect("the promote stage answers")
         .expect("the round left a candidate");
+    for round in 1..=u64::from(qip_kernel::model_serving::MIN_SHADOW_ROUNDS) {
+        if !matches!(outcome, PromotionOutcome::Shadowed { .. }) {
+            break;
+        }
+        let later = at().saturating_add(qip_core::Duration::from_mins(round as i64));
+        desk.maybe_learn(
+            &subject(),
+            &learnable(400),
+            "trending/calm",
+            1 + round,
+            later,
+        )
+        .expect("the shadow round's fit runs");
+        outcome = desk
+            .promote_candidate(&mut platform, later)
+            .expect("the promote stage answers")
+            .expect("the shadow round left a candidate");
+    }
     let PromotionOutcome::Promoted {
         reference,
         published,
