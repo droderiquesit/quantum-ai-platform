@@ -526,11 +526,12 @@ impl ExpansionDesk {
             Ok(capability) => {
                 self.queue.close(&question)?;
                 self.forget(&question);
-                self.research.record(
+                self.research.record_concluded(
                     &question,
                     Verdict::Supported {
                         evidence: format!("promoted as {:?}", capability.verb),
                     },
+                    &campaign.experiment_refs()?,
                 )?;
                 self.remember(Closed {
                     question,
@@ -543,11 +544,12 @@ impl ExpansionDesk {
                 if !failed.is_empty() && campaign.is_complete() {
                     self.queue.close(&question)?;
                     self.forget(&question);
-                    self.research.record(
+                    self.research.record_concluded(
                         &question,
                         Verdict::Null {
                             evidence: format!("failed {failed:?}"),
                         },
+                        &campaign.experiment_refs()?,
                     )?;
                     self.remember(Closed {
                         question,
@@ -557,6 +559,11 @@ impl ExpansionDesk {
                 Err(refusal)
             }
         }
+    }
+
+    /// What the desk has recorded about each question it concluded.
+    pub fn research(&self) -> &ResearchRegistry {
+        &self.research
     }
 
     /// Every started item and its lineage, in rank order: what the research

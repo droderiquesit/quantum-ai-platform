@@ -1360,24 +1360,28 @@
   },
   {
     "id": "R12-EXPAND-6061",
-    "status": "PARTIAL",
-    "current": "ExpansionDesk holds a ResearchRegistry on the deep-brain sweep; a concluded null is recorded and a re-raised question is refused at admission.",
+    "status": "COMPLETE",
+    "current": "A research campaign is identified by qip_agents::research::campaign_id, the SHA-256 of its normalised question (ResearchCampaign::id), and each stage that ran is an experiment reference `<campaign id>/<stage>` (ResearchCampaign::experiment_refs). ResearchRegistry::record_concluded refuses a Null or Supported verdict that cites no experiment or one belonging to another question, and stores the sorted unique references on ResearchVersion.experiments; ExpansionDesk::conclude records through it on both the promotion and the null arm. No free-text benchmark_suite is added (ADR 0152 d11).",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/research.rs:33",
-      "backend/crates/libs/qip-agents/tests/expansion_registries.rs:64"
+      "backend/crates/libs/qip-agents/src/research.rs::campaign_id",
+      "backend/crates/libs/qip-agents/src/research.rs::ResearchRegistry::record_concluded",
+      "backend/crates/services/qip-expansion/src/promotion.rs::ResearchCampaign::experiment_refs",
+      "backend/crates/services/qip-expansion/src/desk.rs::ExpansionDesk::conclude",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs::campaign_identity::a_campaign_has_a_stable_id_and_a_verdict_cites_its_experiment_references",
+      "backend/crates/services/qip-expansion/tests/executor.rs::a_concluded_null_cites_the_campaigns_own_experiment_references"
     ],
-    "gap": "The registry stores hypothesis plus Verdict, and a Null or Supported verdict already must cite non-empty evidence (research.rs record_version), so the 'refuse a verdict without an experiment' half exists as free text. Missing: structured experiment ids (ResearchCampaign has none - it holds a question and per-stage provenance), a list of open questions, a benchmark-suite field, and unresolved contradictions. Widening needs a campaign identity first, and the desk's two record() call sites (qip-expansion desk.rs conclude) and the tests that call record() change with the signature.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-expansion --test executor",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: not implemented; ExpansionDesk is on the deep-brain sweep, so the widened record would run, but ResearchCampaign has no id to cite."
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d11. Mutations fired: skipping normalise in campaign_id makes the same question two ids (left eb21c939.., right ef8b9a5e..); recording &[] in the null arm leaves nothing recorded (held.len left 0, right 1). Not added, per the ADR: a list of open questions and an unresolved-contradictions list (needs a variable-to-subject map ADR 0151 declines to invent). ResearchRegistry::record still exists for Open verdicts."
   },
   {
     "id": "R12-EXPAND-6062",
@@ -1387,7 +1391,7 @@
       "backend/crates/libs/qip-agents/src/registries.rs:115",
       "backend/crates/libs/qip-contracts/src/expansion.rs:416 CapabilityEntry"
     ],
-    "gap": "CapabilityRegistry (registries.rs) has no caller outside qip-agents tests and none was added: the UnsupportedRequest arm of the sweep is the coverage detector over asset-class and venue keys (detectors.rs coverage), which is not a request for a capability verb, so there is no input there to look up in a registry of the ten verbs. Populating it from the configured venues and the simulated broker's modes is mechanical; what it would be consulted against is the missing piece, and is a design decision for the expansion loop rather than a wiring one.",
+    "gap": "2026-10-24 (ADR 0158 decision 15): none to close in code. CapabilityRegistry is consulted against nothing and stays empty: the sweep's coverage detector (qip-expansion detectors.rs coverage) keys on asset class, venue and geography and never a verb, and populating the ten verbs would assert Trade, Purchase and Transfer capabilities the paper platform does not have. It is populated when a promoted capability declares its verb at registration, with eligibility stated as shadow or simulated.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1398,7 +1402,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": "Checked 2026-10-18 against the code: coverage() takes (universe map, covered set, floor) and raises per dimension value; no part of the sweep names a CapabilityVerb."
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed. Kept PARTIAL: library-only type with no production caller, by decision."
   },
   {
     "id": "R12-EXPAND-6063",

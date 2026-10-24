@@ -189,6 +189,46 @@ fn a_bias_that_does_not_hold_out_of_sample_records_its_null() {
     );
 }
 
+/// R12-EXPAND-6061. A concluded null that names no experiment is free text
+/// that stops a later repeat; the desk records the campaign's own stage
+/// references, `<campaign id>/<stage>`, so the verdict can be audited.
+/// Mutation: record `&[]` in `conclude`'s null arm; the registry refuses an
+/// uncited null, nothing is recorded, and `held.len() == 1` fails.
+#[test]
+fn a_concluded_null_cites_the_campaigns_own_experiment_references() {
+    let (mut desk, question) = started_desk();
+    let lineage = desk.lineage(&question).unwrap().clone();
+    let result = run_fill_bias_campaign(
+        &question,
+        &lineage,
+        &residuals(8, 0.0),
+        t0(),
+        &CampaignPolicy::default(),
+        true,
+        Decimal::from_int(4),
+        Decimal::from_int(48),
+    )
+    .unwrap()
+    .expect("premise: the campaign ran");
+    let refs = result.campaign.experiment_refs().unwrap();
+    assert_eq!(refs.len(), 4, "premise: all four stages ran: {refs:?}");
+    assert!(desk.conclude(&result.campaign, &result.evaluation).is_err());
+
+    let held = desk.research().history(&question);
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].experiments.len(), 4);
+    let id = result.campaign.id().unwrap();
+    assert!(
+        held[0]
+            .experiments
+            .iter()
+            .all(|r| r.starts_with(&format!("{id}/"))),
+        "{:?}",
+        held[0].experiments
+    );
+    assert!(held[0].experiments.contains(&format!("{id}/shadow")));
+}
+
 /// Research that cost more than it was authorised fails the cost criterion
 /// by name. Mutation: compare against `budget * 2` — it passes and the
 /// assertion fails.
