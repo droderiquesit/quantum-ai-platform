@@ -2409,4 +2409,56 @@ mod tests {
         assert!(!t.is_admitted("election-2026"));
         Ok(())
     }
+
+    /// R12-MODEL-10092: resolved outcomes update each forecaster's
+    /// calibration score, and the score is the number a person can compute
+    /// by hand. Two forecasters face the same four questions in one regime,
+    /// three resolving up and one not: `steady` says 70% up every time and
+    /// `bold` says 90%. With ten bins, `steady`'s 0.7 statements realise
+    /// 3/4 and its 0.3 statements 1/4, so its expected calibration error is
+    /// |0.7 − 0.75|/2 + |0.3 − 0.25|/2 = 0.05; `bold`'s is 0.15 the same
+    /// way. Its Brier is (3 × 0.18 + 0.98)/4 = 0.38. Before the questions
+    /// resolve there is no score at all. Mutations that fire: pushing
+    /// `(p, !happened)` as a calibration point, and scoring calibration over
+    /// one bin instead of `CALIBRATION_BINS`.
+    #[test]
+    fn resolved_outcomes_give_each_forecaster_the_calibration_score_computed_by_hand() -> Result<()>
+    {
+        let mut t = Tournament::new();
+        t.admit(spec("steady"), at(0))?;
+        t.admit(spec("bold"), at(0))?;
+        assert!(
+            t.scorecards("steady").is_empty(),
+            "premise: nothing is scored before an outcome resolves"
+        );
+        let views = [("steady", 7_000), ("bold", 9_000)];
+        rounds(&mut t, "calm", 0, 3, &views, "up", 50.0)?;
+        rounds(&mut t, "calm", 10, 1, &views, "not_up", -50.0)?;
+
+        let card = |name: &str| -> Result<Scorecard> {
+            let cards = t.scorecards(name);
+            assert_eq!(cards.len(), 1, "{name}: one regime, one card");
+            cards
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::not_found(format!("{name} has no card")))
+        };
+        let steady = card("steady")?;
+        let bold = card("bold")?;
+        assert_eq!(steady.resolved, 4);
+        let ece = |c: &Scorecard| c.calibration_error.value().unwrap_or(f64::NAN);
+        assert!(
+            (ece(&steady) - 0.05).abs() < 1e-12,
+            "steady's calibration error is {}",
+            ece(&steady)
+        );
+        assert!(
+            (ece(&bold) - 0.15).abs() < 1e-12,
+            "bold's calibration error is {}",
+            ece(&bold)
+        );
+        let brier = steady.brier.value().unwrap_or(f64::NAN);
+        assert!((brier - 0.38).abs() < 1e-12, "steady's Brier is {brier}");
+        Ok(())
+    }
 }

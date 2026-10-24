@@ -392,9 +392,15 @@ fn reachable_from(graph: &BTreeMap<String, BTreeSet<String>>, root: &str) -> BTr
 /// sequencers, books and feature DAGs transform; they do not decide. Listing
 /// them would make this "the edge" rather than "the crates whose output is an
 /// order", and a list that means everything constrains nothing.
-const SAFETY_CRITICAL: [&str; 9] = [
+const SAFETY_CRITICAL: [&str; 10] = [
     "backend/crates/services/qip-execution-engine",
     "backend/crates/services/qip-risk-engine",
+    // Where the hard limits are evaluated (`LimitSet::check`), which every
+    // deterministic gate — pre-trade, monitor, kill-switch — reads. Listed
+    // since 2026-10-24 (R12-RISK-3022): until then the risk *engine* was
+    // held model-free while the library computing its verdicts was held by
+    // nothing but the absence of a dependency nobody was checking.
+    "backend/crates/libs/qip-risk",
     "backend/crates/services/qip-portfolio-engine",
     "backend/crates/services/qip-optimization-engine",
     "backend/crates/services/qip-simulation-engine",
@@ -2875,7 +2881,7 @@ const CAPITAL_MOVING: [&str; 2] = ["qip-capital", "qip-capital-fabric"];
 fn nothing_that_moves_capital_can_reach_a_language_model() {
     // Blueprint §2.2: "No language model touches a trade, a cycle, or a
     // transfer." This file already holds the *trade* clause from four
-    // directions — `SAFETY_CRITICAL` above names the nine crates whose output
+    // directions — `SAFETY_CRITICAL` above names the ten crates whose output
     // is an order — and the *cycle* clause is held structurally elsewhere, by
     // `qip-cost-router`'s `Determinism::Required` arm returning a type that
     // cannot name a model rung.

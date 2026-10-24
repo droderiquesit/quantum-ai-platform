@@ -1747,7 +1747,7 @@
     "evidence": [
       "backend/crates/services/qip-evolution/src/promotion.rs"
     ],
-    "gap": "Build the role.",
+    "gap": "Build the role. Lane L5-EDGE 2026-10-24: the clause is GCP v2.1 §13's autonomous development agent, whose boundary is enforced by agent credentials and configuration (.claude/agents, .claude/settings.json, the guard hook) and the CI promotion gates under .github/**, all protected paths this lane does not edit; strategy promotion in qip-evolution/qip-lifecycle is not this role. Needs a person to define the learning agent's credential scope and the refused promotion run.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1758,7 +1758,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L5-EDGE: left MISSING; protected paths."
   },
   {
     "id": "R12-CICD-9076",
@@ -2624,7 +2624,7 @@
       "backend/crates/apps/qip-edge-node/src/event_fabric/pressure.rs:194,410",
       "backend/crates/apps/qip-edge-node/tests/event_fabric_pressure.rs"
     ],
-    "gap": "Node drain/activate orchestration.",
+    "gap": "Restated 2026-10-24 (lane L5-EDGE): the epoch fence a new incarnation takes before activating exists for the node (qip-edge-node/src/standby.rs: promotion swaps the lease to epoch+1 before the cell's Fence is granted, and a former holder reading a higher epoch fences itself; tests/standby.rs) and for fabric producers (event_fabric/pressure.rs). Not on a default path: the lease and role are written by the execution-node startup template only under standby_enabled (modules/execution-node/variables.tf), which no committed tfvars sets and execution_nodes is empty or disabled in every environment. The remaining step is a tfvar/deployment decision (standby_enabled with a cross-zone lease store, which standby.rs says is not in the tree), plus a drain step for the fabric writer before the new incarnation's activation.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2635,7 +2635,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_pressure",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L5-EDGE: gap made precise; no code changed."
   },
   {
     "id": "R12-CICD-9115",

@@ -940,3 +940,62 @@ fn the_tournament_and_verifier_records_sit_on_their_own_topics() {
     assert_eq!(ModelVerified::TOPIC, Topic::HypothesisChallenged);
     assert_eq!(AttributionRecorded::TOPIC, Topic::OutcomeObserved);
 }
+
+/// R12-MODEL-6016: the tournament's market aggregate is an ensemble, and it
+/// is scored after its question resolves under a self-model component of its
+/// own, apart from the forecasters it combined. Before this the aggregate was
+/// journaled on the resolution and charged to nothing, so an ensemble worse
+/// than its best member had no record to show it. Mutation: deleting the
+/// aggregate charge loop in `Platform`'s LEARN stage leaves the ensemble's
+/// component absent and the estimate assertion fails.
+#[test]
+fn a_resolved_tournament_question_charges_its_market_aggregate_to_the_ensembles_own_component()
+-> Result<()> {
+    use qip_kernel::platform::TOURNAMENT_ENSEMBLE;
+    use qip_learning_engine::self_model::{ComponentKey, ComponentKind};
+
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let question = platform
+        .model_tournament()
+        .open_questions()
+        .next()
+        .cloned()
+        .ok_or_else(|| Error::not_found("no question opened"))?;
+    let id = question.spec().id.clone();
+    let resolves_at = question.spec().resolves_at;
+    let key = ComponentKey::new(ComponentKind::Ensemble, TOURNAMENT_ENSEMBLE)?;
+    assert!(
+        platform.self_model().get(&key).is_none(),
+        "premise: nothing is charged before the question resolves"
+    );
+
+    platform.observe(vec![bar("AAA", resolves_at, 150.0, 165.0)]);
+    platform.run_cycle(resolves_at.saturating_add(Duration::from_days(2)));
+
+    let reviews = records::<TournamentReview>(&platform, TOURNAMENT_ORIGIN)?;
+    let aggregates: Vec<f64> = reviews
+        .iter()
+        .flat_map(|review| review.resolved.iter())
+        .filter_map(|resolved| resolved.aggregate)
+        .filter(|aggregate| aggregate.total_cmp(&0.5).is_ne())
+        .collect();
+    assert!(
+        reviews
+            .iter()
+            .flat_map(|review| review.resolved.iter())
+            .any(|resolved| resolved.question == id && resolved.aggregate.is_some()),
+        "premise: the question resolved with a market aggregate"
+    );
+    let estimate = platform
+        .self_model()
+        .get(&key)
+        .ok_or_else(|| Error::not_found("the ensemble holds no estimate"))?;
+    assert_eq!(
+        estimate.sample_count(),
+        aggregates.len(),
+        "every resolved aggregate that took a side is charged once"
+    );
+    Ok(())
+}

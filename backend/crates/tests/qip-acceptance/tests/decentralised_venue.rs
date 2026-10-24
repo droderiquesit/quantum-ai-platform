@@ -47,7 +47,7 @@ use qip_execution_engine::broker::{
     Broker, LiveBroker, LiveVenueConfig, SimulatedBroker, SimulationSettings,
 };
 use qip_execution_engine::creation::{
-    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+    CreationAction, CreationAdmission, CreationAuthority, CreationPermissions, CreationRequest,
 };
 use qip_execution_engine::feasibility::GATE_MINIMUM_NOTIONAL;
 use qip_execution_engine::oms::{OrderManager, RefusalReason};
@@ -672,6 +672,7 @@ fn a_venue_that_times_itself_crosses_the_broker_port_and_earns_the_observed_rung
         dec!("100.00"),
         Decimal::from_int(400),
         start(),
+        &seeding(MEASURED_VENUE, &measured_object()),
     )?;
     exchange.bring_up(&measured_credential(), start())?;
 
@@ -831,6 +832,7 @@ fn a_venue_whose_recorded_sessions_replay_clean_reaches_the_simulator_and_stops(
         dec!("100.00"),
         Decimal::from_int(4_000),
         start(),
+        &seeding(MEASURED_VENUE, &measured_object()),
     )?;
     exchange.bring_up(&measured_credential(), start())?;
 
@@ -1109,4 +1111,21 @@ fn list_admitted(
         permissions.record(authority, &request, "test fixture")?;
     }
     exchange.list(object, &permissions.admit(&request)?)
+}
+
+/// An admission to seed `object` at `venue`, minted the one way there is:
+/// every authority's permission recorded, then `CreationPermissions::admit`.
+/// Seeding is governed like listing (R12-EXEC-5079), so a fixture that
+/// seeds a book carries one.
+fn seeding(venue: &str, object: &ObjectId) -> CreationAdmission {
+    let request = CreationRequest::new(CreationAction::Seed, venue, object.as_str(), "paper");
+    let mut permissions = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        permissions
+            .record(authority, &request, "test fixture")
+            .expect("a fixture permission with a reference is recorded");
+    }
+    permissions
+        .admit(&request)
+        .expect("all three authorities are recorded")
 }

@@ -3801,6 +3801,97 @@ mod tests {
         assert_eq!(status("info-a"), Some(AcquisitionStatus::Halted));
     }
 
+    /// Urgency reaches the ranking through `admit`, not only through the
+    /// helper (R12-AMBIENT-3106): two gaps equal in every factor but their
+    /// deadline, admitted at the same instant through `ResearchLoop::admit`
+    /// — one the router held until a sweep before its expiry, one raised with
+    /// its whole window ahead — compete for a budget that buys one re-sweep,
+    /// and the deferred one launches. The feedback links make the tie-break
+    /// by id favour the fresh gap, so under the mutation that ranks `admit`'s
+    /// requests at a constant urgency (`let urgency = URGENCY_FLOOR_BP;`)
+    /// both rank equal, `info-a-fresh` launches and both assertions fail.
+    #[test]
+    fn a_deferred_gap_admitted_beside_a_fresh_one_ranks_first_through_admit() {
+        let now = Timestamp::from_secs(1_800_000_000);
+        let config = ResearchConfig {
+            acquisition_budget_bp: RESWEEP_COST_BP,
+            ..ResearchConfig::default()
+        };
+        let ttl = config.signal_ttl;
+        let mut research = ResearchLoop::new(config, BTreeMap::new()).expect("assembles");
+        let gap = |domain: &str| {
+            qip_expansion::gap::raise(Observation {
+                trigger: GapTrigger::Contradiction,
+                wanting: vec![Wanting::Specialist],
+                observation: format!("two sources disagree on {domain}"),
+                affected_domains: vec![domain.to_string()],
+                evidence: vec!["measured:0.4".to_string()],
+                severity: 0.6,
+                economic_value: Decimal::from_int(60),
+                risk_value: Decimal::ZERO,
+            })
+            .expect("raises")
+        };
+        let metrics = Metrics::new("test");
+        let mut round = ResearchRound::default();
+        let none = BTreeSet::new();
+        let eligible: BTreeSet<String> = ["US".to_string()].into();
+        for (link, domain, deadline) in [
+            ("a-fresh", "rates", now.saturating_add(ttl)),
+            (
+                "b-deferred",
+                "credit",
+                now.saturating_add(Duration::from_mins(1)),
+            ),
+        ] {
+            research
+                .admit(
+                    gap(domain),
+                    deadline,
+                    Pathway::ResearchTask,
+                    link,
+                    now,
+                    &metrics,
+                    &mut round,
+                    &none,
+                    &eligible,
+                )
+                .expect("admits");
+        }
+        assert_eq!(
+            research.candidates.len(),
+            2,
+            "premise: both gaps are priced as candidates: {:?}",
+            round.admissions
+        );
+        let rank_of = |id: &str| {
+            research
+                .candidates
+                .iter()
+                .find(|(r, _)| r.id() == id)
+                .map(|(r, _)| r.criteria().net_value_bp())
+                .expect("candidate")
+        };
+        assert!(
+            rank_of("info-b-deferred") > rank_of("info-a-fresh"),
+            "the nearer deadline ranks higher"
+        );
+        research
+            .launch_ranked(&metrics, &mut round)
+            .expect("launches");
+        let status = |id: &str| {
+            research
+                .info_requests()
+                .find(|r| r.id() == id)
+                .map(InfoRequest::status)
+        };
+        assert_eq!(
+            status("info-b-deferred"),
+            Some(AcquisitionStatus::InProgress)
+        );
+        assert_eq!(status("info-a-fresh"), Some(AcquisitionStatus::Halted));
+    }
+
     /// A repeated-veto gap carries what its gate forwent (R12-EXPAND-6048):
     /// three regretted declines that would have earned 100, 50 and a loss
     /// price the gap at 150, and a gate with as many regrets that forwent

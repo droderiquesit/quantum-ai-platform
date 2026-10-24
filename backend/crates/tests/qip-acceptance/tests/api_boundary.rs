@@ -1314,6 +1314,17 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // could not already read.
         "observe_fresh",
         "observe_statement",
+        // `absorb_evidence` — the same class as `observe`, and the gate in
+        // front of it (R12-EVID-1200, admitted 2026-10-24). `POST /cycle`
+        // hands the world fabric the checked evidence of the poll the route
+        // just made, drained from the connector the root admitted through
+        // the licensing gate, and then observes only the records whose claim
+        // the fabric did not withhold. The request carries no body the route
+        // reads, so no caller can shape a claim; the fabric refuses
+        // incomplete provenance and duplicates and holds an impossible
+        // timeline as inadmissible. It can only narrow what `observe` takes
+        // in, never widen it, and it places no order and moves no limit.
+        "absorb_evidence",
         "approve_promotion",
         // `approve_recalibration` — the operator signature on a recalibration
         // proposal the platform generated (ADR 0061), admitted on the same

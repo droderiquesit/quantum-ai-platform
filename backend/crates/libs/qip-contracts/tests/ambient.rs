@@ -1479,3 +1479,64 @@ fn a_router_without_clustering_treats_identical_signals_as_the_budget_always_did
         ]
     );
 }
+
+/// R12-AMBIENT-3106's property, stated as the requirement states it: the
+/// rank is monotone in each factor the formula multiplies — non-decreasing in
+/// significance, uncertainty reduction and urgency, non-increasing in
+/// acquisition cost — and zeroing any multiplicative factor zeroes it. Swept
+/// over a grid of every factor rather than spot values, so a mutation that
+/// inverts one factor (ranking a less urgent request higher) or adds a term
+/// that survives a zero anywhere in the grid fails here.
+///
+/// Mutations that fire: replace `self.urgency_bp` in `net_value_bp` with
+/// `MAX_SEVERITY_BP - self.urgency_bp` (monotone sweep), and add `+ 1` to the
+/// quotient (zero sweep).
+#[test]
+fn the_curiosity_rank_is_monotone_in_every_factor_and_zero_when_any_factor_is() {
+    let grid = [0, 1, 1_250, 2_500, 5_000, 7_500, 9_999, 10_000];
+    let mut zero_cases = 0;
+    for &significance in &grid {
+        for &uncertainty in &grid {
+            for &urgency in &grid {
+                for &cost in &grid {
+                    let rank = criteria(significance, uncertainty, urgency, cost).net_value_bp();
+                    if significance == 0 || uncertainty == 0 || urgency == 0 || cost == 10_000 {
+                        zero_cases += 1;
+                        assert_eq!(
+                            rank, 0,
+                            "({significance}, {uncertainty}, {urgency}, {cost}) has a zero factor"
+                        );
+                    }
+                    let up = |v: u32| (v + 2_500).min(10_000);
+                    let raised = [
+                        criteria(up(significance), uncertainty, urgency, cost),
+                        criteria(significance, up(uncertainty), urgency, cost),
+                        criteria(significance, uncertainty, up(urgency), cost),
+                    ];
+                    for (factor, more) in ["significance", "uncertainty", "urgency"]
+                        .iter()
+                        .zip(raised)
+                    {
+                        assert!(
+                            more.net_value_bp() >= rank,
+                            "raising {factor} lowered the rank at ({significance}, \
+                             {uncertainty}, {urgency}, {cost})"
+                        );
+                    }
+                    let dearer = criteria(significance, uncertainty, urgency, up(cost));
+                    assert!(
+                        dearer.net_value_bp() <= rank,
+                        "raising cost raised the rank at ({significance}, {uncertainty}, \
+                         {urgency}, {cost})"
+                    );
+                }
+            }
+        }
+    }
+    assert!(zero_cases > 0, "premise: the grid holds zero factors");
+    assert_eq!(
+        criteria(10_000, 10_000, 10_000, 0).net_value_bp(),
+        10_000,
+        "premise: the grid's top is a nonzero rank, so the sweep is not of zeros"
+    );
+}

@@ -350,15 +350,20 @@
   {
     "id": "R12-MODEL-6016",
     "status": "PARTIAL",
-    "current": "LEARN grades resolved theses (ThesisEvaluator) and charges them to SelfModel components (detector, analyst, rung, strategy). Since 2026-10-18 world-model federation members are scored the same way: FederationStage keeps the probability each member gave each pending proposition and carries them on the journaled Resolution, and the Platform's federation pass charges each resolved forecast to ComponentKind::WorldModel keyed by member id through SelfModel::absorb_forecast (a forecast of exactly one half took no side and is not charged).",
+    "current": "LEARN grades resolved theses (ThesisEvaluator) and charges them to SelfModel components (detector, analyst, rung, strategy). World-model federation members are charged per resolved forecast to ComponentKind::WorldModel. Since 2026-10-24 the two ensembles are charged too, under ComponentKind::Ensemble: the federation's arbitrated probability (FederationStage keeps each pending proposition's latest arbitrated_probability and carries it on the journaled Resolution as `ensemble`; the platform's federation pass charges it under `world-model-federation`), and the tournament's market aggregate on each resolved question (charged in LEARN under `model-tournament` as the probability it held for the outcome that happened). A forecast of exactly one half took no side and is not charged.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12064 the charge loop in the federation pass",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:960 Resolution.forecasts",
       "backend/crates/services/qip-learning-engine/src/self_model.rs:404 SelfModel::absorb_forecast",
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:627 a_resolved_federation_forecast_is_charged_to_its_world_model_in_the_self_model",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:203"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:203",
+      "backend/crates/services/qip-learning-engine/src/self_model.rs ComponentKind::Ensemble",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs Resolution::ensemble and FederationStage::ensembles",
+      "backend/crates/runtime/qip-kernel/src/platform.rs FEDERATION_ENSEMBLE / TOURNAMENT_ENSEMBLE charges",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_resolved_federation_arbitration_is_charged_to_the_ensembles_own_component",
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::a_resolved_tournament_question_charges_its_market_aggregate_to_the_ensembles_own_component"
     ],
-    "gap": "Ensembles are not charged: the federation's arbitrated view and the tournament's aggregate are scored by nothing in the self-model, only their members are.",
+    "gap": "2026-10-24 (lane L2-INTEL): ensembles are now charged (federation arbitration and tournament aggregate). Promotion awaits the independent skeptic.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -366,10 +371,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test symbolic_federation a_resolved_federation_forecast_is_charged_to_its_world_model_in_the_self_model && cargo test -p qip-learning-engine --test self_model a_world_model_forecast_is_charged_by_the_side_it_took_and_never_freshens_the_self_model",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test symbolic_federation charged && cargo +1.94.1 test -p qip-kernel --test model_tournament ensemble && cargo +1.94.1 test -p qip-learning-engine --test self_model",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutations fired - skipping the charge loop in Platform's federation pass left markets.microstructure.home.micro (2 resolved forecasts) with no estimate; charging the outcome instead of the side taken gave hits 0 against 1; removing the sample_facts filter listed the member. World-model records are kept out of SelfModel::sample_facts: counting them freshened the self-model capability and lifted the sizing bound (valuation_seam's compounded budget came out at 0.75 of the expected factor instead of 0.5 until the filter landed). The kernel test lives in symbolic_federation.rs, not learning.rs as the closure proposed, because that suite already holds the tape fixture under which reality answers forecasts."
+    "notes": "2026-10-18 lane L23: mutations fired - skipping the charge loop in Platform's federation pass left markets.microstructure.home.micro (2 resolved forecasts) with no estimate; charging the outcome instead of the side taken gave hits 0 against 1; removing the sample_facts filter listed the member. World-model records are kept out of SelfModel::sample_facts: counting them freshened the self-model capability and lifted the sizing bound (valuation_seam's compounded budget came out at 0.75 of the expected factor instead of 0.5 until the filter landed). The kernel test lives in symbolic_federation.rs, not learning.rs as the closure proposed, because that suite already holds the tape fixture under which reality answers forecasts. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the federation ensemble charge disabled (`resolution.ensemble.filter(|_| false)`) fails a_resolved_federation_arbitration_is_charged_to_the_ensembles_own_component; no arbitrated probability recorded in FederationStage::run fails its premise; the tournament aggregate charge disabled fails a_resolved_tournament_question_charges_its_market_aggregate_to_the_ensembles_own_component. qip-kernel and qip-learning-engine: 69 test binaries ok, none failed."
   },
   {
     "id": "R12-MODEL-6017",
@@ -798,7 +803,7 @@
       "backend/crates/libs/qip-quantum/src/foundry.rs:178 research family not built",
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112 baseline always computed"
     ],
-    "gap": "Decided by ADR 0134 (accepted 2026-10-18): The hybrid solver router is qip-optimization-engine's compute router: hedge and hypothesis searches submit to it asynchronously, the classical answer is always computed, a hedge result carries an unwind plan, and the next quantum research family is feature-subset selection on the simulated provider. Code left: a FeatureEnsembleSelection FamilyDeclaration with its QUBO encoding and greedy baseline, and a solvers.rs test asserting the experiment record and the baseline.",
+    "gap": "Decided by ADR 0134 (accepted 2026-10-18): The hybrid solver router is qip-optimization-engine's compute router: hedge and hypothesis searches submit to it asynchronously, the classical answer is always computed, a hedge result carries an unwind plan, and the next quantum research family is feature-subset selection on the simulated provider. Code left: a FeatureEnsembleSelection FamilyDeclaration with its QUBO encoding and greedy baseline, and a solvers.rs test asserting the experiment record and the baseline. 2026-10-24 (L4): blocked by ADR 0150 decision A2, accepted 2026-10-19: a new family's encoding, baseline and benchmark may be written only after a committed note shows the sizes the platform actually poses lie above the exact-enumeration limit and at or below the provider's qubit ceiling. A2 also keeps FeatureEnsembleSelection not built on purpose. No such note exists. For this row the parked patch holds a QuantumExperiment/Benchmark record (FamilyExperiment, QmlExperiment) that validates on construction and carries a problem digest as lineage. The code is written and parked unlanded in docs/blueprint/lanes/L4-quant-research-families-adr0150.patch: the graph-search, feature-selection and scenario-selection QUBO families and the kernel and reservoir QML families, each with a greedy or in-sample-chosen classical baseline, a validated experiment record with a problem digest, and registration in Foundry::platform with a required benchmark field. It applied cleanly to 09ccd529, and its tests and mutations ran green there (qip-quantum --test families 7 passed, --test qml 5 passed, --test foundry 11 passed). The remaining step is an owner or ADR decision that supersedes A2, or the benefit note A2 asks for; then apply the patch. Even then the families run in no binary, so bar part 2 also needs a deep-brain research sweep to run them.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -809,7 +814,7 @@
     "verification": "cargo test (crate producing QuantumExperiment / Benchmark)",
     "work_item": "",
     "size": "XL",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Research families and QuantumExperiment artifact."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Research families and QuantumExperiment artifact. 2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it."
   },
   {
     "id": "R12-EXPAND-6037",
@@ -2897,9 +2902,10 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs stage_reason: else if let Err(refusal) = justify_thesis(&reasoned.hypothesis.evidence) (grep -n justify_thesis)",
       "backend/crates/runtime/qip-kernel/src/platform.rs fn justify_thesis builds grounds from Stance::Supports items and calls qip_contracts::action::check_justification",
       "backend/crates/runtime/qip-kernel/src/platform.rs decide_tests::a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted",
-      "backend/crates/services/qip-agency/src/guard.rs check_justification in ActionGuard::preflight"
+      "backend/crates/services/qip-agency/src/guard.rs check_justification in ActionGuard::preflight",
+      "backend/crates/runtime/qip-kernel/src/platform.rs mod justification: Justified token; thesis_from(.., _justified: justification::Justified) (commit dfa17876)"
     ],
-    "gap": "Unchanged on 2026-10-24 (lane T8-RESIDUAL), but the proposed closure is not writable as stated. Platform::synthesise always passes the triggering anomaly into SynthesisInput::direct_evidence as a Stance::Supports item, so no cycle fixture can reach an approved hypothesis with zero supporting evidence: the justify_thesis branch in reason_about_the_queue is a guard behind an invariant the caller keeps. Proving the call site needs a seam that lets a test hand reason_about_the_queue a ReasoningOutcome (or a synthesise that can omit the direct item), which is a design choice about test-only surface in platform.rs, not a fixture.",
+    "gap": "Lane L5-EDGE 2026-10-24: the kernel REASON->DECIDE call site is now structural (dfa17876): thesis_from takes a justification::Justified token only justify_thesis can mint, so dropping the check fails to compile. Still PARTIAL on bar part 3, per an independent skeptic (REFUTED): (1) ApprovedThesis (qip-portfolio-engine construction.rs) has all-pub fields and DECIDE sizing takes &[ApprovedThesis], so the proof guards the push site, not the type; Platform::submit_order and order_from are pub and check no justification (desk_ledger.rs builds an order through them); (2) the edge cell's Cell::work/Cell::send form and place orders from signals, the arbitrage desk and quoting on qip-edge-node's default simulated-feed pass with no ground at all (no check_justification anywhere under backend/crates/edge or qip-edge-node). Closing needs either a per-order ground checked at Cell::send and the proof carried by ApprovedThesis/Order, or an owner decision that systematic edge strategies are outside the clause.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2910,6 +2916,6 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Wired into the agency engine; no production market-facing action consults it. 2026-10-18 (lane L01): justification wired into the kernel REASON->DECIDE seam. Mutation: grounds built from every evidence item instead of supporting ones admitted the contradicting-only set and the test failed at its expect_err; restored byte-for-byte, passes. Kept PARTIAL: call site not yet proven by a stage-level mutated test. 2026-10-24 (lane T8-RESIDUAL): read synthesise, the redteam verdict and Hypothesis::validate (which itself refuses a hypothesis with no supporting evidence); found the branch unreachable through a cycle, nothing changed."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Wired into the agency engine; no production market-facing action consults it. 2026-10-18 (lane L01): justification wired into the kernel REASON->DECIDE seam. Mutation: grounds built from every evidence item instead of supporting ones admitted the contradicting-only set and the test failed at its expect_err; restored byte-for-byte, passes. Kept PARTIAL: call site not yet proven by a stage-level mutated test. 2026-10-24 (lane T8-RESIDUAL): read synthesise, the redteam verdict and Hypothesis::validate (which itself refuses a hypothesis with no supporting evidence); found the branch unreachable through a cycle, nothing changed. 2026-10-24 lane L5-EDGE: made the call site structural. Mutation 1: check_justification(&grounds)? -> let _ = ... in justify_thesis; decide_tests::a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted panicked at its expect_err; restored (cmp), passes. Mutation 2: the REASON call replaced with Ok(justification::Justified(())) -> error[E0603] private tuple struct constructor. Skeptic (security-engineer, read-only, default REFUTED): REFUTED on bar part 3 for the edge-cell and submit_order paths; kept PARTIAL."
   }
 ]
