@@ -403,12 +403,39 @@ fn fabric_backlog_and_ledger_reconciliation_are_product_objectives_backed_by_rec
     // And the objective is evaluated, by the recorder that measures the lag,
     // from the one constructor the declaration also uses.
     assert_eq!(fabric, &qip_observability::slo::fabric_archive_backlog());
+    //
+    // Since R12-OBS-9160 the backlog is one of the fabric's seven objectives:
+    // recording the lag evaluates them all (`archive_lag` calls
+    // `evaluate_objectives`, which records every `fabric_objectives()`
+    // status), and that list seats this same constructor. Each link is held
+    // as a whole statement, so deleting any one of them fails here.
+    let telemetry = code_of("backend/crates/apps/qip-fabricd/src/telemetry.rs");
+    let archive_lag = telemetry
+        .split("pub fn archive_lag(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    pub fn ").next())
+        .unwrap_or_else(|| panic!("qip-fabricd's telemetry has no archive_lag"));
     assert!(
-        code_of("backend/crates/apps/qip-fabricd/src/telemetry.rs")
+        archive_lag
             .lines()
-            .any(|line| line.trim()
-                == "critical_paths::record(&self.metrics, &[self.backlog.evaluate(good, total)]);"),
+            .any(|line| line.trim() == "self.evaluate_objectives();"),
         "qip-fabricd records the lag and evaluates no objective from it"
+    );
+    assert!(
+        telemetry
+            .lines()
+            .any(|line| line.trim() == "critical_paths::record(&self.metrics, &statuses);")
+            && telemetry
+                .lines()
+                .any(|line| line.trim()
+                    == "let statuses: Vec<_> = critical_paths::fabric_objectives()"),
+        "qip-fabricd evaluates objectives other than the fabric's declared ones"
+    );
+    assert!(
+        code_of("backend/crates/libs/qip-observability/src/critical_paths.rs")
+            .lines()
+            .any(|line| line.trim() == "crate::slo::fabric_archive_backlog(),"),
+        "the fabric's objectives no longer seat the archive-backlog constructor"
     );
 
     let ledger = named(&blueprint_slos(), "reconciliation-breaks-zero-unexplained").clone();
