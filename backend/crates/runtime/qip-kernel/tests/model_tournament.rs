@@ -981,6 +981,9 @@ fn a_resolved_tournament_question_charges_its_market_aggregate_to_the_ensembles_
         .filter_map(|resolved| resolved.aggregate)
         .filter(|aggregate| aggregate.total_cmp(&0.5).is_ne())
         .collect();
+    // The aggregate is the probability the market held for the outcome that
+    // happened, so it called the question exactly when it exceeded one half.
+    let called = aggregates.iter().filter(|a| **a > 0.5).count();
     assert!(
         reviews
             .iter()
@@ -996,6 +999,11 @@ fn a_resolved_tournament_question_charges_its_market_aggregate_to_the_ensembles_
         estimate.sample_count(),
         aggregates.len(),
         "every resolved aggregate that took a side is charged once"
+    );
+    assert_eq!(
+        estimate.hits(),
+        called,
+        "graded against the outcome: {aggregates:?}"
     );
     Ok(())
 }

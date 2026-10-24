@@ -14306,6 +14306,21 @@ impl Platform {
                 if let Some(multiplier) = outside_narrowing {
                     reasoned.hypothesis.confidence *= multiplier;
                 }
+                // Blueprint §9.4: the symbolic reasoners over this hypothesis,
+                // journaled as a derivation trace. Run before approval is read
+                // (ADR 0125 decision 2, R12-REASON-3053), so the rule pack's
+                // verdict is an input to approval rather than a comment on it:
+                // a hypothesis review approved that the pack refuses on a hard
+                // stop is rejected here, before it is counted, charted, written
+                // into a prediction or handed to the tournament as approved.
+                // The derivation records the status review gave it, which is
+                // what the pack was asked about. Nothing here sizes or sends.
+                let (symbolic_detail, symbolic_problem, symbolic_veto) =
+                    self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                if symbolic_veto.is_some() {
+                    reasoned.hypothesis.status =
+                        qip_reasoning_engine::hypothesis::HypothesisStatus::Rejected;
+                }
                 let approved = reasoned.hypothesis.status.is_actionable();
                 // Recorded here, where review's verdict becomes known, rather
                 // than inferred later from the order count. `created` is the
@@ -14378,12 +14393,8 @@ impl Platform {
                         error.message()
                     ));
                 }
-                // Blueprint §9.4: the symbolic reasoners over this hypothesis,
-                // journaled as a derivation trace. Its one power is ADR 0125's
-                // veto: a hypothesis review approved and the rule pack does not
-                // find eligible forms no proposal. Nothing here sizes or sends.
-                let (symbolic_detail, symbolic_problem, symbolic_veto) =
-                    self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                // The derivation ran before approval, above; its trace joins
+                // the stage detail here, after the hypothesis line it explains.
                 outcome.detail.push_str(&symbolic_detail);
                 if let Some(problem) = symbolic_problem {
                     outcome = outcome.with_problem(problem);
@@ -14395,20 +14406,21 @@ impl Platform {
                 if let Some(clause) = self.observe_hypothesis(&reasoned, &report, approved, now) {
                     outcome.detail.push_str(&clause);
                 }
-                let decision = if !approved {
+                let decision = if let Some(veto) = symbolic_veto {
+                    // ADR 0125 decision 2: the rule pack refused what review
+                    // approved, so the hypothesis was rejected above. Recorded
+                    // under its own words, because "vetoed by a rule" and
+                    // "rejected on review" send an operator to different
+                    // places; the derivation that produced it is already on
+                    // the log under `kernel/symbolic`.
+                    outcome = outcome.with_problem(format!(
+                        "approved on review but vetoed by the symbolic rule pack: {veto}"
+                    ));
+                    DecisionTaken::NotSizeable
+                } else if !approved {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
                     DecisionTaken::RejectedOnReview
-                } else if let Some(veto) = symbolic_veto {
-                    // ADR 0125 decision 2: the rule pack refused what review
-                    // approved. Recorded under its own words, because "vetoed
-                    // by a rule" and "could not be sized" send an operator to
-                    // different places; the derivation that produced it is
-                    // already on the log under `kernel/symbolic`.
-                    outcome = outcome.with_problem(format!(
-                        "approved but vetoed by the symbolic rule pack: {veto}"
-                    ));
-                    DecisionTaken::NotSizeable
                 } else if let Err(refusal) = justify_thesis(&reasoned.hypothesis.evidence) {
                     // Approved on review and still not queued: a thesis whose
                     // only ground is the return it expects never reaches

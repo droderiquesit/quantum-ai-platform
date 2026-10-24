@@ -605,10 +605,19 @@ impl SelfModel {
     /// that originate and size a thesis are measured, and counting it here
     /// let a federation's resolutions read the self-model fresh and lift the
     /// sizing bound the self-model's staleness holds (R12-MODEL-6016).
+    /// Ensembles are left out for the same reason: the federation's
+    /// arbitration and the tournament's aggregate resolve on the platform's
+    /// own advisory cadence, and counting them would let that cadence read
+    /// the self-model fresh, or thin, regardless of the thesis components.
     pub fn sample_facts(&self) -> impl Iterator<Item = (String, usize, Option<Timestamp>)> + '_ {
         self.components
             .iter()
-            .filter(|(key, _)| key.kind != ComponentKind::WorldModel)
+            .filter(|(key, _)| {
+                !matches!(
+                    key.kind,
+                    ComponentKind::WorldModel | ComponentKind::Ensemble
+                )
+            })
             .map(|(key, estimate)| {
                 (
                     key.to_string(),

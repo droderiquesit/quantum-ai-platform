@@ -705,30 +705,60 @@ fn a_resolved_federation_arbitration_is_charged_to_the_ensembles_own_component()
     let mut aaa = tape("AAA", total, end);
     let later = aaa.split_off(120);
     platform.observe(aaa);
+    let key = ComponentKey::new(ComponentKind::Ensemble, FEDERATION_ENSEMBLE)?;
     for (step, a) in later.into_iter().enumerate() {
         platform.observe(vec![a]);
         platform.run_cycle(start().saturating_add(Duration::from_days(step as i64 + 1)));
+        if step == 0 {
+            // The unresolved half: arbitrations are pending after the first
+            // cycle and nothing has answered them, so nothing is charged.
+            let first = federation_stage::replay(&platform)?;
+            assert!(
+                first.iter().all(|r| r.resolved.is_empty())
+                    && first.iter().any(|r| !r.arbitrations.is_empty()),
+                "premise: the first cycle arbitrated and resolved nothing"
+            );
+            assert!(
+                platform.self_model().get(&key).is_none(),
+                "an arbitration was charged before its proposition resolved"
+            );
+        }
     }
 
     let reviews = federation_stage::replay(&platform)?;
     let resolutions: Vec<&federation_stage::Resolution> =
         reviews.iter().flat_map(|r| &r.resolved).collect();
     assert!(!resolutions.is_empty(), "premise: propositions resolved");
-    let sided = resolutions
+    let sided: Vec<(f64, bool)> = resolutions
         .iter()
-        .filter_map(|r| r.ensemble)
-        .filter(|p| p.total_cmp(&0.5).is_ne())
-        .count();
+        .filter_map(|r| r.ensemble.map(|p| (p, r.outcome)))
+        .filter(|(p, _)| p.total_cmp(&0.5).is_ne())
+        .collect();
     assert!(
-        sided > 0,
+        !sided.is_empty(),
         "premise: an arbitration took a side and resolved"
     );
-    let key = ComponentKey::new(ComponentKind::Ensemble, FEDERATION_ENSEMBLE)?;
-    let estimate = platform
-        .self_model()
-        .get(&key)
-        .unwrap_or_else(|| panic!("{sided} arbitration(s) resolved and the ensemble holds none"));
-    assert_eq!(estimate.sample_count(), sided);
+    let called = sided
+        .iter()
+        .filter(|(p, outcome)| (*p > 0.5) == *outcome)
+        .count();
+    let estimate = platform.self_model().get(&key).unwrap_or_else(|| {
+        panic!(
+            "{} arbitration(s) resolved and the ensemble holds none",
+            sided.len()
+        )
+    });
+    assert_eq!(estimate.sample_count(), sided.len());
+    // Graded by the side the arbitration took against what happened.
+    assert_eq!(estimate.hits(), called, "{sided:?}");
+    // Never in the facts the sizing bound reads.
+    assert!(
+        platform
+            .self_model()
+            .sample_facts()
+            .all(|(component, _, _)| !component.starts_with("ensemble:")),
+        "an ensemble record reached the self-model freshness facts"
+    );
     Ok(())
 }
 
