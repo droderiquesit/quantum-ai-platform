@@ -33,10 +33,10 @@ fn event(id: &str) -> AnyEvent {
         lineage: Lineage {
             correlation_id: CorrelationId::from_string("COR00000000000000000000042"),
             causation_id: None,
-            trace_id: None,
+            trace_id: Some(qip_core::TraceId::new("trace-origin")),
             producer: "producer-under-test".to_string(),
         },
-        idempotency_key: None,
+        idempotency_key: Some(format!("idem-{id}")),
         payload_hash: sha256_hex(canonical_json(&payload).as_bytes()),
         payload,
     }
