@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 494 | 32.5% |
+| Blueprint completion (COMPLETE) | 493 | 32.5% |
 | Implemented (behaviour exists in code) | 1333 | 87.8% |
 | Tested (a named test demonstrates it) | 1235 | 81.4% |
 | Integrated (reached from a composition root) | 891 | 58.7% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 494 |
-| PARTIAL | 884 |
+| COMPLETE | 493 |
+| PARTIAL | 885 |
 | MISSING | 108 |
 | BLOCKED | 31 |
 | NEEDS-VALIDATION | 1 |
@@ -40,7 +40,7 @@ register (ADR 0099), and there is no second one.
 | [DATA](#data) | 95 | 20 | 65 | 10 | 0 | 0 | 83 | 75 | 1 |
 | [EVID](#evid) | 25 | 2 | 23 | 0 | 0 | 0 | 24 | 21 | 0 |
 | [TICK](#tick) | 97 | 21 | 73 | 3 | 0 | 0 | 93 | 84 | 1 |
-| [WORLD](#world) | 69 | 33 | 31 | 5 | 0 | 0 | 62 | 57 | 1 |
+| [WORLD](#world) | 69 | 32 | 32 | 5 | 0 | 0 | 62 | 57 | 1 |
 | [REASON](#reason) | 41 | 15 | 24 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 23 | 23 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 38 | 24 | 0 | 7 | 0 | 63 | 61 | 0 |
@@ -789,7 +789,7 @@ register (ADR 0099), and there is no second one.
 | R12-WORLD-9024 | forecast-tactical outputs expire when stale and feed capital sizing | Forecasts carry expires_at, set from LatticeHorizon::refresh (lattice.rs:128-138). lattice::staleness_multiplier (lattice.rs:538) shrinks with age and refuses at expiry. | PARTIAL | Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: a staleness cap from lattice::staleness_multiplier at the sizing seam, with a test that an expired forecast vetoes the thesis. |  | P1 | cargo test -p qip-edge |  |
 | R12-WORLD-9025 | forecast-strategic outage accumulates backlog, never an execution outage | LatticeStage backlogs strategic questions while unavailable; qip-deepbrain gate_strategic_service sets availability from node readiness each pass. | PARTIAL | Owner decision O24 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split cognitive services or the strategic lattice into separately deployed Cloud Run services (ADR 0024 catalogue). Enables: Independent scaling and a strategic service whose outage only backs up research. Costs: More services, images, identities and minimum instances. |  | P3 | n/a |  |
 | R12-WORLD-9026 | forecast-calibrator scores calibration, quantiles/intervals, regime scorecards | Every resolved forecast is scored by the Calibrator under the regime label it was issued under: the ScoreRecord carries the regime, LatticeReview::scored journals it whole each cycle, and the calibrator keeps a Scorecard per (horizon, regime) (bounded, overflow filed under 'other'). The journaled records rebuild the per-regime Brier mean and pinball sum the calibrator holds, so regime score history is durable in the log. | COMPLETE |  |  | P1 | cd backend && cargo test -p qip-kernel --test now_lattice |  |
-| R12-WORLD-9027 | On calibrator failure, model influence freezes at last safe weights | Lattice Calibrator freezes ensemble weights at the last safe set when unavailable; kernel marks it unavailable when the lattice review fails to journal. | COMPLETE | None for the requirement; not deployed. | R12-WORLD-9026 | P1 | cargo test -p qip-kernel |  |
+| R12-WORLD-9027 | On calibrator failure, model influence freezes at last safe weights | Lattice Calibrator freezes ensemble weights at the last safe set when unavailable; kernel marks it unavailable when the lattice review fails to journal. | PARTIAL | 2026-10-24: Closes when a kernel test makes the lattice review journal fail (a failing journal sink or full spool) and asserts the next review reports WeightUpdate::Frozen, failing when platform.rs:12848 is mutated to pass true. | R12-WORLD-9026 | P1 | cargo test -p qip-kernel |  |
 | R12-WORLD-9035 | world-branch-manager branches, reweights, prunes future-state trees | FutureTree grows, reweights and prunes synthetic future branches bounded by max_branches; Branch projects to WorldBranch. | PARTIAL | No partitioning by scenario family; weights-sum-to-one not asserted; reached only through the off-by-default tick desk. |  | P3 | n/a |  |
 | R12-WORLD-9037 | Macro/company twins simulate causal business and supply-chain dynamics | FutureTree propagates a world driver to instruments as second-order moves over a compact twin state. | PARTIAL | No macro or company twin with business/supply-chain dynamics; off-by-default tick desk only. |  | P3 | n/a |  |
 | R12-WORLD-10042 | Spanner Graph holds promoted world knowledge apart from the ledger | No graph database; world/causal model is in-process in qip-world-model. | MISSING | Graph store and writer. | R12-LEDGER-10041 | P2 | terraform plan + world-model writer integration test |  |
