@@ -1104,13 +1104,13 @@ pub fn node_tools(
 pub fn registered_tools_holding(
     extra: &[(String, qip_agents::tools::ToolKind)],
 ) -> Result<qip_agents::tools::ToolRegistry> {
-    use qip_agents::tools::ToolKind;
+    use qip_agents::tools::{ToolKind, ToolName};
     let mut tools = qip_agents::tools::ToolRegistry::new();
-    tools.register("source-discovery", ToolKind::Connector)?;
-    tools.register("model-fit", ToolKind::ModelEndpoint)?;
-    tools.register("stress-simulator", ToolKind::Simulator)?;
+    tools.register(ToolName::parse("source-discovery")?, ToolKind::Connector)?;
+    tools.register(ToolName::parse("model-fit")?, ToolKind::ModelEndpoint)?;
+    tools.register(ToolName::parse("stress-simulator")?, ToolKind::Simulator)?;
     for (name, kind) in extra {
-        tools.register(name, *kind)?;
+        tools.register(ToolName::parse(name)?, *kind)?;
     }
     Ok(tools)
 }

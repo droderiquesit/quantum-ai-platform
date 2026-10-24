@@ -38,7 +38,7 @@
 
 use crate::attestation::ATTESTATION_PATH_VARIABLE;
 use crate::config::{DeepBrainConfig, HostedLanguageModel, LANGUAGE_MODEL_VARIABLE};
-use qip_agents::tools::{ToolKind, ToolPermission, ToolRegistry};
+use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
 use qip_ai::language::{DeterministicModel, FallbackChain, LanguageModel};
 /// The reply tally lives beside the port in `qip-ai`, so wrapping the hosted
 /// adapter adds no implementation of `LanguageModel` outside ADR 0117's list.
@@ -227,7 +227,7 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
     // evaluation -- here the attestation, the record that a named operator
     // read what the provider does with what it is sent.
     let mut tools = ToolRegistry::new();
-    tools.register(&hosted.model, ToolKind::ModelEndpoint)?;
+    tools.register(ToolName::parse(&hosted.model)?, ToolKind::ModelEndpoint)?;
 
     match precondition(hosted, &adapter_config) {
         Err(withheld) => Ok(AssembledModel {

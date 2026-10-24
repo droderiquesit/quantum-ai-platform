@@ -1,14 +1,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_agents::research::{ResearchRegistry, Screening, Verdict};
-use qip_agents::tools::{ToolKind, ToolPermission, ToolRegistry};
+use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
 
 #[test]
 fn a_tool_of_each_of_the_ten_kinds_resolves_by_kind_with_its_scope() {
     assert_eq!(ToolKind::ALL.len(), 10);
     let mut registry = ToolRegistry::new();
     for (i, kind) in ToolKind::ALL.into_iter().enumerate() {
-        registry.register(&format!("tool-{i}"), kind).unwrap();
+        registry
+            .register(ToolName::parse(&format!("tool-{i}")).unwrap(), kind)
+            .unwrap();
     }
     for (i, kind) in ToolKind::ALL.into_iter().enumerate() {
         let found = registry.by_kind(kind);
@@ -21,7 +23,9 @@ fn a_tool_of_each_of_the_ten_kinds_resolves_by_kind_with_its_scope() {
 #[test]
 fn a_new_tool_is_read_only_and_sandboxed_until_a_promotion_widens_exactly_the_granted_scope() {
     let mut registry = ToolRegistry::new();
-    registry.register("parser-a", ToolKind::Parser).unwrap();
+    registry
+        .register(ToolName::parse("parser-a").unwrap(), ToolKind::Parser)
+        .unwrap();
     registry
         .authorise("parser-a", ToolPermission::Read)
         .unwrap();
