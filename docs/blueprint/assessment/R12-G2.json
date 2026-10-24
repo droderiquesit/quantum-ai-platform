@@ -2866,10 +2866,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test admin_surfaces every_gke_cluster_enables_workload_identity_and_runs_its_nodes_as_a_narrow_identity; cargo +1.94.1 test -p qip-acceptance --test security_controls --test infrastructure",
     "work_item": "",
     "size": "S",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-5: 2026-10-24 citation fix, status stays COMPLETE. Mutation: deleting the workload_identity_config block in modules/gitops-control-plane/main.tf passes security_controls (12) and infrastructure (155), the previous verification; it fails admin_surfaces every_gke_cluster_enables_workload_identity_and_runs_its_nodes_as_a_narrow_identity, which the evidence already named. Verification now runs it."
   },
   {
     "id": "R12-SEC-9126",
@@ -3155,10 +3155,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test architecture --test paper_boundary",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test identity_separation --test architecture --test paper_boundary",
     "work_item": "",
     "size": "S",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-5: 2026-10-24 citation fix, status stays COMPLETE. Mutation: granting roles/secretmanager.secretAccessor to the ci service account in modules/cicd/main.tf passes architecture (56) and paper_boundary (5), the previous verification; it fails identity_separation the_agent_identity_and_build_identities_hold_no_project_role_over_secrets_or_keys, which the evidence already named. Verification now runs identity_separation."
   },
   {
     "id": "R12-SEC-9139",

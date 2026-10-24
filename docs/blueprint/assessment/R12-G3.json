@@ -466,10 +466,10 @@
       "R12-API-10017"
     ],
     "blocked_by": "",
-    "verification": "inspection of public-edge plan",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test admin_surfaces every_public_tls_certificate_is_google_managed_and_none_is_uploaded",
     "work_item": "",
     "size": "S",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-5: 2026-10-24 citation fix, status stays COMPLETE. The previous verification ('inspection of public-edge plan') named no command. Mutation: adding a google_compute_ssl_certificate with a private_key to modules/public-edge/main.tf fails admin_surfaces every_public_tls_certificate_is_google_managed_and_none_is_uploaded. A prohibition on committed Terraform that holds for every build (bar part 3); no committed environment creates a certificate today."
   },
   {
     "id": "R12-SEC-10022",

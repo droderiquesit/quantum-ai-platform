@@ -2941,7 +2941,8 @@
     "evidence": [
       "backend/crates/services/qip-world-model/src/federation.rs:362",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_its_arbitrations"
     ],
     "gap": "None for the requirement; not deployed.",
     "implemented": true,
@@ -2953,10 +2954,10 @@
       "R12-WORLD-1003"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test federation",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test federation; cargo +1.94.1 test -p qip-kernel --test symbolic_federation every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_its_arbitrations",
     "work_item": "",
     "size": "L",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-5: 2026-10-24 citation fix, status stays COMPLETE. Mutation: FederationStage::run's registration loop over Self::declarations(..) taken to .take(1) leaves qip-world-model --test federation (the previous verification) green; it fails qip-kernel --test symbolic_federation every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_its_arbitrations and ten federation_stage lib tests. Verification and evidence now name the kernel test."
   },
   {
     "id": "R12-WORLD-1130",
