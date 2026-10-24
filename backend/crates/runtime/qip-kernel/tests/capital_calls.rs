@@ -1289,3 +1289,169 @@ fn a_record_publishing_more_draws_than_it_may_still_call_stops_assembly() -> Res
     );
     Ok(())
 }
+
+fn commitment_operations(
+    platform: &Platform,
+) -> Vec<qip_contracts::ledger_operation::LedgerOperation> {
+    platform
+        .pending_desk_operations()
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.kind,
+                qip_contracts::ledger_operation::OperationKind::Commitment { .. }
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn fresh_log_path(name: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-{name}-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    directory.join("events.jsonl")
+}
+
+/// A private fund's commitment reaches the ledger once, as the commitment
+/// that was made.
+///
+/// Nothing in any binary used to build a `Commitment` operation, so ledger
+/// state for private commitments was reachable only from tests (ADR 0153
+/// decision 2). The failure a restart invites is the second booking: a
+/// rebuilt operation at the restart's clock carries another digest under the
+/// same id, which the ledger refuses as a conflict. The operation is
+/// journalled whole, so the restart re-sends the bytes the first process
+/// sent, and the log holds one record however many starts saw the fund.
+#[test]
+fn a_private_asset_commitment_is_booked_once_as_a_commit_stage_operation_and_a_restart_does_not_book_it_again()
+-> Result<()> {
+    use qip_contracts::ledger_operation::{CommitmentStage, OperationKind};
+
+    let path = fresh_log_path("private-commitment");
+    let first_at = start();
+    let restart_at = start().saturating_add(Duration::from_days(3));
+
+    let booked = {
+        let first = platform_over(&path, first_at, encumbered_universe()?)?;
+        commitment_operations(&first)
+    };
+    assert_eq!(
+        booked.len(),
+        1,
+        "premise: one private fund in the universe is one commitment to book"
+    );
+    let OperationKind::Commitment {
+        commitment,
+        counterparty,
+        amount,
+        stage,
+        ..
+    } = &booked[0].kind
+    else {
+        unreachable!("filtered to commitments above");
+    };
+    assert_eq!(commitment, "obj-FUND");
+    assert_eq!(counterparty, "obj-FUND", "the fund is the counterparty");
+    assert_eq!(
+        *amount,
+        dec!("400000"),
+        "the whole commitment, not the unfunded part"
+    );
+    assert_eq!(
+        *stage,
+        CommitmentStage::Commit,
+        "draw and release are never produced"
+    );
+    assert!(
+        booked[0].operation_id.ends_with(":commitment:obj-FUND"),
+        "the id is the commitment's own: {}",
+        booked[0].operation_id
+    );
+    assert_eq!(booked[0].recorded_at, first_at);
+
+    let restarted = platform_over(&path, restart_at, encumbered_universe()?)?;
+    let rebooked = commitment_operations(&restarted);
+    assert_eq!(rebooked.len(), 1, "a restart queues the commitment once");
+    assert_eq!(
+        rebooked[0], booked[0],
+        "the restart must re-send the operation as written: same instant, same digest"
+    );
+    assert_eq!(
+        rebooked[0].recorded_at, first_at,
+        "recorded_at is the first assembly's, not the restart's"
+    );
+
+    let journalled = restarted
+        .event_log()
+        .records()
+        .iter()
+        .filter(|record| record.event.lineage.producer == "kernel/private-commitment")
+        .count();
+    assert_eq!(journalled, 1, "one journalled record across two starts");
+    Ok(())
+}
+
+/// A restated amount is a problem on the pass, never a second booking.
+///
+/// The administrator's record moves; the commitment that was made does not.
+/// Overwriting the journalled operation would hand the ledger a conflicting
+/// digest under one id, and silently booking the new amount would edit a
+/// fact already booked.
+#[test]
+fn a_commitment_whose_amount_is_restated_in_the_universe_is_reported_and_not_rebooked() -> Result<()>
+{
+    let path = fresh_log_path("restated-commitment");
+    let original = {
+        let first = platform_over(&path, start(), encumbered_universe()?)?;
+        commitment_operations(&first)
+    };
+    assert_eq!(original.len(), 1, "premise: the first start booked it");
+
+    let mut restated = Universe::new();
+    restated.insert(listed("AAA")?)?;
+    restated.insert(
+        FinancialObject::builder(
+            object("FUND"),
+            "FUND",
+            InstrumentType::PrivateEquityFund,
+            LiquidityProfile::illiquid(90.0, 250.0),
+        )
+        .venue("OTC")
+        .geography("US")
+        .price(dec!("100"))
+        .extension(Extension::PrivateAsset(PrivateAssetDetails {
+            vintage_year: 2024,
+            committed_capital: dec!("500000"),
+            called_capital: dec!("150000"),
+            distributed_capital: Decimal::ZERO,
+            residual_value: dec!("160000"),
+            stage: "buyout".to_string(),
+            lockup_years: 7.0,
+            capital_call_notice_days: 10,
+            call_schedule: None,
+        }))
+        .provenance(Provenance::synthetic("administrator", start()))
+        .build(start())?,
+    )?;
+    let at = start().saturating_add(Duration::from_days(3));
+    let mut restarted = platform_over(&path, at, restated)?;
+
+    let queued = commitment_operations(&restarted);
+    assert_eq!(queued, original, "the original booking stands, unchanged");
+
+    let report = restarted.run_cycle(at);
+    let named = report
+        .problems()
+        .into_iter()
+        .any(|(_, problem)| problem.contains("obj-FUND") && problem.contains("rebooked"));
+    assert!(
+        named,
+        "the restatement was not reported: {:?}",
+        report.problems()
+    );
+    Ok(())
+}
