@@ -3741,4 +3741,46 @@ mod tests {
         assert!(cheapest_viable(0, full, full, true, 0).is_none());
         assert!(cheapest_viable(full, 0, full, true, 0).is_none());
     }
+
+    /// ADR 0158 decisions 1-2: a grant changes a named budget or is not made,
+    /// and no agent bid exists. An agent's compute is bounded by the market's
+    /// `agent_budgets` and its manifest `Budget` in the run, so a `WorkKind::Agent`
+    /// bid would be a grant with no budget to raise. Pinned so a mapping that
+    /// begins to bid `Agent` (or `Solver`) fails here rather than silently
+    /// granting compute nothing consumes. The match is exhaustive on purpose:
+    /// a new `TaskKind` stops this file compiling until it is classified.
+    /// Mutation: map `TaskKind::Experiment` to `WorkKind::Agent` in `work_kind`.
+    #[test]
+    fn the_bids_the_research_loop_makes_are_only_of_kinds_that_change_a_named_budget() {
+        let every_kind = [
+            TaskKind::DataAcquisition,
+            TaskKind::Simulation,
+            TaskKind::Label,
+            TaskKind::Experiment,
+            TaskKind::Campaign,
+            TaskKind::ToolBuild,
+        ];
+        for kind in every_kind {
+            match kind {
+                TaskKind::DataAcquisition
+                | TaskKind::Simulation
+                | TaskKind::Label
+                | TaskKind::Experiment
+                | TaskKind::Campaign
+                | TaskKind::ToolBuild => {}
+            }
+        }
+        let bid: BTreeSet<WorkKind> = every_kind.into_iter().map(work_kind).collect();
+        let named: BTreeSet<WorkKind> = [
+            WorkKind::Question,
+            WorkKind::Simulation,
+            WorkKind::DataSource,
+            WorkKind::Model,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(named.len(), 4, "premise: four named-budget kinds");
+        assert_eq!(bid, named, "the loop bids exactly the four named-budget kinds");
+        assert!(!bid.contains(&WorkKind::Agent) && !bid.contains(&WorkKind::Solver));
+    }
 }

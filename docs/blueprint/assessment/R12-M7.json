@@ -590,7 +590,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:298,572,741,997,1093 no-action baseline, deceptive step infeasible, weakly identified plan never executed, adapter only after simulation+gate, default authority shadow",
       "backend/crates/libs/qip-contracts/src/action.rs:250-340 ToolRegistration/ToolRegistry with revoke at :328"
     ],
-    "gap": "The deepbrain ambient path has no causal simulation access: it runs no engine::run simulate stage (see R12-AGENCY-6105 for why a per-opportunity model is a design question, not a missing call). The shadow binary does simulate, against declared models and, since R12-AGENCY-6088, a market twin's futures. The in-process ActionGuard/ToolRegistry is the policy and identity component; there is no separate service.",
+    "gap": "no engine::run simulate stage on the deepbrain ambient path, by decision (ADR 0145 decision 5); the shadow binary simulates against declared models and, via ScenarioSource, the twin's futures. (dated 2026-10-24)",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -601,7 +601,7 @@
     "verification": "cargo test -p qip-agency",
     "work_item": "",
     "size": "L",
-    "notes": "Re-read 2026-10-18 (lane L10). Held PARTIAL; the simulation half is on the shadow binary only."
+    "notes": "Re-read 2026-10-18 (lane L10). Held PARTIAL; the simulation half is on the shadow binary only. Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): The ambient path has no causal simulation access by decision; the in-process ActionGuard and ToolRegistry are the policy and identity component."
   },
   {
     "id": "R12-AGENCY-7028",
@@ -661,7 +661,7 @@
       "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from, learn_stages (engine::learn on the default node path), ask, await_follow_up; DraftLearning, LEARNING_ORIGIN, learnings",
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect"
     ],
-    "gap": "No experiment assignment: the door writes one draft per signal, so there is no second variant to assign (two drafts per opportunity is what AmbientIntake dedups), external assignment stays refused (ADR 0114), and no estimate.rs estimator runs on the observed outcome because none has a control.",
+    "gap": "no experiment assignment, by decision (ADR 0145 decision 3). Two drafts per opportunity defeat AmbientIntake's dedup on signal id, and a hold-out is an experiment; revival needs an ADR amending 0114 plus a consumer. (dated 2026-10-24)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -672,7 +672,7 @@
     "verification": "cargo test -p qip-agency; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity)."
+    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): The platform assigns no treatment: no A/B draft variants, no seeded hold-out, no perturbation; no estimate.rs estimator is fed the ambient outcome."
   },
   {
     "id": "R12-FABRIC-7031",
@@ -2384,13 +2384,15 @@
   },
   {
     "id": "R12-RES-7106",
-    "status": "PARTIAL",
-    "current": "Agency plans with prohibited methods are infeasible; expansion has a Contradiction gap class; no symbolic derivation trace.",
+    "status": "COMPLETE",
+    "current": "Contradiction narrows the confidence a position is sized on and is deliberately not folded into the action bar (Hypothesis::confidence_for_sizing, read at platform.rs where the proposal's conviction is built); a contested thesis is held small and scored, not blocked. Agency plans with prohibited methods are infeasible; expansion has a Contradiction gap class. ContradictionResolution has one consumer (trust_score).",
     "evidence": [
-      "backend/crates/services/qip-agency/tests/agency.rs:280",
-      "backend/crates/services/qip-expansion/src/gap.rs:20"
+      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs::Hypothesis::confidence_for_sizing",
+      "backend/crates/runtime/qip-kernel/src/platform.rs conviction: sign * reasoned.hypothesis.confidence_for_sizing()",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs::the_reason_stage_names_the_evidence_posture_so_a_small_size_can_be_told_from_an_absent_one"
     ],
-    "gap": "ContradictionResolution (contradiction.rs) has one consumer, trust_score.rs, and no running path: nothing in the cycle builds one. The closure's last clause (an unresolved contradiction marks the dependent proposal infeasible and blocks money movement) contradicts a standing design: Hypothesis::confidence_for_sizing narrows size on conflicting evidence and its doc says it is deliberately not folded into the action bar, so a contested thesis is held small and scored rather than refused. Blocking would be a reversal needing an ADR. Buildable without it: a derivation trace and an alternates search over ResolutionMethod on ContradictionResolution, fed from evidence the fabric already contests.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2400,10 +2402,10 @@
       "R12-CONTRACT-7077"
     ],
     "blocked_by": "",
-    "verification": "reasoning test",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning contradiction_only_ever; cargo test -p qip-kernel --test kernel the_reason_stage_names",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L23: not implemented; see gap for the design conflict."
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed by ADR 0150 d14: the closure clause that an unresolved contradiction blocks a proposal is withdrawn; a ContradictionResolution trace is advisory and waits for a named consumer. Mutation fired: confidence_for_sizing multiplying by (2.0 - dissent) instead of dissent failed contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on at reasoning.rs:1086; restored, it passed."
   },
   {
     "id": "R12-RES-7107",
@@ -4191,7 +4193,7 @@
       "backend/crates/services/qip-agency/src/engine.rs:454",
       "backend/crates/services/qip-agency/tests/agency.rs::authority_is_used_only_over_a_plan_every_competing_model_agrees_helps"
     ],
-    "gap": "The federation's competing views (qip_kernel::federation_stage) are not consulted: no WorldSimulator seam in qip-agency is implemented over federation members in qip-deepbrain (lane L04), and the deepbrain ambient door does not run engine::run's simulate stage.",
+    "gap": "the federation's competing views are not consulted by the agency simulation, by decision (ADR 0145 decision 6); ScenarioSource sources are the declared scenarios and the twin's futures. (dated 2026-10-24)",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4202,7 +4204,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "XL",
-    "notes": "Re-graded 2026-10-18 (lane L10): disagreement between competing models now withholds action (mutation fired: consulting only the first branch lets the contested pass Execute). Kept PARTIAL: the competing models are declared ones, not the federation's."
+    "notes": "Re-graded 2026-10-18 (lane L10): disagreement between competing models now withholds action (mutation fired: consulting only the first branch lets the contested pass Execute). Kept PARTIAL: the competing models are declared ones, not the federation's. Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): No federation-backed ScenarioSource/WorldSimulator is built; a federation view is a probability over a proposition, not a structural model, and ADR 0125 keeps it subtractive."
   },
   {
     "id": "R12-COVERAGE-7187",
@@ -4252,15 +4254,17 @@
   },
   {
     "id": "R12-COVERAGE-7189",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip-deepbrain records each draft's measured outcome into ActionOutcomeMemory and runs ActionPolicy::observe through engine::learn on the default node path (R12-AGENCY-6107); no world-model or causal-graph update.",
     "evidence": [
       "backend/crates/services/qip-agency/src/memory.rs",
       "backend/crates/services/qip-agency/src/autonomy.rs:87-123 ActionPolicy::widen refuses unidentified attribution; observe() narrows on side effects",
       "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from, learn_stages (engine::learn on the default node path), ask, await_follow_up; DraftLearning, LEARNING_ORIGIN, learnings",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect"
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
+      "backend/crates/services/qip-world-model/tests/federation.rs::a_federation_update_from_an_unidentified_attribution_is_refused_and_journals_nothing",
+      "backend/crates/tests/qip-acceptance/tests/ambient_effect_boundary.rs::a_boundary_suite_pins_that_no_production_code_feeds_an_unidentified_effect_to_the_federation_the_graph_or_the_engine"
     ],
-    "gap": "Feedback into the world model federation and the causal graph: the only measured effect is unidentified, and Federation::update_from_attribution would journal it as an update to a market world model; deliberately not fed until an identified estimate exists.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4268,10 +4272,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
+    "verification": "cargo +1.94.1 test -p qip-acceptance --test ambient_effect_boundary; cargo +1.94.1 test -p qip-world-model --test federation unidentified",
     "work_item": "",
     "size": "XL",
-    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity)."
+    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): An unidentified measured effect updates neither the federation nor the causal graph; enforced in the federation method and pinned by the boundary suite. Mutation: add a call to Federation::update_from_attribution (or engine::run_governed) in qip-deepbrain/src/ambient_agency.rs: the source pin finds a non-comment line and fails, which is the right failure because the boundary is that no running path makes that call fired."
   },
   {
     "id": "R12-COVERAGE-7190",

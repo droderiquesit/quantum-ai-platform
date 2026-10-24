@@ -1,0 +1,14 @@
+[
+ {"id":"R12-FABRIC-10027","class":"LARGE_SPLITTABLE","reason":"Stale MISSING: ADR 0111 replication is built (qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost; infrastructure/terraform/modules/event-fabric-broker/variables.tf broker_zones). Slice: replace the fixture pins fabric_010/055 with tests of the real contract; remainder is deployment and a real Spanner replica kill."},
+ {"id":"R12-FABRIC-8086","class":"CODE_CLOSABLE","reason":"Gap step 1 is a committed managed_majority RF3 catalogue: grep managed_majority infrastructure/event-fabric finds none. Steps 2-4 are deploy/ADR 0113 dependent and stay in gap."},
+ {"id":"R12-FABRIC-7038","class":"LARGE_SPLITTABLE","reason":"grep 'Mirroring::' qip-events policy.rs: only None admitted (C8). Mirror process is ADR 0120 XL work."},
+ {"id":"R12-DATA-10079","class":"DEPLOY_DEPENDENT","reason":"grep ArchiveTarget qip-fabricd/src/config.rs: Cloud Storage target is wired; fabricd not deployed (lib.rs doc)."},
+ {"id":"R12-FABRIC-7037","class":"DEPLOY_DEPENDENT","reason":"Decided by ADR 0111 Amendment 1; metadata-in-Spanner tables are XL and need the Spanner database applied."},
+ {"id":"R12-EVID-2032","class":"CODE_CLOSABLE","reason":"ADR 0152 plan: evidence.admitted topic + EvidenceFabric::rebuild; grep 'EvidenceAdmitted' qip-events topic.rs to confirm absent."},
+ {"id":"R12-FABRIC-7035","class":"DEPLOY_DEPENDENT","reason":"Code built (broker.rs, spanner.rs); gap is Terraform database, emulator proof, image matrix, dev deployment."},
+ {"id":"R12-FABRIC-8075","class":"LARGE_SPLITTABLE","reason":"No replicated metadata store; Spanner tables for membership/partition maps are XL."},
+ {"id":"R12-RES-10154","class":"CODE_CLOSABLE","reason":"ADR 0156 4f plan: local-only fixture publisher in the game-day scenario; touches scripts/game-day and qip-cli, outside this lane's territory."},
+ {"id":"R12-DATA-2012","class":"ALREADY_COMPLETE","reason":"ADR 0152 d8 restates the gap as no-code; wording change only."},
+ {"id":"R12-FABRIC-8101","class":"DEPLOY_DEPENDENT","reason":"Needs Terraform landing bucket and an enabled environment; event_fabric_broker is null everywhere."},
+ {"id":"R12-DATA-9187","class":"DEPLOY_DEPENDENT","reason":"qip-storage Compactor has no production caller; wiring waits on a lake producing tiny objects."}
+]

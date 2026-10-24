@@ -811,6 +811,46 @@ fn an_attribution_to_a_model_the_federation_does_not_hold_is_refused_and_not_jou
 }
 
 #[test]
+fn a_federation_update_from_an_unidentified_attribution_is_refused_and_journals_nothing()
+-> Result<()> {
+    // The failure this prevents (ADR 0145): `AttributionApplied` carries the
+    // effect's mean and deviation and drops the identification marker, so a
+    // correlation at identifiability zero, which the contract admits, was
+    // journaled as evidence about a world model and could not be told apart
+    // from an experiment afterwards. The only thing standing between the
+    // ambient door's null effect and that journal was that nobody called the
+    // method.
+    let mut f = Federation::new();
+    register(&mut f, plain("goal-1", 1_000))?;
+    let mut unidentified = valid_attribution("goal-1");
+    unidentified.identification = Identification::NotIdentified;
+    unidentified.identifiability = 0.0;
+    assert!(
+        unidentified.validate().is_ok(),
+        "premise: the contract admits a not-identified attribution at zero"
+    );
+    let before = f.journal().len();
+    assert!(
+        f.update_from_attribution(&valid_attribution("goal-1"), at(99))
+            .is_ok(),
+        "premise: the same attribution, identified by experiment, is admitted"
+    );
+    let admitted = f.journal().len();
+    assert_eq!(admitted, before + 1, "premise: and journaled");
+
+    let refused = f
+        .update_from_attribution(&unidentified, at(100))
+        .expect_err("an unidentified effect updates no world model");
+    assert!(
+        refused.message().to_string().contains("ADR 0145"),
+        "the refusal names the record: {}",
+        refused.message()
+    );
+    assert_eq!(f.journal().len(), admitted, "nothing is journaled for it");
+    Ok(())
+}
+
+#[test]
 fn an_attribution_the_contract_refuses_is_refused_and_not_journalled() -> Result<()> {
     // The failure this prevents: the method checked only for a blank goal id
     // and journalled attributions with no observation behind them.
