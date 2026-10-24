@@ -133,6 +133,7 @@ use qip_lifecycle::{Evaluator, EvaluatorPolicy};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
 use qip_training::ConformalInterval;
+use qip_training::adversarial::PerturbationPolicy;
 use qip_training::campaign::{CampaignDraft, TrainingCampaign};
 use qip_training::dataset::TrainingDataset;
 use qip_training::distill::{Distillation, FidelityPolicy, StudentForm, distil};
@@ -801,6 +802,9 @@ pub struct LearningDesk {
     /// bounded by construction and does not grow with uptime. Read by
     /// [`choose_class`] before a round's own fits are scored onto it.
     classes: Scoreboard,
+    /// The adversarial perturbation suite every candidate must survive before
+    /// promotion (R12-MODEL-4021).
+    perturbation: PerturbationPolicy,
     /// Whether the registry has been refilled from the log's registration
     /// records this process (R12-MODEL-9003). Done once, before the first
     /// round, so a restart does not lose the cards it registered and never
@@ -822,6 +826,10 @@ impl std::fmt::Debug for LearningDesk {
     }
 }
 
+/// What [`LearningDesk::restore_artifacts`] fetched: the references whose
+/// artifact came back, and those that did not, each with why.
+pub type ArtifactRestore = (Vec<String>, Vec<(String, String)>);
+
 impl LearningDesk {
     pub fn new(config: LearningConfig, seed: u64) -> Self {
         Self {
@@ -836,11 +844,60 @@ impl LearningDesk {
             require_provenance: false,
             stream_reference: BTreeMap::new(),
             classes: Scoreboard::models(),
+            perturbation: PerturbationPolicy::default(),
             restored: false,
             fits: 0,
             seed,
             stats: LearningStats::default(),
         }
+    }
+
+    /// Fetch the artifact of every model the platform's log says was
+    /// promoted, by the digest its promotion record names, and hold it as
+    /// this desk's own (R12-MODEL-9003): the promoted set's under
+    /// `promoted_artifacts`, so a restored incumbent can be rescored against
+    /// a later candidate, and the rest under `displaced_artifacts`, so a
+    /// rollback can reactivate a predecessor. Returns the references fetched
+    /// and those that could not be, with why; a missing artifact is reported
+    /// rather than assumed, and its incumbent blocks promotion by name.
+    pub fn restore_artifacts(
+        &mut self,
+        platform: &Platform,
+        fetch: impl Fn(&str) -> Result<ModelArtifact>,
+    ) -> Result<ArtifactRestore> {
+        let promoted = platform.model_promotions();
+        let mut fetched = Vec::new();
+        let mut missing = Vec::new();
+        let mut seen = BTreeSet::new();
+        for record in platform.model_promotion_history()?.into_iter().rev() {
+            if !seen.insert(record.reference.clone()) {
+                continue;
+            }
+            match fetch(&record.artifact_digest) {
+                Ok(artifact) => {
+                    if promoted.contains_key(&record.reference) {
+                        self.promoted_artifacts
+                            .insert(record.reference.clone(), artifact);
+                    } else {
+                        self.displaced_artifacts
+                            .insert(record.reference.clone(), artifact);
+                    }
+                    fetched.push(record.reference);
+                }
+                Err(error) => missing.push((record.reference, error.message().to_string())),
+            }
+        }
+        Ok((fetched, missing))
+    }
+
+    /// Attack every candidate under `policy` before promotion instead of the
+    /// default (R12-MODEL-4021). Refuses a policy that is not one.
+    pub fn with_perturbation_policy(mut self, policy: PerturbationPolicy) -> Result<Self> {
+        // Validated by attacking a trivially smooth function: the suite's own
+        // check, rather than a second copy of it here.
+        qip_training::adversarial::attack(|row| Ok(row[0]), &[vec![0.0], vec![1.0]], &policy)?;
+        self.perturbation = policy;
+        Ok(self)
     }
 
     /// Refuse to promote a card that cannot be traced to a research campaign
@@ -885,14 +942,14 @@ impl LearningDesk {
     /// A card already in the registry is left as it is: the in-memory card
     /// is never older than the log's.
     ///
-    /// A card the log last saw in production is not registered. What is in
-    /// production is the platform's promoted set, rebuilt from its own
-    /// promotion records, and this desk holds no artifact to rescore a
-    /// restored incumbent with; registering it would make every later
-    /// candidate on its subject face an incumbent nobody can score, and
-    /// `promote_candidate` refuses that, so a restart would have stopped
-    /// promotion on the subject for good. Its version still feeds the fit
-    /// count below, and its card stays on the log. Paired with
+    /// Production cards are restored like any other: the strictly-better
+    /// gate in `promote_candidate` reads its incumbents from this registry,
+    /// so a production card left out would let any candidate that clears
+    /// the skill bar in unopposed, beside the incumbent it never displaced.
+    /// An incumbent is rescored by its artifact, which
+    /// [`Self::restore_artifacts`] fetches by the digest its promotion
+    /// record names; an incumbent whose artifact could not be fetched blocks
+    /// promotion on its subject by name, the fail-closed direction. Paired with
     /// `Platform::journal_model_registry` after every round, this is what
     /// makes a registered-but-unpromoted version and its evaluations survive
     /// the restart that rebuilds this desk's registry empty.
@@ -916,9 +973,7 @@ impl LearningDesk {
             {
                 self.fits = self.fits.max(fit);
             }
-            if card.stage != ModelStage::Production
-                && self.registry.get(&card.reference()).is_none()
-            {
+            if self.registry.get(&card.reference()).is_none() {
                 self.registry.register(card.clone());
                 restored += 1;
             }
@@ -1049,6 +1104,29 @@ impl LearningDesk {
                 ));
             }
             candidate_scores.push(score);
+        }
+        // Validated adversarially before acceptance (R12-MODEL-4021): the
+        // served model, attacked on the held-out rows by nudging each feature
+        // a fraction of its spread either way, must not swing its output on
+        // more rows than the policy tolerates. A suite that cannot run (a
+        // constant model, too few rows) is a refusal too: robustness that
+        // could not be measured was not shown.
+        let attacked =
+            qip_training::adversarial::attack(|row| served.score(row), rows, &self.perturbation);
+        match attacked {
+            Ok(report) => {
+                if let Some(why) = report.refusal(&self.perturbation) {
+                    return not_promoted(format!(
+                        "it failed the adversarial perturbation suite: {why}"
+                    ));
+                }
+            }
+            Err(error) => {
+                return not_promoted(format!(
+                    "the adversarial perturbation suite could not run: {}",
+                    error.message()
+                ));
+            }
         }
         let candidate_rmse = rmse(&candidate_scores, targets);
         // Every production model on this subject, rescored by the same
@@ -2085,20 +2163,68 @@ mod tests {
         Ok(())
     }
 
-    /// R12-MODEL-9003: restoring the registry from the log must not stop a
-    /// restarted desk from promoting. The first cut restored the production
-    /// card too; this desk holds no artifact to rescore a restored incumbent,
-    /// so every later candidate on the subject was refused for as long as
-    /// the process ran (an independent skeptic found it). The restarted desk
-    /// gets the unpromoted cards back and still promotes the same better
-    /// candidate a desk that never restarted promotes.
-    ///
-    /// Mutation: register production cards in `restore_registry` (drop the
-    /// stage condition) — the restarted desk's candidate is refused against
-    /// an incumbent it cannot score and the promotion assertion fails.
+    /// R12-MODEL-4021: acceptance runs the adversarial perturbation suite on
+    /// the served candidate, and a model whose output moves beyond tolerance
+    /// is refused. The same fit is promoted under the default policy and
+    /// refused under one that tolerates no movement at all, so the refusal is
+    /// the suite and not a broken fit. Mutation: delete the attack in
+    /// `promote_candidate` — the strict desk promotes and the refusal
+    /// assertion fails.
     #[test]
-    fn a_restarted_desk_restores_its_unpromoted_cards_and_still_promotes_a_better_candidate()
-    -> Result<()> {
+    fn a_candidate_that_fails_the_adversarial_perturbation_suite_is_not_promoted() -> Result<()> {
+        let bars = super::tests_support::learnable(400);
+        let mut lenient = learning_desk();
+        let mut platform = serving_platform()?;
+        lenient.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
+        let promoted = lenient
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(promoted, PromotionOutcome::Promoted { .. }),
+            "premise: the fit survives the default suite: {}",
+            promoted.describe()
+        );
+
+        let strict = qip_training::adversarial::PerturbationPolicy {
+            max_movement_sd: 1e-9,
+            max_fragile_share: 0.0,
+            ..qip_training::adversarial::PerturbationPolicy::default()
+        };
+        let mut desk = learning_desk().with_perturbation_policy(strict)?;
+        let mut platform = serving_platform()?;
+        desk.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
+        let refused = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(&refused, PromotionOutcome::NotPromoted { reason, .. }
+                if reason.contains("adversarial perturbation suite")),
+            "{}",
+            refused.describe()
+        );
+        assert!(platform.model_promotions().is_empty());
+        Ok(())
+    }
+
+    /// R12-MODEL-9003: a restarted desk restores every card the log holds,
+    /// production ones included, and holds its restored incumbent to the
+    /// same strictly-better gate as a desk that never restarted.
+    ///
+    /// The first cut restored the production card with no artifact to
+    /// rescore it, which blocked promotion on the subject for good; the
+    /// second left production cards out, which let any candidate in
+    /// unopposed beside an incumbent it never displaced. Both were found by
+    /// independent skeptics. Now: without its artifact the restored
+    /// incumbent blocks promotion by name (fail closed); with it fetched by
+    /// digest, an equal candidate is refused as not strictly better and a
+    /// better one is promoted and displaces it, leaving one production card.
+    ///
+    /// Mutations: leave production cards out of `restore_registry` — the
+    /// equal candidate is promoted unopposed; skip the promoted set in
+    /// `restore_artifacts` — the better candidate is refused for want of an
+    /// artifact.
+    #[test]
+    fn a_restarted_desk_holds_its_restored_incumbent_to_the_strictly_better_gate() -> Result<()> {
         let mut desk = learning_desk();
         let mut platform = serving_platform()?;
         let bars = super::tests_support::learnable(400);
@@ -2106,41 +2232,82 @@ mod tests {
         let first = desk
             .promote_candidate(&mut platform, at())?
             .ok_or_else(|| Error::not_found("a first candidate"))?;
-        assert!(
-            matches!(first, PromotionOutcome::Promoted { .. }),
-            "premise: the first fit was promoted: {}",
-            first.describe()
-        );
+        let PromotionOutcome::Promoted {
+            reference: incumbent,
+            ..
+        } = &first
+        else {
+            return Err(Error::invalid(format!(
+                "premise: the first fit was promoted: {}",
+                first.describe()
+            )));
+        };
+        let incumbent = incumbent.clone();
+        let published = first
+            .published()
+            .ok_or_else(|| Error::not_found("the promoted artifact"))?;
+        let stored = ModelArtifact::from_json(&published.contents)?;
         assert!(platform.journal_model_registry(desk.registry(), at())? > 0);
-        let unpromoted: Vec<String> = desk
-            .registry()
-            .iter()
-            .filter(|card| card.stage != ModelStage::Production)
-            .map(ModelCard::reference)
-            .collect();
+        let fetch = |digest: &str| -> Result<ModelArtifact> {
+            if digest == stored.digest {
+                Ok(stored.clone())
+            } else {
+                Err(Error::not_found(format!("{digest} is not stored")))
+            }
+        };
+
+        // Without the artifact: the restored incumbent blocks by name.
+        let mut blind = learning_desk();
+        assert!(blind.restore_registry(&platform) > 0);
+        assert_eq!(
+            blind.registry().get(&incumbent).map(|card| card.stage),
+            Some(ModelStage::Production),
+            "the production card is restored"
+        );
+        blind.maybe_learn(&subject(), &bars, REGIME, 3, at())?;
+        let refused = blind
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
         assert!(
-            platform.registered_model_cards().count() > unpromoted.len(),
-            "premise: the log holds the production card as well"
+            matches!(&refused, PromotionOutcome::NotPromoted { reason, .. }
+                if reason.contains("holds no artifact")),
+            "{}",
+            refused.describe()
         );
 
-        let bigger = super::tests_support::learnable(1_200);
+        // With it: an equal candidate is refused on the gate itself.
         let mut restarted = learning_desk();
-        assert_eq!(restarted.restore_registry(&platform), unpromoted.len());
-        for reference in &unpromoted {
-            assert!(
-                restarted.registry().get(reference).is_some(),
-                "{reference} did not come back"
-            );
-        }
-        restarted.maybe_learn(&subject(), &bigger, REGIME, 3, at())?;
-        let after = restarted
+        let (fetched, missing) = restarted.restore_artifacts(&platform, fetch)?;
+        assert_eq!((fetched, missing.len()), (vec![incumbent.clone()], 0));
+        restarted.restore_registry(&platform);
+        restarted.maybe_learn(&subject(), &bars, REGIME, 3, at())?;
+        let equal = restarted
             .promote_candidate(&mut platform, at())?
-            .ok_or_else(|| Error::not_found("a candidate after the restart"))?;
+            .ok_or_else(|| Error::not_found("an equal candidate"))?;
         assert!(
-            matches!(after, PromotionOutcome::Promoted { .. }),
-            "the restarted desk could not promote: {}",
-            after.describe()
+            matches!(&equal, PromotionOutcome::NotPromoted { reason, .. }
+                if reason.contains("not strictly better")),
+            "{}",
+            equal.describe()
         );
+        // And a better one is promoted and displaces the incumbent.
+        let bigger = super::tests_support::learnable(1_200);
+        restarted.maybe_learn(&subject(), &bigger, REGIME, 4, at())?;
+        let better = restarted
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a better candidate"))?;
+        assert!(
+            matches!(&better, PromotionOutcome::Promoted { displaced, .. }
+                if displaced.contains(&incumbent)),
+            "{}",
+            better.describe()
+        );
+        let production = restarted
+            .registry()
+            .iter()
+            .filter(|card| card.stage == ModelStage::Production)
+            .count();
+        assert_eq!(production, 1, "one production card per subject");
         Ok(())
     }
 

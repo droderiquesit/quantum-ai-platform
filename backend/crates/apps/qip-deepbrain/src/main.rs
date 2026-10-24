@@ -44,7 +44,9 @@
 
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, SystemClock};
-use qip_deepbrain::artifacts::{MODEL_ARTIFACTS_NAMESPACE, write_model_artifact};
+use qip_deepbrain::artifacts::{
+    MODEL_ARTIFACTS_NAMESPACE, read_model_artifact, write_model_artifact,
+};
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::{health, node, roster};
 use qip_financial::universe::Universe;
@@ -980,6 +982,22 @@ fn run() -> Result<()> {
             .storage
             .blobs(qip_deepbrain::tick_desk::OUTPUT_NAMESPACE)?,
     );
+
+    // A restarted desk rescores its restored incumbents by the artifacts
+    // their promotion records name (R12-MODEL-9003). One that cannot be
+    // fetched is printed, and its incumbent blocks promotion by name.
+    let (restored_artifacts, missing_artifacts) = evolution
+        .restore_model_artifacts(&platform, |digest| {
+            read_model_artifact(model_artifacts.as_ref(), digest)
+        })?;
+    println!(
+        "  model artifacts:  {} restored from the promotion log, {} missing",
+        restored_artifacts.len(),
+        missing_artifacts.len()
+    );
+    for (reference, why) in &missing_artifacts {
+        println!("    {reference}: {why}");
+    }
 
     let run = node::run_with(
         &mut platform,

@@ -33,7 +33,9 @@
 //! trial count still rises for every scored candidate, discarded or not —
 //! that is the whole point of the ledger.
 
-use crate::learning::{LearningConfig, LearningDesk, LearningRound, LearningStats};
+use crate::learning::{
+    ArtifactRestore, LearningConfig, LearningDesk, LearningRound, LearningStats,
+};
 use crate::succession::{ChallengeSummary, SuccessionDesk, SuccessionStats};
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -569,6 +571,18 @@ impl EvolutionEngine {
     }
 
     /// What the learning desk has done across the node's lifetime.
+    /// Fetch every promoted and displaced model's artifact the platform's
+    /// log names, so the learning desk can rescore a restored incumbent and
+    /// reactivate a restored predecessor (R12-MODEL-9003). See
+    /// `LearningDesk::restore_artifacts`.
+    pub fn restore_model_artifacts(
+        &mut self,
+        platform: &Platform,
+        fetch: impl Fn(&str) -> Result<qip_ai::serving::ModelArtifact>,
+    ) -> Result<ArtifactRestore> {
+        self.learning.restore_artifacts(platform, fetch)
+    }
+
     pub const fn learning_stats(&self) -> LearningStats {
         self.learning.stats()
     }

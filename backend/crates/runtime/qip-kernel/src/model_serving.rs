@@ -670,6 +670,13 @@ impl Platform {
         Ok(written)
     }
 
+    /// Every promotion the log holds, in log order, displaced ones included:
+    /// what a restarted desk fetches incumbent and predecessor artifacts by
+    /// (R12-MODEL-9003).
+    pub fn model_promotion_history(&self) -> Result<Vec<ModelPromotion>> {
+        promotions_in(self.event_log())
+    }
+
     /// Every registered card the log holds, the newest record per reference,
     /// in reference order: what a restarted deep brain registers before its
     /// first round (R12-MODEL-9003).
