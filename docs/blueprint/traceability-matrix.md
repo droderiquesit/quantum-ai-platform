@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 547 | 36.0% |
+| Blueprint completion (COMPLETE) | 548 | 36.1% |
 | Implemented (behaviour exists in code) | 1333 | 87.8% |
 | Tested (a named test demonstrates it) | 1235 | 81.4% |
-| Integrated (reached from a composition root) | 887 | 58.4% |
+| Integrated (reached from a composition root) | 888 | 58.5% |
 | Deployable (provisionable from committed config) | 206 | 13.6% |
 | End-to-end demonstrated | 20 | 1.3% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 547 |
-| PARTIAL | 831 |
+| COMPLETE | 548 |
+| PARTIAL | 830 |
 | MISSING | 108 |
 | BLOCKED | 31 |
 | NEEDS-VALIDATION | 1 |
@@ -42,7 +42,7 @@ register (ADR 0099), and there is no second one.
 | [TICK](#tick) | 97 | 25 | 69 | 3 | 0 | 0 | 93 | 84 | 1 |
 | [WORLD](#world) | 69 | 34 | 30 | 5 | 0 | 0 | 62 | 57 | 1 |
 | [REASON](#reason) | 41 | 16 | 23 | 2 | 0 | 0 | 39 | 39 | 0 |
-| [AMBIENT](#ambient) | 48 | 26 | 20 | 2 | 0 | 0 | 46 | 45 | 9 |
+| [AMBIENT](#ambient) | 48 | 27 | 19 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 42 | 20 | 0 | 7 | 0 | 63 | 61 | 0 |
 | [MODEL](#model) | 81 | 28 | 49 | 3 | 1 | 0 | 76 | 71 | 0 |
 | [QUANT](#quant) | 78 | 25 | 27 | 26 | 0 | 0 | 52 | 52 | 0 |
@@ -937,7 +937,7 @@ register (ADR 0099), and there is no second one.
 | R12-AMBIENT-3110 | Meta-Intelligence allocates compute by expected uncertainty reduction or value | qip-deepbrain runs MetaIntelligence::allocate every sweep over the desk's research items on CPU/GPU/QPU budgets, granting by marginal value per cost; each ComputeAllocation records rationale with the expected value. | PARTIAL | Only research items bid. A model-retraining, agent or solver bid is accepted by MetaIntelligence::allocate but has no consumer on a grant: the learning desk retrains on its own cadence (learning.rs due) and nothing lets a grant bring a round forward; agent budgets are not reachable from the research loop (see R12-AMBIENT-10094); no pending-QUBO queue exists for solver bids. TPU zero budget is a deployment fact. |  | P2 | new test to be written (see gap); cargo test -p <owning crate> |  |
 | R12-AMBIENT-3111 | Model reputation by domain, horizon and regime | ResearchLoop::run_market keys every bid's ReputationKey by domain, the question's horizon bucket (horizon_bucket of the window left at admission: hour/day/week/beyond_week) and the regime Platform::regime_context classifies for the question's subject at the bid; the grant carries the cell and measure_last_round records the window through record_cell under the same key, so a window measured in one regime leaves every other regime's cell Uninformed. The literals "research"/"all" are gone from production. | COMPLETE |  |  | P1 | cd backend && cargo +1.94.1 test -p qip-deepbrain --test research_market a_measured_window_in_one_regime_leaves_another_regimes_cell_uninformed |  |
 | R12-AMBIENT-3112 | Marginal value of extra simulation, agent, call, source or QPU experiment measured | measure_last_round records on qip_meta_marginal_value_bp{kind} the gain over the question's previous grant level — (realised now - realised at the last measured level) per added unit where the level grew, this window's per-unit figure where it did not — from the per-question last_window record, so a question that stopped yielding reads zero rather than the average of its history. The deepbrain recording site is proven from a node sweep. | COMPLETE |  |  | P2 | cd backend && cargo +1.94.1 test -p qip-deepbrain --test research_market a_second_unit_that_realises_nothing_records_zero_marginal_value |  |
-| R12-AMBIENT-3113 | Create specialist populations where residual error is economically meaningful | MetaIntelligence::propose_specialists proposes a domain when residual x exposure >= specialist_threshold (qip-expansion/src/meta.rs:870-915). qip-deepbrain calls it every sweep with residuals from the platform's per-belief-class hit rates below HIT_RATE_FLOOR and exposure = platform.equity().abs() for every class (research.rs:862-899); each proposal becomes a research gap observation, counted on qip_meta_specialists_proposed_total. | PARTIAL | Economic weighting uses the whole book's equity as every class's exposure, so the weight ranks residuals, not the money each class's error is applied to. Nothing creates a specialist population: a proposal becomes a research gap. No test covers the production call site (removing research.rs:862-899 fails no test). |  | P3 | new test to be written (see gap); cargo test -p <owning crate> |  |
+| R12-AMBIENT-3113 | Create specialist populations where residual error is economically meaningful | MetaIntelligence::propose_specialists proposes a domain when residual x exposure >= specialist_threshold (qip-expansion/src/meta.rs:870-915). qip-deepbrain's sweep now weights each belief class's residual by that class's own exposure from Platform::class_exposure: the gross notional at cost of the instruments only that class holds an open thesis on, with shared instruments (open theses from two or more classes) and unclaimed ones (a position, no open thesis) counted under `unattributed` and never spread, so the buckets sum to the gross book at cost. A class with no instrument of its own carries zero and proposes nothing. Each proposal becomes a research gap, counted on qip_meta_specialists_proposed_total. | COMPLETE |  |  | P3 | cd backend && cargo +1.94.1 test -p qip-kernel --lib class_exposure; cargo +1.94.1 test -p qip-kernel --test valuation_seam a_position_opened; cargo +1.94.1 test -p qip-deepbrain --test research a_class_with_no_attributed |  |
 | R12-AMBIENT-3114 | Kill redundant or persistently unproductive work | MetaIntelligence retires work whose realised value stays at or below the floor for retire_after windows and declines redundant same-subject bids; qip-deepbrain retires such research items each sweep and declines them afterwards, proven through ResearchLoop::sweep. | COMPLETE | None for the requirement; not deployed. |  | P2 | new test to be written (see gap); cargo test -p <owning crate> |  |
 | R12-AMBIENT-7025 | Ambient mesh scheduled continuously with wakeups and surprise scoring | node::run_with schedules the research sweep each cycle; it keeps a stateful NowEstimator, scores surprises, and routes AmbientSignals into AttentionEvents, journaled with causation lineage. | COMPLETE | None for the requirement; not deployed. |  | P3 | integration test of a scheduled ambient loop |  |
 | R12-AMBIENT-7026 | Isolated budgets stop background cognition starving trading | Ambient cognition (the AttentionRouter, its detectors and the research sweep) is constructed in exactly one binary, qip-deepbrain, whose ResearchLoop runs every cycle by default (QIP_DEEPBRAIN_RESEARCH_EVERY defaults to 1). In every environment's committed GitOps manifest that binary is its own Cloud Run service bounded to one instance and one request, with CPU and memory limits on its container (4 CPU, 8Gi, held to the catalogue by gitops.rs's parity test); the fast brain is a separate service with its own limits and the regional cell runs on its own Compute Engine node. Within that budget RoutingPolicy caps attention spend per window, and no order-path crate names an ambient type. | COMPLETE |  |  | P0 | cargo test -p qip-acceptance --test ambient_attention; cargo test -p qip-acceptance --test gitops |  |

@@ -1544,3 +1544,52 @@ fn a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_f
     assert!(!derivations[0].rules.agrees_with_review);
     Ok(())
 }
+
+/// R12-AMBIENT-3113, ADR 0158 decisions 7-8: after a cycle sized and sent a
+/// position on a thesis, `Platform::class_exposure` puts that position's gross
+/// notional at cost under the thesis's class and nothing under `unattributed`;
+/// the buckets sum to the gross book at cost. The failure prevented is the
+/// ambient loop weighting every class's residual by the whole book's equity.
+///
+/// Mutation: make `Platform::class_exposure` pass no theses to the
+/// attribution — the position lands under `unattributed` and the class
+/// assertion fails.
+#[test]
+fn a_position_opened_on_a_thesis_is_that_thesis_classs_exposure_and_the_buckets_sum_to_the_book() {
+    let mut universe = Universe::new();
+    universe
+        .insert(listed("AAA").expect("a listed name"))
+        .expect("insertable");
+    let mut platform = platform_over(universe, leverage_only()).expect("a platform");
+    platform.observe(tape("AAA"));
+    platform.run_cycle(start());
+
+    let positions = platform.positions_at_cost();
+    let (quantity, average_price) = positions
+        .get("obj-AAA")
+        .copied()
+        .expect("premise: the cycle opened a position in obj-AAA");
+    let open: Vec<String> = platform
+        .predictions()
+        .iter()
+        .filter(|p| p.is_open())
+        .filter_map(|p| p.claim.as_ref())
+        .filter(|claim| claim.subject == "obj-AAA")
+        .map(|claim| claim.class.clone())
+        .collect();
+    assert_eq!(
+        open.len(),
+        1,
+        "premise: exactly one open thesis is held on obj-AAA: {open:?}"
+    );
+
+    let exposure = platform.class_exposure();
+    let notional = quantity.abs() * average_price;
+    assert_eq!(
+        exposure.by_class.get(&open[0]),
+        Some(&notional),
+        "the position was not attributed to the class that alone holds a thesis on it: {exposure:?}"
+    );
+    assert_eq!(exposure.unattributed, Decimal::ZERO, "{exposure:?}");
+    assert_eq!(exposure.total(), notional);
+}
