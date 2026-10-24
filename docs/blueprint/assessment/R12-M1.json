@@ -49,28 +49,27 @@
   },
   {
     "id": "R12-WORLD-1003",
-    "status": "PARTIAL",
-    "current": "Federation of seven members is built and run each UNDERSTAND pass and journaled.",
+    "status": "COMPLETE",
+    "current": "Each UNDERSTAND pass derives a Narrowing per instrument from the federation's journaled arbitration spread (federation_stage::Narrowing::of_spread over NARROWING_SCHEDULE, every multiplier in (0,1)); DECIDE's Platform::construct_from multiplies it into that instrument's cap beside ADR 0063's and ADR 0066's through federation_stage::narrow and names it on the DECIDE detail. An agreeing or silent population earns no narrowing. FederationStage::run calls Federation::branch on a standing disagreement (one live branch per followed reading, FEDERATION_MAX_LIVE_BRANCHES) and merges the two best branches.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:362 Federation",
-      "backend/crates/services/qip-world-model/src/federation.rs:443 register",
-      "backend/crates/services/qip-world-model/tests/federation.rs crate tests",
-      "backend/crates/runtime/qip-kernel/src (no reference to qip_world_model::federation)",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::narrow",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::construct_from (federation_stage::narrow call)",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1396 Federation::branch caller",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_material_federation_disagreement_narrows_the_instruments_bound_and_an_agreeing_one_does_not",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_federation_narrowing_multiplies_into_the_cap_once_per_instrument_and_an_agreeing_one_leaves_it_at_one"
     ],
-    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the federation narrowing schedule in Platform::construct_from's caps map, with a test that an agreeing population leaves every cap at one and a disagreeing one narrows; Federation::branch still has no cycle caller.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel (new test: cycle consults >1 federated model)",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation; cargo test -p qip-kernel --lib federation_stage",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Advisory only: no REASON/DECIDE code reads the federation; decisions still use the single WorldModel. Federation::branch is never called in the cycle, so no hypothesis branches."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Advisory only: no REASON/DECIDE code reads the federation; decisions still use the single WorldModel. Federation::branch is never called in the cycle, so no hypothesis branches. 2026-10-24 lane T7-KERNEL: the gap text was older than the code (commit 3e934023 landed ADR 0125 decision 4 and Federation::branch has a cycle caller in FederationStage::run). The existing test read only DECIDE's detail line, which narrow() writes whether or not it multiplied; the new test asserts the cap itself (once per instrument, not squared, and unchanged for an agreeing population). Mutation: replace the `*= narrowing.multiplier()` in federation_stage::narrow with a bare entry() - the new test failed with 'narrowed once, not squared: 0.8'; restored, passes."
   },
   {
     "id": "R12-REASON-1004",

@@ -248,7 +248,7 @@
       "backend/crates/libs/qip-contracts/src/ledger.rs:42 Settlement::Simulated only",
       "backend/crates/libs/qip-contracts/tests/ledger_event.rs:6 settlement_has_no_variant_but_simulated"
     ],
-    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: the in_settlement account, the fill posting change, and Decision::Settled from the simulated gateway, with a test that cash is unavailable before the settlement date.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18) and not started; it spans three crates, so it is larger than the M this row carries. Slices: (1) qip-contracts: an in_settlement Account and a Decision::Settled outcome, both additive with serde defaults so old records decode and no digest moves; (2) qip-ledgerd store.rs: the Decision::Filled arm posts the cash leg to in_settlement:<cell>/<strategy> when the venue has SettlementTerms, to cash when it has none; (3) qip-edge-node gateway.rs: the simulated gateway emits Decision::Settled when its settlement clock passes a fill's date; (4) the test that cash is unavailable before the settlement date. Slice 3 is the only producer of the fact, and without it slice 2 would leave cash pending for ever. Re-graded 2026-10-24, no code changed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
