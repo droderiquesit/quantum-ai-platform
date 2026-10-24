@@ -2434,14 +2434,14 @@
   },
   {
     "id": "R12-CICD-9106",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-acceptance architecture/api_boundary/paper_boundary suites run in ci.yml's cargo test; deploy.yml's gate requires CI success.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture.rs",
       ".github/workflows/ci.yml:73",
       ".github/workflows/deploy.yml:91"
     ],
-    "gap": "None.",
+    "gap": "2026-10-24: Closes when a test fails if deploy.yml's gate job stops refusing a deploy whose ci.yml run did not succeed (both the `workflow_run.conclusion != success` refusal and the `ci.yml runs total_count < 1` refusal), and the row's verification names it. architecture.rs reads neither workflow, so the clause 'deploy gates on CI' has no test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2452,7 +2452,7 @@
     "verification": "cargo test -p qip-acceptance --test architecture",
     "work_item": "",
     "size": "S",
-    "notes": "Many arch_0NN_*.rs suites are vacuous (e.g. arch_033_quantum_path.rs::quantum_service_exists asserts nothing; classical_baseline_computed_always is a substring check) — the real guards are architecture.rs, api_boundary.rs, paper_boundary.rs."
+    "notes": "Many arch_0NN_*.rs suites are vacuous (e.g. arch_033_quantum_path.rs::quantum_service_exists asserts nothing; classical_baseline_computed_always is a substring check) — the real guards are architecture.rs, api_boundary.rs, paper_boundary.rs. AUDIT-3 2026-10-24: regraded, the acceptance clause is two halves, CI runs the architecture suite and the deploy gates on CI; removing either of deploy.yml's two CI-success refusals fails no test in the eight acceptance suites that read workflows, and the named test (architecture.rs) reads neither workflow"
   },
   {
     "id": "R12-CICD-9107",

@@ -812,7 +812,7 @@
   },
   {
     "id": "R12-EVID-2035",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "EvidenceFabric::admit skips same-origin corroboration and credits authenticity per independent origin at other sources (capped at MAX_CORROBORATING_ORIGINS), collapsing copies by normalised-statement fingerprint and document hash; fed in production through the kernel's evidence intake. A test now asserts the supporting weight itself: the same probe claim earns an identical belief_weight and authenticity after ten copies of one press release as after one, and a strictly higher one after one copy plus an independent origin.",
     "evidence": [
       "backend/crates/libs/qip-evidence/src/fabric.rs:758 EvidenceFabric::admit",
@@ -820,7 +820,7 @@
       "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:719 ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it",
       "qip-world-model/tests/evidence_fabric.rs::ten_copies_of_one_press_release_count_as_one_origin"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when a committed deployment (deepbrain_connector or market_data_connector set in an environment tfvars) feeds claims into EvidenceFabric::admit on a running node, or the row's requirement is narrowed to the library property.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -831,7 +831,7 @@
     "verification": "cargo test -p qip-world-model --test evidence_fabric ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutation fired - crediting per corroborating claim (others.len()) instead of per independent origin gave the ten-copy probe authenticity 0.6 against the one-copy probe's lower score. Limits that do not belong to this clause: normalisation collapses punctuation and case, not reworded copies; belief_weight reaches no decision. Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: mutation fired - crediting per corroborating claim (others.len()) instead of per independent origin gave the ten-copy probe authenticity 0.6 against the one-copy probe's lower score. Limits that do not belong to this clause: normalisation collapses punctuation and case, not reworded copies; belief_weight reaches no decision. Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. AUDIT-3 2026-10-24: regraded, the origin-discount arithmetic is real and mutation-checked, but EvidenceFabric::admit runs in a deployed process only through the connector arm, which no committed environment enables"
   },
   {
     "id": "R12-EVID-2036",
