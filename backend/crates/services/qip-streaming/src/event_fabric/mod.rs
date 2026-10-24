@@ -7,6 +7,7 @@ pub mod admission;
 pub mod broker;
 pub mod group;
 pub mod managed;
+pub mod mirror;
 pub mod partition;
 pub mod producer;
 pub mod service;

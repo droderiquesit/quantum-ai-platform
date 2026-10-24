@@ -43,7 +43,7 @@ use crate::evidence::{
 };
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Claims a fabric holds by default before evicting the oldest.
@@ -566,6 +566,20 @@ fn independent_origins_of<'a>(
         .len()
 }
 
+/// One claim the fabric admitted, as the event log keeps it (ADR 0152 §2):
+/// the record exactly as it was handed to [`EvidenceFabric::admit`], the
+/// document hash it was admitted with and the instant of admission. These
+/// three are the whole input of `admit`, so a journal of them is enough to
+/// derive every link, contest and resolution again; the links themselves are
+/// never journaled, because a second copy of a derived fact is a second claim
+/// that can disagree with the first.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JournaledClaim {
+    pub record: EvidenceRecord,
+    pub document_hash: Option<String>,
+    pub admitted_at: Timestamp,
+}
+
 /// The bounded evidence store with its graph, contests and source records.
 #[derive(Clone, Debug)]
 pub struct EvidenceFabric {
@@ -677,6 +691,43 @@ impl EvidenceFabric {
             source_capacity,
             ..Self::default()
         })
+    }
+
+    /// Derive the fabric a journal describes: re-admit `claims` in journal
+    /// order, each at its recorded instant, into this fabric.
+    ///
+    /// `self` must be an empty fabric configured as the one that wrote the
+    /// journal (capacity, trusted registries, pinned hashes): admission is a
+    /// function of those and of the order, and a rebuild that differed in
+    /// either would be a different belief presented as a recovered one. A
+    /// fabric that already holds a claim is refused, and so is a journaled
+    /// claim the fabric refuses: the journal holds only claims that were
+    /// admitted, so a refusal means the journal or the configuration is not
+    /// the one that wrote it, and skipping the claim would rebuild a fabric
+    /// that quietly disagrees with the one before the restart.
+    pub fn rebuild(mut self, claims: impl IntoIterator<Item = JournaledClaim>) -> Result<Self> {
+        if !self.is_empty() || self.version != 0 {
+            return Err(Error::invalid(
+                "a fabric is rebuilt from the journal into an empty fabric; this one already \
+                 holds claims, and replaying onto them would corroborate the journal with itself",
+            ));
+        }
+        for claim in claims {
+            let id = claim.record.id.clone();
+            self.admit(
+                claim.record,
+                claim.document_hash.as_deref(),
+                claim.admitted_at,
+            )
+            .map_err(|error| {
+                Error::invalid(format!(
+                    "journaled claim `{id}` is refused on replay ({}); the journal was not \
+                         written by a fabric configured like this one",
+                    error.message()
+                ))
+            })?;
+        }
+        Ok(self)
     }
 
     /// Trust `registry` as an identity registry for authenticity.

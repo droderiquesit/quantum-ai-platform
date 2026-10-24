@@ -259,6 +259,15 @@ pub struct FederationReview {
     /// written before the field existed.
     #[serde(default)]
     pub information_requests: Vec<qip_contracts::control::InformationRequest>,
+    /// The disagreement spread behind each request, in basis points, in the
+    /// same order as `information_requests` (ADR 0158 decision 10). The
+    /// contract states what is asked and what it is worth, not how much the
+    /// views differ, and the research loop ranks a request by how much
+    /// uncertainty answering it would remove — so the spread travels beside
+    /// the request rather than being guessed back from a value and an
+    /// exposure. Absent on a record written before the field existed.
+    #[serde(default)]
+    pub request_spreads_bp: Vec<u32>,
 }
 
 impl EventBody for FederationReview {
@@ -1245,6 +1254,7 @@ impl FederationStage {
 
         let mut arbitrations = Vec::new();
         let mut information_requests = Vec::new();
+        let mut request_spreads_bp = Vec::new();
         for proposition in &propositions {
             match self.federation.arbitrate(proposition, now) {
                 Ok(a) => {
@@ -1267,7 +1277,24 @@ impl FederationStage {
                             extra_sources: Vec::new(),
                         };
                         match self.federation.information_request(&a, &stake) {
-                            Ok(Some(request)) => information_requests.push(request),
+                            Ok(Some(request)) => {
+                                // The spread is a probability difference; one
+                                // outside [0, 1] is a model bug to refuse, not
+                                // a figure to round into range.
+                                let spread = a.disagreement.spread;
+                                if !(0.0..=1.0).contains(&spread) {
+                                    refused.push((
+                                        proposition.clone(),
+                                        format!(
+                                            "the disagreement spread {spread} is not in [0, 1]"
+                                        ),
+                                    ));
+                                } else {
+                                    information_requests.push(request);
+                                    // Statistic to integer basis points.
+                                    request_spreads_bp.push((spread * 10_000.0).round() as u32);
+                                }
+                            }
                             Ok(None) => {}
                             Err(error) => {
                                 refused.push((proposition.clone(), error.message().to_string()));
@@ -1329,6 +1356,7 @@ impl FederationStage {
             journal_base,
             events,
             information_requests,
+            request_spreads_bp,
         }
     }
 
