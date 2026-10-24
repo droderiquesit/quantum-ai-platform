@@ -782,7 +782,7 @@
       "qip-streaming/tests/event_fabric_managed.rs::a_follower_holds_the_committed_log_and_takes_over_with_no_committed_loss",
       "qip-fabricd/src/spanner.rs::tests::a_commit_under_a_superseded_lease_epoch_rolls_back_as_fenced_and_inserts_nothing"
     ],
-    "gap": "Declare the fabric's regional Spanner database in Terraform (gated), prove SpannerManagedLog against the Spanner emulator, add fabricd to the image matrix, and deploy it in dev in ADR 0035's region once billing is enabled, plan shown first (ADR 0111 Amendment 1).",
+    "gap": "Code is built and tested on MemoryManagedLog and a fake Spanner transport. Missing: (1) the fabric regional Spanner database declared in Terraform and gated (infrastructure/event-fabric/spanner.ddl is unapplied; only the ledger positions database exists in modules/data); (2) SpannerManagedLog proven against the Spanner emulator; (3) fabricd in the image matrix; (4) deployment in dev when billing is enabled, plan shown first. Terraform could not be validated in this lane (no terraform binary), so none was written. Corrected 2026-10-24.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -827,7 +827,7 @@
       "docs/adr/0111-event-fabric-replication-is-delegated-to-a-managed-consensus-and-not-written-in-tree.md",
       "backend/crates/apps/qip-fabricd/src/config.rs:253-290"
     ],
-    "gap": "Already decided by ADR 0111 Amendment 1: The metadata quorum is decided: Spanner under lease-epoch checks, three brokers one per zone, openraft not taken (ADR 0111 Amendment 1).",
+    "gap": "Decided by ADR 0111 Amendment 1 (Spanner under lease-epoch checks, three brokers one per zone, openraft not taken), but only leadership is built. Missing, in order: (1) Spanner tables for stream definitions, partition placement, broker epochs and ACL metadata beside fabric_leases in infrastructure/event-fabric/spanner.ddl, written only through read-write transactions that check the writer lease epoch; (2) the qip-fabricd read and write path for them (today the catalogue is a per-broker file); (3) a minority-loss test; (4) the database applied, which needs the Spanner database in Terraform (not declared, and no terraform binary ran in this lane to validate one). Corrected 2026-10-24.",
     "implemented": false,
     "tested": false,
     "integrated": false,

@@ -1671,7 +1671,7 @@
       "docs/adr/0111-event-fabric-replication-is-delegated-to-a-managed-consensus-and-not-written-in-tree.md",
       "backend/crates/apps/qip-fabricd/src/spanner.rs:60-70"
     ],
-    "gap": "A replicated metadata store (Spanner tables or a superseding Raft ADR) holding membership, partition maps, epochs, consumer leases and quotas, with a minority-loss test.",
+    "gap": "A replicated metadata store holding membership, partition maps, epochs, consumer leases and quotas, with a minority-loss test. ADR 0111 Amendment 1 places it in the regional Spanner database beside the lease (same slices as R12-FABRIC-7037); today leadership is the only replicated fact and the rest is per broker or per catalogue file. Partition-move tooling is the further slice. Corrected 2026-10-24.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2280,7 +2280,7 @@
       "infrastructure/terraform/variables.tf:1611 event_fabric_broker default null (\"Null in every environment\")",
       "grep archive in infrastructure/terraform/fabric.tf and modules/event-fabric-broker: no bucket/lifecycle"
     ],
-    "gap": "Regional landing bucket, lifecycle/residency copy to archive bucket, enabled in an environment.",
+    "gap": "Regional landing bucket, lifecycle or residency copy to the archive bucket, enabled in an environment. fabricd side is code-complete (ArchiveTarget::CloudStorage, lib.rs::open_archive). Not written in this lane: the bucket is Terraform under infrastructure/terraform, no terraform binary was available to validate it, and enabling it edits infrastructure/environments/**, which is protected. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
