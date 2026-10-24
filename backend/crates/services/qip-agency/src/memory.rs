@@ -281,7 +281,9 @@ impl ActionOutcomeMemory {
     /// times there has not earned an opinion, and a mean effect
     /// (`observed - counterfactual`) that is not strictly positive loses to
     /// doing nothing. The winner carries its mean delay, so a caller knows
-    /// how long to wait before judging it.
+    /// how long to wait before judging it. A record whose
+    /// `attribution_confidence` is zero is remembered and never read: it rests
+    /// on no identified attribution (ADR 0145).
     // ponytail: a plain mean over a support floor. Weight by attribution
     // confidence once an estimator exists (AGENCY-028).
     pub fn recommend_for(
@@ -298,7 +300,14 @@ impl ActionOutcomeMemory {
         // Per sequence: summed effect, count, summed delay.
         let mut seen: BTreeMap<&[String], (Decimal, i64, u128)> = BTreeMap::new();
         for outcome in &self.records {
+            // A record at zero confidence rests on no identified attribution
+            // (`engine::attribute` refuses a confidence above the
+            // attribution's identifiability, and an unidentified effect is
+            // filed at zero), so a mean over it is a correlation presenting
+            // as a recommendation. It stays remembered; it is not read
+            // (ADR 0145 decision 2).
             if outcome.observed != Observed::Measured
+                || outcome.attribution_confidence <= Decimal::ZERO
                 || outcome.environment_state != environment_state
                 || audience.is_some_and(|a| a != outcome.audience)
             {

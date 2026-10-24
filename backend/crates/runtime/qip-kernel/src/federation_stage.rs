@@ -718,6 +718,12 @@ impl FederationStage {
         self.stakes = stakes;
     }
 
+    /// The exposure last stated for `subject` ([`Self::set_stakes`]), so a
+    /// composition can be proven to state it without running a pass over a tape.
+    pub fn stake_of(&self, subject: &str) -> Option<Decimal> {
+        self.stakes.get(subject).copied()
+    }
+
     /// Name each subject's asset class before a pass (MODEL-4009). A class
     /// seen for the first time gets its domain member declared on that
     /// pass; a subject not named is read by no domain member.

@@ -198,13 +198,13 @@
     "status": "PARTIAL",
     "current": "Account::Collateral and Account::Margin with pledge and margin OperationKinds post through LedgerOperation into the global journal; tested per kind.",
     "evidence": [
-      "backend/crates/services/qip-capital/src/collateral.rs:163 Pledge",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::review_cross_margin",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs::review_cross_margin_posts_no_ledger_operation_from_the_default_margin_model",
+      "backend/crates/tests/qip-acceptance/tests/ledger_declined_kinds.rs::no_source_outside_the_contract_builds_an_assumed_margin_pledge_or_tax_operation",
       "backend/crates/services/qip-capital/src/margin.rs:60 MarginRequirement",
-      "backend/crates/libs/qip-contracts/src/ledger.rs:67 no collateral/margin account",
-      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::OperationKind::MarginRequirement"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for pledges or margin or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "2026-10-24: no venue states a margin requirement, so no production producer exists by decision (ADR 0153 d3); modelled margin is advice and is never booked. Margin and pledge post only from a venue-stated requirement line, which no simulated venue publishes yet.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -212,10 +212,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
+    "verification": "cargo test -p qip-kernel --test collateral review_cross_margin_posts; cargo test -p qip-acceptance --test ledger_declined_kinds",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane T4-LEDGER 2026-10-24: refusal proven twice. Mutation 1: queueing a MarginRequirement per called venue inside review_cross_margin made the kernel test fail ('a modelled margin figure was queued for the ledger'). Mutation 2: a matches! on OperationKind::TaxCharge appended to qip-kernel platform.rs made the acceptance scan fail (the same scan guards MarginRequirement and CollateralPledge). Kept PARTIAL: no producer by decision until a venue states a requirement."
   },
   {
     "id": "R12-LEDGER-5010",
@@ -442,10 +442,10 @@
     "current": "Account::Tax (separate from Account::Fees) and a tax OperationKind post into the global journal; tested per kind.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs:73 Account::Fees",
-      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::OperationKind::TaxCharge",
+      "backend/crates/tests/qip-acceptance/tests/ledger_declined_kinds.rs::no_source_outside_the_contract_builds_an_assumed_margin_pledge_or_tax_operation"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for taxes or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "2026-10-24: no TaxCharge producer by decision (ADR 0153 d7): tax method, rate and jurisdiction are facts the repository was never shown and a paper platform realises nothing taxable. The kind stays bookable and tested in qip-contracts. A test now proves no source outside the contract names OperationKind::TaxCharge.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -453,10 +453,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd plus a subledger test",
+    "verification": "cargo test -p qip-acceptance --test ledger_declined_kinds",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane T4-LEDGER 2026-10-24: decision restated and its refusal proven. Mutation: a matches! on OperationKind::TaxCharge appended to qip-kernel platform.rs made the test fail naming platform.rs:32414. Kept PARTIAL: no producer by decision."
   },
   {
     "id": "R12-LEDGER-5020",
@@ -696,24 +696,24 @@
   {
     "id": "R12-REFLEX-5031",
     "status": "PARTIAL",
-    "current": "qip-edge-node composes mirror -> relay -> spool writer -> drain, and adds a FabricSink producing to qip-fabricd when a fabric URL is configured; no test drives the drain into a fabric endpoint.",
+    "current": "qip-edge-node composes mirror -> relay -> spool writer -> drain and pushes a FabricSink producing to qip-fabricd when QIP_FABRIC_URL is set; tests/fabric_wiring.rs drives the real binary into a fabricd broker and a record reaches both partitions.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:809 fabric sink only when configured; :847 FabricMirror",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:396 FabricSink::deliver",
-      "grep FabricSink in apps/qip-edge-node/tests and qip-acceptance: none"
+      "backend/crates/apps/qip-edge-node/src/main.rs:1094 fabric sink pushed",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:416 FabricSink::deliver",
+      "backend/crates/apps/qip-edge-node/tests/fabric_wiring.rs:193 a_node_given_a_fabric_endpoint_ships_its_journal_to_p2_and_its_chain_to_p1"
     ],
-    "gap": "A test that a record reaches a fabricd partition (and fails if the mirror is removed); a deployed node.",
+    "gap": "A deployed node (execution_nodes = {} in every tfvars, so no node ships to a deployed fabricd). The earlier gap, a test that a record reaches a fabricd partition, is closed (corrected 2026-10-24).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox; node test asserting records reach a broker double",
+    "verification": "cargo test -p qip-edge-node --test fabric_wiring",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Drain and mirror now wired in main; the fabric delivery is untested."
+    "notes": "Lane T1-EDGE 2026-10-24: the evidence line saying no test names FabricSink was stale. Mutation: main.rs:1094 sinks.push( -> drop( fails fabric_wiring with empty topics; restored, passes. Kept PARTIAL for the deployed-node clause."
   },
   {
     "id": "R12-REFLEX-5032",
@@ -913,13 +913,15 @@
   {
     "id": "R12-REFLEX-5040",
     "status": "PARTIAL",
-    "current": "DistilledModel inline in compiled plans (qip-strategy model.rs), admitted only when the trained_models manifest names it (backend/crates/edge/qip-edge/src/cell.rs:3318); test a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose (backend/crates/edge/qip-edge/tests/model_manifest.rs:227).",
+    "current": "DistilledModel inline in compiled plans (qip-strategy model.rs), admitted only when the trained_models manifest names it (backend/crates/edge/qip-edge/src/cell.rs); test a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose (backend/crates/edge/qip-edge/tests/model_manifest.rs). Since 05f17d18 DistilledModel carries an optional ModelCalibration that enters digest() only under a calibration/v1 tag, so no existing digest moves, and the cell's program evaluates through DistilledModel::evaluate, which applies it after the raw score (qip-strategy program.rs). Since 2026-10-24 qip_training::distill::distil fits a calibrated teacher's raw scores and carries the teacher's calibration; an uncalibrated teacher's student carries none and digests as before.",
     "evidence": [
-      "backend/crates/edge/qip-strategy/src/model.rs",
-      "backend/crates/edge/qip-edge/src/cell.rs:3318",
+      "backend/crates/edge/qip-strategy/src/model.rs::DistilledModel::with_calibration, digest",
+      "backend/crates/edge/qip-strategy/tests/strategy.rs a calibrated model digests differently and an uncalibrated one exactly as before",
+      "backend/crates/services/qip-training/src/distill.rs::distil",
+      "backend/crates/services/qip-training/tests/training.rs::a_student_of_a_calibrated_teacher_carries_its_calibration_and_one_of_an_uncalibrated_teacher_carries_none",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs:227"
     ],
-    "gap": "DistilledModel (qip-strategy model.rs) has no calibration: it returns the raw tree or linear score, and there is no calibration table in the struct, its digest or the training distillation (qip-training distill.rs); the kernel manifest producer (model_serving.rs) is still not shipped to nodes by a deployed path. DistilledModel is constructed or matched at over a hundred sites, so a new field changes every model digest and manifest.",
+    "gap": "No production caller of distil yet: grep finds it only in qip-training tests, so no deployed binary produces a calibrated student; and the kernel manifest producer (model_serving.rs) is still not shipped to nodes by a deployed path (the signed release path of ADR 0149 decisions 1-4, R12-CONTRACT-7064 and R12-CONTRACT-7091). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -927,10 +929,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test model_manifest",
+    "verification": "cargo test -p qip-training --test training a_student_of_a_calibrated; cargo test -p qip-strategy; cargo test -p qip-edge --test model_manifest",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: not attempted; the change alters digests that manifests pin. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 did not attempt it; 05f17d18 built the strategy half (ADR 0149 d17); lane T6-MODEL-AGENTS 2026-10-24 built the distil half. Mutations that fired: dropping with_calibration in distil failed 'the calibration is carried'; fitting the calibrated outputs (applied twice) failed 3.352 != 1.426. Kept PARTIAL on the two deployment gaps above."
   },
   {
     "id": "R12-REFLEX-5041",
@@ -942,7 +944,7 @@
       "backend/crates/apps/qip-edge-node/src/main.rs:628",
       "backend/crates/apps/qip-edge-node/tests/strategies.rs"
     ],
-    "gap": "Opportunity detectors do not exist as a concept to consume: PolicyPayload::opportunity_definitions (qip-contracts policy.rs:1016, OpportunityManifest at :626, id to definition digest) is never read outside qip-contracts, nothing produces it, and neither qip-strategy's compiled plan nor qip-edge names a detector (no 'detector' identifier in qip-strategy/src, qip-edge/src or qip-edge-node/src). Closing it needs a detector definition in the compiled plan, a centre producer for the manifest, and the installer gating on it; that is a contract design (an ADR), not a wiring change. Not deployed.",
+    "gap": "Opportunity detectors are defined (ADR 0149 decision 7) as a compiled strategy's named Enter rule, with the definition digest its compiled predicate node; no new IR concept. PolicyPayload::opportunity_definitions has no producer and no reader and stays unproduced; when a centre producer and a StrategyInstaller reader are built together it is a narrowing filter only, never activating a strategy the signed plan lacks. Not deployed. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -953,7 +955,7 @@
     "verification": "cargo test -p qip-edge-node --test strategies",
     "work_item": "",
     "size": "S",
-    "notes": "Corrected 2026-10-18 by lane L09: the triage closure ('StrategyInstaller consumes OpportunityManifest so a plan's detectors deploy only when the manifest names them') presupposed detectors in the plan; there are none, so gating them would gate nothing. The compiled-strategy half of the statement is met by StrategyInstaller and tests/strategies.rs."
+    "notes": "Corrected 2026-10-18 by lane L09; 2026-10-24 lane T6-MODEL-AGENTS restated the gap per ADR 0149 d7. No code changed: the manifest producer and reader, and the test an_unproduced_opportunity_manifest_leaves_every_plan_strategy_installed..., are written together with the reader. Kept PARTIAL."
   },
   {
     "id": "R12-MESH-5042",
@@ -1430,7 +1432,7 @@
       "services/qip-mesh/tests/peer_guarantees.rs::a_node_whose_gate_refuses_a_leg_reserves_nothing_and_its_refusal_reaches_the_coordinator_and_blocks_fire",
       "services/qip-mesh/tests/peer_guarantees.rs::a_node_whose_book_cannot_hold_every_one_of_its_legs_holds_none_of_them_and_declines"
     ],
-    "gap": "Default-on peer mesh; reservation against RegionTable capital.",
+    "gap": "2026-10-24: peer mesh is default-off (spawned only when LISTEN/PEERS variables are set; no committed deployment sets them and no node is deployed); reservation against RegionTable capital not wired. Cited qip-mesh peer.rs path no longer exists; the protocol is in qip-peer.",
     "implemented": true,
     "tested": true,
     "integrated": false,

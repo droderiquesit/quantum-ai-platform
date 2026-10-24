@@ -182,26 +182,27 @@
   },
   {
     "id": "R12-MODEL-4009",
-    "status": "PARTIAL",
-    "current": "FederationStage declares one domain member per asset class the composition root names through set_asset_classes (domain.<class>.global.meso, domain = the class, hypothesis cross-sectional-breadth), fed on every instrument proposition of that class with the classs breadth (share of class members whose short-window mean return is positive), so an instrument rising while its class falls is arbitrated between its tape members and its domain member and the Disagreement and research task record both. covers(\"domain\", ..) reads the family. Regional, horizon and scenario members unchanged.",
+    "status": "COMPLETE",
+    "current": "FederationStage declares one domain member per asset class (domain.<class>.global.meso, hypothesis cross-sectional-breadth), fed on every instrument proposition of that class with the class's breadth, so an instrument rising while its class falls is arbitrated between its tape members and its domain member and the Disagreement and research task record both. Platform::new now names the universe's asset classes to its FederationStage (platform.rs, the `federation:` field of the Platform literal), so every deployed cycle's first pass declares the members: the journaled review of a one-class universe carries domain.equity.global.meso beside the ten others (11 members, 9 views per instrument proposition).",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::new `federation:` literal calls FederationStage::set_asset_classes over the universe asset_classes map",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::set_asset_classes, declare_domain_members, class_breadth, domain_member",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::run (domain_view fed per instrument)",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_its_arbitrations (asserts the domain member in the replayed population)",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::tests::a_domain_member_fed_its_asset_classs_breadth_disagrees_with_the_tape_members_and_is_recorded",
       "backend/crates/services/qip-world-model/src/federation.rs::Federation::arbitrate"
     ],
-    "gap": "platform.rs::understand_federation does not yet call FederationStage::set_asset_classes (InstrumentView carries no asset class and is built by a struct literal there; the call-site patch is in the L14 lane report for L01), so no deployed cycle declares a domain member yet. domain is deliberately not in REQUIRED_FAMILIES until that call lands. Members remain declared statistics rather than fitted models.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib federation_stage",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test symbolic_federation every_cycle_journals && cargo +1.94.1 test -p qip-kernel --lib federation_stage",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L14). Mutation: feeding the domain member a constant breadth of one half failed the test at the views probability (1/3 expected)."
+    "notes": "Re-graded 2026-10-24 (lane T8-RESIDUAL). Earlier mutation (L14): constant breadth of one half failed the stage test. This lane: replacing the class map handed to set_asset_classes with an empty map failed symbolic_federation::every_cycle_journals... at the population count (10 members, expected 11); restored byte-for-byte, passes. The two tests in that file that counted 10 members and 8 views were updated to 11 and 9 because the platform now declares the domain member itself. Remaining caveat, not part of this row's clause: members are declared statistics, not fitted models, and `domain` stays out of REQUIRED_FAMILIES because a process with no universe has no class to cover."
   },
   {
     "id": "R12-MODEL-4010",
@@ -298,7 +299,7 @@
       "backend/crates/apps/qip-cli/tests/agency.rs::every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations",
       "backend/crates/apps/qip-cli/src/agency.rs only caller"
     ],
-    "gap": "Integration beyond the CLI: no deployed binary acts under authority (qip-deepbrain's ambient door only drafts and never runs engine::execute), and the branches come from the request's declared structural models, not qip-twin futures.",
+    "gap": "Integration beyond the CLI is not built, by decision (ADR 0146 decision 2): no deployed binary acts under authority; qip-deepbrain's ambient door only drafts and never runs engine::execute. Branches come from the request's declared structural models and, when the request declares a twin, qip-twin futures (qip-cli agency.rs TwinScenarios, a ScenarioSource). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -309,7 +310,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L10): the simulation-before-authority half is met; kept PARTIAL on integration, as the closure itself said it would stay. Mutation fired: reading only the first branch in counterfactually_supported lets the contested pass Execute."
+    "notes": "Re-graded 2026-10-18 (lane L10): simulation-before-authority is met. 2026-10-24 lane T6-MODEL-AGENTS: gap rewritten per ADR 0146 (the twin-futures clause was stale: TwinScenarios exists); kept PARTIAL because no running deployed path acts under authority, which the ADR keeps true on purpose. Mutation fired earlier: reading only the first branch in counterfactually_supported lets the contested pass Execute."
   },
   {
     "id": "R12-MODEL-4015",
@@ -645,7 +646,7 @@
       "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled defaults false; no app config sets it (grep quantum in apps/*/src/config.rs, main.rs: none)",
       "backend/crates/apps/qip-deepbrain/src/main.rs::with_compute_settings"
     ],
-    "gap": "The synchronous seam is closed and tested (2026-10-18, lane RT-C), but GatewayEntrant has no production caller: SolverBenchmark is driven by tests with a hosted provider and by no binary, quantum_enabled defaults false and no app config sets it, and no app wires a HostedProvider. The refusal in ProviderSolver therefore guards a path no deployed process takes yet, the shape the gateway module doc calls a refusal that guards nothing. Closing needs a composition root that enables the quantum arm with a gateway-fronted provider, which is an owner decision on quantum_enabled and a provider, not a library change.",
+    "gap": "Unchanged on 2026-10-24: GatewayEntrant has no production caller. SolverBenchmark is driven by tests only, quantum_enabled (qip-kernel/src/config.rs) defaults false, no apps/*/src config sets it, and no app wires a HostedProvider. Closing needs an owner decision to enable the quantum arm with a named vendor and its billing (ADR 0006: a quantum path runs only where a measured benefit over the classical baseline is demonstrable). No in-repo slice is left, so nothing was changed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -656,7 +657,7 @@
     "verification": "cd backend && cargo test -p qip-quantum --test solvers a_hosted_provider_is_refused_a_synchronous_solve_and_enters_the_benchmark_only_through_the_gateway && cargo test -p qip-quantum --test hosted a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline",
     "work_item": "",
     "size": "M",
-    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L24 2026-10-18: triage closure (make both QuboSolver impls refuse) read against the code and not applied; ProviderSolver is the hosted benchmark's seam and the gap now names the larger change (an M row, not S). Lane RT-C 2026-10-18: seam closed in code and mutation-verified; kept PARTIAL because the closed seam has no deployed caller (quantum_enabled false everywhere). The hosted.rs test used a loopback test service, never a vendor; the new test uses an in-tree stand-in device with no transport or credential."
+    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L24 2026-10-18: triage closure (make both QuboSolver impls refuse) read against the code and not applied; ProviderSolver is the hosted benchmark's seam and the gap now names the larger change (an M row, not S). Lane RT-C 2026-10-18: seam closed in code and mutation-verified; kept PARTIAL because the closed seam has no deployed caller (quantum_enabled false everywhere). The hosted.rs test used a loopback test service, never a vendor; the new test uses an in-tree stand-in device with no transport or credential. 2026-10-24 (lane T8-RESIDUAL): re-read against the code, no change; graded DESIGN_OPEN."
   },
   {
     "id": "R12-QUANT-4030",
@@ -1934,7 +1935,7 @@
       "backend/crates/runtime/qip-kernel/src/survival.rs::CombinedObligations",
       "backend/crates/services/qip-capital/src/obligations.rs::LedgerObligations"
     ],
-    "gap": "2026-10-19: the emergency reserve is a policy fraction of equity derived by the waterfall (SurvivalPolicy::emergency_reserve_fraction), by decision (ADR 0159 D): a reserve nobody moved is not an observed fact and the ledger books only observed facts, so it is not a ledger account and will not become one. What the ledger contributes is what it observes, margin, collateral and settlement through LedgerObligations. What remains is the obligations route: no binary calls Platform::observe_ledger_obligations, so collateral and ledger settlement read zero in production. That wiring belongs to R12-CAPITAL-4086, not to this row.",
+    "gap": "2026-10-24 (ADR 0159 D): The emergency reserve is a derived policy fraction of equity by decision, not a ledger account (a reserve nobody moved is not an observed fact, and the ledger books only observed facts, ADR 0153). Collateral and settlement read zero in production until a binary feeds Platform::observe_ledger_obligations (grep finds no non-test caller in any binary); that wiring belongs to the obligations-route row R12-CAPITAL-4086, and collateral additionally has no producer because no venue states a margin requirement (ADR 0153 d3).",
     "implemented": false,
     "tested": true,
     "integrated": true,
@@ -1945,7 +1946,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: depends on the ledgerd obligations route in R12-CAPITAL-4086. Kept PARTIAL. Lane W8-159 2026-10-19 (ADR 0159). Gap restated; no grade change."
+    "notes": "Lane W8-159 2026-10-19 (ADR 0159). Lane T4-LEDGER 2026-10-24: re-read against the code, gap re-dated and the missing margin producer named; no code change, no grade change."
   },
   {
     "id": "R12-CAPITAL-4088",
