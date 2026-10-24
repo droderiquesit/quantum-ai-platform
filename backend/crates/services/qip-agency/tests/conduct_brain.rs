@@ -500,3 +500,127 @@ fn a_coordination_pattern_with_no_listed_phrase_is_still_blocked() {
         .expect("a manipulative method is refused behind a clean draft");
     assert!(refused.reason.unwrap_or_default().contains("PumpAndDump"));
 }
+
+fn manifest_gate(records: &[(&str, &str, &str)]) -> ConductGate {
+    #[allow(clippy::unwrap_used)]
+    let manifest = EvidenceManifest::new(
+        records
+            .iter()
+            .map(|(id, source_id, statement)| EvidenceDecl {
+                id: (*id).to_string(),
+                source_id: (*source_id).to_string(),
+                statement: (*statement).to_string(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    basic_gate().with_resolver(std::sync::Arc::new(manifest))
+}
+
+fn failed_checks(gate: &ConductGate, draft: &CommunicationDraft) -> Vec<String> {
+    gate.evaluate(draft)
+        .into_iter()
+        .filter(|r| !r.passed)
+        .map(|r| r.check_name)
+        .collect()
+}
+
+/// ADR 0146 decision 5, R12-AGENCY-1065: an assertion is the claim a citation
+/// carries, and it is checked against the record. Prose is not parsed, so an
+/// honest action description ("Quote 20 lots on venue-a ...") is released when
+/// its citation's claim equals the recorded statement, and a claim the record
+/// does not hold, or evidence the platform holds nothing for, is refused. The
+/// failure prevented is the other way to close the row: a sentence-level
+/// binder that refuses every action sentence as an uncited assertion.
+/// Mutation: make `check_factual_support_resolving` fail content that contains
+/// no citation claim as a substring; the honest draft is refused and the first
+/// assertion fails.
+#[test]
+fn an_honest_action_description_with_a_resolving_cited_claim_is_released_and_an_unresolved_or_mismatched_claim_is_refused()
+ {
+    let recorded = "the published spread is four basis points";
+    let gate = manifest_gate(&[("spread-1", "financial_data", recorded)]);
+    let mut honest = compliant_draft();
+    honest.content = "Quote 20 lots on venue-a at the published spread".to_string();
+    honest.evidence_citations = vec![EvidenceCitation {
+        source_id: "financial_data".to_string(),
+        evidence_id: "spread-1".to_string(),
+        claim: Some(recorded.to_string()),
+        confidence_bps: 9000,
+    }];
+    assert!(
+        !honest.content.contains(recorded),
+        "premise: the content states no sentence equal to the claim, so a release proves prose is not parsed"
+    );
+    assert!(
+        failed_checks(&gate, &honest).is_empty(),
+        "an honest action description with a resolving claim was refused: {:?}",
+        failed_checks(&gate, &honest)
+    );
+
+    let mut mismatched = honest.clone();
+    mismatched.evidence_citations[0].claim =
+        Some("the published spread is four hundred basis points".to_string());
+    assert_eq!(
+        failed_checks(&gate, &mismatched),
+        vec!["factual_support".to_string()],
+        "a claim the record does not hold must fail factual support and nothing else"
+    );
+
+    let mut unresolved = honest.clone();
+    unresolved.evidence_citations[0].evidence_id = "spread-9".to_string();
+    assert!(
+        failed_checks(&gate, &unresolved).contains(&"factual_support".to_string()),
+        "a citation resolving to no record was released"
+    );
+}
+
+/// ADR 0146 decision 5, R12-AGENCY-1069: rumour is structural. A claim whose
+/// evidence id resolves to no record, or whose recorded source is not an
+/// authorised one, is refused whatever source the citation declares; an action
+/// phrase with no hearsay vocabulary is not parsed and is released. The
+/// failure prevented is a citation naming an authorised source for evidence
+/// the record files under a rumour board.
+/// Mutation: make `check_provenance_resolving` compare the citation's declared
+/// source instead of the recorded one; the forged-provenance draft is released
+/// and the second assertion fails.
+#[test]
+fn a_claim_whose_evidence_id_resolves_to_no_record_or_whose_source_is_unauthorised_is_refused_as_rumour_while_an_uncited_action_phrase_alone_is_not_parsed()
+ {
+    let gate = manifest_gate(&[
+        ("wire-1", "news_wire", "the venue published a halt"),
+        ("board-1", "rumour_board", "the venue will publish a halt"),
+    ]);
+    let cite = |evidence_id: &str, source_id: &str, claim: &str| EvidenceCitation {
+        source_id: source_id.to_string(),
+        evidence_id: evidence_id.to_string(),
+        claim: Some(claim.to_string()),
+        confidence_bps: 9000,
+    };
+    let mut sound = compliant_draft();
+    sound.content = "Quote 20 lots on venue-a".to_string();
+    sound.evidence_citations = vec![cite("wire-1", "news_wire", "the venue published a halt")];
+    assert!(
+        failed_checks(&gate, &sound).is_empty(),
+        "premise: a recorded claim from an authorised source is released: {:?}",
+        failed_checks(&gate, &sound)
+    );
+
+    let mut forged = sound.clone();
+    forged.evidence_citations = vec![cite(
+        "board-1",
+        "financial_data",
+        "the venue will publish a halt",
+    )];
+    assert!(
+        failed_checks(&gate, &forged).contains(&"provenance".to_string()),
+        "evidence recorded under an unauthorised source was released on a declared authorised one"
+    );
+
+    let mut unrecorded = sound.clone();
+    unrecorded.evidence_citations = vec![cite("wire-9", "news_wire", "the venue published a halt")];
+    assert!(
+        failed_checks(&gate, &unrecorded).contains(&"provenance".to_string()),
+        "a claim with no recorded counterpart was released"
+    );
+}
