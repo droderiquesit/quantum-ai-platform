@@ -1491,28 +1491,3 @@ resource "google_org_policy_policy" "require_shielded_vm" {
 
   depends_on = [module.services]
 }
-
-# Network Connectivity Center. Off in every environment: `enabled` is a literal
-# here because the root's variables.tf is not where this lane may add a switch,
-# and a hub that joins the five planes is a decision a person takes with a plan
-# in front of them. modules/ncc declares the hub and the spokes; flipping this
-# to true is the plan the register rows R12-GCP-8056 and R12-GCP-10009 ask for.
-module "ncc" {
-  source = "./modules/ncc"
-
-  depends_on = [module.services]
-
-  project_id  = var.project_id
-  environment = var.environment
-  labels      = local.labels
-
-  enabled = false
-
-  vpc_spokes = {
-    reflex      = module.network.reflex_network_id
-    fabric      = module.network.fabric_network_id
-    service     = module.network.service_network_id
-    data        = module.network.data_vpc_id
-    engineering = module.network.engineering_vpc_id
-  }
-}

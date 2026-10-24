@@ -1243,26 +1243,23 @@
   },
   {
     "id": "R12-GCP-8056",
-    "status": "PARTIAL",
-    "current": "infrastructure/terraform/modules/ncc declares google_network_connectivity_hub and a VPC spoke per plane; the root instantiates it with enabled = false and spokes for the reflex, fabric, service, data and engineering networks. Nothing is planned or enabled.",
+    "status": "MISSING",
+    "current": "No google_network_connectivity_* resource in the tree. A gated-off modules/ncc was declared and removed on 2026-10-24 because gcp_placement::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region refuses the declaration itself.",
     "evidence": [
-      "infrastructure/terraform/modules/ncc/main.tf",
-      "infrastructure/terraform/main.tf module \"ncc\"",
-      "infrastructure/terraform/modules/ncc/tests/ncc.tftest.hcl",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_ncc_hub_and_every_spoke_are_gated_on_a_flag_the_root_leaves_false"
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region"
     ],
-    "gap": "2026-10-24: no terraform binary in the lane's session, so ncc.tftest.hcl and terraform validate have not run; networkconnectivity.googleapis.com is not in modules/services; enabling needs a plan shown to a person, and each VPC spoke bills for inter-spoke data.",
-    "implemented": true,
-    "tested": true,
+    "gap": "2026-10-24: ADR 0035 runs one execution node in one region, so there is nothing to join; the guard in gcp_placement.rs refuses a hub even gated off. Needs a new ADR superseding 0035 (hub is billed, owner's decision); then modules/ncc can be declared.",
+    "implemented": false,
+    "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure the_ncc; terraform test in infrastructure/terraform/modules/ncc",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gcp_placement",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 (T5-MESH-INFRA): Mutation: removed the enabled gate from the vpc spoke's for_each, set the root's enabled = true, set the hub count = 1; the test failed each time at the matching assertion; restored byte-for-byte."
+    "notes": "2026-10-24 (T5-MESH-INFRA): a gated-off modules/ncc was written, then reverted in the commit after 44e43380 when the guard failed PR 239; the guard is not edited."
   },
   {
     "id": "R12-GCP-8057",
