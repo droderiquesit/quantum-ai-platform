@@ -63,9 +63,12 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs ModelRegistered, resume_model_registrations, Platform::journal_model_registry, Platform::registered_model_cards",
       "backend/crates/apps/qip-deepbrain/src/evolution.rs maybe_learn: restore_registry before the round, journal_model_registry after it",
       "backend/crates/apps/qip-deepbrain/src/learning.rs LearningDesk::restore_registry",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs evolution::tests::a_restarted_node_rebuilds_every_registered_card_and_its_evaluations_from_the_log (file-backed log; a second process gets every card back with its evaluations, including unpromoted ones; a later fit does not overwrite them)"
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs evolution::tests::a_restarted_node_rebuilds_every_registered_card_and_its_evaluations_from_the_log (file-backed log; a second process gets every card back with its evaluations, including unpromoted ones; a later fit does not overwrite them)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs learning::tests::a_restarted_desk_restores_its_unpromoted_cards_and_still_promotes_a_better_candidate",
+      "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_card_is_journaled_when_registered_and_on_a_kept_change_but_not_on_drift_alone",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs a_registered_model_keeps_all_six_attributes, an_alias_move_names_its_mover_and_its_evidence, a_never_evaluated_model_cannot_drive_a_decision (the requirement's unit test, by combined coverage; the skeptic's mutation of the never-evaluated refusal in registry.rs fails the last)"
     ],
-    "gap": "2026-10-24 (lane L2-INTEL): the closure the gap named is built: registrations and evaluations are journaled and a restarted deep brain rebuilds its registry from them. Promotion awaits the independent skeptic.",
+    "gap": "2026-10-24 (lane L2-INTEL): first skeptic REFUTED cb3e0a88 for a regression it introduced, now fixed: restore_registry registered the log's production card, and since the desk holds no artifact to rescore a restored incumbent, every later candidate on that subject was refused after a restart. Production cards are no longer restored (the promoted set is the platform's, rebuilt from its promotion records; the card stays on the log), and a test restarts after a promotion and asserts a better candidate is still promoted. Its growth finding is fixed too: a drift reading alone no longer writes a record (the desk re-measures every earlier fit each round). Remaining known limits: a restored card's drift is its value at its last kept change and is not re-measured (the desk's drift reference for it is not restored); a round that errors after registering is journaled by the next successful round, so a crash in between loses that round's cards; the registry itself is unbounded, as before. Promotion awaits a second skeptic.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -73,10 +76,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_restarted_node_rebuilds_every_registered_card_and_its_evaluations_from_the_log && cargo +1.94.1 test -p qip-ai --test model_infrastructure && cargo +1.94.1 test -p qip-kernel --test promotion_durability",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-ai --test model_infrastructure && cargo +1.94.1 test -p qip-deepbrain --lib -- a_restarted_node_rebuilds_every_registered_card_and_its_evaluations_from_the_log a_restarted_desk_restores_its_unpromoted_cards_and_still_promotes_a_better_candidate && cargo +1.94.1 test -p qip-kernel --test promotion_durability",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap narrowed. Promoted versions with evaluation evidence, mover and displacement now proven durable; mutation: journal the promotion with evidence None -> 'came back without the evaluation it was promoted on'; restored and passing. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the journal_model_registry call in maybe_learn deleted; the restore_registry call deleted; the fit-count continuation in restore_registry disabled (a restarted fit reused a restored version and replaced its card). qip-kernel, qip-deepbrain and qip-ai: 88 test binaries ok, none failed."
+    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap narrowed. Promoted versions with evaluation evidence, mover and displacement now proven durable; mutation: journal the promotion with evidence None -> 'came back without the evaluation it was promoted on'; restored and passing. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the journal_model_registry call in maybe_learn deleted; the restore_registry call deleted; the fit-count continuation in restore_registry disabled (a restarted fit reused a restored version and replaced its card). qip-kernel, qip-deepbrain and qip-ai: 88 test binaries ok, none failed. 2026-10-24 L2-INTEL second pass: mutations fired, each restored by copy and cmp: restoring production cards (stage condition dropped) fails a_restarted_desk_restores_its_unpromoted_cards_and_still_promotes_a_better_candidate; whole-card comparison instead of same_but_drift fails a_card_is_journaled_when_registered_and_on_a_kept_change_but_not_on_drift_alone. qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 test binaries ok."
   },
   {
     "id": "R12-WORLD-9004",

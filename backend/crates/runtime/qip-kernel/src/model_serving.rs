@@ -100,6 +100,13 @@ impl EventBody for ModelRegistered {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// Whether two cards differ only in their drift reading.
+fn same_but_drift(a: &qip_ai::registry::ModelCard, b: &qip_ai::registry::ModelCard) -> bool {
+    let mut b = b.clone();
+    b.drift_score = a.drift_score;
+    *a == b
+}
+
 /// Every card the log's registration records hold, the newest per
 /// reference, for a restarted process to rebuild from.
 pub(crate) fn resume_model_registrations(
@@ -625,8 +632,8 @@ fn apply_promotion(promoted: &mut BTreeMap<String, ModelPromotion>, record: Mode
 
 impl Platform {
     /// Journal every card in `registry` that is new or has changed since this
-    /// process last journaled it — a registration, an evaluation, a drift
-    /// reading, a stage or alias move — and return how many were written
+    /// process last journaled it — a registration, an evaluation, a stage or
+    /// alias move, a limitation — and return how many were written
     /// (R12-MODEL-9003). The deep brain calls it after each learning round,
     /// so the registry it rebuilds empty at start can be refilled from the
     /// log by [`Self::registered_model_cards`]. A card is written before the
@@ -640,7 +647,16 @@ impl Platform {
         let mut written = 0;
         for card in registry.iter() {
             let reference = card.reference();
-            if self.journaled_cards.get(&reference) == Some(card) {
+            // A drift reading alone is not a new record. The desk re-measures
+            // every earlier fit on a subject each round, so journaling each
+            // reading would grow the never-evicted Learn group with the
+            // square of the rounds; drift is a monitoring figure the next
+            // round re-measures, not part of what the registry must keep.
+            if self
+                .journaled_cards
+                .get(&reference)
+                .is_some_and(|journaled| same_but_drift(journaled, card))
+            {
                 continue;
             }
             self.journal_record(

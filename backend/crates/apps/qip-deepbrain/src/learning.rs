@@ -883,7 +883,16 @@ impl LearningDesk {
     /// Refill the registry from the cards the platform's log holds, once
     /// per process, and return how many were registered (R12-MODEL-9003).
     /// A card already in the registry is left as it is: the in-memory card
-    /// is never older than the log's. Paired with
+    /// is never older than the log's.
+    ///
+    /// A card the log last saw in production is not registered. What is in
+    /// production is the platform's promoted set, rebuilt from its own
+    /// promotion records, and this desk holds no artifact to rescore a
+    /// restored incumbent with; registering it would make every later
+    /// candidate on its subject face an incumbent nobody can score, and
+    /// `promote_candidate` refuses that, so a restart would have stopped
+    /// promotion on the subject for good. Its version still feeds the fit
+    /// count below, and its card stays on the log. Paired with
     /// `Platform::journal_model_registry` after every round, this is what
     /// makes a registered-but-unpromoted version and its evaluations survive
     /// the restart that rebuilds this desk's registry empty.
@@ -907,7 +916,9 @@ impl LearningDesk {
             {
                 self.fits = self.fits.max(fit);
             }
-            if self.registry.get(&card.reference()).is_none() {
+            if card.stage != ModelStage::Production
+                && self.registry.get(&card.reference()).is_none()
+            {
                 self.registry.register(card.clone());
                 restored += 1;
             }
@@ -2070,6 +2081,65 @@ mod tests {
         assert!(
             desk.promoted_artifacts.contains_key(&first_reference),
             "the reactivated model cannot be rescored by the next candidate"
+        );
+        Ok(())
+    }
+
+    /// R12-MODEL-9003: restoring the registry from the log must not stop a
+    /// restarted desk from promoting. The first cut restored the production
+    /// card too; this desk holds no artifact to rescore a restored incumbent,
+    /// so every later candidate on the subject was refused for as long as
+    /// the process ran (an independent skeptic found it). The restarted desk
+    /// gets the unpromoted cards back and still promotes the same better
+    /// candidate a desk that never restarted promotes.
+    ///
+    /// Mutation: register production cards in `restore_registry` (drop the
+    /// stage condition) — the restarted desk's candidate is refused against
+    /// an incumbent it cannot score and the promotion assertion fails.
+    #[test]
+    fn a_restarted_desk_restores_its_unpromoted_cards_and_still_promotes_a_better_candidate()
+    -> Result<()> {
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+        desk.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
+        let first = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a first candidate"))?;
+        assert!(
+            matches!(first, PromotionOutcome::Promoted { .. }),
+            "premise: the first fit was promoted: {}",
+            first.describe()
+        );
+        assert!(platform.journal_model_registry(desk.registry(), at())? > 0);
+        let unpromoted: Vec<String> = desk
+            .registry()
+            .iter()
+            .filter(|card| card.stage != ModelStage::Production)
+            .map(ModelCard::reference)
+            .collect();
+        assert!(
+            platform.registered_model_cards().count() > unpromoted.len(),
+            "premise: the log holds the production card as well"
+        );
+
+        let bigger = super::tests_support::learnable(1_200);
+        let mut restarted = learning_desk();
+        assert_eq!(restarted.restore_registry(&platform), unpromoted.len());
+        for reference in &unpromoted {
+            assert!(
+                restarted.registry().get(reference).is_some(),
+                "{reference} did not come back"
+            );
+        }
+        restarted.maybe_learn(&subject(), &bigger, REGIME, 3, at())?;
+        let after = restarted
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate after the restart"))?;
+        assert!(
+            matches!(after, PromotionOutcome::Promoted { .. }),
+            "the restarted desk could not promote: {}",
+            after.describe()
         );
         Ok(())
     }

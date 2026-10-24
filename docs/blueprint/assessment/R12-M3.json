@@ -2392,13 +2392,16 @@
   {
     "id": "R12-AMBIENT-3104",
     "status": "PARTIAL",
-    "current": "backend/crates/apps/qip-deepbrain/src/research.rs:290 cheapest_viable prices a re-sweep or the class's declared acquisition per research gap; admit() creates an InfoRequest (backend/crates/apps/qip-deepbrain/src/research.rs:760)",
+    "current": "VOI is priced for research gaps (cheapest_viable over a re-sweep and the class's declared acquisition, admitted as an InfoRequest), for the federation's own questions (R12-AMBIENT-10093), and since 2026-10-24 for DECIDE's uncertain decisions: stage_decide records a DecisionUncertainty for every proposed leg whose thesis conviction is at or below one half (uncertainty = 1 - |conviction| >= DECISION_UNCERTAINTY_FLOOR), with the leg's notional as the value at stake and the thesis claim's resolution instant as the deadline; the deep brain's research sweep (ResearchLoop::admit_decision_uncertainties, beside admit_federation_requests in sweep_over) turns each into an InfoRequest ranked with every other candidate, choosing the cheapest viable observation: a re-sweep of the subject's next price, the series the claim resolves against, before the declared acquisition of a data gap.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/research.rs:812 a_gap_with_economic_value_launches_on_the_product_rank",
       "backend/crates/apps/qip-deepbrain/tests/research.rs:171 a_gap_worth_less_than_its_cheapest_observation_launches_no_information_request",
-      "backend/crates/apps/qip-deepbrain/src/node.rs:450 maybe_sweep runs in the deep brain run loop"
+      "backend/crates/apps/qip-deepbrain/src/node.rs:450 maybe_sweep runs in the deep brain run loop",
+      "backend/crates/runtime/qip-kernel/src/platform.rs DecisionUncertainty, DECISION_UNCERTAINTY_FLOOR, decision_uncertainties (called in stage_decide), Platform::decision_uncertainties",
+      "backend/crates/apps/qip-deepbrain/src/research.rs ResearchLoop::admit_decision_uncertainties",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::an_uncertain_sized_decision_becomes_an_information_request_at_the_cheapest_observation (a real cycle sizes an uncertain leg; the sweep launches a dec- request at the re-sweep cost with the decision's uncertainty and subject)"
     ],
-    "gap": "VOI is priced for research gaps, and since 2026-10-24 for the federation's own questions (R12-AMBIENT-10093: Platform::federation_information_requests admitted by ResearchLoop::admit_federation_requests). Still missing: DECIDE emits no decision-uncertainty gap: grep -rn 'decision_uncertainty|DecisionUncertainty' backend/crates finds nothing, platform.rs reads a proposal's confidence and nothing carries a low-confidence decision, its deadline and its value at stake to the research intake. That needs a new intake type in qip-kernel (platform.rs, outside this lane's territory) and a hand-off in qip-deepbrain node.rs, which IMPL-B is editing under ADR 0145. Corrected 2026-10-24.",
+    "gap": "2026-10-24 (lane L2-INTEL): the missing half the gap named is built: DECIDE emits the decision-uncertainty intake and the deep brain prices it. Promotion awaits the independent skeptic.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2406,10 +2409,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research an_uncertain_sized_decision_becomes_an_information_request_at_the_cheapest_observation",
     "work_item": "",
     "size": "L",
-    "notes": "Checked 2026-10-18 against research.rs admit; 2026-10-24 lane T6-MODEL-AGENTS graded it LARGE_SPLITTABLE (docs/blueprint/lanes/T6-MODEL-AGENTS-triage.json) and left it to the ADR 0145 lane to avoid a conflicting edit of node.rs. Kept PARTIAL."
+    "notes": "Checked 2026-10-18 against research.rs admit; 2026-10-24 lane T6-MODEL-AGENTS graded it LARGE_SPLITTABLE (docs/blueprint/lanes/T6-MODEL-AGENTS-triage.json) and left it to the ADR 0145 lane to avoid a conflicting edit of node.rs. Kept PARTIAL. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the admit_decision_uncertainties call in sweep_over deleted (no dec- request); the decision_uncertainties assignment in stage_decide deleted (premise fails); the floor comparison inverted (premise fails)."
   },
   {
     "id": "R12-DATA-3105",

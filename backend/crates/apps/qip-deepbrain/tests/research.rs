@@ -1868,3 +1868,67 @@ fn a_class_with_no_attributed_exposure_proposes_no_specialist() {
         "only the class with money on its own thesis proposes a specialist: {round:?}"
     );
 }
+
+/// R12-AMBIENT-3104, blueprint §9.10: a decision DECIDE sized while it was no
+/// surer of it than a coin becomes an information request the sweep ranks,
+/// at the cheapest observation that discriminates — a re-sweep of the
+/// subject's next price, the series its claim resolves against. Before this
+/// DECIDE emitted nothing a research intake could read: VOI was priced for
+/// research gaps and the federation's questions, never for the platform's own
+/// uncertain decisions.
+///
+/// Mutations: drop the `admit_decision_uncertainties` call in `sweep_over` —
+/// no `dec-` request exists; stop assigning `decision_uncertainties` in
+/// `stage_decide` — the premise that the cycle handed one over fails.
+#[test]
+fn an_uncertain_sized_decision_becomes_an_information_request_at_the_cheapest_observation() {
+    let mut platform = platform_holding_a_disputed_instrument();
+    let report = platform.run_cycle(start());
+    let decisions = platform.decision_uncertainties().to_vec();
+    assert!(
+        !decisions.is_empty(),
+        "premise: the cycle sized a decision it was unsure of:\n{}",
+        report.summarise()
+    );
+    let decision = &decisions[0];
+    assert!(
+        decision.uncertainty >= qip_kernel::platform::DECISION_UNCERTAINTY_FLOOR,
+        "premise: only uncertain decisions are handed over: {decision:?}"
+    );
+    assert!(decision.value_at_stake.is_positive(), "{decision:?}");
+
+    let mut research = research(coverage(&[]));
+    let round = research
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(round.decisions_asked >= 1, "{round:?}");
+    let id = format!("dec-{}", decision.hypothesis_id);
+    let request = research
+        .info_requests()
+        .find(|r| r.id() == id)
+        .unwrap_or_else(|| panic!("no request for the uncertain decision: {round:?}"));
+    // The cheapest discriminating observation, the re-sweep, was chosen
+    // over the declared acquisition, and the sweep's budget bought it.
+    let resweep = qip_deepbrain::research::RESWEEP_COST_BP;
+    assert_eq!(request.criteria().acquisition_cost_bp, resweep);
+    assert_eq!(
+        request.status(),
+        qip_contracts::ambient::AcquisitionStatus::InProgress,
+        "{round:?}"
+    );
+    // The uncertainty it reduces is the decision's own, as left after the
+    // one purchase (`InfoRequest::record_acquisition` keeps `1 - cost` of it).
+    let at_creation = (decision.uncertainty * 10_000.0).round() as u64;
+    let after_purchase = at_creation * u64::from(10_000 - resweep) / 10_000;
+    assert_eq!(
+        u64::from(request.criteria().uncertainty_reduction_bp),
+        after_purchase
+    );
+    assert!(
+        round
+            .scouted
+            .iter()
+            .any(|scout| scout.request_id == id && scout.entities == vec![decision.subject.clone()]),
+        "the launched request names the decision's subject: {round:?}"
+    );
+}
