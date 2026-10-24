@@ -2922,7 +2922,7 @@
   },
   {
     "id": "R12-RES-10130",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "With the centre silent the node runs the same passes, sends the same orders and refuses the same; on the deep brain, gate_strategic_service takes the strategic service down when the node is unready, every stage still runs, and the lattice's questions wait in its bounded backlog until the service returns. The check (node trades identically with the centre silent) is met and the backlog clause is tested.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:350",
@@ -2930,7 +2930,7 @@
       "backend/crates/apps/qip-deepbrain/src/node.rs:882 a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs",
       "backend/crates/runtime/qip-kernel/tests/now_lattice.rs:339 with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when a test drives the run loop (or its step) with a halted or stalled NodeStatus and asserts the lattice backlog queues, failing when node.rs:490 is removed, and the outage test runs through DecisionLoop::turn.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2941,7 +2941,7 @@
     "verification": "cargo test -p qip-edge-node --test reasoning_outage; cargo test -p qip-deepbrain --lib a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs; cargo test -p qip-kernel --test now_lattice with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice."
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice. AUDIT-4 2026-10-24: regraded, the deep-brain half is proven only on the function (gate_strategic_service called directly in node.rs tests); deleting its one call in the shipped run loop (node.rs:490) fails no test, so a running deep brain could keep the strategic service up through an outage unnoticed. The edge-node half repeats REFLEX-5029: reasoning_outage drives MeshLink::exchange, which the shipped node never calls."
   },
   {
     "id": "R12-RES-10131",
@@ -3057,7 +3057,7 @@
   },
   {
     "id": "R12-FINOPS-10136",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-cost-router's ComputeLedger carries an Attribution (strategy, data source, region; each optional and reported as 'unattributed' when unknown) and exposes entries(): every charge with its strategy, model (from the rung's ModelTier, 'no-model' for deterministic rungs), data-source and region keys. report_by(ledgers, CostDimension) sums spend per key exactly, read off the entries. The kernel's per-cycle ledger (Platform::charge_cycle) is attributed to the platform's region and to no strategy or source, because a cycle's compute serves every strategy it looked at.",
     "evidence": [
       "backend/crates/services/qip-cost-router/src/ledger.rs:81 Attribution",
@@ -3067,7 +3067,7 @@
       "backend/crates/services/qip-cost-router/tests/attribution.rs each_charge_carries_strategy_model_source_and_region_and_the_rollup_sums_per_strategy",
       "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:741 a_cycles_bill_is_attributed_to_its_region_and_reported_per_region"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when a shipped binary reports cost by dimension: a production caller of qip_cost_router::report_by (an api route, qip-cli command or journaled event) over the ledgers a cycle or decision actually opened, and production code that attributes a ledger to a strategy and to a data source (today only CostAttribution::region(HOME_REGION) in Platform::charge_cycle sets any key), or the requirement is narrowed to 'carries keys'.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3080,7 +3080,7 @@
     "verification": "cargo test -p qip-cost-router --test attribution && cargo test -p qip-kernel --test platform_outcomes a_cycles_bill_is_attributed_to_its_region_and_reported_per_region",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18. Mutations: dropping with_attribution in charge_cycle fails the kernel test (region unattributed); making entries() ignore the ledger's strategy fails the cost-router test at the strategy key. Both restored. Strategy and data-source keys are populated only where a ledger is opened for one decision about one strategy; the cycle ledger honestly reports them as unattributed rather than splitting a shared bill."
+    "notes": "Lane L24 2026-10-18. Mutations: dropping with_attribution in charge_cycle fails the kernel test (region unattributed); making entries() ignore the ledger's strategy fails the cost-router test at the strategy key. Both restored. Strategy and data-source keys are populated only where a ledger is opened for one decision about one strategy; the cycle ledger honestly reports them as unattributed rather than splitting a shared bill. AUDIT-4 2026-10-24: regraded, report_by and CostDimension have no caller outside qip-cost-router and tests; the only production attribution is the region on the cycle ledger (platform.rs:11859), and that ledger is discarded after total_cost(). Nothing in a shipped binary reports cost per strategy, model, data source or region. The attribution and kernel tests are real and mutation-checked (dropping with_attribution fails platform_outcomes.rs:819)."
   },
   {
     "id": "R12-FINOPS-10137",

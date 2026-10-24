@@ -2564,7 +2564,7 @@
   },
   {
     "id": "R12-GCP-8114",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Venue credential is readable only by the execution node and only where the ceiling allows; Cloud Run services are internal and hold no venue path; order placement exists only in the edge cell.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:258 the_venue_credential_is_unreadable_where_live_trading_is_impossible",
@@ -2573,7 +2573,7 @@
       "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::the_cloud_run_module_refuses_an_execution_plane_and_no_catalogue_workload_hosts_the_edge_node",
       "infrastructure/terraform/modules/cloudrun/tests/plane.tftest.hcl"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when no Cloud Run identity can ever be granted the venue credential: remove the venue_credential_reader grant to module.cloud_run[\"fastbrain\"] (main.tf:419, modules/secrets/main.tf:187) so only the execution node's service account is bound under the same ceiling predicate, and invert the acceptance test the_venue_credential_is_bound_to_the_fast_brain_and_only_where_the_ceiling_permits (infrastructure.rs:4853) to forbid any Cloud Run reader.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2584,7 +2584,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test workload_identity; cd infrastructure/terraform/modules/cloudrun && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "Tested 2026-10-18 by an acceptance scan of modules/cloudrun/variables.tf's plane validation and of catalogue.tf, and by a terraform test that plans the refusal (terraform 1.9.8, checksum-verified: `Success! 2 passed, 0 failed.`; with `execution` added to the admitted planes the refusal run failed). Mutations, restored: `execution` admitted; the first catalogue binary renamed qip-edge-node."
+    "notes": "Tested 2026-10-18 by an acceptance scan of modules/cloudrun/variables.tf's plane validation and of catalogue.tf, and by a terraform test that plans the refusal (terraform 1.9.8, checksum-verified: `Success! 2 passed, 0 failed.`; with `execution` added to the admitted planes the refusal run failed). Mutations, restored: `execution` admitted; the first catalogue binary renamed qip-edge-node. AUDIT-4 2026-10-24: regraded, the requirement is that no Cloud Run workload can read the venue credential and only the execution node can. The root names the fast brain's Cloud Run account as the credential's reader (main.tf:419), and an acceptance test pins that binding; the grant has count 0 in every committed environment because the ceiling is paper, so nothing is readable today, but where a ceiling reached a venue the Cloud Run account would hold it. The cited tests and the plane-validation mutation (adding execution to the admitted planes fails workload_identity.rs:142) are real."
   },
   {
     "id": "R12-GCP-8115",
@@ -2670,14 +2670,14 @@
   },
   {
     "id": "R12-GCP-8119",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "The one Cloud Run hop (console to API) is IAM-authenticated: the portal's identity token audience is QIP_API_AUDIENCE, which the committed portal manifest now sets to the API's own run.app URL, equal to the URL it dials and to the one modules/cloudrun derives from the project number and region. No Rust workload dials another Cloud Run service.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/console_route.rs every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
       "infrastructure/gitops/envs/dev/portal.yaml QIP_API_AUDIENCE",
       "frontend/portal/src/lib/server/upstream.ts AUDIENCE_VARIABLE"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when an acceptance test asserts the clauses the check names and the named test does not: no execution, broker or ledger machine and no Fabric or Reflex workload carries a service-mesh sidecar or mesh membership, and the warm-service client in the Cloud Run hop enforces a timeout and a breaker (qip-transport breaker.rs) on the console-to-API call; or the requirement is reinterpreted by an ADR that withdraws the mesh clauses.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2688,7 +2688,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test console_route -- every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 (lane L08). The register text claimed the audience was minted against the named-invoker binding; the manifest set no audience until this change, see R12-GCP-8055. The audience equals the derived URL asserted per environment against its tfvars project_number and region. Same mutations as R12-GCP-8055. The test covers environments that carry a portal manifest (dev only)."
+    "notes": "Re-graded 2026-10-18 (lane L08). The register text claimed the audience was minted against the named-invoker binding; the manifest set no audience until this change, see R12-GCP-8055. The audience equals the derived URL asserted per environment against its tfvars project_number and region. Same mutations as R12-GCP-8055. The test covers environments that carry a portal manifest (dev only). AUDIT-4 2026-10-24: regraded, the named console_route test proves only the IAM identity-token audience of the one Cloud Run hop, the ADR 0112 substitute for mTLS, and it fails when the portal's QIP_API_AUDIENCE is changed (console_route.rs:881). No test asserts that Fabric or Reflex traffic stays out of mesh sidecars or that warm-service clients enforce timeouts and breakers, which is what the requirement and its check say."
   },
   {
     "id": "R12-DATA-8120",
