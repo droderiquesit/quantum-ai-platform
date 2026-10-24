@@ -1,0 +1,224 @@
+{
+ "generated": "2026-10-24",
+ "method": "Same score as next40-2026-10-24.json at c75e7698, excluding top100 and next40 rows, rows a lane dated 2026-10-24, and (stricter) any row whose gap names a deployment, KMS, an ADR or an owner decision: the top-100 lanes found those blockers on most of the rows they could not close.",
+ "lanes": [
+  {
+   "lane": "M1-KERNEL-EDGE",
+   "rows": [
+    {
+     "score": 9.5,
+     "id": "R12-EVENT-5084",
+     "status": "PARTIAL",
+     "file": "R12-M5.json",
+     "adr": 151,
+     "w9lane": ""
+    },
+    {
+     "score": 9.5,
+     "id": "R12-RES-7095",
+     "status": "PARTIAL",
+     "file": "R12-M7.json",
+     "adr": 154,
+     "w9lane": ""
+    },
+    {
+     "score": 9.5,
+     "id": "R12-RES-7103",
+     "status": "PARTIAL",
+     "file": "R12-M7.json",
+     "adr": null,
+     "w9lane": "W9-EDGE"
+    },
+    {
+     "score": 9.5,
+     "id": "R12-RISK-4112",
+     "status": "PARTIAL",
+     "file": "R12-M4.json",
+     "adr": null,
+     "w9lane": "W9-KERNEL-B"
+    },
+    {
+     "score": 9.5,
+     "id": "R12-RISK-4115",
+     "status": "PARTIAL",
+     "file": "R12-M4.json",
+     "adr": null,
+     "w9lane": "W9-KERNEL-B"
+    },
+    {
+     "score": 9.5,
+     "id": "R12-SEC-9129",
+     "status": "PARTIAL",
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-B"
+    },
+    {
+     "score": 9.5,
+     "id": "R12-SEC-9134",
+     "status": "PARTIAL",
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-B"
+    },
+    {
+     "score": 9.5,
+     "id": "R12-TICK-2050",
+     "status": "PARTIAL",
+     "file": "R12-M2.json",
+     "adr": 151,
+     "w9lane": ""
+    },
+    {
+     "score": 9,
+     "id": "R12-EVENT-5089",
+     "status": "PARTIAL",
+     "file": "R12-M5.json",
+     "adr": null,
+     "w9lane": "W9-KERNEL-A"
+    },
+    {
+     "score": 9,
+     "id": "R12-EXEC-1169",
+     "status": "PARTIAL",
+     "file": "R12-M1.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-A"
+    },
+    {
+     "score": 9,
+     "id": "R12-EXEC-5074",
+     "status": "PARTIAL",
+     "file": "R12-M5.json",
+     "adr": null,
+     "w9lane": "W9-EDGE"
+    },
+    {
+     "score": 9,
+     "id": "R12-FINOPS-8040",
+     "status": "PARTIAL",
+     "file": "R12-G1.json",
+     "adr": null,
+     "w9lane": "W9-ACCEPT-A"
+    },
+    {
+     "score": 9,
+     "id": "R12-GCP-7002",
+     "status": "PARTIAL",
+     "file": "R12-M7.json",
+     "adr": null,
+     "w9lane": "W9-EDGE-NODE"
+    }
+   ]
+  },
+  {
+   "lane": "M2-DATA-AGENTS",
+   "rows": [
+    {
+     "score": 9.5,
+     "id": "R12-EVID-2037",
+     "status": "PARTIAL",
+     "file": "R12-M2.json",
+     "adr": 157,
+     "w9lane": ""
+    },
+    {
+     "score": 9.5,
+     "id": "R12-EXPAND-6057",
+     "status": "PARTIAL",
+     "file": "R12-M6.json",
+     "adr": 152,
+     "w9lane": ""
+    },
+    {
+     "score": 9.5,
+     "id": "R12-EXPAND-6061",
+     "status": "PARTIAL",
+     "file": "R12-M6.json",
+     "adr": 152,
+     "w9lane": ""
+    },
+    {
+     "score": 9.5,
+     "id": "R12-EXPAND-6062",
+     "status": "PARTIAL",
+     "file": "R12-M6.json",
+     "adr": 158,
+     "w9lane": ""
+    },
+    {
+     "score": 9.5,
+     "id": "R12-QUANT-4032",
+     "status": "PARTIAL",
+     "file": "R12-M4.json",
+     "adr": 150,
+     "w9lane": ""
+    },
+    {
+     "score": 9.5,
+     "id": "R12-QUANT-4040",
+     "status": "PARTIAL",
+     "file": "R12-M4.json",
+     "adr": 150,
+     "w9lane": ""
+    },
+    {
+     "score": 9.5,
+     "id": "R12-REFLEX-10205",
+     "status": "PARTIAL",
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-STORAGE-OBS-RISK"
+    },
+    {
+     "score": 9.5,
+     "id": "R12-RES-9171",
+     "status": "PARTIAL",
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-INFRA-PIPE"
+    },
+    {
+     "score": 9.5,
+     "id": "R12-RISK-4103",
+     "status": "PARTIAL",
+     "file": "R12-M4.json",
+     "adr": 146,
+     "w9lane": ""
+    },
+    {
+     "score": 9.5,
+     "id": "R12-TICK-2045",
+     "status": "PARTIAL",
+     "file": "R12-M2.json",
+     "adr": 157,
+     "w9lane": ""
+    },
+    {
+     "score": 9,
+     "id": "R12-API-9057",
+     "status": "PARTIAL",
+     "file": "R12-G2.json",
+     "adr": null,
+     "w9lane": "W9-INFRA-TF-A"
+    },
+    {
+     "score": 9,
+     "id": "R12-EVID-1200",
+     "status": "PARTIAL",
+     "file": "R12-M1.json",
+     "adr": null,
+     "w9lane": "W9-DATA"
+    },
+    {
+     "score": 9,
+     "id": "R12-FINOPS-10138",
+     "status": "PARTIAL",
+     "file": "R12-G3.json",
+     "adr": null,
+     "w9lane": "W9-EVENTS"
+    }
+   ]
+  }
+ ]
+}
