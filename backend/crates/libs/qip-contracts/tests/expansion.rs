@@ -45,6 +45,14 @@ fn attribution() -> Value {
     })
 }
 
+/// The attribution with an observational identification, the variant that
+/// carries a field of its own.
+fn observational_attribution() -> Value {
+    let mut v = attribution();
+    v["identification"] = json!({"observational": {"strategy": "difference in differences"}});
+    v
+}
+
 fn gap() -> Value {
     json!({
         "observation": "surprise on CPI", "affected_domains": ["macro"], "evidence": ["ev-1"],
@@ -112,11 +120,7 @@ fn an_attribution_missing_a_nested_required_field_is_refused() {
             .map_err(|e| e.to_string())
             .and_then(|a| a.validate().map_err(|e| e.message().to_string()))
     };
-    let observational = {
-        let mut v = attribution();
-        v["identification"] = json!({"observational": {"strategy": "difference in differences"}});
-        v
-    };
+    let observational = observational_attribution();
     // Premise: both complete fixtures are accepted, so each refusal below is
     // the missing field's and not a fixture that never decoded.
     assert!(
@@ -434,6 +438,18 @@ fn every_decoded_record_encodes_back_to_the_same_document_field_for_field() {
             )
             .expect("e")
         }),
+        // The experiment fixture never carries `Identification::Observational`,
+        // so its `strategy` was the one attribution field no round trip saw.
+        (
+            "observational attribution",
+            observational_attribution(),
+            |b| {
+                serde_json::to_value(
+                    serde_json::from_slice::<EffectAttribution>(b).expect("attribution decodes"),
+                )
+                .expect("e")
+            },
+        ),
     ];
     for (name, valid, round_trip) in encoders {
         let fields = valid.as_object().expect("object");
