@@ -4019,11 +4019,12 @@
   {
     "id": "R12-RES-9177",
     "status": "PARTIAL",
-    "current": "modules/registry declares an optional secondary DOCKER repository (secondary.tf google_artifact_registry_repository.images_secondary) in var.secondary_region with the primary's discipline (immutable tags, dry-run cleanup, CI writer only), refused at plan when the secondary region equals the primary's; null by default. tests/secondary.tftest.hcl plans none by default, one when a region is named, and refuses the same region. Existing nodes keep their pulled images (the execution node boots a baked image; Cloud Run keeps running revisions).",
+    "current": "modules/registry declares an optional secondary DOCKER repository (secondary.tf google_artifact_registry_repository.images_secondary) in var.secondary_region with the primary's discipline (immutable tags, dry-run cleanup, CI writer only), encrypted under its own customer-managed key: a key ring and key in var.secondary_region (Artifact Registry takes a key only from the repository's location), ninety-day rotation at the root's protection level, the Artifact Registry service agent's encrypter grant ahead of the create, all under the same gate, refused at plan when the secondary region equals the primary's; null by default. tests/secondary.tftest.hcl plans none by default, one when a region is named, and refuses the same region. Existing nodes keep their pulled images (the execution node boots a baked image; Cloud Run keeps running revisions).",
     "evidence": [
       "infrastructure/terraform/modules/registry/secondary.tf",
       "infrastructure/terraform/modules/registry/variables.tf secondary_region",
-      "infrastructure/terraform/modules/registry/tests/secondary.tftest.hcl"
+      "infrastructure/terraform/modules/registry/tests/secondary.tftest.hcl",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs::no_data_store_beyond_those_the_register_records_is_left_without_a_customer_managed_key"
     ],
     "gap": "2026-10-24 (lane L6): (1) the root module does not pass secondary_region (wiring it needs a variable in infrastructure/terraform/variables.tf, a protected path) and no environment names one; (2) nothing copies a promoted digest into the secondary repository, and no prod promotion checks the digest is there: that belongs to the release pipeline (deploy.yml/Kargo, protected) and prod is never promoted from a workflow today; (3) no real plan.",
     "implemented": true,
@@ -4036,7 +4037,7 @@
     "verification": "scratch copy of infrastructure/: cd infrastructure/terraform/modules/registry && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/registry 'Success! 13 passed, 0 failed.' Mutations, restored by cp and cmp: the same-region validation weakened to `!= \"nowhere\"` failed a_secondary_repository_in_the_primarys_region_is_refused (secondary.tftest.hcl:62); immutable_tags = false on the secondary failed a_secondary_region_declares_an_immutable_repository_ci_can_push_to_and_not_delete_from."
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/registry 'Success! 13 passed, 0 failed.' Mutations, restored by cp and cmp: the same-region validation weakened to `!= \"nowhere\"` failed a_secondary_repository_in_the_primarys_region_is_refused (secondary.tftest.hcl:62); immutable_tags = false on the secondary failed a_secondary_region_declares_an_immutable_repository_ci_can_push_to_and_not_delete_from. 2026-10-24 parent session, after the wave580 merge: CI on 2105c7f2 failed security_controls::no_data_store_beyond_those_the_register_records_is_left_without_a_customer_managed_key because the secondary repository named no customer-managed key. Adding it to UNKEYED_STORES would have grown a register that fails on growth only, so the repository now has its own ring and key in the secondary region. The harness gained the_secondary_repository_is_encrypted_under_its_own_regions_key_and_the_agent_holds_it, and its default run now asserts that no ring and no key are declared, because a key ring cannot be deleted."
   },
   {
     "id": "R12-RES-9178",
