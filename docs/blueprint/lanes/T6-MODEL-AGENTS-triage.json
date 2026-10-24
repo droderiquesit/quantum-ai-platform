@@ -1,0 +1,17 @@
+[
+  {
+    "id": "R12-TICK-2065",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "backend/crates/services/qip-training/src/labels.rs::LabelBuilder and tests/labels.rs already meet the requirement; the only gap is that the tick desk is off: backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs::THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED says QIP_DEEPBRAIN_TICK_EVERY stays unset until a per-dataset licensing decision nobody has made."
+  },
+  {
+    "id": "R12-TICK-2068",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "Same switch as R12-TICK-2065 (manifest_wiring.rs::THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED); the slippage, liquidity, regime and execution models are further LARGE_SPLITTABLE work and need replay data the desk is not licensed to read; grep -n 'fn train_' backend/crates/services/qip-training/src/microstructure.rs finds only the fill and volatility trainers."
+  },
+  {
+    "id": "R12-AMBIENT-3104",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "grep -rn 'decision_uncertainty\\|DecisionUncertainty' backend/crates finds nothing: DECIDE emits no low-confidence-decision gap, so the closure needs a new qip-kernel intake type (platform.rs, outside this lane's territory) plus a node.rs hand-off in qip-deepbrain, which IMPL-B is editing under ADR 0145."
+  }
+]

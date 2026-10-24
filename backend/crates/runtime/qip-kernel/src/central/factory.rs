@@ -19,6 +19,7 @@
 //! pilot" call: there is no value it could construct to represent one.
 
 use qip_ai::registry::ModelRegistry;
+use qip_compliance::eligibility::EligibilityRegister;
 use qip_contracts::gate::{GateStage, Promotion};
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
@@ -37,6 +38,7 @@ use qip_observability::metrics::Metrics;
 pub use qip_optimization_engine::universe::AlphaFamily;
 use qip_strategy::compile::CompiledStrategy;
 use qip_strategy::program::Program;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -260,6 +262,24 @@ impl StrategyReview {
     }
 }
 
+/// The operating permission a promotion is judged against (ADR 0155
+/// section 21 to 24): the compliance register, the one place that answers
+/// "may this operator trade here and deploy this", with the jurisdiction,
+/// venues and products the plane operates in.
+///
+/// The user registry and the product catalogue answer to whom a product may
+/// be offered; neither is consulted for this question, and the kernel keeps no
+/// table of its own. The strategy subject is the strategy *family*, because
+/// strategy ids are minted by the factory and a record per id could not be
+/// written ahead of time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PromotionEligibility {
+    pub register: EligibilityRegister,
+    pub jurisdiction: String,
+    pub venues: Vec<String>,
+    pub products: Vec<String>,
+}
+
 /// Candidates, their walk up the ladder, and the triggers that push them down.
 #[derive(Debug)]
 pub struct StrategyFactory {
@@ -267,6 +287,12 @@ pub struct StrategyFactory {
     ledger: LifecycleLedger,
     monitor: DemotionMonitor,
     baselines: BTreeMap<StrategyId, PilotBaseline>,
+    /// `None` is a plane nobody armed (the library default, for the reason
+    /// `CellConfig::exposure_bounds_required` is off in the library). `Some`
+    /// is fail-closed: a family with no record, an expired record, a venue or
+    /// product nobody recorded, or a jurisdiction the register does not hold
+    /// refuses the promotion, naming each.
+    eligibility: Option<PromotionEligibility>,
 }
 
 impl Default for StrategyFactory {
@@ -295,7 +321,16 @@ impl StrategyFactory {
             ledger: LifecycleLedger::new().with_trial_book(TrialBook::in_memory()),
             monitor: DemotionMonitor::default(),
             baselines: BTreeMap::new(),
+            eligibility: None,
         }
+    }
+
+    /// Judge every promotion against the compliance register (ADR 0155
+    /// section 23). `None` leaves the factory unarmed.
+    #[must_use]
+    pub fn with_promotion_eligibility(mut self, eligibility: Option<PromotionEligibility>) -> Self {
+        self.eligibility = eligibility;
+        self
     }
 
     /// Charge holdout evaluations to `book` — the durable one a composition
@@ -538,6 +573,15 @@ impl StrategyFactory {
                 "{strategy} is not registered, so there is no evidence to put in front of a gate"
             ))
         })?;
+        if let Some(eligibility) = &self.eligibility {
+            eligibility.register.admit_deployment(
+                candidate.family().as_str(),
+                &eligibility.products,
+                &eligibility.venues,
+                &eligibility.jurisdiction,
+                now,
+            )?;
+        }
         let promotion = attempt_promotion(
             &mut self.ledger,
             strategy,

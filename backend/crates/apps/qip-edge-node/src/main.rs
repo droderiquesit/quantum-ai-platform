@@ -111,6 +111,10 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// The file holding this build's own identity (ADR 0155 section 14), written
+/// by the unit that starts the process.
+const BUILD_IDENTITY_VARIABLE: &str = "QIP_BUILD_IDENTITY_FILE";
+
 /// Exit code for a configuration problem, matching `sysexits.h`.
 ///
 /// Distinct from a general failure so an orchestrator can tell "this node was
@@ -559,6 +563,24 @@ fn run() -> Result<()> {
     let cell_config = cell_config
         .with_journal_trimmed_on_ship()
         .with_journal_wire();
+    // ADR 0155 section 14: the identity of this build, from a file the unit
+    // that starts the process writes, never from the network, in line with
+    // "secrets and facts reach the process as files". Unset leaves the
+    // deployment wire unbuilt; set and unreadable stops the process, because
+    // a node that cannot say which build it is cannot be judged against the
+    // set of builds the centre accepts.
+    let cell_config = match std::env::var(BUILD_IDENTITY_VARIABLE) {
+        Ok(path) if !path.trim().is_empty() => {
+            let identity = std::fs::read_to_string(path.trim()).map_err(|error| {
+                Error::io(format!(
+                    "configuration: {BUILD_IDENTITY_VARIABLE} names {path}, which cannot be read: \
+                     {error}; write the build identity there or unset the variable"
+                ))
+            })?;
+            cell_config.with_build_identity(identity.trim())?
+        }
+        _ => cell_config,
+    };
     // Recorded on every pass marker, so a replay can refuse to call a pass
     // reproduced under a configuration it was not run under.
     let config_digest = qip_core::sha256_hex(format!("{cell_config:?}").as_bytes());
@@ -638,6 +660,16 @@ fn run() -> Result<()> {
     for line in choice.banner_lines(ceiling.as_str()) {
         println!("{line}");
     }
+    // Widened here, where the gateway choice is known: a replay under other
+    // gateway settings must refuse on the digest, not reproduce under a fill
+    // model nobody can name (ADR 0155 section 16).
+    let config_digest = match &choice {
+        VenueChoice::Simulated { .. } => qip_edge_node::gateway::widen_config_digest(
+            &config_digest,
+            &qip_edge_node::gateway::SimulatedGateway::default_settings(),
+        ),
+        VenueChoice::Live(_) => config_digest,
+    };
     let mut gateway = NodeGateway::open(&choice, gateway_venue.clone(), started)?;
 
     // The fencing lease, before the feed and before anything is served: a

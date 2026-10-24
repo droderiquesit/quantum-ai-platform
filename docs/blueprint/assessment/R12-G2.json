@@ -533,15 +533,17 @@
   },
   {
     "id": "R12-WORLD-9023",
-    "status": "PARTIAL",
-    "current": "The cell evaluates inline DistilledModel strategies and a local feature DAG with no network calls; calibration/outcome recording to Bigtable is absent.",
+    "status": "COMPLETE",
+    "current": "Signal gains an optional expected_edge_bp (backend/crates/libs/qip-contracts/src/signal.rs, off the wire when absent). qip-strategy Rule gains an optional expected_edge expression typed Statistic (ir.rs Rule::with_expected_edge, compile.rs CompiledRule::expected_edge), evaluated in runtime.rs only for a rule that declared one; nothing derives an edge from conviction. The cell refuses a non-finite edge under GATE_SIGNAL_EDGE beside GATE_SIGNAL_CONVICTION and journals the edge in Decision::SignalRaised, so the centre joins the realised result through attribution lineage and no outcome returns to the cell (ADR 0155 section 7, 10).",
     "evidence": [
-      "backend/crates/edge/qip-feature-dag/src",
-      "backend/crates/edge/qip-strategy/src",
-      "backend/crates/edge/qip-edge/src/cell.rs:3293",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:849 every_lane_0_stage_is_linked_into_the_node"
+      "backend/crates/libs/qip-contracts/src/signal.rs::Signal",
+      "backend/crates/edge/qip-strategy/src/ir.rs::Rule",
+      "backend/crates/edge/qip-strategy/src/runtime.rs::StrategyRuntime::run",
+      "backend/crates/libs/qip-contracts/src/reflex.rs::Decision::SignalRaised",
+      "backend/crates/edge/qip-edge/src/cell.rs::GATE_SIGNAL_EDGE",
+      "backend/crates/edge/qip-strategy/tests/strategy.rs::a_rule_that_declares_an_edge_raises_a_signal_stating_it_and_a_rule_that_does_not_raises_a_signal_stating_none"
     ],
-    "gap": "No predicted edge exists to calibrate: qip_contracts::signal::Signal carries a conviction, a desired quantity and inputs, not an expected edge or return, and the cell sees a fill (a venue fact about quantity and price) but never the realised outcome of the position, which is marked to market elsewhere. A tally of conviction against fill would measure execution, not forecast skill, and calling it calibration would be the overclaim the row exists to avoid. Closing it needs an expected-edge field on Signal produced by qip-strategy's runtime (the same contract change R12-RISK-5044 names) and a realised-outcome signal back to the cell; outcome storage stays out of scope until a storage ADR.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -549,10 +551,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge",
+    "verification": "cargo test -p qip-strategy --test strategy a_rule_that_declares",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure's 'predicted edge against the venue-confirmed fill' compares two things that are not both in the cell: no edge is predicted and a fill is not an outcome."
+    "notes": "2026-10-24 ADR 0155 lane. Mutation fired: deriving expected_edge_bp from conviction when the rule declares none made the edgeless-rule assertion fail (premise: the declaring rule stated Some(35.0) first). No shipped strategy declares an edge yet, so every signal in the tree still states none; the gate that reads it is RISK-5044."
   },
   {
     "id": "R12-WORLD-9024",
@@ -905,8 +907,8 @@
   },
   {
     "id": "R12-CAPITAL-9039",
-    "status": "PARTIAL",
-    "current": "Kernel LEARN scores declined and filled alternatives via qip-twin CounterfactualEngine (planned on knowable data, settled on realised); qip-capital shadow portfolios exist but are not composed. Sequential and in process.",
+    "status": "COMPLETE",
+    "current": "Kernel shadows are the qip-twin menu arms (AlternativeMenu::alternatives_to), scored sequentially in LEARN under the per-cycle cap (COUNTERFACTUALS_PER_CYCLE) with deferral counted (COUNTERFACTUALS_DEFERRED); output is the cycle's CounterfactualJournal. qip-capital::shadow is an allocation-level vocabulary with no kernel caller by decision and is not composed (ADR 0148 decision 6); no parallel batch (tokio is off the decision core). Revisit when the allocator exposes alternate allocations.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined, :17410 score_filled",
       "backend/crates/services/qip-twin/src/counterfactual.rs",
@@ -914,7 +916,7 @@
       "backend/crates/services/qip-capital/src/shadow.rs (no kernel caller)",
       "backend/crates/tests/qip-acceptance/tests/capital_shadow_portfolios.rs"
     ],
-    "gap": "Compose shadow portfolios; parallel batch; compact pack output.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -922,10 +924,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cargo test -p qip-kernel --test learning declined",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane T7-KERNEL, closing by ADR 0148 decision 6 (no-code restate). Re-run the cap test on the production caller: mutation - drop `.take(COUNTERFACTUALS_PER_CYCLE)` in Platform::score_declined's loop - declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle failed at learning.rs:586; restored, passes."
   },
   {
     "id": "R12-QUANT-9040",
@@ -1188,7 +1190,7 @@
       "backend/crates/services/qip-capital/src/shadow.rs",
       "backend/crates/tests/qip-acceptance/tests/capital_shadow_portfolios.rs"
     ],
-    "gap": "Compose and persist.",
+    "gap": "Corrected 2026-10-24 (lane T8-RESIDUAL): composing shadows needs an AllocationPlan per cycle and there is none. CentralPlane::allocate is called from Platform::issue_capital and the capital-envelope path (operator-driven), never from a cycle, so a shadow universe built at plan time would be built on operator calls only, with no resolved fills to score and nothing in the cycle to persist. Slices: (1) a cycle-time allocation pass (R12-CAPITAL-9039); (2) ShadowPortfolioUniverse built from that plan (alternate size and refused shadows) and journaled; (3) scoring from the twin's fills. Note for slice 3: score_shadow clamps regret_bp at 10000 and converts money through f64, both against the refuse-not-clamp rule.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1201,7 +1203,7 @@
     "verification": "cargo test -p qip-acceptance --test capital_shadow_portfolios",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 (lane T8-RESIDUAL): graded LARGE_SPLITTABLE; gap corrected, no code change."
   },
   {
     "id": "R12-DATA-9052",
@@ -1513,7 +1515,7 @@
       "infrastructure/terraform/modules/trust-zones/main.tf",
       "backend/crates/tests/qip-acceptance/tests/untrusted_content.rs::nothing_that_fetches_untrusted_content_can_reach_a_tool_an_order_or_capital"
     ],
-    "gap": "Fetched content still flows through qip-kernel into agents and models; no data-flow (taint) test from ingested content to tool invocation through the kernel.",
+    "gap": "Decided (ADR 0158 decisions 16-19): fetched content is a qip_core::untrusted::Untrusted<T> with private fields, no Deref/AsRef/Display/Into or serialisation of its content, whose only exits are validate and a greppable inspect; ToolRegistry::propose takes a validated ToolName, and a model's output over untrusted content is itself untrusted. Not built: qip-core has no untrusted module (ls backend/crates/libs/qip-core/src), ToolRegistry::propose still takes &str (qip-agents tools.rs:135), and the connector evidence path returns plain strings. The dependency-graph test (nothing that fetches can reach a tool, an order or capital) is the coarser net that exists. Large: it spans qip-core, qip-agents, qip-ai and qip-market-ingestion, plus the scanning acceptance test untrusted_content.rs. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1524,7 +1526,7 @@
     "verification": "new acceptance test",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS: not implemented; the type is only worth having once every fetch site returns it, so a partial landing would prove nothing about the kernel path. Kept PARTIAL."
   },
   {
     "id": "R12-CICD-9066",
@@ -2508,7 +2510,7 @@
       "backend/crates/apps/qip-api/src/main.rs:306",
       "backend/crates/edge/qip-edge/tests/trust_bundle.rs"
     ],
-    "gap": "Write the four HSM signing keys and the publish workflow in Terraform, apply to dev through infra.yml with the plan shown, set QIP_ARTEFACT_SIGNER=kms in dev after a real-key verification (ADR 0110 Amendment 1).",
+    "gap": "2026-10-24: HSM signing keys are billed and need an infra.yml apply with the plan shown, then QIP_ARTEFACT_SIGNER=kms in dev after a real-key check; only modules/binaryauthorization declares an ASYMMETRIC_SIGN key today.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2529,7 +2531,7 @@
       "infrastructure/terraform/modules/binaryauthorization/main.tf:199-232",
       "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs:74 the_binary_authorization_default_rule_requires_a_named_attestation_and_blocks"
     ],
-    "gap": "A deployed refusal proof.",
+    "gap": "A deployed refusal proof. Corrected 2026-10-24: policy tests pass (security_controls 12 passed); the proof is an attempted deploy of an unattested digest to dev, a deployment run.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2813,7 +2815,7 @@
       "infrastructure/terraform/security.tf:17 pam_on; :55 google_privileged_access_manager_entitlement",
       "infrastructure/environments/*/terraform.tfvars: no pam_entitlements"
     ],
-    "gap": "Enable in an environment with a plan.",
+    "gap": "Enable in an environment with a plan. Corrected 2026-10-24: pam_entitlements is empty in every environment; setting it is a protected-path tfvars change and needs named principals, which are a person's decision.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2965,7 +2967,7 @@
       "infrastructure/terraform/modules/public-edge/main.tf:68,98,109,130",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs:27,453"
     ],
-    "gap": "Enable and deploy.",
+    "gap": "Enable and deploy. Corrected 2026-10-24: Cloud Armor tests pass (security_controls 12 passed); no public edge is enabled and enabling is a protected-path tfvars change plus a deployment.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3012,7 +3014,7 @@
       "infrastructure/terraform/modules/scc/main.tf:41,80,114",
       "infrastructure/environments/dev/terraform.tfvars:294"
     ],
-    "gap": "Enable; org activation.",
+    "gap": "Enable; org activation. Corrected 2026-10-24: enable_security_command_center=false in dev (protected tfvars); organisation-level SCC activation is an organisation-managed setting outside this repository.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -3033,7 +3035,7 @@
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs:70",
       "infrastructure/terraform/modules/binaryauthorization/main.tf:199"
     ],
-    "gap": "Live proof.",
+    "gap": "Live proof. Corrected 2026-10-24: container-scanning and BinAuthz tests pass (security_controls 12 passed); proof against a live revision needs a deployed Cloud Run revision.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3776,7 +3778,7 @@
       "apps/qip-edge-node/tests/standby.rs::a_standby_places_nothing_until_it_promotes_and_the_primary_it_replaced_places_nothing_after",
       "apps/qip-edge-node/tests/standby.rs::a_standby_waits_while_any_venue_still_reports_the_old_holders_session"
     ],
-    "gap": "A cross-zone lease store, Terraform wiring of the lease to the standby, a per-shard venue-session check, and the game day.",
+    "gap": "A cross-zone lease store (ADR 0137 GcsLeaseStore, not built), a per-shard venue-session check replacing SimulatedSessions, and the game day (corrected 2026-10-24). The Terraform wiring of QIP_FENCING_LEASE to primary and standby exists (startup.sh.tftpl:263, standby.tftest.hcl) but the lease is a file on one host, so across zones the pair is not fenced; execution_nodes = {} so nothing is deployed.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -3787,7 +3789,7 @@
     "verification": "game day",
     "work_item": "",
     "size": "L",
-    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285)."
+    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285). Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class DEPLOY_DEPENDENT."
   },
   {
     "id": "R12-RES-9167",
@@ -3990,7 +3992,7 @@
       "infrastructure/terraform/modules/gitops-control-plane/main.tf:131",
       "infrastructure/terraform/modules/cloudrun/main.tf:1-40"
     ],
-    "gap": "Drill.",
+    "gap": "2026-10-24: a game day needs a deployed environment; no Cloud Run service exists in dev (ADR 0093).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -4239,7 +4241,7 @@
     "verification": "cargo test -p qip-storage",
     "work_item": "",
     "size": "S",
-    "notes": "Gap corrected 2026-10-18 by lane L17 from the code (archive.rs blob_key/hydrate, compaction.rs compact/merge_objects); nothing in the code changed. Lane W8-156, 2026-10-19 (ADR 0156) §2.1-2.3. Mutations fired and restored: the archive-key refusal disabled (the archive objects merge and the untouched assertion fails); the min_object_size condition dropped (the 8-byte object is merged and reported)."
+    "notes": "Re-read 2026-10-24: compacting_the_archive_prefix_is_refused_and_leaves_every_object_and_manifest_untouched exists (qip-storage/tests/compaction.rs:38). The remaining clause is a production caller for Compactor, which waits on a lake that produces tiny objects; no code change in this lane."
   },
   {
     "id": "R12-FINOPS-9188",

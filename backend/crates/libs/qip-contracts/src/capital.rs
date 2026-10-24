@@ -171,7 +171,12 @@ impl ExposureBreach {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorityBounds {
-    /// Gross exposure over the envelope's gross limit; one is unlevered.
+    /// Gross committed after the order over capital less realised loss — the
+    /// one measure [`CapitalEnvelope::check_exposure`] computes (ADR 0155
+    /// section 4), and not gross over the gross limit, which the money limits
+    /// already cap at one and so could never fire. One is unlevered. When an
+    /// envelope carries both this block and [`ExposureBounds`] the two
+    /// `max_leverage` values must be equal, refused at construction.
     pub max_leverage: Decimal,
     /// Product classes the grant may trade. Empty is none, never all.
     pub product_classes: Vec<String>,
@@ -278,6 +283,15 @@ impl CapitalEnvelope {
                  envelope, signed anew",
             ));
         }
+        if let Some(bounds) = &self.bounds
+            && bounds.max_leverage != exposure.max_leverage
+        {
+            return Err(Error::invalid(format!(
+                "the exposure bounds state a leverage of {} and the authority bounds {}; there \
+                 is one leverage measure, so state one claim about it",
+                exposure.max_leverage, bounds.max_leverage
+            )));
+        }
         let carried = exposure
             .capital
             .checked_mul(exposure.max_leverage)
@@ -382,6 +396,15 @@ impl CapitalEnvelope {
             return Err(Error::denied(
                 "this envelope is already bounded; a changed bound is a new envelope, signed anew",
             ));
+        }
+        if let Some(exposure) = &self.exposure
+            && exposure.max_leverage != bounds.max_leverage
+        {
+            return Err(Error::invalid(format!(
+                "the authority bounds state a leverage of {} and the exposure bounds {}; there \
+                 is one leverage measure, so state one claim about it",
+                bounds.max_leverage, exposure.max_leverage
+            )));
         }
         self.bounds = Some(AuthorityBounds::new(
             bounds.max_leverage,
@@ -519,33 +542,75 @@ impl CapitalEnvelope {
         leverage: Decimal,
         regulated_function: Option<&str>,
     ) -> CapitalAdmission {
+        if let Err(breach) = self.check_authority(product_class, leverage, regulated_function) {
+            return CapitalAdmission::Refused(breach.reason().to_string());
+        }
+        self.admit(venue, notional, used, now)
+    }
+
+    /// The authority bounds alone: product class, leverage and regulated
+    /// function, with no money limit. `Err` names which bound refused.
+    /// Separate from [`Self::admit_bounded`] so a caller that has already
+    /// run the money limits (the cell does, before any intent exists) need
+    /// not run them twice.
+    pub fn check_authority(
+        &self,
+        product_class: &str,
+        leverage: Decimal,
+        regulated_function: Option<&str>,
+    ) -> std::result::Result<(), AuthorityBreach> {
         let Some(bounds) = &self.bounds else {
-            return CapitalAdmission::Refused(
+            return Err(AuthorityBreach::Unbounded(
                 "the envelope carries no authority bounds, so it authorises no product class \
                  and no leverage; ask for a bounded envelope"
                     .to_string(),
-            );
+            ));
         };
         if !bounds.product_classes.iter().any(|c| c == product_class) {
-            return CapitalAdmission::Refused(format!(
+            return Err(AuthorityBreach::Product(format!(
                 "product class {product_class} is outside the envelope's {}",
                 bounds.product_classes.join(", ")
-            ));
+            )));
         }
         if leverage > bounds.max_leverage {
-            return CapitalAdmission::Refused(format!(
+            return Err(AuthorityBreach::Leverage(format!(
                 "leverage {leverage} exceeds the envelope's {}",
                 bounds.max_leverage
-            ));
+            )));
         }
         if let Some(function) = regulated_function
             && !bounds.regulated_functions.iter().any(|f| f == function)
         {
-            return CapitalAdmission::Refused(format!(
+            return Err(AuthorityBreach::Function(format!(
                 "regulated function {function} is not one the envelope authorises"
-            ));
+            )));
         }
-        self.admit(venue, notional, used, now)
+        Ok(())
+    }
+}
+
+/// Which authority bound refused an order (ADR 0155 section 2 to 4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthorityBreach {
+    /// The envelope carries no authority bounds at all.
+    Unbounded(String),
+    /// The instrument's product class is not one the grant names.
+    Product(String),
+    /// The order's leverage is above the grant's.
+    Leverage(String),
+    /// The order performs a regulated function the grant does not name.
+    Function(String),
+}
+
+impl AuthorityBreach {
+    /// The refusal text, naming the bound.
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Unbounded(reason)
+            | Self::Product(reason)
+            | Self::Leverage(reason)
+            | Self::Function(reason) => reason,
+        }
     }
 }
 

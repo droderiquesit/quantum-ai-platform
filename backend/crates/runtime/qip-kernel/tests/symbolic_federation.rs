@@ -149,7 +149,18 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    assert_eq!(first.population.len(), 10, "{:?}", first.population);
+    // Ten members plus the one domain member the platform now declares for
+    // the universe's single asset class (MODEL-4009): the composition names
+    // the classes itself, so a deployed cycle carries the member too.
+    assert_eq!(first.population.len(), 11, "{:?}", first.population);
+    assert!(
+        first
+            .population
+            .iter()
+            .any(|m| m.id == federation_stage::FederationStage::domain_member("equity")),
+        "no domain member for the universe's asset class: {:?}",
+        first.population
+    );
     for family in REQUIRED_FAMILIES {
         assert!(
             !first.uncovered.contains(&family.to_string()),
@@ -166,7 +177,7 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
         .collect();
     assert_eq!(instrument.len(), 2, "one proposition per instrument");
     for a in &instrument {
-        assert_eq!(a.disagreement.views.len(), 8, "{a:?}");
+        assert_eq!(a.disagreement.views.len(), 9, "{a:?}");
         // Unscored members cannot be weighed, and the record says so rather
         // than averaging them.
         assert!(matches!(a.decision, Decision::RequestMoreInformation(_)));
@@ -474,7 +485,7 @@ fn competing_world_models_are_scored_against_reality_and_a_material_disagreement
             .iter()
             .filter(|v| v.lineage.parents.is_empty())
             .count();
-        assert_eq!(roots, 8, "{a:?}");
+        assert_eq!(roots, 9, "{a:?}");
         for v in &a.disagreement.views {
             assert!(v.evidence_fit.is_finite() && v.causal_coherence.is_finite());
             assert!(v.uncertainty.is_finite() && v.composite.is_some(), "{v:?}");
@@ -1063,6 +1074,50 @@ fn a_material_federation_disagreement_narrows_the_instruments_bound_and_an_agree
     Ok(())
 }
 
+#[test]
+fn a_federation_narrowing_multiplies_into_the_cap_once_per_instrument_and_an_agreeing_one_leaves_it_at_one()
+-> Result<()> {
+    // The failure this guards: the sibling test reads DECIDE's detail line, and
+    // `narrow` pushes that line whether or not it multiplied, so a narrowing
+    // that was named and never applied passed it. The cap is the number the
+    // constructor reads, so it is asserted here directly (ADR 0125 decisions 4
+    // and 6).
+    let (narrowing, spread) = federation_stage::Narrowing::of_spread(
+        qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD,
+    )
+    .map(|n| (n, qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD))
+    .expect("premise: the material spread earns a narrowing");
+    assert!(narrowing.multiplier() < 1.0, "premise: it narrows");
+    let narrowings =
+        std::collections::BTreeMap::from([("obj-AAA".to_string(), (narrowing, spread))]);
+    let objects = || ["obj-AAA", "obj-AAA", "obj-BBB"].map(String::from);
+
+    // A disagreeing instrument compounds with an existing cap, once however
+    // many theses name it; an instrument with no arbitration is untouched.
+    let mut caps = std::collections::BTreeMap::from([("obj-AAA".to_string(), 0.8)]);
+    let mut notes = Vec::new();
+    federation_stage::narrow(&mut caps, &mut notes, objects(), &narrowings);
+    assert!(
+        (caps["obj-AAA"] - 0.8 * narrowing.multiplier()).abs() < 1e-12,
+        "narrowed once, not squared: {}",
+        caps["obj-AAA"]
+    );
+    assert!(!caps.contains_key("obj-BBB"), "absence is not disagreement");
+    assert_eq!(notes.len(), 1, "one note per instrument: {notes:?}");
+
+    // An agreeing population leaves every cap where it was.
+    let mut caps = std::collections::BTreeMap::new();
+    let mut notes = Vec::new();
+    federation_stage::narrow(
+        &mut caps,
+        &mut notes,
+        objects(),
+        &std::collections::BTreeMap::new(),
+    );
+    assert!(caps.is_empty() && notes.is_empty());
+    Ok(())
+}
+
 /// R12-QUANT-4040. The symbolic reasoner's constraint encoder produced a QUBO
 /// for the quantum path's solver port and nothing ever ran a quantum solver on
 /// one, so "the constraint problem is compared to classical solvers" was a
@@ -1150,5 +1205,83 @@ fn the_constraint_encoders_qubo_is_solved_by_a_quantum_entrant_and_decodes_to_th
         "the quantum answer decodes to a feasible assignment, but not the proven optimum"
     );
     assert_eq!(decoded.assignment, optimum.assignment);
+    Ok(())
+}
+
+// --- a held instrument's disagreement is worth a question (R12-AMBIENT-10093)
+
+/// The failure this guards: `FederationStage::run` could price a disagreement
+/// but `Platform::understand_federation` never stated what was at stake, so
+/// every request was gated on a stake of nothing and the deployed path issued
+/// none. The desk holds AAA in one platform and nothing in the other; both
+/// see the same material disagreement on it, and only the held one asks.
+/// Mutation: drop the `set_stakes` call in `understand_federation` — the held
+/// platform issues no request and the first assertion fails.
+#[test]
+fn a_material_disagreement_on_a_held_instrument_issues_a_request_and_on_an_unheld_one_issues_none()
+-> Result<()> {
+    use qip_execution_engine::order::Side;
+    use qip_reasoning_engine::redteam::ReviewPolicy;
+    let build = || -> Result<Platform> {
+        let config = PlatformConfig {
+            review: ReviewPolicy {
+                minimum_surviving_confidence: 0.10,
+                ..ReviewPolicy::default()
+            },
+            ..PlatformConfig::default()
+        };
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform =
+            Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+        platform.observe(bars("AAA", 120));
+        Ok(platform)
+    };
+
+    let mut unheld = build()?;
+    unheld.run_cycle(start());
+    let reviews = federation_stage::replay(&unheld)?;
+    let spread = reviews[0]
+        .arbitrations
+        .iter()
+        .find(|a| a.proposition.contains("obj-AAA:next-close-up@"))
+        .expect("the instrument was arbitrated")
+        .disagreement
+        .spread;
+    assert!(
+        spread >= qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD,
+        "premise: a material disagreement, got {spread}"
+    );
+    assert!(
+        unheld.positions_at_cost().is_empty(),
+        "premise: nothing held"
+    );
+    assert!(unheld.federation_information_requests().is_empty());
+
+    let mut held = build()?;
+    let order = held.order_from(
+        ObjectId::from_string("obj-AAA"),
+        Side::Buy,
+        dec!("100"),
+        dec!("100"),
+        "prop-book",
+        vec!["hyp-book".to_string()],
+        start(),
+    );
+    held.submit_order(order, start())?;
+    assert!(
+        held.positions_at_cost().contains_key("obj-AAA"),
+        "premise: the desk holds AAA"
+    );
+    held.run_cycle(start());
+    let requests = held.federation_information_requests();
+    assert_eq!(requests.len(), 1, "one held instrument, one request");
+    let (request, spread_bp) = &requests[0];
+    assert!(request.question.contains("obj-AAA:next-close-up@"));
+    assert!(request.expected_information_value.is_positive());
+    // The spread travels beside the contract, which does not carry it.
+    assert!(
+        (f64::from(*spread_bp) / 10_000.0 - spread).abs() < 1e-4,
+        "{spread_bp} bp against {spread}"
+    );
     Ok(())
 }

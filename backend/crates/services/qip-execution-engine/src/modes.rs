@@ -39,6 +39,22 @@ impl ExecutionMode {
         Self::DecentralisedVenues,
         Self::PhysicalMarketplaces,
     ];
+
+    /// The stable key an envelope's `regulated_functions` names this mode
+    /// by (ADR 0155 section 3). One vocabulary: the value `Cell::send`
+    /// already derives is the value an authority bound is checked against.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ContinuousQuoting => "continuous_quoting",
+            Self::OrderTaking => "order_taking",
+            Self::LiquidityProvision => "liquidity_provision",
+            Self::Routing => "routing",
+            Self::Derivatives => "derivatives",
+            Self::EventContracts => "event_contracts",
+            Self::DecentralisedVenues => "decentralised_venues",
+            Self::PhysicalMarketplaces => "physical_marketplaces",
+        }
+    }
 }
 
 /// Evidence that a mode is supported for a venue and jurisdiction. Both halves
