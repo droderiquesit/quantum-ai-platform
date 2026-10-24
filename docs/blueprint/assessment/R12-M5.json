@@ -2081,7 +2081,7 @@
       "backend/crates/runtime/qip-kernel/tests/breadth.rs a_units_tracked_state_follows_the_ledger_after_it_is_sold",
       "backend/crates/runtime/qip-kernel/tests/breadth.rs commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_cycle"
     ],
-    "gap": "Chargeback risk is still never computed: the plan terms (fees, returns, customs, storage, logistics) carry no payment-network or merchant settlement term to derive a rate from, so a number would be invented; the attribute stays Absent with a reason. The plane also runs only under QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets (grep of infrastructure finds none).",
+    "gap": "Chargeback risk is Absent by decision (ADR 0153 d8) until a settlement term supplies a rate; no payment-network or merchant settlement term exists in the plan terms, so a number would be invented. The plane needs QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2092,7 +2092,7 @@
     "verification": "cargo test -p qip-kernel --test breadth",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 L22: stale-record half closed, chargeback half kept PARTIAL. Mutation: delete the refresh_attributes call after take_return_owed - a sold unit still reads held and the test fails; restored byte for byte. The record is also moved at the unit_attributes call site now: it fails closed when the ledger does not hold the unit rather than inventing one."
+    "notes": "2026-10-18 L22: stale-record half closed, chargeback half kept PARTIAL. Mutation: delete the refresh_attributes call after take_return_owed - a sold unit still reads held and the test fails; restored byte for byte. The record is also moved at the unit_attributes call site now: it fails closed when the ledger does not hold the unit rather than inventing one. 2026-10-24 N2-FABRIC-DATA: gap restated to the ADR 0153 decision; no code changed, status unchanged."
   },
   {
     "id": "R12-COMMERCE-5091",

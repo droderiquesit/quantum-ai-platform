@@ -209,12 +209,14 @@
   {
     "id": "R12-DATA-2010",
     "status": "PARTIAL",
-    "current": "Data-finder has a commerce-source test suite exercising categorisation and legality for commerce candidates; no commerce connector exists.",
+    "current": "The data finder categorises and legality-checks commerce candidates. The seven commerce source kinds are catalogued in data/datasets/source-candidates.json as unevaluated placeholders on reserved .example.com hosts: each posture is Undetermined, so every usage answers Unknown and every one is refused.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/tests/commerce_sources.rs",
+      "data/datasets/source-candidates.json (seven commerce placeholders, posture undetermined)",
+      "backend/crates/services/qip-data-finder/tests/commerce_sources.rs::no_candidate_on_a_reserved_documentation_host_carries_a_declared_licence",
+      "backend/crates/services/qip-data-finder/tests/commerce_sources.rs::all_seven_commerce_source_kinds_are_catalogued_and_refused_until_a_licence_record_exists",
       "backend/crates/services/qip-data-finder/src/category.rs"
     ],
-    "gap": "No acquisition adapter for any commerce source.",
+    "gap": "No commerce connector. Which commerce source to license is the owner's decision and is billed (ADR 0157): a source enters only as a committed licence record quoting the terms it was read from. Until one exists the seven stay Undetermined and refused.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -222,10 +224,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --test connector_contract",
+    "verification": "cargo test -p qip-data-finder --test commerce_sources",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 N2-FABRIC-DATA: the seven placeholders carried Declared licences nobody evaluated and invented fees; they are now Undetermined (ADR 0157). Mutation: restore one placeholder's posture to declared - both commerce_sources tests fail naming it; restored byte for byte. Status stays PARTIAL: the acquisition adapter is billed."
   },
   {
     "id": "R12-DATA-2011",

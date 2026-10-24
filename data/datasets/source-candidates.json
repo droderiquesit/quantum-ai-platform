@@ -98,16 +98,7 @@
         "history_starts": "2024-01-01T00:00:00.000Z"
       },
       "declared_licensing": {
-        "posture": "declared",
-        "license": {
-          "identifier": "commerce-ref-sku-api",
-          "permits": [
-            "Derive"
-          ],
-          "attribution_required": true,
-          "expires_at": null,
-          "effective_from": null
-        }
+        "posture": "undetermined"
       },
       "cost": {
         "monthly_fee": "500",
@@ -161,16 +152,7 @@
         "history_starts": "2024-01-01T00:00:00.000Z"
       },
       "declared_licensing": {
-        "posture": "declared",
-        "license": {
-          "identifier": "globallogistics-inventory-api",
-          "permits": [
-            "Derive"
-          ],
-          "attribution_required": false,
-          "expires_at": null,
-          "effective_from": null
-        }
+        "posture": "undetermined"
       },
       "cost": {
         "monthly_fee": "1000",
@@ -223,17 +205,7 @@
         "history_starts": "2023-01-01T00:00:00.000Z"
       },
       "declared_licensing": {
-        "posture": "declared",
-        "license": {
-          "identifier": "priceindex-public-feed",
-          "permits": [
-            "Derive",
-            "Trade"
-          ],
-          "attribution_required": false,
-          "expires_at": null,
-          "effective_from": null
-        }
+        "posture": "undetermined"
       },
       "cost": {
         "monthly_fee": "0",
@@ -287,16 +259,7 @@
         "history_starts": "2024-01-01T00:00:00.000Z"
       },
       "declared_licensing": {
-        "posture": "declared",
-        "license": {
-          "identifier": "shippingpartners-public-rates",
-          "permits": [
-            "Derive"
-          ],
-          "attribution_required": false,
-          "expires_at": null,
-          "effective_from": null
-        }
+        "posture": "undetermined"
       },
       "cost": {
         "monthly_fee": "0",
@@ -349,16 +312,7 @@
         "history_starts": "2024-01-01T00:00:00.000Z"
       },
       "declared_licensing": {
-        "posture": "declared",
-        "license": {
-          "identifier": "marketplace-ops-public-fees",
-          "permits": [
-            "Derive"
-          ],
-          "attribution_required": true,
-          "expires_at": null,
-          "effective_from": null
-        }
+        "posture": "undetermined"
       },
       "cost": {
         "monthly_fee": "0",
@@ -411,16 +365,7 @@
         "history_starts": "2024-06-01T00:00:00.000Z"
       },
       "declared_licensing": {
-        "posture": "declared",
-        "license": {
-          "identifier": "auctionanalytics-feed",
-          "permits": [
-            "Derive"
-          ],
-          "attribution_required": false,
-          "expires_at": null,
-          "effective_from": null
-        }
+        "posture": "undetermined"
       },
       "cost": {
         "monthly_fee": "2000",
@@ -473,16 +418,7 @@
         "history_starts": "2024-01-01T00:00:00.000Z"
       },
       "declared_licensing": {
-        "posture": "declared",
-        "license": {
-          "identifier": "resalemarkets-public-api",
-          "permits": [
-            "Derive"
-          ],
-          "attribution_required": false,
-          "expires_at": null,
-          "effective_from": null
-        }
+        "posture": "undetermined"
       },
       "cost": {
         "monthly_fee": "750",

@@ -1393,14 +1393,15 @@
   },
   {
     "id": "R12-CONTRACT-7062",
-    "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/evidence_packet.rs:72 EvidencePacket = Validated<EvidencePacketFields>, deny_unknown_fields decode and invariant checks",
+    "status": "COMPLETE",
+    "current": "EvidencePacket is a typed, strict-decoding contract (qip-contracts evidence_packet.rs) and CheckedEvidence::packet derives one from any admitted claim on demand. By ADR 0152 decision 3 it is a derived export and is not journaled: ConnectorRuntime::poll still forms the packet once per claim as a refusal gate (a claim that cannot state source, licence and content hash is quarantined) and no longer carries it on PollReport, which had no reader.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/evidence_packet.rs:72 type",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:118 an_evidence_packet_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:133 an_evidence_packet_refuses_each_broken_invariant"
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs CheckedEvidence::packet",
+      "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs ConnectorRuntime::poll (packet formed as a gate, not stored)",
+      "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs::a_poll_report_carries_no_packet_until_a_consumer_asks_for_one",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs an_evidence_packet_round_trips_and_refuses_a_missing_unknown_or_foreign_field"
     ],
-    "gap": "CheckedEvidence::packet (qip-market-ingestion/src/connector/evidence.rs) constructs EvidencePacketFields for every admitted claim and ConnectorRuntime::poll pushes the packet onto PollReport.packets, reached from the production connector feeds; no receiver decodes or consumes PollReport.packets yet (construction is R12-COVERAGE-7152; consumption is what is missing).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1408,10 +1409,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-market-ingestion --test evidence_stage; cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Evidence ids appear in other contracts as strings only. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding EvidencePacket exists and is tested; nothing in production constructs or decodes it. Gap corrected 2026-10-18 (review of #236, finding 10): it still said no production seam constructs EvidencePacket, which the grep of EvidencePacketFields outside qip-contracts now falsifies (evidence.rs:36 and :149). Status unchanged: consumption is missing."
+    "notes": "2026-10-24 N2-FABRIC-DATA: closed per ADR 0152 decision 3 (the register clause was a packet no consumer decodes; the decision is that none is built ahead of a consumer, ADR 0133). Mutation: add a packets field back to PollReport - the test's exhaustive PollReport destructuring fails to compile (E0027), restored byte for byte. Gap prose of 2026-10-18 superseded."
   },
   {
     "id": "R12-CONTRACT-7063",
