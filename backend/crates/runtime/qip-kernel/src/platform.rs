@@ -12731,12 +12731,15 @@ impl Platform {
             routing_decisions.len() as f64,
         );
         // Blueprint §9.3: the World Model Federation's pass — views fed,
-        // forecasts scored, disagreement arbitrated and journaled. Advisory;
-        // see `crate::federation_stage` for why nothing downstream reads it.
+        // forecasts scored, disagreement arbitrated and journaled. Advisory
+        // under ADR 0125: DECIDE reads only the narrowing it derives
+        // (`federation_stage::narrow`), which can shrink a bound and never
+        // raise one.
         let (federation_detail, federation_problems) = self.understand_federation(now);
         // Blueprint §9.6 and §9.7: the NOW Brain's latent state, then the
-        // forecast lattice over it. Advisory; see `crate::now_stage` and
-        // `crate::lattice_stage` for why nothing downstream reads either.
+        // forecast lattice over it. Advisory under ADR 0125: DECIDE reads
+        // only the lattice's tactical staleness, which vetoes a thesis on an
+        // expired forecast or narrows its bound (R12-WORLD-9024).
         let (now_detail, now_problems) = self.understand_now(now);
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
@@ -12996,6 +12999,9 @@ impl Platform {
         // next pass rather than moving influence on a record nobody kept.
         let journalled = self.journal_record(lattice, "kernel/forecast-lattice", now);
         self.lattice.set_calibrator_available(journalled.is_ok());
+        if journalled.is_ok() {
+            self.lattice.confirm_calibration();
+        }
         if let Err(error) = journalled {
             problems.push(format!(
                 "the forecast lattice's review was computed and not journalled, so its \
@@ -15722,6 +15728,15 @@ impl Platform {
         let mut weakest = Decimal::ONE;
         let mut refusals = Vec::new();
         for thesis in theses {
+            // R12-WORLD-9024: a tactical forecast past its expiry vetoes the
+            // thesis before anything else is read about it.
+            if let Some(Err(stale)) = self
+                .lattice
+                .tactical_staleness(thesis.object_id.as_str(), now)
+            {
+                refusals.push(stale);
+                continue;
+            }
             match self.sizing_confidence(thesis.object_id.as_str(), now) {
                 Ok(confidence) => {
                     weakest = weakest.min(confidence);
@@ -16147,6 +16162,25 @@ impl Platform {
                 .map(|thesis| thesis.object_id.as_str().to_string()),
             &self.federation_narrowing,
         );
+        // ADR 0125 decision 4 for the forecast lattice (R12-WORLD-9024): the
+        // bound narrows by the share of its tactical forecasts' life left,
+        // compounding with the caps above and never above one. An expired
+        // forecast never reaches here; `sizeable_theses` vetoed its thesis.
+        let distinct: std::collections::BTreeSet<&str> = theses
+            .iter()
+            .map(|thesis| thesis.object_id.as_str())
+            .collect();
+        for object in distinct {
+            if let Some(Ok(left)) = self.lattice.tactical_staleness(object, now)
+                && left < 1.0
+            {
+                *caps.entry(object.to_string()).or_insert(1.0) *= left;
+                capped.push(format!(
+                    "{object}: its tactical forecasts have {left:.2} of their life left, narrowed \
+                     to that share of the bound"
+                ));
+            }
+        }
         // Every survival tier and confidence contraction that bit, on the
         // same DECIDE detail line the caps above reach: the recorded capital
         // response a tail world the book does not survive is required to
@@ -24812,6 +24846,78 @@ mod decide_tests {
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
+    }
+
+    /// R12-WORLD-9024: a tactical forecast past its expiry is not used and
+    /// its thesis is not sized; one part-way through its life narrows the
+    /// instrument's bound by the share left (ADR 0125 decision 4). The
+    /// fresh run is the premise that AAPL is sized at all.
+    ///
+    /// Mutations: drop the expiry veto in `sizeable_theses` (the stale run
+    /// sizes AAPL and the leg assertion fails); return no `Err` for an
+    /// expired slot in `LatticeStage::tactical_staleness` (the veto then
+    /// comes from the no-life-left guard, and the expiry-specific refusal the
+    /// test pins is missing); make the cap multiply a no-op while keeping its
+    /// note (the strict size assertion fails).
+    #[test]
+    fn an_expired_tactical_forecast_vetoes_its_thesis_and_an_ageing_one_narrows_the_bound() {
+        use qip_world_model::lattice::LatticeHorizon;
+        let now = Timestamp::from_secs(1_760_000_100);
+        let run = |slot: Option<(Timestamp, Timestamp)>| {
+            let mut platform = small_book_platform();
+            feed_history(&mut platform, "AAPL", 30);
+            feed_history(&mut platform, "MSFT", 30);
+            platform.pending_theses.push(thesis("AAPL", 0.6));
+            platform.pending_theses.push(thesis("MSFT", -0.4));
+            if let Some((issued, expires)) = slot {
+                platform
+                    .lattice
+                    .set_slot("AAPL", LatticeHorizon::HoursDays, issued, expires);
+            }
+            let decided = platform.stage_decide(now);
+            let aapl = platform.proposals.last().and_then(|p| {
+                p.legs
+                    .iter()
+                    .find(|leg| leg.object_id.as_str() == "AAPL")
+                    .map(|leg| leg.quantity.abs())
+            });
+            (decided, aapl)
+        };
+
+        let (_, fresh) = run(None);
+        let fresh = fresh.expect("premise: with no lattice slot AAPL is sized");
+
+        let (decided, stale) = run(Some((
+            now.saturating_sub(Duration::from_days(2)),
+            now.saturating_sub(Duration::from_days(1)),
+        )));
+        assert!(
+            stale.is_none(),
+            "an expired forecast's thesis was sized: {stale:?}"
+        );
+        let said = format!("{} {:?}", decided.detail, decided.problems);
+        assert!(
+            said.contains("AAPL: the forecast lattice's hours_days forecast expired"),
+            "{said}"
+        );
+
+        let (decided, ageing) = run(Some((
+            now.saturating_sub(Duration::from_secs(990)),
+            now.saturating_add(Duration::from_secs(10)),
+        )));
+        let said = format!("{} {:?}", decided.detail, decided.problems);
+        assert!(
+            said.contains("AAPL: its tactical forecasts have 0.01 of their life left"),
+            "{said}"
+        );
+        // A hundredth of the bound binds whatever the optimiser wanted, so
+        // the size must fall, strictly: a cap noted and not applied leaves
+        // it where the fresh run put it.
+        let ageing = ageing.expect("an ageing forecast still sizes its thesis");
+        assert!(
+            ageing < fresh,
+            "sizing did not contract on staleness: {ageing} vs fresh {fresh}"
+        );
     }
 
     #[test]
@@ -33557,6 +33663,102 @@ mod lattice_journal_tests {
             }
         }
         out
+    }
+
+    /// A resolved forecast with two members, the second `drift_err` off.
+    fn resolution(id: &str, outcome: f64, drift_err: f64) -> qip_world_model::lattice::Resolution {
+        use qip_world_model::lattice::LatticeHorizon;
+        let h = LatticeHorizon::HoursDays;
+        let issued = start().saturating_sub(Duration::from_days(10));
+        let due = issued.saturating_add(h.representative());
+        qip_world_model::lattice::Resolution {
+            forecast_id: id.into(),
+            domain: "markets".into(),
+            horizon: h,
+            regime: "r".into(),
+            model_means: BTreeMap::from([
+                ("seeded/martingale".to_string(), 100.0),
+                ("seeded/drift".to_string(), outcome + drift_err),
+            ]),
+            quantiles: [98.0, 100.0, 102.0],
+            p_up: 0.6,
+            reference: 100.0,
+            issued_at: issued,
+            observed_at: due,
+            outcome,
+            resolved_at: due,
+        }
+    }
+
+    /// The bug the first version of this test let through: the set frozen
+    /// on must be the last one whose review the log *kept*, not the one
+    /// computed on the pass whose review it refused. Seeded scores make both
+    /// sets non-empty and different, so an empty-equals-empty pass cannot
+    /// stand in for the property. Mutations: drop `confirm_calibration` after
+    /// a kept review (the frozen set is empty, not the kept one); make
+    /// `refresh_weights` set `last_safe` on refresh (the frozen set is the
+    /// refused one).
+    #[test]
+    fn the_weights_freeze_at_the_last_set_whose_review_the_log_kept() {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            listed_test_universe(&["AAPL", "MSFT"]),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        platform.observe(calm_history());
+        for i in 0..5 {
+            platform
+                .lattice
+                .calibrator_mut()
+                .score(&resolution(&format!("a{i}"), 101.0, 0.1))
+                .expect("a seeded score");
+        }
+        let (_, problems) = platform.understand_now(start());
+        assert!(
+            problems.iter().all(|p| !p.contains("not journalled")),
+            "{problems:?}"
+        );
+        let kept = platform.lattice().calibrator().weights().clone();
+        assert!(
+            kept.len() >= 2,
+            "premise: the seeded row is weighed: {kept:?}"
+        );
+
+        for i in 0..20 {
+            platform
+                .lattice
+                .calibrator_mut()
+                .score(&resolution(&format!("b{i}"), 110.0, 30.0))
+                .expect("a seeded score");
+        }
+        let dir = std::path::PathBuf::from("/tmp")
+            .join(format!("qip-kernel-lattice-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, "").expect("an empty log file");
+        platform.event_log = EventLog::inspect(&path).expect("a read-only log");
+        let (_, problems) = platform.understand_now(start().saturating_add(Duration::from_days(1)));
+        assert!(
+            problems.iter().any(|p| p.contains("not journalled")),
+            "premise: {problems:?}"
+        );
+        let refused = platform.lattice().calibrator().weights().clone();
+        assert_ne!(refused, kept, "premise: the refused pass moved the weights");
+
+        let _ = platform.understand_now(start().saturating_add(Duration::from_days(2)));
+        assert!(platform.lattice().calibrator().frozen());
+        assert_eq!(
+            platform.lattice().calibrator().weights(),
+            &kept,
+            "the weights froze on a set whose review the log refused"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

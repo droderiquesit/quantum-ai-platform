@@ -158,15 +158,14 @@
   {
     "id": "R12-QUANT-9007",
     "status": "PARTIAL",
-    "current": "qip_quantum::foundry::admit_job refuses synchronous jobs and classes outside JobClass::ALL, tested; but nothing outside tests calls it. Egress: trust-zones allows ibm-quantum only from the optimisation zone. The hosted IBM provider has no transport, and the kernel only ever attaches SimulatedProvider.",
+    "current": "qip_quantum::foundry::admit_job refuses a synchronous job and any class outside JobClass::ALL, and the production submission path calls it. QuantumGateway::submit (gateway.rs) goes through admit_job before taking a slot, and ComputeRouter's QPU arm (qip-optimization-engine router.rs) submits only through the gateway, as JobClass::Optimisation with Delivery::Polled. The kernel attaches the in-tree SimulatedProvider only when QIP_QUANTUM_PROVIDER=simulated (dev and test tfvars). Hosted is refused by name.",
     "evidence": [
-      "backend/crates/libs/qip-quantum/src/foundry.rs:192 JobClass, :220 admit_job",
-      "backend/crates/libs/qip-quantum/tests/foundry.rs:118-135",
-      "infrastructure/terraform/modules/trust-zones/main.tf:141-152 ibm-quantum only for optimisation",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4577-4580 SimulatedProvider only",
-      "backend/crates/tests/qip-acceptance/tests/stress.rs:1589 hosted provider reports unavailable"
+      "backend/crates/libs/qip-quantum/src/gateway.rs::QuantumGateway::submit (admit_job)",
+      "backend/crates/services/qip-optimization-engine/src/router.rs (arm.gateway.submit)",
+      "backend/crates/libs/qip-quantum/tests/gateway.rs::an_inline_quantum_job_is_refused_and_the_provider_is_never_called",
+      "backend/crates/libs/qip-quantum/tests/gateway.rs::a_job_outside_the_admitted_classes_is_refused_by_its_whole_name"
     ],
-    "gap": "Call admit_job on the submission path; build the asynchronous gateway (queue + egress) and a hosted transport.",
+    "gap": "2026-10-24 (L4): the row said nothing outside tests calls admit_job. That was stale; the submission path calls it. Still unmet: the requirement's controlled egress gateway to IBM Quantum. HostedProvider has no production caller, ComputeSettings refuses `hosted`, and no IBM transport or credential exists. Closing it needs a hosted vendor, its key, and the egress path deployed: owner, billing and deploy. No code in this lane can do it.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -176,10 +175,10 @@
       "R12-QUANT-9040"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-quantum --test foundry; a kernel test routing a job through admit_job",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-quantum --test gateway",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 (L4): mutation: replacing admit_job in QuantumGateway::submit with an unconditional Ok(JobClass::Optimisation) failed both refusal tests (gateway.rs:91 and :140). Restored; sha256sum checked. Not promoted: the IBM egress half needs a vendor."
   },
   {
     "id": "R12-QUANT-9008",
@@ -568,13 +567,15 @@
   },
   {
     "id": "R12-WORLD-9024",
-    "status": "PARTIAL",
-    "current": "Forecasts carry expires_at, set from LatticeHorizon::refresh (lattice.rs:128-138). lattice::staleness_multiplier (lattice.rs:538) shrinks with age and refuses at expiry.",
+    "status": "COMPLETE",
+    "current": "LatticeStage keeps each forecast slot's issue instant beside its expiry. tactical_staleness gives, over the seconds-to-minutes and hours-to-days slots, the minimum share of life left, or a refusal when one has expired. DECIDE's sizeable_theses vetoes a thesis whose tactical forecast expired. construct multiplies the share left into the instrument's cap (ADR 0125 decision 4), compounding with the ADR 0063/0066/0125 caps and never above one. Both run on run_cycle's default DECIDE path.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/lattice.rs:538",
-      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_stale_forecast_is_refused_and_its_staleness_multiplier_shrinks_with_age"
+      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_stale_forecast_is_refused_and_its_staleness_multiplier_shrinks_with_age",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeStage::tactical_staleness",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::an_expired_tactical_forecast_vetoes_its_thesis_and_an_ageing_one_narrows_the_bound"
     ],
-    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: a staleness cap from lattice::staleness_multiplier at the sizing seam, with a test that an expired forecast vetoes the thesis.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -582,10 +583,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib an_expired_tactical_forecast_vetoes_its_thesis_and_an_ageing_one_narrows_the_bound",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The expiry half is real; the sizing half is explicitly unwired. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Capital sizing does not contract on forecast staleness. staleness_multiplier has no caller outside its own module and test (grep), and lattice.rs:32-35 and lattice_stage.rs:32-36 both say no thesis, size or order reads a lattice forecast. No tactical forecast service exists. The 'sizing shrinks; removing the expiry check fails' half of the check has no test."
+    "notes": "Round-2 independent audit, 2026-10-11: The expiry half is real; the sizing half is explicitly unwired. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Capital sizing does not contract on forecast staleness. staleness_multiplier has no caller outside its own module and test (grep), and lattice.rs:32-35 and lattice_stage.rs:32-36 both say no thesis, size or order reads a lattice forecast. No tactical forecast service exists. The 'sizing shrinks; removing the expiry check fails' half of the check has no test. 2026-10-24 (L4): mutations killed: drop the veto push in sizeable_theses (AAPL sized); return no Err for an expired slot (expiry refusal missing); no-op the cap multiply (strict size assertion). Restored; sha256sum checked. qip-kernel --lib: 430 passed, 0 failed. 2026-10-24 (L4), round 2 on 1bdfdbb8 and eccf2b3e: an independent code-reviewer skeptic returned HOLDS. The veto runs before construct on run_cycle's default path (qip-api routes.rs, qip-fastbrain node.rs, qip-deepbrain node.rs). The ageing cap strictly reduces the size. Removing the expiry check fails the test: the no-life-left guard still vetoes, so the expiry-specific refusal the test pins is missing, and the guard is kept as defence in depth. The skeptic's comment finding was fixed in the promoting commit: platform.rs said nothing downstream reads the lattice or the federation. Promoted to COMPLETE."
   },
   {
     "id": "R12-WORLD-9025",
@@ -634,13 +635,16 @@
   },
   {
     "id": "R12-WORLD-9027",
-    "status": "PARTIAL",
-    "current": "Lattice Calibrator freezes ensemble weights at the last safe set when unavailable; kernel marks it unavailable when the lattice review fails to journal.",
+    "status": "COMPLETE",
+    "current": "The lattice Calibrator freezes the ensemble weights at the last safe set while unavailable. The kernel marks it unavailable when the lattice review fails to journal (Platform::understand_now). Since 2026-10-24 a refreshed set becomes the safe set only once its review is journalled (Calibrator::confirm_safe, called through LatticeStage::confirm_calibration after a kept review). Before that, last_safe advanced at refresh time, so a freeze returned to the set built from the scores the log had refused.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/lattice.rs::Calibrator::refresh_weights",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_now"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_now",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::lattice_journal_tests::the_weights_freeze_at_the_last_set_whose_review_the_log_kept",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::lattice_journal_tests::a_lattice_review_the_log_refused_freezes_the_ensemble_weights_on_the_next_pass",
+      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_refreshed_set_whose_review_was_never_kept_is_not_the_safe_set"
     ],
-    "gap": "2026-10-24: Closes when a kernel test makes the lattice review journal fail (a failing journal sink or full spool) and asserts the next review reports WeightUpdate::Frozen, failing when platform.rs:12848 is mutated to pass true.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -650,10 +654,10 @@
       "R12-WORLD-9026"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib lattice_journal_tests && cargo +1.94.1 test -p qip-world-model --test forecast_lattice",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4 2026-10-24: regraded, the freeze rule is proven, but the only production path that makes the calibrator unavailable is platform.rs:12848 (from the lattice review failing to journal) and no test drives that: the kernel freeze test calls set_calibrator_available(false) by hand, so the line can be made always-true and every test in qip-kernel still passes"
+    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4 2026-10-24: regraded, the freeze rule is proven, but the only production path that makes the calibrator unavailable is platform.rs:12848 (from the lattice review failing to journal) and no test drives that: the kernel freeze test calls set_calibrator_available(false) by hand, so the line can be made always-true and every test in qip-kernel still passes 2026-10-24 (L4): round one (commit 09ccd529) added a kernel test driving the real cause: a read-only EventLog makes journal_record refuse the review. An independent skeptic REFUTED it: refresh_weights(true) set last_safe before the journal answered, so the frozen set was the refused one. The empty weights in the kernel test hid that. Fixed in the next commit. Kernel test the_weights_freeze_at_the_last_set_whose_review_the_log_kept seeds non-empty, differing sets. Mutations, each failing at the equality 'the weights froze on a set whose review the log refused': drop confirm_calibration; make refresh_weights set last_safe again. The second also fails the world-model test at forecast_lattice.rs:503. understand_now passing `true` fails both kernel tests. Restored; sha256sum checked. 2026-10-24 (L4), round 2, commit 1bdfdbb8: an independent code-reviewer skeptic returned HOLDS. last_safe is set only by confirm_safe, the one caller is gated on journal_record succeeding, understand_now has no early return before it, and run_cycle reaches it unconditionally. The kernel test uses two non-empty, differing sets. Caveats it recorded, outside the requirement text: the pass whose journal fails has already used its unconfirmed set (the freeze applies from the next pass), and scores whose review was refused stay in model_errors for later refreshes. Promoted to COMPLETE."
   },
   {
     "id": "R12-ARCH-9028",
