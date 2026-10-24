@@ -1,0 +1,62 @@
+[
+ {
+  "id": "R12-GCP-8056",
+  "class": "LARGE_SPLITTABLE",
+  "reason": "grep -rn network_connectivity infrastructure finds nothing; a gated-off modules/ncc can be declared here, but terraform is not installed so no plan/test can run and the row asks for a plan"
+ },
+ {
+  "id": "R12-GCP-10009",
+  "class": "LARGE_SPLITTABLE",
+  "reason": "same gap as R12-GCP-8056; hybrid spokes need interconnect attachments that connectivity/NOT-ORDERED.md says are out of band"
+ },
+ {
+  "id": "R12-REFLEX-10024",
+  "class": "DEPLOY_DEPENDENT",
+  "reason": "infrastructure/environments/*/terraform.tfvars execution_nodes = {} (protected path); module and standby.tftest.hcl exist"
+ },
+ {
+  "id": "R12-REFLEX-8063",
+  "class": "DEPLOY_DEPENDENT",
+  "reason": "gap is a plan showing a node and a benchmark; execution_nodes_enabled = false in every environment"
+ },
+ {
+  "id": "R12-DATA-10036",
+  "class": "BILLED",
+  "reason": "qip-mesh/src/bigquery.rs::BigQueryWarehouse has no non-test caller; modules/data research dataset is gated off; a writer plus enabling dataset is a billed resource"
+ },
+ {
+  "id": "R12-SEC-9109",
+  "class": "BILLED",
+  "reason": "HSM-protected signing keys are billed and need an infra.yml apply plus QIP_ARTEFACT_SIGNER=kms in dev; only modules/binaryauthorization declares ASYMMETRIC_SIGN today"
+ },
+ {
+  "id": "R12-MESH-10075",
+  "class": "DESIGN_OPEN",
+  "reason": "owner decision O07 (QUIC crate under ADR 0109) in design-decisions-2026-10-18.json; evidence path qip-mesh/src/peer.rs no longer exists, the protocol is in qip-peer"
+ },
+ {
+  "id": "R12-SEC-10006",
+  "class": "PROTECTED_PATCH",
+  "reason": "enable_security_command_center = false in environments/*/terraform.tfvars (protected); modules/scc/ORGANISATION-SCOPED.md says it needs org-level SCC"
+ },
+ {
+  "id": "R12-GCP-10010",
+  "class": "EXTERNAL_BLOCKED",
+  "reason": "modules/connectivity/NOT-ORDERED.md: partner contract and physical circuit are out of band"
+ },
+ {
+  "id": "R12-MESH-1010",
+  "class": "LARGE_SPLITTABLE",
+  "reason": "register stale: qip-edge-node depends on qip-peer-link (Cargo.toml:80) and spawns it in main.rs; two-node socket test in qip-peer-link/tests/peer_mesh.rs; remaining gap is default-on, deployment env"
+ },
+ {
+  "id": "R12-MESH-5062",
+  "class": "DEPLOY_DEPENDENT",
+  "reason": "peer mesh spawned only when QIP peer env vars set (qip-edge-node main.rs match &config.peers); no committed deployment sets them"
+ },
+ {
+  "id": "R12-RES-9176",
+  "class": "DEPLOY_DEPENDENT",
+  "reason": "gap is a game-day drill against a deployed environment; nothing runs"
+ }
+]
