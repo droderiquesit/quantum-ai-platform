@@ -1602,14 +1602,11 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        let request = CreationRequest::new(
-            CreationAction::List,
-            venue.as_str(),
-            object.as_str(),
-            "paper",
-        );
-        for authority in CreationAuthority::ALL {
-            permissions.record(authority, &request, "test fixture")?;
+        for action in [CreationAction::Create, CreationAction::List] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
         }
     }
     gateway.with_listing_permissions(permissions, "paper")
@@ -1618,7 +1615,7 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
 /// Permit `gateway` to seed each of `objects` as well as to list it, in
 /// place, where it is about to be seeded (R12-COVERAGE-5107: permission to
 /// list is not permission to seed). Called only there, so a test here that
-/// seeds nothing runs under `List` alone. It replaces the register
+/// seeds nothing runs under `Create` and `List` alone. It replaces the register
 /// `permitting` installed, so `objects` names every instrument the gateway
 /// lists, not only the one seeded. A fixture; the refusals without either
 /// permission are proven in qip-edge-node's tests/gateway.rs.
@@ -1626,7 +1623,11 @@ fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Resu
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        for action in [CreationAction::List, CreationAction::Seed] {
+        for action in [
+            CreationAction::Create,
+            CreationAction::List,
+            CreationAction::Seed,
+        ] {
             let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
             for authority in CreationAuthority::ALL {
                 permissions.record(authority, &request, "test fixture")?;
@@ -1675,6 +1676,18 @@ fn every_seeding_and_book_opening_primitive_demands_a_creation_admission() {
         ),
         ("services/qip-brokers/src/matching.rs", "pub fn open("),
         ("services/qip-brokers/src/matching.rs", "pub fn seed("),
+        // R12-COVERAGE-5107 round 4: venue flow taken against a listed book
+        // trades in the market, and the synthetic listing invents an
+        // instrument; both were public and took none for the first, `list`
+        // alone for the second.
+        (
+            "services/qip-brokers/src/exchange.rs",
+            "pub fn seed_aggressor(",
+        ),
+        (
+            "services/qip-brokers/src/exchange.rs",
+            "pub fn list_synthetic(",
+        ),
     ] {
         let declared = signature(path, needle);
         assert!(
@@ -1695,5 +1708,119 @@ fn every_seeding_and_book_opening_primitive_demands_a_creation_admission() {
         constructed.len(),
         1,
         "a book is constructed somewhere other than `MatchingEngine::open`: {constructed:?}"
+    );
+}
+
+/// R12-COVERAGE-5107, round 4: the primitives the skeptic found public and
+/// admission-free, each now either structural or pinned so that a new
+/// caller or a reverted signature fails here.
+///
+/// * `SimulatedExchange::list_synthetic` invents an instrument, so it takes
+///   a `create` admission beside the `list` one.
+/// * `MatchingEngine` derives `Serialize` and not `Deserialize`: a decoded
+///   engine would carry open, seeded books no admission opened.
+/// * `EventMarketPlane::open` takes the creation register every listing and
+///   quote is admitted against; it has no form without one.
+/// * `qip_prediction::SyntheticPredictionVenue::new` builds the event
+///   plane's market and its outcome instruments and cannot take an
+///   admission itself — `qip-prediction` is classified as holding no money
+///   authority and may not depend on the execution crate that mints one — so
+///   its production callers are pinned: exactly one, `open_event_plane` in
+///   the kernel's breadth plane, and only after `admit_event_market` has
+///   admitted every instrument it builds.
+///
+/// Mutations: add `Deserialize` back to `MatchingEngine`'s derive; drop
+/// `creation: &CreationAdmission` from `list_synthetic`; drop `creation:
+/// CreationPermissions` from `EventMarketPlane::open`; call
+/// `SyntheticPredictionVenue::new` before `admit_event_market` in
+/// `open_event_plane`, or from a second production function.
+#[test]
+fn no_public_primitive_brings_a_market_into_existence_without_an_admission() {
+    let root = crates_root();
+    let read = |path: &str| -> String {
+        std::fs::read_to_string(root.join(path)).expect("a source file is readable")
+    };
+    let signature = |text: &str, needle: &str| -> String {
+        let start = text
+            .find(needle)
+            .unwrap_or_else(|| panic!("premise: {needle} is declared"));
+        let end = text[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .expect("a function body follows its signature");
+        text[start..end]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    let exchange = read("services/qip-brokers/src/exchange.rs");
+    let listed = signature(&exchange, "pub fn list_synthetic(");
+    assert!(
+        listed.contains("creation: &CreationAdmission")
+            && listed.contains("admission: &CreationAdmission"),
+        "`list_synthetic` no longer demands both a creation and a listing admission: {listed}"
+    );
+
+    let matching = read("services/qip-brokers/src/matching.rs");
+    let at = matching
+        .find("pub struct MatchingEngine")
+        .expect("premise: MatchingEngine is declared");
+    let derive = matching[..at]
+        .rfind("#[derive(")
+        .map(|start| &matching[start..at])
+        .expect("premise: MatchingEngine has a derive");
+    assert!(
+        derive.contains("Serialize"),
+        "premise: the derive read is MatchingEngine's own: {derive}"
+    );
+    assert!(
+        !derive.contains("Deserialize"),
+        "MatchingEngine derives Deserialize again, so a decoded engine can carry books no \
+         admission opened: {derive}"
+    );
+
+    let events = read("runtime/qip-kernel/src/event_markets.rs");
+    let opened = signature(&events, "pub fn open(");
+    assert!(
+        opened.contains("creation: CreationPermissions"),
+        "`EventMarketPlane::open` no longer takes the creation register: {opened}"
+    );
+
+    let mut callers: Vec<(String, String)> = Vec::new();
+    let mut ordered = false;
+    for file in production_files() {
+        let path = relative(&file);
+        let text = std::fs::read_to_string(&file).expect("a source file is readable");
+        let lines = production_lines(&text);
+        for (position, (_, code)) in lines.iter().enumerate() {
+            if !code.contains("SyntheticPredictionVenue::new(") {
+                continue;
+            }
+            let start = (0..=position)
+                .rev()
+                .find(|i| declared_fn(&lines[*i].1).is_some())
+                .unwrap_or(0);
+            let function = declared_fn(&lines[start].1).unwrap_or_else(|| "?".to_string());
+            ordered = lines[start..position]
+                .iter()
+                .any(|(_, earlier)| earlier.contains("admit_event_market("));
+            callers.push((path.clone(), function));
+        }
+    }
+    assert_eq!(
+        callers,
+        vec![(
+            "runtime/qip-kernel/src/breadth.rs".to_string(),
+            "open_event_plane".to_string()
+        )],
+        "the synthetic prediction venue, which brings a market and its instruments into \
+         existence, is built somewhere other than the one admitted seam; admit what it builds \
+         first and classify the caller here"
+    );
+    assert!(
+        ordered,
+        "`open_event_plane` builds the synthetic prediction venue before \
+         `admit_event_market` has admitted what it builds"
     );
 }
