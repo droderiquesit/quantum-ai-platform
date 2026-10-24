@@ -14378,61 +14378,71 @@ impl Platform {
                         "approved but vetoed by the symbolic rule pack: {veto}"
                     ));
                     DecisionTaken::NotSizeable
-                } else if let Err(refusal) = justify_thesis(&reasoned.hypothesis.evidence) {
-                    // Approved on review and still not queued: a thesis whose
-                    // only ground is the return it expects never reaches
-                    // DECIDE, so no intent is formed on profit alone
-                    // (R12-GOV-6127). Recorded under its own words, because
-                    // "could not be sized" and "had no reason but profit" send
-                    // an operator to different places.
-                    outcome = outcome
-                        .with_problem(format!("approved but not justified: {}", refusal.message()));
-                    DecisionTaken::NotSizeable
                 } else {
-                    match self.thesis_from(&opportunity, &reasoned) {
-                        Ok(thesis) => {
-                            // What DECIDE will actually size on, read off the
-                            // thesis rather than recomputed here. Two
-                            // independent claims about one number disagree
-                            // eventually and the louder one is wrong; this is
-                            // the number, not a second opinion about it. It
-                            // sits below the admission confidence above
-                            // wherever the evidence contradicts itself, and
-                            // the gap between the two lines is the conflict
-                            // narrowing an operator can see the size of.
-                            outcome.detail.push_str(&format!(
-                                "; sized on conviction {:.3}",
-                                thesis.conviction.abs()
-                            ));
-                            // R12-RISK-4112: how split the panel was on
-                            // the thesis now queued, for DECIDE's
-                            // confidence governor to size against.
-                            self.governor.signals_mut().observe_dissent(
-                                &thesis.hypothesis_id,
-                                reasoned.dissenters.len(),
-                                report.runs.len(),
-                            );
-                            self.pending_theses.push(thesis);
-                            // Bounded like the proposal working set: an idea
-                            // nobody sized for this many cycles is stale, and
-                            // the event log keeps the record.
-                            if self.pending_theses.len() > PROPOSAL_HISTORY {
-                                self.pending_theses
-                                    .drain(..self.pending_theses.len() - PROPOSAL_HISTORY);
-                            }
-                            DecisionTaken::Approved
-                        }
-                        // An approved thesis that cannot be sized is reported,
-                        // not dropped silently — the difference between "we
-                        // chose not to" and "we could not" is the difference
-                        // an operator acts on.
-                        Err(reason) => {
+                    // Approved on review and still not queued unless
+                    // justified: a thesis whose only ground is the return it
+                    // expects never reaches DECIDE, so no intent is formed on
+                    // profit alone (R12-GOV-6127). `thesis_from` takes the
+                    // proof by value and only `justify_thesis` can mint one,
+                    // so this check cannot be dropped without the queue's
+                    // only constructor failing to compile.
+                    match justify_thesis(&reasoned.hypothesis.evidence) {
+                        Err(refusal) => {
+                            // Recorded under its own words, because "could not
+                            // be sized" and "had no reason but profit" send an
+                            // operator to different places.
                             outcome = outcome.with_problem(format!(
-                                "approved but not sizeable: {}",
-                                reason.message()
+                                "approved but not justified: {}",
+                                refusal.message()
                             ));
                             DecisionTaken::NotSizeable
                         }
+                        Ok(justified) => match self.thesis_from(&opportunity, &reasoned, justified)
+                        {
+                            Ok(thesis) => {
+                                // What DECIDE will actually size on, read off the
+                                // thesis rather than recomputed here. Two
+                                // independent claims about one number disagree
+                                // eventually and the louder one is wrong; this is
+                                // the number, not a second opinion about it. It
+                                // sits below the admission confidence above
+                                // wherever the evidence contradicts itself, and
+                                // the gap between the two lines is the conflict
+                                // narrowing an operator can see the size of.
+                                outcome.detail.push_str(&format!(
+                                    "; sized on conviction {:.3}",
+                                    thesis.conviction.abs()
+                                ));
+                                // R12-RISK-4112: how split the panel was on
+                                // the thesis now queued, for DECIDE's
+                                // confidence governor to size against.
+                                self.governor.signals_mut().observe_dissent(
+                                    &thesis.hypothesis_id,
+                                    reasoned.dissenters.len(),
+                                    report.runs.len(),
+                                );
+                                self.pending_theses.push(thesis);
+                                // Bounded like the proposal working set: an idea
+                                // nobody sized for this many cycles is stale, and
+                                // the event log keeps the record.
+                                if self.pending_theses.len() > PROPOSAL_HISTORY {
+                                    self.pending_theses
+                                        .drain(..self.pending_theses.len() - PROPOSAL_HISTORY);
+                                }
+                                DecisionTaken::Approved
+                            }
+                            // An approved thesis that cannot be sized is reported,
+                            // not dropped silently — the difference between "we
+                            // chose not to" and "we could not" is the difference
+                            // an operator acts on.
+                            Err(reason) => {
+                                outcome = outcome.with_problem(format!(
+                                    "approved but not sizeable: {}",
+                                    reason.message()
+                                ));
+                                DecisionTaken::NotSizeable
+                            }
+                        },
                     }
                 };
                 // The episode this cycle is, written down with what was
@@ -16063,10 +16073,15 @@ impl Platform {
         Ok((outcome, unsizeable, capped))
     }
 
+    /// `_justified` is the proof [`justification::justify_thesis`] mints and
+    /// nothing else can: the queue's only constructor will not build a
+    /// thesis from a hypothesis nobody showed was justified by more than
+    /// the return it expects (R12-GOV-6127).
     fn thesis_from(
         &self,
         opportunity: &Opportunity,
         reasoned: &qip_reasoning_engine::engine::ReasoningOutcome,
+        _justified: justification::Justified,
     ) -> Result<qip_portfolio_engine::construction::ApprovedThesis> {
         let object_id = opportunity
             .affected_objects
@@ -24340,18 +24355,35 @@ fn listed_test_universe(symbols: &[&str]) -> Universe {
 /// order path could form an intent on a hypothesis review approved with no
 /// supporting evidence at all — the red team raises a missing primary source
 /// as serious, not fatal, and a tolerant policy lets one through.
-fn justify_thesis(evidence: &qip_reasoning_engine::evidence::EvidenceSet) -> Result<()> {
-    use qip_contracts::action::{Ground, check_justification};
-    use qip_reasoning_engine::evidence::Stance;
-    let mut grounds = vec![Ground::ExpectedProfit];
-    grounds.extend(
-        evidence
-            .with_stance(Stance::Supports)
-            .into_iter()
-            .map(|item| Ground::Evidence(item.record_id.clone())),
-    );
-    check_justification(&grounds)
+///
+/// In its own module so that [`justification::Justified`]'s private field
+/// keeps the rest of `platform.rs` from writing one: before this, the call
+/// was a branch beside `thesis_from` that deleting compiled and no cycle
+/// test could notice, because `synthesise` always supplies a supporting item.
+mod justification {
+    use qip_core::error::Result;
+
+    /// Proof that a thesis stands on more than its expected profit.
+    #[derive(Debug)]
+    pub(super) struct Justified(());
+
+    pub(super) fn justify_thesis(
+        evidence: &qip_reasoning_engine::evidence::EvidenceSet,
+    ) -> Result<Justified> {
+        use qip_contracts::action::{Ground, check_justification};
+        use qip_reasoning_engine::evidence::Stance;
+        let mut grounds = vec![Ground::ExpectedProfit];
+        grounds.extend(
+            evidence
+                .with_stance(Stance::Supports)
+                .into_iter()
+                .map(|item| Ground::Evidence(item.record_id.clone())),
+        );
+        check_justification(&grounds)?;
+        Ok(Justified(()))
+    }
 }
+use justification::justify_thesis;
 
 #[cfg(test)]
 mod decide_tests {
