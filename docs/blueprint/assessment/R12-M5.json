@@ -696,24 +696,24 @@
   {
     "id": "R12-REFLEX-5031",
     "status": "PARTIAL",
-    "current": "qip-edge-node composes mirror -> relay -> spool writer -> drain, and adds a FabricSink producing to qip-fabricd when a fabric URL is configured; no test drives the drain into a fabric endpoint.",
+    "current": "qip-edge-node composes mirror -> relay -> spool writer -> drain and pushes a FabricSink producing to qip-fabricd when QIP_FABRIC_URL is set; tests/fabric_wiring.rs drives the real binary into a fabricd broker and a record reaches both partitions.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:809 fabric sink only when configured; :847 FabricMirror",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:396 FabricSink::deliver",
-      "grep FabricSink in apps/qip-edge-node/tests and qip-acceptance: none"
+      "backend/crates/apps/qip-edge-node/src/main.rs:1094 fabric sink pushed",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:416 FabricSink::deliver",
+      "backend/crates/apps/qip-edge-node/tests/fabric_wiring.rs:193 a_node_given_a_fabric_endpoint_ships_its_journal_to_p2_and_its_chain_to_p1"
     ],
-    "gap": "A test that a record reaches a fabricd partition (and fails if the mirror is removed); a deployed node.",
+    "gap": "A deployed node (execution_nodes = {} in every tfvars, so no node ships to a deployed fabricd). The earlier gap, a test that a record reaches a fabricd partition, is closed (corrected 2026-10-24).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox; node test asserting records reach a broker double",
+    "verification": "cargo test -p qip-edge-node --test fabric_wiring",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Drain and mirror now wired in main; the fabric delivery is untested."
+    "notes": "Lane T1-EDGE 2026-10-24: the evidence line saying no test names FabricSink was stale. Mutation: main.rs:1094 sinks.push( -> drop( fails fabric_wiring with empty topics; restored, passes. Kept PARTIAL for the deployed-node clause."
   },
   {
     "id": "R12-REFLEX-5032",

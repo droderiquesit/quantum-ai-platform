@@ -1480,13 +1480,13 @@
   },
   {
     "id": "R12-REFLEX-8067",
-    "status": "PARTIAL",
-    "current": "Cell state is in memory; journal batches go through spool/drain; delivery to a fabric partition is configuration-dependent and untested.",
+    "status": "COMPLETE",
+    "current": "qip-edge-node main pushes a FabricSink when QIP_FABRIC_URL is set (apps/qip-edge-node/src/main.rs:1094); the binary run against an in-process fabricd broker ships journal entries to the P2 journal stream and outcomes to P1 while it keeps deciding.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:809 fabric sink optional",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs:489 ticks reach the lake (not the fabric)"
+      "backend/crates/apps/qip-edge-node/src/main.rs:1094 fabric sink pushed",
+      "backend/crates/apps/qip-edge-node/tests/fabric_wiring.rs:193 a_node_given_a_fabric_endpoint_ships_its_journal_to_p2_and_its_chain_to_p1"
     ],
-    "gap": "A test that journal batches reach a fabric partition without blocking a pass.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1496,10 +1496,10 @@
       "R12-FABRIC-8004"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
+    "verification": "cargo test -p qip-edge-node --test fabric_wiring",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Writer/drain now constructed in main; fabric leg unproven."
+    "notes": "Closed 2026-10-24 by lane T1-EDGE. Mutation: main.rs:1094 sinks.push( -> drop( made the test fail with empty journal and outcome topics (timed out waiting for the node to ship to the fabric); restored, test result: ok. 1 passed."
   },
   {
     "id": "R12-EXEC-8068",
