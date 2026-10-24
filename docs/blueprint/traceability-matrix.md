@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 493 | 32.5% |
+| Blueprint completion (COMPLETE) | 494 | 32.5% |
 | Implemented (behaviour exists in code) | 1333 | 87.8% |
 | Tested (a named test demonstrates it) | 1235 | 81.4% |
 | Integrated (reached from a composition root) | 891 | 58.7% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 493 |
-| PARTIAL | 885 |
+| COMPLETE | 494 |
+| PARTIAL | 884 |
 | MISSING | 108 |
 | BLOCKED | 31 |
 | NEEDS-VALIDATION | 1 |
@@ -28,7 +28,7 @@ register (ADR 0099), and there is no second one.
 | Domain | Reqs | COMPLETE | PARTIAL | MISSING | BLOCKED | Other | Implemented | Tested | E2E |
 |---|---|---|---|---|---|---|---|---|---|
 | [ARCH](#arch) | 23 | 9 | 14 | 0 | 0 | 0 | 21 | 19 | 0 |
-| [CONTRACT](#contract) | 43 | 20 | 23 | 0 | 0 | 0 | 43 | 43 | 0 |
+| [CONTRACT](#contract) | 43 | 21 | 22 | 0 | 0 | 0 | 43 | 43 | 0 |
 | [FABRIC](#fabric) | 94 | 33 | 54 | 6 | 1 | 0 | 75 | 70 | 0 |
 | [REFLEX](#reflex) | 56 | 24 | 30 | 1 | 0 | 1 | 55 | 49 | 0 |
 | [MESH](#mesh) | 45 | 10 | 35 | 0 | 0 | 0 | 43 | 40 | 0 |
@@ -124,7 +124,7 @@ register (ADR 0099), and there is no second one.
 | R12-CONTRACT-7080 | GoalSpec contract carries its required fields | GoalSpec carries thirteen declarations, now including rollback_conditions (required, non-empty, no blank entry). A goal missing any declaration is refused, naming the field. qip-cli agency shadow decodes goals through it. The ambient intake's goal, built by AmbientIntake::open on the deep brain's default path, declares what a stop unwinds. Authority class is deliberately not on the goal: it lives on qip-agency's ActionPolicy, and a goal document carrying authority_class is refused as unknown. | PARTIAL | Rollback is closed. The authority-class half is a deliberate departure, not an omission: authority lives on ActionPolicy (starts at shadow, no live rung) and a goal asking for any authority is refused (expansion.rs GoalSpec doc). No ADR records that departure, so the clause as written stays unmet. The row closes when an ADR or a requirement amendment records that a goal carries no authority class. Nothing yet executes a rollback declaration; it is carried and validated. |  | P0 | cd backend && cargo test -p qip-contracts --test expansion && cargo test -p qip-agency --test agency |  |
 | R12-CONTRACT-7081 | InterventionPlan contract carries its required fields | InterventionPlan's decoder refuses a document missing any one of its twelve fields with a refusal naming that field in backticks, and a decoded plan encodes back to the same document field for field and byte-identical on a second trip. | COMPLETE |  |  | P0 | cd backend && cargo test -p qip-contracts --test expansion |  |
 | R12-CONTRACT-7082 | ActionIntent contract carries its required fields | qip-agency constructs a §27 qip_contracts::action_intent::ActionIntent for every step ActionGuard::preflight clears (guard.rs::intent :550, built at :470 only after every check passes): actor and on-whose-behalf (the goal approver), channel, the step's canonical JSON payload and its digest, provenance (cited evidence ids, goal and plan approval ids), the draft's disclosures, the four policies that admitted it, an idempotency key over plan id, index and payload digest, and the audit lineage. engine::execute carries them to Report::intents in shadow and when acting, and journal::record_pass writes each as AgencyRecord::IntentRecorded, decoded strictly when read back; PassLineage::verify refuses an intent that cites no plan approval the pass made. On qip-cli agency (main.rs -> agency::run -> record_pass) every pass the guard clears journals its intents; qip-deepbrain's ambient door builds them in the same preflight. | COMPLETE |  |  | P0 | cd backend && cargo +1.94.1 test -p qip-agency --test agency a_shadow_pass_yields_a_decodable_action_intent && cargo +1.94.1 test -p qip-cli --test agency |  |
-| R12-CONTRACT-7083 | EffectAttribution contract carries its required fields | EffectAttribution carries every field with range validation; attribution without chain/confounders/confidence refused. | PARTIAL | 2026-10-24: The named test (agency.rs an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused) probes five of the fields; deleting the goal_id, side_effects or counterfactual_method check leaves it and the whole agency suite green. The suite that proves the required-field refusal is qip-contracts tests/expansion.rs. Closing: point evidence and verification at it (cargo test -p qip-contracts --test expansion). 2026-10-24 (AUDIT-5 verification): the requirement names a two-part proof, refusal of a missing field and a round-trip that preserves every field. Only the refusal half is tested: every_decoded_record_encodes_back_to_the_same_document_field_for_field (qip-contracts tests/expansion.rs) lists goal, plan, gap and item but not the attribution, and no test serialises an EffectAttribution and compares it field for field. Closes with that round-trip test. |  | P1 | cargo test -p qip-agency --test agency |  |
+| R12-CONTRACT-7083 | EffectAttribution contract carries its required fields | EffectAttribution carries every field with range validation; attribution without chain/confounders/confidence refused. | COMPLETE |  |  | P1 | cargo test -p qip-contracts --test expansion |  |
 | R12-CONTRACT-7084 | GapSignal contract carries its required fields | GapSignal carries risk_value beside economic_value, required on decode and refused when negative; qip-expansion's raise carries it from Observation; the deep brain's anomaly mapper (default research path, research.rs:924) fills it from the observed move relative to expectation scaled by confidence, distinct from the z-score-driven economic figure; the surprise and specialist-proposal seams state their own exposure; detectors, campaigns and poisoning state zero. | COMPLETE |  |  | P1 | cd backend && cargo test -p qip-contracts --test expansion && cargo test -p qip-deepbrain --lib signal_mapper |  |
 | R12-CONTRACT-7085 | CurriculumItem contract carries its required fields | CurriculumItem has every field; per-field missing refusal tested; a decoded item encodes back to the same document field for field and byte-identical on a second trip; qip-expansion desk.offer builds items from the deepbrain research loop, on by default. | COMPLETE |  |  | P1 | cd backend && cargo test -p qip-contracts --test expansion |  |
 | R12-CONTRACT-7086 | BrainSpec contract carries its required fields | BrainSpec carries every field plus calibration/version and refuses a missing one; qip-deepbrain's ResearchLoop::new builds a validated registry for every wakeable specialist and refuses to start unless each names only registered tools. | COMPLETE | None for the requirement; not deployed. |  | P1 | cargo test -p qip-contracts --test brain_registry |  |
