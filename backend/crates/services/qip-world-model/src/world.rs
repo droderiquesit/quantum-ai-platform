@@ -261,6 +261,27 @@ impl WorldModel {
         Ok(())
     }
 
+    /// Stop believing what a quarantined source said (R12-RES-7097).
+    ///
+    /// Every fact the source stated is retracted from `at` — kept, so a
+    /// decision made while it was believed stays explicable — and each
+    /// relationship touched is journaled as a retraction naming the source,
+    /// so the change that moved a belief is visible and not inferred.
+    /// Returns how many relationships lost a version.
+    pub fn quarantine_source(&mut self, source: &str, at: Timestamp) -> usize {
+        let keys = self.graph.retract_source(source, at);
+        for key in &keys {
+            self.journal.push(Change::new(
+                ChangeKind::RelationshipRetracted,
+                key.clone(),
+                format!("source `{source}` quarantined; its statement is no longer believed"),
+                0.5,
+                at,
+            ));
+        }
+        keys.len()
+    }
+
     /// Assert a relationship, adding it to the graph.
     pub fn relate(
         &mut self,

@@ -302,6 +302,14 @@ impl TapeDriver {
     /// time, whatever the line asked for (TICK-006) — with the source hash
     /// recomputed so a corrected event's own hash still names its own
     /// payload rather than the request it started from.
+    ///
+    /// A tape carries no permission of its own (R12-COVERAGE-5107). A touch
+    /// is applied only where the gateway's register admits both seeding and
+    /// listing its instrument at that venue, and an aggressor against a
+    /// listed instrument only where the register still admits listing it.
+    /// A line the register refuses is not applied and is not counted as
+    /// applied; the refusal is returned, and the lines before it in this
+    /// call stay applied.
     pub fn seed(
         &mut self,
         gateway: &mut SimulatedGateway,

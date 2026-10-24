@@ -1897,3 +1897,202 @@ fn a_conformal_interval_is_refused_for_an_alpha_out_of_range_or_too_few_calibrat
     );
     Ok(())
 }
+
+/// Spearman correlation computed here from first principles, independent of
+/// `qip_numerics::stats`, so the fidelity report is checked against an
+/// arithmetic it did not share. A boosted teacher's outputs are piecewise
+/// constant, so ties are the norm and share the mean of their positions.
+fn independent_rank_correlation(x: &[f64], y: &[f64]) -> f64 {
+    fn ranks(values: &[f64]) -> Vec<f64> {
+        values
+            .iter()
+            .map(|v| {
+                let below = values.iter().filter(|w| *w < v).count() as f64;
+                let equal = values.iter().filter(|w| w.total_cmp(v).is_eq()).count() as f64;
+                below + (equal + 1.0) / 2.0
+            })
+            .collect()
+    }
+    let (rx, ry) = (ranks(x), ranks(y));
+    let n = rx.len() as f64;
+    let (mx, my) = (rx.iter().sum::<f64>() / n, ry.iter().sum::<f64>() / n);
+    let (mut cov, mut vx, mut vy) = (0.0, 0.0, 0.0);
+    for (a, b) in rx.iter().zip(&ry) {
+        cov += (a - mx) * (b - my);
+        vx += (a - mx) * (a - mx);
+        vy += (b - my) * (b - my);
+    }
+    cov / (vx * vy).sqrt()
+}
+
+/// R12-MODEL-4005: the fidelity a distillation reports is the gap that was
+/// actually there, on every axis, for a student that is measurably imperfect.
+///
+/// The test this replaces only asserted properties a report of zeros also has
+/// (gaps non-negative, agreement in [0, 1]), and AUDIT-4 overwrote
+/// `measure_fidelity`'s result with a perfect report without any test in the
+/// crate failing. A linear student cannot reproduce a boosted teacher of a
+/// humped target, so its gap is real and nonzero; the test recomputes each
+/// axis from the two models' own outputs and requires the report to match.
+/// Mutations that fire: replace the report with a perfect one; drop the
+/// absolute value from the gap; count disagreements instead of agreements;
+/// compute R2 against zero instead of the teacher's mean.
+#[test]
+fn a_distillation_reports_the_gap_its_student_actually_has_on_every_axis() -> Result<()> {
+    let training = humped_dataset("known-gap", 400, 131)?;
+    let teacher = fit(ModelFamily::boosted(), &training)?;
+    let probe = humped_dataset("known-gap-probe", 300, 137)?;
+    let threshold = 0.0;
+    let distillation = distil(
+        &teacher,
+        &probe,
+        StudentForm::Linear { ridge: 0.0 },
+        threshold,
+    )?;
+    let report = distillation.fidelity();
+
+    let teacher_out = teacher.predict_all(&probe)?;
+    let student_out: Vec<f64> = probe
+        .rows()
+        .iter()
+        .map(|row| distillation.student().evaluate(row))
+        .collect::<Result<Vec<f64>>>()?;
+    let n = teacher_out.len();
+    assert_eq!(n, probe.len());
+    assert_eq!(report.probe_samples, n);
+
+    let gaps: Vec<f64> = teacher_out
+        .iter()
+        .zip(&student_out)
+        .map(|(t, s)| (t - s).abs())
+        .collect();
+    let mean_gap = gaps.iter().sum::<f64>() / n as f64;
+    let max_gap = gaps.iter().cloned().fold(0.0_f64, f64::max);
+    let teacher_mean = teacher_out.iter().sum::<f64>() / n as f64;
+    let residual: f64 = teacher_out
+        .iter()
+        .zip(&student_out)
+        .map(|(t, s)| (t - s) * (t - s))
+        .sum();
+    let total: f64 = teacher_out
+        .iter()
+        .map(|t| (t - teacher_mean) * (t - teacher_mean))
+        .sum();
+    let r2 = 1.0 - residual / total;
+    let agreement = teacher_out
+        .iter()
+        .zip(&student_out)
+        .filter(|(t, s)| (**t >= threshold) == (**s >= threshold))
+        .count() as f64
+        / n as f64;
+    let rank = independent_rank_correlation(&teacher_out, &student_out);
+
+    // Premise: the student is measurably imperfect on every axis, so a report
+    // of a perfect copy cannot satisfy the equalities below by coincidence.
+    assert!(mean_gap > 0.05, "premise: a real mean gap, got {mean_gap}");
+    assert!(
+        max_gap > mean_gap,
+        "premise: the worst case exceeds the mean"
+    );
+    assert!(r2 < 0.95, "premise: R2 short of a copy, got {r2}");
+    assert!(rank < 0.99, "premise: ranking short of a copy, got {rank}");
+    assert!(
+        agreement < 1.0,
+        "premise: some decisions disagree, got {agreement}"
+    );
+
+    let summary = report.summarise();
+    assert!(
+        approx_eq(report.mean_absolute_gap, mean_gap, 1e-12),
+        "{summary}"
+    );
+    assert!(
+        approx_eq(report.maximum_absolute_gap, max_gap, 1e-12),
+        "{summary}"
+    );
+    assert!(approx_eq(report.agreement_r2, r2, 1e-9), "{summary}");
+    assert!(approx_eq(report.rank_correlation, rank, 1e-9), "{summary}");
+    assert!(
+        approx_eq(report.decision_agreement, agreement, 0.0),
+        "{summary}"
+    );
+    Ok(())
+}
+
+/// R12-MODEL-4005: each of the four fidelity bars refuses a student on its own.
+///
+/// Every report below meets the default policy on every axis but one, so a
+/// shortfall list of exactly one entry naming that axis is the bar firing and
+/// nothing else. Mutations that fire: `false &&` on any of the R2, rank,
+/// decision-agreement or mean-gap comparisons in `FidelityPolicy::shortfalls`.
+#[test]
+fn each_fidelity_bar_alone_refuses_a_student_that_misses_only_it() {
+    let passing = qip_training::distill::FidelityReport {
+        probe_samples: 200,
+        mean_absolute_gap: 0.01,
+        maximum_absolute_gap: 0.05,
+        agreement_r2: 0.99,
+        rank_correlation: 0.99,
+        decision_agreement: 0.99,
+        decision_threshold: 0.0,
+        student_cost: 4,
+        parameter_bytes: 128,
+        failure_modes: 0,
+    };
+    let policy = FidelityPolicy {
+        maximum_mean_gap: 0.02,
+        ..FidelityPolicy::default()
+    };
+    assert!(
+        policy.shortfalls(&passing).is_empty(),
+        "premise: the baseline report passes: {:?}",
+        policy.shortfalls(&passing)
+    );
+
+    let cases: [(&str, qip_training::distill::FidelityReport, &str); 4] = [
+        (
+            "R2",
+            qip_training::distill::FidelityReport {
+                agreement_r2: 0.79,
+                ..passing
+            },
+            "of the teacher's variation",
+        ),
+        (
+            "rank",
+            qip_training::distill::FidelityReport {
+                rank_correlation: 0.84,
+                ..passing
+            },
+            "rank correlation",
+        ),
+        (
+            "decision agreement",
+            qip_training::distill::FidelityReport {
+                decision_agreement: 0.94,
+                ..passing
+            },
+            "of decisions",
+        ),
+        (
+            "mean gap",
+            qip_training::distill::FidelityReport {
+                mean_absolute_gap: 0.03,
+                ..passing
+            },
+            "mean gap",
+        ),
+    ];
+    for (axis, report, phrase) in cases {
+        let shortfalls = policy.shortfalls(&report);
+        assert_eq!(
+            shortfalls.len(),
+            1,
+            "{axis}: exactly one bar should fire: {shortfalls:?}"
+        );
+        assert!(
+            shortfalls[0].contains(phrase),
+            "{axis}: the refusal names its bar: {shortfalls:?}"
+        );
+    }
+}

@@ -136,8 +136,8 @@ fn share_policy(grants: Vec<String>) -> Result<VerifiedPolicy> {
 
 /// A node holding one firing strategy under `grant`, with or without the
 /// centre's region share, and a venue whose touch is seeded on both sides.
-/// The venue may list `object()` on demand, the one instrument seeded and
-/// traded here, and nothing else.
+/// The venue may list `object()` on demand and seed it, the one instrument
+/// seeded and traded here, and nothing else.
 fn node(
     grant: VerifiedEnvelope,
     funded: bool,
@@ -146,7 +146,7 @@ fn node(
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
-    let mut gateway = permitting(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
+    let mut gateway = permitting_to_seed(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let feed = SimulatedFeed::new(venue());
@@ -658,22 +658,24 @@ fn a_cell_with_no_session_opens_no_chain_link_and_the_epoch_is_set_once_and_earl
     Ok(())
 }
 
-/// `gateway`, permitted to list each of `objects` on demand: a recorded
-/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
-/// A fixture; the refusal without one is proven in qip-edge-node's
-/// tests/gateway.rs.
-fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+/// `gateway`, permitted to list each of `objects` on demand and to seed
+/// liquidity into it: a recorded venue, product and jurisdiction permission
+/// for each action on each instrument (R12-COVERAGE-5107). `Seed` as well as
+/// `List`, because the tests here seed the touch they trade against and
+/// permission to list is not permission to seed. A fixture; the refusals
+/// without either are proven in qip-edge-node's tests/gateway.rs.
+fn permitting_to_seed(
+    gateway: SimulatedGateway,
+    objects: &[&ObjectId],
+) -> Result<SimulatedGateway> {
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        let request = CreationRequest::new(
-            CreationAction::List,
-            venue.as_str(),
-            object.as_str(),
-            "paper",
-        );
-        for authority in CreationAuthority::ALL {
-            permissions.record(authority, &request, "test fixture")?;
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
         }
     }
     gateway.with_listing_permissions(permissions, "paper")

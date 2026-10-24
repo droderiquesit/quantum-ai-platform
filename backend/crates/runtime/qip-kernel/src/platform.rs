@@ -988,6 +988,18 @@ pub struct Platform {
     /// desk that grew with uptime would be the failure [`SERIES_HISTORY`]
     /// documents, reached by a second road.
     market: Upstream<MarketView>,
+    /// The risk view the desk's risk control reads through its
+    /// `read_risk_state` gate (R12-RISK-3021).
+    ///
+    /// Until this was an [`Upstream`] the desk held the `RiskState` built at
+    /// assembly — equity and cash, nothing else — so in every running binary
+    /// the risk control read empty value-at-risk and expected-shortfall maps
+    /// and a zero volatility, and never emitted a forecast or a stress day
+    /// outside a test that handed it a populated state by hand. The scope was
+    /// "covered" by an agent that could not see the book. REASON writes
+    /// [`Platform::risk_state`] here before the panel is convened; see
+    /// [`Self::brief_the_desk_on_risk`].
+    risk: Upstream<RiskView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -1210,6 +1222,12 @@ const PENDING_CORPORATE_ACTIONS: usize = 4_096;
 const OUTSIDE_PRIOR_CAPACITY: usize = 1_024;
 
 const PROPOSAL_HISTORY: usize = 256;
+/// The self-model key the world-model federation's arbitrated view is
+/// scored under as an ensemble (R12-MODEL-6016).
+pub const FEDERATION_ENSEMBLE: &str = "world-model-federation";
+/// The self-model key the tournament's market aggregate is scored under as
+/// an ensemble (R12-MODEL-6016).
+pub const TOURNAMENT_ENSEMBLE: &str = "model-tournament";
 
 /// How many cycles of the book's own equity the platform keeps, for the tail
 /// statistics the risk limits read.
@@ -5254,6 +5272,20 @@ impl Platform {
             snapshot: MarketSnapshot::new(now),
             universe,
         });
+        let risk = Upstream::new(RiskView {
+            state: RiskState {
+                equity: initial_equity,
+                cash: initial_equity,
+                // The empty book's survival ceiling at assembly: its whole
+                // equity, which is what the seed below derives before any
+                // reserve is configured. Without it the desk's risk agent
+                // would read the installed survival limit against no
+                // ceiling and veto every thesis on a book holding nothing.
+                survival_gross_ceiling: Some(initial_equity),
+                ..RiskState::default()
+            },
+            limits: limits.clone(),
+        });
         let mut desk = Desk::new(
             MarketView {
                 snapshot: MarketSnapshot::new(now),
@@ -5290,6 +5322,7 @@ impl Platform {
         );
         desk.world = world.gate(desk.world.required(), desk.world.label());
         desk.market = market.gate(desk.market.required(), desk.market.label());
+        desk.risk = risk.gate(desk.risk.required(), desk.risk.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -5689,6 +5722,7 @@ impl Platform {
             observation_history: BTreeMap::new(),
             world,
             market,
+            risk,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -10327,7 +10361,39 @@ impl Platform {
     /// before this seam existed — is a `false` here and not a `no_data`
     /// finding somebody has to notice in a cycle report.
     pub fn desk_is_fed(&self) -> bool {
-        self.world.feeds(&self.desk.world) && self.market.feeds(&self.desk.market)
+        self.world.feeds(&self.desk.world)
+            && self.market.feeds(&self.desk.market)
+            && self.risk.feeds(&self.desk.risk)
+    }
+
+    /// The risk view the desk's risk control reads through its
+    /// `read_risk_state` gate, as REASON last wrote it.
+    pub fn desk_risk_view(&self) -> Reading<'_, RiskView> {
+        self.risk.read()
+    }
+
+    /// Write the book's current risk state and limits into the slot the
+    /// desk's risk control reads, before the panel is convened.
+    ///
+    /// One carry-over is deliberate. Before the survival kernel's first
+    /// construction [`Platform::risk_state`] has no gross ceiling, and the
+    /// pre-trade gate refuses on that; the desk's risk control, reading the
+    /// same `None` against the installed survival limit, would veto every
+    /// thesis, so no construction would ever happen to supply a ceiling.
+    /// Until one exists the view keeps the ceiling it already held — the
+    /// assembly seed, the empty book's whole equity — rather than a figure
+    /// nobody derived. The pre-trade gate is untouched: it reads
+    /// `risk_state()`, not this view.
+    fn brief_the_desk_on_risk(&self) {
+        let mut state = self.risk_state();
+        let limits = self.monitor.limits().clone();
+        self.risk.update(|view| {
+            if state.survival_gross_ceiling.is_none() {
+                state.survival_gross_ceiling = view.state.survival_gross_ceiling;
+            }
+            view.state = state;
+            view.limits = limits;
+        });
     }
 
     /// Where liquidity lives, per instrument across venues, as fed from the
@@ -13033,6 +13099,31 @@ impl Platform {
                     ));
                 }
             }
+            // The arbitrated view is scored as an ensemble of its own, apart
+            // from the members it combined (R12-MODEL-6016).
+            if let Some(merged) = resolution.ensemble {
+                let charged = ComponentKey::new(
+                    qip_learning_engine::self_model::ComponentKind::Ensemble,
+                    FEDERATION_ENSEMBLE,
+                )
+                .and_then(|key| {
+                    self.self_model.absorb_forecast(
+                        key,
+                        resolution.proposition.as_str(),
+                        merged,
+                        resolution.outcome,
+                        now,
+                    )
+                });
+                if let Err(error) = charged {
+                    problems.push(format!(
+                        "the federation's arbitrated view on `{}` resolved and was charged to no \
+                         component: {}",
+                        resolution.proposition,
+                        error.message()
+                    ));
+                }
+            }
         }
         if let Err(error) = self.journal_record(review, "kernel/federation", now) {
             problems.push(format!(
@@ -13944,6 +14035,7 @@ impl Platform {
             labels([]),
             expired.len() as f64,
         );
+        self.brief_the_desk_on_risk();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
             return outcome;
@@ -14378,61 +14470,71 @@ impl Platform {
                         "approved but vetoed by the symbolic rule pack: {veto}"
                     ));
                     DecisionTaken::NotSizeable
-                } else if let Err(refusal) = justify_thesis(&reasoned.hypothesis.evidence) {
-                    // Approved on review and still not queued: a thesis whose
-                    // only ground is the return it expects never reaches
-                    // DECIDE, so no intent is formed on profit alone
-                    // (R12-GOV-6127). Recorded under its own words, because
-                    // "could not be sized" and "had no reason but profit" send
-                    // an operator to different places.
-                    outcome = outcome
-                        .with_problem(format!("approved but not justified: {}", refusal.message()));
-                    DecisionTaken::NotSizeable
                 } else {
-                    match self.thesis_from(&opportunity, &reasoned) {
-                        Ok(thesis) => {
-                            // What DECIDE will actually size on, read off the
-                            // thesis rather than recomputed here. Two
-                            // independent claims about one number disagree
-                            // eventually and the louder one is wrong; this is
-                            // the number, not a second opinion about it. It
-                            // sits below the admission confidence above
-                            // wherever the evidence contradicts itself, and
-                            // the gap between the two lines is the conflict
-                            // narrowing an operator can see the size of.
-                            outcome.detail.push_str(&format!(
-                                "; sized on conviction {:.3}",
-                                thesis.conviction.abs()
-                            ));
-                            // R12-RISK-4112: how split the panel was on
-                            // the thesis now queued, for DECIDE's
-                            // confidence governor to size against.
-                            self.governor.signals_mut().observe_dissent(
-                                &thesis.hypothesis_id,
-                                reasoned.dissenters.len(),
-                                report.runs.len(),
-                            );
-                            self.pending_theses.push(thesis);
-                            // Bounded like the proposal working set: an idea
-                            // nobody sized for this many cycles is stale, and
-                            // the event log keeps the record.
-                            if self.pending_theses.len() > PROPOSAL_HISTORY {
-                                self.pending_theses
-                                    .drain(..self.pending_theses.len() - PROPOSAL_HISTORY);
-                            }
-                            DecisionTaken::Approved
-                        }
-                        // An approved thesis that cannot be sized is reported,
-                        // not dropped silently — the difference between "we
-                        // chose not to" and "we could not" is the difference
-                        // an operator acts on.
-                        Err(reason) => {
+                    // Approved on review and still not queued unless
+                    // justified: a thesis whose only ground is the return it
+                    // expects never reaches DECIDE, so no intent is formed on
+                    // profit alone (R12-GOV-6127). `thesis_from` takes the
+                    // proof by value and only `justify_thesis` can mint one,
+                    // so this check cannot be dropped without the queue's
+                    // only constructor failing to compile.
+                    match justify_thesis(&reasoned.hypothesis.evidence) {
+                        Err(refusal) => {
+                            // Recorded under its own words, because "could not
+                            // be sized" and "had no reason but profit" send an
+                            // operator to different places.
                             outcome = outcome.with_problem(format!(
-                                "approved but not sizeable: {}",
-                                reason.message()
+                                "approved but not justified: {}",
+                                refusal.message()
                             ));
                             DecisionTaken::NotSizeable
                         }
+                        Ok(justified) => match self.thesis_from(&opportunity, &reasoned, justified)
+                        {
+                            Ok(thesis) => {
+                                // What DECIDE will actually size on, read off the
+                                // thesis rather than recomputed here. Two
+                                // independent claims about one number disagree
+                                // eventually and the louder one is wrong; this is
+                                // the number, not a second opinion about it. It
+                                // sits below the admission confidence above
+                                // wherever the evidence contradicts itself, and
+                                // the gap between the two lines is the conflict
+                                // narrowing an operator can see the size of.
+                                outcome.detail.push_str(&format!(
+                                    "; sized on conviction {:.3}",
+                                    thesis.conviction.abs()
+                                ));
+                                // R12-RISK-4112: how split the panel was on
+                                // the thesis now queued, for DECIDE's
+                                // confidence governor to size against.
+                                self.governor.signals_mut().observe_dissent(
+                                    &thesis.hypothesis_id,
+                                    reasoned.dissenters.len(),
+                                    report.runs.len(),
+                                );
+                                self.pending_theses.push(thesis);
+                                // Bounded like the proposal working set: an idea
+                                // nobody sized for this many cycles is stale, and
+                                // the event log keeps the record.
+                                if self.pending_theses.len() > PROPOSAL_HISTORY {
+                                    self.pending_theses
+                                        .drain(..self.pending_theses.len() - PROPOSAL_HISTORY);
+                                }
+                                DecisionTaken::Approved
+                            }
+                            // An approved thesis that cannot be sized is reported,
+                            // not dropped silently — the difference between "we
+                            // chose not to" and "we could not" is the difference
+                            // an operator acts on.
+                            Err(reason) => {
+                                outcome = outcome.with_problem(format!(
+                                    "approved but not sizeable: {}",
+                                    reason.message()
+                                ));
+                                DecisionTaken::NotSizeable
+                            }
+                        },
                     }
                 };
                 // The episode this cycle is, written down with what was
@@ -16063,10 +16165,15 @@ impl Platform {
         Ok((outcome, unsizeable, capped))
     }
 
+    /// `_justified` is the proof [`justification::justify_thesis`] mints and
+    /// nothing else can: the queue's only constructor will not build a
+    /// thesis from a hypothesis nobody showed was justified by more than
+    /// the return it expects (R12-GOV-6127).
     fn thesis_from(
         &self,
         opportunity: &Opportunity,
         reasoned: &qip_reasoning_engine::engine::ReasoningOutcome,
+        _justified: justification::Justified,
     ) -> Result<qip_portfolio_engine::construction::ApprovedThesis> {
         let object_id = opportunity
             .affected_objects
@@ -18036,6 +18143,36 @@ impl Platform {
             Ok(Some(review)) => {
                 let detail = format!("{}; {}", outcome.detail, review.detail());
                 outcome = StageOutcome { detail, ..outcome };
+                // The market aggregate is an ensemble of the tournament's
+                // forecasters, scored apart from them (R12-MODEL-6016): the
+                // probability it held for the outcome that happened, charged
+                // as a forecast that the outcome would happen.
+                for resolved in &review.resolved {
+                    let Some(aggregate) = resolved.aggregate else {
+                        continue;
+                    };
+                    let charged = ComponentKey::new(
+                        qip_learning_engine::self_model::ComponentKind::Ensemble,
+                        TOURNAMENT_ENSEMBLE,
+                    )
+                    .and_then(|key| {
+                        self.self_model.absorb_forecast(
+                            key,
+                            resolved.question.as_str(),
+                            aggregate,
+                            true,
+                            now,
+                        )
+                    });
+                    if let Err(error) = charged {
+                        outcome = outcome.with_problem(format!(
+                            "the tournament aggregate on `{}` resolved and was charged to no \
+                             component: {}",
+                            resolved.question,
+                            error.message()
+                        ));
+                    }
+                }
                 if let Err(error) =
                     self.journal_record(review, crate::model_tournament::TOURNAMENT_ORIGIN, now)
                 {
@@ -20854,6 +20991,17 @@ impl Platform {
             .filter_map(RegistrationDecision::transition)
         {
             let dataset = format!("source.{}", transition.source_id);
+            // A quarantined source's evidence is quarantined with it
+            // (R12-RES-7097): what it already told the world model stops
+            // being believed, so every belief and hypothesis read from the
+            // graph afterwards is formed without it. A retirement is not a
+            // finding against the facts — a feed retired for cost or
+            // staleness said nothing false — so it leaves them standing.
+            if transition.action == LifecycleAction::Quarantined {
+                let source = transition.source_id.clone();
+                self.world
+                    .update(|world| world.quarantine_source(&source, now));
+            }
             if matches!(
                 transition.action,
                 LifecycleAction::Quarantined | LifecycleAction::Retired
@@ -24340,18 +24488,35 @@ fn listed_test_universe(symbols: &[&str]) -> Universe {
 /// order path could form an intent on a hypothesis review approved with no
 /// supporting evidence at all — the red team raises a missing primary source
 /// as serious, not fatal, and a tolerant policy lets one through.
-fn justify_thesis(evidence: &qip_reasoning_engine::evidence::EvidenceSet) -> Result<()> {
-    use qip_contracts::action::{Ground, check_justification};
-    use qip_reasoning_engine::evidence::Stance;
-    let mut grounds = vec![Ground::ExpectedProfit];
-    grounds.extend(
-        evidence
-            .with_stance(Stance::Supports)
-            .into_iter()
-            .map(|item| Ground::Evidence(item.record_id.clone())),
-    );
-    check_justification(&grounds)
+///
+/// In its own module so that [`justification::Justified`]'s private field
+/// keeps the rest of `platform.rs` from writing one: before this, the call
+/// was a branch beside `thesis_from` that deleting compiled and no cycle
+/// test could notice, because `synthesise` always supplies a supporting item.
+mod justification {
+    use qip_core::error::Result;
+
+    /// Proof that a thesis stands on more than its expected profit.
+    #[derive(Debug)]
+    pub(super) struct Justified(());
+
+    pub(super) fn justify_thesis(
+        evidence: &qip_reasoning_engine::evidence::EvidenceSet,
+    ) -> Result<Justified> {
+        use qip_contracts::action::{Ground, check_justification};
+        use qip_reasoning_engine::evidence::Stance;
+        let mut grounds = vec![Ground::ExpectedProfit];
+        grounds.extend(
+            evidence
+                .with_stance(Stance::Supports)
+                .into_iter()
+                .map(|item| Ground::Evidence(item.record_id.clone())),
+        );
+        check_justification(&grounds)?;
+        Ok(Justified(()))
+    }
 }
+use justification::justify_thesis;
 
 #[cfg(test)]
 mod decide_tests {
@@ -27331,6 +27496,112 @@ mod retention_tests {
         assert_eq!(closes.last().map(|value| value.value), Some(newest));
     }
 
+    /// R12-RISK-3021: the production organisation's risk control forecasts
+    /// the book's tail and generates a stress day from the book the platform
+    /// actually holds, not from the state taken at assembly.
+    ///
+    /// The failure this prevents shipped: the desk held a `RiskState` with
+    /// equity and cash only, so in every binary the value-at-risk and
+    /// expected-shortfall maps were empty, volatility was zero, and the risk
+    /// control's forecast and stress facts were never emitted outside a test
+    /// that built the state by hand.
+    ///
+    /// Mutation: delete `self.brief_the_desk_on_risk();` from `stage_reason`
+    /// — the desk then still reads the assembly state, the premise-checked
+    /// tail below never reaches it, and the forecast facts are absent.
+    #[test]
+    fn reason_briefs_the_desk_risk_control_on_the_book_and_it_forecasts_and_stresses_it() {
+        let mut platform = platform();
+        assert!(
+            platform.desk_is_fed(),
+            "the desk's risk gate is not wired to the platform's upstream"
+        );
+        // An equity path with a left tail, so the kernel's own risk state has
+        // a value at risk, an expected shortfall and a volatility to give.
+        for equity in [
+            100_000.0, 100_400.0, 100_900.0, 101_200.0, 101_500.0, 101_100.0, 101_600.0, 102_000.0,
+            101_800.0, 102_300.0, 96_000.0, 90_500.0, 84_000.0,
+        ] {
+            platform.equity_history.push(equity);
+        }
+        let kernel = platform.risk_state();
+        // The premise: the kernel computed a tail and a volatility. Without
+        // it the assertions below would be about nothing.
+        assert!(
+            !kernel.value_at_risk.is_empty(),
+            "the kernel computed no VaR"
+        );
+        assert!(
+            !kernel.expected_shortfall.is_empty(),
+            "the kernel computed no expected shortfall"
+        );
+        assert!(kernel.volatility > 0.0, "the kernel computed no volatility");
+        // And the desk did not already hold it: assembly gave it none.
+        assert!(platform.desk_risk_view().state.value_at_risk.is_empty());
+
+        let now = start();
+        let lineage = Lineage::root(CorrelationId::from_string("risk-brief"), "kernel/test");
+        let _ = platform.stage_reason(now, &lineage);
+
+        assert_eq!(
+            platform.desk_risk_view().state.value_at_risk,
+            kernel.value_at_risk,
+            "REASON did not write the kernel's risk state into the desk"
+        );
+
+        // The production organisation, dispatched against the desk REASON
+        // briefed: its risk control now emits the forecast and the stress
+        // day, read from the kernel's figures.
+        let brief = qip_agents::finding::AgentBrief::new(
+            "is the book's tail acceptable",
+            now,
+            Duration::from_days(30),
+        );
+        let report = platform.organisation.dispatch(&brief, now, &lineage);
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.agent_id == qip_investment_agents::manifests::ids::RISK)
+            .expect("premise: the production organisation runs the risk control");
+        let fact = |label: &str| {
+            finding
+                .facts
+                .iter()
+                .find(|fact| fact.label == label)
+                .map(|fact| fact.value)
+        };
+        let highest = |tail: &BTreeMap<String, f64>| {
+            tail.iter()
+                .max_by(|a, b| a.0.cmp(b.0))
+                .map(|(_, value)| *value)
+        };
+        assert_eq!(
+            fact("forecast_value_at_risk"),
+            highest(&kernel.value_at_risk),
+            "the risk control's forecast is not the kernel's VaR"
+        );
+        assert_eq!(
+            fact("forecast_expected_shortfall"),
+            highest(&kernel.expected_shortfall),
+            "the risk control's forecast is not the kernel's expected shortfall"
+        );
+        // The stress day is emitted only where the book has a volatility, so
+        // its presence is the proof the kernel's figure arrived; its value is
+        // three of the kernel's daily sigmas at the kernel's own leverage
+        // (zero gross here, so zero — a book with no position loses nothing).
+        let leverage = kernel.gross_exposure.to_f64() / kernel.equity.to_f64();
+        let stress = fact("stress_loss_3sd_day").unwrap_or_else(|| {
+            panic!(
+                "the risk control generated no stress day: {:?}",
+                finding.facts
+            )
+        });
+        assert!(
+            (stress - 3.0 * kernel.volatility / 252.0_f64.sqrt() * leverage).abs() < 1e-12,
+            "the stress day {stress} is not three daily sigmas of the kernel's volatility"
+        );
+    }
+
     /// The other market records reach the desk too, so an agent reading the
     /// book or the last trade is reading what the platform absorbed.
     #[test]
@@ -27974,6 +28245,180 @@ mod central_sizing_tests {
                 .freshness(Capability::CausalGraph),
             Freshness::Stale,
             "the demo seed's year-old claims read stale at the centre"
+        );
+    }
+
+    /// One platform sized as `size` sizes it, with `trigger` applied to its
+    /// confidence signals first, and the grant the next capital grant would
+    /// be narrowed by afterwards — the multiplier `Platform::issue_capital`
+    /// hands `CentralPlane::issue_narrowed`.
+    fn sized_and_granted(
+        trigger: impl FnOnce(&mut Platform),
+        now: Timestamp,
+    ) -> (
+        Decimal,
+        Decimal,
+        crate::confidence::ConfidenceDecision,
+        Platform,
+    ) {
+        let mut platform = platform();
+        trigger(&mut platform);
+        let (budget, notional) = size(&mut platform, now);
+        let grant = platform
+            .grant_narrowing(now)
+            .expect("the grant narrowing reads");
+        (budget, notional, grant, platform)
+    }
+
+    /// R12-RISK-4112 through the kernel: a split panel on a thesis the desk is
+    /// about to size narrows the construction budget and the next capital
+    /// grant, by the disagreement schedule, and nothing else moves.
+    ///
+    /// Until this test the property was proven only in `confidence.rs`'s unit
+    /// tests, against a `ConfidenceSignals` built by hand: nothing showed the
+    /// platform's DECIDE stage reading the dissent REASON records, or the
+    /// grant `issue_capital` signs reading the construction that followed.
+    ///
+    /// Mutations that fail it: skip the disagreement block in
+    /// `ConfidenceSignals::decide` (budget unchanged); skip the
+    /// `Trigger::Disagreement` arm in `decide_for_grant` (grant unchanged).
+    #[test]
+    fn a_split_panel_narrows_the_construction_budget_and_the_next_grant() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let (calm_budget, calm_notional, calm_grant, _) = sized_and_granted(|_| {}, now);
+        assert!(
+            calm_notional.is_positive(),
+            "premise: the undisputed platform sized something"
+        );
+        assert!(
+            !calm_grant
+                .contractions
+                .iter()
+                .any(|c| c.trigger == crate::confidence::Trigger::Disagreement),
+            "premise: no disagreement narrows a grant on an undisputed platform: {calm_grant:?}"
+        );
+
+        // Three of four agents argued against the AAPL thesis.
+        let (split_budget, split_notional, split_grant, _) = sized_and_granted(
+            |platform| {
+                platform
+                    .governor
+                    .signals_mut()
+                    .observe_dissent("HYP-AAPL", 3, 4);
+            },
+            now,
+        );
+        let floor = crate::confidence::DISAGREEMENT_FLOOR;
+        assert_eq!(
+            split_budget,
+            calm_budget * floor,
+            "the construction budget is not narrowed by the disagreement schedule"
+        );
+        assert!(
+            split_notional < calm_notional,
+            "the split panel traded as much"
+        );
+        assert_eq!(
+            split_grant.multiplier,
+            calm_grant.multiplier * floor,
+            "the next grant is not narrowed by the disagreement schedule: {split_grant:?}"
+        );
+        assert!(
+            split_grant
+                .contractions
+                .iter()
+                .any(|c| c.trigger == crate::confidence::Trigger::Disagreement),
+            "the grant does not name the disagreement that narrowed it: {split_grant:?}"
+        );
+        assert!(
+            split_grant.multiplier <= Decimal::ONE && calm_grant.multiplier <= Decimal::ONE,
+            "a grant multiplier exceeded one"
+        );
+    }
+
+    /// R12-RISK-4115 through the kernel: a thesis whose instrument is in a
+    /// regime no resolved claim was graded in narrows the construction budget
+    /// and the next capital grant by the regime-mismatch factor, and a
+    /// platform graded in that regime sizes exactly as one graded in nothing.
+    ///
+    /// Mutations that fail it: make `regime_multiplier` return one always
+    /// (budget and grant unchanged); skip the `Trigger::RegimeMismatch` arm
+    /// in `decide_for_grant` (grant unchanged).
+    #[test]
+    fn a_regime_no_claim_was_graded_in_narrows_the_construction_budget_and_the_next_grant() {
+        use qip_cost_router::context::MarketRegime;
+        let now = Timestamp::from_secs(1_760_000_100);
+        let (calm_budget, calm_notional, calm_grant, calm) = sized_and_granted(|_| {}, now);
+        assert!(calm_notional.is_positive(), "premise: something was sized");
+        // The regimes the two theses are sized in, read the way DECIDE reads
+        // them; every other regime is one the mismatched platform is graded in.
+        let present: BTreeSet<MarketRegime> = ["AAPL", "MSFT"]
+            .into_iter()
+            .map(|object| calm.market_regime(object))
+            .collect();
+        let elsewhere: Vec<MarketRegime> = [
+            MarketRegime::Trending,
+            MarketRegime::MeanReverting,
+            MarketRegime::Crisis,
+            MarketRegime::Illiquid,
+            MarketRegime::Quiet,
+        ]
+        .into_iter()
+        .filter(|regime| !present.contains(regime))
+        .collect();
+        assert!(
+            !elsewhere.is_empty(),
+            "premise: some regime is not the one the theses sit in"
+        );
+
+        // A calibration good enough to earn one on its own, so the only
+        // contraction the grading adds is the regime's.
+        let (away_budget, away_notional, away_grant, _) = sized_and_granted(
+            |platform| {
+                platform
+                    .governor
+                    .signals_mut()
+                    .observe_calibration(0.0, 60, elsewhere.clone());
+            },
+            now,
+        );
+        let mismatch = crate::confidence::REGIME_MISMATCH;
+        assert_eq!(
+            away_budget,
+            calm_budget * mismatch,
+            "the construction budget is not narrowed by the regime mismatch"
+        );
+        assert!(
+            away_notional < calm_notional,
+            "the mismatched platform traded as much"
+        );
+        assert_eq!(
+            away_grant.multiplier,
+            calm_grant.multiplier * mismatch,
+            "the next grant is not narrowed by the regime mismatch: {away_grant:?}"
+        );
+        assert!(
+            away_grant.multiplier <= Decimal::ONE,
+            "a grant multiplier exceeded one"
+        );
+
+        // Graded in the very regimes the theses sit in: no contraction.
+        let (home_budget, _, home_grant, _) = sized_and_granted(
+            |platform| {
+                platform
+                    .governor
+                    .signals_mut()
+                    .observe_calibration(0.0, 60, present.clone());
+            },
+            now,
+        );
+        assert_eq!(
+            home_budget, calm_budget,
+            "a graded regime narrowed the budget"
+        );
+        assert_eq!(
+            home_grant.multiplier, calm_grant.multiplier,
+            "a graded regime narrowed the grant"
         );
     }
 }
@@ -32957,5 +33402,114 @@ mod idle_routing_tests {
         let (line, problems) = platform.route_idle_capital(later);
         assert_eq!((line, problems), (None, Vec::new()));
         assert_eq!(platform.parked_capital(later), Decimal::ZERO);
+    }
+}
+
+#[cfg(test)]
+mod lattice_journal_tests {
+    //! R12-WORLD-9027 through the production cause. The integration test in
+    //! `tests/now_lattice.rs` freezes the weights by calling
+    //! `set_calibrator_available(false)` by hand, so the one production line
+    //! that makes the calibrator unavailable -- `understand_now` passing
+    //! whether the lattice review reached the log -- could be made always
+    //! `true` and every kernel test still passed (AUDIT-4, 2026-10-24). This
+    //! makes the journal genuinely refuse the review and reads the next pass.
+
+    use super::*;
+    use qip_core::time::Duration;
+    use qip_market::bar::{Bar, Interval};
+    use qip_market_ingestion::adapter::SensedRecord;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    const FROZEN: &str = "ensemble weights frozen at the last safe set";
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn calm_history() -> Vec<SensedRecord> {
+        let mut out = Vec::new();
+        for symbol in ["AAPL", "MSFT"] {
+            for i in 0..30_i64 {
+                let close = Decimal::from_int(if i % 2 == 0 { 101 } else { 99 });
+                let closes_at = start().saturating_sub(Duration::from_days(29 - i));
+                out.push(SensedRecord::Bar(Box::new(Bar {
+                    object_id: qip_core::ObjectId::from_string(symbol),
+                    venue: "XNAS".to_string(),
+                    interval: Interval::Day,
+                    open_time: closes_at.saturating_sub(Duration::from_days(1)),
+                    open: close,
+                    high: close,
+                    low: close,
+                    close,
+                    volume: Decimal::from_int(1_000_000),
+                    trade_count: 5_000,
+                    vwap: None,
+                    quality: qip_financial::quality::DataQuality::default(),
+                })));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_lattice_review_the_log_refused_freezes_the_ensemble_weights_on_the_next_pass() {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            listed_test_universe(&["AAPL", "MSFT"]),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        platform.observe(calm_history());
+
+        // Premise: a healthy pass issues forecasts and moves the weights, so
+        // a frozen report below is the refusal's doing and not an idle lattice.
+        let (healthy, problems) = platform.understand_now(start());
+        assert!(healthy.contains("forecast lattice issued"), "{healthy}");
+        assert!(!healthy.contains(FROZEN), "{healthy}");
+        assert!(
+            !problems.iter().any(|p| p.contains("not journalled")),
+            "{problems:?}"
+        );
+
+        // The log refuses every append from here: a read-only log is the
+        // honest stand-in for a full spool or a lost disk, because it fails
+        // inside `journal_record` exactly where those would.
+        let dir = std::path::PathBuf::from("/tmp").join(format!(
+            "qip-kernel-lattice-unjournalled-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, "").expect("an empty log file");
+        platform.event_log = EventLog::inspect(&path).expect("a read-only log");
+
+        let second = start().saturating_add(Duration::from_days(1));
+        let (refused, problems) = platform.understand_now(second);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("forecast lattice's review was computed and not journalled")),
+            "premise: the review really failed to journal: {problems:?}"
+        );
+        // The pass that failed to journal ran on weights computed while the
+        // calibrator was still available; the freeze is for the next one.
+        assert!(!refused.contains(FROZEN), "{refused}");
+        assert!(!platform.lattice().calibrator().frozen());
+
+        let third = start().saturating_add(Duration::from_days(2));
+        let (frozen, _) = platform.understand_now(third);
+        assert!(
+            frozen.contains(FROZEN),
+            "the weights moved on a review nobody kept: {frozen}"
+        );
+        assert!(platform.lattice().calibrator().frozen());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

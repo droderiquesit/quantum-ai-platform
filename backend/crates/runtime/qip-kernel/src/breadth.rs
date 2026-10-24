@@ -18,6 +18,19 @@
 //! listing venue — refuses the whole installation naming the section, so a
 //! deployment that asked for breadth and got half of it stops at start-up.
 //!
+//! # Nothing is created without an admission
+//!
+//! Every market and instrument the plane brings into existence rests on the
+//! three-authority register of `qip_execution_engine::creation` — venue,
+//! product and jurisdiction — read from the plan through the same
+//! [`crate::market_factory_stage::register`] for both sections that create
+//! one. The Market Factory consumes an admission per step; the event plane's
+//! own market and each of its outcome instruments need one for `create`
+//! before the synthetic venue that holds them is built, and the admissions
+//! are journaled with their references (R12-COVERAGE-5107). Until
+//! 2026-10-24 the event plane built its venue, and so its market and three
+//! instruments, with no admission of any kind.
+//!
 //! # Paper, by structure
 //!
 //! The Market Factory lists only through the desk broker's listing venue,
@@ -31,16 +44,20 @@ use std::collections::BTreeMap;
 use qip_contracts::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
-use qip_events::EventBody;
+use qip_events::{EventBody, Topic};
+use qip_execution_engine::creation::{CreationAction, CreationAdmission, CreationRequest};
 use qip_execution_engine::market_creation::PricingRule;
 use qip_prediction::access::{AccessBook, EntityRecord, Jurisdiction, VenuePolicy};
-use qip_prediction::{OracleIdentity, OracleKind, SyntheticPredictionVenue, SyntheticVenueConfig};
+use qip_prediction::{
+    DEMO_MARKET_ID, DEMO_OUTCOME_INSTRUMENTS, OracleIdentity, OracleKind, SyntheticPredictionVenue,
+    SyntheticVenueConfig,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::commerce_research::{CommercePlan, CommerceResearch, SyntheticCommerceFeed};
 use crate::cycle::StageOutcome;
 use crate::event_markets::EventMarketPlane;
-use crate::market_factory_stage::{FactoryPlan, FactoryStage};
+use crate::market_factory_stage::{FactoryPlan, FactoryStage, PermissionEntry, register};
 use crate::platform::Platform;
 use qip_observability::metrics::labels;
 
@@ -65,6 +82,66 @@ pub struct EventMarketPlan {
     /// Entity records for the access book. Empty refuses every order.
     #[serde(default)]
     pub entities: BTreeMap<String, EntityRecord>,
+    /// The jurisdiction the plane's own market and its outcome instruments
+    /// are created in, matched exactly against `permissions`. Defaulted only
+    /// so a section that omits it parses and is then refused at
+    /// installation with the reason, rather than failing to parse: an empty
+    /// jurisdiction matches no recorded permission.
+    #[serde(default)]
+    pub jurisdiction: String,
+    /// The creation register for the plane's own market and each outcome
+    /// instrument: the same entries, and the same three authorities, the
+    /// Market Factory's section records. Each instrument needs `create` from
+    /// the venue, the product rules and the jurisdiction. Empty refuses the
+    /// section (R12-COVERAGE-5107).
+    #[serde(default)]
+    pub permissions: Vec<PermissionEntry>,
+}
+
+/// One instrument of the event plane's own market admitted for creation, as
+/// the event log holds it: on whose word the market and each instrument the
+/// synthetic venue quotes came to exist.
+///
+/// Journaled because an admission that gated the install and was then
+/// dropped would leave the log unable to say why a market exists — the
+/// Market Factory's records carry their approvals for the same reason.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventMarketCreationAdmitted {
+    pub venue: String,
+    pub product: String,
+    pub jurisdiction: String,
+    /// `authority: reference`, one per authority, in authority order.
+    pub approvals: Vec<String>,
+}
+
+impl EventMarketCreationAdmitted {
+    fn from_admission(admission: &CreationAdmission) -> Self {
+        let request = admission.request();
+        Self {
+            venue: request.venue.clone(),
+            product: request.product.clone(),
+            jurisdiction: request.jurisdiction.clone(),
+            approvals: admission
+                .references()
+                .iter()
+                .map(|(authority, reference)| format!("{}: {reference}", authority.as_str()))
+                .collect(),
+        }
+    }
+}
+
+impl EventBody for EventMarketCreationAdmitted {
+    /// A governed product decision with its approval references, like the
+    /// Market Factory's: only this platform has it.
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!(
+            "event-market-creation:{}:{}",
+            self.venue, self.product
+        ))
+    }
 }
 
 /// What a deployment asks the breadth plane to run. Every section optional.
@@ -123,7 +200,15 @@ fn synthetic_oracle() -> Result<OracleIdentity> {
 }
 
 /// The access book an event-markets section describes. Empty refuses
-/// every order and every creation.
+/// every paper order, and the creation of every Market Factory market
+/// flagged `event_contract` (R12-EVENT-5087), which it gates by venue and
+/// jurisdiction.
+///
+/// It does not gate the event plane's own market. This said an empty book
+/// refused "every creation" until 2026-10-24, while the plane's market and
+/// its three outcome instruments were built with no admission at all. Those
+/// are admitted by the section's `permissions` register, in
+/// [`admit_event_market`], and by nothing in this book.
 fn access_book(section: &EventMarketPlan) -> AccessBook {
     let mut access = AccessBook::new();
     for policy in &section.policies {
@@ -138,6 +223,93 @@ fn access_book(section: &EventMarketPlan) -> AccessBook {
 /// The kill-switch scope a Market Factory ladder is admitted under, so an
 /// operator can halt market making without halting the desk.
 pub const MARKET_FACTORY_SCOPE: &str = "market-factory";
+
+/// Admit the event plane's own market and every outcome instrument its
+/// venue quotes for `create` at `venue` in the section's jurisdiction, from
+/// the section's register — or refuse, naming every instrument refused.
+///
+/// Called before the synthetic venue is built, because building it is what
+/// brings [`DEMO_MARKET_ID`] and its instruments into existence; the ids
+/// are read from `qip_prediction`'s constants, which are the ones the venue
+/// builds them from. Every instrument is asked about before any refusal is
+/// returned, as `CreationPermissions::admit` names every missing authority:
+/// a refusal that named the first would make four admissions a sequence of
+/// four refusals.
+fn admit_event_market(
+    section: &EventMarketPlan,
+    venue: &VenueId,
+) -> Result<Vec<EventMarketCreationAdmitted>> {
+    let permissions = register(&section.permissions).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: the event-markets section's permissions do not parse: {}",
+            error.message()
+        ))
+    })?;
+    let mut admitted = Vec::new();
+    let mut refused = Vec::new();
+    for product in std::iter::once(DEMO_MARKET_ID).chain(DEMO_OUTCOME_INSTRUMENTS) {
+        let request = CreationRequest::new(
+            CreationAction::Create,
+            venue.as_str(),
+            product,
+            section.jurisdiction.as_str(),
+        );
+        match permissions.admit(&request) {
+            Ok(admission) => admitted.push(EventMarketCreationAdmitted::from_admission(&admission)),
+            Err(error) => refused.push(format!("{product}: {}", error.message())),
+        }
+    }
+    if !refused.is_empty() {
+        return Err(Error::denied(format!(
+            "configuration: the event-markets section's market {DEMO_MARKET_ID} and its outcome \
+             instruments may be created at {venue} only under a recorded venue, product and \
+             jurisdiction permission to create each, and {} of {} are not admitted in \
+             jurisdiction `{}`; record them under the section's `permissions`. No venue, market \
+             or instrument was created: {}",
+            refused.len(),
+            refused.len() + admitted.len(),
+            section.jurisdiction,
+            refused.join("; ")
+        )));
+    }
+    Ok(admitted)
+}
+
+/// The event plane a section describes, the admissions its market was
+/// created under, and its banner line. Builds nothing the platform shares:
+/// the venue is in-memory and synthetic, so a refusal here or later leaves
+/// nothing behind once the value is dropped.
+fn open_event_plane(
+    section: &EventMarketPlan,
+    access: AccessBook,
+    seed: u64,
+    now: Timestamp,
+) -> Result<(EventMarketPlane, Vec<EventMarketCreationAdmitted>, String)> {
+    if section.source != SYNTHETIC_SOURCE {
+        return Err(refuse_source("event-market", &section.source));
+    }
+    let config = SyntheticVenueConfig::demo(seed)?;
+    let admitted = admit_event_market(section, &config.venue)?;
+    let venue = SyntheticPredictionVenue::new(config, now)?;
+    let plane = EventMarketPlane::open(
+        Box::new(venue),
+        None,
+        access,
+        section.entity.clone(),
+        synthetic_oracle()?,
+    )?;
+    let line = format!(
+        "event markets from {} ({}, research only): {} instrument(s) admitted for creation in {}; \
+         paper orders admitted for {} through {} venue polic(ies)",
+        plane.source().name,
+        plane.posture().as_str(),
+        admitted.len(),
+        section.jurisdiction,
+        section.entity,
+        section.policies.len()
+    );
+    Ok((plane, admitted, line))
+}
 
 fn refuse_source(section: &str, source: &str) -> Error {
     Error::invalid(format!(
@@ -157,8 +329,47 @@ impl Platform {
             ));
         }
         let seed = self.config().seed;
-        let mut lines = Vec::new();
         let access = plan.event_markets.as_ref().map(access_book);
+        // The event and commerce planes are built first. Both are in-memory
+        // planes over synthetic sources, so a refusal in either — a source
+        // with no licensing evaluation, a market its register does not
+        // admit — returns before anything the platform shares has been
+        // touched. The factory goes last because it is the one section that
+        // writes to a venue the platform shares: it lists and seeds on the
+        // desk broker's simulated venue. Until 2026-10-24 it went first, so
+        // an event section refused after it left the factory's books resting
+        // on that venue for a plan the caller was told was refused.
+        let events = match &plan.event_markets {
+            Some(section) => Some(open_event_plane(
+                section,
+                access.clone().unwrap_or_default(),
+                seed,
+                now,
+            )?),
+            None => None,
+        };
+        let commerce = match &plan.commerce {
+            Some(section) => {
+                if section.source != SYNTHETIC_SOURCE {
+                    return Err(refuse_source("commerce", &section.source));
+                }
+                let research = CommerceResearch::open(
+                    Box::new(SyntheticCommerceFeed::new(seed, now)),
+                    None,
+                    section.clone(),
+                )?;
+                let line = format!(
+                    "commerce research from {} ({}, research only): purchases through account {} \
+                     under a ceiling of {}",
+                    research.source().name,
+                    research.posture().as_str(),
+                    section.account.id,
+                    section.total_ceiling
+                );
+                Some((research, line))
+            }
+            None => None,
+        };
         let factory = match &plan.market_factory {
             Some(section) => {
                 // R12-EVENT-5087: an event market is created only where the
@@ -222,70 +433,44 @@ impl Platform {
                             error.message()
                         ))
                     })?;
-                lines.push(format!(
+                let line = format!(
                     "market factory at {}: {} market(s) created, listed and seeded",
                     stage.factory().venue(),
                     stage.factory().markets().count()
-                ));
-                Some(stage)
+                );
+                Some((stage, line))
             }
             None => None,
         };
-        let events = match &plan.event_markets {
-            Some(section) => {
-                if section.source != SYNTHETIC_SOURCE {
-                    return Err(refuse_source("event-market", &section.source));
-                }
-                let access = access.clone().unwrap_or_default();
-                let venue = SyntheticPredictionVenue::new(SyntheticVenueConfig::demo(seed)?, now)?;
-                let plane = EventMarketPlane::open(
-                    Box::new(venue),
-                    None,
-                    access,
-                    section.entity.clone(),
-                    synthetic_oracle()?,
-                )?;
-                lines.push(format!(
-                    "event markets from {} ({}, research only): paper orders admitted for {} \
-                     through {} venue polic(ies)",
-                    plane.source().name,
-                    plane.posture().as_str(),
-                    section.entity,
-                    section.policies.len()
-                ));
-                Some(plane)
+        // Banner lines in the plan's own section order, whatever order the
+        // sections were built in.
+        let mut lines = Vec::new();
+        let factory = factory.map(|(stage, line)| {
+            lines.push(line);
+            stage
+        });
+        let (events, created) = match events {
+            Some((plane, created, line)) => {
+                lines.push(line);
+                (Some(plane), created)
             }
-            None => None,
+            None => (None, Vec::new()),
         };
-        let commerce = match &plan.commerce {
-            Some(section) => {
-                if section.source != SYNTHETIC_SOURCE {
-                    return Err(refuse_source("commerce", &section.source));
-                }
-                let research = CommerceResearch::open(
-                    Box::new(SyntheticCommerceFeed::new(seed, now)),
-                    None,
-                    section.clone(),
-                )?;
-                lines.push(format!(
-                    "commerce research from {} ({}, research only): purchases through account {} \
-                     under a ceiling of {}",
-                    research.source().name,
-                    research.posture().as_str(),
-                    section.account.id,
-                    section.total_ceiling
-                ));
-                Some(research)
-            }
-            None => None,
-        };
+        let commerce = commerce.map(|(research, line)| {
+            lines.push(line);
+            research
+        });
         self.breadth = BreadthPlane {
             factory,
             events,
             commerce,
         };
-        // The factory's installation steps reach the log before anything
-        // else runs, so a market exists on the venue only with its record.
+        // Every creation reaches the log before anything else runs, so a
+        // market exists only with the record of what admitted it: the event
+        // plane's admissions, then the factory's installation steps.
+        for admission in created {
+            self.journal_record(admission, "kernel/event-markets", now)?;
+        }
         let records = self
             .breadth
             .factory

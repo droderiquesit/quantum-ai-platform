@@ -417,38 +417,79 @@ impl SimulatedExchange {
     /// before anything is written.
     pub fn list(&mut self, object: FinancialObject, admission: &CreationAdmission) -> Result<()> {
         self.admits_listing(&object.object_id, admission)?;
-        self.register_listing(object);
-        Ok(())
+        self.register_listing(object, admission)
     }
 
     /// Refuse `admission` unless it is to list exactly `object_id` at exactly
     /// this venue. The one check both listing paths make, so neither can
     /// drift from the other.
     fn admits_listing(&self, object_id: &ObjectId, admission: &CreationAdmission) -> Result<()> {
+        self.admits(CreationAction::List, object_id, admission)
+    }
+
+    /// Refuse `admission` unless it is to `action` exactly `object_id` at
+    /// exactly this venue: the check listing and seeding both make.
+    fn admits(
+        &self,
+        action: CreationAction,
+        object_id: &ObjectId,
+        admission: &CreationAdmission,
+    ) -> Result<()> {
         let request = admission.request();
-        if request.action != CreationAction::List
+        if request.action != action
             || request.venue != self.venue.as_str()
             || request.product != object_id.as_str()
         {
             return Err(Error::denied(format!(
-                "{} was not listed at {}: the admission offered is to {} {} at {}, and a listing \
-                 needs an admission to list exactly this instrument at exactly this venue",
+                "{} was not {}ed at {}: the admission offered is to {} {} at {}, and this needs \
+                 an admission to {} exactly this instrument at exactly this venue",
                 object_id.as_str(),
+                action.as_str(),
                 self.venue.as_str(),
                 request.action.as_str(),
                 request.product,
-                request.venue
+                request.venue,
+                action.as_str()
             )));
         }
         Ok(())
     }
 
-    /// Write a listing into the venue's books. Private: the two ways in are
-    /// [`Self::list`] and [`Self::list_synthetic`], each behind an admission.
-    fn register_listing(&mut self, object: FinancialObject) {
-        self.ledger.register(object.clone());
+    /// Write a listing into the venue's books and open the instrument's book
+    /// in the matching engine. Private: the two ways in are [`Self::list`]
+    /// and [`Self::list_synthetic`], each behind an admission, and this is the
+    /// only place the engine is told to open a book, so a book exists here
+    /// only for an instrument some admission listed.
+    ///
+    /// **An instrument already listed is refused, not replaced.** Until
+    /// 2026-10-24 a second listing overwrote the first — its lot size, its
+    /// tick, its price and its provenance — under live orders resting
+    /// against the old grid, and the clearing ledger's record of the
+    /// instrument was overwritten with it, so positions already booked would
+    /// be read against a listing they never traded under. Refused before
+    /// anything is written; the refusal names the listing that stands.
+    fn register_listing(
+        &mut self,
+        object: FinancialObject,
+        admission: &CreationAdmission,
+    ) -> Result<()> {
+        if let Some(existing) = self.listings.get(object.object_id.as_str()) {
+            return Err(Error::denied(format!(
+                "{} is already listed at {} as {}, lot {} and tick {}, and a listing is made \
+                 once rather than replaced; trade the listing that stands, or list the \
+                 replacement under an id of its own",
+                object.object_id.as_str(),
+                self.venue.as_str(),
+                existing.symbol,
+                existing.lot_size,
+                existing.tick_size
+            )));
+        }
+        self.ledger.register(object.clone())?;
+        self.engine.open(&object.object_id, admission)?;
         self.listings
             .insert(object.object_id.as_str().to_string(), object);
+        Ok(())
     }
 
     /// List an instrument from its trading facts alone.
@@ -508,8 +549,7 @@ impl SimulatedExchange {
                     at,
                 ))
                 .build(at)?;
-        self.register_listing(listing);
-        Ok(())
+        self.register_listing(listing, admission)
     }
 
     pub fn is_listed(&self, object_id: &ObjectId) -> bool {
@@ -521,6 +561,15 @@ impl SimulatedExchange {
     }
 
     /// Add resting interest belonging to other participants.
+    ///
+    /// **Demands an admission to seed exactly this instrument at exactly
+    /// this venue** (R12-EXEC-5079). Until 2026-10-24 the only `Seed` check
+    /// sat in one caller, the edge node's `seed_touch`, and this public
+    /// method took none: any other caller holding the venue could seed a
+    /// listed book with no seeding permission recorded anywhere. Seeding is
+    /// one of the three governed actions, and a listing is not a licence to
+    /// seed. Checked before the listing, so an unlisted instrument with no
+    /// admission is refused for the admission.
     pub fn seed_liquidity(
         &mut self,
         object_id: &ObjectId,
@@ -528,7 +577,9 @@ impl SimulatedExchange {
         price: Decimal,
         quantity: Decimal,
         at: Timestamp,
+        admission: &CreationAdmission,
     ) -> Result<()> {
+        self.admits(CreationAction::Seed, object_id, admission)?;
         if !self.is_listed(object_id) {
             return Err(Error::not_found(format!(
                 "{} does not list {}, so it has no book to seed",
@@ -536,7 +587,8 @@ impl SimulatedExchange {
                 object_id.as_str()
             )));
         }
-        self.engine.seed(object_id, side, price, quantity, at)
+        self.engine
+            .seed(object_id, side, price, quantity, at, admission)
     }
 
     /// Hit the book with flow belonging to somebody else, and return what
@@ -591,7 +643,7 @@ impl SimulatedExchange {
             Some(price),
             at,
             Participant::Venue,
-        );
+        )?;
         let trades = outcome.trades.clone();
         for trade in &trades {
             if trade.maker_owner.is_client() {
@@ -991,7 +1043,7 @@ impl SimulatedExchange {
             limit,
             landed,
             Participant::Client,
-        );
+        )?;
 
         let mut fills = Vec::new();
         // Collected first because booking a fill borrows the venue's books, and

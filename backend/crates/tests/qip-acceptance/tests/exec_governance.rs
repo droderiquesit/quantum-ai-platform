@@ -20,7 +20,7 @@ use qip_core::error::Result;
 use qip_core::{Decimal, dec};
 use qip_execution_engine::broker::{ListingVenue, SimulatedBroker, SimulationSettings};
 use qip_execution_engine::creation::{
-    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+    CreationAction, CreationAdmission, CreationAuthority, CreationPermissions, CreationRequest,
 };
 use qip_execution_engine::market_creation::{MarketFactory, PricingRule};
 use qip_market::book::OrderBook;
@@ -136,7 +136,11 @@ fn no_market_is_created_on_a_venue_that_is_not_the_simulated_one() -> Result<()>
         fn listed_book(&self, _object_id: &str) -> Option<&OrderBook> {
             None
         }
-        fn list_book(&mut self, _book: OrderBook) {}
+        fn list_book(&mut self, _book: OrderBook, _admission: &CreationAdmission) -> Result<()> {
+            Err(qip_core::error::Error::denied(
+                "a live surface rests no book; the factory must never reach this",
+            ))
+        }
         fn withdraw_book(&mut self, _object_id: &str) -> Option<OrderBook> {
             None
         }

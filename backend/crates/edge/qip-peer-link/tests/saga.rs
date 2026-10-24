@@ -218,6 +218,10 @@ fn two_nodes_publishing_only_through_their_ports_run_a_cross_region_cycle_to_its
 /// asked. The coordinator never declares FIRE, no leg is sent on either
 /// side, and the cycle is rejected at the end of its TTL by name.
 ///
+/// The rejection is also counted against the cycle americas *originated*
+/// (`cycles_expired`, R12-RES-7095), which `cycles_rejected` alone cannot
+/// say: it counts every unfired epoch the endpoint expires, joined or not.
+///
 /// Mutation (run): make `Saga::gate` return `Ok(())` for any positive leg —
 /// europe reserves, FIRE is declared and legs are sent, and the wait for a
 /// decline times out.
@@ -250,15 +254,81 @@ fn a_leg_whose_unwind_bound_does_not_cover_the_cells_exit_is_declined_and_no_leg
         &europe,
         (&usa, &europe_book),
         (true, true),
-        |a, e| e.declines >= 1 && a.cycles_rejected >= 1,
+        |a, e| e.declines >= 1 && a.cycles_rejected >= 1 && a.cycles_expired >= 1,
     );
     assert!(
         a.cycles_originated >= 1,
         "premise: a cycle was offered: {a:?}"
     );
+    assert!(
+        a.cycles_expired <= a.cycles_originated,
+        "more cycles lapsed than were opened: {a:?}"
+    );
+    assert_eq!(e.cycles_expired, 0, "europe opened nothing: {e:?}");
     assert_eq!(e.reservations, 0, "{e:?}");
     assert_eq!(a.fires, 0, "{a:?}");
     assert_eq!(a.legs_sent + e.legs_sent, 0, "{a:?} {e:?}");
+    Ok(())
+}
+
+/// Every cycle a coordinator opens leaves the endpoint exactly one way:
+/// fired, or lapsed at its TTL unfired. Once both nodes stop authorising and
+/// every epoch has outlived its TTL, `fires + cycles_expired` accounts for
+/// `cycles_originated` exactly (R12-RES-7095). A fired cycle also reaches
+/// its TTL and is dropped by the endpoint the same way an unfired one is;
+/// counting it as lapsed would report a cycle that traded as refused.
+///
+/// Mutation (run): drop the `!fired.contains(opportunity)` test from
+/// `Saga::forget_gone` — the fired cycle is counted as lapsed too and the
+/// identity is off by the number of fires.
+#[test]
+fn a_fired_cycle_that_outlives_its_ttl_is_not_counted_as_lapsed() -> Result<()> {
+    let (americas, europe) = nodes()?;
+    let usa = Book {
+        venue: "XNYS",
+        bid: dec!("99"),
+        ask: dec!("100"),
+        displayed: dec!("50"),
+        authorised: dec!("10"),
+        fills: dec!("10"),
+        exit_cost: None,
+    };
+    let europe_book = Book {
+        venue: "XLON",
+        bid: dec!("101"),
+        ask: dec!("102"),
+        displayed: dec!("50"),
+        authorised: dec!("10"),
+        fills: dec!("10"),
+        exit_cost: None,
+    };
+    let (a, _) = run_until(
+        &americas,
+        &europe,
+        (&usa, &europe_book),
+        (true, true),
+        |a, e| a.fires >= 1 && a.fills >= 1 && e.fills >= 1,
+    );
+    assert!(a.cycles_originated >= 1, "premise: a cycle opened: {a:?}");
+    // Stop authorising, so nothing new opens, and keep publishing the touch
+    // past every open epoch's TTL so the endpoint has expired them all.
+    let quiet_until = std::time::Instant::now()
+        + std::time::Duration::from_nanos(
+            u64::try_from(qip_peer_link::saga::EPOCH_TTL.as_nanos()).expect("a positive TTL"),
+        )
+        + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < quiet_until {
+        americas.try_publish(offer(&usa, false));
+        europe.try_publish(offer(&europe_book, false));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let a = americas.status();
+    assert!(a.fires >= 1, "premise: a cycle fired: {a:?}");
+    assert_eq!(
+        a.fires + a.cycles_expired,
+        a.cycles_originated,
+        "every opened cycle either fired or lapsed, once: {a:?}"
+    );
     Ok(())
 }
 

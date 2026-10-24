@@ -77,6 +77,10 @@ pub struct SagaStep {
     /// Cycles whose every leg's fill is known, closed this step (ADR 0154
     /// decision 6).
     pub closed: u64,
+    /// Cycles this node originated that the endpoint let go of without FIRE
+    /// this step: the counterparty never reserved, declined, or was lost
+    /// before it could, and the epoch reached its TTL (R12-RES-7095).
+    pub expired: u64,
 }
 
 /// The session thread's cycle state.
@@ -98,6 +102,11 @@ pub struct Saga {
     /// Fired cycles already closed: their drift was raised once and is not
     /// raised again while the epoch is still held.
     closed: BTreeSet<String>,
+    /// Cycles this node originated and declared FIRE on, while the endpoint
+    /// still holds them. The endpoint forgets whether an epoch fired the
+    /// moment it drops the epoch, so the saga keeps the fact it needs to
+    /// tell a cycle that ran from one that lapsed.
+    fired: BTreeSet<String>,
     /// Rebalancing tasks closed cycles raised, until the host carries them
     /// to the port.
     rebalance: Vec<RebalanceTask>,
@@ -134,7 +143,7 @@ impl Saga {
     /// each to the nodes holding a leg of its epoch and never to every peer.
     pub fn step(&mut self, session: &mut PeerSession, now: Timestamp) -> SagaStep {
         let mut step = SagaStep::default();
-        self.forget_gone(session, now);
+        self.forget_gone(session, now, &mut step);
         self.originate(session, now, &mut step);
         self.reserve(session, now, &mut step);
         self.fire(session, now, &mut step);
@@ -206,10 +215,29 @@ impl Saga {
         Ok(())
     }
 
-    fn forget_gone(&mut self, session: &PeerSession, now: Timestamp) {
+    /// Drop what the endpoint no longer holds, counting each cycle this node
+    /// originated that left without FIRE.
+    ///
+    /// This is the one place an originated epoch that lapsed unfired is
+    /// seen: the endpoint journals a `guarantee_unmet` refusal for every
+    /// unfired epoch it expires, but it does so for epochs this node merely
+    /// joined as well, so that count cannot say whether a cycle *this cell
+    /// started* was refused. Until R12-RES-7095 the saga dropped such a cycle
+    /// here in silence, and a peer lost mid-epoch was indistinguishable, in
+    /// the status, from a cycle that was never offered.
+    fn forget_gone(&mut self, session: &PeerSession, now: Timestamp, step: &mut SagaStep) {
         let held: BTreeSet<String> = session.endpoint().opportunities().into_iter().collect();
-        self.open
-            .retain(|opportunity, _| held.contains(opportunity));
+        let fired = &self.fired;
+        let mut lapsed = 0u64;
+        self.open.retain(|opportunity, _| {
+            let still = held.contains(opportunity);
+            if !still && !fired.contains(opportunity) {
+                lapsed += 1;
+            }
+            still
+        });
+        step.expired = lapsed;
+        self.fired.retain(|opportunity| held.contains(opportunity));
         self.attempted
             .retain(|opportunity| held.contains(opportunity));
         self.executed
@@ -484,6 +512,7 @@ impl Saga {
             let recipients = endpoint.recipients(&opportunity).unwrap_or_default();
             if let Ok(frame) = session.endpoint_mut().declare_fire(&opportunity, now) {
                 session.send_to(recipients, frame);
+                self.fired.insert(opportunity);
                 step.fires += 1;
             }
         }

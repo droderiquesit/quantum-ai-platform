@@ -106,6 +106,33 @@ pub const EDGE_REGION_SHARE_BOUND: &str = "qip_edge_region_share_bound";
 /// Named here for the same reason as [`EDGE_FILLS_CONFIRMED`].
 pub const EDGE_REGION_SHARE_APPLIED: &str = "qip_edge_region_share_applied_total";
 
+/// Each package the node activated, by outcome (R12-OBS-9152). A package is
+/// the compiled plan a verified policy payload names by digest
+/// (REFLEX-10105); one is counted when a new digest is deployed at a pass
+/// boundary, never per pass, so the series moves only when what the cell
+/// runs changes.
+pub const EDGE_PACKAGE_ACTIVATIONS: &str = "qip_edge_package_activations_total";
+
+/// How a package came to be the one the cell runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackageActivation {
+    /// A digest the cell had not been running, deployed forward.
+    Activated,
+    /// The resident parent redeployed because the payload named it again:
+    /// a rollback, charted apart so an operator sees one without a journal.
+    RolledBack,
+}
+
+impl PackageActivation {
+    /// The label value, fixed here so no call site can format a third.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Activated => "activated",
+            Self::RolledBack => "rolled_back",
+        }
+    }
+}
+
 /// What an attempt to move the cell's region share came to (ADR 0039).
 ///
 /// The `outcome` label's whole range, as a type rather than as four string
@@ -493,6 +520,11 @@ impl CellMetrics {
             EDGE_REGION_SHARE_BOUND,
             "the bound the cell's region table holds: its share of the region's grant, capped by \
              the operator's ceiling",
+        );
+        m.describe(
+            EDGE_PACKAGE_ACTIVATIONS,
+            "packages (compiled plans named by digest) the node activated at a pass boundary, \
+             by outcome: activated, rolled_back",
         );
         m.describe(
             EDGE_REGION_SHARE_APPLIED,
@@ -884,6 +916,14 @@ impl CellMetrics {
     pub fn region_share(&self, outcome: RegionShareOutcome) {
         self.metrics.count(
             EDGE_REGION_SHARE_APPLIED,
+            self.with("outcome", outcome.as_str()),
+        );
+    }
+
+    /// A package became the one the cell runs (R12-OBS-9152).
+    pub fn package_activation(&self, outcome: PackageActivation) {
+        self.metrics.count(
+            EDGE_PACKAGE_ACTIVATIONS,
             self.with("outcome", outcome.as_str()),
         );
     }

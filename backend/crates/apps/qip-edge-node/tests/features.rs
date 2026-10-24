@@ -116,7 +116,7 @@ fn node_with_feed(subject: &ObjectId) -> Result<(NodeAssembly, SimulatedGateway,
     let (engine, _catalogue) = standard_engine_and_catalogue(subject, DEFAULT_MAX_STALENESS)?;
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let mut node = assemble(config, engine, Arc::new(SystemClock), allocation, None)?;
-    let gateway = permitting(SimulatedGateway::new(venue(), 7, t(0))?, &[subject])?;
+    let gateway = permitting_to_seed(SimulatedGateway::new(venue(), 7, t(0))?, &[subject])?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
     Ok((node, gateway, feed))
@@ -283,22 +283,24 @@ fn the_catalogue_the_compiler_sees_is_the_suite_the_engine_computes() -> Result<
     Ok(())
 }
 
-/// `gateway`, permitted to list each of `objects` on demand: a recorded
-/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
-/// A fixture; the refusal without one is proven in qip-edge-node's
-/// tests/gateway.rs.
-fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+/// `gateway`, permitted to list each of `objects` on demand and to seed
+/// liquidity into it: a recorded venue, product and jurisdiction permission
+/// for each action on each instrument (R12-COVERAGE-5107). `Seed` as well as
+/// `List`, because the tests here seed the touch they trade against and
+/// permission to list is not permission to seed. A fixture; the refusals
+/// without either are proven in qip-edge-node's tests/gateway.rs.
+fn permitting_to_seed(
+    gateway: SimulatedGateway,
+    objects: &[&ObjectId],
+) -> Result<SimulatedGateway> {
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        let request = CreationRequest::new(
-            CreationAction::List,
-            venue.as_str(),
-            object.as_str(),
-            "paper",
-        );
-        for authority in CreationAuthority::ALL {
-            permissions.record(authority, &request, "test fixture")?;
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
         }
     }
     gateway.with_listing_permissions(permissions, "paper")

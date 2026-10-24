@@ -2616,6 +2616,13 @@ impl Cell {
         })
     }
 
+    /// Record that a package became the one this cell runs. The installer
+    /// that deploys a plan lives in the node, beside the cell; the series is
+    /// the cell's, so it lands in the registry the scrape surface serves.
+    pub fn record_package_activation(&self, outcome: crate::telemetry::PackageActivation) {
+        self.metrics.package_activation(outcome);
+    }
+
     /// The registry every series this cell records lands in.
     ///
     /// Exposed so a composition root's test can prove, by pointer identity,

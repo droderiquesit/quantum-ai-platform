@@ -220,3 +220,200 @@ fn over_quota_telemetry_is_shed_visibly_and_an_outcome_is_only_ever_told_to_wait
         assert_eq!(b.metadata("orders", 0).unwrap().high_watermark(), 1);
     }
 }
+
+fn class_policy(
+    qos_class: QosClass,
+    ack_profile: AckProfile,
+    overload: OverloadPolicy,
+    messages: u64,
+) -> StreamPolicy {
+    StreamPolicy::new(StreamPolicySpec {
+        qos_class,
+        partition_key: "account".to_string(),
+        ordering: Ord_::PerPartition,
+        retention: qip_events::RetentionClass::EventAnchored,
+        replication_factor: 1,
+        mirroring: Mirroring::None,
+        overload_policy: overload,
+        ack_profile,
+        byte_quota_per_producer: 1_000_000,
+        message_quota_per_producer: messages,
+        lag_limit: 1_000,
+        entitlement: Entitlement::new("internal-reflex", "trade").unwrap(),
+        seal_age_ms: 500,
+        peak_bytes_per_second: 5_000_000,
+    })
+    .unwrap()
+}
+
+/// R12-FABRIC-8089's integration check, on one broker under concurrent
+/// load: while four threads flood a P4 telemetry stream far past its quota,
+/// a P0 control stream and a P1 outcome stream written by the *same*
+/// producer ids still commit every batch, the telemetry past its quota is
+/// shed visibly (never acknowledged, never told to retry), and a P1
+/// producer that does exceed its own quota is refused with a back-off
+/// rather than shed.
+///
+/// Until this test the class answers were proven one stream at a time, so
+/// nothing showed that telemetry overload leaves control and outcome
+/// traffic standing. The producer ids are shared across streams on purpose:
+/// a node writes all three, and a quota keyed by producer alone would let
+/// its telemetry starve its fills.
+///
+/// Mutations that fail it: key `charge_quota`'s window by producer alone
+/// (control and outcomes are refused behind the telemetry flood); answer
+/// `SampleOrShed` with `Quota` in `admission::over_quota` (the flood is told
+/// to retry instead of shed).
+#[test]
+fn under_a_telemetry_flood_p4_is_shed_while_p0_and_p1_still_commit_and_p1_excess_backs_off() {
+    use qip_transport::event_fabric::protocol::Refusal;
+    use std::thread;
+
+    const TELEMETRY_QUOTA: u64 = 10;
+    const FLOOD_PER_THREAD: u64 = 200;
+    const CRITICAL_BATCHES: u64 = 200;
+    // Each of four nodes writes a quarter of the critical batches, and its
+    // control and outcome quota is exactly that: the flood must not cost a
+    // node one message of it, and one more is over.
+    const PER_NODE: u64 = CRITICAL_BATCHES / 4;
+
+    let clock = Arc::new(ManualClock::new(Timestamp::from_civil(2026, 9, 26)));
+    let dyn_clock: Arc<dyn Clock> = clock.clone();
+    let b = Arc::new(Broker::open(temp_dir(), dyn_clock.clone()).unwrap());
+    for (stream, policy) in [
+        (
+            "control",
+            class_policy(
+                QosClass::P0Control,
+                AckProfile::Archived,
+                OverloadPolicy::RefuseProducer,
+                PER_NODE,
+            ),
+        ),
+        (
+            "outcomes",
+            class_policy(
+                QosClass::P1Outcomes,
+                AckProfile::Archived,
+                OverloadPolicy::RefuseProducer,
+                PER_NODE,
+            ),
+        ),
+        (
+            "telemetry",
+            class_policy(
+                QosClass::P4Telemetry,
+                AckProfile::None,
+                OverloadPolicy::SampleOrShed,
+                TELEMETRY_QUOTA,
+            ),
+        ),
+    ] {
+        b.declare_stream(
+            stream,
+            1,
+            policy,
+            SegmentLogConfig::new(dyn_clock.clone()).with_roll_after_bytes(10_000_000),
+        )
+        .unwrap();
+        b.register_schema(stream, 1, 1, Shape::of(&1u32).unwrap())
+            .unwrap();
+    }
+
+    // The flood: each thread is one node's telemetry producer, advancing its
+    // sequence only on an acknowledgement, as a producer told its record is
+    // gone must.
+    let flooders: Vec<_> = (0..4)
+        .map(|node| {
+            let b = Arc::clone(&b);
+            thread::spawn(move || {
+                let producer = format!("node-{node}");
+                let (mut committed, mut shed, mut other) = (0u64, 0u64, Vec::new());
+                for _ in 0..FLOOD_PER_THREAD {
+                    match b
+                        .produce_to("telemetry", 0, batch(&producer, committed, b"t"))
+                        .unwrap()
+                    {
+                        Ok(_) => committed += 1,
+                        Err(refused) => match refused.refusal {
+                            Refusal::Shed { class } => {
+                                assert_eq!(class, QosClass::P4Telemetry);
+                                shed += 1;
+                            }
+                            unexpected => other.push(format!("{unexpected:?}")),
+                        },
+                    }
+                }
+                (committed, shed, other)
+            })
+        })
+        .collect();
+
+    // Meanwhile the same node ids write control and outcomes, interleaved.
+    let mut critical_refusals = Vec::new();
+    for sequence in 0..CRITICAL_BATCHES {
+        for stream in ["control", "outcomes"] {
+            let producer = format!("node-{}", sequence % 4);
+            let per_producer = sequence / 4;
+            if let Err(refused) = b
+                .produce_to(stream, 0, batch(&producer, per_producer, b"c"))
+                .unwrap()
+            {
+                critical_refusals.push(format!("{stream}: {:?}", refused.refusal));
+            }
+        }
+    }
+
+    let mut flood_committed = 0;
+    let mut flood_shed = 0;
+    for flooder in flooders {
+        let (committed, shed, other) = flooder.join().unwrap();
+        assert!(
+            other.is_empty(),
+            "telemetry was answered other than shed: {other:?}"
+        );
+        assert!(
+            committed <= TELEMETRY_QUOTA,
+            "a telemetry producer committed {committed}, past its quota of {TELEMETRY_QUOTA}"
+        );
+        flood_committed += committed;
+        flood_shed += shed;
+    }
+    // The premise: there was an overload, and it was shed.
+    assert!(
+        flood_shed >= 4 * (FLOOD_PER_THREAD - TELEMETRY_QUOTA),
+        "the flood was not shed: {flood_shed} shed"
+    );
+    assert!(
+        critical_refusals.is_empty(),
+        "control or outcome traffic was refused under a telemetry flood: {critical_refusals:?}"
+    );
+    for stream in ["control", "outcomes"] {
+        assert_eq!(
+            b.metadata(stream, 0).unwrap().high_watermark(),
+            CRITICAL_BATCHES,
+            "{stream} did not commit every batch"
+        );
+    }
+    assert_eq!(
+        b.metadata("telemetry", 0).unwrap().high_watermark(),
+        flood_committed
+    );
+
+    // P1 past its own quota is told to wait, with a wait, and nothing lands.
+    let excess = b
+        .produce_to("outcomes", 0, batch("node-0", PER_NODE, b"x"))
+        .unwrap()
+        .expect_err("node-0 has spent its outcome quota for this window");
+    match excess.refusal {
+        Refusal::Quota { retry_after_ms } => assert!(
+            retry_after_ms > 0,
+            "a quota refusal must say how long to back off"
+        ),
+        other => panic!("an outcome over quota was answered {other:?}, not a back-off"),
+    }
+    assert_eq!(
+        b.metadata("outcomes", 0).unwrap().high_watermark(),
+        CRITICAL_BATCHES
+    );
+}

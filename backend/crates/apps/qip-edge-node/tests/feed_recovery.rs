@@ -162,6 +162,7 @@ fn a_simulated_venue_that_did_not_move_is_still_heard_so_a_quiet_market_is_not_r
     // a dead feed publishes. A cell that judged silence from bytes alone
     // would refuse every order at a quiet venue after five seconds.
     let (mut node, mut gateway, mut feed) = node()?;
+    permit_seeding(&mut gateway, &[&object()])?;
     // A bid and no offer: the strategy's marketable buy has nothing to take,
     // so no order goes out and the venue's book does not move between passes.
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
@@ -206,6 +207,7 @@ fn a_book_the_cell_discarded_is_rebuilt_from_the_venues_own_depth_on_the_next_pa
     // differences against what it remembers publishing, so without an
     // answer the discarded book would never be refilled at all.
     let (mut node, mut gateway, mut feed) = node()?;
+    permit_seeding(&mut gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
 
@@ -307,4 +309,25 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
         }
     }
     gateway.with_listing_permissions(permissions, "paper")
+}
+
+/// Permit `gateway` to seed each of `objects` as well as to list it, in
+/// place, where it is about to be seeded (R12-COVERAGE-5107: permission to
+/// list is not permission to seed). Called only there, so a test here that
+/// seeds nothing runs under `List` alone. It replaces the register
+/// `permitting` installed, so `objects` names every instrument the gateway
+/// lists, not only the one seeded. A fixture; the refusals without either
+/// permission are proven in qip-edge-node's tests/gateway.rs.
+fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Result<()> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
+        }
+    }
+    gateway.permit_listings(permissions, "paper")
 }

@@ -685,6 +685,53 @@ fn a_resolved_federation_forecast_is_charged_to_its_world_model_in_the_self_mode
     Ok(())
 }
 
+/// R12-MODEL-6016: the federation's arbitrated view is an ensemble, scored
+/// after its proposition resolves under its own self-model component, apart
+/// from the members it arbitrated between. Before this only the members were
+/// charged, so whether the arbitration beat its members had no record.
+/// Mutation: deleting the ensemble charge in `Platform`'s federation pass
+/// leaves the component absent; recording no arbitrated probability in
+/// `FederationStage::run` leaves every resolution's `ensemble` empty and the
+/// premise fails.
+#[test]
+fn a_resolved_federation_arbitration_is_charged_to_the_ensembles_own_component() -> Result<()> {
+    use qip_kernel::platform::FEDERATION_ENSEMBLE;
+    use qip_learning_engine::self_model::{ComponentKey, ComponentKind};
+
+    let cycles: u64 = 8;
+    let mut platform = platform()?;
+    let total = 120 + cycles as usize;
+    let end = start().saturating_add(Duration::from_days(cycles as i64));
+    let mut aaa = tape("AAA", total, end);
+    let later = aaa.split_off(120);
+    platform.observe(aaa);
+    for (step, a) in later.into_iter().enumerate() {
+        platform.observe(vec![a]);
+        platform.run_cycle(start().saturating_add(Duration::from_days(step as i64 + 1)));
+    }
+
+    let reviews = federation_stage::replay(&platform)?;
+    let resolutions: Vec<&federation_stage::Resolution> =
+        reviews.iter().flat_map(|r| &r.resolved).collect();
+    assert!(!resolutions.is_empty(), "premise: propositions resolved");
+    let sided = resolutions
+        .iter()
+        .filter_map(|r| r.ensemble)
+        .filter(|p| p.total_cmp(&0.5).is_ne())
+        .count();
+    assert!(
+        sided > 0,
+        "premise: an arbitration took a side and resolved"
+    );
+    let key = ComponentKey::new(ComponentKind::Ensemble, FEDERATION_ENSEMBLE)?;
+    let estimate = platform
+        .self_model()
+        .get(&key)
+        .unwrap_or_else(|| panic!("{sided} arbitration(s) resolved and the ensemble holds none"));
+    assert_eq!(estimate.sample_count(), sided);
+    Ok(())
+}
+
 /// The one journaled derivation of the fixture every replay test reads, and
 /// the platform whose causal graph re-runs its intervention.
 fn journaled_derivation() -> Result<(Platform, symbolic_stage::SymbolicDerivation)> {

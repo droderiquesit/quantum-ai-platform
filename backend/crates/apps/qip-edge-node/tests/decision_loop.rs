@@ -240,8 +240,9 @@ fn rig_with(
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
     // The one instrument the firing strategy trades and the touch below
-    // seeds: the venue lists it on demand only once permitted to.
-    let mut gateway = permitting(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
+    // seeds: the venue lists it on demand, and seeds it, only once permitted
+    // to do each.
+    let mut gateway = permitting_to_seed(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
     let (compiled, program) = firing_strategy()?;
@@ -1411,6 +1412,185 @@ fn the_decision_loop_publishes_the_peer_round_trip_it_reads_from_the_port() -> R
     }
 }
 
+/// R12-RES-7095: when the peer reflex mesh degrades, local trading goes on
+/// and a cycle needing coordination is refused rather than waited for.
+///
+/// The node coordinates (`london-1` sorts before `tokyo-1`) a cross-region
+/// cycle its own decision loop authorised through `DecisionLoop::turn`,
+/// priced against the touch tokyo showed. tokyo authorises no leg of its
+/// own, so it can never reserve and FIRE is impossible whatever the timing;
+/// then tokyo's port is dropped, which ends its session thread and closes
+/// its listener: the peer is gone mid-epoch. The loop then turns past the
+/// epoch's TTL, and both halves of the requirement are asserted on the same
+/// passes: the originated cycle lapsed unfired and is counted as such
+/// (`PeerStatus::cycles_expired`), no FIRE was declared and no leg was sent,
+/// and the single-venue strategy kept placing paper orders at the simulated
+/// venue throughout.
+///
+/// Until the counter existed `Saga::forget_gone` dropped such a cycle in
+/// silence, and a peer lost mid-epoch read in the status exactly like a
+/// cycle never offered: the property had no assertion to hang on.
+///
+/// Both session threads run on one `InstantClock` anchored at the rig's
+/// instants, and every turn is stamped from it. The leg authorities the loop
+/// publishes are stamped with the turn's instant and the session judges them
+/// on its own clock, so turns on the test's fixed calendar beside a session
+/// on the wall clock would see every authority as long expired and
+/// originate nothing.
+///
+/// Mutation (run): drop the `lapsed += 1` from `Saga::forget_gone`, and the
+/// wait for `cycles_expired` times out with the epoch long gone.
+/// Mutation (run): drop the `cycles_expired` line from `Host::record`, and
+/// the same wait times out.
+#[test]
+fn a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading()
+-> Result<()> {
+    use qip_peer_link::boundary::{EdgeQuote, Offer, PeerStatus};
+    use qip_peer_link::{DEFAULT_CLOCK_BOUND, PeerSettings};
+    use qip_transport::tls::LinkSecurity;
+    use std::collections::BTreeMap;
+    /// Longer than this file's `PATIENCE`: a first connect that finds no
+    /// listener backs off for a second, clocks are probed every 250 ms, and
+    /// a saturated workspace run shares the cores with hundreds of threads.
+    const MESH_PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+    /// Real time between turns. The simulated venue allows fifty orders a
+    /// second and the strategy enters on every pass, so turns closer than
+    /// twenty milliseconds make the venue's rate limit, not the peer loss,
+    /// the reason a pass placed nothing.
+    const TURN_GAP_MS: u64 = 25;
+    let free = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|probe| probe.local_addr())
+            .expect("a loopback port")
+    };
+    let clock: Arc<InstantClock> = Arc::new(InstantClock::anchored_at(t(10)));
+    let spawn = |node: &str, at, peer: &str, peer_at| {
+        qip_peer_link::spawn(
+            &PeerSettings {
+                node: node.to_string(),
+                listen: at,
+                peers: BTreeMap::from([(peer.to_string(), peer_at)]),
+                security: LinkSecurity::plaintext_for_tests(),
+                clock_bound: DEFAULT_CLOCK_BOUND,
+            },
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        )
+        .map(|(port, _)| port)
+    };
+    // A port taken between the probe and the bind is an `Err` from `spawn`,
+    // not a finding; a fresh pair turns that race into a retry.
+    let mut pair = None;
+    for _ in 0..10 {
+        let (london_at, tokyo_at) = (free(), free());
+        if let (Ok(london), Ok(tokyo)) = (
+            spawn(CELL, london_at, "tokyo-1", tokyo_at),
+            spawn("tokyo-1", tokyo_at, CELL, london_at),
+        ) {
+            pair = Some((london, tokyo));
+            break;
+        }
+    }
+    let (london, tokyo) = pair.expect("two loopback listeners within ten attempts");
+    // tokyo bids 103 for what this cell offers at 101: two hundred basis
+    // points, far past `MIN_EDGE_BPS`. Its touch only, and no leg authority,
+    // so whatever reaches tokyo it can only decline.
+    let tokyo_touch = |at: Timestamp| Offer {
+        quotes: vec![EdgeQuote {
+            venue: "XTKS".into(),
+            instrument: object().as_str().to_string(),
+            bid: dec!("103"),
+            bid_size: dec!("50"),
+            ask: dec!("104"),
+            ask_size: dec!("50"),
+            as_of_ns: at.as_nanos(),
+        }],
+        legs: Vec::new(),
+        withheld: 0,
+    };
+
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let rig = rig(store as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let mut decisions = rig.decisions.with_peers(london);
+    let status = |decisions: &DecisionLoop| -> PeerStatus {
+        decisions.peers().expect("the loop holds the port").status()
+    };
+
+    // The cycle opens: the loop turns on the shared clock, publishing the
+    // cell's touch and legs, while tokyo shows its touch.
+    let began = std::time::Instant::now();
+    loop {
+        let now = clock.now();
+        tokyo.try_publish(tokyo_touch(now));
+        decisions.turn(now)?;
+        if status(&decisions).cycles_originated >= 1 {
+            break;
+        }
+        assert!(
+            began.elapsed() < MESH_PATIENCE,
+            "premise: the node never originated a cycle against tokyo's touch: {:?}",
+            status(&decisions)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(TURN_GAP_MS));
+    }
+    let opened = status(&decisions);
+    assert_eq!(
+        opened.cycles_expired, 0,
+        "premise: nothing had lapsed when the cycle opened: {opened:?}"
+    );
+    assert_eq!(
+        opened.fires, 0,
+        "premise: tokyo authorised nothing: {opened:?}"
+    );
+
+    // The peer is lost mid-epoch.
+    drop(tokyo);
+    let orders_at_loss = decisions.stats().orders;
+    let passes_at_loss = decisions.stats().passes;
+
+    // Turn on, past the epoch's TTL, until the node has let the cycle go.
+    let began = std::time::Instant::now();
+    loop {
+        decisions.turn(clock.now())?;
+        if status(&decisions).cycles_expired >= 1 {
+            break;
+        }
+        assert!(
+            began.elapsed() < MESH_PATIENCE,
+            "the cycle the lost peer never reserved was not counted as lapsed: {:?}",
+            status(&decisions)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(TURN_GAP_MS));
+    }
+    let after = status(&decisions);
+    assert!(
+        after.cycles_expired <= after.cycles_originated,
+        "more cycles lapsed than were opened: {after:?}"
+    );
+    assert_eq!(
+        after.fires, 0,
+        "a cycle whose peer was lost was fired: {after:?}"
+    );
+    assert_eq!(after.legs_sent, 0, "a leg was sent without FIRE: {after:?}");
+
+    // The same passes traded locally: the strategy kept placing paper
+    // orders at the simulated venue while the cycle waited and lapsed.
+    let stats = decisions.stats();
+    assert!(
+        orders_at_loss > 0,
+        "premise: the single-venue strategy was trading before the loss: {stats:?}"
+    );
+    assert!(
+        stats.passes > passes_at_loss,
+        "premise: passes ran after the peer was lost: {stats:?}"
+    );
+    assert!(
+        stats.orders > orders_at_loss,
+        "the single-venue strategy placed nothing after the peer was lost: {orders_at_loss} \
+         before, {stats:?} after"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_halt_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn() -> Result<()> {
     // FABRIC-10076: control acknowledgments reach the regional Fabric, and a
@@ -1742,22 +1922,24 @@ fn a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_
     Ok(())
 }
 
-/// `gateway`, permitted to list each of `objects` on demand: a recorded
-/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
-/// A fixture; the refusal without one is proven in qip-edge-node's
-/// tests/gateway.rs.
-fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+/// `gateway`, permitted to list each of `objects` on demand and to seed
+/// liquidity into it: a recorded venue, product and jurisdiction permission
+/// for each action on each instrument (R12-COVERAGE-5107). `Seed` as well as
+/// `List`, because the tests here seed the touch they trade against and
+/// permission to list is not permission to seed. A fixture; the refusals
+/// without either are proven in qip-edge-node's tests/gateway.rs.
+fn permitting_to_seed(
+    gateway: SimulatedGateway,
+    objects: &[&ObjectId],
+) -> Result<SimulatedGateway> {
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        let request = CreationRequest::new(
-            CreationAction::List,
-            venue.as_str(),
-            object.as_str(),
-            "paper",
-        );
-        for authority in CreationAuthority::ALL {
-            permissions.record(authority, &request, "test fixture")?;
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
         }
     }
     gateway.with_listing_permissions(permissions, "paper")

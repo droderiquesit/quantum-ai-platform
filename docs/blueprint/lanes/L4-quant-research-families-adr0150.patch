@@ -1,0 +1,2718 @@
+diff --git a/backend/crates/libs/qip-quantum/src/families.rs b/backend/crates/libs/qip-quantum/src/families.rs
+new file mode 100644
+index 00000000..b42c0876
+--- /dev/null
++++ b/backend/crates/libs/qip-quantum/src/families.rs
+@@ -0,0 +1,1038 @@
++//! The Quantum Foundry's combinatorial research families (R12-QUANT-1077,
++//! -1078, -1081, -4035, -4038, -4041).
++//!
++//! Each family is three things the foundry refuses to register without: an
++//! encoding that turns the family's problem into a QUBO, a classical
++//! baseline that solves the *problem* rather than the QUBO, and a benchmark
++//! that runs both and scores every answer on the problem's own measure. The
++//! last part is the one that matters. A QUBO's energy is a penalty landscape
++//! somebody chose; a feature subset is good when a model fitted on it
++//! predicts held-out data, and a scenario set is good when it buys
++//! information inside the budget. So every QUBO answer -- the exhaustive
++//! classical solver's and any quantum entrant's -- is decoded, refused if it
++//! breaks a constraint, and re-scored on that measure beside the greedy
++//! baseline. A quantum answer that wins on energy and loses on held-out loss
++//! has lost, and the record says so.
++//!
++//! The experiment record ([`FamilyExperiment`]) is constructed only by the
++//! family runners here and validates itself on construction: a record that
++//! names no problem digest, no baseline score or an entrant with neither a
++//! score nor a refusal is not one this type can hold.
++//!
++//! Everything here runs on the in-tree statevector through
++//! [`crate::provider::SimulatedProvider`] in tests. A simulator answer
++//! validates a formulation; it is not evidence of quantum advantage (ADR
++//! 0006), and the record's `simulated` note says so.
++
++use crate::benchmark::{BenchmarkReport, SolverBenchmark};
++use crate::foundry::FamilyKind;
++use crate::solver::SolverKind;
++use qip_core::Decimal;
++use qip_core::error::{Error, Result};
++use qip_core::time::Duration;
++use qip_numerics::anneal::Qubo;
++use qip_numerics::matrix::Matrix;
++use serde::Serialize;
++use std::collections::BTreeSet;
++
++/// The encoder [`crate::foundry::Foundry::platform`] declares for feature
++/// and ensemble selection.
++pub const FEATURE_SELECTION_ENCODING: &str = "FeatureSelection::to_qubo";
++/// The classical selector the feature family is benchmarked against.
++pub const FEATURE_SELECTION_BASELINE: &str = "FeatureSelection::greedy_forward";
++/// The encoder declared for scenario and hypothesis selection.
++pub const SCENARIO_SELECTION_ENCODING: &str = "ScenarioSelection::to_qubo";
++/// The classical selector the scenario family is benchmarked against.
++pub const SCENARIO_SELECTION_BASELINE: &str = "ScenarioSelection::greedy_by_value_per_cost";
++/// The encoder declared for graph search.
++pub const GRAPH_SEARCH_ENCODING: &str = "ConflictGraph::to_qubo";
++/// The classical search the graph family is benchmarked against.
++pub const GRAPH_SEARCH_BASELINE: &str = "ConflictGraph::greedy_by_weight";
++/// The benchmark every combinatorial family is run through.
++pub const COMBINATORIAL_BENCHMARK: &str =
++    "families::FamilyExperiment (SolverBenchmark::run, decoded and re-scored on the problem)";
++
++/// One solver's answer, decoded and scored on the family's own measure.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct EntrantOutcome {
++    pub solver: String,
++    pub kind: SolverKind,
++    /// The decoded selection, in index order, when the answer was usable.
++    pub members: Option<Vec<usize>>,
++    /// The family's measure of the selection. `None` exactly when refused.
++    pub score: Option<f64>,
++    /// Why the answer could not be used, when it could not.
++    pub refusal: Option<String>,
++    /// Modelled, as the benchmark models it.
++    pub runtime: Duration,
++    /// Exact money, never an `f64`.
++    pub price: Decimal,
++}
++
++/// The classical baseline's selection and its score.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct BaselineOutcome {
++    pub selector: String,
++    pub members: Vec<usize>,
++    pub score: f64,
++}
++
++/// A QuantumExperiment / Benchmark record for one run of one family.
++///
++/// Private fields and one constructor: only a family runner in this module
++/// builds one, and it validates itself before it exists.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct FamilyExperiment {
++    family: FamilyKind,
++    encoding: String,
++    classical_baseline: String,
++    /// SHA-256 of the canonical problem: the lineage a reader re-derives the
++    /// experiment from.
++    problem_digest: String,
++    /// The measure's direction. Held-out loss is lower-is-better; information
++    /// and edge are higher-is-better.
++    higher_is_better: bool,
++    measure: String,
++    variables: usize,
++    baseline: BaselineOutcome,
++    entrants: Vec<EntrantOutcome>,
++    notes: Vec<String>,
++}
++
++impl FamilyExperiment {
++    #[allow(clippy::too_many_arguments)]
++    fn new(
++        family: FamilyKind,
++        encoding: &str,
++        classical_baseline: &str,
++        problem_digest: String,
++        higher_is_better: bool,
++        measure: &str,
++        variables: usize,
++        baseline: BaselineOutcome,
++        entrants: Vec<EntrantOutcome>,
++        notes: Vec<String>,
++    ) -> Result<Self> {
++        let experiment = Self {
++            family,
++            encoding: encoding.to_string(),
++            classical_baseline: classical_baseline.to_string(),
++            problem_digest,
++            higher_is_better,
++            measure: measure.to_string(),
++            variables,
++            baseline,
++            entrants,
++            notes,
++        };
++        experiment.validate()?;
++        Ok(experiment)
++    }
++
++    /// Refuse a record nobody could re-derive or read.
++    pub fn validate(&self) -> Result<()> {
++        if self.problem_digest.len() != 64
++            || !self.problem_digest.bytes().all(|b| b.is_ascii_hexdigit())
++        {
++            return Err(Error::invalid(
++                "a quantum experiment carries the SHA-256 of the problem it ran; without it the \
++                 result has no lineage",
++            ));
++        }
++        if self.encoding.trim().is_empty() || self.classical_baseline.trim().is_empty() {
++            return Err(Error::invalid(
++                "a quantum experiment names its encoding and its classical baseline",
++            ));
++        }
++        if !self.baseline.score.is_finite() {
++            return Err(Error::numeric(
++                "a quantum experiment's classical baseline has no finite score, so nothing is \
++                 measured against it",
++            ));
++        }
++        if self.entrants.is_empty() {
++            return Err(Error::invalid(
++                "a quantum experiment records at least the QUBO's classical solve",
++            ));
++        }
++        for entrant in &self.entrants {
++            match (&entrant.score, &entrant.refusal) {
++                (Some(score), None) if score.is_finite() => {}
++                (None, Some(reason)) if !reason.trim().is_empty() => {}
++                _ => {
++                    return Err(Error::invalid(format!(
++                        "entrant {} holds neither a finite score nor a stated refusal",
++                        entrant.solver
++                    )));
++                }
++            }
++        }
++        Ok(())
++    }
++
++    pub const fn family(&self) -> FamilyKind {
++        self.family
++    }
++    pub fn encoding(&self) -> &str {
++        &self.encoding
++    }
++    pub fn classical_baseline(&self) -> &str {
++        &self.classical_baseline
++    }
++    pub fn problem_digest(&self) -> &str {
++        &self.problem_digest
++    }
++    pub fn measure(&self) -> &str {
++        &self.measure
++    }
++    pub const fn variables(&self) -> usize {
++        self.variables
++    }
++    pub fn baseline(&self) -> &BaselineOutcome {
++        &self.baseline
++    }
++    pub fn entrants(&self) -> &[EntrantOutcome] {
++        &self.entrants
++    }
++    pub fn notes(&self) -> &[String] {
++        &self.notes
++    }
++
++    /// Signed improvement of an entrant over the classical baseline on the
++    /// family's measure: positive is better, whichever way the measure runs.
++    pub fn uplift_of(&self, entrant: &EntrantOutcome) -> Option<f64> {
++        let score = entrant.score?;
++        Some(if self.higher_is_better {
++            score - self.baseline.score
++        } else {
++            self.baseline.score - score
++        })
++    }
++
++    /// The best quantum entrant's uplift over the classical baseline, or
++    /// `None` when no quantum entrant produced a usable answer.
++    pub fn quantum_uplift(&self) -> Option<f64> {
++        self.entrants
++            .iter()
++            .filter(|e| e.kind == SolverKind::Quantum)
++            .filter_map(|e| self.uplift_of(e))
++            .fold(None, |best: Option<f64>, u| {
++                Some(best.map_or(u, |b| b.max(u)))
++            })
++    }
++}
++
++fn digest_of<T: Serialize>(problem: &T) -> Result<String> {
++    let bytes = serde_json::to_vec(problem)
++        .map_err(|e| Error::invalid(format!("the problem does not serialise: {e}")))?;
++    Ok(qip_core::hash::sha256_hex(&bytes))
++}
++
++fn finite(name: &str, value: f64) -> Result<()> {
++    if value.is_finite() {
++        Ok(())
++    } else {
++        Err(Error::invalid(format!(
++            "{name} must be finite, got {value}"
++        )))
++    }
++}
++
++/// Add `penalty * (sum_v a_v z_v - target)^2` to `qubo`, over `(index, a_v)`.
++///
++/// The square expands, with `z^2 = z`, to `a_v^2 - 2 target a_v` on each
++/// linear term, `2 a_u a_v` on each pair and `target^2` as offset.
++fn add_squared_equality(qubo: &mut Qubo, terms: &[(usize, f64)], target: f64, penalty: f64) {
++    for (k, &(u, a)) in terms.iter().enumerate() {
++        qubo.add_linear(u, penalty * (a * a - 2.0 * target * a));
++        for &(v, b) in &terms[k + 1..] {
++            qubo.add(u, v, penalty * 2.0 * a * b);
++        }
++    }
++    qubo.offset += penalty * target * target;
++}
++
++/// Binary slack bits whose weighted sum reaches every integer in `0..=max`.
++fn slack_bits(max: u32) -> usize {
++    (u32::BITS - max.leading_zeros()) as usize
++}
++
++/// Run the QUBO benchmark and decode every answer through `decode`, which
++/// either returns the selection and its score or refuses it.
++fn decoded_entrants<F>(report: &BenchmarkReport, decode: F) -> Vec<EntrantOutcome>
++where
++    F: Fn(&[u8]) -> Result<(Vec<usize>, f64)>,
++{
++    report
++        .records()
++        .map(|record| {
++            let (members, score, refusal) = match record.usable_solution() {
++                None => (
++                    None,
++                    None,
++                    Some(
++                        record
++                            .refusal
++                            .clone()
++                            .filter(|r| !r.trim().is_empty())
++                            .unwrap_or_else(|| "the solver produced no validated answer".into()),
++                    ),
++                ),
++                Some(solution) => match decode(solution.assignment()) {
++                    Ok((members, score)) => (Some(members), Some(score), None),
++                    Err(error) => (
++                        None,
++                        None,
++                        Some(format!(
++                            "the answer decodes to an infeasible selection and is refused: {}",
++                            error.message()
++                        )),
++                    ),
++                },
++            };
++            EntrantOutcome {
++                solver: record.solver.clone(),
++                kind: record.kind,
++                members,
++                score,
++                refusal,
++                runtime: record.runtime,
++                price: record.price,
++            }
++        })
++        .collect()
++}
++
++fn simulation_note(report: &BenchmarkReport) -> Vec<String> {
++    let mut notes = report.notes.clone();
++    notes.push(
++        "a simulator answer validates the formulation and is not evidence of quantum advantage"
++            .to_string(),
++    );
++    notes
++}
++
++// --------------------------------------------------------------------------
++// Feature / ensemble selection (R12-QUANT-1078, -4035, -4059)
++// --------------------------------------------------------------------------
++
++/// Rows of features and the target they predict.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct Dataset {
++    /// One row per observation, one column per candidate feature.
++    pub rows: Vec<Vec<f64>>,
++    pub target: Vec<f64>,
++}
++
++impl Dataset {
++    fn columns(&self) -> usize {
++        self.rows.first().map_or(0, Vec::len)
++    }
++
++    fn validate(&self, name: &str, columns: usize) -> Result<()> {
++        if self.rows.is_empty() || self.rows.len() != self.target.len() {
++            return Err(Error::invalid(format!(
++                "the {name} set holds {} row(s) and {} target(s); it needs at least one row and \
++                 one target per row",
++                self.rows.len(),
++                self.target.len()
++            )));
++        }
++        for row in &self.rows {
++            if row.len() != columns {
++                return Err(Error::invalid(format!(
++                    "a {name} row holds {} feature(s) where {columns} were declared",
++                    row.len()
++                )));
++            }
++            if row.iter().any(|v| !v.is_finite()) {
++                return Err(Error::invalid(format!(
++                    "a {name} row holds a non-finite value"
++                )));
++            }
++        }
++        if self.target.iter().any(|v| !v.is_finite()) {
++            return Err(Error::invalid(format!(
++                "the {name} target holds a non-finite value"
++            )));
++        }
++        Ok(())
++    }
++
++    fn column(&self, j: usize) -> Vec<f64> {
++        self.rows.iter().map(|r| r[j]).collect()
++    }
++}
++
++/// Choose exactly `select` of the candidate features for a compact learner.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct FeatureSelection {
++    pub train: Dataset,
++    /// Scored only after selection; never read by the encoding or the
++    /// baseline, so a selection cannot be fitted to it.
++    pub held_out: Dataset,
++    pub select: usize,
++    /// How much a pair's redundancy costs against their joint relevance.
++    pub redundancy_weight: f64,
++    /// Ridge penalty of the learner the selection is scored with.
++    pub ridge: f64,
++}
++
++/// |Pearson correlation|, zero for a constant series. A statistic, so `f64`.
++fn abs_correlation(a: &[f64], b: &[f64]) -> f64 {
++    let n = a.len() as f64;
++    let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
++    let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
++    for (x, y) in a.iter().zip(b) {
++        sab += (x - ma) * (y - mb);
++        saa += (x - ma) * (x - ma);
++        sbb += (y - mb) * (y - mb);
++    }
++    if saa <= 0.0 || sbb <= 0.0 {
++        0.0
++    } else {
++        (sab / (saa * sbb).sqrt()).abs()
++    }
++}
++
++/// Fit ridge regression with an unpenalised intercept on `columns` of
++/// `train`, and return the fitted coefficients (intercept first).
++fn fit_ridge(train: &Dataset, columns: &[usize], ridge: f64) -> Result<Vec<f64>> {
++    let p = columns.len() + 1;
++    let mut gram = Matrix::zeros(p, p);
++    let mut rhs = vec![0.0; p];
++    for (row, y) in train.rows.iter().zip(&train.target) {
++        let x: Vec<f64> = std::iter::once(1.0)
++            .chain(columns.iter().map(|&j| row[j]))
++            .collect();
++        for a in 0..p {
++            rhs[a] += x[a] * y;
++            for b in 0..p {
++                gram.add_to(a, b, x[a] * x[b]);
++            }
++        }
++    }
++    for a in 1..p {
++        gram.add_to(a, a, ridge);
++    }
++    gram.solve(&rhs)
++}
++
++fn mean_squared_error(data: &Dataset, columns: &[usize], beta: &[f64]) -> f64 {
++    let total: f64 = data
++        .rows
++        .iter()
++        .zip(&data.target)
++        .map(|(row, y)| {
++            let fitted = beta[0]
++                + columns
++                    .iter()
++                    .zip(&beta[1..])
++                    .map(|(&j, b)| row[j] * b)
++                    .sum::<f64>();
++            (y - fitted) * (y - fitted)
++        })
++        .sum();
++    total / data.rows.len() as f64
++}
++
++impl FeatureSelection {
++    /// The largest candidate set the in-tree statevector is asked to carry.
++    pub const MAX_CANDIDATES: usize = 12;
++
++    pub fn validate(&self) -> Result<()> {
++        let columns = self.train.columns();
++        if columns == 0 || columns > Self::MAX_CANDIDATES {
++            return Err(Error::invalid(format!(
++                "feature selection takes 1 to {} candidate features, got {columns}",
++                Self::MAX_CANDIDATES
++            )));
++        }
++        self.train.validate("training", columns)?;
++        self.held_out.validate("held-out", columns)?;
++        if self.select == 0 || self.select > columns {
++            return Err(Error::invalid(format!(
++                "select names how many of the {columns} features to keep, 1 to {columns}; got {}",
++                self.select
++            )));
++        }
++        if self.train.rows.len() <= self.select + 1 {
++            return Err(Error::invalid(
++                "the training set must hold more rows than the selected learner has coefficients",
++            ));
++        }
++        finite("the redundancy weight", self.redundancy_weight)?;
++        if self.redundancy_weight < 0.0 {
++            return Err(Error::invalid(
++                "a negative redundancy weight would reward duplicated features; pass zero or more",
++            ));
++        }
++        finite("the ridge penalty", self.ridge)?;
++        if self.ridge <= 0.0 {
++            return Err(Error::invalid("the ridge penalty must be positive"));
++        }
++        Ok(())
++    }
++
++    fn relevance(&self) -> Vec<f64> {
++        (0..self.train.columns())
++            .map(|j| abs_correlation(&self.train.column(j), &self.train.target))
++            .collect()
++    }
++
++    fn redundancy(&self, i: usize, j: usize) -> f64 {
++        abs_correlation(&self.train.column(i), &self.train.column(j))
++    }
++
++    /// Minimise `-sum r_i x_i + w sum_{i<j} R_ij x_i x_j + P (sum x - k)^2`:
++    /// relevance to the target, redundancy between the kept pair, and a
++    /// cardinality penalty larger than any swing the first two can make.
++    pub fn to_qubo(&self) -> Result<Qubo> {
++        self.validate()?;
++        let n = self.train.columns();
++        let relevance = self.relevance();
++        let mut qubo = Qubo::new(n);
++        let mut swing: f64 = relevance.iter().sum();
++        for (i, r) in relevance.iter().enumerate() {
++            qubo.add_linear(i, -r);
++            for j in (i + 1)..n {
++                let cost = self.redundancy_weight * self.redundancy(i, j);
++                swing += cost;
++                qubo.add(i, j, cost);
++            }
++        }
++        let terms: Vec<(usize, f64)> = (0..n).map(|i| (i, 1.0)).collect();
++        add_squared_equality(&mut qubo, &terms, self.select as f64, 1.0 + swing);
++        Ok(qubo)
++    }
++
++    /// The selection an assignment encodes and its held-out loss; refused
++    /// unless it keeps exactly `select` features.
++    pub fn decode(&self, assignment: &[u8]) -> Result<(Vec<usize>, f64)> {
++        let n = self.train.columns();
++        if assignment.len() != n {
++            return Err(Error::invalid(format!(
++                "a {n}-feature selection is {n} bits, got {}",
++                assignment.len()
++            )));
++        }
++        let members: Vec<usize> = (0..n).filter(|&i| assignment[i] == 1).collect();
++        if members.len() != self.select {
++            return Err(Error::invalid(format!(
++                "the selection keeps {} feature(s) where exactly {} were asked for",
++                members.len(),
++                self.select
++            )));
++        }
++        let loss = self.held_out_loss(&members)?;
++        Ok((members, loss))
++    }
++
++    /// Mean squared error on the held-out set of a ridge learner fitted on
++    /// the training set over `members`.
++    pub fn held_out_loss(&self, members: &[usize]) -> Result<f64> {
++        let beta = fit_ridge(&self.train, members, self.ridge)?;
++        let loss = mean_squared_error(&self.held_out, members, &beta);
++        finite("the held-out loss", loss)?;
++        Ok(loss)
++    }
++
++    /// Classical baseline: forward selection by relevance less redundancy
++    /// with what is already kept (minimum-redundancy, maximum-relevance).
++    pub fn greedy_forward(&self) -> Result<Vec<usize>> {
++        self.validate()?;
++        let relevance = self.relevance();
++        let mut kept: Vec<usize> = Vec::new();
++        while kept.len() < self.select {
++            let next = (0..relevance.len())
++                .filter(|i| !kept.contains(i))
++                .map(|i| {
++                    let penalty: f64 = kept
++                        .iter()
++                        .map(|&j| self.redundancy_weight * self.redundancy(i, j))
++                        .sum();
++                    (i, relevance[i] - penalty)
++                })
++                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
++                .map(|(i, _)| i)
++                .ok_or_else(|| Error::invalid("no feature is left to select"))?;
++            kept.push(next);
++        }
++        kept.sort_unstable();
++        Ok(kept)
++    }
++
++    /// Run the family: greedy baseline, then the QUBO through `benchmark`
++    /// (whose own classical solve is recorded beside every entrant), every
++    /// answer scored on held-out loss.
++    pub fn run_experiment(&self, benchmark: &SolverBenchmark) -> Result<FamilyExperiment> {
++        let qubo = self.to_qubo()?;
++        let greedy = self.greedy_forward()?;
++        let baseline = BaselineOutcome {
++            selector: FEATURE_SELECTION_BASELINE.to_string(),
++            score: self.held_out_loss(&greedy)?,
++            members: greedy,
++        };
++        let report = benchmark.run(&qubo)?;
++        FamilyExperiment::new(
++            FamilyKind::FeatureEnsembleSelection,
++            FEATURE_SELECTION_ENCODING,
++            FEATURE_SELECTION_BASELINE,
++            digest_of(self)?,
++            false,
++            "held-out mean squared error of a ridge learner on the selection",
++            qubo.n,
++            baseline,
++            decoded_entrants(&report, |bits| self.decode(bits)),
++            simulation_note(&report),
++        )
++    }
++}
++
++// --------------------------------------------------------------------------
++// Scenario / hypothesis selection under a compute budget (R12-QUANT-1081,
++// -4038, -4041)
++// --------------------------------------------------------------------------
++
++/// One scenario or experiment a desk could run.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct Scenario {
++    pub id: String,
++    /// Expected information the run yields. Positive.
++    pub information: f64,
++    /// Compute units the run costs. Positive.
++    pub cost: u32,
++    /// The hypothesis the scenario tests.
++    pub hypothesis: String,
++    /// Whether the hypothesis is a minority explanation the selection must
++    /// keep alive.
++    pub minority: bool,
++}
++
++/// Choose scenarios that maximise information less overlap inside a budget,
++/// keeping at least one minority hypothesis where any is offered.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct ScenarioSelection {
++    pub scenarios: Vec<Scenario>,
++    /// Symmetric, `[0, 1]`, how much two scenarios tell you the same thing.
++    pub similarity: Vec<Vec<f64>>,
++    pub budget: u32,
++    pub overlap_weight: f64,
++}
++
++impl ScenarioSelection {
++    /// Above this many scenarios plus slack bits the statevector is not asked.
++    pub const MAX_VARIABLES: usize = 16;
++
++    fn minority_indices(&self) -> Vec<usize> {
++        (0..self.scenarios.len())
++            .filter(|&i| self.scenarios[i].minority)
++            .collect()
++    }
++
++    fn budget_slack(&self) -> usize {
++        slack_bits(self.budget)
++    }
++
++    fn minority_slack(&self) -> usize {
++        let m = self.minority_indices().len();
++        if m == 0 {
++            0
++        } else {
++            slack_bits(u32::try_from(m - 1).unwrap_or(u32::MAX))
++        }
++    }
++
++    pub fn validate(&self) -> Result<()> {
++        let n = self.scenarios.len();
++        if n == 0 {
++            return Err(Error::invalid(
++                "a scenario selection needs scenarios to choose from",
++            ));
++        }
++        let mut ids = BTreeSet::new();
++        for s in &self.scenarios {
++            if s.id.trim().is_empty() || !ids.insert(s.id.trim()) {
++                return Err(Error::invalid(format!(
++                    "every scenario needs a distinct, non-blank id; {:?} is not",
++                    s.id
++                )));
++            }
++            if s.hypothesis.trim().is_empty() {
++                return Err(Error::invalid(format!(
++                    "scenario {} names no hypothesis it tests",
++                    s.id
++                )));
++            }
++            if !s.information.is_finite() || s.information <= 0.0 {
++                return Err(Error::invalid(format!(
++                    "scenario {} must offer positive, finite information",
++                    s.id
++                )));
++            }
++            if s.cost == 0 {
++                return Err(Error::invalid(format!(
++                    "scenario {} costs nothing; a free run needs no budget to choose it",
++                    s.id
++                )));
++            }
++        }
++        if self.budget == 0 {
++            return Err(Error::invalid("a zero budget admits no scenario"));
++        }
++        if self.similarity.len() != n || self.similarity.iter().any(|r| r.len() != n) {
++            return Err(Error::invalid(format!(
++                "the similarity matrix must be {n} by {n}"
++            )));
++        }
++        for i in 0..n {
++            for j in 0..n {
++                let s = self.similarity[i][j];
++                if !(0.0..=1.0).contains(&s) || (s - self.similarity[j][i]).abs() > 1e-12 {
++                    return Err(Error::invalid(
++                        "similarity is symmetric and in [0, 1]; refusing rather than clamping",
++                    ));
++                }
++            }
++        }
++        finite("the overlap weight", self.overlap_weight)?;
++        if self.overlap_weight < 0.0 {
++            return Err(Error::invalid(
++                "a negative overlap weight would reward running the same experiment twice",
++            ));
++        }
++        let variables = n + self.budget_slack() + self.minority_slack();
++        if variables > Self::MAX_VARIABLES {
++            return Err(Error::invalid(format!(
++                "{variables} QUBO variables exceed the {} this family carries",
++                Self::MAX_VARIABLES
++            )));
++        }
++        Ok(())
++    }
++
++    /// Information less overlap, the family's measure. Higher is better.
++    pub fn value(&self, members: &[usize]) -> f64 {
++        let info: f64 = members.iter().map(|&i| self.scenarios[i].information).sum();
++        let mut overlap = 0.0;
++        for (k, &i) in members.iter().enumerate() {
++            for &j in &members[k + 1..] {
++                overlap += self.similarity[i][j];
++            }
++        }
++        info - self.overlap_weight * overlap
++    }
++
++    /// Refuse a selection over budget, or one that drops every minority
++    /// hypothesis while one was offered (R12-QUANT-4041).
++    pub fn check(&self, members: &[usize]) -> Result<()> {
++        let cost: u64 = members
++            .iter()
++            .map(|&i| u64::from(self.scenarios[i].cost))
++            .sum();
++        if cost > u64::from(self.budget) {
++            return Err(Error::denied(format!(
++                "the selection costs {cost} against a budget of {}",
++                self.budget
++            )));
++        }
++        let minority = self.minority_indices();
++        if !minority.is_empty() && !members.iter().any(|i| minority.contains(i)) {
++            return Err(Error::denied(
++                "the selection drops every minority hypothesis; at least one must stay under \
++                 test, or a budget becomes a way to settle a question without asking it",
++            ));
++        }
++        Ok(())
++    }
++
++    /// Maximise value as `-value`, with two equalities as penalties:
++    /// `sum c_i x_i + sum 2^j s_j = B` (the budget, slack absorbing what is
++    /// left) and, where minorities exist, `sum_m x_m - sum 2^j t_j = 1` (at
++    /// least one kept, slack absorbing the rest).
++    pub fn to_qubo(&self) -> Result<Qubo> {
++        self.validate()?;
++        let n = self.scenarios.len();
++        let budget_bits = self.budget_slack();
++        let minority_bits = self.minority_slack();
++        let mut qubo = Qubo::new(n + budget_bits + minority_bits);
++        let mut swing = 0.0;
++        for i in 0..n {
++            qubo.add_linear(i, -self.scenarios[i].information);
++            swing += self.scenarios[i].information;
++            for j in (i + 1)..n {
++                let cost = self.overlap_weight * self.similarity[i][j];
++                swing += cost;
++                qubo.add(i, j, cost);
++            }
++        }
++        let penalty = 1.0 + swing;
++        let mut budget: Vec<(usize, f64)> = (0..n)
++            .map(|i| (i, f64::from(self.scenarios[i].cost)))
++            .collect();
++        budget.extend((0..budget_bits).map(|b| (n + b, f64::from(1u32 << b))));
++        add_squared_equality(&mut qubo, &budget, f64::from(self.budget), penalty);
++        let minority = self.minority_indices();
++        if !minority.is_empty() {
++            let mut keep: Vec<(usize, f64)> = minority.iter().map(|&i| (i, 1.0)).collect();
++            keep.extend((0..minority_bits).map(|b| (n + budget_bits + b, -f64::from(1u32 << b))));
++            add_squared_equality(&mut qubo, &keep, 1.0, penalty);
++        }
++        Ok(qubo)
++    }
++
++    pub fn decode(&self, assignment: &[u8]) -> Result<(Vec<usize>, f64)> {
++        let n = self.scenarios.len();
++        let expected = n + self.budget_slack() + self.minority_slack();
++        if assignment.len() != expected {
++            return Err(Error::invalid(format!(
++                "this selection is {expected} bits, got {}",
++                assignment.len()
++            )));
++        }
++        let members: Vec<usize> = (0..n).filter(|&i| assignment[i] == 1).collect();
++        self.check(&members)?;
++        Ok((members.clone(), self.value(&members)))
++    }
++
++    /// Classical baseline: seed with the best minority scenario by
++    /// information per unit cost where any is offered, then add by
++    /// marginal value per unit cost while the budget allows.
++    pub fn greedy_by_value_per_cost(&self) -> Result<Vec<usize>> {
++        self.validate()?;
++        let n = self.scenarios.len();
++        let mut kept: Vec<usize> = Vec::new();
++        let mut spent: u64 = 0;
++        let ratio = |i: usize, kept: &[usize]| {
++            let mut with = kept.to_vec();
++            with.push(i);
++            (self.value(&with) - self.value(kept)) / f64::from(self.scenarios[i].cost)
++        };
++        let minority = self.minority_indices();
++        if !minority.is_empty() {
++            let seed = minority
++                .iter()
++                .copied()
++                .filter(|&i| u64::from(self.scenarios[i].cost) <= u64::from(self.budget))
++                .max_by(|&a, &b| {
++                    ratio(a, &[])
++                        .partial_cmp(&ratio(b, &[]))
++                        .unwrap_or(std::cmp::Ordering::Equal)
++                })
++                .ok_or_else(|| {
++                    Error::denied(
++                        "no minority scenario fits the budget, so no admissible selection exists",
++                    )
++                })?;
++            spent += u64::from(self.scenarios[seed].cost);
++            kept.push(seed);
++        }
++        loop {
++            let next = (0..n)
++                .filter(|i| !kept.contains(i))
++                .filter(|&i| spent + u64::from(self.scenarios[i].cost) <= u64::from(self.budget))
++                .map(|i| (i, ratio(i, &kept)))
++                .filter(|(_, r)| *r > 0.0)
++                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
++            match next {
++                Some((i, _)) => {
++                    spent += u64::from(self.scenarios[i].cost);
++                    kept.push(i);
++                }
++                None => break,
++            }
++        }
++        kept.sort_unstable();
++        self.check(&kept)?;
++        Ok(kept)
++    }
++
++    pub fn run_experiment(&self, benchmark: &SolverBenchmark) -> Result<FamilyExperiment> {
++        let qubo = self.to_qubo()?;
++        let greedy = self.greedy_by_value_per_cost()?;
++        let baseline = BaselineOutcome {
++            selector: SCENARIO_SELECTION_BASELINE.to_string(),
++            score: self.value(&greedy),
++            members: greedy,
++        };
++        let report = benchmark.run(&qubo)?;
++        FamilyExperiment::new(
++            FamilyKind::ScenarioHypothesisSelection,
++            SCENARIO_SELECTION_ENCODING,
++            SCENARIO_SELECTION_BASELINE,
++            digest_of(self)?,
++            true,
++            "information less overlap of the selected scenarios, inside the budget",
++            qubo.n,
++            baseline,
++            decoded_entrants(&report, |bits| self.decode(bits)),
++            simulation_note(&report),
++        )
++    }
++}
++
++// --------------------------------------------------------------------------
++// Graph search: a maximum-weight conflict-free set (R12-QUANT-1077, -4033)
++// --------------------------------------------------------------------------
++
++/// A candidate (a multi-leg cycle, a route) with its value and the
++/// resources it holds while it runs.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct GraphCandidate {
++    pub id: String,
++    /// What selecting it is worth. Positive.
++    pub weight: f64,
++    /// Inventory, a settlement slot, a venue's concurrency: two candidates
++    /// holding one resource conflict.
++    pub resources: BTreeSet<String>,
++}
++
++/// Choose the heaviest set of candidates no two of which share a resource:
++/// a maximum-weight independent set on the conflict graph.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct ConflictGraph {
++    pub candidates: Vec<GraphCandidate>,
++}
++
++impl ConflictGraph {
++    pub const MAX_CANDIDATES: usize = 16;
++
++    pub fn validate(&self) -> Result<()> {
++        let n = self.candidates.len();
++        if n == 0 || n > Self::MAX_CANDIDATES {
++            return Err(Error::invalid(format!(
++                "graph search takes 1 to {} candidates, got {n}",
++                Self::MAX_CANDIDATES
++            )));
++        }
++        let mut ids = BTreeSet::new();
++        for c in &self.candidates {
++            if c.id.trim().is_empty() || !ids.insert(c.id.trim()) {
++                return Err(Error::invalid(format!(
++                    "every candidate needs a distinct, non-blank id; {:?} is not",
++                    c.id
++                )));
++            }
++            if !c.weight.is_finite() || c.weight <= 0.0 {
++                return Err(Error::invalid(format!(
++                    "candidate {} must be worth a positive, finite amount",
++                    c.id
++                )));
++            }
++            if c.resources.is_empty() {
++                return Err(Error::invalid(format!(
++                    "candidate {} holds no resource; a candidate that holds nothing cannot be \
++                     checked for conflicts",
++                    c.id
++                )));
++            }
++        }
++        Ok(())
++    }
++
++    /// The conflict edges, `i < j`.
++    pub fn conflicts(&self) -> Vec<(usize, usize)> {
++        let n = self.candidates.len();
++        let mut out = Vec::new();
++        for i in 0..n {
++            for j in (i + 1)..n {
++                if !self.candidates[i]
++                    .resources
++                    .is_disjoint(&self.candidates[j].resources)
++                {
++                    out.push((i, j));
++                }
++            }
++        }
++        out
++    }
++
++    pub fn weight(&self, members: &[usize]) -> f64 {
++        members.iter().map(|&i| self.candidates[i].weight).sum()
++    }
++
++    /// Minimise `-sum w_i x_i + P sum_{(i,j) in E} x_i x_j`, with `P` above
++    /// the heaviest candidate so dropping one of a conflicting pair always
++    /// pays.
++    pub fn to_qubo(&self) -> Result<Qubo> {
++        self.validate()?;
++        let n = self.candidates.len();
++        let heaviest = self.candidates.iter().map(|c| c.weight).fold(0.0, f64::max);
++        let mut qubo = Qubo::new(n);
++        for (i, c) in self.candidates.iter().enumerate() {
++            qubo.add_linear(i, -c.weight);
++        }
++        for (i, j) in self.conflicts() {
++            qubo.add(i, j, 1.0 + 2.0 * heaviest);
++        }
++        Ok(qubo)
++    }
++
++    pub fn decode(&self, assignment: &[u8]) -> Result<(Vec<usize>, f64)> {
++        let n = self.candidates.len();
++        if assignment.len() != n {
++            return Err(Error::invalid(format!(
++                "a {n}-candidate selection is {n} bits, got {}",
++                assignment.len()
++            )));
++        }
++        let members: Vec<usize> = (0..n).filter(|&i| assignment[i] == 1).collect();
++        for (i, j) in self.conflicts() {
++            if members.contains(&i) && members.contains(&j) {
++                return Err(Error::denied(format!(
++                    "candidates {} and {} share a resource and cannot both run",
++                    self.candidates[i].id, self.candidates[j].id
++                )));
++            }
++        }
++        Ok((members.clone(), self.weight(&members)))
++    }
++
++    /// Classical baseline: heaviest first, skipping any that conflicts with
++    /// one already kept.
++    pub fn greedy_by_weight(&self) -> Result<Vec<usize>> {
++        self.validate()?;
++        let mut order: Vec<usize> = (0..self.candidates.len()).collect();
++        order.sort_by(|&a, &b| {
++            self.candidates[b]
++                .weight
++                .partial_cmp(&self.candidates[a].weight)
++                .unwrap_or(std::cmp::Ordering::Equal)
++        });
++        let mut kept: Vec<usize> = Vec::new();
++        for i in order {
++            if kept.iter().all(|&j| {
++                self.candidates[i]
++                    .resources
++                    .is_disjoint(&self.candidates[j].resources)
++            }) {
++                kept.push(i);
++            }
++        }
++        kept.sort_unstable();
++        Ok(kept)
++    }
++
++    pub fn run_experiment(&self, benchmark: &SolverBenchmark) -> Result<FamilyExperiment> {
++        let qubo = self.to_qubo()?;
++        let greedy = self.greedy_by_weight()?;
++        let baseline = BaselineOutcome {
++            selector: GRAPH_SEARCH_BASELINE.to_string(),
++            score: self.weight(&greedy),
++            members: greedy,
++        };
++        let report = benchmark.run(&qubo)?;
++        FamilyExperiment::new(
++            FamilyKind::GraphSearch,
++            GRAPH_SEARCH_ENCODING,
++            GRAPH_SEARCH_BASELINE,
++            digest_of(self)?,
++            true,
++            "total weight of a conflict-free selection",
++            qubo.n,
++            baseline,
++            decoded_entrants(&report, |bits| self.decode(bits)),
++            simulation_note(&report),
++        )
++    }
++}
+diff --git a/backend/crates/libs/qip-quantum/src/foundry.rs b/backend/crates/libs/qip-quantum/src/foundry.rs
+index a8f51673..89b88a21 100644
+--- a/backend/crates/libs/qip-quantum/src/foundry.rs
++++ b/backend/crates/libs/qip-quantum/src/foundry.rs
+@@ -18,7 +18,7 @@ use qip_core::error::{Error, Result};
+ use std::collections::BTreeMap;
+ 
+ /// The workload families the blueprint names (M p6 and p20-21).
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+ pub enum FamilyKind {
+     PortfolioAllocation,
+     GraphSearch,
+@@ -57,9 +57,14 @@ pub struct FamilyDeclaration {
+     /// it; the router compares this name against the encoder it actually
+     /// calls and refuses a family whose declaration describes another.
+     pub encoding: Option<String>,
++    /// The harness that runs the quantum path beside the baseline and scores
++    /// both on the objective, named as the code names it. A family with an
++    /// encoding and a baseline and nothing that ever compares them is the
++    /// "one-off experiment no gate can see" this registry exists to stop.
++    pub benchmark: Option<String>,
+ }
+ 
+-/// An admitted family: all three declarations present and valid.
++/// An admitted family: every declaration present and valid.
+ #[derive(Debug, Clone, PartialEq)]
+ pub struct WorkloadFamily {
+     kind: FamilyKind,
+@@ -67,6 +72,7 @@ pub struct WorkloadFamily {
+     objective: String,
+     promotion_threshold: f64,
+     encoding: String,
++    benchmark: String,
+ }
+ 
+ impl WorkloadFamily {
+@@ -85,6 +91,9 @@ impl WorkloadFamily {
+     pub fn encoding(&self) -> &str {
+         &self.encoding
+     }
++    pub fn benchmark(&self) -> &str {
++        &self.benchmark
++    }
+ }
+ 
+ /// The registry's account of one family.
+@@ -101,6 +110,11 @@ pub enum FamilyStatus {
+ /// quantum arm does not run.
+ pub const PORTFOLIO_ALLOCATION_ENCODING: &str = "PortfolioProblem::to_qubo";
+ 
++/// The harness portfolio allocation is benchmarked through: the router's
++/// solve, which computes the classical baseline every time and journals the
++/// comparison as a `SolverBenchmarked` record.
++pub const PORTFOLIO_ALLOCATION_BENCHMARK: &str = "ComputeRouter::route (SolverBenchmarked)";
++
+ #[derive(Debug, Default)]
+ pub struct Foundry {
+     entries: BTreeMap<FamilyKind, FamilyStatus>,
+@@ -129,6 +143,7 @@ impl Foundry {
+         let classical_baseline = declared("a classical baseline", &declaration.classical_baseline)?;
+         let objective = declared("a shared objective", &declaration.objective)?;
+         let encoding = declared("an encoding", &declaration.encoding)?;
++        let benchmark = declared("a benchmark", &declaration.benchmark)?;
+         let promotion_threshold = match declaration.promotion_threshold {
+             Some(t) if t.is_finite() && t > 0.0 => t,
+             _ => {
+@@ -145,6 +160,7 @@ impl Foundry {
+                 objective,
+                 promotion_threshold,
+                 encoding,
++                benchmark,
+             }),
+         );
+         Ok(())
+@@ -180,9 +196,16 @@ impl Foundry {
+             .collect()
+     }
+ 
+-    /// The platform's own foundry: the one family that exists, registered with
+-    /// the baseline and margin the compute router already uses, and every other
+-    /// family recorded as not built.
++    /// The platform's own foundry: portfolio allocation registered with the
++    /// baseline and margin the compute router already uses; the five research
++    /// families registered with the encoders, baselines and benchmarks in
++    /// [`crate::families`] and [`crate::qml`] (R12-QUANT-1077 to -1081); and
++    /// symbolic search recorded as not routed, with its own reason.
++    ///
++    /// A research family's registration says the family is judgeable -- an
++    /// encoding, a baseline and a benchmark exist and run -- not that it has
++    /// won anything. Every one of them has only ever run on the in-tree
++    /// simulator, and its experiment record says so.
+     pub fn platform() -> Result<Self> {
+         let mut f = Self::new();
+         f.register(
+@@ -194,21 +217,65 @@ impl Foundry {
+                 objective: Some("PortfolioProblem::objective_at".into()),
+                 promotion_threshold: Some(0.01),
+                 encoding: Some(PORTFOLIO_ALLOCATION_ENCODING.into()),
++                benchmark: Some(PORTFOLIO_ALLOCATION_BENCHMARK.into()),
+             },
+         )?;
+-        let reason = "research family not built: no encoding, baseline or benchmark exists in-tree, and a variational or kernel model would need an ADR for any dependency it implies";
++        use crate::{families, qml};
++        let research = [
++            (
++                FamilyKind::GraphSearch,
++                families::GRAPH_SEARCH_ENCODING,
++                families::GRAPH_SEARCH_BASELINE,
++                "ConflictGraph::weight (total weight of a conflict-free selection)",
++                families::COMBINATORIAL_BENCHMARK,
++            ),
++            (
++                FamilyKind::FeatureEnsembleSelection,
++                families::FEATURE_SELECTION_ENCODING,
++                families::FEATURE_SELECTION_BASELINE,
++                "FeatureSelection::held_out_loss (held-out ridge MSE)",
++                families::COMBINATORIAL_BENCHMARK,
++            ),
++            (
++                FamilyKind::ScenarioHypothesisSelection,
++                families::SCENARIO_SELECTION_ENCODING,
++                families::SCENARIO_SELECTION_BASELINE,
++                "ScenarioSelection::value (information less overlap, inside the budget)",
++                families::COMBINATORIAL_BENCHMARK,
++            ),
++            (
++                FamilyKind::KernelsAndVariationalModels,
++                qml::QUANTUM_KERNEL_ENCODING,
++                qml::QUANTUM_KERNEL_BASELINE,
++                "ModelScore::out_of_sample_mse (held-out MSE)",
++                qml::QML_BENCHMARK,
++            ),
++            (
++                FamilyKind::ReservoirAndExtremeLearning,
++                qml::QUANTUM_RESERVOIR_ENCODING,
++                qml::QUANTUM_RESERVOIR_BASELINE,
++                "ModelScore::out_of_sample_mse (out-of-time one-step MSE)",
++                qml::QML_BENCHMARK,
++            ),
++        ];
++        for (kind, encoding, baseline, objective, benchmark) in research {
++            f.register(
++                kind,
++                &FamilyDeclaration {
++                    classical_baseline: Some(baseline.into()),
++                    objective: Some(objective.into()),
++                    promotion_threshold: Some(0.01),
++                    encoding: Some(encoding.into()),
++                    benchmark: Some(benchmark.into()),
++                },
++            )?;
++        }
+         // Symbolic search is the one other family with an encoding and a
+         // baseline in-tree, so its reason is its own: saying "no encoding
+         // exists" of it would be a false statement about the tree
+         // (R12-QUANT-4040).
+         let symbolic = "research family not routed: the constraint encoder (`Problem::to_qubo`) and its proven classical minimiser (`Problem::minimise`) exist, and a quantum entrant is benchmarked on a constraint QUBO in qip-kernel's symbolic_federation test, but no problem the cycle poses is QUBO-admissible (the acting problem has Boolean domains and non-linear guards), so nothing routes this family and it is not registered";
+-        for kind in FamilyKind::ALL {
+-            match kind {
+-                FamilyKind::PortfolioAllocation => {}
+-                FamilyKind::SymbolicCombinatorialSearch => f.record_not_built(kind, symbolic)?,
+-                _ => f.record_not_built(kind, reason)?,
+-            }
+-        }
++        f.record_not_built(FamilyKind::SymbolicCombinatorialSearch, symbolic)?;
+         Ok(f)
+     }
+ }
+diff --git a/backend/crates/libs/qip-quantum/src/lib.rs b/backend/crates/libs/qip-quantum/src/lib.rs
+index 2086f54b..a9cd406f 100644
+--- a/backend/crates/libs/qip-quantum/src/lib.rs
++++ b/backend/crates/libs/qip-quantum/src/lib.rs
+@@ -40,10 +40,12 @@
+ //! without blocking, so a device queue can never stall the cycle that asked.
+ 
+ pub mod benchmark;
++pub mod families;
+ pub mod foundry;
+ pub mod gateway;
+ pub mod provider;
+ pub mod qaoa;
++pub mod qml;
+ pub mod registry;
+ pub mod solver;
+ pub mod statevector;
+diff --git a/backend/crates/libs/qip-quantum/src/qml.rs b/backend/crates/libs/qip-quantum/src/qml.rs
+new file mode 100644
+index 00000000..b800dbb5
+--- /dev/null
++++ b/backend/crates/libs/qip-quantum/src/qml.rs
+@@ -0,0 +1,691 @@
++//! Quantum machine-learning research families: fidelity kernels and a
++//! quantum extreme-learning reservoir (R12-QUANT-1079, -1080, -4036, -4037,
++//! -4054).
++//!
++//! Neither is a QUBO, so neither goes through [`crate::benchmark`]. What they
++//! share with the combinatorial families is the rule that matters: a quantum
++//! model is never reported alone. [`QmlExperiment`] holds the quantum model's
++//! out-of-sample error and calibration beside a strong classical model's, on
++//! the same split, and the classical model is chosen without looking at the
++//! held-out data -- by validation inside the training window -- so the uplift
++//! it reports is not a comparison against a baseline picked to lose.
++//!
++//! Both quantum models run on the in-tree statevector. A simulated kernel or
++//! reservoir is a classical computation of what a device would compute; it
++//! measures whether the representation carries information, and says
++//! nothing about speed. The record's notes say so.
++//!
++//! Statistics throughout, so `f64`; nothing here is money.
++
++use crate::families::Dataset;
++use crate::foundry::FamilyKind;
++use crate::statevector::{Complex, StateVector};
++use qip_core::error::{Error, Result};
++use qip_core::{Rng, Xoshiro256};
++use qip_numerics::matrix::Matrix;
++use serde::Serialize;
++
++/// The feature map [`crate::foundry::Foundry::platform`] declares for kernels.
++pub const QUANTUM_KERNEL_ENCODING: &str =
++    "KernelRegression::feature_state (Hadamard, Z(2x), ZZ(2xy) layers)";
++/// The strong classical model the kernel family is benchmarked against.
++pub const QUANTUM_KERNEL_BASELINE: &str = "KernelRegression::rbf_kernel_ridge";
++/// The encoding declared for the reservoir.
++pub const QUANTUM_RESERVOIR_ENCODING: &str =
++    "ReservoirForecast::quantum_features (windowed RX input, seeded scrambler, <Z>, <ZZ>)";
++/// The classical models the reservoir is benchmarked against.
++pub const QUANTUM_RESERVOIR_BASELINE: &str =
++    "ReservoirForecast::classical (echo-state network or AR(window), chosen in-sample)";
++/// The benchmark both families run through.
++pub const QML_BENCHMARK: &str =
++    "qml::QmlExperiment (out-of-sample error and 95% interval coverage beside the classical model)";
++
++/// One model's fit and its out-of-sample record.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct ModelScore {
++    pub model: String,
++    /// Mean squared error on the rows it was fitted on.
++    pub in_sample_mse: f64,
++    /// Mean squared error on rows it never saw (out of time, for a series).
++    pub out_of_sample_mse: f64,
++    /// Fraction of held-out targets inside the fit's 95% interval, the
++    /// interval being `1.96` training residual deviations. Calibrated is
++    /// near `0.95`; an overfitted model's narrow interval covers far less.
++    pub coverage_95: f64,
++}
++
++impl ModelScore {
++    fn validate(&self) -> Result<()> {
++        if self.model.trim().is_empty()
++            || !self.in_sample_mse.is_finite()
++            || !self.out_of_sample_mse.is_finite()
++            || !(0.0..=1.0).contains(&self.coverage_95)
++        {
++            return Err(Error::numeric(format!(
++                "model {:?} has no finite out-of-sample record",
++                self.model
++            )));
++        }
++        Ok(())
++    }
++}
++
++/// A QuantumExperiment record for a QML family.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct QmlExperiment {
++    family: FamilyKind,
++    encoding: String,
++    classical_baseline: String,
++    problem_digest: String,
++    quantum: ModelScore,
++    /// The classical model the uplift is measured against.
++    classical: ModelScore,
++    /// Every classical model tried, with the validation error it was chosen
++    /// on. Recorded so the choice can be checked.
++    classical_candidates: Vec<(String, f64)>,
++    notes: Vec<String>,
++}
++
++impl QmlExperiment {
++    fn new(
++        family: FamilyKind,
++        encoding: &str,
++        classical_baseline: &str,
++        problem_digest: String,
++        quantum: ModelScore,
++        classical: ModelScore,
++        classical_candidates: Vec<(String, f64)>,
++    ) -> Result<Self> {
++        quantum.validate()?;
++        classical.validate()?;
++        if problem_digest.len() != 64 {
++            return Err(Error::invalid(
++                "a quantum experiment carries the SHA-256 of the problem it ran",
++            ));
++        }
++        Ok(Self {
++            family,
++            encoding: encoding.to_string(),
++            classical_baseline: classical_baseline.to_string(),
++            problem_digest,
++            quantum,
++            classical,
++            classical_candidates,
++            notes: vec![
++                "the quantum model ran on the in-tree statevector: this measures whether the \
++                 representation carries information, and is not evidence of quantum advantage"
++                    .to_string(),
++            ],
++        })
++    }
++
++    pub const fn family(&self) -> FamilyKind {
++        self.family
++    }
++    pub fn encoding(&self) -> &str {
++        &self.encoding
++    }
++    pub fn classical_baseline(&self) -> &str {
++        &self.classical_baseline
++    }
++    pub fn problem_digest(&self) -> &str {
++        &self.problem_digest
++    }
++    pub fn quantum(&self) -> &ModelScore {
++        &self.quantum
++    }
++    pub fn classical(&self) -> &ModelScore {
++        &self.classical
++    }
++    pub fn classical_candidates(&self) -> &[(String, f64)] {
++        &self.classical_candidates
++    }
++    pub fn notes(&self) -> &[String] {
++        &self.notes
++    }
++
++    /// Out-of-sample error the quantum model saves over the classical one:
++    /// positive means the quantum representation predicted better.
++    pub fn out_of_sample_uplift(&self) -> f64 {
++        self.classical.out_of_sample_mse - self.quantum.out_of_sample_mse
++    }
++}
++
++fn digest_of<T: Serialize>(problem: &T) -> Result<String> {
++    let bytes = serde_json::to_vec(problem)
++        .map_err(|e| Error::invalid(format!("the problem does not serialise: {e}")))?;
++    Ok(qip_core::hash::sha256_hex(&bytes))
++}
++
++fn mean(values: &[f64]) -> f64 {
++    values.iter().sum::<f64>() / values.len() as f64
++}
++
++fn mse(predicted: &[f64], actual: &[f64]) -> f64 {
++    predicted
++        .iter()
++        .zip(actual)
++        .map(|(p, a)| (p - a) * (p - a))
++        .sum::<f64>()
++        / actual.len() as f64
++}
++
++fn coverage(predicted: &[f64], actual: &[f64], sigma: f64) -> f64 {
++    let half = 1.96 * sigma;
++    let inside = predicted
++        .iter()
++        .zip(actual)
++        .filter(|(p, a)| (*p - *a).abs() <= half)
++        .count();
++    inside as f64 / actual.len() as f64
++}
++
++fn score(
++    model: &str,
++    fitted: &[f64],
++    train_target: &[f64],
++    predicted: &[f64],
++    test_target: &[f64],
++) -> ModelScore {
++    let in_sample_mse = mse(fitted, train_target);
++    ModelScore {
++        model: model.to_string(),
++        in_sample_mse,
++        out_of_sample_mse: mse(predicted, test_target),
++        coverage_95: coverage(predicted, test_target, in_sample_mse.sqrt()),
++    }
++}
++
++/// Kernel ridge regression on a precomputed Gram matrix: `alpha = (K +
++/// lambda I)^-1 (y - mean)`, predicting `mean + k(x)' alpha`.
++fn kernel_ridge(gram: &Matrix, target: &[f64], ridge: f64) -> Result<(f64, Vec<f64>)> {
++    let n = target.len();
++    let offset = mean(target);
++    let mut system = gram.clone();
++    for i in 0..n {
++        system.add_to(i, i, ridge);
++    }
++    let centred: Vec<f64> = target.iter().map(|y| y - offset).collect();
++    Ok((offset, system.solve(&centred)?))
++}
++
++/// Linear ridge with an unpenalised intercept over feature rows.
++fn linear_ridge(rows: &[Vec<f64>], target: &[f64], ridge: f64) -> Result<Vec<f64>> {
++    let p = rows.first().map_or(0, Vec::len) + 1;
++    let mut gram = Matrix::zeros(p, p);
++    let mut rhs = vec![0.0; p];
++    for (row, y) in rows.iter().zip(target) {
++        let x: Vec<f64> = std::iter::once(1.0).chain(row.iter().copied()).collect();
++        for a in 0..p {
++            rhs[a] += x[a] * y;
++            for b in 0..p {
++                gram.add_to(a, b, x[a] * x[b]);
++            }
++        }
++    }
++    for a in 1..p {
++        gram.add_to(a, a, ridge);
++    }
++    gram.solve(&rhs)
++}
++
++fn linear_predict(rows: &[Vec<f64>], beta: &[f64]) -> Vec<f64> {
++    rows.iter()
++        .map(|row| beta[0] + row.iter().zip(&beta[1..]).map(|(x, b)| x * b).sum::<f64>())
++        .collect()
++}
++
++fn inner(a: &StateVector, b: &StateVector) -> Complex {
++    a.amplitudes()
++        .iter()
++        .zip(b.amplitudes())
++        .fold(Complex::ZERO, |acc, (x, y)| {
++            acc + Complex::new(x.re, -x.im) * *y
++        })
++}
++
++/// `<Z_q>` of a state.
++fn z_expectation(state: &StateVector, qubit: usize) -> f64 {
++    state.expectation(|basis| if basis & (1 << qubit) == 0 { 1.0 } else { -1.0 })
++}
++
++/// `<Z_a Z_b>` of a state.
++fn zz_expectation(state: &StateVector, a: usize, b: usize) -> f64 {
++    state.expectation(|basis| {
++        let parity = ((basis >> a) ^ (basis >> b)) & 1;
++        if parity == 0 { 1.0 } else { -1.0 }
++    })
++}
++
++// --------------------------------------------------------------------------
++// Quantum kernels (R12-QUANT-1079, -4036)
++// --------------------------------------------------------------------------
++
++/// Regression with a fidelity quantum kernel, benchmarked against RBF
++/// kernel ridge and linear ridge on the same split.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct KernelRegression {
++    pub train: Dataset,
++    pub test: Dataset,
++    pub ridge: f64,
++    /// Width of the classical RBF kernel.
++    pub rbf_gamma: f64,
++    /// Repetitions of the feature map.
++    pub layers: usize,
++}
++
++impl KernelRegression {
++    pub const MAX_FEATURES: usize = 6;
++
++    pub fn validate(&self) -> Result<()> {
++        let columns = self.train.rows.first().map_or(0, Vec::len);
++        if columns == 0 || columns > Self::MAX_FEATURES {
++            return Err(Error::invalid(format!(
++                "a quantum kernel takes 1 to {} features, one qubit each; got {columns}",
++                Self::MAX_FEATURES
++            )));
++        }
++        for (name, data) in [("training", &self.train), ("test", &self.test)] {
++            if data.rows.len() < 2 || data.rows.len() != data.target.len() {
++                return Err(Error::invalid(format!(
++                    "the {name} set needs at least two rows and one target per row"
++                )));
++            }
++            if data
++                .rows
++                .iter()
++                .any(|r| r.len() != columns || r.iter().any(|v| !v.is_finite()))
++                || data.target.iter().any(|v| !v.is_finite())
++            {
++                return Err(Error::invalid(format!(
++                    "the {name} set holds a ragged row or a non-finite value"
++                )));
++            }
++        }
++        if !self.ridge.is_finite() || self.ridge <= 0.0 {
++            return Err(Error::invalid(
++                "the ridge penalty must be positive and finite",
++            ));
++        }
++        if !self.rbf_gamma.is_finite() || self.rbf_gamma <= 0.0 {
++            return Err(Error::invalid("the RBF width must be positive and finite"));
++        }
++        if self.layers == 0 || self.layers > 3 {
++            return Err(Error::invalid("the feature map repeats 1 to 3 times"));
++        }
++        Ok(())
++    }
++
++    /// `|phi(x)>`: per layer, Hadamard on every qubit, `RZ(2 x_i)`, then a
++    /// `ZZ` phase of `2 x_i x_j` on every pair.
++    pub fn feature_state(&self, x: &[f64]) -> Result<StateVector> {
++        let mut state = StateVector::zero(x.len())?;
++        for _ in 0..self.layers {
++            for (i, v) in x.iter().enumerate() {
++                state.hadamard(i)?;
++                state.rotate_z(i, 2.0 * v)?;
++            }
++            for i in 0..x.len() {
++                for j in (i + 1)..x.len() {
++                    state.controlled_phase(i, j, 2.0 * x[i] * x[j])?;
++                }
++            }
++        }
++        Ok(state)
++    }
++
++    /// `|<phi(a)|phi(b)>|^2`, a fidelity in `[0, 1]`.
++    pub fn quantum_kernel(&self, a: &[f64], b: &[f64]) -> Result<f64> {
++        if a.len() != b.len() {
++            return Err(Error::invalid("a kernel compares points of one dimension"));
++        }
++        let overlap = inner(&self.feature_state(a)?, &self.feature_state(b)?);
++        Ok(overlap.norm_squared())
++    }
++
++    fn rbf(&self, a: &[f64], b: &[f64]) -> f64 {
++        let d: f64 = a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum();
++        (-self.rbf_gamma * d).exp()
++    }
++
++    fn kernel_model<F>(&self, name: &str, k: F) -> Result<ModelScore>
++    where
++        F: Fn(&[f64], &[f64]) -> Result<f64>,
++    {
++        let n = self.train.rows.len();
++        let mut gram = Matrix::zeros(n, n);
++        for i in 0..n {
++            for j in 0..n {
++                gram.set(i, j, k(&self.train.rows[i], &self.train.rows[j])?);
++            }
++        }
++        let (offset, alpha) = kernel_ridge(&gram, &self.train.target, self.ridge)?;
++        let predict = |x: &[f64]| -> Result<f64> {
++            let mut total = offset;
++            for (row, a) in self.train.rows.iter().zip(&alpha) {
++                total += a * k(x, row)?;
++            }
++            Ok(total)
++        };
++        let fitted = self
++            .train
++            .rows
++            .iter()
++            .map(|x| predict(x))
++            .collect::<Result<Vec<_>>>()?;
++        let predicted = self
++            .test
++            .rows
++            .iter()
++            .map(|x| predict(x))
++            .collect::<Result<Vec<_>>>()?;
++        Ok(score(
++            name,
++            &fitted,
++            &self.train.target,
++            &predicted,
++            &self.test.target,
++        ))
++    }
++
++    /// Run the quantum kernel and the classical candidates. The classical
++    /// baseline is chosen by leave-out validation inside the training set,
++    /// never on the test rows.
++    pub fn run_experiment(&self) -> Result<QmlExperiment> {
++        self.validate()?;
++        let quantum =
++            self.kernel_model("quantum-fidelity-kernel", |a, b| self.quantum_kernel(a, b))?;
++        let rbf = self.kernel_model("rbf-kernel-ridge", |a, b| Ok(self.rbf(a, b)))?;
++        let beta = linear_ridge(&self.train.rows, &self.train.target, self.ridge)?;
++        let linear = score(
++            "linear-ridge",
++            &linear_predict(&self.train.rows, &beta),
++            &self.train.target,
++            &linear_predict(&self.test.rows, &beta),
++            &self.test.target,
++        );
++        let candidates = vec![
++            ("rbf-kernel-ridge".to_string(), self.validation_error(true)?),
++            ("linear-ridge".to_string(), self.validation_error(false)?),
++        ];
++        let classical = if candidates[0].1 <= candidates[1].1 {
++            rbf
++        } else {
++            linear
++        };
++        QmlExperiment::new(
++            FamilyKind::KernelsAndVariationalModels,
++            QUANTUM_KERNEL_ENCODING,
++            QUANTUM_KERNEL_BASELINE,
++            digest_of(self)?,
++            quantum,
++            classical,
++            candidates,
++        )
++    }
++
++    /// Error on the last quarter of the training rows of a model fitted on
++    /// the first three quarters.
++    fn validation_error(&self, rbf: bool) -> Result<f64> {
++        let n = self.train.rows.len();
++        let cut = (n * 3 / 4).clamp(1, n - 1);
++        let inner = KernelRegression {
++            train: Dataset {
++                rows: self.train.rows[..cut].to_vec(),
++                target: self.train.target[..cut].to_vec(),
++            },
++            test: Dataset {
++                rows: self.train.rows[cut..].to_vec(),
++                target: self.train.target[cut..].to_vec(),
++            },
++            ..self.clone()
++        };
++        if rbf {
++            Ok(inner
++                .kernel_model("rbf", |a, b| Ok(inner.rbf(a, b)))?
++                .out_of_sample_mse)
++        } else {
++            let beta = linear_ridge(&inner.train.rows, &inner.train.target, self.ridge)?;
++            Ok(mse(
++                &linear_predict(&inner.test.rows, &beta),
++                &inner.test.target,
++            ))
++        }
++    }
++}
++
++// --------------------------------------------------------------------------
++// Quantum reservoir / extreme learning (R12-QUANT-1080, -4037, -4054)
++// --------------------------------------------------------------------------
++
++/// One-step-ahead forecasting of a series: a quantum extreme-learning
++/// reservoir against an echo-state network and a linear AR model, scored
++/// out of time.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++pub struct ReservoirForecast {
++    pub series: Vec<f64>,
++    /// Observations `0..train_len` are the training period; everything after
++    /// is out of time.
++    pub train_len: usize,
++    /// Past values each forecast reads.
++    pub window: usize,
++    pub qubits: usize,
++    pub ridge: f64,
++    pub seed: u64,
++}
++
++impl ReservoirForecast {
++    pub const MAX_QUBITS: usize = 6;
++
++    pub fn validate(&self) -> Result<()> {
++        if self.series.iter().any(|v| !v.is_finite()) {
++            return Err(Error::invalid("the series holds a non-finite value"));
++        }
++        if self.window == 0 || self.window > 8 {
++            return Err(Error::invalid("the window reads 1 to 8 past values"));
++        }
++        if self.qubits < 2 || self.qubits > Self::MAX_QUBITS {
++            return Err(Error::invalid(format!(
++                "the reservoir has 2 to {} qubits",
++                Self::MAX_QUBITS
++            )));
++        }
++        if self.train_len < self.window + 12 {
++            return Err(Error::invalid(
++                "the training period must hold at least twelve forecasts beyond the window",
++            ));
++        }
++        if self.series.len() < self.train_len + 5 {
++            return Err(Error::invalid(
++                "at least five out-of-time observations are needed to score a forecast",
++            ));
++        }
++        if !self.ridge.is_finite() || self.ridge <= 0.0 {
++            return Err(Error::invalid(
++                "the ridge penalty must be positive and finite",
++            ));
++        }
++        let scale = self.input_scale();
++        if !scale.is_finite() || scale <= 0.0 {
++            return Err(Error::invalid(
++                "the training period is constant, so there is nothing to forecast",
++            ));
++        }
++        Ok(())
++    }
++
++    /// Rotation per unit of input, from the training period alone: a scale
++    /// taken over the whole series would let out-of-time values shape the
++    /// features the model is fitted on.
++    fn input_scale(&self) -> f64 {
++        let peak = self.series[..self.train_len]
++            .iter()
++            .fold(0.0_f64, |m, v| m.max(v.abs()));
++        std::f64::consts::PI / peak
++    }
++
++    /// Indices `t` of forecasts, each reading `series[t + 1 - window..=t]`
++    /// and predicting `series[t + 1]`.
++    fn forecast_points(&self) -> std::ops::Range<usize> {
++        (self.window - 1)..(self.series.len() - 1)
++    }
++
++    fn is_training(&self, t: usize) -> bool {
++        t + 1 < self.train_len
++    }
++
++    /// The scrambler: seeded single-qubit rotations then a CNOT ring, fixed
++    /// for the run.
++    fn scrambler(&self) -> Vec<(f64, f64)> {
++        let mut rng = Xoshiro256::seeded(self.seed);
++        (0..self.qubits)
++            .map(|_| {
++                (
++                    rng.uniform(0.0, std::f64::consts::TAU),
++                    rng.uniform(0.0, std::f64::consts::TAU),
++                )
++            })
++            .collect()
++    }
++
++    /// `<Z_i>` and `<Z_i Z_j>` after the window is fed in, one value per
++    /// step: `RX(scale * u)` on qubit 0, then the scrambler.
++    pub fn quantum_features(&self) -> Result<Vec<Vec<f64>>> {
++        let scale = self.input_scale();
++        let scrambler = self.scrambler();
++        self.forecast_points()
++            .map(|t| {
++                let mut state = StateVector::zero(self.qubits)?;
++                for u in &self.series[t + 1 - self.window..=t] {
++                    state.rotate_x(0, scale * u)?;
++                    for (q, (theta, phi)) in scrambler.iter().enumerate() {
++                        state.rotate_x(q, *theta)?;
++                        state.rotate_z(q, *phi)?;
++                    }
++                    for q in 0..self.qubits {
++                        state.cnot(q, (q + 1) % self.qubits)?;
++                    }
++                }
++                let mut row: Vec<f64> =
++                    (0..self.qubits).map(|q| z_expectation(&state, q)).collect();
++                for a in 0..self.qubits {
++                    for b in (a + 1)..self.qubits {
++                        row.push(zz_expectation(&state, a, b));
++                    }
++                }
++                Ok(row)
++            })
++            .collect()
++    }
++
++    /// An echo-state network of as many units as the quantum features, run
++    /// causally over the series; its weights' largest absolute row sum is
++    /// scaled to 0.9 so the state forgets.
++    fn echo_state_features(&self) -> Vec<Vec<f64>> {
++        let units = self.qubits + self.qubits * (self.qubits - 1) / 2;
++        let mut rng = Xoshiro256::seeded(self.seed).fork("echo-state");
++        let w_in: Vec<f64> = (0..units).map(|_| rng.uniform(-1.0, 1.0)).collect();
++        let mut w: Vec<Vec<f64>> = (0..units)
++            .map(|_| (0..units).map(|_| rng.uniform(-1.0, 1.0)).collect())
++            .collect();
++        let widest = w
++            .iter()
++            .map(|r| r.iter().map(|v| v.abs()).sum::<f64>())
++            .fold(0.0_f64, f64::max);
++        for row in &mut w {
++            for v in row.iter_mut() {
++                *v *= 0.9 / widest;
++            }
++        }
++        let scale = self.input_scale() / std::f64::consts::PI;
++        let mut state = vec![0.0; units];
++        let mut by_time = Vec::with_capacity(self.series.len());
++        for u in &self.series {
++            state = (0..units)
++                .map(|i| {
++                    let recurrent: f64 = w[i].iter().zip(&state).map(|(a, b)| a * b).sum();
++                    (recurrent + w_in[i] * scale * u).tanh()
++                })
++                .collect();
++            by_time.push(state.clone());
++        }
++        self.forecast_points().map(|t| by_time[t].clone()).collect()
++    }
++
++    fn autoregressive_features(&self) -> Vec<Vec<f64>> {
++        self.forecast_points()
++            .map(|t| self.series[t + 1 - self.window..=t].to_vec())
++            .collect()
++    }
++
++    fn readout(&self, name: &str, features: &[Vec<f64>]) -> Result<ModelScore> {
++        let (train, test) = self.split(features);
++        let beta = linear_ridge(&train.rows, &train.target, self.ridge)?;
++        Ok(score(
++            name,
++            &linear_predict(&train.rows, &beta),
++            &train.target,
++            &linear_predict(&test.rows, &beta),
++            &test.target,
++        ))
++    }
++
++    fn split(&self, features: &[Vec<f64>]) -> (Dataset, Dataset) {
++        let mut train = Dataset {
++            rows: Vec::new(),
++            target: Vec::new(),
++        };
++        let mut test = train.clone();
++        for (row, t) in features.iter().zip(self.forecast_points()) {
++            let into = if self.is_training(t) {
++                &mut train
++            } else {
++                &mut test
++            };
++            into.rows.push(row.clone());
++            into.target.push(self.series[t + 1]);
++        }
++        (train, test)
++    }
++
++    /// Validation error inside the training period: fit on its first three
++    /// quarters, score on the last.
++    fn validation_error(&self, features: &[Vec<f64>]) -> Result<f64> {
++        let (train, _) = self.split(features);
++        let cut = train.rows.len() * 3 / 4;
++        let beta = linear_ridge(&train.rows[..cut], &train.target[..cut], self.ridge)?;
++        Ok(mse(
++            &linear_predict(&train.rows[cut..], &beta),
++            &train.target[cut..],
++        ))
++    }
++
++    pub fn run_experiment(&self) -> Result<QmlExperiment> {
++        self.validate()?;
++        let quantum_rows = self.quantum_features()?;
++        let quantum = self.readout("quantum-reservoir", &quantum_rows)?;
++        let echo = self.echo_state_features();
++        let ar = self.autoregressive_features();
++        let candidates = vec![
++            (
++                "echo-state-network".to_string(),
++                self.validation_error(&echo)?,
++            ),
++            (format!("ar-{}", self.window), self.validation_error(&ar)?),
++        ];
++        let classical = if candidates[0].1 <= candidates[1].1 {
++            self.readout("echo-state-network", &echo)?
++        } else {
++            self.readout(&format!("ar-{}", self.window), &ar)?
++        };
++        QmlExperiment::new(
++            FamilyKind::ReservoirAndExtremeLearning,
++            QUANTUM_RESERVOIR_ENCODING,
++            QUANTUM_RESERVOIR_BASELINE,
++            digest_of(self)?,
++            quantum,
++            classical,
++            candidates,
++        )
++    }
++}
+diff --git a/backend/crates/libs/qip-quantum/tests/families.rs b/backend/crates/libs/qip-quantum/tests/families.rs
+new file mode 100644
+index 00000000..0ac80dc2
+--- /dev/null
++++ b/backend/crates/libs/qip-quantum/tests/families.rs
+@@ -0,0 +1,379 @@
++//! The foundry's combinatorial research families, run end to end: encoding,
++//! classical baseline, QUBO benchmark with a quantum entrant on the in-tree
++//! statevector, and every answer decoded and re-scored on the family's own
++//! measure (R12-QUANT-1077, -1078, -1081, -4035, -4038, -4041, -4059).
++//!
++//! Each test asserts its premise before its claim, and names the mutation
++//! that should make it fail.
++
++#![allow(clippy::panic_in_result_fn)]
++#![allow(clippy::unwrap_used, clippy::expect_used)] // a panic is the failure report
++
++use qip_core::error::Result;
++use qip_quantum::benchmark::SolverBenchmark;
++use qip_quantum::families::{
++    ConflictGraph, Dataset, FEATURE_SELECTION_BASELINE, FEATURE_SELECTION_ENCODING,
++    FamilyExperiment, FeatureSelection, GRAPH_SEARCH_ENCODING, GraphCandidate, Scenario,
++    ScenarioSelection,
++};
++use qip_quantum::foundry::FamilyKind;
++use qip_quantum::provider::SimulatedProvider;
++use qip_quantum::qaoa::QaoaSettings;
++use qip_quantum::solver::{ClassicalSolver, ProviderSolver, SolverKind};
++use std::collections::BTreeSet;
++use std::sync::Arc;
++
++fn benchmark() -> SolverBenchmark {
++    SolverBenchmark::new(ClassicalSolver::exhaustive(20))
++        .with_solver(Arc::new(ProviderSolver::new(
++            Arc::new(SimulatedProvider::new(11)),
++            QaoaSettings {
++                layers: 2,
++                optimiser_iterations: 60,
++                shots: 0,
++            },
++        )))
++        .with_repeats(1)
++}
++
++/// A deterministic pseudo-random stream in `[-1, 1)`, so the data is fixed.
++fn stream(seed: u64) -> impl FnMut() -> f64 {
++    let mut state = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
++    move || {
++        state = state
++            .wrapping_mul(6_364_136_223_846_793_005)
++            .wrapping_add(1_442_695_040_888_963_407);
++        ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
++    }
++}
++
++/// Six candidate features: the target is `2 x0 - x3` plus noise; `x1` is a
++/// near-copy of `x0`; the rest are noise.
++fn dataset(rows: usize, seed: u64) -> Dataset {
++    let mut next = stream(seed);
++    let mut out = Dataset {
++        rows: Vec::new(),
++        target: Vec::new(),
++    };
++    for _ in 0..rows {
++        let x0 = next();
++        let x3 = next();
++        let row = vec![x0, x0 + 0.05 * next(), next(), x3, next(), next()];
++        out.target.push(2.0 * x0 - x3 + 0.1 * next());
++        out.rows.push(row);
++    }
++    out
++}
++
++fn features() -> FeatureSelection {
++    FeatureSelection {
++        train: dataset(60, 1),
++        held_out: dataset(40, 2),
++        select: 2,
++        redundancy_weight: 1.0,
++        ridge: 1e-3,
++    }
++}
++
++fn quantum(experiment: &FamilyExperiment) -> &qip_quantum::families::EntrantOutcome {
++    experiment
++        .entrants()
++        .iter()
++        .find(|e| e.kind == SolverKind::Quantum)
++        .expect("a quantum entrant ran")
++}
++
++fn classical(experiment: &FamilyExperiment) -> &qip_quantum::families::EntrantOutcome {
++    experiment
++        .entrants()
++        .iter()
++        .find(|e| e.kind == SolverKind::Classical)
++        .expect("the QUBO's classical solve is recorded")
++}
++
++/// R12-QUANT-1078, -4035, -4059: feature selection is encoded, solved by a
++/// quantum entrant and the exhaustive classical solver, and every answer is
++/// scored on held-out loss beside the greedy selector, with the uplift and
++/// the compute each cost reported.
++///
++/// Mutation: drop the redundancy term from `FeatureSelection::to_qubo` -- the
++/// QUBO's optimum keeps the duplicated pair `{0, 1}` and the held-out loss
++/// assertion fails.
++#[test]
++fn feature_selection_is_benchmarked_on_held_out_loss_against_the_greedy_selector() -> Result<()> {
++    let problem = features();
++    let experiment = problem.run_experiment(&benchmark())?;
++
++    assert_eq!(experiment.family(), FamilyKind::FeatureEnsembleSelection);
++    assert_eq!(experiment.encoding(), FEATURE_SELECTION_ENCODING);
++    assert_eq!(experiment.classical_baseline(), FEATURE_SELECTION_BASELINE);
++    assert_eq!(experiment.problem_digest().len(), 64);
++
++    // Both drivers, and one copy of `x0` -- `x0` and its near-copy `x1` are
++    // interchangeable, the pair of them is not.
++    let drivers = |members: &[usize]| {
++        members.len() == 2 && members.contains(&3) && (members.contains(&0) ^ members.contains(&1))
++    };
++    assert!(
++        drivers(&experiment.baseline().members),
++        "the greedy selector keeps the two drivers: {:?}",
++        experiment.baseline().members
++    );
++    let exhaustive = classical(&experiment);
++    assert!(
++        exhaustive.members.as_deref().is_some_and(drivers),
++        "the QUBO's optimum is the relevant, non-redundant pair: {:?}",
++        exhaustive.members
++    );
++    let loss = exhaustive.score.expect("scored");
++    assert!(loss < 0.05, "held-out loss of the true drivers: {loss}");
++    // A selection of the duplicated pair predicts far worse out of sample:
++    // the measure, not the QUBO energy, is what the record scores.
++    assert!(problem.held_out_loss(&[0, 1])? > 10.0 * loss);
++
++    let q = quantum(&experiment);
++    assert!(
++        q.score.is_some() ^ q.refusal.is_some(),
++        "a quantum entrant holds exactly one of a score and a refusal"
++    );
++    if q.score.is_some() {
++        assert!(experiment.quantum_uplift().is_some());
++    }
++    assert!(experiment.uplift_of(exhaustive).expect("scored").abs() < 1e-12);
++    assert!(
++        experiment
++            .notes()
++            .iter()
++            .any(|n| n.contains("not evidence of quantum advantage"))
++    );
++    Ok(())
++}
++
++/// R12-QUANT-4035: a selection keeping the wrong number of features is
++/// refused at decode, and the held-out set never reaches the encoding.
++///
++/// Mutation: delete the cardinality check in `FeatureSelection::decode` --
++/// the three-feature assignment decodes and `unwrap_err` panics.
++#[test]
++fn a_selection_of_the_wrong_size_is_refused_and_the_held_out_set_never_shapes_the_qubo()
++-> Result<()> {
++    let problem = features();
++    assert!(problem.decode(&[1, 0, 0, 1, 0, 0]).is_ok(), "premise");
++    let refused = problem.decode(&[1, 0, 1, 1, 0, 0]).unwrap_err();
++    assert!(
++        refused.message().contains("exactly 2"),
++        "{}",
++        refused.message()
++    );
++
++    let mut peeked = problem.clone();
++    peeked.held_out = dataset(40, 99);
++    assert_ne!(
++        peeked.held_out, problem.held_out,
++        "premise: a different held-out set"
++    );
++    assert_eq!(peeked.to_qubo()?.entries, problem.to_qubo()?.entries);
++    assert_eq!(peeked.greedy_forward()?, problem.greedy_forward()?);
++    Ok(())
++}
++
++#[test]
++fn a_feature_problem_with_a_bad_input_is_refused_rather_than_repaired() {
++    let mut nan = features();
++    nan.train.rows[3][2] = f64::NAN;
++    assert!(nan.validate().is_err());
++    let mut zero = features();
++    zero.select = 0;
++    assert!(zero.validate().is_err());
++    let mut negative = features();
++    negative.redundancy_weight = -0.1;
++    assert!(negative.validate().is_err());
++    assert!(features().validate().is_ok(), "premise");
++}
++
++fn scenario(id: &str, information: f64, cost: u32, hypothesis: &str, minority: bool) -> Scenario {
++    Scenario {
++        id: id.to_string(),
++        information,
++        cost,
++        hypothesis: hypothesis.to_string(),
++        minority,
++    }
++}
++
++/// Five scenarios testing a consensus view and two testing minority views;
++/// the consensus runs are informative and cheap, so a selector that ignored
++/// the minority rule would spend the budget on them alone.
++fn scenarios() -> ScenarioSelection {
++    let list = vec![
++        scenario("rates-up-a", 5.0, 2, "consensus", false),
++        scenario("rates-up-b", 4.8, 2, "consensus", false),
++        scenario("rates-up-c", 4.5, 2, "consensus", false),
++        scenario("supply-shock", 2.0, 3, "minority-supply", true),
++        scenario("fx-break", 1.5, 2, "minority-fx", true),
++        scenario("rates-flat", 3.0, 1, "consensus", false),
++    ];
++    let n = list.len();
++    let mut similarity = vec![vec![0.0; n]; n];
++    for (i, row) in similarity.iter_mut().enumerate() {
++        row[i] = 1.0;
++    }
++    // The three rates-up runs largely repeat one another.
++    for (i, j) in [(0, 1), (0, 2), (1, 2)] {
++        similarity[i][j] = 0.8;
++        similarity[j][i] = 0.8;
++    }
++    ScenarioSelection {
++        scenarios: list,
++        similarity,
++        budget: 7,
++        overlap_weight: 1.0,
++    }
++}
++
++/// The best admissible selection by brute force: what a correct encoding's
++/// minimum must decode to.
++fn brute_force(problem: &ScenarioSelection) -> (Vec<usize>, f64) {
++    let n = problem.scenarios.len();
++    let mut best: Option<(Vec<usize>, f64)> = None;
++    for mask in 0u32..(1 << n) {
++        let members: Vec<usize> = (0..n).filter(|i| mask & (1 << i) != 0).collect();
++        if problem.check(&members).is_err() {
++            continue;
++        }
++        let value = problem.value(&members);
++        if best.as_ref().is_none_or(|(_, b)| value > *b) {
++            best = Some((members, value));
++        }
++    }
++    best.expect("an admissible selection exists")
++}
++
++/// R12-QUANT-1081, -4038: scenario selection under a compute budget is
++/// encoded with budget and minority slack, its QUBO minimum decodes to the
++/// brute-force optimum, and the greedy selector and a quantum entrant are
++/// scored on the same measure.
++///
++/// Mutation: drop the budget equality from `ScenarioSelection::to_qubo` --
++/// the QUBO's minimum takes every scenario, decodes over budget and is
++/// refused, and the exhaustive entrant's `members` assertion fails.
++#[test]
++fn scenario_selection_under_a_budget_decodes_to_the_brute_force_optimum() -> Result<()> {
++    let problem = scenarios();
++    let (optimum, value) = brute_force(&problem);
++    let experiment = problem.run_experiment(&benchmark())?;
++    assert_eq!(experiment.family(), FamilyKind::ScenarioHypothesisSelection);
++
++    let exhaustive = classical(&experiment);
++    assert_eq!(exhaustive.members.as_deref(), Some(&optimum[..]));
++    assert!((exhaustive.score.expect("scored") - value).abs() < 1e-9);
++    // The greedy baseline is admissible and no better than the optimum.
++    problem.check(&experiment.baseline().members)?;
++    assert!(experiment.baseline().score <= value + 1e-9);
++
++    let q = quantum(&experiment);
++    if let Some(members) = &q.members {
++        problem.check(members)?;
++    } else {
++        assert!(q.refusal.is_some());
++    }
++    Ok(())
++}
++
++/// R12-QUANT-4041: a selection that drops every minority hypothesis is
++/// refused, however much information it buys.
++///
++/// Mutation: delete the minority clause in `ScenarioSelection::check` -- the
++/// consensus-only selection is admitted and `unwrap_err` panics.
++#[test]
++fn a_selection_that_drops_every_minority_hypothesis_is_refused() {
++    let problem = scenarios();
++    let consensus_only = vec![0, 1, 2, 5];
++    // Premise: it fits the budget and buys more information than anything
++    // with a minority run in it, so only the minority rule can refuse it.
++    // The comparison is by hand, not through `check`, so the premise does
++    // not lean on the rule under test: [0, 1, 4, 5] is the best selection
++    // that keeps a minority run.
++    let cost =
++        |members: &[usize]| -> u32 { members.iter().map(|&i| problem.scenarios[i].cost).sum() };
++    let with_minority = [0, 1, 4, 5];
++    assert!(problem.scenarios[4].minority);
++    assert!(cost(&consensus_only) <= problem.budget);
++    assert!(cost(&with_minority) <= problem.budget);
++    assert!(problem.value(&consensus_only) > problem.value(&with_minority));
++
++    let refused = problem.check(&consensus_only).unwrap_err();
++    assert!(
++        refused.message().contains("minority hypothesis"),
++        "{}",
++        refused.message()
++    );
++    let decoded = problem
++        .decode(&{
++            let mut bits = vec![0u8; problem.to_qubo().unwrap().n];
++            for i in &consensus_only {
++                bits[*i] = 1;
++            }
++            bits
++        })
++        .unwrap_err();
++    assert!(decoded.message().contains("minority hypothesis"));
++}
++
++fn candidate(id: &str, weight: f64, resources: &[&str]) -> GraphCandidate {
++    GraphCandidate {
++        id: id.to_string(),
++        weight,
++        resources: resources.iter().map(|r| (*r).to_string()).collect(),
++    }
++}
++
++/// Six multi-leg cycles over shared inventory: greedy-by-weight takes the
++/// heaviest and is locked out of a better pair.
++fn graph() -> ConflictGraph {
++    ConflictGraph {
++        candidates: vec![
++            candidate("btc-eth-usdt", 10.0, &["btc", "eth"]),
++            candidate("btc-sol", 6.0, &["btc", "sol"]),
++            candidate("eth-ada", 6.0, &["eth", "ada"]),
++            candidate("xrp-dot", 3.0, &["xrp", "dot"]),
++            candidate("dot-ltc", 2.0, &["dot", "ltc"]),
++            candidate("ltc-xlm", 2.5, &["ltc", "xlm"]),
++        ],
++    }
++}
++
++/// R12-QUANT-1077: graph search (a maximum-weight conflict-free set) is
++/// encoded, its QUBO minimum is the brute-force optimum, and it is
++/// benchmarked against the greedy search, which it beats on this instance.
++///
++/// Mutation: lower the conflict penalty in `ConflictGraph::to_qubo` to
++/// `0.5 * heaviest` -- the QUBO's minimum keeps a conflicting pair, decodes
++/// to a refusal and the `members` assertion fails.
++#[test]
++fn graph_search_is_benchmarked_against_the_greedy_search_and_decodes_conflict_free() -> Result<()> {
++    let problem = graph();
++    let experiment = problem.run_experiment(&benchmark())?;
++    assert_eq!(experiment.family(), FamilyKind::GraphSearch);
++    assert_eq!(experiment.encoding(), GRAPH_SEARCH_ENCODING);
++
++    // Premise: greedy takes the 10 and is locked out of 6 + 6.
++    assert_eq!(experiment.baseline().members, vec![0, 3, 5]);
++    let exhaustive = classical(&experiment);
++    assert_eq!(exhaustive.members.as_deref(), Some(&[1, 2, 3, 5][..]));
++    assert!(experiment.uplift_of(exhaustive).expect("scored") > 0.0);
++
++    let refused = problem.decode(&[1, 1, 0, 0, 0, 0]).unwrap_err();
++    assert!(refused.message().contains("share a resource"));
++    let q = quantum(&experiment);
++    assert!(q.score.is_some() ^ q.refusal.is_some());
++    Ok(())
++}
++
++#[test]
++fn a_graph_candidate_holding_no_resource_is_refused() {
++    let mut problem = graph();
++    assert!(problem.validate().is_ok(), "premise");
++    problem.candidates[2].resources = BTreeSet::new();
++    assert!(problem.validate().is_err());
++}
+diff --git a/backend/crates/libs/qip-quantum/tests/foundry.rs b/backend/crates/libs/qip-quantum/tests/foundry.rs
+index 4bd15031..ee2748f5 100644
+--- a/backend/crates/libs/qip-quantum/tests/foundry.rs
++++ b/backend/crates/libs/qip-quantum/tests/foundry.rs
+@@ -9,6 +9,7 @@ fn complete() -> FamilyDeclaration {
+         objective: Some("variance".into()),
+         promotion_threshold: Some(0.01),
+         encoding: Some("PortfolioProblem::to_qubo".into()),
++        benchmark: Some("SolverBenchmark::run".into()),
+     }
+ }
+ 
+@@ -28,17 +29,97 @@ fn no_blueprint_family_is_silently_absent_from_the_platform_foundry() -> Result<
+         }
+         other => panic!("portfolio allocation must be registered: {other:?}"),
+     }
++    // R12-QUANT-1077 to -1081: every research family but symbolic search is
++    // registered with a baseline, an objective, an encoding and a benchmark,
++    // and symbolic search is accounted for as not routed.
+     for kind in FamilyKind::ALL {
+-        if kind != FamilyKind::PortfolioAllocation {
+-            assert!(
+-                matches!(foundry.status(kind), Some(FamilyStatus::NotBuilt { reason }) if !reason.is_empty()),
+-                "{kind:?}"
+-            );
++        match (kind, foundry.status(kind)) {
++            (FamilyKind::SymbolicCombinatorialSearch, Some(FamilyStatus::NotBuilt { reason })) => {
++                assert!(!reason.is_empty());
++            }
++            (FamilyKind::SymbolicCombinatorialSearch, other) => {
++                panic!("symbolic search must stay not routed: {other:?}")
++            }
++            (_, Some(FamilyStatus::Registered(f))) => {
++                assert!(
++                    !f.encoding().is_empty() && !f.benchmark().is_empty(),
++                    "{kind:?}"
++                );
++            }
++            (_, other) => panic!("{kind:?} must be registered: {other:?}"),
+         }
+     }
+     Ok(())
+ }
+ 
++/// The registrations name the encoders and baselines the family modules
++/// actually define, so the foundry cannot describe a path the tree does not
++/// run. Mutation: register graph search under any other encoder name -- the
++/// equality fails.
++#[test]
++fn every_research_registration_names_the_encoder_and_baseline_its_module_defines() -> Result<()> {
++    use qip_quantum::{families, qml};
++    let foundry = Foundry::platform()?;
++    for (kind, encoding, baseline) in [
++        (
++            FamilyKind::GraphSearch,
++            families::GRAPH_SEARCH_ENCODING,
++            families::GRAPH_SEARCH_BASELINE,
++        ),
++        (
++            FamilyKind::FeatureEnsembleSelection,
++            families::FEATURE_SELECTION_ENCODING,
++            families::FEATURE_SELECTION_BASELINE,
++        ),
++        (
++            FamilyKind::ScenarioHypothesisSelection,
++            families::SCENARIO_SELECTION_ENCODING,
++            families::SCENARIO_SELECTION_BASELINE,
++        ),
++        (
++            FamilyKind::KernelsAndVariationalModels,
++            qml::QUANTUM_KERNEL_ENCODING,
++            qml::QUANTUM_KERNEL_BASELINE,
++        ),
++        (
++            FamilyKind::ReservoirAndExtremeLearning,
++            qml::QUANTUM_RESERVOIR_ENCODING,
++            qml::QUANTUM_RESERVOIR_BASELINE,
++        ),
++    ] {
++        let Some(FamilyStatus::Registered(f)) = foundry.status(kind) else {
++            panic!("{kind:?} is not registered");
++        };
++        assert_eq!(f.encoding(), encoding, "{kind:?}");
++        assert_eq!(f.classical_baseline(), baseline, "{kind:?}");
++    }
++    Ok(())
++}
++
++/// A family with everything but a benchmark is refused by name: an encoding
++/// and a baseline nothing ever compares are not a judgeable family.
++#[test]
++fn a_family_without_a_benchmark_is_refused_by_name() {
++    let mut f = Foundry::new();
++    for missing in [None, Some(" ".to_string())] {
++        let d = FamilyDeclaration {
++            benchmark: missing.clone(),
++            ..complete()
++        };
++        let e = f.register(FamilyKind::GraphSearch, &d).unwrap_err();
++        assert!(
++            e.message().contains("without a benchmark"),
++            "{missing:?}: {}",
++            e.message()
++        );
++    }
++    assert!(f.status(FamilyKind::GraphSearch).is_none());
++    assert!(
++        f.register(FamilyKind::GraphSearch, &complete()).is_ok(),
++        "premise"
++    );
++}
++
+ #[test]
+ fn an_empty_foundry_reports_every_family_as_unaccounted() {
+     assert_eq!(Foundry::new().unaccounted().len(), FamilyKind::ALL.len());
+@@ -173,13 +254,13 @@ fn a_family_without_an_encoding_is_refused_by_name() -> Result<()> {
+ }
+ 
+ /// R12-QUANT-4040. The symbolic family has an encoder and a proven baseline in
+-/// the tree, so the generic "no encoding, baseline or benchmark exists"
+-/// reason would be a false statement about it - while registering it would
+-/// let `model_serving` promote a benefit nothing in the cycle can produce.
++/// the tree, so a "no encoding, baseline or benchmark exists" reason would be
++/// a false statement about it - while registering it would let
++/// `model_serving` promote a benefit nothing in the cycle can produce.
+ ///
+-/// Mutation: record the symbolic family with the generic reason - the reason
+-/// no longer names the encoder and the first assertion fails. Mutation:
+-/// register it - the `NotBuilt` match fails.
++/// Mutation: record the symbolic family with a reason that does not name the
++/// encoder - the first assertion fails. Mutation: register it - the
++/// `NotBuilt` match fails.
+ #[test]
+ fn the_symbolic_family_is_not_routed_and_its_reason_names_the_encoder_that_exists() -> Result<()> {
+     let foundry = Foundry::platform()?;
+@@ -192,10 +273,9 @@ fn the_symbolic_family_is_not_routed_and_its_reason_names_the_encoder_that_exist
+         reason.contains("`Problem::to_qubo`") && reason.contains("`Problem::minimise`"),
+         "the reason does not name the encoder and baseline that exist: {reason}"
+     );
+-    let Some(FamilyStatus::NotBuilt { reason: generic }) = foundry.status(FamilyKind::GraphSearch)
+-    else {
+-        panic!("premise: graph search is not built");
+-    };
+-    assert_ne!(reason, generic, "premise: the symbolic reason is its own");
++    assert!(
++        !reason.contains("no encoding"),
++        "the symbolic reason must not claim no encoding exists: {reason}"
++    );
+     Ok(())
+ }
+diff --git a/backend/crates/libs/qip-quantum/tests/qml.rs b/backend/crates/libs/qip-quantum/tests/qml.rs
+new file mode 100644
+index 00000000..dda29c02
+--- /dev/null
++++ b/backend/crates/libs/qip-quantum/tests/qml.rs
+@@ -0,0 +1,214 @@
++//! Quantum kernel and quantum reservoir research families, each benchmarked
++//! out of sample against a classical model chosen without the held-out data
++//! (R12-QUANT-1079, -1080, -4036, -4037, -4054).
++//!
++//! Each test names the mutation that should make it fail.
++
++#![allow(clippy::panic_in_result_fn)]
++#![allow(clippy::unwrap_used, clippy::expect_used)] // a panic is the failure report
++
++use qip_core::error::Result;
++use qip_quantum::families::Dataset;
++use qip_quantum::foundry::FamilyKind;
++use qip_quantum::qml::{
++    KernelRegression, QUANTUM_KERNEL_ENCODING, QUANTUM_RESERVOIR_ENCODING, ReservoirForecast,
++};
++
++fn stream(seed: u64) -> impl FnMut() -> f64 {
++    let mut state = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
++    move || {
++        state = state
++            .wrapping_mul(6_364_136_223_846_793_005)
++            .wrapping_add(1_442_695_040_888_963_407);
++        ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
++    }
++}
++
++fn points(rows: usize, seed: u64) -> Dataset {
++    let mut next = stream(seed);
++    let mut out = Dataset {
++        rows: Vec::new(),
++        target: Vec::new(),
++    };
++    for _ in 0..rows {
++        let (a, b) = (next(), next());
++        out.target.push((2.0 * a * b).cos() + 0.05 * next());
++        out.rows.push(vec![a, b]);
++    }
++    out
++}
++
++fn kernel() -> KernelRegression {
++    KernelRegression {
++        train: points(40, 3),
++        test: points(30, 4),
++        ridge: 1e-2,
++        rbf_gamma: 1.0,
++        layers: 2,
++    }
++}
++
++/// The fidelity kernel is a kernel: one on the diagonal, symmetric, in
++/// `[0, 1]`, and below one for distinct points.
++///
++/// Mutation: drop the conjugate in `qml::inner` -- `k(x, x)` is no longer one
++/// and the diagonal assertion fails.
++#[test]
++fn the_quantum_kernel_is_a_fidelity_one_on_the_diagonal_and_symmetric() -> Result<()> {
++    let model = kernel();
++    let (a, b) = (vec![0.3, -0.7], vec![-0.4, 0.9]);
++    assert!((model.quantum_kernel(&a, &a)? - 1.0).abs() < 1e-12);
++    let ab = model.quantum_kernel(&a, &b)?;
++    assert!((ab - model.quantum_kernel(&b, &a)?).abs() < 1e-12);
++    assert!((0.0..1.0).contains(&ab), "{ab}");
++    Ok(())
++}
++
++/// R12-QUANT-1079, -4036: the kernel experiment reports the quantum model's
++/// out-of-sample error and calibration beside the classical model's, and
++/// the classical model is chosen by validation inside the training set: a
++/// different test set changes neither the candidates' validation errors nor
++/// the choice.
++///
++/// Mutation: make `KernelRegression::validation_error` validate on
++/// `self.test` -- the candidates' errors move with the test set and the
++/// equality fails.
++#[test]
++fn the_kernel_experiment_reports_uplift_against_a_classical_model_chosen_without_the_test_set()
++-> Result<()> {
++    let model = kernel();
++    let experiment = model.run_experiment()?;
++    assert_eq!(experiment.family(), FamilyKind::KernelsAndVariationalModels);
++    assert_eq!(experiment.encoding(), QUANTUM_KERNEL_ENCODING);
++    assert_eq!(experiment.problem_digest().len(), 64);
++    let (q, c) = (experiment.quantum(), experiment.classical());
++    assert_eq!(q.model, "quantum-fidelity-kernel");
++    assert!(q.out_of_sample_mse.is_finite() && c.out_of_sample_mse.is_finite());
++    assert!((0.0..=1.0).contains(&q.coverage_95) && (0.0..=1.0).contains(&c.coverage_95));
++    assert!(
++        (experiment.out_of_sample_uplift() - (c.out_of_sample_mse - q.out_of_sample_mse)).abs()
++            < 1e-15
++    );
++    // The chosen classical model is the candidate with the lower
++    // validation error.
++    let best = experiment
++        .classical_candidates()
++        .iter()
++        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
++        .unwrap();
++    assert_eq!(c.model, best.0);
++
++    let mut other = model.clone();
++    other.test = points(30, 77);
++    assert_ne!(other.test, model.test, "premise: a different test set");
++    let again = other.run_experiment()?;
++    assert_eq!(
++        again.classical_candidates(),
++        experiment.classical_candidates()
++    );
++    assert_eq!(again.classical().model, c.model);
++    assert_eq!(
++        again.quantum().in_sample_mse.to_bits(),
++        q.in_sample_mse.to_bits()
++    );
++    assert_ne!(
++        again.quantum().out_of_sample_mse.to_bits(),
++        q.out_of_sample_mse.to_bits()
++    );
++    Ok(())
++}
++
++#[test]
++fn a_kernel_problem_with_a_bad_input_is_refused() {
++    let mut wide = kernel();
++    wide.train.rows[0].push(0.1);
++    assert!(wide.validate().is_err());
++    let mut zero = kernel();
++    zero.ridge = 0.0;
++    assert!(zero.validate().is_err());
++    assert!(kernel().validate().is_ok(), "premise");
++}
++
++fn series() -> Vec<f64> {
++    let mut next = stream(9);
++    (0..120)
++        .map(|t| {
++            let t = f64::from(t);
++            (0.4 * t).sin() + 0.5 * (0.9 * t).sin().powi(2) + 0.05 * next()
++        })
++        .collect()
++}
++
++fn reservoir() -> ReservoirForecast {
++    ReservoirForecast {
++        series: series(),
++        train_len: 80,
++        window: 4,
++        qubits: 3,
++        ridge: 1e-4,
++        seed: 5,
++    }
++}
++
++/// R12-QUANT-1080, -4037, -4054: the reservoir forecasts out of time and
++/// reports its error and interval coverage beside the classical reservoir or
++/// AR model chosen in-sample, and nothing after the training period shapes
++/// the fit: blowing up every out-of-time value leaves both in-sample fits and
++/// the classical choice exactly as they were.
++///
++/// Mutation: take `ReservoirForecast::input_scale` over the whole series --
++/// the out-of-time peak rescales the training features and the quantum
++/// in-sample equality fails.
++#[test]
++fn the_reservoir_forecasts_out_of_time_beside_a_classical_model_and_the_future_never_shapes_the_fit()
++-> Result<()> {
++    let model = reservoir();
++    let experiment = model.run_experiment()?;
++    assert_eq!(experiment.family(), FamilyKind::ReservoirAndExtremeLearning);
++    assert_eq!(experiment.encoding(), QUANTUM_RESERVOIR_ENCODING);
++    let (q, c) = (experiment.quantum(), experiment.classical());
++    assert_eq!(q.model, "quantum-reservoir");
++    assert!(q.out_of_sample_mse.is_finite() && c.out_of_sample_mse.is_finite());
++    assert!((0.0..=1.0).contains(&q.coverage_95) && (0.0..=1.0).contains(&c.coverage_95));
++    // The quantum features carry information: the reservoir forecasts far
++    // better than the series' own variance.
++    let tail = &model.series[model.train_len..];
++    let m = tail.iter().sum::<f64>() / tail.len() as f64;
++    let variance = tail.iter().map(|v| (v - m) * (v - m)).sum::<f64>() / tail.len() as f64;
++    assert!(
++        q.out_of_sample_mse < 0.5 * variance,
++        "{} vs {variance}",
++        q.out_of_sample_mse
++    );
++
++    let mut future = model.clone();
++    for v in &mut future.series[model.train_len..] {
++        *v *= 10.0;
++    }
++    let again = future.run_experiment()?;
++    assert_eq!(
++        again.quantum().in_sample_mse.to_bits(),
++        q.in_sample_mse.to_bits()
++    );
++    assert_eq!(
++        again.classical().in_sample_mse.to_bits(),
++        c.in_sample_mse.to_bits()
++    );
++    assert_eq!(
++        again.classical_candidates(),
++        experiment.classical_candidates()
++    );
++    assert_ne!(
++        again.quantum().out_of_sample_mse.to_bits(),
++        q.out_of_sample_mse.to_bits()
++    );
++    Ok(())
++}
++
++#[test]
++fn a_reservoir_with_too_little_out_of_time_data_is_refused() {
++    let mut short = reservoir();
++    short.train_len = short.series.len() - 2;
++    assert!(short.validate().is_err());
++    assert!(reservoir().validate().is_ok(), "premise");
++}
+diff --git a/backend/crates/runtime/qip-kernel/tests/serving.rs b/backend/crates/runtime/qip-kernel/tests/serving.rs
+index 70ca5ae4..03383776 100644
+--- a/backend/crates/runtime/qip-kernel/tests/serving.rs
++++ b/backend/crates/runtime/qip-kernel/tests/serving.rs
+@@ -788,7 +788,10 @@ fn a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundr
+ 
+     for (workload, expected) in [
+         (None, "names none"),
+-        (Some("GraphSearch"), "is not built"),
++        // Symbolic search is the one family the foundry still holds as not
++        // routed (R12-QUANT-4040); graph search was the example here until
++        // it was registered (R12-QUANT-1077).
++        (Some("SymbolicCombinatorialSearch"), "is not built"),
+         (Some("TeleportationAllocation"), "not a workload family"),
+     ] {
+         let refused = platform
+diff --git a/backend/crates/services/qip-optimization-engine/tests/foundry_threshold.rs b/backend/crates/services/qip-optimization-engine/tests/foundry_threshold.rs
+index 305b6071..ad150468 100644
+--- a/backend/crates/services/qip-optimization-engine/tests/foundry_threshold.rs
++++ b/backend/crates/services/qip-optimization-engine/tests/foundry_threshold.rs
+@@ -91,6 +91,7 @@ fn foundry_with(threshold: f64) -> Result<Foundry> {
+             objective: Some("PortfolioProblem::objective_at".into()),
+             promotion_threshold: Some(threshold),
+             encoding: Some("PortfolioProblem::to_qubo".into()),
++            benchmark: Some("ComputeRouter::route (SolverBenchmarked)".into()),
+         },
+     )?;
+     Ok(f)
+@@ -305,6 +306,7 @@ fn a_portfolio_family_declaring_an_encoder_the_router_does_not_run_is_refused()
+             objective: Some("PortfolioProblem::objective_at".into()),
+             promotion_threshold: Some(0.01),
+             encoding: Some("PortfolioProblem::to_ising".into()),
++            benchmark: Some("ComputeRouter::route (SolverBenchmarked)".into()),
+         },
+     )?;
+     let refused = ComputeRouter::classical(1)

@@ -689,7 +689,7 @@
       "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:197 contradicting_evidence_lowers_a_belief",
       "backend/crates/runtime/qip-kernel/src/platform.rs:13021-13070 synthesise builds EvidenceSet for REASON"
     ],
-    "gap": "World-source records are checked per source in the connector runtime but not re-gated by the world fabric before the detectors and the world model observe them. The connector runtime already quarantines a record whose evidence is refused, impossible or from an altered document (connector/runtime.rs check_evidence), so a record reaching Platform::sense via ConnectorFeed::poll has passed a per-source check. What is missing is the kernel-level gate: a SensedRecord carries no evidence id (the id is the event fingerprint minted inside the connector runtime), so Platform::absorb_evidence cannot hand back which records the world fabric admitted and node.rs / connectors.rs cannot gate observe on it; ConnectorFeed::poll would have to return (record, evidence id) pairs first (qip-market-ingestion, outside the model lane).",
+    "gap": "2026-10-24: the kernel-level gate the earlier gap named now exists on every root that observes connector records (qip-deepbrain ConnectorArm::poll, qip-fastbrain node::step_with, qip-api POST /cycle all release only records whose claim the world fabric did not withhold; see R12-EVID-1200). What remains against the requirement's text: admission is not belief. A released world-source record still enters Platform::observe and the detectors as an observation on one source's word once the fabric admits it (admission requires no corroboration), so 'no single source is converted directly into a fact' does not yet hold on the observe path; closing needs observed world records to carry the fabric's belief weight (or to wait on independent_origins >= 2) before a detector treats them as fact, and a test that a single uncorroborated source cannot move a detector to certainty.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -700,7 +700,7 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoning",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap."
+    "notes": "2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap. 2026-10-24 lane L3-DATA: gap corrected after the fast brain and API roots gained the world-fabric release gate (R12-EVID-1200). Kept PARTIAL."
   },
   {
     "id": "R12-EVID-2031",
@@ -1194,15 +1194,17 @@
   },
   {
     "id": "R12-TICK-2051",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Decided by ADR 0151 decision 9: the central Tick states event time (at) and capture time (capture_time) and claims no normalised time or uncertainty, because the centre has no clock discipline to certify either; Tick's documentation says so. Normalised time, uncertainty and the ClockCorrection lineage are edge-lake facts, written by drain.rs tick_line from the disciplined clock (decision_loop test).",
     "evidence": [
       "backend/crates/libs/qip-market/src/quote.rs::Tick (documentation states the decision)",
       "backend/crates/libs/qip-market/tests/tick_time_fields.rs::the_central_tick_states_received_time_and_claims_no_normalised_time_or_uncertainty",
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:708 tick_line writes the clock block",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock"
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+      "backend/crates/apps/qip-edge-node/tests/lake_clock.rs::a_skewed_venue_clock_reaches_the_lake_line_as_the_figures_arithmetic_predicts",
+      "backend/crates/apps/qip-edge-node/src/main.rs LakeSink::new built unconditionally in run()"
     ],
-    "gap": "2026-10-24: the uncertainty half of the requirement is unproven: every lake line the test drains has uncertainty 0 (76 of 76), so overwriting uncertainty_ns with the constant 0 passes; needs a test whose clock discipline yields a non-zero uncertainty and asserts it reaches the lake line. The exchange and capture times on the lake line are not asserted by the node test either",
+    "gap": "None against the requirement's text on the lake line. Stated limits, not closing conditions: qip_storage::lake_history::decode_line (the lake's reader) returns RecordedTick without the clock block, so a replay consumer downstream of the lake sees event and knowable instants but not normalized time or uncertainty (that is R12-TICK-1122's remaining step); the central qip_market::Tick carries no normalized time or uncertainty by ADR 0151 decision 9, which an owner may revisit under bar part 4.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1210,10 +1212,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market --test tick_time_fields; cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+    "verification": "cargo +1.94.1 test -p qip-edge-node --test lake_clock; cargo test -p qip-market --test tick_time_fields",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L09: edge half closed (lake line). Central Tick not changed in this lane. 2026-10-24 lane T7-KERNEL, closing by ADR 0151 decision 9: no field is added to the central Tick. A guard test pins that its serialised keys name no normalised or uncertainty token. Mutation: #[serde(rename = \"normalized_time_ns\")] on Tick::capture_time - the new test failed on the capture_time premise; restored, passes. AUDIT-2 2026-10-24: regraded, the uncertainty half of the requirement is unproven: every lake line the test drains has uncertainty 0 (76 of 76), so overwriting uncertainty_ns with the constant 0 passes; needs a test whose clock discipline yields a non-zero uncertainty and asserts it reaches the lake line. The exchange and capture times on the lake line are not asserted by the node test either"
+    "notes": "Re-graded 2026-10-18 by lane L09: edge half closed (lake line). Central Tick not changed in this lane. 2026-10-24 lane T7-KERNEL, closing by ADR 0151 decision 9: no field is added to the central Tick. A guard test pins that its serialised keys name no normalised or uncertainty token. Mutation: #[serde(rename = \"normalized_time_ns\")] on Tick::capture_time - the new test failed on the capture_time premise; restored, passes. AUDIT-2 2026-10-24: regraded, the uncertainty half of the requirement is unproven: every lake line the test drains has uncertainty 0 (76 of 76), so overwriting uncertainty_ns with the constant 0 passes; needs a test whose clock discipline yields a non-zero uncertainty and asserts it reaches the lake line. The exchange and capture times on the lake line are not asserted by the node test either 2026-10-24 lane L3-DATA: tests/lake_clock.rs feeds LakeSink::deliver (built unconditionally in qip-edge-node main.rs run()) a recorded session whose venue clock lags 1 ms / 3 ms alternately with 0.5 ms stated uncertainty per tick, and asserts hand-worked literals per line: exchange and capture instants as separate fields, normalized = venue before 16 samples and venue + 1 ms after, uncertainty 0.5 ms then 2 ms (non-zero throughout), the event's own uncertainty, venue and sequence round-tripped. Mutations fired, each restored by cp + cmp: uncertainty_ns written as 0 (left Some(0), right Some(500000)); capture_time_ns from event time; offset estimate never applied in ClockDiscipline::discipline_traced (line 15 normalized fails); median in place of upper quartile (left Some(1000000), right Some(2000000)). Independent skeptic (code-reviewer) verdict HOLDS, with caveats recorded in gap; its caveat that venue was unasserted was closed by asserting event.origin().venue and sequence."
   },
   {
     "id": "R12-TICK-2052",

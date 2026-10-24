@@ -686,7 +686,8 @@
     "evidence": [
       "backend/crates/libs/qip-transport/src/mesh.rs:1-30 plaintext HTTP/1.1 mesh",
       "backend/crates/libs/qip-transport/src/mesh.rs:735 mTLS expected from a sidecar/ingress",
-      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277 no machine inside a mesh"
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277 no machine inside a mesh",
+      "backend/crates/tests/qip-acceptance/tests/no_service_mesh.rs::nothing_the_repository_deploys_enrols_a_workload_in_a_service_mesh (the mesh never carries Reflex traffic: no mesh is declared)"
     ],
     "gap": "mTLS for warm services is met by ADR 0112's hop table (Amendment 1): rustls mTLS with CA Service workload certificates on every Compute Engine hop, IAM invocation into Cloud Run. Needs CA Service issuance in Terraform and the composition roots, and the IAM evidence of API-8113. The mesh itself is refused.",
     "implemented": false,
@@ -699,7 +700,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). The mTLS obligation itself survives ADR 0024; the mechanism does not."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). The mTLS obligation itself survives ADR 0024; the mechanism does not. 2026-10-24 lane L6: the 'mesh never carries Reflex traffic' clause is now guarded by no_service_mesh.rs (mutation: an istio-injection label in the dev portal manifest fails it). CA Service issuance in the composition roots is unchanged."
   },
   {
     "id": "R12-GCP-10032",
@@ -1108,9 +1109,10 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3268 every_deployable_has_its_own_cloud_run_identity",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2354 no_workload_runs_as_the_projects_default_compute_identity",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_service_account_terraform_creates_runs_something_or_signs_something",
-      "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::every_workload_identity_holds_only_the_roles_its_allow_list_names"
+      "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::every_workload_identity_holds_only_the_roles_its_allow_list_names",
+      "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::every_workload_identity_holds_only_the_roles_its_allow_list_names (ten files since 2026-10-24)"
     ],
-    "gap": "The role allow lists for the Cloud Run workload module, the execution node, qip-ledgerd and the fabric broker are committed in workload_identity.rs and compared for equality, so a widened identity is a diff to a test (2026-10-18). Not covered: the CI, infra, build, image-bake, console, landing, model-pack-publisher and GitOps control-plane accounts, and any evidence that each held role is actually used (a pinned list is a ceiling, not a use measurement).",
+    "gap": "2026-10-24 (lane L6): allow lists now also pin the CI and infra deploy identities (modules/cicd/main.tf), the build pool, the image bake, the GitOps control plane, the artefact signers including the model-pack publisher (artefact-signing.tf) and the research fleet worker (infrastructure/fleet/main.tf); the console and landing run as Cloud Run workloads and were already under the cloudrun module's list. Still open: (1) a list is a per-file ceiling, so where one file declares two accounts (cicd: CI and infra) the test bounds their union, not each; (2) nothing measures that each held role is used (a pinned list is a ceiling, not a use measurement), so 'only the grants it uses' is unproven: that needs IAM Recommender or audit-log evidence from a deployed project; (3) the infra identity's list is admin-wide by design, since it applies the whole root.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1121,7 +1123,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test workload_identity",
     "work_item": "",
     "size": "S",
-    "notes": "Mutations 2026-10-18, restored: a roles/editor binding appended to the ledgerd module failed the allow-list test naming the file; the scan is also run on mutated copies adding roles/owner and roles/storage.objectAdmin to each listed file."
+    "notes": "Mutations 2026-10-18, restored: a roles/editor binding appended to the ledgerd module failed the allow-list test naming the file; the scan is also run on mutated copies adding roles/owner and roles/storage.objectAdmin to each listed file. 2026-10-24 lane L6: six allow lists added. Mutation: a roles/iam.serviceAccountKeyAdmin binding appended to modules/cicd/main.tf failed every_workload_identity_holds_only_the_roles_its_allow_list_names naming the file and role; restored by cp and cmp, 'test result: ok. 4 passed'. Stays PARTIAL."
   },
   {
     "id": "R12-SEC-10051",
@@ -1191,59 +1193,66 @@
   },
   {
     "id": "R12-SEC-10054",
-    "status": "MISSING",
-    "current": "No privateca resource; the event-fabric protocol uses an in-tree identity table over plaintext TCP.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/security.tf declares a Certificate Authority Service pool, root CA and workload certificate template (google_privateca_ca_pool.internal, ..._certificate_authority.internal, ..._certificate_template.workload), behind var.certificate_authority, which is null in every environment. The template issues non-CA certificates of at most a day whose one SAN must be a service account, and requesters are bound per workload with a CEL condition on that SAN. tests/security.tftest.hcl plans it against mocks.",
     "evidence": [
-      "backend/crates/libs/qip-transport/src/event_fabric/auth.rs identity table"
+      "infrastructure/terraform/security.tf google_privateca_ca_pool.internal",
+      "infrastructure/terraform/tests/security.tftest.hcl every_security_service_plans_when_named_soundly, a_workload_certificate_living_longer_than_a_day_is_refused"
     ],
-    "gap": "CA pool and an mTLS terminator for Fabric.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, row was stale at MISSING): the CA pool exists in code and is off everywhere (certificate_authority = null; enabling it is an infrastructure/environments/** change, protected, and costs money). No Fabric broker, client or VM requests or presents a certificate from it: the event-fabric protocol still authenticates by the in-tree identity table over plaintext TCP, and no composition root reads the pool's trust roots. Closing needs the tfvar flip with a real plan, and the mTLS terminator on the Fabric hop (ADR 0112 Amendment 1, R12-SEC-10031).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan shows google_privateca_ca_pool",
+    "verification": "scratch copy of infrastructure/ and data/datasets: terraform init -backend=false && terraform test -filter=tests/security.tftest.hcl",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL, the row predated security.tf. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation doubling the hour-to-seconds factor of cas_maximum_lifetime (security.tf:32) failed every_security_service_plans_when_named_soundly and a_workload_certificate_lifetime_of_hours_is_admitted; restored (cmp), 13 passed."
   },
   {
     "id": "R12-SEC-10055",
-    "status": "MISSING",
-    "current": "No access_context_manager or service perimeter resources.",
-    "evidence": [],
-    "gap": "Declare perimeter.",
-    "implemented": false,
-    "tested": false,
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/security.tf declares google_access_context_manager_service_perimeter.data over the project, enforced by default (dry run only as an explicit field), restricting the data, ledger and AI APIs (Spanner among them; variables.tf default list), behind var.vpc_service_controls, null in every environment. The access policy is organisation-level and named by number, not created here. tests/security.tftest.hcl refuses a perimeter restricting nothing and an ingress rule for a person.",
+    "evidence": [
+      "infrastructure/terraform/security.tf google_access_context_manager_service_perimeter.data",
+      "infrastructure/terraform/tests/security.tftest.hcl a_perimeter_restricting_nothing_is_refused, every_security_service_plans_when_named_soundly"
+    ],
+    "gap": "2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere. Enabling needs the organisation's access policy number and an infrastructure/environments/** change (protected) with a real plan; Artifact Registry is deliberately left out of the default list pending an egress rule for cross-project promotion (security.tf comment).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan shows google_access_context_manager_service_perimeter",
+    "verification": "scratch copy: terraform test -filter=tests/security.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation deleting spanner.googleapis.com from the default restricted_services (variables.tf:2013) failed every_security_service_plans_when_named_soundly ('12 passed, 1 failed'); restored (cmp), 13 passed."
   },
   {
     "id": "R12-SEC-10056",
-    "status": "MISSING",
-    "current": "No DLP resources.",
-    "evidence": [],
-    "gap": "Declare discovery/inspection.",
-    "implemented": false,
-    "tested": false,
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/security.tf declares a Sensitive Data Protection inspect template (minimum likelihood POSSIBLE), a de-identification template and a RUNNING discovery config over the project's BigQuery tables and Cloud Storage buckets, behind var.sensitive_data_protection, null in every environment. tests/security.tftest.hcl refuses a discovery scan for nothing.",
+    "evidence": [
+      "infrastructure/terraform/security.tf google_data_loss_prevention_discovery_config.lake",
+      "infrastructure/terraform/tests/security.tftest.hcl a_discovery_scan_for_nothing_is_refused"
+    ],
+    "gap": "2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere; enabling it is an infrastructure/environments/** change (protected) that bills, and needs a real plan. Logs are not inspected: the requirement names stores and logs, and the discovery config covers BigQuery and Cloud Storage only (log redaction would need a log sink into one of them or a Logging exclusion/redaction, neither declared).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: terraform test -filter=tests/security.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation setting the discovery config's status to PAUSED (security.tf:468) failed every_security_service_plans_when_named_soundly; restored (cmp), 13 passed."
   },
   {
     "id": "R12-OBS-10057",
@@ -1311,21 +1320,25 @@
   },
   {
     "id": "R12-GCP-10060",
-    "status": "MISSING",
-    "current": "No connectivity test resources.",
-    "evidence": [],
-    "gap": "Declare tests.",
-    "implemented": false,
-    "tested": false,
+    "status": "PARTIAL",
+    "current": "modules/connectivity-tests declares google_network_management_connectivity_test per named path (source and destination by instance or IP, protocol, port) with its intent (reachable | unreachable) as a label, and refuses at plan a test with no intent, a malformed protocol or port, a test missing an endpoint, and a suite with no forbidden path. tests/connectivity_tests.tftest.hcl plans it against mocks.",
+    "evidence": [
+      "infrastructure/terraform/modules/connectivity-tests/main.tf",
+      "infrastructure/terraform/modules/connectivity-tests/variables.tf",
+      "infrastructure/terraform/modules/connectivity-tests/tests/connectivity_tests.tftest.hcl"
+    ],
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the module exists and is tested but is not instantiated from the root (a root variable is a change to infrastructure/terraform/variables.tf, protected) and no environment names a path; the key paths (execution node to venue and to the internet, API to ledger, broker to archive) need the deployed instances' self-links, which do not exist while no node or broker is deployed. No real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/connectivity-tests && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: terraform 1.9.8 in a scratch copy 'Success! 4 passed, 0 failed.' Mutation: the at-least-one-forbidden-path validation weakened to `length(var.tests) >= 0` failed a_suite_of_only_intended_paths_is_refused ('Missing expected failure'); restored by cp and cmp, 4 passed."
   },
   {
     "id": "R12-ARCH-10061",
@@ -2028,17 +2041,19 @@
   },
   {
     "id": "R12-MODEL-10092",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Kernel tournament stage opens a question per directional hypothesis, aggregates forecasts weighted by synthetic-credit market share and calibration, and on resolution scores every forecaster (Brier, log loss, calibration error, ...) per regime; journaled as TournamentReview.",
     "evidence": [
       "backend/crates/services/qip-prediction/src/scoring.rs",
       "backend/crates/services/qip-prediction/tests/scoring.rs",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8901 learn_from",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::learn_from",
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs",
       "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::aggregate",
-      "backend/crates/services/qip-learning-engine/src/forecast_market.rs::ForecastMarket"
+      "backend/crates/services/qip-learning-engine/src/forecast_market.rs::ForecastMarket",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs tournament::tests::resolved_outcomes_give_each_forecaster_the_calibration_score_computed_by_hand (two forecasters, four resolved questions; expected calibration error 0.05 and 0.15 and Brier 0.38 asserted against the hand computation; no card before resolution)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_learn calls TournamentStage::learn, which resolves due questions through Tournament::resolve (model_tournament.rs) and journals the TournamentReview"
     ],
-    "gap": "2026-10-24: Closes when a tournament test asserts a forecaster's calibration score after resolved outcomes equals the hand-computed value (qip-learning-engine Tournament scorecard calibration_error), and the row's verification points at it; today `cargo test -p qip-prediction` scores the platform-versus-market Brier comparison and never reaches the tournament.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2046,10 +2061,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-prediction",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-learning-engine --lib resolved_outcomes_give_each_forecaster_the_calibration_score_computed_by_hand",
     "work_item": "",
     "size": "L",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4 2026-10-24: regraded, the named verification, qip-prediction, does not exercise the Tournament or ForecastMarket scoring the requirement names; replacing the per-forecaster calibration_error with 0.0 (tournament.rs:1302) passes qip-prediction, the whole qip-learning-engine crate and qip-kernel's model_tournament suite."
+    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4 2026-10-24: regraded, the named verification, qip-prediction, does not exercise the Tournament or ForecastMarket scoring the requirement names; replacing the per-forecaster calibration_error with 0.0 (tournament.rs:1302) passes qip-prediction, the whole qip-learning-engine crate and qip-kernel's model_tournament suite. 2026-10-24 L2-INTEL: mutations fired, each restored byte-for-byte (cp + cmp): tournament.rs resolve pushing `(p, !happened)` as a calibration point, and Scorecard calibration assessed over 1 bin instead of CALIBRATION_BINS, each fail the new test at the calibration assertion. 2026-10-24 L2-INTEL promoted. Skeptic (code-reviewer, read-only, default REFUTED): HOLDS. It reran the calibration mutation (calibration_error forced to 0.0; the new test fails), confirmed the weighted-aggregate and forecast-market payoff mutations fail qip-learning-engine tests, traced TournamentStage built unconditionally (platform.rs Platform::new), questions opened in REASON for every directional hypothesis and resolved in LEARN unconditionally, and ran a default qip-deepbrain for 300 cycles: 219 questions opened with 8 forecasts each. Residual risk it named: resolution on the live binary was not observed inside 300 s because horizons are hours to days; it is proven through Platform::run_cycle by qip-kernel tests/model_tournament.rs a_hypothesis_opens_a_question_many_forecasters_answer_and_a_later_cycle_scores_each. Stale citation platform.rs:8901 replaced by the symbol."
   },
   {
     "id": "R12-AMBIENT-10093",
@@ -2620,9 +2635,11 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4923 nothing_deploys_that_has_not_passed_the_test_suite",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs the_pipeline_fails_on_warnings",
       "backend/crates/tests/qip-acceptance/tests/property_fuzz.rs",
-      "backend/crates/tests/qip-acceptance/tests/performance.rs"
+      "backend/crates/tests/qip-acceptance/tests/performance.rs",
+      ".github/workflows/deploy.yml step 'a second build of the commit is the same image'",
+      "deploy run 284 (actions/runs/39181663463) jobs 117838916586, 117838916625, 117838916659, 117838916667: reproducibility step success"
     ],
-    "gap": "Deterministic/reproducible build proof.",
+    "gap": "2026-10-24 (lane L6, read-only check of GitHub Actions): the deterministic-artifact clause is proven for the four workspace binaries and not for the portal. deploy run 284 (https://github.com/droderiquesit/quantum-ai-platform/actions/runs/39181663463, commit 27ac0a5, conclusion success) ran 'a second build of the commit is the same image' (deploy.yml, a --no-cache rebuild whose image id must equal the first or nothing is pushed) and it succeeded for qip-api, qip-fastbrain, qip-deepbrain and qip-edge-node; it was skipped for qip-portal, whose Next.js build id is random (deploy.yml's own comment names it). Still open: (1) the portal's two-build check (frontend/portal pins no generateBuildId, and the step's `matrix.dockerfile == ''` condition is in protected .github/**); (2) replay is not a named CI job of its own (it runs inside cargo test --workspace through the acceptance suites); (3) every deploy since 284 (285-288) failed, so the proof is one run on one commit, not a standing property; (4) builds run on GitHub-hosted runners, not the private pool (R12-CICD-9097).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2635,7 +2652,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: no code change; gap corrected from 'proof missing' to what run 284 proves and what it does not. Stays PARTIAL."
   },
   {
     "id": "R12-CICD-10118",
@@ -2928,9 +2945,11 @@
       "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:350",
       "backend/crates/apps/qip-deepbrain/src/node.rs:189 gate_strategic_service, called at node.rs:467",
       "backend/crates/apps/qip-deepbrain/src/node.rs:882 a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs",
-      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs:339 with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs"
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs:339 with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs",
+      "backend/crates/apps/qip-deepbrain/src/node.rs::a_node_halted_when_its_loop_runs_queues_strategic_questions_and_runs_every_stage",
+      "backend/crates/apps/qip-edge-node/tests/reasoning_outage_loop.rs::a_node_driven_by_its_decision_loop_trades_the_same_passes_orders_and_refusals_when_the_centre_stops_part_way"
     ],
-    "gap": "2026-10-24: Closes when a test drives the run loop (or its step) with a halted or stalled NodeStatus and asserts the lattice backlog queues, failing when node.rs:490 is removed, and the outage test runs through DecisionLoop::turn.",
+    "gap": "2026-10-24 (lane L6): both shipped loops now carry tests (deep brain run() under a halted status queues the lattice's strategic backlog while every stage runs; edge DecisionLoop::turn with a MeshWorker trades identically when the centre is dropped), each mutation-verified. An independent skeptic REFUTED promotion on the requirement's text: (1) 'AI/agent platform is lost' is simulated by a proxy — the deep brain's own kill-switch status and an edge centre that publishes nothing, so the healthy run receives no cognition either; (2) 'no new cognitive/model output is produced' has no proof and the code contradicts it: the gate only holds the lattice's strategic rows (lattice_stage.rs:519); REASON, shorter horizons, research, tick and evolution loops keep producing; (3) 'existing packages continue' is unproven: the edge test deploys a strategy directly (deploy_with_pricing) and installs no package through StrategyInstaller, and no package test drops the centre; (4) the edge centre exists only behind QIP_MESH_PEER, which no committed environment sets (as REFLEX-5029); (5) whether the lattice's strategic backlog is the 'research backlog' is undecided, and the research loop is not gated. Closing needs: an outage simulated as provider/agent loss with a test that no new model or agent output is journaled during it and resumes after; a package installed via StrategyInstaller with a centre that publishes policy, held across the drop; a default-path decision on the mesh; and an owner's reading of 'research backlog'.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2938,10 +2957,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test reasoning_outage; cargo test -p qip-deepbrain --lib a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs; cargo test -p qip-kernel --test now_lattice with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs",
+    "verification": "cargo test -p qip-deepbrain --lib a_node_halted_when_its_loop_runs_queues_strategic_questions_and_runs_every_stage; cargo test -p qip-edge-node --test reasoning_outage_loop",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice. AUDIT-4 2026-10-24: regraded, the deep-brain half is proven only on the function (gate_strategic_service called directly in node.rs tests); deleting its one call in the shipped run loop (node.rs:490) fails no test, so a running deep brain could keep the strategic service up through an outage unnoticed. The edge-node half repeats REFLEX-5029: reasoning_outage drives MeshLink::exchange, which the shipped node never calls."
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice. AUDIT-4 2026-10-24: regraded, the deep-brain half is proven only on the function (gate_strategic_service called directly in node.rs tests); deleting its one call in the shipped run loop (node.rs:490) fails no test, so a running deep brain could keep the strategic service up through an outage unnoticed. The edge-node half repeats REFLEX-5029: reasoning_outage drives MeshLink::exchange, which the shipped node never calls. 2026-10-24 lane L6: mutation deleting the gate_strategic_service call in run_with failed the new test at node.rs:1142 ('the run loop left the strategic service up through a halt'); restored by cp and cmp, it passes. qip-deepbrain --no-fail-fast: 15 result lines, 317 passed, 0 failed. Stays PARTIAL for the edge half. 2026-10-24 lane L6 (edge half): mutation making DecisionLoop::turn skip its pass on a turn whose mesh tick carried a poll error failed reasoning_outage_loop.rs:747 ('turn 3 differs with the centre stopped before turn 3'); restored by cp and cmp, it passes (three consecutive runs ok). qip-edge-node --no-fail-fast: 41 result lines, 285 passed, 0 failed. 2026-10-24 lane L6: skeptic (code-reviewer, read-only) verdict REFUTED; findings above. Stays PARTIAL."
   },
   {
     "id": "R12-RES-10131",
@@ -3546,9 +3565,10 @@
       "scripts/game-day/harness.test.mjs agent-escalation tests",
       "docs/ops/game-days/agent-escalation/2026-10-18-agent-escalation.json",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5073 the_infrastructure_workflow_cannot_touch_production",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1461 no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1461 no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell",
+      "docs/blueprint/lanes/l6-sec-10157-protected.patch"
     ],
-    "gap": "The drill is a scripted agent against the two judges, not a model. Its tests are in scripts/game-day/harness.test.mjs, which CI's scripts job already runs, so it runs on every pull request; but a secret read and a connection outside the egress allow-list need the sandbox's runner and firewall, so a step in .github/workflows/agent-sandbox.yml (protected) still has to run them and fail on success.",
+    "gap": "The drill is a scripted agent against the two judges, not a model. Its tests are in scripts/game-day/harness.test.mjs, which CI's scripts job runs on every pull request; but a secret read and a connection outside the egress allow-list need the sandbox's runner and firewall. 2026-10-24 (lane L6): that step is written as docs/blueprint/lanes/l6-sec-10157-protected.patch, a step appended to .github/workflows/agent-sandbox.yml that, after the egress verdict, runs as the lane's uid and lane-egress gid and must be refused five times: reading a root-only planted secret, a direct connection with the proxy bypassed, an off-list host through the proxy, a runner token in the lane's environment, and a token kept in either checkout's .git/config; any success fails the job. Checked only statically: the YAML parses, `bash -n` accepts the step, and agent-guard.mjs's sandbox judge still admits the file ('holds no secret, no credential and no write ...'). It has not run: it needs a person to apply the protected patch and a dispatched sandbox run, and its record would then belong in docs/ops/game-days/agent-escalation/.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3559,7 +3579,7 @@
     "verification": "node --test scripts/game-day/harness.test.mjs",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutations fired - runDrill recording every attempt as held (the relaxed-policy test failed); the outcome forced to 'refused' (the control, relaxed-policy, lying-record and command tests failed). Kept PARTIAL for the sandbox-run half."
+    "notes": "2026-10-18 lane L23: mutations fired - runDrill recording every attempt as held (the relaxed-policy test failed); the outcome forced to 'refused' (the control, relaxed-policy, lying-record and command tests failed). Kept PARTIAL for the sandbox-run half. 2026-10-24 lane L6: sandbox drill step written as a protected patch; not run (no runner, protected path). Stays PARTIAL."
   },
   {
     "id": "R12-RES-10158",
@@ -3589,7 +3609,9 @@
     "evidence": [
       "infrastructure/terraform/main.tf",
       "infrastructure/terraform/modules/network/main.tf",
-      "infrastructure/terraform/modules/cicd/main.tf:24"
+      "infrastructure/terraform/modules/cicd/main.tf:24",
+      "docs/architecture/phase-register.json phase 0 (state entered, eight exit tests)",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs"
     ],
     "gap": "PAM, NCC, CA, SCC enabled.",
     "implemented": true,
@@ -3607,7 +3629,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: phase 0 is recorded as entered, not exited, in the ADR 0143 register, with its eight Rust exit tests checked by phase_register.rs; the gap (PAM, NCC, CA, SCC enabled) is unchanged."
   },
   {
     "id": "R12-CICD-10160",

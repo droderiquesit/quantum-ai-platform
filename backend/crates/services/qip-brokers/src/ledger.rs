@@ -122,9 +122,25 @@ impl AccountLedger {
     }
 
     /// Tell the ledger about an instrument it may book.
-    pub fn register(&mut self, object: FinancialObject) {
+    ///
+    /// Refused for an instrument it already knows (R12-COVERAGE-5107). This
+    /// used to overwrite, so positions already booked against one record of
+    /// an instrument were read against another — a different lot, tick or
+    /// liquidity than they traded under. The venue's listing refuses a second
+    /// listing before it reaches here; this makes the ledger say the same of
+    /// itself rather than rely on its one caller.
+    pub fn register(&mut self, object: FinancialObject) -> Result<()> {
+        if self.instruments.contains_key(object.object_id.as_str()) {
+            return Err(Error::denied(format!(
+                "the ledger for {} already knows {}, and an instrument is registered once \
+                 rather than replaced; book against the record that stands",
+                self.account,
+                object.object_id.as_str()
+            )));
+        }
         self.instruments
             .insert(object.object_id.as_str().to_string(), object);
+        Ok(())
     }
 
     pub fn instrument(&self, object_id: &ObjectId) -> Option<&FinancialObject> {

@@ -153,7 +153,9 @@ fn share_policy(grants: Vec<String>) -> Result<VerifiedPolicy> {
 
 /// A node assembled the way `main.rs` assembles it, under `limits`, with one
 /// firing strategy resting at the mid. Its venue may list `object()` on
-/// demand, the one instrument this suite seeds and trades, and nothing else.
+/// demand, the one instrument this suite seeds and trades, and nothing else;
+/// it may seed it only once `seed_book` has permitted that too, so a test
+/// here that seeds nothing runs under the listing permission alone.
 fn node(limits: &CellRiskLimits) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
@@ -196,6 +198,7 @@ fn limits_with_order_notional(bound: Decimal) -> Result<CellRiskLimits> {
 }
 
 fn seed_book(gateway: &mut SimulatedGateway) -> Result<()> {
+    permit_seeding(gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     Ok(())
@@ -1029,7 +1032,25 @@ const SITES: &[(&str, &str, &str, usize, Class)] = &[
         "list",
         1,
         Class::NotAnOrder {
-            why: "lists an EMPTY OrderBook::new(...): nothing rests",
+            why: "lists an EMPTY OrderBook::new(...): nothing rests; and since \
+                  R12-COVERAGE-5107 `ListingVenue::list_book` itself refuses a book whose \
+                  admission is not to list or seed exactly that instrument at that venue",
+        },
+    ),
+    // --- the other names a book has been rested by --------------------------
+    // R12-COVERAGE-5107: `SimulatedBroker::set_book` and qip-routing's
+    // `SimulatedGateway::set_book` / `with_book` rested a book for any object
+    // id with no admission. They are gone, and their names are scanned so a
+    // production caller of either name has to be classified here. The one
+    // production occurrence left is a liquidity estimate, not a venue.
+    (
+        "edge/qip-arbitrage/src/liquidity.rs",
+        ".with_book(",
+        "with_quote",
+        1,
+        Class::NotAnOrder {
+            why: "StaticLiquidity::with_book records depth the arbitrage scanner prices a \
+                  path against; it lists nothing and rests nothing at any venue",
         },
     ),
     // --- name collisions ------------------------------------------------------
@@ -1107,6 +1128,8 @@ const TOKENS: &[&str] = &[
     ".submit(",
     ".submit_order(",
     ".list_book(",
+    ".set_book(",
+    ".with_book(",
 ];
 
 /// One non-test occurrence: where, and the text of its function so far.
@@ -1407,8 +1430,10 @@ fn the_set_of_production_placers_and_brokers_is_exactly_the_reviewed_one() {
             "services/qip-execution-engine/src/broker.rs",
             "impl Broker for LiveBroker",
         ),
-        // Rests a book in the simulator's own map; `MarketFactory::seed` is
-        // the caller and takes a `LadderAdmission`.
+        // Rests a book in the simulator's own map, and only under a
+        // `CreationAdmission` to list or seed exactly that instrument there
+        // (R12-COVERAGE-5107); `MarketFactory::list` and `::seed` are the
+        // callers, and `seed` also takes a `LadderAdmission`.
         (
             "services/qip-execution-engine/src/broker.rs",
             "impl ListingVenue for SimulatedBroker",
@@ -1436,6 +1461,74 @@ fn the_set_of_production_placers_and_brokers_is_exactly_the_reviewed_one() {
         gone.is_empty(),
         "reviewed implementors no longer exist: {gone:?}"
     );
+}
+
+/// R12-COVERAGE-5107: no production type offers a way to rest a book that
+/// bypasses the admitted `ListingVenue::list_book`.
+///
+/// The call-site scan above catches a new *caller* of `set_book` or
+/// `with_book`; it cannot catch a method of that shape that is merely
+/// *declared*, public and waiting for its first caller — which is exactly
+/// what `SimulatedBroker::set_book` and qip-routing's
+/// `SimulatedGateway::set_book` / `with_book` were, the day the finding was
+/// raised. So the declarations are scanned too. `StaticLiquidity::with_book`
+/// is the one allowed: it records depth for pricing an arbitrage path and is
+/// no venue. And the listing primitive's own signature is pinned, so the
+/// admission cannot quietly fall off it.
+///
+/// Mutation: put `pub fn set_book(&mut self, book: OrderBook)` back on
+/// `SimulatedBroker`, or drop the admission from `ListingVenue::list_book`,
+/// and this fails.
+#[test]
+fn no_production_type_offers_an_unadmitted_way_to_rest_a_book() {
+    let allowed_with_book = "edge/qip-arbitrage/src/liquidity.rs";
+    let mut declared: Vec<String> = Vec::new();
+    let mut saw_allowed = false;
+    let mut list_book_signatures: Vec<String> = Vec::new();
+    for file in production_files() {
+        let path = relative(&file);
+        let text = std::fs::read_to_string(&file).expect("a source file is readable");
+        for (line, code) in production_lines(&text) {
+            let code = code.trim();
+            if code.contains("fn with_book(") && path == allowed_with_book {
+                saw_allowed = true;
+                continue;
+            }
+            if code.contains("fn set_book(") || code.contains("fn with_book(") {
+                declared.push(format!("{path}:{line}: {code}"));
+            }
+            if path == "services/qip-execution-engine/src/broker.rs"
+                && code.contains("fn list_book(")
+            {
+                list_book_signatures.push(code.to_string());
+            }
+        }
+    }
+    // Premise: the scan reads the files it is meant to.
+    assert!(
+        saw_allowed,
+        "premise: the scan did not see StaticLiquidity::with_book in {allowed_with_book}"
+    );
+    assert!(
+        declared.is_empty(),
+        "a production type offers a way to rest a book that takes no creation admission; \
+         rest it through `ListingVenue::list_book`, or classify it here: {declared:?}"
+    );
+    // The trait declaration and the simulator's implementation, both taking
+    // the admission and both able to refuse.
+    assert_eq!(
+        list_book_signatures.len(),
+        2,
+        "premise: the trait's `list_book` and the simulator's were both found: \
+         {list_book_signatures:?}"
+    );
+    for signature in &list_book_signatures {
+        assert!(
+            signature.contains("admission: &CreationAdmission) -> Result<()>"),
+            "`list_book` no longer demands a creation admission and returns a refusal: \
+             {signature}"
+        );
+    }
 }
 
 /// `Cell::risk_admit` admits when no gate is installed, so a cell is gated
@@ -1520,4 +1613,87 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
         }
     }
     gateway.with_listing_permissions(permissions, "paper")
+}
+
+/// Permit `gateway` to seed each of `objects` as well as to list it, in
+/// place, where it is about to be seeded (R12-COVERAGE-5107: permission to
+/// list is not permission to seed). Called only there, so a test here that
+/// seeds nothing runs under `List` alone. It replaces the register
+/// `permitting` installed, so `objects` names every instrument the gateway
+/// lists, not only the one seeded. A fixture; the refusals without either
+/// permission are proven in qip-edge-node's tests/gateway.rs.
+fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Result<()> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
+        }
+    }
+    gateway.permit_listings(permissions, "paper")
+}
+
+/// R12-EXEC-5079: every way to bring a book into existence or rest venue
+/// liquidity in it demands a creation admission in its own signature, so the
+/// guard sits on the primitive and not in one caller.
+///
+/// The previous test pins `list_book`. The independent skeptic on
+/// 2026-10-24 found the seeding half unpinned: `SimulatedExchange::
+/// seed_liquidity` took no admission (the one `Seed` check was in the edge
+/// node's `seed_touch`), and `MatchingEngine`, public and re-exported, could
+/// be built, opened and seeded by anyone. Both now take one; this keeps the
+/// parameter from quietly falling off, and pins that the engine's book map
+/// is written at exactly one place, `open`, so no second constructor of a
+/// book can appear beside it.
+///
+/// Mutation: drop `admission: &CreationAdmission` from any of the three
+/// signatures, or add a second `InstrumentBook::default()` in matching.rs.
+#[test]
+fn every_seeding_and_book_opening_primitive_demands_a_creation_admission() {
+    let root = crates_root();
+    let signature = |path: &str, needle: &str| -> String {
+        let text = std::fs::read_to_string(root.join(path)).expect("a source file is readable");
+        let start = text
+            .find(needle)
+            .unwrap_or_else(|| panic!("premise: {needle} is declared in {path}"));
+        let end = text[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .expect("a function body follows its signature");
+        text[start..end]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    for (path, needle) in [
+        (
+            "services/qip-brokers/src/exchange.rs",
+            "pub fn seed_liquidity(",
+        ),
+        ("services/qip-brokers/src/matching.rs", "pub fn open("),
+        ("services/qip-brokers/src/matching.rs", "pub fn seed("),
+    ] {
+        let declared = signature(path, needle);
+        assert!(
+            declared.contains("admission: &CreationAdmission"),
+            "{path}: `{declared}` no longer demands a creation admission"
+        );
+    }
+    let matching = std::fs::read_to_string(root.join("services/qip-brokers/src/matching.rs"))
+        .expect("matching.rs is readable");
+    let constructed: Vec<(usize, String)> = production_lines(&matching)
+        .into_iter()
+        .filter(|(_, code)| {
+            code.contains("InstrumentBook::default()") || code.contains("InstrumentBook {")
+        })
+        .filter(|(_, code)| !code.contains("struct InstrumentBook") && !code.contains("impl"))
+        .collect();
+    assert_eq!(
+        constructed.len(),
+        1,
+        "a book is constructed somewhere other than `MatchingEngine::open`: {constructed:?}"
+    );
 }
