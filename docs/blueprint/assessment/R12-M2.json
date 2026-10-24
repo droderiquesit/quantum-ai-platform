@@ -896,7 +896,7 @@
       "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:854 an_open_contest_survives_a_fabric_filled_past_capacity_with_unrelated_claims",
       "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them"
     ],
-    "gap": "Nothing persists contests or their resolutions across restart (the fabric is in-memory and unjournaled; see R12-EVID-2032 for the topic blocker), and nothing downstream reads contests. A fabric whose every held claim is contested still evicts the oldest contested claim.",
+    "gap": "2026-10-24 (re-read): the earlier 'unjournaled' is stale - since ADR 0152 §2 every admitted claim is journaled to evidence.admitted (Platform::absorb_evidence, EvidenceAdmittedRecord), Platform::journaled_evidence reads them back in log order and EvidenceFabric::rebuild re-admits them, so contests and resolutions are derivable from the log (kernel tests/evidence_intake.rs). What remains: no composition root restores the event log at start-up or calls EvidenceFabric::rebuild over journaled_evidence, so a restarted process starts with an empty fabric and no contest survives a restart on any default path; nothing outside qip-evidence and tests reads contests (grep of .contests() finds no production reader); and a fabric whose every held claim is contested still evicts the oldest contested claim. Closing needs a start-up restore of the journal (from the chain archive) in qip-deepbrain/qip-fastbrain/qip-api with a rebuild of the world fabric and a restart test proving a contest and its resolving id survive.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -909,7 +909,7 @@
     "verification": "cargo test -p qip-world-model --test evidence_fabric",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed)."
+    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed). 2026-10-24 lane L3-DATA: gap corrected in both directions (journal and rebuild exist; start-up restore and a downstream reader do not). Kept PARTIAL."
   },
   {
     "id": "R12-EVID-2039",
