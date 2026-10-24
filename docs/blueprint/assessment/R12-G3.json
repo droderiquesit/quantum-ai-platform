@@ -111,7 +111,7 @@
       "infrastructure/terraform/modules/scc/main.tf:80 custom module private_endpoint",
       "infrastructure/environments/dev/terraform.tfvars:294 enable_security_command_center = false"
     ],
-    "gap": "Enable in at least one environment and prove findings arrive.",
+    "gap": "2026-10-24: enable_security_command_center is false in every environments/*/terraform.tfvars (protected path); modules/scc/ORGANISATION-SCOPED.md says findings arrive only if SCC is active at the organisation, which this repository cannot check.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -173,12 +173,15 @@
   },
   {
     "id": "R12-GCP-10009",
-    "status": "MISSING",
-    "current": "No google_network_connectivity_* resource in Terraform.",
-    "evidence": [],
-    "gap": "Declare NCC hub/spokes for the five VPCs and hybrid attachments.",
-    "implemented": false,
-    "tested": false,
+    "status": "PARTIAL",
+    "current": "modules/ncc declares the hub and VPC spokes for the five planes, gated off (R12-GCP-8056). Hybrid spokes exist as interconnect_spokes, empty because no attachment is ordered.",
+    "evidence": [
+      "infrastructure/terraform/modules/ncc/main.tf google_network_connectivity_spoke.interconnect",
+      "infrastructure/terraform/main.tf module \"ncc\""
+    ],
+    "gap": "2026-10-24: interconnect_spokes is empty until a partner circuit exists (modules/connectivity/NOT-ORDERED.md); no plan has been shown; terraform not installed in the lane session.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -186,7 +189,7 @@
       "R12-GCP-10008"
     ],
     "blocked_by": "",
-    "verification": "terraform plan shows google_network_connectivity_hub/spoke",
+    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure the_ncc",
     "work_item": "",
     "size": "M",
     "notes": ""
@@ -200,7 +203,7 @@
       "infrastructure/terraform/modules/connectivity/main.tf:243 google_compute_router_peer vpn_fallback",
       "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl"
     ],
-    "gap": "No live attachment; nothing proves BGP sessions establish.",
+    "gap": "2026-10-24: a partner contract and physical circuit are out of band (modules/connectivity/NOT-ORDERED.md); no BGP session can establish until then.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -520,7 +523,7 @@
       "infrastructure/terraform/modules/execution-node/tests/standby.tftest.hcl",
       "infrastructure/environments/prod/terraform.tfvars:51 execution_nodes = {}"
     ],
-    "gap": "Nothing provisioned per shard; standby fencing unproven; requirement is a deployment claim.",
+    "gap": "2026-10-24: execution_nodes = {} in test, stage and prod and execution_nodes_enabled = false in dev (protected paths); no node, so no per-shard provisioning or standby fencing evidence.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -583,26 +586,27 @@
   },
   {
     "id": "R12-FABRIC-10027",
-    "status": "MISSING",
-    "current": "qip-fabricd is one broker with one disk, RF1, no follower, no replication, not deployed; broker_count is 0/1. Acceptance tests fabric_010/fabric_055 assert hand-built fixtures and exercise no code.",
+    "status": "PARTIAL",
+    "current": "Re-graded 2026-10-24: the MISSING verdict described a tree that no longer exists. ADR 0111 replication is built: P0/P1 batches commit to a Spanner-shaped managed log under a fenced lease before the producer is answered, followers catch up onto their own disks and the survivor takes the lease after a kill (qip-streaming event_fabric/managed.rs, broker.rs; qip-fabricd src/spanner.rs, lib.rs). StreamPolicy::new admits RF3 only for P0/P1 acknowledged managed_majority (policy.rs:419-449). The broker module admits up to three brokers, one per zone, only with a managed log (event-fabric-broker/variables.tf broker_internal_addresses, broker_zones). Killing a leader after acknowledgement loses nothing in qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost, and the admission rule is pinned by event_fabric_infrastructure_basics::fabric_010_a_stream_is_admitted_at_rf3_only_for_p0_and_p1_acknowledged_managed_majority (mutation: drop the P0/P1 guard in StreamPolicy::new; the P2 expect_err fires). Replication is delegated to Spanner by decision (ADR 0111, Amendment 1), not written in tree.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/lib.rs:28-31 one broker, no replication",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:16 broker_count RF1 (FABRIC-086 blocked C2)",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs:316 fabric_010 (fixture-only)",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_operational.rs:285 fabric_055 (fixture-only)"
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:419",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs::fabric_010_a_stream_is_admitted_at_rf3_only_for_p0_and_p1_acknowledged_managed_majority",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:143",
+      "backend/crates/apps/qip-fabricd/src/lib.rs:30"
     ],
-    "gap": "Replication protocol, followers, quorum ack, zone spread.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Remaining slices, none in-tree code: (1) deployment: fabricd is not deployed and enable_spanner is false in every tfvars, so no zone spread runs anywhere; (2) the kill test runs on MemoryManagedLog, so 'a replica killed' kills a fabricd instance, not a Spanner replica, and the Spanner majority property is assumed from the vendor; (3) the SpannerManagedLog adapter is untested against the Spanner emulator; (4) cross-region mirroring (R12-FABRIC-10062, 7038) is refused by StreamPolicy until ADR 0120's mirror is built. Corrected 2026-10-24.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "consensus replication blocked on ADR 0099 C2 / dependency decision",
-    "verification": "a qip-fabricd multi-broker test killing a replica after ack",
+    "verification": "cargo test -p qip-fabricd --test managed && cargo test -p qip-acceptance --test event_fabric_infrastructure_basics",
     "work_item": "",
     "size": "XL",
-    "notes": "Several event_fabric_* acceptance tests are tautological (assert their own fixtures); they would pass with the feature deleted."
+    "notes": "fabric_010 and fabric_055 in the event_fabric acceptance suites were fixture or gap pins written when RF1 was the whole story; fabric_010 now has a sibling that drives StreamPolicy::new for the admitted claim. fabric_055 still pins only the rendezvous move and its comment about 'no followers' describes the P2-P4 local path."
   },
   {
     "id": "R12-FINOPS-10028",
@@ -793,7 +797,7 @@
       "backend/crates/services/qip-mesh/src/bigquery.rs:1-15 adapter outside edge closure",
       "backend/crates/services/qip-mesh/tests/bigquery.rs"
     ],
-    "gap": "Not enabled; no production writer.",
+    "gap": "2026-10-24: BigQueryWarehouse (qip-mesh/src/bigquery.rs) has no non-test caller, and the research dataset is gated off in modules/data; a production writer plus enabling the dataset is a billed change.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1637,7 +1641,7 @@
     "verification": "two-node integration test over a socket",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision O07; gap before it: Default-on/committed-deployment peer configuration; QUIC."
+    "notes": "2026-10-24: the evidence path qip-mesh/src/peer.rs no longer exists; the protocol is qip-peer and the wire is qip-peer-link (TCP+mTLS, two-node socket test peer_mesh.rs). Row stays blocked on owner decision O07."
   },
   {
     "id": "R12-FABRIC-10076",
@@ -2061,13 +2065,14 @@
   },
   {
     "id": "R12-AMBIENT-10094",
-    "status": "PARTIAL",
-    "current": "qip-expansion MetaIntelligence::allocate grants CPU/GPU/TPU/QPU units by marginal value per cost, each ComputeAllocation with expected-value rationale; QPU grants carry ComputePlan; called from deepbrain sweep.",
+    "status": "COMPLETE",
+    "current": "The research loop bids only the desk's items (Question, Simulation, DataSource, Model); a grant starts the item, is measured next sweep, and agent compute is bounded by agent_budgets in the market and the manifest Budget in the run. No agent bid exists and no grant raises a ceiling, by decision (ADR 0158 decisions 1-2).",
     "evidence": [
-      "backend/crates/services/qip-cost-router/src/router.rs:161-168 rationale",
-      "backend/crates/services/qip-cost-router/tests/cost_router.rs"
+      "backend/crates/apps/qip-deepbrain/src/research.rs::work_kind",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::tests::the_bids_the_research_loop_makes_are_only_of_kinds_that_change_a_named_budget",
+      "backend/crates/services/qip-expansion/src/meta.rs::MetaIntelligence::allocate_within"
     ],
-    "gap": "No agent bids: a granted agent bid has no consumer. Agent budgets live in qip-agents BudgetLedger instances constructed inside each agent run (runtime.rs) and the cost router's per-decision ledger, neither reachable from ResearchLoop, so a grant could raise nothing; today agent compute is bounded by ResearchConfig.agent_budgets (R12-AMBIENT-9034), a ceiling and not a bid. TPU budget zero is a deployment fact.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2075,10 +2080,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-cost-router",
+    "verification": "cargo test -p qip-deepbrain --lib the_bids_the_research_loop",
     "work_item": "",
     "size": "L",
-    "notes": "Checked 2026-10-18. WorkKind::Agent exists in the market and allocate_within accepts such a bid; the missing half is what a grant does."
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed per ADR 0158 d1-2 (test-only). Mutation fired: mapping TaskKind::Experiment to WorkKind::Agent in work_kind failed the test (bid set {Question, Agent, Simulation, DataSource} != the four named-budget kinds). The TPU budget is the literal zero and is the owner's."
   },
   {
     "id": "R12-QUANT-10095",

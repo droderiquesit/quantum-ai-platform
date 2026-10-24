@@ -140,6 +140,21 @@ impl StrategyRuntime {
                 )));
             };
 
+            // An edge is read only for a rule that declared one. Nothing
+            // here derives it from the conviction (ADR 0155 §7).
+            let expected_edge_bp = match rule.expected_edge() {
+                Some(node) => {
+                    let FeatureValue::Statistic(edge) = self.value_at(node)? else {
+                        return Err(Error::invalid(format!(
+                            "rule '{}' expected edge is not a statistic",
+                            rule.name()
+                        )));
+                    };
+                    Some(edge)
+                }
+                None => None,
+            };
+
             // The revisions are the point: a fill can later be attributed to
             // exactly the feature values that produced the signal, not to
             // whatever those features say by the time anyone looks.
@@ -163,6 +178,7 @@ impl StrategyRuntime {
                 valid_until: as_of.saturating_add(strategy.validity()),
                 inputs,
                 at: as_of,
+                expected_edge_bp,
             }));
         }
         Ok(None)

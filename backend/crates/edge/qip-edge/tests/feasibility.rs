@@ -560,3 +560,169 @@ fn the_policy_payloads_feasibility_slot_is_the_constraint_the_cell_judges_by() -
     );
     Ok(())
 }
+
+// --- the net-edge gate (ADR 0155 §8, §9) ------------------------------------
+
+fn edge_strategy(id: &str, edge: Option<f64>) -> Result<(CompiledStrategy, Program)> {
+    let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
+    let mut rule = Rule::new(
+        "always",
+        SignalKind::Enter,
+        Expr::Flag(true),
+        Expr::Exact(d("10")),
+        Expr::Statistic(0.5),
+        10,
+    );
+    if let Some(edge) = edge {
+        rule = rule.with_expected_edge(Expr::Statistic(edge));
+    }
+    let spec =
+        StrategySpec::new(StrategyId::new(id), object(), Duration::from_secs(30)).with_rule(rule);
+    let compiled = compiler.compile(&spec)?;
+    Ok((compiled, compiler.into_program()))
+}
+
+/// A venue charging a fee floor of 1 on a size-10 order priced near 100: the
+/// fixed cost is roughly ten basis points of notional.
+fn edge_cell(
+    metrics: &Arc<Metrics>,
+    config: impl FnOnce(CellConfig) -> Result<CellConfig>,
+    strategies: &[(&str, Option<f64>)],
+) -> Result<Cell> {
+    let model = VenueModel::new(
+        VenueClass::Exchange,
+        Granularity::new(dec!("1"), dec!("0.01"), Decimal::ZERO)?,
+        dec!("1"),
+        None,
+    )?;
+    let config = config(
+        CellConfig::new(CELL, REGION)
+            .with_venue(venue())
+            .with_feasibility(&venue(), model),
+    )?;
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(metrics));
+    let fresh = fresh_payload(1, t(5)).signed(POLICY_KEY)?;
+    cell.apply_policy(VerifiedPolicy::verify(fresh, POLICY_KEY, CELL, t(5))?, t(5))?;
+    cell.track(book()?);
+    for (id, edge) in strategies {
+        let (compiled, program) = edge_strategy(id, *edge)?;
+        cell.deploy_with_pricing(
+            compiled,
+            program,
+            signed_envelope(id)?,
+            PricingPolicy::Marketable,
+        )?;
+    }
+    Ok(cell)
+}
+
+fn edgeless_gauge(metrics: &Metrics) -> Option<f64> {
+    metrics.snapshot().gauge(
+        qip_edge::telemetry::EDGE_EDGELESS_SIGNALS,
+        &labels([("cell", CELL), ("region", REGION)]),
+    )
+}
+
+fn contributors(report: &WorkReport) -> BTreeSet<String> {
+    report
+        .orders
+        .iter()
+        .flat_map(|order| order.contributors.iter())
+        .map(|c| c.strategy.as_str().to_string())
+        .collect()
+}
+
+#[test]
+fn a_signal_whose_stated_edge_is_below_its_fixed_cost_plus_margin_is_refused_before_netting_while_a_signal_stating_none_and_an_unarmed_cell_pass()
+-> Result<()> {
+    let strategies = [("thin", Some(12.0)), ("rich", Some(60.0)), ("silent", None)];
+
+    // Premise: with no margin configured the gate is not built, so the thin
+    // edge trades. A gate that refused here would be refusing everything.
+    let unarmed_metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let mut unarmed = edge_cell(&unarmed_metrics, Ok, &strategies)?;
+    let report = work(&mut unarmed)?;
+    assert_eq!(
+        contributors(&report),
+        ["rich", "silent", "thin"]
+            .map(String::from)
+            .into_iter()
+            .collect(),
+        "the premise failed: an unarmed cell must trade all three: {report:?}"
+    );
+    assert!(refusals_under(&report, "net_edge").is_empty());
+    assert_eq!(report.edgeless_signals, 0, "an unarmed cell judges nothing");
+    assert_eq!(
+        edgeless_gauge(&unarmed_metrics),
+        None,
+        "a cell that built no gate reports no gauge: zero would read as all judged"
+    );
+
+    // Armed at a 5 bp margin: roughly 10 bp of cost plus 5 puts the bar near
+    // 15, above the thin 12 and below the rich 60.
+    let armed_metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let mut armed = edge_cell(
+        &armed_metrics,
+        |c| c.with_net_edge_margin_bp(dec!("5")),
+        &strategies,
+    )?;
+    let report = work(&mut armed)?;
+    let refused = refusals_under(&report, "net_edge");
+    assert_eq!(
+        refused.len(),
+        1,
+        "only the thin edge is refused: {report:?}"
+    );
+    assert!(
+        refused[0].contains("thin") && refused[0].contains("12"),
+        "the refusal must name the strategy and its edge: {}",
+        refused[0]
+    );
+    assert_eq!(
+        contributors(&report),
+        ["rich", "silent"].map(String::from).into_iter().collect(),
+        "the thin edge must not reach netting; the rich and the edgeless pass: {report:?}"
+    );
+    assert_eq!(
+        report.edgeless_signals, 1,
+        "the edgeless signal passes and is counted"
+    );
+    assert_eq!(edgeless_gauge(&armed_metrics), Some(1.0));
+
+    // The second switch refuses what the gate cannot judge.
+    let strict_metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let mut strict = edge_cell(
+        &strict_metrics,
+        |c| {
+            Ok(c.with_net_edge_margin_bp(dec!("5"))?
+                .with_edgeless_signals_refused())
+        },
+        &strategies,
+    )?;
+    let report = work(&mut strict)?;
+    let refused = refusals_under(&report, "net_edge");
+    assert_eq!(refused.len(), 2, "thin and silent: {report:?}");
+    assert!(
+        refused
+            .iter()
+            .any(|r| r.contains("silent") && r.contains("no edge"))
+    );
+    assert_eq!(contributors(&report), BTreeSet::from(["rich".to_string()]));
+
+    // The gate must never feed the window a venue is withdrawn on (ADR 0062).
+    assert!(
+        !qip_contracts::feasibility::EDGE_GATES.contains(&"net_edge"),
+        "a thin strategy edge is not evidence about a venue"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_negative_net_edge_margin_is_refused_because_it_would_admit_an_edge_below_its_own_cost() {
+    let refused = CellConfig::new(CELL, REGION)
+        .with_net_edge_margin_bp(dec!("-1"))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("negative"), "{refused}");
+}

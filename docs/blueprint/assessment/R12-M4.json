@@ -298,7 +298,7 @@
       "backend/crates/apps/qip-cli/tests/agency.rs::every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations",
       "backend/crates/apps/qip-cli/src/agency.rs only caller"
     ],
-    "gap": "Integration beyond the CLI: no deployed binary acts under authority (qip-deepbrain's ambient door only drafts and never runs engine::execute), and the branches come from the request's declared structural models, not qip-twin futures.",
+    "gap": "Integration beyond the CLI is not built, by decision (ADR 0146 decision 2): no deployed binary acts under authority; qip-deepbrain's ambient door only drafts and never runs engine::execute. Branches come from the request's declared structural models and, when the request declares a twin, qip-twin futures (qip-cli agency.rs TwinScenarios, a ScenarioSource). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -309,7 +309,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L10): the simulation-before-authority half is met; kept PARTIAL on integration, as the closure itself said it would stay. Mutation fired: reading only the first branch in counterfactually_supported lets the contested pass Execute."
+    "notes": "Re-graded 2026-10-18 (lane L10): simulation-before-authority is met. 2026-10-24 lane T6-MODEL-AGENTS: gap rewritten per ADR 0146 (the twin-futures clause was stale: TwinScenarios exists); kept PARTIAL because no running deployed path acts under authority, which the ADR keeps true on purpose. Mutation fired earlier: reading only the first branch in counterfactually_supported lets the contested pass Execute."
   },
   {
     "id": "R12-MODEL-4015",
@@ -2401,7 +2401,7 @@
       "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
       "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::every_common_stock_in_the_committed_catalogue_is_a_declared_hedge_candidate"
     ],
-    "gap": "Only CorrelatedAsset is declared in a running root, because the committed catalogue holds only common stock. Closing needs catalogue records (with a printed price on the simulated exchange) for the other eight classes and stated Greeks/loadings for each; declaring a common stock as an option or future would be a guessed sensitivity, which paper_hedge_candidates refuses to do.",
+    "gap": "By decision (ADR 0155 section 19, 2026-10-24) the committed universe stays equities and only CorrelatedAsset hedge candidates are declared (backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates). The other classes enter only with a catalogue record carrying a price printed on the simulated exchange and a sensitivity the record states or an in-tree pricer computes from printed prices; a vendor sensitivity feed is a data subscription and BILLED, not decided here.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2412,7 +2412,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap corrected (the triage's closure, one candidate per class against the present catalogue, would mislabel equities)."
+    "notes": "2026-10-24 ADR 0155 section 19: gap restated, PARTIAL kept; no code."
   },
   {
     "id": "R12-RISK-4108",

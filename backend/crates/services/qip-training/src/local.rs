@@ -538,6 +538,19 @@ impl TrainedTeacher {
         data.rows().iter().map(|row| self.predict(row)).collect()
     }
 
+    /// The raw scores of every row, before the calibration.
+    ///
+    /// Crate-private: `distil` fits a student to what the model computes and
+    /// carries the calibration beside it, because the cell applies it after
+    /// the raw score. Fitting to calibrated outputs and then shipping the
+    /// calibration too would apply it twice.
+    pub(crate) fn raw_predict_all(&self, data: &TrainingDataset) -> Vec<f64> {
+        data.rows()
+            .iter()
+            .map(|row| self.form.predict(row))
+            .collect()
+    }
+
     /// Apply an update that has already cleared its cadence.
     ///
     /// The signature is the enforcement: there is no way to reach the private

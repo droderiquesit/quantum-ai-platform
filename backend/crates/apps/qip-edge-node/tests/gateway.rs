@@ -20,7 +20,9 @@ use qip_core::{Decimal, dec};
 use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
-use qip_edge_node::gateway::{DEFAULT_RELEASE_TOLERANCE, SimulatedGateway};
+use qip_edge_node::gateway::{
+    DEFAULT_RELEASE_TOLERANCE, SimulatedGateway, assumptions_of, widen_config_digest,
+};
 use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::features::BookPressure;
@@ -1808,6 +1810,70 @@ fn an_order_naming_a_venue_this_gateway_does_not_reach_is_refused_on_the_send_pa
         "denied",
         "{}",
         refused_cancel.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_replay_manifest_built_from_the_gateways_settings_names_them_and_a_gateway_with_other_settings_yields_other_assumptions_and_a_different_config_digest()
+-> Result<()> {
+    // The failure this prevents: a manifest whose assumptions were written as
+    // prose, so a run under a venue that refuses a fifth of orders reproduced
+    // under a text describing one that refuses none, and nobody could say the
+    // fill model had changed.
+    use qip_contracts::replay::{AppliedReadings, PassMarker, ReplayManifest};
+    let at = start();
+    let orderly = SimulatedGateway::new(venue("XLON"), 7, at)?;
+    let refusing = SimulatedGateway::with_rejection_probability(venue("XLON"), 7, 0.2, at)?;
+    // Premise: both gateways build and the production default is the one
+    // `new` uses.
+    assert_eq!(
+        orderly.replay_assumptions(),
+        assumptions_of(&SimulatedGateway::default_settings())
+    );
+
+    let a = orderly.replay_assumptions();
+    let b = refusing.replay_assumptions();
+    assert_ne!(a, b, "other settings must render other assumptions");
+    assert!(
+        a.fill.contains("no order is refused"),
+        "the orderly gateway states that it refuses nothing: {}",
+        a.fill
+    );
+    assert!(b.fill.contains("0.2"), "{}", b.fill);
+
+    let marker = |digest: String| PassMarker {
+        cell: "london-1".to_string(),
+        session: "session".to_string(),
+        pass: 1,
+        now_ns: 1,
+        tape_digest: "tape".to_string(),
+        tape_from: 0,
+        tape_to: 0,
+        control: Vec::new(),
+        readings: AppliedReadings::default(),
+        config_digest: digest,
+        plan_digest: "plan".to_string(),
+        gateway_seed: 7,
+        binary_version: "test".to_string(),
+    };
+    let digest_a = widen_config_digest("cell-config", &SimulatedGateway::default_settings());
+    let digest_b = widen_config_digest(
+        "cell-config",
+        &qip_brokers::exchange::ExchangeSettings {
+            rejection_probability: 0.2,
+            ..SimulatedGateway::default_settings()
+        },
+    );
+    assert_ne!(digest_a, digest_b, "other settings must change the digest");
+
+    let versions = SimulatedGateway::replay_model_versions();
+    let first = ReplayManifest::with_assumptions(marker(digest_a), a, versions.clone())?;
+    let second = ReplayManifest::with_assumptions(marker(digest_b), b, versions)?;
+    assert_ne!(
+        first.reproducibility_hash(),
+        second.reproducibility_hash(),
+        "two runs under different fill models must not share a reproducibility hash"
     );
     Ok(())
 }
