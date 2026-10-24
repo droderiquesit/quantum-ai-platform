@@ -483,9 +483,10 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::submit_order",
       "backend/crates/runtime/qip-kernel/tests/pretrade_determinism.rs::an_accepted_order_was_guarded_by_a_deterministic_routing_that_names_no_model",
       "backend/crates/services/qip-cost-router/tests/determine.rs::a_determined_routing_is_deterministic_code_in_every_regime_and_horizon",
-      "backend/crates/tests/qip-acceptance/tests/order_placement_paths.rs"
+      "backend/crates/tests/qip-acceptance/tests/order_placement_paths.rs",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs SAFETY_CRITICAL (now names backend/crates/libs/qip-risk) and no_safety_critical_engine_can_reach_a_language_model"
     ],
-    "gap": "Independently graded COMPLETE as the weakest case, and held at PARTIAL here: Router::determine is now constructed on every Platform::submit_order and fails the order closed, but the routing it returns is a witness no limit code reads, only order admission is routed, and the kill-switch, sign-off and monitor-side LimitSet::check paths are not. Making the limit decision a function of the DeterministicRouting, and covering those paths, would close it.",
+    "gap": "Independently graded COMPLETE as the weakest case, and held at PARTIAL here: Router::determine is now constructed on every Platform::submit_order and fails the order closed, but the routing it returns is a witness no limit code reads, only order admission is routed, and the kill-switch, sign-off and monitor-side LimitSet::check paths are not. Making the limit decision a function of the DeterministicRouting, and covering those paths, would close it. Corrected 2026-10-24 (lane L1-MONEY): the grader's note 'nothing fails if the limits were changed to call a model' is false for the limit evaluation itself — giving qip-risk (LimitSet::check) a qip-ai dependency fails architecture::no_safety_critical_engine_can_reach_a_language_model, transitively through qip-execution-engine and qip-risk-engine, and qip-risk is now listed by name. What stays open is the gap as written: the kill-switch, sign-off and monitor-side paths are not made a function of a DeterministicRouting, and the decision to call them sits in qip-kernel, which can reach a model.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -496,7 +497,7 @@
     "verification": "cargo test -p qip-cost-router --test cost_router",
     "work_item": "",
     "size": "S",
-    "notes": "Limit-firing proofs belong to the RISK slice. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The structural arm is real but unused by production; the Risk-Brain-recommends/gates-enforce split is asserted, not shown. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The Required arm is now constructed by a running path and the test fails if the call is removed (pretrade_routing stays None). The gate-bypass concern is covered by a2ca740d. Weakest COMPLETE: nothing fails if the limits were changed to call a model."
+    "notes": "Limit-firing proofs belong to the RISK slice. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The structural arm is real but unused by production; the Risk-Brain-recommends/gates-enforce split is asserted, not shown. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The Required arm is now constructed by a running path and the test fails if the call is removed (pretrade_routing stays None). The gate-bypass concern is covered by a2ca740d. Weakest COMPLETE: nothing fails if the limits were changed to call a model. 2026-10-24 lane L1-MONEY: added libs/qip-risk to SAFETY_CRITICAL. Mutation: qip-ai.workspace = true in qip-risk/Cargo.toml FAILED no_safety_critical_engine_can_reach_a_language_model (it fired through qip-execution-engine before the list entry too, so the entry names an already-held property); Cargo.toml and Cargo.lock restored, cmp clean. architecture: 56 passed 0 failed. Kept PARTIAL."
   },
   {
     "id": "R12-REASON-3023",
