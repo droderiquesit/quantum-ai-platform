@@ -415,6 +415,12 @@ pub struct Platform {
     /// `Platform::promote_model`. What the `trained_models` slot is
     /// produced from; see `crate::model_serving`.
     pub(crate) model_promotions: BTreeMap<String, crate::model_serving::ModelPromotion>,
+    /// Every registered model card as this process last journaled it, by
+    /// reference, rebuilt from the log at assembly and written only by
+    /// `Platform::journal_model_registry` (R12-MODEL-9003). What lets a card
+    /// that was registered and evaluated but never promoted survive a
+    /// restart; bounded by the registry it mirrors.
+    pub(crate) journaled_cards: BTreeMap<String, qip_ai::registry::ModelCard>,
     /// The Model Pack in force — the newest version of the promoted set,
     /// naming its predecessor and delta (MODEL-037). Rebuilt from the same
     /// log records as `model_promotions` and advanced only beside it.
@@ -695,6 +701,11 @@ pub struct Platform {
     /// decisions 9-10), replaced wholesale each pass so a disagreement that
     /// has resolved stops asking. Read by the deep brain's research sweep.
     federation_requests: Vec<(qip_contracts::control::InformationRequest, u32)>,
+    /// The decisions the latest DECIDE sized on a conviction it was unsure
+    /// of (R12-AMBIENT-3104), replaced wholesale each cycle and bounded by
+    /// that cycle's legs. Read by the deep brain's research sweep, which
+    /// prices the cheapest observation that could discriminate.
+    decision_uncertainties: Vec<DecisionUncertainty>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -1222,6 +1233,77 @@ const PENDING_CORPORATE_ACTIONS: usize = 4_096;
 const OUTSIDE_PRIOR_CAPACITY: usize = 1_024;
 
 const PROPOSAL_HISTORY: usize = 256;
+/// The uncertainty, `1 - |conviction|`, at or above which a sized decision
+/// is handed to active sensing (R12-AMBIENT-3104): a leg sized on a
+/// conviction of one half or less is a decision the platform is no surer
+/// of than a coin, and the value of learning more before its horizon is
+/// worth pricing.
+pub const DECISION_UNCERTAINTY_FLOOR: f64 = 0.5;
+
+/// A decision DECIDE sized on a conviction it was unsure of, as the deep
+/// brain's research sweep reads it (R12-AMBIENT-3104, blueprint §9.10):
+/// what is at stake, how unsure the platform is, and the deadline after
+/// which evidence answers a question nobody is still asking.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecisionUncertainty {
+    pub hypothesis_id: String,
+    pub subject: String,
+    /// What the evidence would have to decide.
+    pub question: String,
+    /// The notional the decision commits, in account currency.
+    pub value_at_stake: Decimal,
+    /// `1 - |conviction|` of the thesis the leg expresses, in `[0, 1]`.
+    pub uncertainty: f64,
+    /// The thesis's horizon: when its claim resolves.
+    pub deadline: Timestamp,
+}
+
+/// The decisions in `proposal` sized on a thesis at or above
+/// [`DECISION_UNCERTAINTY_FLOOR`], one per leg and thesis, with the claim's
+/// resolution instant as the deadline. A thesis no prediction claims a
+/// resolution for has no deadline to state and is left out rather than given
+/// one.
+fn decision_uncertainties(
+    proposal: &Proposal,
+    theses: &[qip_portfolio_engine::construction::ApprovedThesis],
+    predictions: &[RecordedPrediction],
+) -> Vec<DecisionUncertainty> {
+    let mut out = Vec::new();
+    for leg in &proposal.legs {
+        for hypothesis in &leg.hypotheses {
+            let Some(thesis) = theses.iter().find(|t| &t.hypothesis_id == hypothesis) else {
+                continue;
+            };
+            let uncertainty = 1.0 - thesis.conviction.abs().min(1.0);
+            if uncertainty < DECISION_UNCERTAINTY_FLOOR {
+                continue;
+            }
+            let Some(claim) = predictions
+                .iter()
+                .rev()
+                .find(|p| &p.hypothesis == hypothesis)
+                .and_then(|p| p.claim.as_ref())
+            else {
+                continue;
+            };
+            out.push(DecisionUncertainty {
+                hypothesis_id: hypothesis.clone(),
+                subject: leg.object_id.as_str().to_string(),
+                question: format!(
+                    "does {} move {:.0} bp {} by {} as {hypothesis} claims?",
+                    claim.subject,
+                    claim.expected_move_bps.abs(),
+                    if claim.direction >= 0.0 { "up" } else { "down" },
+                    claim.resolves_at,
+                ),
+                value_at_stake: leg.notional().abs(),
+                uncertainty,
+                deadline: claim.resolves_at,
+            });
+        }
+    }
+    out
+}
 /// The self-model key the world-model federation's arbitrated view is
 /// scored under as an ensemble (R12-MODEL-6016).
 pub const FEDERATION_ENSEMBLE: &str = "world-model-federation";
@@ -5536,6 +5618,7 @@ impl Platform {
             references: Self::resume_references(&event_log)?,
             model_provider,
             model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
+            journaled_cards: crate::model_serving::resume_model_registrations(&event_log)?,
             model_pack: crate::model_serving::resume_model_pack(&event_log)?,
             release_packs: None,
             model_desk: None,
@@ -5603,6 +5686,7 @@ impl Platform {
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
             federation_requests: Vec::new(),
+            decision_uncertainties: Vec::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -13142,6 +13226,12 @@ impl Platform {
         &self.federation_narrowing
     }
 
+    /// The decisions the latest DECIDE sized on a conviction it was unsure of
+    /// (R12-AMBIENT-3104), for the deep brain's research intake.
+    pub fn decision_uncertainties(&self) -> &[DecisionUncertainty] {
+        &self.decision_uncertainties
+    }
+
     /// The active-sensing requests the latest federation pass issued, with
     /// the disagreement spread behind each in basis points.
     pub fn federation_information_requests(
@@ -14367,6 +14457,21 @@ impl Platform {
                 if let Some(multiplier) = outside_narrowing {
                     reasoned.hypothesis.confidence *= multiplier;
                 }
+                // Blueprint §9.4: the symbolic reasoners over this hypothesis,
+                // journaled as a derivation trace. Run before approval is read
+                // (ADR 0125 decision 2, R12-REASON-3053), so the rule pack's
+                // verdict is an input to approval rather than a comment on it:
+                // a hypothesis review approved that the pack refuses on a hard
+                // stop is rejected here, before it is counted, charted, written
+                // into a prediction or handed to the tournament as approved.
+                // The derivation records the status review gave it, which is
+                // what the pack was asked about. Nothing here sizes or sends.
+                let (symbolic_detail, symbolic_problem, symbolic_veto) =
+                    self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                if symbolic_veto.is_some() {
+                    reasoned.hypothesis.status =
+                        qip_reasoning_engine::hypothesis::HypothesisStatus::Rejected;
+                }
                 let approved = reasoned.hypothesis.status.is_actionable();
                 // Recorded here, where review's verdict becomes known, rather
                 // than inferred later from the order count. `created` is the
@@ -14439,12 +14544,8 @@ impl Platform {
                         error.message()
                     ));
                 }
-                // Blueprint §9.4: the symbolic reasoners over this hypothesis,
-                // journaled as a derivation trace. Its one power is ADR 0125's
-                // veto: a hypothesis review approved and the rule pack does not
-                // find eligible forms no proposal. Nothing here sizes or sends.
-                let (symbolic_detail, symbolic_problem, symbolic_veto) =
-                    self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                // The derivation ran before approval, above; its trace joins
+                // the stage detail here, after the hypothesis line it explains.
                 outcome.detail.push_str(&symbolic_detail);
                 if let Some(problem) = symbolic_problem {
                     outcome = outcome.with_problem(problem);
@@ -14456,20 +14557,21 @@ impl Platform {
                 if let Some(clause) = self.observe_hypothesis(&reasoned, &report, approved, now) {
                     outcome.detail.push_str(&clause);
                 }
-                let decision = if !approved {
+                let decision = if let Some(veto) = symbolic_veto {
+                    // ADR 0125 decision 2: the rule pack refused what review
+                    // approved, so the hypothesis was rejected above. Recorded
+                    // under its own words, because "vetoed by a rule" and
+                    // "rejected on review" send an operator to different
+                    // places; the derivation that produced it is already on
+                    // the log under `kernel/symbolic`.
+                    outcome = outcome.with_problem(format!(
+                        "approved on review but vetoed by the symbolic rule pack: {veto}"
+                    ));
+                    DecisionTaken::NotSizeable
+                } else if !approved {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
                     DecisionTaken::RejectedOnReview
-                } else if let Some(veto) = symbolic_veto {
-                    // ADR 0125 decision 2: the rule pack refused what review
-                    // approved. Recorded under its own words, because "vetoed
-                    // by a rule" and "could not be sized" send an operator to
-                    // different places; the derivation that produced it is
-                    // already on the log under `kernel/symbolic`.
-                    outcome = outcome.with_problem(format!(
-                        "approved but vetoed by the symbolic rule pack: {veto}"
-                    ));
-                    DecisionTaken::NotSizeable
                 } else {
                     // Approved on review and still not queued unless
                     // justified: a thesis whose only ground is the return it
@@ -17236,6 +17338,10 @@ impl Platform {
             }
         };
         let legs = proposal.len();
+        // §9.10: a decision sized while the platform was unsure of it is
+        // handed to active sensing, which prices the cheapest observation
+        // that could tell its worlds apart (R12-AMBIENT-3104).
+        self.decision_uncertainties = decision_uncertainties(&proposal, &theses, &self.predictions);
         self.proposals.push(proposal);
         self.proposals_made += 1;
         // Age the oldest out rather than letting the working set grow with

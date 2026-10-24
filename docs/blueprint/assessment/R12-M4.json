@@ -452,11 +452,13 @@
   {
     "id": "R12-MODEL-4021",
     "status": "PARTIAL",
-    "current": "Promotion is attacked by eight critics (verifier society) at promote_model_from and a refutation refuses it; no perturbed/adversarial-input suite measuring output movement.",
+    "current": "Promotion is attacked by eight critics (verifier society) at promote_model_from and a refutation refuses it. Since 2026-10-24 the deep brain's promote stage also runs an adversarial perturbation suite on every candidate before acceptance (qip_training::adversarial::attack): every held-out row has each feature nudged by a tenth of that feature's spread in each direction through the served model, a row whose worst output movement exceeds half the output's spread is fragile, and a candidate with more than a tenth of its rows fragile, any non-finite perturbed output, or a suite that cannot run is refused with the reason.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/verifier.rs::CriticKind"
+      "backend/crates/services/qip-learning-engine/src/verifier.rs::CriticKind",
+      "backend/crates/services/qip-training/src/adversarial.rs attack, PerturbationPolicy, PerturbationReport::refusal and its unit tests (a smooth model survives; a model flipping inside the data noise is refused; a non-finite nudge is refused; a constant model or empty probe is refused rather than passed)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs promote_candidate runs the suite before scoring against incumbents; learning::tests::a_candidate_that_fails_the_adversarial_perturbation_suite_is_not_promoted (same fit promoted under the default policy, refused under a no-movement policy)"
     ],
-    "gap": "Adversarial perturbation suite with tolerance at acceptance.",
+    "gap": "2026-10-24 (lane L2-INTEL): the suite is built and on the deep brain's promote stage. Promotion awaits the independent skeptic. Note: the tolerance values (a tenth of a feature's spread in, half the output's spread out, a tenth of rows) are the lane's choice and are stated in PerturbationPolicy::default.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -464,10 +466,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-training --lib adversarial && cargo +1.94.1 test -p qip-deepbrain --lib a_candidate_that_fails_the_adversarial_perturbation_suite_is_not_promoted",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the refusal filtered out in promote_candidate fails a_candidate_that_fails_the_adversarial_perturbation_suite_is_not_promoted; the fragile comparison inverted in attack fails two adversarial unit tests."
   },
   {
     "id": "R12-MODEL-4022",
