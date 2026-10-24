@@ -2047,14 +2047,18 @@
   },
   {
     "id": "R12-CAPITAL-4092",
-    "status": "PARTIAL",
-    "current": "Belief calibration (calibrate_resolved) scores prediction; attribution separates market/factor from commission/spread/impact/shortfall; sizing_review caps size from counterfactual sizes. No single decomposition across the four.",
+    "status": "COMPLETE",
+    "current": "Each released order from a constructed leg is stamped at release with three quantities read off the stages that produced them: the reference (the constructor's own quantity at the budget before the governor and multipliers, reported in the same pass by PortfolioConstructor::construct_referenced), the sized (ProposalLeg.quantity) and the released (after lot rounding and any risk reduction). LEARN's attribution::run splits each stamped order's held move into prediction, sizing, allocation and unfilled terms that sum to side x filled x (mark - arrival) to the last digit, and carries the execution term (arrival-to-fill slippage plus commission); the five add to the per-fill attribution's own position total. The result is AttributionPass::held_moves, read by Platform::last_attribution. An order submitted without a leg is stamped with no quantities and has no split rather than a zero one.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15155 calibrate_resolved",
-      "backend/crates/services/qip-learning-engine/src/attribution.rs:22-42 Source",
-      "backend/crates/runtime/qip-kernel/src/sizing_review.rs"
+      "backend/crates/services/qip-portfolio-engine/src/construction.rs::PortfolioConstructor::construct_referenced",
+      "backend/crates/services/qip-portfolio-engine/src/proposal.rs::ProposalLeg::reference_quantity",
+      "backend/crates/runtime/qip-kernel/src/attribution.rs::ReleaseQuantities",
+      "backend/crates/runtime/qip-kernel/src/attribution.rs::HeldMoveSplit",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::submit_order (leg_quantities stamped into ReleaseContext)",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_decide.rs::the_four_terms_of_a_fills_held_move_sum_exactly_to_the_filled_quantity_times_the_move",
+      "backend/crates/services/qip-portfolio-engine/tests/portfolio.rs::a_leg_reports_its_quantity_at_the_unnarrowed_budget_from_the_same_pass_and_a_smaller_reference_is_refused"
     ],
-    "gap": "A four-way split needs three order quantities this platform does not stamp together: the thesis's reference size, the size after sizing, and the size the book finally allocated. AttributionLineage::note_release (runtime/qip-kernel/src/attribution.rs) stamps strategy, capital policy, risk rule, execution path and quoted spread only, and 'allocation' has no counterfactual yet (what weight the book would have held with no allocator). Without those, prediction/sizing/allocation can only be defined by choosing the numbers; the existing per-fill total (signed_qty x (mark - fill) - commission) already splits exactly into the execution term (arrival to fill, plus commission) and the held move (arrival to mark). Next step: stamp the three quantities at release, then split the held move as q_ref x move (prediction), (q_sized - q_ref) x move (sizing), (q_final - q_sized) x move (allocation), and assert the sum equals the fill total.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2062,10 +2066,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-acceptance --test vertical_slice_decide && cargo test -p qip-portfolio-engine --test portfolio",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: not implemented. Read attribution.rs and the learning engine's Attribution; the four-way record would have defined its own reference quantities rather than reading stamped ones, and the grader's closure names none of the three sources."
+    "notes": "Lane N1-KERNEL-ACCEPT 2026-10-24, closing ADR 0148 decision 5. The constructor reports q_ref itself (leg quantity is linear in the budget and the optimiser weights do not depend on it), so no second governor run was needed and the ADR stop condition did not trigger. The unfilled term balances the directly computed held move because Decimal rounds each of four products to nine places; the test pins it to the stated definition within four raw units. Allocation is q_released - q_sized, a measured nonzero here from lot rounding. Mutations that fired: stamping the reference as the sized quantity (premise/equality fails), sizing as (sized - released) x move (definition fails), dropping the slippage from the execution term (outcome differs from the position total by 13.5), reference_quantity = quantity in the constructor (unit test fails). Not journaled in AttributionRecorded: a journal field is a separate decision."
   },
   {
     "id": "R12-RISK-4093",

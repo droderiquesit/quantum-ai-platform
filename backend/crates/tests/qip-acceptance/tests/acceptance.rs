@@ -598,6 +598,7 @@ fn a_proposal_cannot_reach_execution_without_both_controls() -> Result<()> {
             target_weight: 0.01,
             estimated_cost_bps: 10.0,
             hypotheses: vec!["hyp-acceptance".to_string()],
+            reference_quantity: None,
         }],
         "expresses one approved thesis",
     )

@@ -86,12 +86,129 @@ pub struct ReleaseContext {
     pub execution_path: String,
     /// The instrument's latest quoted spread at release, in basis points.
     pub quoted_spread_bps: Option<f64>,
+    /// The three quantities the order passed through on its way out, where it
+    /// came from a constructed proposal leg; `None` for an order submitted
+    /// directly, which has no proposal to be narrowed from.
+    pub quantities: Option<ReleaseQuantities>,
+}
+
+/// The three order quantities ADR 0148 decision 5 stamps at release, each read
+/// off the stage that produced it. Unsigned: the order's side carries the
+/// direction.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseQuantities {
+    /// What the thesis implied at the budget before any narrowing multiplier.
+    pub reference: Decimal,
+    /// `ProposalLeg.quantity`: after the multipliers and caps.
+    pub sized: Decimal,
+    /// The order's quantity at release, after lot rounding.
+    pub released: Decimal,
+}
+
+impl ReleaseQuantities {
+    /// Refused unless every quantity is positive: a zero is a leg that is not
+    /// an order, and a negative one is a side applied twice.
+    pub fn new(reference: Decimal, sized: Decimal, released: Decimal) -> Result<Self> {
+        if !reference.is_positive() || !sized.is_positive() || !released.is_positive() {
+            return Err(Error::invalid(
+                "the reference, sized and released quantities of an order are all positive; the side carries the direction",
+            ));
+        }
+        Ok(Self {
+            reference,
+            sized,
+            released,
+        })
+    }
+}
+
+/// How the held move of one order's fills splits across the stages that set
+/// its size (ADR 0148 decision 5). `move = mark - arrival`, each term signed
+/// by the order's side, and the four sum to `side * filled * move`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeldMoveSplit {
+    /// `reference * move`: the thesis, at the unnarrowed budget.
+    pub prediction: Decimal,
+    /// `(sized - reference) * move`: what the narrowing multipliers and caps cost.
+    pub sizing: Decimal,
+    /// `(released - sized) * move`: what lot rounding and the gate took after
+    /// sizing. A **measured** zero when nothing stood between them.
+    pub allocation: Decimal,
+    /// `-(released - filled) * move`: the part of the order that did not fill.
+    pub unfilled: Decimal,
+    /// `side * filled * move`, computed directly and not as the sum above.
+    pub total: Decimal,
+    /// What it cost to get the fills, arrival to fill plus commission, as a
+    /// negative figure: the execution component. It is the term the per-fill
+    /// attribution already measures, carried here so the five components add
+    /// to the order's whole outcome.
+    pub execution: Decimal,
+}
+
+impl HeldMoveSplit {
+    /// Split the held move of `filled` units (over every fill of the order)
+    /// that moved from `arrival` to `mark`.
+    ///
+    /// The `unfilled` term is the balance against the directly computed total
+    /// rather than `-(released - filled) * move`, because `Decimal` rounds each
+    /// product to nine places and four rounded products need not telescope. The
+    /// balance differs from the stated definition by rounding alone, and the
+    /// test pins that; what it buys is that the four terms sum to the fill's
+    /// own held move to the last digit, so no residual is hidden in a fifth
+    /// line.
+    pub fn of(
+        quantities: &ReleaseQuantities,
+        side: i64,
+        filled: Decimal,
+        arrival: Decimal,
+        mark: Decimal,
+        execution: Decimal,
+    ) -> Result<Self> {
+        if side != 1 && side != -1 {
+            return Err(Error::invalid(format!("a side is +1 or -1, not {side}")));
+        }
+        if !filled.is_positive() || filled > quantities.released {
+            return Err(Error::invalid(format!(
+                "{filled} filled against {} released; a fill is positive and no larger than its order",
+                quantities.released
+            )));
+        }
+        let signed_move = Decimal::from_int(side) * (mark - arrival);
+        let prediction = quantities.reference * signed_move;
+        let sizing = (quantities.sized - quantities.reference) * signed_move;
+        let allocation = (quantities.released - quantities.sized) * signed_move;
+        let total = filled * signed_move;
+        let unfilled = total - prediction - sizing - allocation;
+        Ok(Self {
+            prediction,
+            sizing,
+            allocation,
+            unfilled,
+            total,
+            execution,
+        })
+    }
+
+    /// The four held-move terms added up; equal to [`Self::total`] by
+    /// construction.
+    pub fn sum(&self) -> Decimal {
+        self.prediction + self.sizing + self.allocation + self.unfilled
+    }
+
+    /// The order's whole outcome: the held move's four terms and the cost of
+    /// executing. The per-fill attribution measures the same figure on its own
+    /// (`PositionPnl::total`), which is what makes this a decomposition and not
+    /// a second opinion.
+    pub fn outcome(&self) -> Decimal {
+        self.sum() + self.execution
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct Stamped {
     keys: AttributionKeys,
     quoted_spread_bps: Option<f64>,
+    quantities: Option<ReleaseQuantities>,
 }
 
 /// The keys each position will be attributed under, written when they were
@@ -219,6 +336,7 @@ impl AttributionLineage {
             quoted_spread_bps: context
                 .quoted_spread_bps
                 .filter(|s| s.is_finite() && *s >= 0.0),
+            quantities: context.quantities,
         };
         if self.orders.insert(order_id.to_string(), stamped).is_none() {
             self.order_order.push_back(order_id.to_string());
@@ -237,6 +355,14 @@ impl AttributionLineage {
             .iter()
             .map(|(id, stamped)| (id.clone(), stamped.keys.clone()))
             .collect()
+    }
+
+    /// The quantities an order was stamped with at release, if it came from a
+    /// constructed leg and has not been evicted.
+    pub fn release_quantities(&self, order_id: &str) -> Option<ReleaseQuantities> {
+        self.orders
+            .get(order_id)
+            .and_then(|stamped| stamped.quantities)
     }
 
     fn quoted_spread_bps(&self, order_id: &str) -> Option<f64> {
@@ -276,6 +402,9 @@ pub struct AttributionPass {
     pub unmarked: usize,
     /// The book's cash-plus-holdings total, the independent claim.
     pub book_total: Decimal,
+    /// Each stamped order's held move split by the stage that set its size.
+    /// An order with no stamped quantities is absent, not zero.
+    pub held_moves: BTreeMap<String, HeldMoveSplit>,
 }
 
 /// Build one position per fill. See the module doc for the arithmetic.
@@ -402,11 +531,43 @@ pub fn run(
     let attribution = attributor.attribute(&periods, per_fill, equity, now, now)?;
     let keyed = KeyedAttribution::join(&attribution, &lineage.keys())?;
     let unmarked = fills.iter().filter(|fill| fill.mark.is_none()).count();
+    // Per order, over all of its fills: the split's `unfilled` term is about
+    // the order, and a fill-by-fill split would call every partial fill's
+    // remainder unfilled.
+    let mut filled: BTreeMap<&str, (Decimal, Decimal, &FillMark)> = BTreeMap::new();
+    for fill in fills {
+        let entry =
+            filled
+                .entry(fill.order_id.as_str())
+                .or_insert((Decimal::ZERO, Decimal::ZERO, fill));
+        entry.0 += fill.quantity;
+        // Slippage from arrival to fill, paid, and the commission: the same
+        // two costs `periods` charges, as a negative contribution.
+        entry.1 -= Decimal::from_int(fill.side) * fill.quantity * (fill.price - fill.arrival)
+            + fill.commission;
+    }
+    let mut held_moves = BTreeMap::new();
+    for (order_id, (quantity, execution, fill)) in filled {
+        if let Some(quantities) = lineage.release_quantities(order_id) {
+            held_moves.insert(
+                order_id.to_string(),
+                HeldMoveSplit::of(
+                    &quantities,
+                    fill.side,
+                    quantity,
+                    fill.arrival,
+                    fill.mark.unwrap_or(fill.price),
+                    execution,
+                )?,
+            );
+        }
+    }
     Ok(AttributionPass {
         attribution,
         keyed,
         unmarked,
         book_total: book,
+        held_moves,
     })
 }
 
@@ -514,6 +675,7 @@ mod tests {
                 risk_rule: "kernel-test".to_string(),
                 execution_path: "desk/sim/market".to_string(),
                 quoted_spread_bps: Some(bps),
+                quantities: None,
             },
         )?;
         Ok(lineage)
