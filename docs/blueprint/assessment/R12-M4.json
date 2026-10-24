@@ -708,7 +708,7 @@
   {
     "id": "R12-QUANT-4032",
     "status": "PARTIAL",
-    "current": "PortfolioProblem::to_qubo with cardinality and position caps; ComputeRouter attempts QAOA on a provider; kernel construct_from runs it each cycle. But quantum_enabled is false by default and set by no app, and with RoutingPolicy::default (minimum_assets_for_quantum = 50) and SimulatedProvider (MAX_QUBITS = 24) quantum_assessment always declines, so the quantum arm is unreachable in any default composition.",
+    "current": "Default minimum_assets_for_quantum is DEFAULT_EXACT_ENUMERATION_LIMIT + 1 (router.rs RoutingPolicy::default, not fifty); quantum_enabled is false by default and ComputeSettings attaches the in-tree simulator only when QIP_QUANTUM_PROVIDER=simulated (read in qip-deepbrain and qip-api); hosted is refused by name. A cycle approves one thesis, so DECIDE routes exact enumeration; the quantum arm is proven by scripted-provider tests and dev/test simulated attachment.",
     "evidence": [
       "backend/crates/services/qip-optimization-engine/src/problem.rs:198,379 cardinality, to_qubo",
       "backend/crates/services/qip-optimization-engine/src/router.rs:181-192 default policy (50 assets)",
@@ -716,7 +716,7 @@
       "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled: false",
       "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1127 cardinality-violating quantum answer refused"
     ],
-    "gap": "No kernel cycle hands the router a problem the quantum arm can take. Measured 2026-10-18 in a throwaway probe (not committed): a Platform with PlatformConfig::with_quantum(), RoutingPolicy { minimum_assets_for_quantum: 4, exact_enumeration_limit: 2 }, a four-name universe with bars observed for all four and a holdings cap of two journaled solver_routing for six consecutive cycles with compute.task.variables = 1 and ran = [exact_enumeration] every time ('1 assets is below the 4 at which a quantum formulation could pay'). The problem has one variable per approved thesis and a cycle approved one, so the triage's closure (a 4+ asset universe and a policy of 4) does not reach the arm. Closing needs a fixture that yields four simultaneous approved theses in one DECIDE, or a seam handing the router the held book plus the thesis; then the end-to-end assertions the row names (both runs journaled; a cardinality-violating or limit-breaching quantum answer refused by PreTradeChecker before the broker). The quantum arm also stays off in every default composition (quantum_enabled false; QAOA runs on SimulatedProvider only; no hosted provider is wired).",
+    "gap": "2026-10-24 (ADR 0150 decision 3): closed by decision. No fixture or seam is added to hand the router a default-path quantum-eligible problem: one thesis gives one variable and exact enumeration is correct. Kept PARTIAL because the arm is unreachable on a default composition by design.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -729,7 +729,7 @@
     "verification": "kernel test with quantum enabled reaching the QAOA arm",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed."
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed. Existing proof: qip-kernel compute_routing.rs the_compute_settings_attach_only_what_is_asked_and_refuse_what_they_do_not_know."
   },
   {
     "id": "R12-QUANT-4033",
@@ -878,7 +878,7 @@
       "backend/crates/services/qip-reasoning-engine/src/constraint.rs to_qubo, minimise, decode",
       "backend/crates/libs/qip-quantum/src/foundry.rs Foundry::platform symbolic reason"
     ],
-    "gap": "No problem the cycle poses is QUBO-admissible: symbolic_stage::acting() (the only constraint Problem in the kernel) has Boolean single-value domains and Or-conditions, which to_qubo refuses by name, so the grader closure that solves acting() through a Benchmark cannot be done as written. The family stays NotBuilt on purpose: model_serving promotes a Registered family, so registering one with no production caller would assert a quantum benefit path that nothing runs. Closing needs the symbolic stage to pose a 0/1 linear-equality problem each cycle and route it through ComputeRouter, with the benchmark result journaled.",
+    "gap": "2026-10-24 (ADR 0150 decision 6): closed by decision. acting() is a few Boolean variables the exact solver decides, so no cycle problem is made QUBO-admissible and SymbolicCombinatorialSearch stays NotBuilt with its true reason (Foundry::platform). Kept PARTIAL: the constraint encoder is exercised as a capability test only.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -889,7 +889,7 @@
     "verification": "cargo test -p qip-kernel --test symbolic_federation the_constraint_encoders_qubo_is_solved_by_a_quantum_entrant_and_decodes_to_the_symbolic_optimum; cargo test -p qip-quantum --test foundry",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 L22: test and reason added; kept PARTIAL. Mutation: remove the equality penalty block from Problem::to_qubo - the quantum answer no longer decodes and the test fails; restored byte for byte."
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed; qip-quantum tests/foundry.rs the_symbolic_family_is_not_routed_and_its_reason_names_the_encoder_that_exists is the standing proof. Earlier note: 2026-10-18 L22 test and reason added."
   },
   {
     "id": "R12-QUANT-4041",
@@ -2304,11 +2304,11 @@
   {
     "id": "R12-RISK-4103",
     "status": "PARTIAL",
-    "current": "qip-agency conduct_brain gates external communications through seven checks in shadow form; reached only from qip-cli.",
+    "current": "The conduct gate runs on every engine::execute adapter call and every ambient draft (ActionGuard::from_policy builds ConductGate::from_policy; reached from qip-cli and qip-deepbrain); qip-kernel has no dependency on qip-agency.",
     "evidence": [
       "backend/crates/services/qip-agency/src/conduct_brain.rs:1-15"
     ],
-    "gap": "Integration and the externality/overclaiming/channel-compromise checks.",
+    "gap": "2026-10-24 (ADR 0146 decisions 6 and 7): externality, overclaiming and channel-compromise are not built, because no existing input states them and a check with no input cannot fire; an ACT-stage conduct refusal is a RISK matter not decided here. Nothing further is closable in code without a new input.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2319,7 +2319,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 M2-DATA-AGENTS: claims re-verified against the code (qip-kernel/Cargo.toml has no qip-agency; ConductGate::from_policy in guard.rs and ambient_intake.rs). Kept PARTIAL by decision, no code changed."
   },
   {
     "id": "R12-RISK-4104",

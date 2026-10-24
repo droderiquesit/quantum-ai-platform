@@ -1391,7 +1391,7 @@
       "backend/crates/libs/qip-agents/src/registries.rs:115",
       "backend/crates/libs/qip-contracts/src/expansion.rs:416 CapabilityEntry"
     ],
-    "gap": "CapabilityRegistry (registries.rs) has no caller outside qip-agents tests and none was added: the UnsupportedRequest arm of the sweep is the coverage detector over asset-class and venue keys (detectors.rs coverage), which is not a request for a capability verb, so there is no input there to look up in a registry of the ten verbs. Populating it from the configured venues and the simulated broker's modes is mechanical; what it would be consulted against is the missing piece, and is a design decision for the expansion loop rather than a wiring one.",
+    "gap": "2026-10-24 (ADR 0158 decision 15): none to close in code. CapabilityRegistry is consulted against nothing and stays empty: the sweep's coverage detector (qip-expansion detectors.rs coverage) keys on asset class, venue and geography and never a verb, and populating the ten verbs would assert Trade, Purchase and Transfer capabilities the paper platform does not have. It is populated when a promoted capability declares its verb at registration, with eligibility stated as shadow or simulated.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1402,7 +1402,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": "Checked 2026-10-18 against the code: coverage() takes (universe map, covered set, floor) and raises per dimension value; no part of the sweep names a CapabilityVerb."
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed. Kept PARTIAL: library-only type with no production caller, by decision."
   },
   {
     "id": "R12-EXPAND-6063",
