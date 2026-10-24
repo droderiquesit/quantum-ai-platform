@@ -2434,15 +2434,18 @@
   },
   {
     "id": "R12-CICD-9106",
-    "status": "PARTIAL",
-    "current": "qip-acceptance architecture/api_boundary/paper_boundary suites run in ci.yml's cargo test; deploy.yml's gate job refuses a workflow_run whose ci conclusion is not success and a dispatch whose commit has no successful push-event ci run, and deploy_provenance runs both refusal scripts under bash.",
+    "status": "COMPLETE",
+    "current": "qip-acceptance (architecture, api_boundary, paper_boundary and every other suite) runs as ci.yml's acceptance partition under cargo nextest --no-fail-fast; deploy.yml's gate job refuses a workflow_run whose ci conclusion is not success, and a dispatch whose commit has no successful push-event ci run or whose run count is not a number. deploy_provenance runs both refusal scripts under bash.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture.rs",
-      ".github/workflows/ci.yml:73",
-      ".github/workflows/deploy.yml:91",
+      ".github/workflows/ci.yml:102-103 the acceptance partition, -p qip-acceptance",
+      ".github/workflows/ci.yml:196 cargo nextest run ${{ matrix.packages }} --all-features --no-fail-fast",
+      "backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs::every_workspace_crate_is_tested_by_exactly_one_partition_of_the_test_job",
+      ".github/workflows/deploy.yml step 'the triggering ci run succeeded' (workflow_run)",
+      ".github/workflows/deploy.yml step 'ci succeeded for this commit' (workflow_dispatch; numeric check, then the count)",
       "backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs::a_deployment_whose_ci_run_did_not_succeed_is_refused_on_both_paths"
     ],
-    "gap": "2026-10-24: Both refusals are pinned by deploy_provenance::a_deployment_whose_ci_run_did_not_succeed_is_refused_on_both_paths. Still open: the manual-path refusal fails open on a run count that is not a number. `[ \"\" -lt 1 ]` and `[ null -lt 1 ]` are bash errors, an `if` condition is exempt from `set -e`, and the step then prints \"ci succeeded\" and exits 0. Closes when docs/blueprint/lanes/cicd-9106-protected.patch is applied (a numeric check before the comparison, and three test cases: empty, null, non-numeric). `.github/**` is a protected path, so the patch needs a person's approving review.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2453,7 +2456,7 @@
     "verification": "cargo test -p qip-acceptance --test deploy_provenance a_deployment_whose_ci_run_did_not_succeed_is_refused_on_both_paths",
     "work_item": "",
     "size": "S",
-    "notes": "Many arch_0NN_*.rs suites are vacuous (e.g. arch_033_quantum_path.rs::quantum_service_exists asserts nothing; classical_baseline_computed_always is a substring check) — the real guards are architecture.rs, api_boundary.rs, paper_boundary.rs. AUDIT-3 2026-10-24: regraded, the acceptance clause is two halves, CI runs the architecture suite and the deploy gates on CI; removing either of deploy.yml's two CI-success refusals fails no test in the eight acceptance suites that read workflows, and the named test (architecture.rs) reads neither workflow; 2026-10-24 parent session: added the refusal test (the admitting case first, nine non-success conclusions, a zero count, an unreachable API); 3 mutations of deploy.yml fired (automatic exit 1 removed, manual exit 1 removed, dispatch step's if set to false), restored with cmp clean. Writing it found the non-numeric fail-open; the protected patch fixes it, and with only the patch's test cases applied, the test fails on 'an empty answer'"
+    "notes": "Many arch_0NN_*.rs suites are vacuous (e.g. arch_033_quantum_path.rs::quantum_service_exists asserts nothing; classical_baseline_computed_always is a substring check) — the real guards are architecture.rs, api_boundary.rs, paper_boundary.rs. AUDIT-3 2026-10-24: regraded, the acceptance clause is two halves, CI runs the architecture suite and the deploy gates on CI; removing either of deploy.yml's two CI-success refusals fails no test in the eight acceptance suites that read workflows, and the named test (architecture.rs) reads neither workflow; 2026-10-24 parent session: added the refusal test (the admitting case first, nine non-success conclusions, a zero count, an unreachable API); 3 mutations of deploy.yml fired (automatic exit 1 removed, manual exit 1 removed, dispatch step's if set to false), restored with cmp clean. Writing it found the non-numeric fail-open; the protected patch fixes it, and with only the patch's test cases applied, the test fails on 'an empty answer'; 2026-10-24 parent session: the protected patch is applied (51e57f0f, on the owner's authority given in conversation), so the dispatch refusal fails closed on an empty, null or non-numeric count. Mutation, run by the parent: deleting the numeric `case` fails the test at 'a dispatch with an empty answer for its commit started a deployment'; restored, `git diff --quiet` clean. An independent read-only skeptic judged the promotion HOLDS and asked for these record fixes: cite ci.yml:102-103 and :196 rather than :73, and name the partition test. Outside this row's acceptance clause: the CI identity's workload-identity condition admits any refs/heads/*, so the deploy gate, not the identity, is what confines a deployment to a commit ci passed."
   },
   {
     "id": "R12-CICD-9107",
