@@ -24581,8 +24581,10 @@ mod decide_tests {
     ///
     /// Mutations: drop the expiry veto in `sizeable_theses` (the stale run
     /// sizes AAPL and the leg assertion fails); return no `Err` for an
-    /// expired slot in `LatticeStage::tactical_staleness` (the same); drop the
-    /// narrowing loop in `construct` (the ageing run's note is missing).
+    /// expired slot in `LatticeStage::tactical_staleness` (the veto then
+    /// comes from the no-life-left guard, and the expiry-specific refusal the
+    /// test pins is missing); make the cap multiply a no-op while keeping its
+    /// note (the strict size assertion fails).
     #[test]
     fn an_expired_tactical_forecast_vetoes_its_thesis_and_an_ageing_one_narrows_the_bound() {
         use qip_world_model::lattice::LatticeHorizon;
@@ -24626,18 +24628,21 @@ mod decide_tests {
         );
 
         let (decided, ageing) = run(Some((
-            now.saturating_sub(Duration::from_secs(750)),
-            now.saturating_add(Duration::from_secs(250)),
+            now.saturating_sub(Duration::from_secs(990)),
+            now.saturating_add(Duration::from_secs(10)),
         )));
         let said = format!("{} {:?}", decided.detail, decided.problems);
         assert!(
-            said.contains("AAPL: its tactical forecasts have 0.25 of their life left"),
+            said.contains("AAPL: its tactical forecasts have 0.01 of their life left"),
             "{said}"
         );
+        // A hundredth of the bound binds whatever the optimiser wanted, so
+        // the size must fall, strictly: a cap noted and not applied leaves
+        // it where the fresh run put it.
         let ageing = ageing.expect("an ageing forecast still sizes its thesis");
         assert!(
-            ageing <= fresh,
-            "narrowing raised the size: {ageing} > {fresh}"
+            ageing < fresh,
+            "sizing did not contract on staleness: {ageing} vs fresh {fresh}"
         );
     }
 

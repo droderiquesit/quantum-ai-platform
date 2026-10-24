@@ -559,12 +559,14 @@
   {
     "id": "R12-WORLD-9024",
     "status": "PARTIAL",
-    "current": "Forecasts carry expires_at, set from LatticeHorizon::refresh (lattice.rs:128-138). lattice::staleness_multiplier (lattice.rs:538) shrinks with age and refuses at expiry.",
+    "current": "LatticeStage keeps each forecast slot's issue instant beside its expiry. tactical_staleness gives, over the seconds-to-minutes and hours-to-days slots, the minimum share of life left, or a refusal when one has expired. DECIDE's sizeable_theses vetoes a thesis whose tactical forecast expired. construct multiplies the share left into the instrument's cap (ADR 0125 decision 4), compounding with the ADR 0063/0066/0125 caps and never above one. Both run on run_cycle's default DECIDE path.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/lattice.rs:538",
-      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_stale_forecast_is_refused_and_its_staleness_multiplier_shrinks_with_age"
+      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_stale_forecast_is_refused_and_its_staleness_multiplier_shrinks_with_age",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeStage::tactical_staleness",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::an_expired_tactical_forecast_vetoes_its_thesis_and_an_ageing_one_narrows_the_bound"
     ],
-    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: a staleness cap from lattice::staleness_multiplier at the sizing seam, with a test that an expired forecast vetoes the thesis.",
+    "gap": "2026-10-24 (L4): code landed. Round-one skeptic REFUTED on two points. (1) The narrowing assertion was not strict, and is now fixed: the ageing run leaves 0.01 of life and asserts the size falls, and making the cap multiply a no-op while keeping its note fails with 'sizing did not contract on staleness: 15 vs fresh 15'. (2) Removing the `expires <= now` check does not size a stale thesis, because the no-life-left guard still vetoes it. The test then fails only because the expiry-specific refusal it pins is missing. This is defence in depth, kept deliberately. Whether it meets 'removing the expiry check fails the test' needs a second skeptic round, not yet run.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -572,10 +574,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib an_expired_tactical_forecast_vetoes_its_thesis_and_an_ageing_one_narrows_the_bound",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The expiry half is real; the sizing half is explicitly unwired. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Capital sizing does not contract on forecast staleness. staleness_multiplier has no caller outside its own module and test (grep), and lattice.rs:32-35 and lattice_stage.rs:32-36 both say no thesis, size or order reads a lattice forecast. No tactical forecast service exists. The 'sizing shrinks; removing the expiry check fails' half of the check has no test."
+    "notes": "Round-2 independent audit, 2026-10-11: The expiry half is real; the sizing half is explicitly unwired. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Capital sizing does not contract on forecast staleness. staleness_multiplier has no caller outside its own module and test (grep), and lattice.rs:32-35 and lattice_stage.rs:32-36 both say no thesis, size or order reads a lattice forecast. No tactical forecast service exists. The 'sizing shrinks; removing the expiry check fails' half of the check has no test. 2026-10-24 (L4): mutations killed: drop the veto push in sizeable_theses (AAPL sized); return no Err for an expired slot (expiry refusal missing); no-op the cap multiply (strict size assertion). Restored; sha256sum checked. qip-kernel --lib: 430 passed, 0 failed."
   },
   {
     "id": "R12-WORLD-9025",
@@ -624,7 +626,7 @@
   },
   {
     "id": "R12-WORLD-9027",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "The lattice Calibrator freezes the ensemble weights at the last safe set while unavailable. The kernel marks it unavailable when the lattice review fails to journal (Platform::understand_now). Since 2026-10-24 a refreshed set becomes the safe set only once its review is journalled (Calibrator::confirm_safe, called through LatticeStage::confirm_calibration after a kept review). Before that, last_safe advanced at refresh time, so a freeze returned to the set built from the scores the log had refused.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/lattice.rs::Calibrator::refresh_weights",
@@ -646,7 +648,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib lattice_journal_tests && cargo +1.94.1 test -p qip-world-model --test forecast_lattice",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4 2026-10-24: regraded, the freeze rule is proven, but the only production path that makes the calibrator unavailable is platform.rs:12848 (from the lattice review failing to journal) and no test drives that: the kernel freeze test calls set_calibrator_available(false) by hand, so the line can be made always-true and every test in qip-kernel still passes 2026-10-24 (L4): round one (commit 09ccd529) added a kernel test driving the real cause: a read-only EventLog makes journal_record refuse the review. An independent skeptic REFUTED it: refresh_weights(true) set last_safe before the journal answered, so the frozen set was the refused one. The empty weights in the kernel test hid that. Fixed in the next commit. Kernel test the_weights_freeze_at_the_last_set_whose_review_the_log_kept seeds non-empty, differing sets. Mutations, each failing at the equality 'the weights froze on a set whose review the log refused': drop confirm_calibration; make refresh_weights set last_safe again. The second also fails the world-model test at forecast_lattice.rs:503. understand_now passing `true` fails both kernel tests. Restored; sha256sum checked."
+    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4 2026-10-24: regraded, the freeze rule is proven, but the only production path that makes the calibrator unavailable is platform.rs:12848 (from the lattice review failing to journal) and no test drives that: the kernel freeze test calls set_calibrator_available(false) by hand, so the line can be made always-true and every test in qip-kernel still passes 2026-10-24 (L4): round one (commit 09ccd529) added a kernel test driving the real cause: a read-only EventLog makes journal_record refuse the review. An independent skeptic REFUTED it: refresh_weights(true) set last_safe before the journal answered, so the frozen set was the refused one. The empty weights in the kernel test hid that. Fixed in the next commit. Kernel test the_weights_freeze_at_the_last_set_whose_review_the_log_kept seeds non-empty, differing sets. Mutations, each failing at the equality 'the weights froze on a set whose review the log refused': drop confirm_calibration; make refresh_weights set last_safe again. The second also fails the world-model test at forecast_lattice.rs:503. understand_now passing `true` fails both kernel tests. Restored; sha256sum checked. 2026-10-24 (L4), round 2, commit 1bdfdbb8: an independent code-reviewer skeptic returned HOLDS. last_safe is set only by confirm_safe, the one caller is gated on journal_record succeeding, understand_now has no early return before it, and run_cycle reaches it unconditionally. The kernel test uses two non-empty, differing sets. Caveats it recorded, outside the requirement text: the pass whose journal fails has already used its unconfirmed set (the freeze applies from the next pass), and scores whose review was refused stay in model_errors for later refreshes. Promoted to COMPLETE."
   },
   {
     "id": "R12-ARCH-9028",
