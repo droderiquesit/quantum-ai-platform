@@ -56,8 +56,16 @@ archive included.
   up) must run a build that knows the bit before any broker stamps it. No
   environment is deployed today, so nothing has to be sequenced yet.
 - The flags byte has eight bits. Four are spent by ADR 0129's fields;
-  anything beyond eight more header fields would need the version bump this
+  anything beyond four more header fields would need the version bump this
   ADR defers.
+
+## What it costs
+
+- One flag bit per stamped field, out of eight, and four bytes of header per
+  stamped batch for the partition.
+- The ordering constraint above on every future rollout: readers before
+  brokers.
+- Nothing billed and no dependency.
 
 ## What would make this wrong
 

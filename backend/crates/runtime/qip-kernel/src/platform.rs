@@ -772,7 +772,7 @@ pub struct Platform {
     /// no routing at all — deterministic by the absence of a model in the
     /// call, not by anything that could be shown. Always the deterministic
     /// arm, obtained through [`Router::determine`]; see
-    /// [`Self::observe_book_limits`].
+    /// [`Self::observe_book_under_routing`].
     monitor_routing: Option<DeterministicRouting>,
     /// What the most recent cycle's REASON stage was routed to, and whether
     /// the panel was convened as a result.
@@ -13937,7 +13937,7 @@ impl Platform {
     /// the limits are evaluated, and it is kept as the record of how this
     /// pass was routed. The monitor's verdict engages the kill switch and
     /// gates sign-off and release, so those paths are covered by this one.
-    fn observe_book_limits(
+    fn observe_book_under_routing(
         &mut self,
         routing: DeterministicRouting,
         state: &RiskState,
@@ -17702,7 +17702,7 @@ impl Platform {
             .cost_router
             .determine("risk monitor limits for the book", self.book_conditions())
         {
-            Ok(routing) => self.observe_book_limits(routing, &risk_state, now),
+            Ok(routing) => self.observe_book_under_routing(routing, &risk_state, now),
             Err(error) => {
                 self.monitor_routing = None;
                 MonitorAction::HaltGlobally {
@@ -25080,7 +25080,7 @@ mod decide_tests {
     /// under a deterministic routing. The pre-trade check was; the monitor's
     /// pass — which engages the kill switch and gates sign-off and release —
     /// was evaluated with no routing at all. Now ACT obtains one from
-    /// `Router::determine` and hands it to `observe_book_limits`, the only
+    /// `Router::determine` and hands it to `observe_book_under_routing`, the only
     /// production caller of `RiskMonitor::observe`.
     ///
     /// Mutation: call the monitor directly in `stage_act_orders`, bypassing
@@ -25110,41 +25110,36 @@ mod decide_tests {
         );
 
         // Structurally, not only on this cycle: the production half of this
-        // file calls the monitor's evaluation at exactly one place, inside
-        // the function that demands the routing. The pattern is assembled so
-        // this test's own text is not a match.
+        // file evaluates the monitor at exactly one place, inside the function
+        // that demands the routing. The production half ends at the first
+        // test *module*, not the first `#[cfg(test)]` attribute (production
+        // items carry those too). A call is any `.observe(` whose receiver
+        // ends in `monitor`, whatever the argument names. The needles are
+        // assembled so this test's own text is not a match.
         let source = include_str!("platform.rs");
-        let production = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("the file has a production half");
-        let needle = [".", "observe(state, \"platform\""].concat();
-        let calls: Vec<usize> = production
-            .match_indices(&needle)
+        let boundary = ["\n#[cfg(test)]", "\nmod "].concat();
+        let production = &source[..source.find(&boundary).expect("the file has a test module")];
+        let call = [".", "observe("].concat();
+        let monitor_calls: Vec<usize> = production
+            .match_indices(&call)
             .map(|(at, _)| at)
+            .filter(|&at| production[..at].trim_end().ends_with("monitor"))
             .collect();
-        let monitor_calls = production
-            .match_indices(&[".monitor", "\n"].concat())
-            .count();
         assert_eq!(
-            calls.len(),
+            monitor_calls.len(),
             1,
             "the monitor is observed at {} production sites, not one",
-            calls.len()
+            monitor_calls.len()
         );
         let wrapper = production
-            .find("fn observe_book_limits(")
+            .find("fn observe_book_under_routing(")
             .expect("premise: the routed wrapper exists");
         let next_fn = production[wrapper + 1..]
             .find("\n    fn ")
             .map_or(production.len(), |offset| wrapper + 1 + offset);
         assert!(
-            (wrapper..next_fn).contains(&calls[0]),
+            (wrapper..next_fn).contains(&monitor_calls[0]),
             "the monitor's one evaluation sits outside the routed wrapper"
-        );
-        assert!(
-            monitor_calls > 0,
-            "premise: the scan reads the monitor's calls"
         );
     }
 
