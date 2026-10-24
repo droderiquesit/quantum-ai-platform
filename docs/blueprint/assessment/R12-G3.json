@@ -277,7 +277,7 @@
       "backend/crates/tests/qip-acceptance/tests/egress.rs (egress suite)",
       "infrastructure/terraform/modules/egress-proxy/tests/venue-refusal.tftest.hcl"
     ],
-    "gap": "No deployed proxy; agent workers (scripts/fleet) run outside it.",
+    "gap": "No deployed proxy: nothing is applied with real egress, so the Envoy sidecar is unproven in a deployment (a run URL and terminal status are the evidence), and the agent workers under scripts/fleet, a protected path, run outside it. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -288,7 +288,7 @@
     "verification": "cargo test -p qip-acceptance --test egress",
     "work_item": "",
     "size": "M",
-    "notes": "Equivalent control by a different product; acceptable under ADR 0024 if the proxy is proven in a deployment."
+    "notes": "Equivalent control by a different product; acceptable under ADR 0024 if the proxy is proven in a deployment. Lane N1-KERNEL-ACCEPT 2026-10-24: classed DEPLOY_DEPENDENT; no code changed."
   },
   {
     "id": "R12-GCP-10014",
@@ -1991,7 +1991,7 @@
       "backend/crates/services/qip-world-model/src/now.rs::NowBrain",
       "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::run"
     ],
-    "gap": "Inputs come from in-process bar history and the world model, not scout/evidence workers over typed Fabric knowledge events.",
+    "gap": "Inputs still come from in-process bar history and the world model: no scout or evidence worker produces typed Fabric knowledge events in-repo, and none is deployed. Re-read 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2002,7 +2002,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE; the producers are outside the cycle. No code changed."
   },
   {
     "id": "R12-WORLD-10091",
@@ -2737,7 +2737,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:19703 the_expected_shortfall_limit_can_actually_fire",
       "backend/crates/libs/qip-contracts/src/degradation.rs:776 sizing_multiplier"
     ],
-    "gap": "No capital society; distributions not via ForecastState.",
+    "gap": "No capital society: nothing arbitrates among capital policies as members, and the survival and confidence governors read disagreement without carrying distributions via ForecastState. The ForecastState consumer was declined by decision (ADR 0159 F, R12-CAPITAL-10097), which this row depends on. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2750,7 +2750,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE; a society stage is a new member set and arbitration rule, not a call-site change. No code changed."
   },
   {
     "id": "R12-MODEL-10123",
@@ -3336,7 +3336,7 @@
       "infrastructure/environments/stage/terraform.tfvars:49-51",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5009"
     ],
-    "gap": "Canary packages and game-day use.",
+    "gap": "Canary packages and game-day use need a stage workload and control plane: gitops is off in stage and its tfvars (infrastructure/environments/stage/terraform.tfvars) are a protected path. R12-GCP-10143 is COMPLETE, so only the environment edit and a deployment remain. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3349,7 +3349,7 @@
     "verification": "plan stage",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane N1-KERNEL-ACCEPT 2026-10-24: classed DEPLOY_DEPENDENT; nothing in-repo left to close."
   },
   {
     "id": "R12-GOV-10149",
@@ -3499,7 +3499,7 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:595-680"
     ],
-    "gap": "Drill + rollback.",
+    "gap": "Rollback exists in-process (qip-kernel/src/model_serving.rs::rollback_model, which ADR 0148 d8's re-verification demotes through). The staged drill ('game-day: promote degraded candidate in stage') needs a deployed stage and depends on R12-RES-10119 (SLO-driven rollback automation, PARTIAL). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3512,7 +3512,7 @@
     "verification": "game-day",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane N1-KERNEL-ACCEPT 2026-10-24: classed DEPLOY_DEPENDENT; no code changed."
   },
   {
     "id": "R12-FABRIC-10156",

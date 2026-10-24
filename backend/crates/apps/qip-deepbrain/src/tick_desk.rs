@@ -324,6 +324,14 @@ pub struct TickRound {
     pub refused_regions: BTreeMap<String, String>,
     pub branches_grown: usize,
     pub branches_live: usize,
+    /// Live branches written to the outputs store as §24.9 `WorldBranch`
+    /// contracts (ADR 0151 decision 5: the tick desk is where trees are grown,
+    /// so it is where they are journaled), and the live ones the contract
+    /// refused to state: the baseline, which is its parent's own future, and
+    /// any whose propagation no basis-point strength can state. The two add up
+    /// to `branches_live`, so a branch is never silently absent.
+    pub world_branches: usize,
+    pub world_branches_refused: usize,
     pub tree_log_score: Option<f64>,
     pub compression: Option<CompressionReport>,
 }
@@ -872,6 +880,20 @@ impl TickDesk {
             )?;
             round.branches_grown = tree.branches.len();
             round.branches_live = tree.live().count();
+            let mut contracts = Vec::new();
+            for branch in tree.live() {
+                match branch.to_world_branch() {
+                    Ok(contract) => contracts.push(contract),
+                    Err(_) => round.world_branches_refused += 1,
+                }
+            }
+            round.world_branches = contracts.len();
+            if !contracts.is_empty() {
+                self.outputs.put(
+                    &format!("{OUTPUT_NAMESPACE}/world-branches/{}.json", round.manifest),
+                    serde_json::to_vec(&contracts)?,
+                )?;
+            }
             self.tree = Some(tree);
         }
         Ok(round)

@@ -1853,7 +1853,7 @@
       "qip-execution-engine/src/market_creation.rs::tests::an_approved_creation_lists_seeds_and_publishes_its_rule_at_the_simulated_venue",
       "qip-kernel/tests/breadth.rs::a_planned_market_is_created_listed_and_seeded_on_the_simulated_venue_and_journaled"
     ],
-    "gap": "Inventory management after seeding is absent and has no flow to drive it: SimulatedBroker::fill_price only sweeps the listed book read-only (broker.rs:456), so a fill never consumes resting depth, and nothing routes a fill on a created product back to MarketFactory. The factory side (a settle_fill debiting CreatedMarket.inventory and re-listing the consumed ladder) is the easy half; the broker consuming the book and the kernel reporting the fill are the missing path. Live creation stays BLOCKED (ADR 0003/0021).",
+    "gap": "Inventory management after seeding is absent. Three slices, none built: (1) MarketFactory::settle_fill debiting CreatedMarket.inventory and re-listing the consumed ladder; (2) SimulatedBroker::fill_price consuming resting depth instead of only sweeping the listed book (broker.rs); (3) the kernel routing a fill on a created product back to MarketFactory. Live creation stays BLOCKED (ADR 0003/0021). Re-read 2026-10-24.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1866,7 +1866,7 @@
     "verification": "acceptance test listing + seeding at SimulatedExchange",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: the kernel test's mutation claim (tests/breadth.rs) now reads the venue's book through Platform::listed_book, so that part of the 2026-10-11 audit finding is closed; inventory management remains. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the kernel test's mutation claim (tests/breadth.rs) now reads the venue's book through Platform::listed_book, so that part of the 2026-10-11 audit finding is closed; inventory management remains. Kept PARTIAL. Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE; two crates and a settle_fill exceed one row."
   },
   {
     "id": "R12-EXEC-5081",

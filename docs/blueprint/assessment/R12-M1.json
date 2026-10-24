@@ -314,7 +314,7 @@
       "backend/crates/services/qip-expansion/src/gap.rs:17 GapTrigger",
       "backend/crates/apps/qip-deepbrain/src/signal_mapper.rs:24 imports qip_expansion; module never called"
     ],
-    "gap": "Source/ontology/tool/brain promotion not benchmark-gated.",
+    "gap": "Only model and strategy promotion is benchmark-gated (central/models.rs::require_calibrated_baseline). Source, ontology, tool and brain promotion each need their own gate and none exists; qip-deepbrain signal_mapper.rs imports qip_expansion and is never called. Re-read 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -325,7 +325,7 @@
     "verification": "cargo test -p qip-kernel --test models; cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE, one slice per promotion kind; no code changed."
   },
   {
     "id": "R12-ASSET-1015",
