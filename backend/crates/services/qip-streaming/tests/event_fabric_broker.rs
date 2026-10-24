@@ -870,3 +870,45 @@ fn a_batch_retried_after_a_broker_restart_appears_once_and_a_stale_epoch_is_stil
     assert_eq!(broker.metadata(stream, partition)?.high_watermark(), 2);
     Ok(())
 }
+
+/// R12-FABRIC-8084 on the broker's own path: every batch the broker appends
+/// reads back stamped with the partition it was appended to, in each of a
+/// stream's partitions, and across a restart (the stamp is in the stored
+/// bytes, not in the broker's memory).
+///
+/// Mutation: drop the `partition` argument's effect in `stamp_broker` —
+/// every fetched batch reads back with no partition.
+#[test]
+fn every_appended_batch_reads_back_stamped_with_its_partition() -> Result<()> {
+    let dir = temp_dir("partition-stamp");
+    let stream = "orders";
+    {
+        let broker = Broker::open(&dir, clock())?;
+        broker.declare_stream(stream, 3, policy(), config(10_000_000))?;
+        broker.register_schema(stream, 1, 1, sample_shape())?;
+        for partition in 0..3u32 {
+            let batch = drain_batch(
+                &format!("producer-{partition}"),
+                1,
+                0,
+                u64::from(partition),
+                b"stamped",
+            );
+            broker
+                .produce_to(stream, partition, batch)?
+                .map_err(|refused| qip_core::Error::invalid(format!("{:?}", refused.refusal)))?;
+        }
+    }
+    let broker = Broker::open(&dir, clock())?;
+    broker.declare_stream(stream, 3, policy(), config(10_000_000))?;
+    for partition in 0..3u32 {
+        let response = broker.fetch(stream, partition, 0, 65_536)?;
+        let batch = first_batch(response.batches());
+        assert_eq!(
+            batch.partition,
+            Some(partition),
+            "the batch in partition {partition} does not carry its partition"
+        );
+    }
+    Ok(())
+}

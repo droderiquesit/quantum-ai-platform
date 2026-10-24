@@ -169,6 +169,7 @@ fn a_batch_round_trips_byte_for_byte_with_every_contract_048_header_field() {
     stamp_drain(&mut batch, "producer-7", 4, 900);
     stamp_broker(
         &mut batch,
+        0,
         555,
         2,
         LogicalTimestamp {
@@ -401,6 +402,7 @@ fn a_blake3_content_hash_or_a_non_json_encoding_is_refused_naming_c2() {
     // has no Blake3 to verify one against.
     stamp_broker(
         &mut batch,
+        0,
         1,
         1,
         LogicalTimestamp::default(),
@@ -552,6 +554,7 @@ fn a_batch_stamped_by_the_drain_and_then_the_broker_changes_only_the_fields_each
     let mut broker_batch = drain_batch.clone();
     stamp_broker(
         &mut broker_batch,
+        0,
         1234,
         7,
         LogicalTimestamp {
@@ -581,4 +584,61 @@ fn a_batch_stamped_by_the_drain_and_then_the_broker_changes_only_the_fields_each
     assert_eq!(broker_batch.producer_id, drain_batch.producer_id);
     assert_eq!(broker_batch.producer_epoch, drain_batch.producer_epoch);
     assert_eq!(broker_batch.base_sequence, drain_batch.base_sequence);
+}
+
+/// R12-FABRIC-8084 (ADR 0129): the broker stamps the partition into the batch
+/// header, inside the batch CRC. It round-trips; a batch no broker stamped —
+/// and every batch written before the field existed — decodes with none; and
+/// a single flipped bit in the partition is refused as corruption rather than
+/// read as a different partition.
+///
+/// The partition's bytes are found by diffing two encodings that differ only
+/// in the partition, so the flip lands in that field and nowhere else.
+///
+/// Mutation: omit the partition from `Batch::encode` (keep the flag) — the
+/// round trip reads garbage and the decode is refused; omit it from the
+/// header the CRC covers and the flip decodes as another partition.
+#[test]
+fn a_broker_stamped_partition_round_trips_and_a_flipped_partition_bit_is_corruption() {
+    let unstamped = tagged_batch(7, "evt-partition");
+    let encoded = unstamped.encode().expect("an unstamped batch encodes");
+    match Batch::decode(&encoded).expect("an unstamped batch decodes") {
+        DecodeOutcome::Complete(batch) => assert_eq!(batch.partition, None),
+        DecodeOutcome::Torn => panic!("a whole batch read as torn"),
+    }
+
+    let stamp = |partition: u32| {
+        let mut batch = tagged_batch(7, "evt-partition");
+        stamp_broker(
+            &mut batch,
+            partition,
+            41,
+            3,
+            LogicalTimestamp::default(),
+            None,
+        );
+        batch.encode().expect("a stamped batch encodes")
+    };
+    let seven = stamp(7);
+    match Batch::decode(&seven).expect("a stamped batch decodes") {
+        DecodeOutcome::Complete(batch) => assert_eq!(batch.partition, Some(7)),
+        DecodeOutcome::Torn => panic!("a whole batch read as torn"),
+    }
+
+    let other = stamp(7 ^ 0x0100);
+    assert_eq!(seven.len(), other.len(), "premise: same layout");
+    let differing: Vec<usize> = (0..seven.len())
+        .filter(|&at| seven[at] != other[at])
+        .collect();
+    let field = *differing
+        .first()
+        .expect("premise: the partition reaches the encoded bytes");
+    let mut flipped = seven.clone();
+    flipped[field] ^= 0x01;
+    let refused = Batch::decode(&flipped)
+        .expect_err("a batch with a flipped partition bit decoded as another partition");
+    assert!(
+        refused.to_string().contains("batch CRC mismatch"),
+        "the flip was refused for the wrong reason: {refused}"
+    );
 }

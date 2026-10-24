@@ -134,10 +134,20 @@ const PREFIX_FIELDS_LEN: usize = 4 + 2 + 4;
 /// length, closes the same gap for magic and version too.
 const PREFIX_LEN: usize = PREFIX_FIELDS_LEN + 4;
 
-/// No flag bit is defined yet. Any other value is refused on decode rather
-/// than silently accepted and ignored, so a future flag a reader does not
-/// understand cannot be mistaken for one it does.
+/// No flag bit set. Any bit outside [`FLAGS_KNOWN`] is refused on decode
+/// rather than silently accepted and ignored, so a future flag a reader does
+/// not understand cannot be mistaken for one it does.
 const FLAGS_NONE: u8 = 0;
+
+/// The header carries the broker-stamped partition, as a little-endian `u32`
+/// after the previous-batch hash (ADR 0129, R12-FABRIC-8084). A flag rather
+/// than a format-version bump, so every batch written before the field
+/// existed — flags zero — still decodes, with no partition, instead of being
+/// refused by a reader that knows only version 1.
+const FLAG_PARTITION: u8 = 0b0000_0001;
+
+/// Every flag bit this build understands.
+const FLAGS_KNOWN: u8 = FLAG_PARTITION;
 
 /// The wire tag for [`ContentHash::Sha256`] in the previous-batch-hash field.
 const HASH_TAG_NONE: u8 = 0;
@@ -349,6 +359,13 @@ pub struct Batch {
     pub leader_epoch: u64,
     pub logical_timestamp: LogicalTimestamp,
     pub previous_batch_hash: Option<ContentHash>,
+    /// The partition the broker appended this batch to (ADR 0129). Inside
+    /// the batch CRC and so inside the next batch's previous-batch hash: a
+    /// batch copied into another partition's log, or a flipped bit here, is
+    /// corruption rather than a record that silently changes its key's
+    /// order. `None` only for a batch no broker has stamped yet, or one
+    /// written before the field existed.
+    pub partition: Option<u32>,
 }
 
 impl Batch {
@@ -381,6 +398,7 @@ impl Batch {
             leader_epoch: 0,
             logical_timestamp: LogicalTimestamp::default(),
             previous_batch_hash: None,
+            partition: None,
         })
     }
 
@@ -393,7 +411,11 @@ impl Batch {
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut header = Vec::new();
         header.push(self.message_type.tag());
-        header.push(FLAGS_NONE);
+        header.push(if self.partition.is_some() {
+            FLAG_PARTITION
+        } else {
+            FLAGS_NONE
+        });
         header.push(self.encoding.tag());
         write_u32(&mut header, self.schema_id);
         write_u32(&mut header, self.schema_version);
@@ -405,6 +427,9 @@ impl Batch {
         write_i64(&mut header, self.logical_timestamp.physical_ns);
         write_u32(&mut header, self.logical_timestamp.logical);
         encode_previous_hash(&mut header, &self.previous_batch_hash)?;
+        if let Some(partition) = self.partition {
+            write_u32(&mut header, partition);
+        }
 
         let record_count = u32::try_from(self.records.len()).map_err(|_| {
             Error::invalid(format!(
@@ -564,7 +589,7 @@ fn decode_frame(bytes: &[u8]) -> Result<Frame> {
     let message_type = MessageType::from_tag(cursor.read_u8()?, cursor.absolute(message_type_pos))?;
     let flags_pos = cursor.pos;
     let flags = cursor.read_u8()?;
-    if flags != FLAGS_NONE {
+    if flags & !FLAGS_KNOWN != FLAGS_NONE {
         return Err(Error::schema(format!(
             "corrupt batch at byte offset {}: flags byte {flags:#04x} sets a bit \
              this build does not understand; refusing rather than guessing what it means",
@@ -583,6 +608,11 @@ fn decode_frame(bytes: &[u8]) -> Result<Frame> {
     let physical_ns = cursor.read_i64()?;
     let logical = cursor.read_u32()?;
     let previous_batch_hash = decode_previous_hash(&mut cursor)?;
+    let partition = if flags & FLAG_PARTITION != FLAGS_NONE {
+        Some(cursor.read_u32()?)
+    } else {
+        None
+    };
     let record_count = cursor.read_u32()?;
     let header_end = cursor.pos;
     let header_bytes = cursor.slice(header_start, header_end);
@@ -627,6 +657,7 @@ fn decode_frame(bytes: &[u8]) -> Result<Frame> {
                 logical,
             },
             previous_batch_hash,
+            partition,
         },
         end,
     ))
@@ -671,17 +702,19 @@ pub fn stamp_drain(batch: &mut Batch, producer_id: &str, producer_epoch: u64, ba
     batch.base_sequence = base_sequence;
 }
 
-/// The broker's stamp: the partition-log position, the accepting broker's
-/// epoch, the logical timestamp assigned on admission, and the hash chaining
-/// this batch to the previous one in the same partition. Touches no other
-/// field.
+/// The broker's stamp: the partition it appends to, the partition-log
+/// position, the accepting broker's epoch, the logical timestamp assigned on
+/// admission, and the hash chaining this batch to the previous one in the
+/// same partition. Touches no other field.
 pub fn stamp_broker(
     batch: &mut Batch,
+    partition: u32,
     base_offset: u64,
     leader_epoch: u64,
     logical_timestamp: LogicalTimestamp,
     previous_batch_hash: Option<ContentHash>,
 ) {
+    batch.partition = Some(partition);
     batch.base_offset = base_offset;
     batch.leader_epoch = leader_epoch;
     batch.logical_timestamp = logical_timestamp;

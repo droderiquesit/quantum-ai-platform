@@ -73,6 +73,7 @@ fn over_the_wire(records: Vec<Record>) -> Batch {
     stamp_drain(&mut batch, "cell-a", 5, 40);
     stamp_broker(
         &mut batch,
+        0,
         17,
         9,
         LogicalTimestamp {

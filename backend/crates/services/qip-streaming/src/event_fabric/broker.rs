@@ -938,6 +938,7 @@ impl Broker {
                     let previous_hash = cursor.last_batch_hash.clone();
                     stamp_broker(
                         &mut batch,
+                        partition,
                         predicted_offset,
                         self.leader_epoch,
                         logical_timestamp,
@@ -1105,6 +1106,7 @@ impl Broker {
         // epochs are unrelated numbers.
         stamp_broker(
             &mut batch,
+            partition,
             predicted_offset,
             lease.epoch,
             logical_timestamp,
