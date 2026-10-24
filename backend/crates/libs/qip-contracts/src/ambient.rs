@@ -819,6 +819,25 @@ pub struct InfoRequest {
     status: AcquisitionStatus,
     /// Cumulative cost spent on acquisitions against this request so far, in basis points.
     cumulative_cost_bp: u32,
+    /// The uncertainty reduction on offer when the first acquisition was
+    /// recorded, before any purchase shrank it (ADR 0158 decision 11). The
+    /// ceiling realised gain is read against. Absent until then, and on a
+    /// record written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch_reduction_bp: Option<u32>,
+    /// What the acquisitions have measurably bought so far: the sum of each
+    /// window's fall in the uncertainty reading, in basis points of that
+    /// window's opening reading, capped at the scale.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    realised_gain_bp: u32,
+    /// Halted because a purchase was measured to have bought nothing, as
+    /// distinct from one that ran out of value or time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    halted_for_no_gain: bool,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl InfoRequest {
@@ -850,6 +869,9 @@ impl InfoRequest {
             requested_at,
             status: AcquisitionStatus::Requested,
             cumulative_cost_bp: 0,
+            launch_reduction_bp: None,
+            realised_gain_bp: 0,
+            halted_for_no_gain: false,
         })
     }
 
@@ -909,12 +931,68 @@ impl InfoRequest {
         // back here — and it is the conservative direction: it can only make
         // a request halt sooner.
         let kept = u64::from(MAX_SEVERITY_BP.saturating_sub(acquisition_cost_bp));
+        self.launch_reduction_bp
+            .get_or_insert(self.criteria.uncertainty_reduction_bp);
         self.criteria.uncertainty_reduction_bp = u32::try_from(
             u64::from(self.criteria.uncertainty_reduction_bp) * kept / u64::from(MAX_SEVERITY_BP),
         )
         .unwrap_or(0);
         self.status = AcquisitionStatus::InProgress;
         Ok(())
+    }
+
+    /// Feeds back what the last acquisition measurably bought: `window_bp` is
+    /// the fall of the uncertainty reading over the window, in basis points of
+    /// the reading the window opened on (ADR 0158 decision 11). A reading that
+    /// rose is a fall of zero, and the caller passes zero for it.
+    ///
+    /// Realised gain can only shrink what is left: the remaining reduction
+    /// becomes `min(what the cost proxy left, launch reduction - realised so
+    /// far)`. The proxy stays as a floor on shrinkage because feeding gain
+    /// back without it would let a purchase that bought nothing make buying
+    /// more look better. A window that bought nothing halts the request as
+    /// `no_gain`, so it is not bought again. Refuses a request with no
+    /// acquisition recorded, one no longer in progress, and a figure past
+    /// the scale. A request with no measurement is simply never passed here,
+    /// and completes.
+    pub fn record_realised_gain(&mut self, window_bp: u32) -> Result<()> {
+        if window_bp > MAX_SEVERITY_BP {
+            return Err(Error::invalid(
+                "info request: realised gain must be 0-10000 basis points; do not exceed MAX_SEVERITY_BP",
+            ));
+        }
+        if self.status != AcquisitionStatus::InProgress {
+            return Err(Error::denied(
+                "info request: realised gain is measured on a request in progress; check status",
+            ));
+        }
+        let Some(launch) = self.launch_reduction_bp else {
+            return Err(Error::denied(
+                "info request: no acquisition has been recorded, so there is nothing to measure",
+            ));
+        };
+        self.realised_gain_bp = self
+            .realised_gain_bp
+            .saturating_add(window_bp)
+            .min(MAX_SEVERITY_BP);
+        self.criteria.uncertainty_reduction_bp = self
+            .criteria
+            .uncertainty_reduction_bp
+            .min(launch.saturating_sub(self.realised_gain_bp));
+        if window_bp == 0 {
+            self.status = AcquisitionStatus::Halted;
+            self.halted_for_no_gain = true;
+        }
+        Ok(())
+    }
+
+    pub fn realised_gain_bp(&self) -> u32 {
+        self.realised_gain_bp
+    }
+
+    /// Whether the request was halted because a purchase bought nothing.
+    pub fn halted_for_no_gain(&self) -> bool {
+        self.halted_for_no_gain
     }
 
     /// Completes the request. Refuses if the request was not in progress.

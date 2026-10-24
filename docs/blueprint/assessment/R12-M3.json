@@ -2453,14 +2453,15 @@
   },
   {
     "id": "R12-AMBIENT-3107",
-    "status": "PARTIAL",
-    "current": "InfoRequest::record_acquisition shrinks the criteria remaining uncertainty reduction by the acquisition cost (basis points of the decision value, floored), so should_halt compares the marginal net value left after earlier purchases instead of the value fixed at creation. qip-deepbrain research.rs launches each request once and reports its launch rank read before the purchase.",
+    "status": "COMPLETE",
+    "current": "InfoRequest::record_acquisition shrinks the criteria's remaining uncertainty reduction by the acquisition cost proxy and records the reduction on offer at the first purchase; InfoRequest::record_realised_gain feeds back the window's measured fall in the uncertainty reading (basis points of the reading the window opened on), shrinking what is left to min(proxy remaining, launch reduction - realised) and halting a request whose purchase measurably bought nothing as no_gain. In qip-deepbrain, measure_last_round passes each granted question's measured reduction (Uncertainty::measured_reduction, None where a side could not be formed) to ResearchLoop::feed_back_realised_gain, which re-acquires a still-viable request once per sweep against what the sweep's acquisition budget had left after launch_ranked and scouts it again; a request launched or re-acquired in a sweep waits for the next sweep's reading, and one with no measurement completes as before.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs InfoRequest::record_acquisition / should_halt",
-      "backend/crates/apps/qip-deepbrain/src/research.rs launch_ranked",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs a_request_viable_at_creation_halts_once_its_acquisitions_have_consumed_its_value"
+      "backend/crates/libs/qip-contracts/src/ambient.rs InfoRequest::record_realised_gain, record_acquisition, halted_for_no_gain",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::feed_back_realised_gain, measure_last_round, Uncertainty::measured_reduction",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs::realised_gain_can_only_shrink_the_value_left_below_the_cost_proxy",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::tests::a_purchase_that_measurably_bought_nothing_is_halted_and_not_repeated"
     ],
-    "gap": "The shrinkage is a proxy by cost, and production never makes a second acquisition against a request: deepbrain launch_ranked records exactly one acquisition and the next sweep completes it, so the marginal halt is proven on the contract but gates nothing on a running path. Closing needs repeated scout rounds against one request and the realised information gain fed back in place of the cost proxy.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2470,10 +2471,10 @@
       "R12-AMBIENT-3104"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient a_request_viable",
+    "verification": "cargo test -p qip-contracts --test ambient realised_gain; cargo test -p qip-deepbrain --lib a_purchase_that_measurably",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 L12: mutation that fired: removing the uncertainty_reduction_bp shrinkage left it at 9000 where the test expects 8100. Kept PARTIAL: contract half only."
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS per ADR 0158 d11. Mutations that fired: replacing the min() with an assignment of launch - realised raised the remaining reduction to 7500 over the proxy's 7200; disabling the no_gain halt left the request InProgress; skipping record_realised_gain left the zero-gain request unhalted; blocking the re-acquisition left it Complete after the first window; completing launched requests in their own sweep left it Complete. Limit stated plainly: the deep-brain test injects the request on the fill-bias question the market grants, because that gap states no economic value of its own and so raises none; every step after the injection (measure_last_round onward) is the production path. A request is measurable only when its question was granted compute in the launch sweep; others complete."
   },
   {
     "id": "R12-REASON-3108",
