@@ -1,0 +1,67 @@
+[
+  {
+    "id": "R12-WORLD-3082",
+    "class": "ALREADY_COMPLETE",
+    "reason": "Population::standard (qip-world-model lattice.rs) admits the four specialists; tests/lattice_specialists.rs and now_lattice.rs::the_cycle_issues_at_every_central_horizon_and_never_the_microsecond_row pass; left PARTIAL only for the unfed order-flow specialist (ADR 0151 d6, BILLED)"
+  },
+  {
+    "id": "R12-MODEL-10084",
+    "class": "PROTECTED_PATCH",
+    "reason": "grep -rn 'ModelPack' finds no publisher; needs a billed pack repository in modules/registry and a publish step under .github/** (protected); depends on R12-CICD-10046 (PARTIAL)"
+  },
+  {
+    "id": "R12-WORLD-3075",
+    "class": "EXTERNAL_BLOCKED",
+    "reason": "no producer of RelationshipKind::Supplies outside tests; ADR 0151 d5 says Supply needs data the repo does not hold (ADR 0157 licence record)"
+  },
+  {
+    "id": "R12-WORLD-1003",
+    "class": "ALREADY_COMPLETE",
+    "reason": "federation_stage.rs::narrow called from platform.rs::construct_from; Federation::branch called at federation_stage.rs:1396; test symbolic_federation.rs::a_material_federation_disagreement_narrows_the_instruments_bound_and_an_agreeing_one_does_not"
+  },
+  {
+    "id": "R12-TICK-2051",
+    "class": "CODE_CLOSABLE",
+    "reason": "ADR 0151 d9 doc-only: qip-market quote.rs::Tick; closed with a guard test"
+  },
+  {
+    "id": "R12-CAPITAL-9039",
+    "class": "ALREADY_COMPLETE",
+    "reason": "ADR 0148 d6 no-code restate; platform.rs::score_declined COUNTERFACTUALS_PER_CYCLE; learning.rs::declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle"
+  },
+  {
+    "id": "R12-TICK-3096",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "qip-deepbrain tick_desk.rs::TickDesk::tree exists; QIP_DEEPBRAIN_TICK_EVERY unset in every committed deployment"
+  },
+  {
+    "id": "R12-GOV-6125",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "qip-api auth.rs has only Presence::Unattested; check_authority has no caller outside its unit tests; verifier, challenge route and token are three slices in qip-api"
+  },
+  {
+    "id": "R12-RES-9173",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "infrastructure/terraform/modules/observability/main.tf outcome_backlog count gated on workload_metrics_exist=false; needs proof of ingestion"
+  },
+  {
+    "id": "R12-CONTRACT-7077",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "symbolic_stage.rs keeps its own SymbolicDerivation beside qip_contracts::symbolic::SymbolicDerivation; retiring one needs a lossless mapping and a journal/verify() repoint"
+  },
+  {
+    "id": "R12-CONTRACT-7072",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "MarketStatePack built nowhere outside qip-contracts; ADR 0151 d2 names the edge drain producer and fusion.rs consumer; slice 1 (refuse zero events) done here"
+  },
+  {
+    "id": "R12-TICK-2067",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "tick_desk.rs off by default (QIP_DEEPBRAIN_TICK_EVERY unset)"
+  },
+  {
+    "id": "R12-LEDGER-5011",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "ADR 0130: in_settlement account, store.rs Decision::Filled arm and a Decision::Settled producer in qip-edge-node gateway.rs; none present (grep -rn in_settlement backend finds nothing)"
+  }
+]
