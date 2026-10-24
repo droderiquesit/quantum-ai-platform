@@ -6303,6 +6303,78 @@ fn reflex_capacity_is_never_scaled_by_a_reactive_autoscaler() {
 
 // --- the registry -----------------------------------------------------------
 
+/// Every `google_artifact_registry_repository` block in the tree, as
+/// `(file, name, block)`, cut by brace depth from its `resource` line.
+fn artifact_repositories() -> Vec<(String, String, String)> {
+    let mut found = Vec::new();
+    for path in files_with_extension("infrastructure", "tf") {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let file = path
+            .strip_prefix(repository_root())
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let mut lines = text.lines();
+        while let Some(line) = lines.next() {
+            let Some(rest) =
+                line.strip_prefix("resource \"google_artifact_registry_repository\" \"")
+            else {
+                continue;
+            };
+            let name = rest.split('"').next().unwrap_or_default().to_string();
+            let mut block = vec![line];
+            let mut depth = line
+                .matches('{')
+                .count()
+                .saturating_sub(line.matches('}').count());
+            while depth > 0 {
+                let Some(next) = lines.next() else { break };
+                depth =
+                    (depth + next.matches('{').count()).saturating_sub(next.matches('}').count());
+                block.push(next);
+            }
+            found.push((file.clone(), name, without_comments(&block.join("\n"))));
+        }
+    }
+    found
+}
+
+/// R12-CICD-10203: no registry in the tree holds a mutable tag. The test
+/// below this one reads `modules/registry` alone, so a second DOCKER
+/// repository was free to leave tags mutable, and one did:
+/// `infrastructure/fleet/main.tf`'s `fleet`, found by the AUDIT-5
+/// verification on 2026-10-24. Walking every `.tf` file makes the next one a
+/// failure rather than a gap.
+///
+/// Mutation: delete the fleet repository's `docker_config` block, and the
+/// assertion naming `fleet` fails.
+#[test]
+fn every_docker_repository_in_the_tree_makes_its_tags_immutable() {
+    let docker: Vec<(String, String, String)> = artifact_repositories()
+        .into_iter()
+        .filter(|(_, _, block)| sets(block, "format", "\"DOCKER\""))
+        .collect();
+    // Premise: the walk found both DOCKER repositories this tree declares,
+    // the platform's images and the fleet worker's, so a broken walk cannot
+    // pass by finding none.
+    for expected in ["images", "fleet"] {
+        assert!(
+            docker.iter().any(|(_, name, _)| name == expected),
+            "premise: no DOCKER repository named `{expected}` was found; found {:?}",
+            docker
+                .iter()
+                .map(|(f, n, _)| format!("{f}:{n}"))
+                .collect::<Vec<_>>()
+        );
+    }
+    for (file, name, block) in &docker {
+        assert!(
+            block.contains("docker_config") && sets(block, "immutable_tags", "true"),
+            "{file}: DOCKER repository `{name}` does not set `immutable_tags = true` in a \
+             `docker_config` block, so one of its tags can be moved onto different bytes"
+        );
+    }
+}
+
 #[test]
 fn the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it() {
     let registry = read("infrastructure/terraform/modules/registry/main.tf");
