@@ -2193,12 +2193,15 @@
   {
     "id": "R12-RES-7097",
     "status": "PARTIAL",
-    "current": "data-finder has a Quarantined decision; reasoning trust score penalises failures; no propagation to dependent beliefs.",
+    "current": "A source policy quarantines now has its evidence quarantined in the world model: Platform::assess_sources calls WorldModel::quarantine_source for every Quarantined transition, which retracts (keeps, bitemporally) every fact that source stated through KnowledgeGraph::retract_source, leaves another source's statement of the same relationship standing, and journals each as RelationshipRetracted. Facts read through facts_at after the quarantine no longer include it, so beliefs and hypotheses formed from the graph afterwards are formed without it. Models: the verifier society's data-poisoning critic refutes a model whose training datasets include a quarantined catalogue dataset (qip-learning-engine verifier.rs attack_model, fed by Platform::quarantined_datasets). The catalogue stops offering the dataset (existing).",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/decision.rs:218,586",
-      "backend/crates/services/qip-reasoning-engine/src/trust_score.rs"
+      "backend/crates/services/qip-world-model/src/graph.rs KnowledgeGraph::retract_source",
+      "backend/crates/services/qip-world-model/src/world.rs WorldModel::quarantine_source",
+      "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources (Quarantined transition)",
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs::quarantining_a_source_stops_the_world_model_believing_what_it_said",
+      "backend/crates/services/qip-learning-engine/src/verifier.rs attack_model (quarantined training data)"
     ],
-    "gap": "Dependency propagation from quarantined source to beliefs/models.",
+    "gap": "2026-10-24 (lane L6): (1) default path: qip-deepbrain assesses sources only when QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH names a candidate catalogue, which no committed environment sets, so the quarantine (and with it the retraction) never runs on a shipped binary's default path (bar part 2); (2) 'stale' half: a source retired for staleness or cost keeps its facts and nothing downweights beliefs citing a stale source; (3) a hypothesis or belief already formed and held (reasoning engine, episodic memory) is not re-scored when its evidence is retracted; only reads after the quarantine see the narrower graph.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2206,10 +2209,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "integration test quarantine→belief downweight",
+    "verification": "cd backend && cargo test -p qip-kernel --test source_lifecycle quarantining_a_source_stops_the_world_model_believing_what_it_said",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: implemented the propagation. Mutations, each restored by cp and cmp: replacing the kernel's quarantine_source call with a no-op failed the new test at source_lifecycle.rs:470 ('a quarantined source's facts are still believed'); dropping the source match in retract_source failed it at :475 ('a clean source's facts were retracted with the quarantined one's'). qip-kernel + qip-world-model --no-fail-fast: 90 result lines, 1355 passed, 0 failed. Stays PARTIAL on the default-path and stale clauses."
   },
   {
     "id": "R12-RES-7098",

@@ -388,3 +388,106 @@ fn the_shipped_default_owner_is_one_the_catalogue_accepts() -> Result<()> {
     }
     Ok(())
 }
+
+/// A story from `source`, mentioning one company, so the world model holds a
+/// `ConcernsEntity` fact whose provenance is that source.
+fn story_from(source: &str, item_id: &str) -> Result<qip_financial::intelligence::NewsItem> {
+    use qip_financial::intelligence::{EntityMention, NewsItem, NewsSource, Sentiment};
+    use qip_financial::manifest::SourceManifest;
+    use qip_financial::quality::{DataQuality, Provenance};
+    let published_at = start().saturating_sub(Duration::from_hours(2));
+    Ok(NewsItem {
+        item_id: item_id.to_string(),
+        headline: format!("Acme Corporation guides revenue higher ({item_id})"),
+        manifest: SourceManifest::of(
+            source,
+            format!("http://vendor.test/docs#{item_id}"),
+            start(),
+            b"Acme Corporation raised full-year revenue guidance.",
+        )?,
+        source: NewsSource::CompanyAnnouncement,
+        published_at,
+        entities: vec![EntityMention {
+            text: "Acme Corporation".to_string(),
+            entity_id: Some("ent-acme".to_string()),
+            confidence: 0.9,
+            is_primary: true,
+            sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
+        }],
+        sentiment: Sentiment {
+            polarity: 0.8,
+            confidence: 0.9,
+            novelty: 0.7,
+        },
+        topics: vec!["guidance".to_string()],
+        provenance: Provenance::new(source, published_at, start()),
+        quality: DataQuality::clean(),
+        evidence_unretrievable: false,
+    })
+}
+
+#[test]
+fn quarantining_a_source_stops_the_world_model_believing_what_it_said() -> Result<()> {
+    // R12-RES-7097: a poisoned source has its evidence quarantined and the
+    // beliefs citing it invalidated. Before this the quarantine reached the
+    // finder's registry and the mesh catalogue, and every fact the source had
+    // already written into the graph went on being believed and reasoned
+    // over — the quarantine stopped the next poisoned fact and none of the old.
+    use qip_market_ingestion::adapter::SensedRecord;
+    let mut platform = platform()?;
+    let mut probe = probe();
+    platform.assess_sources(candidates()?, &mut probe, start())?;
+    let absorbed = platform.observe(vec![
+        SensedRecord::News(Box::new(story_from("forger", "news-forged")?)),
+        SensedRecord::News(Box::new(story_from("rising", "news-clean")?)),
+    ]);
+    assert_eq!(absorbed, 2, "premise: both stories are absorbed");
+    let believed = |platform: &Platform, source: &str, known_at: Timestamp| {
+        platform
+            .world()
+            .graph()
+            .facts_at(known_at, known_at)
+            .iter()
+            .filter(|fact| fact.relationship.source == source)
+            .count()
+    };
+    assert!(
+        believed(&platform, "forger", later()) > 0 && believed(&platform, "rising", later()) > 0,
+        "premise: the graph holds facts from both sources before the quarantine"
+    );
+
+    platform.assess_sources(candidates()?, &mut probe, later())?;
+    assert!(
+        platform
+            .registered_sources()
+            .get("forger")
+            .is_some_and(|entry| entry.is_quarantined()),
+        "premise: policy quarantined forger on the second pass"
+    );
+
+    assert_eq!(
+        believed(&platform, "forger", later()),
+        0,
+        "a quarantined source's facts are still believed"
+    );
+    assert!(
+        believed(&platform, "rising", later()) > 0,
+        "a clean source's facts were retracted with the quarantined one's"
+    );
+    // Kept, not deleted: what the platform knew before the quarantine is
+    // still answerable, so a decision taken then stays explicable.
+    assert!(
+        believed(&platform, "forger", start()) > 0,
+        "the retraction rewrote history instead of ending belief from the quarantine"
+    );
+    assert!(
+        platform.world().changes().iter().any(|change| {
+            change.kind == qip_world_model::state::ChangeKind::RelationshipRetracted
+                && change.description.contains("`forger` quarantined")
+        }),
+        "the retraction is not on the world model's change journal"
+    );
+    Ok(())
+}
