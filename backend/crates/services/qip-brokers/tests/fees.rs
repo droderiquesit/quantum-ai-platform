@@ -31,6 +31,9 @@ use qip_core::ids::{ObjectId, OrderId};
 use qip_core::time::Timestamp;
 use qip_core::{Decimal, dec};
 use qip_execution_engine::broker::Broker;
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::costs::LiquidityProfile;
@@ -121,7 +124,7 @@ fn settings(fees: FeeSchedule) -> ExchangeSettings {
 /// first run.
 fn live_venue(fees: FeeSchedule) -> Result<SimulatedExchange> {
     let mut exchange = SimulatedExchange::new(venue(), settings(fees), 11, start());
-    exchange.list(instrument());
+    list_admitted(&mut exchange, VENUE, instrument())?;
     exchange.seed_liquidity(
         &object(),
         Side::Sell,
@@ -455,4 +458,25 @@ fn the_venue_that_charges_the_ladder_is_still_a_simulated_one_and_has_no_live_cl
         "there is no live adapter class to deserialise into"
     );
     Ok(())
+}
+
+/// List `object` at `venue` under an admission with all three permissions
+/// recorded. A fixture: the gate itself is proven by qip-execution-engine's
+/// creation tests and qip-acceptance's `market_creation` suite.
+fn list_admitted(
+    exchange: &mut SimulatedExchange,
+    venue: &str,
+    object: FinancialObject,
+) -> Result<()> {
+    let request = CreationRequest::new(
+        CreationAction::List,
+        venue,
+        object.object_id.as_str(),
+        "paper",
+    );
+    let mut permissions = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        permissions.record(authority, &request, "test fixture")?;
+    }
+    exchange.list(object, &permissions.admit(&request)?)
 }

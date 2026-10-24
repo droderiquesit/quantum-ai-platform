@@ -43,6 +43,7 @@ use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Currency, Decimal};
 use qip_execution_engine::broker::{Broker, VenueCapabilities};
+use qip_execution_engine::creation::{CreationAction, CreationAdmission};
 use qip_execution_engine::observation::{
     DeclaredVenueProfile, ObservedVenueFacts, VenueObservation,
 };
@@ -402,8 +403,41 @@ impl SimulatedExchange {
             .remaining(self.venue.as_str(), &self.settings.rate_limits, at)
     }
 
-    /// List an instrument. The venue will not trade anything else.
-    pub fn list(&mut self, object: FinancialObject) {
+    /// List an instrument the market-creation register admitted for listing
+    /// here. The venue will not trade anything else.
+    ///
+    /// An admission rather than a bare instrument (R12-COVERAGE-5107):
+    /// listing is one of the three governed actions, and until 2026-10-24
+    /// this method took any `FinancialObject` from any caller, so the
+    /// permission gate sat beside the venue rather than on it — an
+    /// instrument could be listed here with no venue, product or legal
+    /// permission recorded anywhere. A `CreationAdmission` has one mint,
+    /// `CreationPermissions::admit`, which refuses unless all three are
+    /// recorded; one for another action, venue or product is refused here
+    /// before anything is written.
+    pub fn list(&mut self, object: FinancialObject, admission: &CreationAdmission) -> Result<()> {
+        let request = admission.request();
+        if request.action != CreationAction::List
+            || request.venue != self.venue.as_str()
+            || request.product != object.object_id.as_str()
+        {
+            return Err(Error::denied(format!(
+                "{} was not listed at {}: the admission offered is to {} {} at {}, and a listing \
+                 needs an admission to list exactly this instrument at exactly this venue",
+                object.object_id.as_str(),
+                self.venue.as_str(),
+                request.action.as_str(),
+                request.product,
+                request.venue
+            )));
+        }
+        self.register_listing(object);
+        Ok(())
+    }
+
+    /// Write a listing into the venue's books. Private: the two ways in are
+    /// [`Self::list`], behind an admission, and [`Self::list_synthetic`].
+    fn register_listing(&mut self, object: FinancialObject) {
         self.ledger.register(object.clone());
         self.listings
             .insert(object.object_id.as_str().to_string(), object);
@@ -428,6 +462,15 @@ impl SimulatedExchange {
     /// one-session exit, on a record the simulator invented, in the direction
     /// that permits trading. The composition that decides to run against a
     /// simulated venue is the one that has to say what it is pretending about.
+    ///
+    /// **It takes no `CreationAdmission`, and that is the one listing path
+    /// here that does not.** It creates no market: its one caller is the
+    /// edge node's simulated gateway, which mirrors into this simulator's
+    /// book an instrument the cell is already trading under the centre's
+    /// policy, so that the twin has something to match against. The
+    /// instrument type is fixed to `CommonStock` here rather than taken from
+    /// the caller, so the path cannot be used to bring a new product class
+    /// into existence; a created market goes through [`Self::list`].
     pub fn list_synthetic(
         &mut self,
         object_id: ObjectId,
@@ -456,7 +499,7 @@ impl SimulatedExchange {
                     at,
                 ))
                 .build(at)?;
-        self.list(listing);
+        self.register_listing(listing);
         Ok(())
     }
 

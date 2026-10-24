@@ -2475,9 +2475,12 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs:321",
       "qip-execution-engine/src/creation.rs::tests::with_nothing_recorded_every_action_is_refused_naming_all_three_authorities",
       "qip-kernel/tests/breadth.rs::a_plan_missing_a_permission_is_refused_whole_and_creates_nothing",
-      "qip-kernel/tests/breadth.rs::an_event_market_is_created_only_where_the_access_book_permits_creation"
+      "qip-kernel/tests/breadth.rs::an_event_market_is_created_only_where_the_access_book_permits_creation",
+      "backend/crates/services/qip-brokers/src/exchange.rs SimulatedExchange::list (demands a CreationAdmission for List at this venue for this object)",
+      "backend/crates/tests/qip-acceptance/tests/market_creation.rs::the_venue_refuses_an_admission_for_another_action_venue_or_product_and_lists_nothing",
+      "backend/crates/tests/qip-acceptance/tests/market_creation.rs::a_market_is_listed_at_a_simulated_venue_only_once_the_venue_the_product_rules_and_the_jurisdiction_all_permit_it"
     ],
-    "gap": "2026-10-24: The permission gate is real and mutation-checked, but it runs only when an operator supplies a breadth plan through QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment does. Closing: a committed environment (or a default plan) sets the variable so a deployed process reaches the gate, or the row is narrowed to the library gate. 2026-10-24 (AUDIT-5 verification): the guard is not on the only creation path: qip_brokers::exchange::SimulatedExchange::list and list_synthetic are public, take no CreationAdmission, and qip-edge-node gateway.rs calls list_synthetic. So an instrument can be listed without the three permissions. Closes when every listing path demands a CreationAdmission, with a test that a listing without one does not compile or is refused.",
+    "gap": "2026-10-24: the AUDIT-5 bypass is narrowed. SimulatedExchange::list now takes a CreationAdmission and refuses one for another action, venue or product before writing anything; its listing write is private. The one public listing path left without an admission is list_synthetic, whose only caller is qip-edge-node's simulated gateway (ensure_listed). It mirrors into the twin's book an instrument the cell already trades, with the type fixed to CommonStock and synthetic provenance, so it creates no product class. Whether that mirror counts as a 'created instrument' is the open question; an independent skeptic must judge it before promotion. The breadth-plan path stays opt-in (QIP_DEEPBRAIN_BREADTH_PLAN unset everywhere). Under audit-5-bar part 3 that is a guard built on the only creation path, not a gap, if the skeptic accepts the mirror reading.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2485,9 +2488,9 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test market_creation",
+    "verification": "cargo test -p qip-acceptance --test market_creation; cargo test -p qip-execution-engine creation; cargo test -p qip-kernel --test breadth",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Opt-in: only when QIP_DEEPBRAIN_BREADTH_PLAN is set (no committed deployment sets it), and only on the desk's simulated listing venue (breadth.rs:180-186). The kernel test drops only the jurisdiction permission; the unit test covers all three. AUDIT-4: 2026-10-24 regraded, the permission gate runs only when QIP_DEEPBRAIN_BREADTH_PLAN names a plan, which no committed environment sets, so no deployed process creates a market or reaches the gate.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
+    "notes": "Round-2 independent audit, 2026-10-11: Opt-in: only when QIP_DEEPBRAIN_BREADTH_PLAN is set (no committed deployment sets it), and only on the desk's simulated listing venue (breadth.rs:180-186). The kernel test drops only the jurisdiction permission; the unit test covers all three. AUDIT-4: 2026-10-24 regraded, the permission gate runs only when QIP_DEEPBRAIN_BREADTH_PLAN names a plan, which no committed environment sets, so no deployed process creates a market or reaches the gate.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL; 2026-10-24 parent session: SimulatedExchange::list gated on a CreationAdmission. Three mutations, run by the parent, each replacing one comparison in list with `false` (action, venue, product), each fail market_creation::the_venue_refuses_an_admission_for_another_action_venue_or_product_and_lists_nothing at the matching case. Restored, cmp clean."
   }
 ]

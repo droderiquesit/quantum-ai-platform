@@ -22,6 +22,9 @@ use qip_core::error::Result;
 use qip_core::ids::{ObjectId, OrderId};
 use qip_core::time::Timestamp;
 use qip_core::{Decimal, dec};
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::object::FinancialObject;
@@ -79,7 +82,9 @@ fn simulated() -> Result<SimulatedExchange> {
     let venue = VenueId::new("XSIM");
     let mut exchange =
         SimulatedExchange::new(venue.clone(), ExchangeSettings::default(), 7, start());
-    exchange.list(
+    list_admitted(
+        &mut exchange,
+        "XSIM",
         FinancialObject::builder(
             object(),
             "AAA",
@@ -93,7 +98,7 @@ fn simulated() -> Result<SimulatedExchange> {
         .tick_size(dec!("0.01"))
         .provenance(Provenance::synthetic("conformance", start()))
         .build(start())?,
-    );
+    )?;
     exchange.seed_liquidity(
         &object(),
         Side::Sell,
@@ -188,4 +193,25 @@ fn every_adapter_declares_refuses_undeclared_and_round_trips_through_the_common_
         "only the declared order was sent"
     );
     Ok(())
+}
+
+/// List `object` at `venue` under an admission with all three permissions
+/// recorded. A fixture: the gate itself is proven by qip-execution-engine's
+/// creation tests and qip-acceptance's `market_creation` suite.
+fn list_admitted(
+    exchange: &mut SimulatedExchange,
+    venue: &str,
+    object: FinancialObject,
+) -> Result<()> {
+    let request = CreationRequest::new(
+        CreationAction::List,
+        venue,
+        object.object_id.as_str(),
+        "paper",
+    );
+    let mut permissions = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        permissions.record(authority, &request, "test fixture")?;
+    }
+    exchange.list(object, &permissions.admit(&request)?)
 }

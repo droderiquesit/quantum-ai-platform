@@ -9,13 +9,13 @@
 //! once the venue, the product rules and the jurisdiction have all been
 //! recorded as permitting it.
 //!
-//! There is no Market Factory in this workspace (EXEC-006), so nothing in
-//! production consumes a `CreationAdmission` yet. `list_where_permitted`
-//! below is this suite's stand-in for the operation that will: it takes the
-//! admission first and touches the venue second, which is the only order a
-//! real one may use. What the suite proves is the gate — that the admission
-//! cannot be had without all three permissions and cannot be made any other
-//! way — not a capability that does not exist.
+//! Since 2026-10-24 the venue demands the admission itself:
+//! `SimulatedExchange::list` takes a `CreationAdmission` and refuses one for
+//! another action, venue or product before anything is written
+//! (R12-COVERAGE-5107). Until then this suite wrapped an ungated `list` in a
+//! stand-in that asked the register first, so the gate sat beside the venue
+//! and any other caller could list without it. `list_where_permitted` below
+//! now only asks the register and hands the venue what it answered.
 //!
 //! Nothing here weakens the paper-trading boundary: the venue is
 //! `AdapterClass::Simulated`, and the suite asserts it.
@@ -76,20 +76,89 @@ fn proposed_instrument() -> FinancialObject {
     .expect("a structurally valid instrument")
 }
 
-/// The stand-in for a create operation: the admission first, the venue
-/// second. A refused request returns before the venue is named at all.
+/// Ask the register, then hand the venue whatever it admitted. A refused
+/// request returns before the venue is named at all.
 fn list_where_permitted(
     permissions: &CreationPermissions,
     request: &CreationRequest,
     exchange: &mut SimulatedExchange,
 ) -> Result<()> {
     let admission = permissions.admit(request)?;
-    assert_eq!(
-        admission.request().venue,
-        exchange.venue_id().as_str(),
-        "an admission for one venue was used at another"
+    exchange.list(proposed_instrument(), &admission)
+}
+
+/// A register holding all three permissions for `request`.
+fn fully_permitted(request: &CreationRequest) -> Result<CreationPermissions> {
+    let mut permissions = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        permissions.record(authority, request, "qip-acceptance market_creation")?;
+    }
+    Ok(permissions)
+}
+
+#[test]
+fn the_venue_refuses_an_admission_for_another_action_venue_or_product_and_lists_nothing()
+-> Result<()> {
+    // R12-COVERAGE-5107: until 2026-10-24 `SimulatedExchange::list` took any
+    // instrument from any caller, and the register's admission was checked
+    // only by this suite's wrapper, beside the venue rather than on it. Each
+    // admission below is genuine, minted by a register holding all three
+    // permissions, and each is for something other than listing this
+    // instrument here, so only the venue's own check can refuse it.
+    //
+    // Mutation: delete the action, venue or product comparison in
+    // `SimulatedExchange::list`, and the matching case below lists the
+    // instrument.
+    let mut exchange =
+        SimulatedExchange::new(VenueId::new(VENUE), ExchangeSettings::orderly(), 7, start());
+    for (case, request) in [
+        (
+            "an admission to seed",
+            CreationRequest::new(CreationAction::Seed, VENUE, PRODUCT, JURISDICTION),
+        ),
+        (
+            "an admission for another venue",
+            CreationRequest::new(CreationAction::List, "XOTHER", PRODUCT, JURISDICTION),
+        ),
+        (
+            "an admission for another product",
+            CreationRequest::new(
+                CreationAction::List,
+                VENUE,
+                "OBJ0000000000000000000NEW2",
+                JURISDICTION,
+            ),
+        ),
+    ] {
+        // Premise: the admission is real, so a refusal below is the venue's.
+        let admission = fully_permitted(&request)?.admit(&request)?;
+        let refusal = exchange
+            .list(proposed_instrument(), &admission)
+            .expect_err(&format!("{case} listed {PRODUCT} at {VENUE}"));
+        assert!(
+            refusal
+                .message()
+                .contains("needs an admission to list exactly this instrument"),
+            "{case} was refused for another reason: {}",
+            refusal.message()
+        );
+        assert!(
+            !exchange.is_listed(&product()),
+            "{case} was refused and still left a listing at the venue"
+        );
+    }
+
+    // And the admission it does need lists the instrument, so the refusals
+    // above are not a venue that refuses everything.
+    let request = CreationRequest::new(CreationAction::List, VENUE, PRODUCT, JURISDICTION);
+    exchange.list(
+        proposed_instrument(),
+        &fully_permitted(&request)?.admit(&request)?,
+    )?;
+    assert!(
+        exchange.is_listed(&product()),
+        "an admission to list this instrument here listed nothing"
     );
-    exchange.list(proposed_instrument());
     Ok(())
 }
 

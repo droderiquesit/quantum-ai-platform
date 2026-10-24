@@ -46,6 +46,9 @@ use qip_core::{Decimal, dec};
 use qip_execution_engine::broker::{
     Broker, LiveBroker, LiveVenueConfig, SimulatedBroker, SimulationSettings,
 };
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::feasibility::GATE_MINIMUM_NOTIONAL;
 use qip_execution_engine::oms::{OrderManager, RefusalReason};
 use qip_execution_engine::order::{Fill, Order, OrderType, Side};
@@ -662,7 +665,7 @@ fn a_venue_that_times_itself_crosses_the_broker_port_and_earns_the_observed_rung
          the declared one read back"
     );
     let mut exchange = SimulatedExchange::new(VenueId::new(MEASURED_VENUE), settings, 11, start());
-    exchange.list(measured_instrument());
+    list_admitted(&mut exchange, MEASURED_VENUE, measured_instrument())?;
     exchange.seed_liquidity(
         &measured_object(),
         Side::Sell,
@@ -821,7 +824,7 @@ fn a_venue_whose_recorded_sessions_replay_clean_reaches_the_simulator_and_stops(
         ..ExchangeSettings::default()
     };
     let mut exchange = SimulatedExchange::new(VenueId::new(MEASURED_VENUE), settings, 11, start());
-    exchange.list(measured_instrument());
+    list_admitted(&mut exchange, MEASURED_VENUE, measured_instrument())?;
     exchange.seed_liquidity(
         &measured_object(),
         Side::Sell,
@@ -1085,4 +1088,25 @@ fn a_recorded_session_holding_a_fill_the_venue_did_not_call_simulated_promotes_n
     );
     assert_eq!(ladder.stage_of(MEASURED_VENUE), GateStage::Holdout);
     Ok(())
+}
+
+/// List `object` at `venue` under an admission with all three permissions
+/// recorded. A fixture: the gate itself is proven by qip-execution-engine's
+/// creation tests and this crate's `market_creation` suite.
+fn list_admitted(
+    exchange: &mut SimulatedExchange,
+    venue: &str,
+    object: FinancialObject,
+) -> Result<()> {
+    let request = CreationRequest::new(
+        CreationAction::List,
+        venue,
+        object.object_id.as_str(),
+        "paper",
+    );
+    let mut permissions = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        permissions.record(authority, &request, "test fixture")?;
+    }
+    exchange.list(object, &permissions.admit(&request)?)
 }
