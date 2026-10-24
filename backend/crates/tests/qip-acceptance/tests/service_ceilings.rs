@@ -40,10 +40,10 @@ fn services() -> Vec<(String, String)> {
 /// The refusals for one service document.
 fn refusals(document: &str) -> Vec<&'static str> {
     let mut refused = Vec::new();
-    if !integer(document, "maxInstanceCount").is_some_and(|n| n >= 1) {
+    if integer(document, "maxInstanceCount").is_none_or(|n| n < 1) {
         refused.push("no positive maxInstanceCount");
     }
-    if !integer(document, "maxInstanceRequestConcurrency").is_some_and(|n| n >= 1) {
+    if integer(document, "maxInstanceRequestConcurrency").is_none_or(|n| n < 1) {
         refused.push("no positive maxInstanceRequestConcurrency");
     }
     refused
