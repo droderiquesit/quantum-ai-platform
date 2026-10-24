@@ -275,6 +275,75 @@ fn a_plan_missing_a_permission_is_refused_whole_and_creates_nothing() -> Result<
     Ok(())
 }
 
+/// R12-COVERAGE-5107: installation is all or nothing on the shared venue.
+/// The plan's first market is fully permitted and installs on its own; its
+/// second is fully permitted and listed, and then refused at its seed for
+/// inventory that cannot cover the ask side. The failure this prevents is
+/// the first market's ladder left resting on the desk broker's venue — and
+/// the second's empty book beside it — for a plan the caller was told was
+/// refused, under a factory that was dropped with the refusal and so could
+/// never review or withdraw either.
+///
+/// Mutation: drop the `venue.withdraw_book(product)` loop from
+/// `FactoryStage::install` and the first market's book still rests.
+#[test]
+fn a_plan_refused_part_way_through_leaves_nothing_listed_on_the_venue() -> Result<()> {
+    const SECOND: &str = "obj-SECOND";
+    // Premise: the first market on its own installs and rests a book.
+    let mut premise = platform()?;
+    premise.install_breadth(
+        &BreadthPlan {
+            market_factory: Some(factory_plan("obj-NEVER-OBSERVED")),
+            ..BreadthPlan::default()
+        },
+        start(),
+    )?;
+    assert!(premise.listed_book(PRODUCT).is_some());
+
+    let mut plan = factory_plan("obj-NEVER-OBSERVED");
+    let seconded: Vec<PermissionEntry> = plan
+        .permissions
+        .iter()
+        .map(|entry| PermissionEntry {
+            product: SECOND.to_string(),
+            ..entry.clone()
+        })
+        .collect();
+    plan.permissions.extend(seconded);
+    let mut second = plan.markets[0].clone();
+    second.product = SECOND.to_string();
+    second.inventory = dec!("1");
+    plan.markets.push(second);
+
+    let mut platform = platform()?;
+    let refused = platform
+        .install_breadth(
+            &BreadthPlan {
+                market_factory: Some(plan),
+                ..BreadthPlan::default()
+            },
+            start(),
+        )
+        .expect_err("a plan whose second market cannot be seeded installed");
+    assert!(
+        refused.message().contains("market obj-SECOND")
+            && refused.message().contains("cannot cover"),
+        "refused for another reason: {}",
+        refused.message()
+    );
+    assert!(
+        platform.listed_book(PRODUCT).is_none(),
+        "the first market's book still rests on the venue after the plan was refused"
+    );
+    assert!(
+        platform.listed_book(SECOND).is_none(),
+        "the second market's empty book still rests on the venue"
+    );
+    assert!(platform.market_factory().is_none());
+    assert!(factory_records(&platform)?.is_empty());
+    Ok(())
+}
+
 /// The event plane's own market and the instrument each of its outcomes
 /// trades as: everything the synthetic venue brings into existence, so
 /// everything that needs a creation admission.
