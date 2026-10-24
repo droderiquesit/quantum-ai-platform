@@ -269,7 +269,7 @@
       "backend/crates/runtime/qip-kernel/tests/serving.rs:713 quantum candidate admitted only with calibrated baseline",
       "backend/crates/services/qip-world-model/tests/quantum_causal_refusal.rs"
     ],
-    "gap": "Advisory typing (qip_contracts::quantum) is not the type the kernel uses; only the portfolio family is integrated; gate is per-call, not structural at the risk boundary.",
+    "gap": "Advisory typing (qip_contracts::quantum) is not the type the kernel uses; only the portfolio family is integrated; gate is per-call, not structural at the risk boundary. 2026-10-24 (L4): read again. In production a quantum answer reaches a weight only through ComputeRouter::judge (qip-optimization-engine router.rs). judge refuses a wrong-length assignment and an energy claim the QUBO does not reproduce, and re-scores the weights on the real problem. The quantum-inspired arm goes through ClassicalValidator into the typed ValidatedSolution; the QAOA arm reads QaoaResult's public fields directly, so the 'typed advisory candidate' half holds only for the inspired arm. The 'only the portfolio family' half is ADR 0150 A1's deliberate scope, so under bar part 4 this row stays PARTIAL until an owner reopens A1. Typing the QAOA arm through ClassicalValidator is the code step left.",
     "implemented": true,
     "tested": true,
     "integrated": true,

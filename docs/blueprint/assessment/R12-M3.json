@@ -820,13 +820,14 @@
   {
     "id": "R12-WORLD-3037",
     "status": "PARTIAL",
-    "current": "UNDERSTAND runs a seven-member federation across all five axes each cycle and journals a review; members are simple declared statistics, unfed members produce no state, and decisions still read the single WorldModel.",
+    "current": "UNDERSTAND runs the federation each cycle (FederationStage::run): ten members plus one domain member per declared asset class, spanning all five axes. DECIDE reads the population through federation_stage::narrow (ADR 0125 decision 4, landed under R12-WORLD-1003, COMPLETE), so decisions no longer read only the single WorldModel.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1 runs in UNDERSTAND; advisory",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:872 a_population_differing_on_all_five_axes_is_built_and_every_fed_member_produces_state",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review"
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs (first.silent == [ON_CHAIN] on a default cycle)"
     ],
-    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the same federation narrowing slice as WORLD-1003, so a decision reads the population rather than the single WorldModel.",
+    "gap": "2026-10-24 (L4): the 'code left' this gap named, the WORLD-1003 narrowing slice, has landed. The requirement's integration clause, 'every member produces state each cycle', still fails on the default composition. qip-kernel tests/symbolic_federation.rs pins the on-chain member as silent on a cycle with no observed chain (assert_eq!(first.silent, vec![ON_CHAIN])), and no committed environment feeds a chain view. Closing it needs a chain view on the default path, or a decision that a member with no input this pass meets 'produces state' by reporting its silence. That decision belongs to an owner or an ADR.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -837,7 +838,7 @@
     "verification": "cargo test -p qip-world-model --test federation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Federation now built by the kernel; advisory only. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Decisions consume the federation; every member produces state each cycle."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Federation now built by the kernel; advisory only. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Decisions consume the federation; every member produces state each cycle. 2026-10-24 (L4): gap corrected by reading the code; no code changed."
   },
   {
     "id": "R12-WORLD-3038",
