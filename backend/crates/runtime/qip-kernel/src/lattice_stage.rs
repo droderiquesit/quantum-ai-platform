@@ -805,3 +805,96 @@ impl LatticeStage {
         &mut self.calibrator
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn thin_target(subject: &str, at: Timestamp) -> LatticeTarget {
+        LatticeTarget {
+            subject: subject.to_string(),
+            closes: vec![(at, 100.0)],
+            regime: "calm".to_string(),
+            held_quantity: 0.0,
+            now_return: None,
+        }
+    }
+
+    /// R12-WORLD-9024, on the path that produces the veto in a running
+    /// binary. DECIDE sees an expired tactical forecast only when the pass
+    /// could not reissue a due slot: target_input refused it, the subject
+    /// was cut by LATTICE_MAX_SUBJECTS, or routing or issuing failed. The
+    /// slot survives to DECIDE only through the `present` clause of the
+    /// retain at the end of `run`. The DECIDE test in platform.rs plants the
+    /// slot by hand and never runs the pass, so dropping that clause left
+    /// every test green while the veto became unreachable: an unrefreshed
+    /// forecast would read "never forecast", and the thesis would size at
+    /// the full bound exactly when the lattice stood behind it least.
+    /// Mutation: the retain reduced to `*exp > now` fails the last
+    /// assertion here.
+    #[test]
+    fn a_due_tactical_slot_the_pass_could_not_reissue_survives_the_pass_and_still_vetoes() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut stage = LatticeStage::new().expect("the stage builds");
+        stage.set_slot(
+            "AAPL",
+            LatticeHorizon::HoursDays,
+            now.saturating_sub(Duration::from_days(2)),
+            now.saturating_sub(Duration::from_days(1)),
+        );
+        let target = thin_target("AAPL", now);
+        // Premises: the slot is expired before the pass, and the pass cannot
+        // reissue it, because one close is too few returns to forecast on.
+        assert!(matches!(
+            stage.tactical_staleness("AAPL", now),
+            Some(Err(_))
+        ));
+        assert!(target_input(&target).is_none());
+
+        let _ = stage.run(
+            LatticeInputs {
+                cycle: 1,
+                targets: vec![target],
+                surprised: BTreeSet::new(),
+            },
+            now,
+        );
+
+        assert!(
+            matches!(
+                stage.tactical_staleness("AAPL", now),
+                Some(Err(ref refusal)) if refusal.contains("expired")
+            ),
+            "the pass dropped an unrefreshed expired slot for a subject still in it, so DECIDE \
+             reads the subject as never forecast and sizes it at the full bound"
+        );
+    }
+
+    /// The other half of the same retain: the slot table is bounded by the
+    /// subjects the pass still sees. An expired slot whose subject has left
+    /// the pass is forgotten, so the veto above cannot become a slot nobody
+    /// ever clears. Mutation: the retain made to keep every slot fails here.
+    #[test]
+    fn an_expired_slot_whose_subject_has_left_the_pass_is_forgotten() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut stage = LatticeStage::new().expect("the stage builds");
+        stage.set_slot(
+            "AAPL",
+            LatticeHorizon::HoursDays,
+            now.saturating_sub(Duration::from_days(2)),
+            now.saturating_sub(Duration::from_days(1)),
+        );
+        assert!(stage.tactical_staleness("AAPL", now).is_some());
+
+        let _ = stage.run(
+            LatticeInputs {
+                cycle: 1,
+                targets: vec![thin_target("MSFT", now)],
+                surprised: BTreeSet::new(),
+            },
+            now,
+        );
+
+        assert_eq!(stage.tactical_staleness("AAPL", now), None);
+    }
+}
