@@ -135,3 +135,44 @@ fn a_bounded_admission_refuses_outside_the_class_the_leverage_or_the_function() 
     );
     assert!(AuthorityBounds::new(d(1), vec![], vec![]).is_err());
 }
+
+/// ADR 0155 section 4: there is one leverage measure, so an envelope that
+/// carries both blocks must state one claim about it, in either order of
+/// construction. Mutation: drop the equality check in `bound` or
+/// `with_exposure` and the matching arm below accepts a contradiction.
+#[test]
+fn an_envelope_stating_two_different_leverages_is_refused_whichever_block_is_added_second() {
+    use qip_contracts::capital::ExposureBounds;
+    let exposure = |leverage: i64| ExposureBounds::bounded(2_500, d(leverage), d(1_000)).unwrap();
+
+    // Premise: equal claims build, in both orders.
+    assert!(
+        envelope()
+            .with_exposure(exposure(2))
+            .unwrap()
+            .bound(bounds(2, &["equity"], &["order_taking"]))
+            .is_ok()
+    );
+    assert!(
+        envelope()
+            .bound(bounds(2, &["equity"], &["order_taking"]))
+            .unwrap()
+            .with_exposure(exposure(2))
+            .is_ok()
+    );
+
+    let refused = envelope()
+        .with_exposure(exposure(2))
+        .unwrap()
+        .bound(bounds(3, &["equity"], &["order_taking"]))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("one leverage measure"), "{refused}");
+    let refused = envelope()
+        .bound(bounds(3, &["equity"], &["order_taking"]))
+        .unwrap()
+        .with_exposure(exposure(2))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("one leverage measure"), "{refused}");
+}

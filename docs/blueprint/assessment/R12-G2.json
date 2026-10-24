@@ -907,8 +907,8 @@
   },
   {
     "id": "R12-CAPITAL-9039",
-    "status": "PARTIAL",
-    "current": "Kernel LEARN scores declined and filled alternatives via qip-twin CounterfactualEngine (planned on knowable data, settled on realised); qip-capital shadow portfolios exist but are not composed. Sequential and in process.",
+    "status": "COMPLETE",
+    "current": "Kernel shadows are the qip-twin menu arms (AlternativeMenu::alternatives_to), scored sequentially in LEARN under the per-cycle cap (COUNTERFACTUALS_PER_CYCLE) with deferral counted (COUNTERFACTUALS_DEFERRED); output is the cycle's CounterfactualJournal. qip-capital::shadow is an allocation-level vocabulary with no kernel caller by decision and is not composed (ADR 0148 decision 6); no parallel batch (tokio is off the decision core). Revisit when the allocator exposes alternate allocations.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined, :17410 score_filled",
       "backend/crates/services/qip-twin/src/counterfactual.rs",
@@ -916,7 +916,7 @@
       "backend/crates/services/qip-capital/src/shadow.rs (no kernel caller)",
       "backend/crates/tests/qip-acceptance/tests/capital_shadow_portfolios.rs"
     ],
-    "gap": "Compose shadow portfolios; parallel batch; compact pack output.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -924,10 +924,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cargo test -p qip-kernel --test learning declined",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane T7-KERNEL, closing by ADR 0148 decision 6 (no-code restate). Re-run the cap test on the production caller: mutation - drop `.take(COUNTERFACTUALS_PER_CYCLE)` in Platform::score_declined's loop - declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle failed at learning.rs:586; restored, passes."
   },
   {
     "id": "R12-QUANT-9040",

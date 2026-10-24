@@ -1923,6 +1923,15 @@ impl ResearchLoop {
         self.conditional_scenarios(platform, &metrics, &mut round)?;
 
         // --- curiosity: rank every candidate, then launch ------------------
+        // The federation's own questions join the gaps' before the ranking, so
+        // a disagreement over capital at stake competes for the same budget.
+        self.admit_federation_requests(
+            platform.federation_information_requests(),
+            now,
+            &metrics,
+            &mut round,
+            licensed_sources,
+        )?;
         self.launch_ranked(&metrics, &mut round)?;
 
         // --- the compute market ---------------------------------------------
@@ -2196,6 +2205,72 @@ impl ResearchLoop {
             self.candidate_entities
                 .insert(request.id().to_string(), entities);
             self.candidates.push((request, source));
+        }
+        Ok(())
+    }
+
+    /// The federation's active-sensing requests as ranked information
+    /// requests (AMBIENT-10093, ADR 0158 decisions 9-10).
+    ///
+    /// The contract request is canonical for what is asked; this loop's
+    /// [`InfoRequest`] is derived from it: significance is the value of the
+    /// information on the loop's money scale, cost is the budget as a share of
+    /// that value in basis points, urgency is read from the request's deadline
+    /// like a gap's, and the uncertainty it would remove is the arbitration's
+    /// spread, forwarded beside the request. A request none of whose allowed
+    /// sources is licensed is refused outright — dropping the unlicensed ones
+    /// and keeping the rest is the whole of the narrowing, never a widening —
+    /// and a request already held (launched or halted on an earlier sweep) is
+    /// not admitted twice. Admitted requests join this sweep's candidates and
+    /// are ranked against every gap's by [`ResearchLoop::launch_ranked`].
+    fn admit_federation_requests(
+        &mut self,
+        requests: &[(qip_contracts::control::InformationRequest, u32)],
+        now: Timestamp,
+        metrics: &Metrics,
+        round: &mut ResearchRound,
+        licensed_sources: &BTreeSet<String>,
+    ) -> Result<()> {
+        for (contract, spread_bp) in requests {
+            let id = format!("fed-{}", contract.request_id);
+            let held = self.info_requests.iter().any(|r| r.id() == id)
+                || self.candidates.iter().any(|(r, _)| r.id() == id);
+            if held {
+                continue;
+            }
+            if !contract
+                .allowed_sources
+                .iter()
+                .any(|source| licensed_sources.contains(source))
+            {
+                metrics.count(names::INFO_REQUESTS, labels([("outcome", "unlicensed")]));
+                continue;
+            }
+            // Money to the ranking scale: statistics from here on.
+            let significance = economic_scale_bp(contract.expected_information_value.to_f64())?;
+            let share = contract.budget.to_f64() / contract.expected_information_value.to_f64();
+            let cost_bp = basis_points(share.min(1.0))?;
+            let criteria = qip_contracts::ambient::AcquisitionCriteria::new(
+                significance,
+                *spread_bp,
+                urgency_bp(now, contract.deadline, self.config.signal_ttl),
+                cost_bp,
+            )?;
+            let mut request = InfoRequest::new(
+                id,
+                contract.question.clone(),
+                criteria,
+                contract.deadline.max(now),
+                now,
+            )?;
+            if request.should_halt(now, MIN_VIABLE_BP) {
+                request.halt();
+                round.info_halted += 1;
+                metrics.count(names::INFO_REQUESTS, labels([("outcome", "halted")]));
+                self.retain_request(request);
+            } else {
+                self.candidates.push((request, "federation"));
+            }
         }
         Ok(())
     }
@@ -3785,5 +3860,70 @@ mod tests {
             "the loop bids exactly the four named-budget kinds"
         );
         assert!(!bid.contains(&WorkKind::Agent) && !bid.contains(&WorkKind::Solver));
+    }
+
+    /// AMBIENT-10093 (ADR 0158 decisions 9-10). A federation request on a held
+    /// subject is converted to this loop's ranked request — spread as the
+    /// uncertainty it would remove, budget over value as its cost — and
+    /// launched through the same ranking as a gap's; one with no licensed
+    /// source is refused and one already held is not admitted twice.
+    /// Mutation: pass `0` for the spread in `admit_federation_requests` — the
+    /// request ranks at nothing, halts as unviable, and the launch assertion
+    /// fails.
+    #[test]
+    fn a_federation_request_on_a_held_subject_reaches_the_research_loop_as_a_ranked_request_and_an_unlicensed_one_does_not()
+     {
+        use qip_contracts::control::{InformationRequest as Contract, InformationRequestFields};
+        let at = Timestamp::from_secs(1_800_000_000);
+        let contract = |id: &str, sources: &[&str]| -> Contract {
+            Contract::new(InformationRequestFields {
+                schema_version:
+                    <InformationRequestFields as qip_contracts::Contract>::SCHEMA_VERSION,
+                request_id: id.to_string(),
+                question: format!("does {id} hold?"),
+                expected_information_value: Decimal::from_int(50_000),
+                issued_at: at,
+                deadline: at.saturating_add(Duration::from_hours(1)),
+                allowed_sources: sources.iter().map(|s| (*s).to_string()).collect(),
+                budget: Decimal::from_int(5_000),
+            })
+            .expect("a well-formed request")
+        };
+        let licensed: BTreeSet<String> = ["licensed-feed".to_string()].into();
+        let held = contract("ir:held", &["licensed-feed", "unlicensed-feed"]);
+        let unlicensed = contract("ir:unlicensed", &["unlicensed-feed"]);
+        let requests = vec![(held, 4_000u32), (unlicensed, 4_000u32)];
+        let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
+            .unwrap_or_else(|e| panic!("{e}"));
+        let metrics = Metrics::new("test");
+        let mut round = ResearchRound::default();
+        assert_eq!(research.info_requests().count(), 0, "premise: none held");
+
+        research
+            .admit_federation_requests(&requests, at, &metrics, &mut round, &licensed)
+            .expect("admits");
+        research
+            .admit_federation_requests(&requests, at, &metrics, &mut round, &licensed)
+            .expect("a second admission is a no-op");
+        assert_eq!(
+            research.candidates.len(),
+            1,
+            "licensed once, unlicensed never"
+        );
+        // Read before the launch's purchase shrinks the value still on offer.
+        let criteria = research.candidates[0].0.criteria();
+        assert_eq!(criteria.uncertainty_reduction_bp, 4_000, "the spread");
+        assert_eq!(criteria.acquisition_cost_bp, 1_000, "budget over value");
+        research
+            .launch_ranked(&metrics, &mut round)
+            .expect("launches");
+
+        let launched: Vec<&InfoRequest> = research.info_requests().collect();
+        assert_eq!(launched.len(), 1);
+        let request = launched[0];
+        assert_eq!(request.id(), "fed-ir:held");
+        assert_eq!(request.status(), AcquisitionStatus::InProgress);
+        assert_eq!(round.info_launched, 1);
+        assert_eq!(round.scouted.len(), 1);
     }
 }

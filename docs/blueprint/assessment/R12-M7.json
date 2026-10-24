@@ -1615,12 +1615,13 @@
   {
     "id": "R12-CONTRACT-7072",
     "status": "PARTIAL",
-    "current": "MarketStatePack refuses inverted interval, non-positive horizon, empty lineage, out-of-interval events.",
+    "current": "MarketStatePack refuses an empty event list, an inverted interval, a non-positive horizon, an empty lineage and out-of-interval events. It is built nowhere outside qip-contracts.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/market_state.rs:39-70",
-      "backend/crates/libs/qip-contracts/tests/market_state.rs"
+      "backend/crates/libs/qip-contracts/tests/market_state.rs",
+      "backend/crates/libs/qip-contracts/tests/market_state.rs::a_pack_over_no_events_is_refused_rather_than_reported_as_a_clean_tape"
     ],
-    "gap": "No production producer/consumer. The NOW stage holds instrument readings, not the MarketEvents a MarketStatePack is reconstructed over (qip-contracts market_state.rs computes its integrity flags from those events), so a pack built there would carry an empty event list and claim a clean tape nobody read; the producer belongs where the ingested tape or the edge book is held.",
+    "gap": "No production producer/consumer. ADR 0151 decision 2 names both: the edge capture drain builds a pack per interval over the MarketEvents it applied (never over zero, which is now refused in the constructor) and the pack rides in the pass's FeatureSnapshot P2 record; the consumer is the tick desk's fusion (fusion.rs), which removes a flagged instrument's input weight and never raises one. Neither is built: the drain (qip-edge-node event_fabric/drain.rs) holds MarketEvents only inside the lake writer, and fusion.rs is off by default (QIP_DEEPBRAIN_TICK_EVERY unset). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1631,7 +1632,7 @@
     "verification": "cargo test -p qip-contracts --test market_state",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L06: the grader closure (build a MarketStatePack in now_stage.rs) was not implemented because it would assert tape integrity over zero events; row left PARTIAL with the corrected gap."
+    "notes": "2026-10-18 lane L06: the grader closure (build a MarketStatePack in now_stage.rs) was not implemented because it would assert tape integrity over zero events; row left PARTIAL with the corrected gap. 2026-10-24 lane T7-KERNEL slice: MarketStatePack::new now refuses zero events, so the producer cannot claim a clean tape over an empty interval. Mutation - disable the events.is_empty() refusal - a_pack_over_no_events_is_refused_rather_than_reported_as_a_clean_tape failed; restored, passes. Remaining slices: edge drain producer, FeatureSnapshot P2 carriage, fusion consumer."
   },
   {
     "id": "R12-CONTRACT-7073",

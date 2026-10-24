@@ -248,7 +248,7 @@
       "backend/crates/libs/qip-contracts/src/ledger.rs:42 Settlement::Simulated only",
       "backend/crates/libs/qip-contracts/tests/ledger_event.rs:6 settlement_has_no_variant_but_simulated"
     ],
-    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: the in_settlement account, the fill posting change, and Decision::Settled from the simulated gateway, with a test that cash is unavailable before the settlement date.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18) and not started; it spans three crates, so it is larger than the M this row carries. Slices: (1) qip-contracts: an in_settlement Account and a Decision::Settled outcome, both additive with serde defaults so old records decode and no digest moves; (2) qip-ledgerd store.rs: the Decision::Filled arm posts the cash leg to in_settlement:<cell>/<strategy> when the venue has SettlementTerms, to cash when it has none; (3) qip-edge-node gateway.rs: the simulated gateway emits Decision::Settled when its settlement clock passes a fill's date; (4) the test that cash is unavailable before the settlement date. Slice 3 is the only producer of the fact, and without it slice 2 would leave cash pending for ever. Re-graded 2026-10-24, no code changed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1542,23 +1542,25 @@
   {
     "id": "R12-CAPITAL-5067",
     "status": "PARTIAL",
-    "current": "qip_mesh::rebalance::rebalancing_tasks (backend/crates/services/qip-mesh/src/rebalance.rs:27); tests rebalance.rs:40, :59. Called from no kernel/app.",
+    "current": "rebalancing_tasks and RebalanceTask now live in qip_peer::rebalance (libs/qip-peer/src/rebalance.rs); qip-mesh re-exports them. qip-peer-link's Saga::close raises one task per drifting node/venue/instrument place when every leg fill of a fired cycle is known, and the host carries them to ReflexPort, read as PeerStatus::rebalance_new. Nothing in qip-edge-node reads rebalance_new yet.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/rebalance.rs:27",
-      "backend/crates/services/qip-mesh/tests/rebalance.rs:40"
+      "backend/crates/libs/qip-peer/src/rebalance.rs:rebalancing_tasks",
+      "backend/crates/edge/qip-peer-link/src/saga.rs::Saga::close (called from Saga::step)",
+      "backend/crates/edge/qip-peer-link/src/host.rs task hand-off to the port",
+      "backend/crates/edge/qip-peer-link/tests/saga.rs::a_closed_epoch_with_drift_raises_one_rebalance_task_per_drifting_place_through_the_port"
     ],
-    "gap": "Consumer in the saga: the only non-mesh holder of OpportunityEpoch is qip-peer-link's saga (Lane 1), which does not depend on qip-mesh, where rebalancing_tasks lives (a service). Wiring it needs either the function moved into the pure qip-peer library or a qip-peer-link dependency on qip-mesh, an architecture call the mesh_lane and lane_placement suites constrain, plus a journal record for the tasks.",
+    "gap": "The node side of ADR 0154 decision 6 (corrected 2026-10-24): qip-edge-node reads PeerStatus::rebalance_new from no caller that keeps it (scheduler.rs reads port.status() twice a turn for telemetry and health, so the field is consumed unread), and the P2 journal record for a task does not exist: Decision is a hash-chained enum in qip-contracts and a new topic needs qip-events schemas.lock.json and consumers.lock.json entries and the fabric catalogue, which is its own change. The ReflexPort stays at two methods (mesh_lane::the_reflex_port_declares_only_its_two_methods_and_none_can_wait), so tasks travel in the status report.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test rebalance",
+    "verification": "cargo test -p qip-peer-link --test saga; cargo test -p qip-mesh --test rebalance; cargo test -p qip-acceptance --test mesh_lane",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: the closure (saga.rs calls rebalancing_tasks) is blocked by the crate graph; not attempted."
+    "notes": "Lane L09 2026-10-18: closure blocked by the crate graph. Lane T1-EDGE 2026-10-24: function moved to qip-peer, saga calls it at epoch close, reported through the port. Mutations fired: dropping self.close() in Saga::step times out the drift test; capping nothing (filled instead of filled.min(least)) drops the americas task; removing closed.insert repeats the pair every step. Kept PARTIAL for the node consumer and the journal record."
   },
   {
     "id": "R12-MESH-5068",

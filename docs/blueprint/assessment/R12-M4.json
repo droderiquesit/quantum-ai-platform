@@ -2255,14 +2255,15 @@
   {
     "id": "R12-RISK-4101",
     "status": "PARTIAL",
-    "current": "Edge halts on journal pressure, awaiting reconciliation and polled halt flag; kill switch; reconciliation breaks halt a cell. Clock is now a risk signal: Cell::on_bytes measures how far each venue's batch stamps messages ahead of the cell's capture time, journals the transition (Decision::ClockSkew), withholds a venue past CellConfig::max_clock_skew under GATE_CLOCK_SKEW, and the pass sizes down by the clock row. Credential and deployment failures are still not modelled as risk.",
+    "current": "Edge halts on journal pressure, awaiting reconciliation and polled halt flag; kill switch; reconciliation breaks halt a cell. Clock is a risk signal (Decision::ClockSkew, GATE_CLOCK_SKEW). Deployment identity now has a consumer (ADR 0155 section 14): PolicyItem::AcceptableBuilds and BuildSet in qip-contracts (off the wire and out of the signing string while unproduced), CellConfig::with_build_identity, and a narrowing-only halt derived from the applied payload (Cell::deployment_halted): a cell whose build is absent from a produced set takes no new exposure under GATE_DEPLOYMENT_HALT, charted as qip_edge_halted{source=deployment} only on a cell built with an identity (absent, not zero, elsewhere); a rollback can neither release nor impose it. qip-edge-node reads its identity from the file named by QIP_BUILD_IDENTITY_FILE and stops if that file is set and unreadable.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:432 GATE_CLOCK_SKEW; :4017 observe_clock_lead measures each batch's venue time against capture time; :4045 clock_skewed; :4068 venue_withheld refuses a skewed venue; :2867 Cell::narrowing observes Clock, Feed and VenueSession; :7945 scan_cycles pauses the desk",
-      "backend/crates/libs/qip-contracts/src/degradation.rs:895 pauses_cross_venue_ordering",
-      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1516 a_venue_stamping_its_messages_ahead_of_the_cell_gets_no_order_until_a_batch_shows_it_level_again; :1597 a_cell_with_one_skewed_venue_reads_its_clock_stale_and_pauses_cross_venue_ordering; :1673 a_pass_sizes_down_by_the_clock_row_once_any_venue_is_skewed",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs the_desk_opens_no_cycle_while_a_venues_clock_cannot_be_placed_against_the_cells"
+      "backend/crates/libs/qip-contracts/src/policy.rs::PolicyItem::AcceptableBuilds",
+      "backend/crates/edge/qip-edge/src/cell.rs::Cell::deployment_halted",
+      "backend/crates/edge/qip-edge/src/telemetry.rs::CellMetrics::deployment_halt",
+      "backend/crates/apps/qip-edge-node/src/main.rs (QIP_BUILD_IDENTITY_FILE)",
+      "backend/crates/edge/qip-edge/tests/policy_rollback.rs::belief_is_freshness_only::a_cell_whose_build_is_absent_from_a_produced_build_set_takes_no_new_exposure_while_an_unproduced_set_changes_nothing"
     ],
-    "gap": "Credential and deployment risk signals: no halt source in qip-edge-node main.rs for a venue credential nearing expiry or a deployed commit that disagrees with the one the centre published. The clock half measures venue time against the cell's capture time, so a cell whose own clock is wrong and every venue's agree is not seen (the peer mesh's clock probe measures that, and is not wired into this row).",
+    "gap": "Producer and writer are missing (2026-10-24; ADR 0155 consumer-first rollout): the centre issues no acceptable_builds set (nothing in qip-kernel or qip-api populates PolicyPayload::acceptable_builds), and no unit writes QIP_BUILD_IDENTITY_FILE (infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl does not), so on every binary the wire is unbuilt and no cell halts on its deployment. Credential expiry has no source on a paper platform (the simulated gateway authenticates against references to requirements, no secret material, and the venue credential is readable nowhere, ADR 0003) and is not built; the shape for a real-venue connection under ADR 0108 is a per-venue not_after instant in signed policy, recorded as unreachable, not pending. The clock half measures venue time against the cell capture time, so a cell whose own clock is wrong while every venue agrees is not seen.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2270,10 +2271,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test venue_failure --test arbitrage",
+    "verification": "cargo test -p qip-edge --test policy_rollback",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: clock half closed on the default path, PARTIAL kept for credential and deployment. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests."
+    "notes": "2026-10-24 ADR 0155 section 14 and 15: consumer built, PARTIAL kept. Mutation fired: treating a mismatching build as matching left the cell trading under a set that omits it and the halted assertion failed (premise: an unproduced set and a set naming the build both size normally)."
   },
   {
     "id": "R12-RISK-4102",
