@@ -1495,6 +1495,11 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-edge-node",
+        "QIP_BUILD_IDENTITY_FILE",
+        NO_PRODUCER_STATES_THE_ACCEPTABLE_BUILDS_YET,
+    ),
+    (
+        "qip-edge-node",
         "QIP_FABRIC_URL",
         NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE,
     ),
@@ -2386,6 +2391,15 @@ const HAND_PLACED_CERTIFICATES_ARE_A_WORKSTATION_PATH: &str = "Unset because \
      `cas`. Set, a private key would sit on the node's disk for as long as the \
      file lived, which is what short-lived workload certificates exist to \
      avoid.";
+
+/// The deployment-identity wire (ADR 0155 section 14), consumer first.
+const NO_PRODUCER_STATES_THE_ACCEPTABLE_BUILDS_YET: &str = "Unset because the \
+     centre does not yet produce an `acceptable_builds` set in any policy \
+     payload, so a node holding its build identity would compare it with \
+     nothing: the wire is built and tested, and the rollout order the ADR \
+     fixes is consumer, then producer, then the unit that writes the identity \
+     file. Set earlier, nothing narrows; unset, the cell reports no \
+     `deployment` halt series at all rather than a zero.";
 
 /// The node-to-node coordination mesh.
 const THE_PEER_MESH_HAS_NO_DEPLOYED_PEER: &str = "The peer transport is \
