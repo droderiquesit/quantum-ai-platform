@@ -458,7 +458,7 @@
       "backend/crates/services/qip-training/src/adversarial.rs attack, PerturbationPolicy, PerturbationReport::refusal and its unit tests (a smooth model survives; a model flipping inside the data noise is refused; a non-finite nudge is refused; a constant model or empty probe is refused rather than passed)",
       "backend/crates/apps/qip-deepbrain/src/learning.rs promote_candidate runs the suite before scoring against incumbents; learning::tests::a_candidate_that_fails_the_adversarial_perturbation_suite_is_not_promoted (same fit promoted under the default policy, refused under a no-movement policy)"
     ],
-    "gap": "2026-10-24 (lane L2-INTEL): the suite is built and on the deep brain's promote stage. Promotion awaits the independent skeptic. Note: the tolerance values (a tenth of a feature's spread in, half the output's spread out, a tenth of rows) are the lane's choice and are stated in PerturbationPolicy::default.",
+    "gap": "2026-10-24 (lane L2-INTEL, skeptic REFUTED 4b659b96): the suite runs on the served candidate over its holdout on the deep brain's promote stage and a test fails when the call is removed, but: (1) the default policy cannot refuse the case it was written for: one dominant mid-data split (a single central stump) leaves about 6% of rows fragile, under the 10% pooled share allowed, so it passes; only fragility summed across features past 10% is refused, and no default-policy refusal of a real fitted fragile model is tested; (2) the guard is a convention: Platform::promote_model and promote_model_from are pub and run no suite; today the desk is their only non-test caller; (3) the attack is coordinate-wise, one feature at a time, so a joint-feature fragility passes. Remaining step: calibrate against a real fitted boosted-stumps teacher (a per-feature or single-split share rather than one pooled share, or a lower pooled share) with a promote-stage test refusing a one-dominant-split candidate under the default policy; and make the suite structural (a proof type promote_model requires, minted only by the attack, or the attack inside promote_model_from given the holdout).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -469,7 +469,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-training --lib adversarial && cargo +1.94.1 test -p qip-deepbrain --lib a_candidate_that_fails_the_adversarial_perturbation_suite_is_not_promoted",
     "work_item": "",
     "size": "L",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the refusal filtered out in promote_candidate fails a_candidate_that_fails_the_adversarial_perturbation_suite_is_not_promoted; the fragile comparison inverted in attack fails two adversarial unit tests."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the refusal filtered out in promote_candidate fails a_candidate_that_fails_the_adversarial_perturbation_suite_is_not_promoted; the fragile comparison inverted in attack fails two adversarial unit tests. Skeptic (security-engineer, read-only, default REFUTED) 2026-10-24: REFUTED as recorded in gap."
   },
   {
     "id": "R12-MODEL-4022",

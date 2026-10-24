@@ -995,6 +995,11 @@ impl Platform {
         *registry = scratch;
         self.succeed_model_pack(&record);
         apply_promotion(&mut self.model_promotions, record);
+        // The cards the promotion moved, in the step that moved them
+        // (R12-MODEL-9003): left to the caller's next journal, a process that
+        // died between the two left the log saying one model was promoted
+        // and its cards saying another was in production.
+        self.journal_model_registry(registry, now)?;
         Ok(published)
     }
 
@@ -1081,6 +1086,8 @@ impl Platform {
             *registry = scratch;
             self.succeed_model_pack(&record);
             apply_promotion(&mut self.model_promotions, record);
+            // As in a promotion: the moved cards in the same step.
+            self.journal_model_registry(registry, now)?;
             return Ok(predecessor.clone());
         }
         Err(Error::not_found(format!(

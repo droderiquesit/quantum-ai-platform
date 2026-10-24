@@ -335,6 +335,14 @@ fn card_subject(card: &ModelCard) -> Option<&str> {
     found
 }
 
+/// The instrument a promoted model's name says it is of: this desk names
+/// every model `bar-{family}-{subject}`, and no family name holds a `-`.
+fn promotion_subject(name: &str) -> Option<&str> {
+    name.strip_prefix("bar-")?
+        .split_once('-')
+        .map(|(_, subject)| subject)
+}
+
 /// A standing model's fitted feature sample, and the instrument it is of.
 ///
 /// The subject is held beside the columns rather than derived when needed: the
@@ -734,7 +742,8 @@ pub struct LearningDesk {
     promoted_artifacts: BTreeMap<String, ModelArtifact>,
     /// Artifacts of models a promotion displaced, kept so a rollback can put
     /// the incumbent back in the position to be rescored (MODEL-045). Bounded
-    /// by the number of references ever displaced in this process, one entry
+    /// by the number of references ever displaced — in this process, and
+    /// since R12-MODEL-9003 in the log a restart restores from — one entry
     /// each, and an entry leaves when its model is reactivated.
     displaced_artifacts: BTreeMap<String, ModelArtifact>,
     /// Per registered model, the feature columns it was fitted on and the
@@ -959,7 +968,45 @@ impl LearningDesk {
         }
         self.restored = true;
         let mut restored = 0;
+        // The promotion records are the source of truth for what is in
+        // production; the registration records are a mirror written beside
+        // them, and a process can die between the two writes. So each
+        // restored card's stage is reconciled against the promoted set: a
+        // card the log promoted is Production, one it promoted and has since
+        // displaced is Retired, and a Production card the log never promoted
+        // goes back to Validation. Without this a crash between the writes
+        // restored a displaced model as the incumbent, which no artifact
+        // could rescore, and stopped promotion on its subject for good.
+        let promoted: BTreeSet<String> = platform.model_promotions().keys().cloned().collect();
+        let ever_promoted: BTreeSet<String> = platform
+            .model_promotion_history()
+            .map(|history| history.into_iter().map(|record| record.reference).collect())
+            .unwrap_or_default();
+        // Versions are also drawn past every promoted one, so a fit after a
+        // crash that lost the promoted version's card does not take its name.
+        for reference in &ever_promoted {
+            if let Some(fit) = reference
+                .rsplit_once('@')
+                .and_then(|(_, version)| version.strip_prefix("0."))
+                .and_then(|rest| rest.strip_suffix(".0"))
+                .and_then(|n| n.parse::<u64>().ok())
+            {
+                self.fits = self.fits.max(fit);
+            }
+        }
         for card in platform.registered_model_cards() {
+            let reference = card.reference();
+            let mut card = card.clone();
+            if promoted.contains(&reference) {
+                card.stage = ModelStage::Production;
+            } else if card.stage == ModelStage::Production {
+                card.stage = if ever_promoted.contains(&reference) {
+                    ModelStage::Retired
+                } else {
+                    ModelStage::Validation
+                };
+            }
+            let card = &card;
             // The fit count is what versions are drawn from, and it restarts
             // at zero with the process; left there, the next fit would reuse
             // a restored card's version and `register` would replace it,
@@ -1140,6 +1187,21 @@ impl LearningDesk {
             .filter(|card| card_subject(card) == Some(candidate.subject.as_str()))
             .map(ModelCard::reference)
             .collect();
+        // An incumbent the promotion log names on this subject with no card
+        // in the registry — a crash between the promotion record and its
+        // cards — is still the incumbent. It is refused by name rather than
+        // ignored: ignoring it would let the candidate in unopposed beside a
+        // model it never displaced.
+        if let Some(orphan) = platform.model_promotions().values().find(|promotion| {
+            promotion_subject(&promotion.name) == Some(candidate.subject.as_str())
+                && self.registry.get(&promotion.reference).is_none()
+        }) {
+            return not_promoted(format!(
+                "incumbent {} is promoted on this subject by the log but its card is not in the \
+                 registry; a candidate cannot be shown better than a model the desk cannot read",
+                orphan.reference
+            ));
+        }
         let mut best_incumbent: Option<f64> = None;
         let mut baseline_name = "the held-out mean predictor (skill bar)".to_string();
         for incumbent in &incumbents {
@@ -2206,6 +2268,135 @@ mod tests {
         Ok(())
     }
 
+    /// R12-MODEL-9003: a process that dies between a promotion record and
+    /// the cards it moved leaves a log whose promotion says v2 and whose
+    /// cards say v1 is in production. The restarted desk reconciles the
+    /// cards against the promotion log: v1 comes back Retired, v2 is still
+    /// the incumbent and, with no card to read, blocks promotion by name
+    /// rather than being ignored, and the next fit does not take v2's
+    /// version. An independent skeptic reproduced the stuck subject and the
+    /// version reuse this closes. The crash is reproduced by truncating the
+    /// log file after v2's promotion record, which is a valid prefix of the
+    /// hash chain.
+    ///
+    /// Mutations: drop the stage reconciliation in `restore_registry` — v1
+    /// comes back Production; drop the orphan check in `promote_candidate` —
+    /// a candidate is promoted unopposed; drop the promoted-version scan —
+    /// the next fit reuses v2's version.
+    #[test]
+    fn a_crash_between_a_promotion_and_its_cards_leaves_the_promotion_log_in_charge() -> Result<()>
+    {
+        let directory = std::env::temp_dir().join(format!(
+            "qip-deepbrain-promotion-crash-{}-{}",
+            std::process::id(),
+            at().as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let file_platform = || -> Result<Platform> {
+            let config = qip_kernel::PlatformConfig::default().with_event_log_file(&path);
+            let (context, _clock) = qip_core::Context::deterministic(at(), config.seed);
+            Platform::new_serving(
+                config,
+                context,
+                qip_observability::Telemetry::silent(),
+                qip_financial::universe::Universe::new(),
+                qip_risk::limits::LimitSet::conservative_default(),
+                Box::new(InTreeProvider),
+            )
+        };
+        let (v1, v2) = {
+            let mut platform = file_platform()?;
+            let mut desk = learning_desk();
+            desk.maybe_learn(
+                &subject(),
+                &super::tests_support::learnable(400),
+                REGIME,
+                1,
+                at(),
+            )?;
+            let first = desk
+                .promote_candidate(&mut platform, at())?
+                .ok_or_else(|| Error::not_found("a first candidate"))?;
+            desk.maybe_learn(
+                &subject(),
+                &super::tests_support::learnable(1_200),
+                REGIME,
+                2,
+                at(),
+            )?;
+            let second = desk
+                .promote_candidate(&mut platform, at())?
+                .ok_or_else(|| Error::not_found("a second candidate"))?;
+            match (&first, &second) {
+                (
+                    PromotionOutcome::Promoted { reference: v1, .. },
+                    PromotionOutcome::Promoted {
+                        reference: v2,
+                        displaced,
+                        ..
+                    },
+                ) if displaced.contains(v1) => (v1.clone(), v2.clone()),
+                _ => {
+                    return Err(Error::invalid(format!(
+                        "premise: v2 displaced v1: {} / {}",
+                        first.describe(),
+                        second.describe()
+                    )));
+                }
+            }
+        };
+        // The crash: everything after v2's promotion record is lost.
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| Error::io(format!("read the log: {e}")))?;
+        let lines: Vec<&str> = text.lines().collect();
+        let cut = lines
+            .iter()
+            .rposition(|line| line.contains(qip_kernel::model_serving::MODEL_PROMOTION_ORIGIN))
+            .ok_or_else(|| Error::not_found("v2's promotion record"))?;
+        assert!(
+            lines[cut + 1..]
+                .iter()
+                .any(|line| line.contains(qip_kernel::model_serving::MODEL_REGISTRATION_ORIGIN)),
+            "premise: v2's cards follow its promotion record and are lost by the cut"
+        );
+        std::fs::write(&path, lines[..=cut].join("\n") + "\n")
+            .map_err(|e| Error::io(format!("truncate the log: {e}")))?;
+
+        let mut platform = file_platform()?;
+        assert!(
+            platform.model_promotions().contains_key(&v2),
+            "premise: the log still says v2 is promoted"
+        );
+        let mut restarted = learning_desk();
+        restarted.restore_registry(&platform);
+        assert_eq!(
+            restarted.registry().get(&v1).map(|card| card.stage),
+            Some(ModelStage::Retired),
+            "the displaced model came back in production"
+        );
+        restarted.maybe_learn(
+            &subject(),
+            &super::tests_support::learnable(2_000),
+            REGIME,
+            3,
+            at(),
+        )?;
+        let after = restarted
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate after the crash"))?;
+        let PromotionOutcome::NotPromoted { reference, reason } = &after else {
+            return Err(Error::invalid(format!(
+                "a candidate was promoted unopposed beside {v2}: {}",
+                after.describe()
+            )));
+        };
+        assert!(reason.contains(&v2), "{reason}");
+        assert_ne!(reference, &v2, "the next fit took the promoted version");
+        let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
+    }
+
     /// R12-MODEL-9003: a restarted desk restores every card the log holds,
     /// production ones included, and holds its restored incumbent to the
     /// same strictly-better gate as a desk that never restarted.
@@ -2247,7 +2438,13 @@ mod tests {
             .published()
             .ok_or_else(|| Error::not_found("the promoted artifact"))?;
         let stored = ModelArtifact::from_json(&published.contents)?;
-        assert!(platform.journal_model_registry(desk.registry(), at())? > 0);
+        // The promotion journaled the cards it moved in the same step.
+        assert!(
+            platform
+                .registered_model_cards()
+                .any(|card| card.reference() == incumbent && card.stage == ModelStage::Production),
+            "premise: the promoted card is on the log"
+        );
         let fetch = |digest: &str| -> Result<ModelArtifact> {
             if digest == stored.digest {
                 Ok(stored.clone())
