@@ -892,7 +892,7 @@
     "verification": "cargo test -p qip-edge --test reservation; cargo test -p qip-edge-node --test feed_recovery",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: gap corrected, PARTIAL kept. The grader's 'Cell::positions is never written from fills' is false (cell.rs:6537, tested in fills.rs). Closing the rest needs a funding/borrow print in qip-edge-node's feed (lane L09's crate) and a borrow gate in Cell's pre-order checks; neither was done here."
+    "notes": "Lane L11, 2026-10-18: gap corrected, PARTIAL kept. The grader's 'Cell::positions is never written from fills' is false (cell.rs:6537, tested in fills.rs). Closing the rest needs a funding/borrow print in qip-edge-node's feed (lane L09's crate) and a borrow gate in Cell's pre-order checks; neither was done here. 2026-10-24 lane L5-EDGE: not closed. A producer on the default simulated feed would have to state what the in-process venue lends, and the simulator (qip-brokers exchange.rs, qip-edge-node gateway.rs) has no inventory, borrow or funding concept: stating 'unavailable' refuses every short sale on the node, stating an amount invents one. That is a modelling decision (what the simulated venue lends and charges) to make before the feed print and a borrow gate beside authority_verdict in Cell's signal path; recorded rather than guessed."
   },
   {
     "id": "R12-REFLEX-5039",
@@ -1234,7 +1234,7 @@
       "backend/crates/apps/qip-edge-node/tests/arbitrage.rs::the_installed_desks_graph_places_every_node_in_the_cells_region_and_two_regions_never_share_a_node",
       "edge/qip-arbitrage/tests/edge_costs.rs::two_nodes_differing_only_in_settlement_stage_or_region_are_distinct_and_no_free_edge_joins_them"
     ],
-    "gap": "Representation and settlement stage on production nodes: the CycleWhitelist contract (qip-contracts) carries neither per conversion, so the desk can only assume Native/Settled; settlement stage from gateway terms needs the contract to name it. The kernel's graphs (qip-kernel platform.rs) still build Node::new.",
+    "gap": "Corrected 2026-10-24 (lane L5-EDGE): the old clause 'the kernel's graphs (qip-kernel platform.rs) still build Node::new' was wrong: both Node::new calls in platform.rs (ensure_world_object and a test) are qip_world_model::graph::Node, the causal world graph, and qip-kernel does not use qip-arbitrage at all. What remains: the CycleWhitelist contract (qip-contracts policy.rs WhitelistedConversion) carries no representation or settlement stage per conversion, so the desk assumes Native/Settled; and on the default path no desk is installed, because qip-api ships an empty whitelist unless QIP_ARBITRAGE_POLICY_PATH is set, which no committed environment sets (grep -rn QIP_ARBITRAGE_POLICY_PATH infrastructure finds nothing).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1245,7 +1245,7 @@
     "verification": "cargo test -p qip-edge-node --test arbitrage the_installed_desks_graph_places_every_node_in_the_cells_region",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L09: region half closed on the node. Mutations, each restored byte for byte: passing None for the region in ArbitrageInstaller::install failed 'a node of the installed graph carries no region'; deleting .in_region(&config.region) from main.rs failed 'main.rs no longer places the desk's graph in the cell's region'."
+    "notes": "Re-graded 2026-10-18 by lane L09: region half closed on the node. Mutations, each restored byte for byte: passing None for the region in ArbitrageInstaller::install failed 'a node of the installed graph carries no region'; deleting .in_region(&config.region) from main.rs failed 'main.rs no longer places the desk's graph in the cell's region'. 2026-10-24 lane L5-EDGE: gap corrected by reading the code; no code changed."
   },
   {
     "id": "R12-MESH-5054",
