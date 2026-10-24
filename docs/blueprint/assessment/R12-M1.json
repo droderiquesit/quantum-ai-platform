@@ -539,12 +539,14 @@
   {
     "id": "R12-REASON-1024",
     "status": "PARTIAL",
-    "current": "Rule/constraint evaluators exist but are not on the path from a model output to a decision; no proof traces.",
+    "current": "The kernel's REASON stage runs the symbolic reasoners over every formed hypothesis and journals a SymbolicDerivation that symbolic_stage::verify re-derives (the proof trace). Since REASON-1004 (ADR 0125 decision 2) the rule pack vetoes an approved hypothesis on a hard stop, so a proposal violating a hard rule is rejected with the derivation on the log. Hypotheses are raised by deterministic detectors and reviewed by the agent panel; no neural model proposes anything.",
     "evidence": [
       "backend/crates/services/qip-reasoning-engine/src/rules.rs:38 Op",
-      "backend/crates/services/qip-reasoning-engine/src/constraint.rs:45 Form"
+      "backend/crates/services/qip-reasoning-engine/src/constraint.rs:45 Form",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs::SymbolicDerivation::veto",
+      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs::a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal"
     ],
-    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the same veto slice as REASON-1004; SymbolicDerivation is already the trace.",
+    "gap": "2026-10-24 (lane L2-INTEL): the veto slice the gap named has landed (REASON-1004), so a rule-violating proposal is rejected with a recorded, replayable derivation. Unmet: the requirement's subject is a neural proposal, and no neural model exists in the tree (grep -rli neural over qip-kernel and qip-reasoning-engine finds nothing); the proposals the veto rejects come from deterministic detectors. Closes when a neural (or learned-model) proposal reaches REASON on a default path and the veto rejects one, or an ADR reads 'neural' as any model output.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -554,7 +556,7 @@
       "R12-REASON-1004"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test valuation_seam a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal",
     "work_item": "",
     "size": "L",
     "notes": " ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Place symbolic verification between model output and decision; emit proof traces."

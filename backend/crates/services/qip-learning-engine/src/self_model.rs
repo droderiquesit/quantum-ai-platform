@@ -93,6 +93,13 @@ pub enum ComponentKind {
     /// factor — a member's view reaches REASON through the federation's own
     /// arbitration, not as the origin of a thesis.
     WorldModel,
+    /// An ensemble's combined view, keyed by the ensemble's name: the world
+    /// model federation's arbitrated probability and the tournament's market
+    /// aggregate, charged when the proposition or question they combined on
+    /// resolves (R12-MODEL-6016). Scored apart from the members it combines,
+    /// because an ensemble can be worse than its best member and that is
+    /// only visible if the ensemble has a record of its own.
+    Ensemble,
 }
 
 impl ComponentKind {
@@ -103,6 +110,7 @@ impl ComponentKind {
             Self::Rung => "rung",
             Self::Strategy => "strategy",
             Self::WorldModel => "world_model",
+            Self::Ensemble => "ensemble",
         }
     }
 
@@ -113,6 +121,7 @@ impl ComponentKind {
             "rung" => Some(Self::Rung),
             "strategy" => Some(Self::Strategy),
             "world_model" => Some(Self::WorldModel),
+            "ensemble" => Some(Self::Ensemble),
             _ => None,
         }
     }

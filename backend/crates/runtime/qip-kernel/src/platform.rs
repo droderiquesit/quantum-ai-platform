@@ -1222,6 +1222,12 @@ const PENDING_CORPORATE_ACTIONS: usize = 4_096;
 const OUTSIDE_PRIOR_CAPACITY: usize = 1_024;
 
 const PROPOSAL_HISTORY: usize = 256;
+/// The self-model key the world-model federation's arbitrated view is
+/// scored under as an ensemble (R12-MODEL-6016).
+pub const FEDERATION_ENSEMBLE: &str = "world-model-federation";
+/// The self-model key the tournament's market aggregate is scored under as
+/// an ensemble (R12-MODEL-6016).
+pub const TOURNAMENT_ENSEMBLE: &str = "model-tournament";
 
 /// How many cycles of the book's own equity the platform keeps, for the tail
 /// statistics the risk limits read.
@@ -13093,6 +13099,31 @@ impl Platform {
                     ));
                 }
             }
+            // The arbitrated view is scored as an ensemble of its own, apart
+            // from the members it combined (R12-MODEL-6016).
+            if let Some(merged) = resolution.ensemble {
+                let charged = ComponentKey::new(
+                    qip_learning_engine::self_model::ComponentKind::Ensemble,
+                    FEDERATION_ENSEMBLE,
+                )
+                .and_then(|key| {
+                    self.self_model.absorb_forecast(
+                        key,
+                        resolution.proposition.as_str(),
+                        merged,
+                        resolution.outcome,
+                        now,
+                    )
+                });
+                if let Err(error) = charged {
+                    problems.push(format!(
+                        "the federation's arbitrated view on `{}` resolved and was charged to no \
+                         component: {}",
+                        resolution.proposition,
+                        error.message()
+                    ));
+                }
+            }
         }
         if let Err(error) = self.journal_record(review, "kernel/federation", now) {
             problems.push(format!(
@@ -18097,6 +18128,36 @@ impl Platform {
             Ok(Some(review)) => {
                 let detail = format!("{}; {}", outcome.detail, review.detail());
                 outcome = StageOutcome { detail, ..outcome };
+                // The market aggregate is an ensemble of the tournament's
+                // forecasters, scored apart from them (R12-MODEL-6016): the
+                // probability it held for the outcome that happened, charged
+                // as a forecast that the outcome would happen.
+                for resolved in &review.resolved {
+                    let Some(aggregate) = resolved.aggregate else {
+                        continue;
+                    };
+                    let charged = ComponentKey::new(
+                        qip_learning_engine::self_model::ComponentKind::Ensemble,
+                        TOURNAMENT_ENSEMBLE,
+                    )
+                    .and_then(|key| {
+                        self.self_model.absorb_forecast(
+                            key,
+                            resolved.question.as_str(),
+                            aggregate,
+                            true,
+                            now,
+                        )
+                    });
+                    if let Err(error) = charged {
+                        outcome = outcome.with_problem(format!(
+                            "the tournament aggregate on `{}` resolved and was charged to no \
+                             component: {}",
+                            resolved.question,
+                            error.message()
+                        ));
+                    }
+                }
                 if let Err(error) =
                     self.journal_record(review, crate::model_tournament::TOURNAMENT_ORIGIN, now)
                 {

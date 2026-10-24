@@ -1173,14 +1173,17 @@
   {
     "id": "R12-REASON-3053",
     "status": "PARTIAL",
-    "current": "REASON runs rules, timeline, Bayesian network, constraint, lifecycle, abduction and intervention per hypothesis and journals the derivation, but only after review decided; nothing feeds back into hypothesis formation.",
+    "current": "REASON runs rules, timeline, Bayesian network, constraint, lifecycle, abduction and intervention per hypothesis (symbolic_stage::derive) and journals the derivation. Under ADR 0125 decision 2 the rule pack's verdict now feeds the decision: Platform::reason_symbolically returns SymbolicDerivation::veto, and a hypothesis review approved that the pack finds ineligible on a hard stop (live ceiling, one lot over the position budget, cash short of one lot) forms no thesis and no proposal, recorded as 'approved but vetoed by the symbolic rule pack'.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:537 derive",
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:18 advisory: called after REASON has decided"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:18 advisory: called after REASON has decided",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs::SymbolicDerivation::veto",
+      "backend/crates/runtime/qip-kernel/src/platform.rs reason_about_the_queue: the symbolic_veto arm before thesis_from (DecisionTaken::NotSizeable)",
+      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs::a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal (control queued, vetoed half forms none)"
     ],
-    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the same veto slice as REASON-1004, feeding the rule verdict into approval.",
+    "gap": "2026-10-24 (lane L2-INTEL, skeptic REFUTED): the rule-pack veto gates thesis and proposal formation, not hypothesis formation. In REASON the hypothesis is synthesised and reviewed, `approved` is computed, HYPOTHESES_APPROVED counted and the prediction recorded before reason_symbolically runs; the veto arm returns DecisionTaken::NotSizeable and leaves the hypothesis approved (the vetoed run's detail still reads 'hypothesis approved at confidence 0.36'). ADR 0125 decision 2 itself says the derivation moves before approval so the verdict is an input to approval; that move is not done. In practice the veto's two reachable stops (lot over budget, cash short of a lot) duplicate ACT's whole-lot gate, and the named test pins only the absence of '; sized on conviction', not proposals(). 'Alongside neural inference' is unmet on a default path: qip-fastbrain forbids a language model and qip-deepbrain's hosted adapter is behind unset model, attestation and credential variables (DeterministicModel otherwise). Remaining step: run reason_symbolically on the synthesised hypothesis before `approved` is computed, a hard-stop veto setting the status to not approved with the rule-pack rationale (driving the approved/rejected counters and the recorded prediction), plus a mutation-verified test with a control that the vetoed hypothesis's journaled status is not approved and proposals_made() is unchanged; the neural clause needs a neural reasoner on a default path or an ADR scoping it out.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1188,10 +1191,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test valuation_seam a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Compose at least one symbolic verdict into hypothesis formation, as the verification requires."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Compose at least one symbolic verdict into hypothesis formation, as the verification requires. 2026-10-24 L2-INTEL: mutation re-run: SymbolicDerivation::veto returning None at entry fails the named test at valuation_seam.rs:1528 (the vetoed thesis is queued); restored by copy and cmp, the test passes (1 passed). Skeptic (code-reviewer, read-only, default REFUTED) 2026-10-24: REFUTED as recorded in gap; it confirmed the default path (qip-fastbrain node::run -> run_cycle -> stage_reason -> reason_symbolically) and the mutation."
   },
   {
     "id": "R12-REASON-3054",
@@ -2433,11 +2436,13 @@
     "status": "PARTIAL",
     "current": "Urgency is derived from the gap's deadline in production: ResearchLoop::admit computes urgency_bp(now, signal expiry, signal_ttl) — half scale with the whole window ahead (URGENCY_FLOOR_BP), full scale at the deadline, linear between — and passes it to cheapest_viable, so a gap the router deferred ranks ahead of the same gap raised this instant; the information request's deadline is the signal's expiry rather than now + ttl. The pending map keeps each routed signal's expiry for that purpose. rank_acquisitions' product then reads significance x uncertainty x urgency x (1 - cost) with every factor measured.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/research.rs:136-157 URGENCY_FLOOR_BP and urgency_bp",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:1515-1524 admit derives urgency from the deadline and passes it",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:2431 two_gaps_equal_in_every_other_factor_rank_the_nearer_deadline_first (mutation: urgency_bp ignores the deadline; the test fails)"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:148-166 URGENCY_FLOOR_BP and urgency_bp",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2149-2178 admit derives urgency from the deadline and passes it to cheapest_viable",
+      "backend/crates/apps/qip-deepbrain/src/research.rs two_gaps_equal_in_every_other_factor_rank_the_nearer_deadline_first",
+      "backend/crates/apps/qip-deepbrain/src/research.rs research::tests::a_deferred_gap_admitted_beside_a_fresh_one_ranks_first_through_admit (two gaps admitted through ResearchLoop::admit; the deferred one ranks higher and launches)",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs the_curiosity_rank_is_monotone_in_every_factor_and_zero_when_any_factor_is (grid sweep of all four factors)"
     ],
-    "gap": "2026-10-24: The named test calls urgency_bp directly, so it proves the helper but not that admit passes the gap's deadline through to the ranking. Closing: a test that admits a deferred gap and a fresh one through ResearchLoop::admit and asserts the deferred one ranks first (it must fail the line-2176 mutation); also state the monotone-in-each-factor and zero-factor property test the requirement asks for.",
+    "gap": "2026-10-24 (lane L2-INTEL, skeptic REFUTED): the acquisition rank is closed (admit-level urgency test and grid property test, both mutation-verified), but the requirement says the Curiosity Engine ranks research, and the research tasks the deep brain starts on its default path are ordered by qip-expansion curriculum.rs Criteria::score: value_per_cost x (information_gain + uncertainty_reduction) with urgency as a (1 + urgency) boost and cost as a divisor, whose comment keeps a zero urgency from zeroing a task (EXPAND-6063); the research queue sorts on that priority and desk.finish_sweep_within starts from it. Owner decision needed, because the two requirements conflict: either Criteria::score gates on significance x uncertainty x urgency x (1 - cost) with the zero rule (and EXPAND-6063 changes), plus a mutation-verified test through offer_by_deadline; or an ADR narrows 'ranks research' here to InfoRequest acquisitions. Also unrecorded by any ADR: cost enters as (1 - cost), not x cost as the text reads; and the uncertainty factor is the gap's severity, the same for every option, not a measured reduction per observation.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2447,10 +2452,10 @@
       "R12-AMBIENT-3104"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib two_gaps_equal_in_every_other_factor_rank_the_nearer_deadline_first",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_deferred_gap_admitted_beside_a_fresh_one_ranks_first_through_admit && cargo +1.94.1 test -p qip-contracts --test ambient the_curiosity_rank_is_monotone_in_every_factor_and_zero_when_any_factor_is",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L03: closed. The (1 - cost) form is a register wording note, not a defect. The desk's research queue is still ordered by the curriculum; that is the queue's own ranking, not the acquisition rank this row checks. AUDIT-4: 2026-10-24 regraded, the named test calls urgency_bp directly; replacing ResearchLoop::admit's urgency with the floor leaves it and the whole qip-deepbrain suite green, so the production derivation from the gap's deadline is unproved."
+    "notes": "2026-10-18 lane L03: closed. The (1 - cost) form is a register wording note, not a defect. The desk's research queue is still ordered by the curriculum; that is the queue's own ranking, not the acquisition rank this row checks. AUDIT-4: 2026-10-24 regraded, the named test calls urgency_bp directly; replacing ResearchLoop::admit's urgency with the floor leaves it and the whole qip-deepbrain suite green, so the production derivation from the gap's deadline is unproved. 2026-10-24 L2-INTEL: mutations fired, each restored byte-for-byte (cp + cmp): research.rs admit `let urgency = URGENCY_FLOOR_BP;` fails a_deferred_gap_admitted_beside_a_fresh_one_ranks_first_through_admit (rank assertion); ambient.rs net_value_bp `MAX_SEVERITY_BP - self.urgency_bp` and `+ 1` on the quotient each fail the_curiosity_rank_is_monotone_in_every_factor_and_zero_when_any_factor_is. Skeptic (code-reviewer, read-only, default REFUTED) 2026-10-24: REFUTED on bar part 4 (the research queue's own ranking is not the product); default path, formula and both new tests judged to hold. Stale evidence line numbers corrected."
   },
   {
     "id": "R12-AMBIENT-3107",
@@ -2488,7 +2493,7 @@
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs:443-453",
       "backend/crates/runtime/qip-kernel/src/platform.rs:12585-12592"
     ],
-    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: observe_hypothesis returning a typed refusal that reason_about_the_queue honours, and a kernel test that a DataPoisoning refutation yields no proposal.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): a refutation may veto a hypothesis. 2026-10-24 lane L2-INTEL built the veto (observe_reasoning returning the society's refutation, honoured in reason_about_the_queue beside the symbolic veto) and reverted it unpushed, because on the default path it stops every proposal: the missing_variable critic (qip-learning-engine verifier.rs MissingVariableCritic) refutes any prediction whose panel reported a missing input, and every default panel reports 'quantum-optimization: a reachable quantum backend; this deployment has no credential or endpoint configured' (and fixtures also 'compliance-control: compliance register entry'), so every approved hypothesis was refuted and 27 qip-kernel tests across capital, catalogue_hedge_candidates, solver_routing, symbolic_federation, valuation_seam and the platform lib failed for want of any sized proposal. Remaining step, needing a decision before the code: which missing inputs are material to an explanation (a deployment-wide absence such as the quantum backend is not a variable the explanation omitted), then MissingVariableCritic narrowed to those, then the veto as built, then a kernel test that a DataPoisoning refutation of an approved hypothesis forms no proposal and its control is queued.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2499,7 +2504,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The poisoning critic is wired (old gap closed). 'Can refuse it' holds only at verdict level. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: A critic's refutation must be able to refuse the hypothesis it falsifies (today it is advisory: tournament hold-out only); a kernel test that a refuted thesis is not sized."
+    "notes": "Round-2 independent audit, 2026-10-11: The poisoning critic is wired (old gap closed). 'Can refuse it' holds only at verdict level. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: A critic's refutation must be able to refuse the hypothesis it falsifies (today it is advisory: tournament hold-out only); a kernel test that a refuted thesis is not sized. 2026-10-24 L2-INTEL: veto prototype and its full qip-kernel run (27 failures, cause quoted in gap) recorded; nothing of it is committed."
   },
   {
     "id": "R12-REASON-3109",
