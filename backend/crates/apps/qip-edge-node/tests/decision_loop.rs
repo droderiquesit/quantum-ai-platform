@@ -2111,3 +2111,101 @@ fn the_lake_alone_rebuilds_the_book_the_venue_published() -> Result<()> {
     );
     Ok(())
 }
+
+/// R12-TICK-2044: a circuit breaker the simulated venue declares reaches the
+/// cell as a typed status message on the feed's own wire, and the tick lake
+/// seals it as that typed record. The feed refuses a pass whose frame the
+/// cell decoded short (`decoded != tick.messages`), so the pass succeeding
+/// is the cell having decoded the status line; the lake line is what the
+/// capture path kept of it.
+///
+/// Mutation: in `SimulatedFeed::publish`, skip the status line
+/// (`wire.status(..)`) — no `StatusChange` reaches the lake and the first
+/// assertion fails.
+#[test]
+fn a_circuit_breaker_the_venue_declares_reaches_the_cell_as_a_typed_status_and_is_sealed_in_the_lake()
+-> Result<()> {
+    use qip_contracts::message::MessageBody;
+    use qip_contracts::venue::VenueStatus;
+
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 1_024)?;
+    let lake: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::new());
+    let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        CELL,
+        qip_edge_node::event_fabric::drain::default_retention(),
+        qip_storage::lake_codec::SegmentCodec::Identity,
+    )?)];
+    let mut drain = Drain::open(
+        Arc::clone(&rig.spool),
+        sinks,
+        rig.drain_publisher
+            .take()
+            .expect("the publisher is handed once"),
+        Arc::clone(&rig.telemetry),
+        DrainConfig::new(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+            64,
+        )?,
+    )?;
+
+    let mut captured = 0usize;
+    for second in 10..16 {
+        let simulated = rig
+            .decisions
+            .gateway_mut()
+            .simulated_mut()
+            .expect("the rig's gateway is simulated");
+        simulated.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(second))?;
+        match second {
+            12 => simulated.declare_status(&object(), VenueStatus::CircuitBreaker)?,
+            14 => simulated.declare_status(&object(), VenueStatus::Open)?,
+            _ => {}
+        }
+        captured += rig.decisions.turn(t(second))?.captured;
+    }
+
+    let statuses = |lake: &MemoryBlobStore| -> Result<Vec<VenueStatus>> {
+        let mut found: Vec<(u64, VenueStatus)> = Vec::new();
+        for key in lake.list("lake/class=market/")? {
+            let body = lake.get(&key)?.expect("a listed segment is readable");
+            for line in String::from_utf8(body).expect("canonical JSON").lines() {
+                let value: serde_json::Value = serde_json::from_str(line)?;
+                let event: qip_contracts::market_event::MarketEvent =
+                    serde_json::from_value(value["event"].clone())?;
+                if let MessageBody::StatusChange { status } = event.payload().body {
+                    found.push((event.origin().sequence, status));
+                }
+            }
+        }
+        found.sort();
+        Ok(found.into_iter().map(|(_, status)| status).collect())
+    };
+    let waited = std::time::Instant::now();
+    let mut lines = 0usize;
+    while lines < captured {
+        drain.step()?;
+        lines = lake
+            .list("lake/class=market/")?
+            .iter()
+            .filter_map(|key| lake.get(key).ok().flatten())
+            .map(|body| {
+                body.split(|byte| *byte == b'\n')
+                    .filter(|l| !l.is_empty())
+                    .count()
+            })
+            .sum();
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "only {lines} of {captured} ticks reached the lake"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        statuses(&lake)?,
+        vec![VenueStatus::CircuitBreaker, VenueStatus::Open],
+        "the venue's breaker and its reopening are not sealed as typed statuses"
+    );
+    Ok(())
+}
