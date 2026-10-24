@@ -405,6 +405,22 @@ pub const GATE_JOURNAL_PRESSURE: &str = "journal_pressure";
 /// as [`GATE_JOURNAL_PRESSURE`].
 pub const GATE_SIGNAL_CONVICTION: &str = "signal_conviction";
 
+/// The gate a signal that states an edge is refused under when that edge does
+/// not clear the cell's measured fixed cost plus the configured margin (ADR
+/// 0155 §8), and — only when [`CellConfig::with_edgeless_signals_refused`] is
+/// on — the gate an edgeless directional signal is refused under.
+///
+/// Deliberately **not** in `qip_contracts::feasibility::EDGE_GATES`: a
+/// refusal in that array enters the window a venue is withdrawn on (ADR 0062),
+/// and a strategy's thin edge is not evidence about a venue. Outside the array
+/// the centre counts it under `other` and seats it nowhere.
+pub const GATE_NET_EDGE: &str = "net_edge";
+
+/// The gate a signal is refused under when the edge it states is not a finite
+/// number. Beside [`GATE_SIGNAL_CONVICTION`] for the same reason: `NaN`
+/// survives every comparison a cell would make of it.
+pub const GATE_SIGNAL_EDGE: &str = "signal_edge";
+
 /// The gate an order is refused under when its venue's feed has said nothing
 /// for longer than [`CellConfig::max_staleness`].
 ///
@@ -633,6 +649,14 @@ pub struct CellConfig {
     /// envelope it issues, so on the binary path an unbounded envelope is
     /// one the centre did not issue.
     pub exposure_bounds_required: bool,
+    /// The margin, in basis points of notional, a stated edge must clear on
+    /// top of the cell's fixed cost (ADR 0155 §8). `None` — the only default —
+    /// means the net-edge gate is not built: the value is a risk matter and no
+    /// number is chosen here.
+    pub net_edge_margin_bp: Option<Decimal>,
+    /// Whether a directional signal that states no edge is refused under
+    /// [`GATE_NET_EDGE`] (ADR 0155 §9). Off: it passes and is counted.
+    pub edgeless_signals_refused: bool,
 }
 
 /// The rolling window §27.1's crossing cap is evaluated against.
@@ -684,6 +708,8 @@ impl CellConfig {
             journal_trimmed_on_ship: false,
             venue_health: None,
             exposure_bounds_required: false,
+            net_edge_margin_bp: None,
+            edgeless_signals_refused: false,
         }
     }
 
@@ -694,6 +720,29 @@ impl CellConfig {
     #[must_use]
     pub fn with_exposure_bounds_required(mut self) -> Self {
         self.exposure_bounds_required = true;
+        self
+    }
+
+    /// Build the net-edge gate with this margin, in basis points of notional
+    /// (ADR 0155 §8). Refused when negative: a negative margin would admit an
+    /// edge below its own cost, which loosens the gate instead of arming it.
+    pub fn with_net_edge_margin_bp(mut self, margin_bp: Decimal) -> Result<Self> {
+        if margin_bp.is_negative() {
+            return Err(Error::invalid(format!(
+                "net-edge margin {margin_bp} bp is negative; a margin below zero admits an \
+                 edge smaller than its own cost. Declare zero or more."
+            )));
+        }
+        self.net_edge_margin_bp = Some(margin_bp);
+        Ok(self)
+    }
+
+    /// Refuse a directional signal that states no edge (ADR 0155 §9). Turning
+    /// this on stops every strategy whose rules declare none, so it is a
+    /// deliberate act; it has no effect unless a margin is configured.
+    #[must_use]
+    pub fn with_edgeless_signals_refused(mut self) -> Self {
+        self.edgeless_signals_refused = true;
         self
     }
 
@@ -971,6 +1020,10 @@ impl CellConfig {
 #[derive(Clone, Debug, Default)]
 pub struct WorkReport {
     pub signals: Vec<Signal>,
+    /// Directional signals this pass that stated no edge and so were not
+    /// judged by the net-edge gate (ADR 0155 §9). Counted only on a cell that
+    /// built the gate, so the desk can see how much trading it does not judge.
+    pub edgeless_signals: usize,
     /// Orders the venue accepted this pass. Accepted, not filled: an entry
     /// here is a resting or working order until a [`Self::fills`] entry names
     /// it, and nothing downstream may read it as a position.
@@ -5040,6 +5093,25 @@ impl Cell {
                 continue;
             }
 
+            if signal
+                .expected_edge_bp
+                .is_some_and(|edge| !edge.is_finite())
+            {
+                self.refuse(
+                    &mut report,
+                    GATE_SIGNAL_EDGE,
+                    &format!(
+                        "strategy {} raised a {} signal on {} whose stated edge is not a finite \
+                         number; an edge nobody can read back gates nothing and is not acted on",
+                        signal.strategy.as_str(),
+                        signal.kind.as_str(),
+                        signal.object_id.as_str()
+                    ),
+                    now,
+                );
+                continue;
+            }
+
             let raised = self
                 .journal
                 .record(
@@ -5048,6 +5120,7 @@ impl Cell {
                         object: signal.object_id.as_str().to_string(),
                         kind: signal.kind.as_str().to_string(),
                         conviction_shrunk_f64: signal.conviction.shrunk(),
+                        expected_edge_bp: signal.expected_edge_bp,
                     },
                     now,
                 )
@@ -5122,6 +5195,9 @@ impl Cell {
             self.place_cycle(cycle, now, gateway, &mut report)?;
         }
 
+        if self.config.net_edge_margin_bp.is_some() {
+            self.metrics.edgeless_signals(report.edgeless_signals);
+        }
         Ok(report)
     }
 
@@ -5727,7 +5803,69 @@ impl Cell {
         // order, and a fill can only be traced back to the values that caused
         // it if each contributor kept its own.
         .with_inputs(signal.inputs.clone());
+
+        // ADR 0155 §8, after the intent exists and before it can join a net.
+        if let Some(reason) = self.net_edge_refusal(signal, &intent, report) {
+            self.release_region_hold_for(signal.strategy.as_str());
+            self.refuse(report, GATE_NET_EDGE, &reason, now);
+            return Ok(None);
+        }
         Ok(Some(intent))
+    }
+
+    /// Why a directional signal's stated edge does not clear the cell's
+    /// measured cost, or `None` when it does, when the gate is not built, or
+    /// when the signal is not one that adds risk.
+    ///
+    /// Exits and hedges are never judged here: refusing one because its edge
+    /// is thin is how a profitability control becomes the accident. The cost
+    /// is `feasibility::fixed_cost_fraction` and nothing more; slippage and
+    /// impact are not computed for a directional intent, so the gate is
+    /// optimistic and the margin exists for that reason. An edgeless signal
+    /// passes and is counted unless the second switch is on.
+    fn net_edge_refusal(
+        &self,
+        signal: &Signal,
+        intent: &Intent,
+        report: &mut WorkReport,
+    ) -> Option<String> {
+        let margin = self.config.net_edge_margin_bp?;
+        if !signal.kind.increases_risk() {
+            return None;
+        }
+        let Some(edge_bp) = signal.expected_edge_bp else {
+            if self.config.edgeless_signals_refused {
+                return Some(format!(
+                    "strategy {} raised an {} signal that states no edge, and this cell refuses \
+                     what it cannot judge; declare an expected edge on the rule",
+                    signal.strategy.as_str(),
+                    signal.kind.as_str()
+                ));
+            }
+            report.edgeless_signals += 1;
+            return None;
+        };
+        let cost = match feasibility::fixed_cost_fraction(
+            self.config.feasibility.get(intent.venue.as_str()),
+            self.feasibility_constraints(),
+            intent,
+        ) {
+            Ok(fraction) => fraction,
+            Err(infeasible) => return Some(infeasible.reason),
+        };
+        // Statistics are `f64` and money is `Decimal`; the crossing is here:
+        // the cost fraction becomes basis points and is compared as a float.
+        let cost_bp = cost.to_f64() * 10_000.0;
+        let needed = cost_bp + margin.to_f64();
+        if edge_bp >= needed {
+            return None;
+        }
+        Some(format!(
+            "strategy {} states an edge of {edge_bp} bp, below the {cost_bp} bp of fixed cost \
+             plus the {margin} bp margin this cell requires; the trade would give the edge to the \
+             venue",
+            signal.strategy.as_str()
+        ))
     }
 
     /// Send one net intent as one order, or record that it cancelled.

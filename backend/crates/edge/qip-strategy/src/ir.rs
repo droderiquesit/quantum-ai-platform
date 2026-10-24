@@ -526,6 +526,12 @@ pub struct Rule {
     /// [`qip_contracts::Conviction`], which shrinks a belief by how little
     /// evidence supports it.
     pub observations: u32,
+    /// The payoff the author claims for this rule, in basis points of
+    /// notional (ADR 0155 §7). Must type as [`Type::Statistic`]. Optional on
+    /// purpose: nothing derives an edge from conviction, so a rule that
+    /// declares none raises a signal that states none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_edge: Option<Expr>,
 }
 
 impl Rule {
@@ -544,7 +550,14 @@ impl Rule {
             size,
             conviction,
             observations,
+            expected_edge: None,
         }
+    }
+
+    /// Declare the edge this rule claims, in basis points of notional.
+    pub fn with_expected_edge(mut self, edge: Expr) -> Self {
+        self.expected_edge = Some(edge);
+        self
     }
 }
 
