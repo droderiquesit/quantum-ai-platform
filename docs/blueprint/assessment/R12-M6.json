@@ -1268,24 +1268,26 @@
   },
   {
     "id": "R12-EXPAND-6057",
-    "status": "PARTIAL",
-    "current": "MemoryEntry/RetentionPolicy/ValuePolicy contract validated; no registry store.",
+    "status": "COMPLETE",
+    "current": "qip-agents MemoryRegistry values every resolved analyst episode by calibration surprise |outcome - conviction| against a positive threshold (refused at 0, negative, >1, non-finite): below it the episode is counted into a per-analyst CompressedSummary, never dropped. Platform::write_research_memory consults it for every stance LEARN charges and still records the episode in ResearchMemory, so hit_rate is computed over all resolved episodes (ADR 0152 d8).",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs:549",
-      "backend/crates/libs/qip-contracts/tests/memory_registry.rs:4"
+      "backend/crates/libs/qip-agents/src/memory.rs::MemoryRegistry",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::write_research_memory",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs::memory_registry::a_below_threshold_episode_is_kept_compressed_and_still_counts_in_the_hit_rate",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::an_unsurprising_call_is_compressed_by_the_registry_and_still_counts_in_the_analysts_hit_rate"
     ],
-    "gap": "Registry store and integration. A MemoryRegistry in qip-agents/src/memory.rs is simple; the consult is not. ResearchMemory lives in the kernel Platform (platform.rs research_memory, its episodes recorded at platform.rs record_episode (~14187, located by symbol)), not in qip-deepbrain's main.rs, and a consult that can refuse an episode drops it from ResearchMemory::hit_rate, so it biases the calibration the platform scores its analysts on. A default policy that never refuses (importance threshold zero) would be a gate that cannot fire. The decision needed first: which MemoryKind an episode is, what its importance is, and whether a below-threshold episode is dropped or kept compressed.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-kernel --lib an_unsurprising_call",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: not implemented after reading MemoryEntry/ValuePolicy (qip-contracts expansion.rs) and the single production record_episode site; see gap for the design question."
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d8. Mutations fired: recording only Retained episodes in write_research_memory fails the kernel test (compression drops nothing: left 1, right 4); inverting the registry threshold comparison fails the qip-agents test (retained 9, expected 1). Default threshold 0.3 is DEFAULT_IMPORTANCE_THRESHOLD; the registry is not yet persisted or journaled, only counted in memory."
   },
   {
     "id": "R12-EXPAND-6058",

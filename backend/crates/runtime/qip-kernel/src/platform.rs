@@ -62,7 +62,7 @@ use crate::venue_review::{
     FEASIBILITY_WINDOW, FeasibilityRefusal, FeasibilitySeam, REINSTATED, REINSTATEMENT_AWAITING,
     REINSTATEMENT_REFUSED, RefusalStanding, VenueReinstatementEntry, VenueWithdrawal,
 };
-use qip_agents::memory::ResearchMemory;
+use qip_agents::memory::{MemoryRegistry, ResearchMemory};
 use qip_agents::runtime::{Reading, Upstream};
 use qip_agents::{Budget, RunStatus};
 use qip_ai::language::{DeterministicModel, LanguageModel};
@@ -998,6 +998,12 @@ pub struct Platform {
     /// LEARN now writes it where a thesis resolves; see
     /// [`Self::write_research_memory`].
     research_memory: Upstream<ResearchMemory>,
+    /// The value policy over the episodes `research_memory` holds: which
+    /// resolved analyst calls were surprising enough to keep whole and which
+    /// are counted into a per-analyst summary (ADR 0152 decision 8,
+    /// R12-EXPAND-6057). It classifies and counts; `research_memory` still
+    /// holds every episode, so the hit rate the reviewer reads is unfiltered.
+    memory_registry: MemoryRegistry,
     /// Per claim class, the recent resolutions a lesson about that class is
     /// built from, and whether one has been promoted. Bounded by the anomaly
     /// kinds the detectors raise and by [`LESSON_WINDOW`] per class.
@@ -5684,6 +5690,7 @@ impl Platform {
             world,
             market,
             research_memory,
+            memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
             liquidity: LiquidityTopology::default(),
             market_events: Vec::new(),
@@ -6436,6 +6443,12 @@ impl Platform {
     /// slot the desk's gate shares, not a copy.
     pub fn research_memory(&self) -> Reading<'_, ResearchMemory> {
         self.research_memory.read()
+    }
+
+    /// How the resolved analyst episodes were valued: kept whole, or counted
+    /// into a per-analyst summary (R12-EXPAND-6057).
+    pub fn memory_registry(&self) -> &MemoryRegistry {
+        &self.memory_registry
     }
 
     /// Produce the cycle's episodic digest — payload slot 4 — and journal it.
@@ -15163,6 +15176,7 @@ impl Platform {
         if !moved.is_finite() || moved == 0.0 {
             return None;
         }
+        let registry = &mut self.memory_registry;
         self.research_memory.update(|memory| {
             for stance in &episode.stances {
                 let leaned = match stance.direction {
@@ -15171,7 +15185,7 @@ impl Platform {
                     StanceDirection::Ambiguous | StanceDirection::Neutral => continue,
                 };
                 let correct = leaned * moved > 0.0;
-                memory.record_episode(ResearchEpisode {
+                let analyst_episode = ResearchEpisode {
                     run_id: AgentRunId::from_string(format!(
                         "{}:{}",
                         episode.episode_id, stance.agent_id
@@ -15193,7 +15207,12 @@ impl Platform {
                             "the series moved {moved:.1} bps over the claim's horizon"
                         ),
                     }),
-                });
+                };
+                // Valued before it is stored and stored whatever the value:
+                // compression is a summary beside the episode, never a drop,
+                // so `hit_rate` counts every resolved call.
+                registry.consult(&analyst_episode);
+                memory.record_episode(analyst_episode);
             }
         });
 
@@ -31406,6 +31425,56 @@ mod episodic_slot_tests {
             memory
                 .hit_rate("analyst-a", retired_at)
                 .is_some_and(|rate| rate > 0.0)
+        );
+    }
+
+    /// R12-EXPAND-6057. A consult that dropped the unsurprising calls would
+    /// keep only the misses and score every analyst as wrong; the registry
+    /// summarises beside the memory and the memory keeps every episode.
+    #[test]
+    fn an_unsurprising_call_is_compressed_by_the_registry_and_still_counts_in_the_analysts_hit_rate()
+     {
+        use qip_ai::memory::{AnalystStance, StanceDirection};
+        use qip_core::ids::AgentRunId;
+        let mut platform = platform();
+        let calls = [
+            ("ep-1", 0.95, 12.0),
+            ("ep-2", 0.95, 12.0),
+            ("ep-3", 0.95, 12.0),
+            ("ep-4", 0.95, -12.0),
+        ];
+        let mut last = start();
+        for (n, (id, conviction, moved)) in calls.into_iter().enumerate() {
+            let at = start().saturating_add(Duration::from_hours(n as i64 + 1));
+            last = at;
+            let mut episode = resolved(id, at);
+            episode.stances = vec![AnalystStance {
+                agent_id: "analyst-a".to_string(),
+                direction: StanceDirection::Positive,
+                conviction,
+            }];
+            if let Some(outcome) = episode.outcome.as_mut() {
+                outcome.realised_move_bps = moved;
+            }
+            platform.write_research_memory(&episode, at);
+        }
+        let registry = platform.memory_registry();
+        // The premise: the registry did both things, so the equalities below
+        // are not about a threshold that classified everything one way.
+        assert_eq!(registry.retained_for("analyst-a"), 1, "only the miss");
+        let summary = registry.summary_for("analyst-a").expect("a summary");
+        assert_eq!(summary.episodes, 3);
+        assert_eq!(summary.correct, 3);
+
+        let memory = platform.research_memory.read();
+        assert_eq!(memory.episode_count(), 4, "compression drops nothing");
+        assert_eq!(memory.hit_rate("analyst-a", last), Some(0.75));
+        assert!(
+            memory
+                .episodes()
+                .iter()
+                .any(|e| e.run_id == AgentRunId::from_string("ep-1:analyst-a".to_string())),
+            "a compressed call is still held"
         );
     }
 
