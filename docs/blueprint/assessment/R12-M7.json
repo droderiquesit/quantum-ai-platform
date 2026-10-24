@@ -358,12 +358,14 @@
   {
     "id": "R12-OBS-7017",
     "status": "PARTIAL",
-    "current": "Prometheus exposition from Telemetry registries; OpenObserve module/secret plumbing exists but is gated on a vendored image digest; no OTel export.",
+    "current": "Every central binary (qip-api, qip-fastbrain, qip-deepbrain, qip-fabricd) carries an OpenObserve drain (qip-telemetry-drain) that exports the metrics snapshot as OTLP (Snapshot::to_otlp_metrics) and spans as OTLP/JSON (Tracer::export); Prometheus exposition is also served. The drain is configured by QIP_OPENOBSERVE_URL, unset in every deployment; the OpenObserve module is gated on a vendored image digest.",
     "evidence": [
       "backend/crates/libs/qip-observability/src/lib.rs",
-      "infrastructure/terraform/main.tf:311-314,1039 openobserve secrets and moved block"
+      "infrastructure/terraform/main.tf:311-314,1039 openobserve secrets and moved block",
+      "backend/crates/services/qip-telemetry-drain/src/lib.rs",
+      "backend/crates/services/qip-telemetry-drain/tests/credential.rs"
     ],
-    "gap": "No OTel protocol export; no proof of ingestion.",
+    "gap": "2026-10-24 (lane L6, current corrected: it said no OTel export): OTLP export is built and off by default (QIP_OPENOBSERVE_URL unset until a collector is vendored and attested, ADR 0156 §5.4); no OpenObserve instance runs and nothing has been shown to ingest a series or span. Collection, not emission, is what is missing.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -374,7 +376,7 @@
     "verification": "scrape of /metrics ingested by collector",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: read-only correction; no code change."
   },
   {
     "id": "R12-OBS-7018",

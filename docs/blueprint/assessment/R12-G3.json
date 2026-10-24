@@ -1304,12 +1304,17 @@
   },
   {
     "id": "R12-OBS-10059",
-    "status": "MISSING",
-    "current": "No tracing exporter in the workspace.",
-    "evidence": [],
-    "gap": "Trace propagation and export.",
-    "implemented": false,
-    "tested": false,
+    "status": "PARTIAL",
+    "current": "qip-api opens a request-scoped span per API request (src/tracing.rs; tests/api.rs::a_request_scoped_span_is_created_for_each_api_request), and the OpenObserve drain (qip-telemetry-drain, ADR 0028/0156) exports the tracer's spans as OTLP/JSON to /api/{org}/traces and the metrics snapshot as OTLP to /api/{org}/v1/metrics from qip-api, qip-fastbrain, qip-deepbrain and qip-fabricd.",
+    "evidence": [
+      "backend/crates/apps/qip-api/src/tracing.rs",
+      "backend/crates/apps/qip-api/tests/api.rs::a_request_scoped_span_is_created_for_each_api_request",
+      "backend/crates/services/qip-telemetry-drain/src/lib.rs traces_url, export_once",
+      "backend/crates/libs/qip-observability/src/trace.rs Tracer::export (OTLP/JSON)"
+    ],
+    "gap": "2026-10-24 (lane L6, current corrected: it said no tracing exporter exists; MISSING->PARTIAL): spans are created and an OTLP exporter exists, but (1) the export goes to OpenObserve, not Cloud Trace, as the requirement names; (2) QIP_OPENOBSERVE_URL is unset in every deployment until a collector is vendored and attested (ADR 0156 §5.4), so no trace leaves a process on a default path; (3) nothing has observed an exported trace (the check's 'a trace exported per API request is observed').",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1318,7 +1323,7 @@
     "verification": "integration test exporting a span",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: read-only correction of a stale row; no code change."
   },
   {
     "id": "R12-GCP-10060",
