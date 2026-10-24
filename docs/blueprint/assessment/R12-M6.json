@@ -1314,7 +1314,7 @@
   },
   {
     "id": "R12-EXPAND-6059",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-agents ToolRegistry with ten ToolKinds, read-only start. qip-deepbrain registers the three desks (source-discovery, model-fit, stress-simulator) and, from the settings main.rs parsed, what the process runs: research::node_tools adds the classical solver always, the quantum-backend only where ComputeSettings attached the in-tree simulator, and one connector per catalogued source the node polls; ResearchLoop::new_for_node (called from main.rs) checks the desk and every BrainSpec against it. tick-replay and venue-adapter stay unregistered because the node holds neither (R12-EXPAND-6037).",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/research.rs:node_tools",
@@ -1322,7 +1322,7 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs:new_for_node",
       "backend/crates/apps/qip-deepbrain/tests/research.rs:the_node_registers_every_tool_kind_it_actually_runs"
     ],
-    "gap": "",
+    "gap": "2026-10-24: The requirement is that an entry missing a declared field is refused; the one refusal in the registry (a blank name) is tested by nothing, and the named test checks what the node registers, not what the registry refuses. Closing: a test that proposes an entry with a blank name (and any other declared field the registry should require) and asserts the refusal; it must fail the line-137 mutation.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1333,7 +1333,7 @@
     "verification": "cargo test -p qip-deepbrain --test research the_node_registers_every_tool_kind_it_actually_runs",
     "work_item": "",
     "size": "S",
-    "notes": "Mutation: replacing the quantum-backend push in node_tools with a no-op failed the test at the QuantumBackend assertion; restored, passes. The parsers, browsers, geospatial and code-runtime kinds are not registered because no process runs them; the planner proposes them as tools to build."
+    "notes": "Mutation: replacing the quantum-backend push in node_tools with a no-op failed the test at the QuantumBackend assertion; restored, passes. The parsers, browsers, geospatial and code-runtime kinds are not registered because no process runs them; the planner proposes them as tools to build. AUDIT-4: 2026-10-24 regraded, the registry's only declared-field refusal (a blank name) is tested by nothing: removing it leaves the named deepbrain test and the whole qip-agents suite green."
   },
   {
     "id": "R12-EXPAND-6060",

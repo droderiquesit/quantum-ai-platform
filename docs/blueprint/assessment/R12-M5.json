@@ -1732,7 +1732,7 @@
   },
   {
     "id": "R12-EXEC-5075",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "QuoteBudget/RateLimits (backend/crates/edge/qip-edge/src/quoting.rs:99, :641); per-venue limits applied by the node (backend/crates/apps/qip-edge-node/src/main.rs:398, backend/crates/apps/qip-edge-node/src/quote_limits.rs).",
     "evidence": [
       "backend/crates/edge/qip-edge/tests/quoting.rs:848",
@@ -1740,7 +1740,7 @@
       "backend/crates/edge/qip-edge/tests/quoting.rs:626",
       "backend/crates/apps/qip-edge-node/src/main.rs:398"
     ],
-    "gap": "Not deployed.",
+    "gap": "2026-10-24: Per-venue rate refusal is on every cell by default, but the message-to-trade ratio limit the requirement names refuses nothing unless QIP_VENUE_QUOTE_LIMITS states it, and no committed environment sets that variable (start-up prints 'awaiting QIP_VENUE_QUOTE_LIMITS ... runs on the fallback'). Closing: a committed environment (or a default) states per-venue limits including a ratio interval, or the requirement's ratio half is narrowed to the monitor.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1751,7 +1751,7 @@
     "verification": "cargo test -p qip-edge --test quoting",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " AUDIT-4: 2026-10-24 regraded, the per-venue rate budget is on by default but the message-to-trade ratio refuses nothing unless QIP_VENUE_QUOTE_LIMITS states a ratio interval, and no committed environment sets it (the default ratio is a monitor that refuses nothing)."
   },
   {
     "id": "R12-EXEC-5076",
@@ -1872,7 +1872,7 @@
   },
   {
     "id": "R12-EXEC-5081",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Every SIMULATE reviews live markets, legal before economic, and withdraws and journals invalid ones; the deep brain re-reads permissions from its plan file each cycle, so an operator revocation withdraws the market (binary-path test).",
     "evidence": [
       "backend/crates/services/qip-execution-engine/src/market_creation.rs:524-621",
@@ -1883,7 +1883,7 @@
       "backend/crates/runtime/qip-kernel/src/breadth.rs::Platform::revise_market_permissions",
       "backend/crates/apps/qip-deepbrain/src/breadth.rs::PermissionWatch::refresh"
     ],
-    "gap": "None for the requirement; not deployed.",
+    "gap": "2026-10-24: The continuous validity review is real and mutation-checked but reviews nothing unless a breadth plan creates markets, and no committed environment supplies one (QIP_DEEPBRAIN_BREADTH_PLAN unset everywhere). Closing: a committed environment sets the variable, or the row is narrowed to the library.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1896,7 +1896,7 @@
     "verification": "new test",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The revocation test reaches set_permissions through market_factory_mut, which only tests call: a legal-validity control that cannot fire in a binary. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The revocation test reaches set_permissions through market_factory_mut, which only tests call: a legal-validity control that cannot fire in a binary. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the validity review reviews nothing unless a breadth plan creates markets (the stage returns at once when idle), and QIP_DEEPBRAIN_BREADTH_PLAN is set in no committed environment."
   },
   {
     "id": "R12-EVENT-5082",
@@ -2014,13 +2014,13 @@
   },
   {
     "id": "R12-EVENT-5087",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "install_breadth refuses an event-contract market unless the access book records a creation permission from its jurisdiction, before the Market Factory touches the venue; the permitted plan installs and seeds. Mutation of admit_creation recorded.",
     "evidence": [
       "backend/crates/services/qip-prediction/tests/access.rs:77",
       "backend/crates/runtime/qip-kernel/src/breadth.rs::Platform::install_breadth"
     ],
-    "gap": "None for the requirement; not deployed.",
+    "gap": "2026-10-24: The permission gate is real and mutation-checked but runs only under a breadth plan no committed environment supplies. Closing: a committed environment sets QIP_DEEPBRAIN_BREADTH_PLAN with an event-market section so a deployed deep brain reaches admit_creation, or the row is narrowed to the library gate.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2031,11 +2031,11 @@
     "verification": "cargo test -p qip-prediction --test access",
     "work_item": "",
     "size": "M",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the creation-permission gate runs only under a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets."
   },
   {
     "id": "R12-EVENT-5088",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "The running event plane consults AccessBook: a Wagering venue, an underage entity and an out-of-jurisdiction entity are refused with reasons; mutations (route by venue id only, drop trading check) recorded.",
     "evidence": [
       "backend/crates/services/qip-prediction/tests/access.rs:89",
@@ -2044,7 +2044,7 @@
       "backend/crates/services/qip-prediction/tests/access.rs:141",
       "backend/crates/services/qip-prediction/src/access.rs::AccessBook::admit"
     ],
-    "gap": "None for the requirement; not deployed.",
+    "gap": "2026-10-24: The wagering/event path separation and the age and jurisdiction controls are real and mutation-checked but run only under a breadth plan no committed environment supplies. Closing: a committed environment sets QIP_DEEPBRAIN_BREADTH_PLAN with an event-market section, or the row is narrowed to the library.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2055,7 +2055,7 @@
     "verification": "cargo test -p qip-prediction --test access",
     "work_item": "",
     "size": "S",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the wagering/event separation and age and jurisdiction controls run only under a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets."
   },
   {
     "id": "R12-EVENT-5089",
