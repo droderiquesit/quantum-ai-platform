@@ -1356,6 +1356,19 @@ pub mod names {
     pub const EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS: &str =
         "qip_event_fabric_archive_backlog_checks_total";
     pub const EVENT_FABRIC_GROUP_LAG: &str = "qip_event_fabric_group_lag";
+    /// Each consumer-group lag reading judged against the
+    /// `fabric-consumer-lag` ceiling, by `outcome` (`within`, `over`).
+    pub const EVENT_FABRIC_GROUP_LAG_CHECKS: &str = "qip_event_fabric_group_lag_checks_total";
+    /// Each reading of the listener's `serving` gauge taken when the
+    /// fabric's objectives are evaluated, by `outcome` (`serving`,
+    /// `not_serving`): the good and total counts of
+    /// `fabric-broker-availability`.
+    pub const EVENT_FABRIC_SERVING_CHECKS: &str = "qip_event_fabric_serving_checks_total";
+    /// Milliseconds the managed log took to answer one P0/P1 commit - the
+    /// quorum acknowledgement (ADR 0111 Amendment 1) - by `class` and
+    /// `outcome` (`committed`, `fenced`, `conflict`, `error`). The series
+    /// the `fabric-publish-quorum-p99` objective is read from.
+    pub const EVENT_FABRIC_QUORUM_ACK_MS: &str = "qip_event_fabric_quorum_ack_ms";
 
     // Edge journal metrics (edge-node)
     pub const EDGE_JOURNAL_RING_DEPTH: &str = "qip_edge_journal_ring_depth";

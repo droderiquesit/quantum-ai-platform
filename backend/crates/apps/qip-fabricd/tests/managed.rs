@@ -703,3 +703,140 @@ fn a_drained_broker_keeps_following_and_reports_that_it_leads_nothing() {
         "following without a lease does not take the lapsed one"
     );
 }
+
+/// `name{labels}` in `running`'s registry as a histogram's count, or the
+/// gauge's value for a gauge.
+fn reading(running: &Running, name: &str, labels: &[(&str, &str)]) -> Option<f64> {
+    use qip_observability::metrics::MetricValue;
+    let wanted: qip_observability::metrics::Labels = labels
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    running
+        .metrics()
+        .snapshot()
+        .series
+        .into_iter()
+        .find(|s| s.name == name && s.labels == wanted)
+        .and_then(|s| match s.value {
+            MetricValue::Histogram(h) => Some(h.count as f64),
+            MetricValue::Gauge(v) => Some(v),
+            _ => None,
+        })
+}
+
+/// Poll `check` for up to thirty seconds; the archiver pass that evaluates
+/// the fabric's objectives runs every twenty milliseconds.
+#[track_caller]
+fn eventually(what: &str, check: impl Fn() -> bool) {
+    let deadline = Instant::now() + StdDuration::from_secs(30);
+    while !check() {
+        assert!(Instant::now() < deadline, "{what}");
+        std::thread::sleep(StdDuration::from_millis(20));
+    }
+}
+
+/// R12-OBS-9146: a P1 produce acknowledged by the managed log moves
+/// `qip_event_fabric_quorum_ack_ms{class="p1_outcomes",outcome="committed"}`
+/// by one per commit, through the composition root `main` reaches, and the
+/// `fabric-publish-quorum-p99` objective (R12-OBS-9160) is then evaluated
+/// from it on the broker's own `/metrics` registry. The series carries the
+/// class and the outcome and nothing else: never the stream, a key or an
+/// offset.
+///
+/// Mutation: in `start_composed`, seat the broker at the log it was given
+/// rather than `timed(log)` - the commit is never timed and the first
+/// `eventually` fires.
+#[test]
+fn a_managed_produce_moves_the_quorum_ack_series_and_the_publish_quorum_objective() {
+    let time = Arc::new(ManualClock::new(Timestamp::from_civil(2026, 10, 24)));
+    let log: Arc<dyn ManagedLog> = Arc::new(MemoryManagedLog::new(time));
+    let leader = instance("zone-a", &catalogue("managed_majority", 3), Some(log));
+    let running = leader.running.as_ref().unwrap();
+    let committed = [("class", "p1_outcomes"), ("outcome", "committed")];
+    assert_eq!(
+        reading(running, "qip_event_fabric_quorum_ack_ms", &committed),
+        None,
+        "premise: no commit has been timed before a produce"
+    );
+
+    let mut writer = producer(&leader.address(), AckProfile::ManagedMajority);
+    for n in 0..2 {
+        let ack = writer.send(batch(&format!("fill-{n}"))).unwrap();
+        assert!(
+            ack.managed_commit_epoch().is_some(),
+            "premise: a quorum ack"
+        );
+    }
+    eventually("the two managed commits were never timed", || {
+        reading(running, "qip_event_fabric_quorum_ack_ms", &committed) == Some(2.0)
+    });
+    let labelled: Vec<_> = running
+        .metrics()
+        .snapshot()
+        .series
+        .into_iter()
+        .filter(|s| s.name == "qip_event_fabric_quorum_ack_ms")
+        .map(|s| s.labels.keys().cloned().collect::<Vec<_>>())
+        .collect();
+    assert!(!labelled.is_empty());
+    for keys in labelled {
+        assert_eq!(
+            keys,
+            ["class", "outcome"],
+            "a label beyond class and outcome"
+        );
+    }
+    eventually(
+        "the publish-quorum objective never evaluated the commits",
+        || {
+            reading(
+                running,
+                "qip_slo_observations",
+                &[("objective", "fabric-publish-quorum-p99")],
+            )
+            .is_some_and(|n| n >= 2.0)
+        },
+    );
+}
+
+/// The default path, one broker and no managed log: the archiver pass
+/// publishes the fabric's objectives on the broker's registry, broker
+/// availability measured from the serving gauge the listener wrote, and
+/// publish quorum with zero observations and no budget, because a broker
+/// with no managed log has no quorum to time.
+///
+/// Mutation: in `FabricdTelemetry::archive_lag`, delete the
+/// `self.evaluate_objectives()` call - no fabric objective is published
+/// and the availability `eventually` fires.
+#[test]
+fn a_broker_with_no_managed_log_publishes_its_objectives_and_reads_publish_quorum_unmeasured() {
+    let local = instance("local", &catalogue("archived", 1), None);
+    let running = local.running.as_ref().unwrap();
+    eventually("broker availability was never evaluated", || {
+        reading(
+            running,
+            "qip_slo_observations",
+            &[("objective", "fabric-broker-availability")],
+        )
+        .is_some_and(|n| n >= 1.0)
+    });
+    assert_eq!(
+        reading(
+            running,
+            "qip_slo_observations",
+            &[("objective", "fabric-publish-quorum-p99")]
+        ),
+        Some(0.0),
+        "publish quorum is published, and unmeasured"
+    );
+    assert_eq!(
+        reading(
+            running,
+            "qip_slo_budget_consumed",
+            &[("objective", "fabric-publish-quorum-p99")]
+        ),
+        None,
+        "an unmeasured objective publishes no budget"
+    );
+}
