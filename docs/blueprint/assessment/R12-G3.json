@@ -2028,7 +2028,7 @@
   },
   {
     "id": "R12-MODEL-10092",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Kernel tournament stage opens a question per directional hypothesis, aggregates forecasts weighted by synthetic-credit market share and calibration, and on resolution scores every forecaster (Brier, log loss, calibration error, ...) per regime; journaled as TournamentReview.",
     "evidence": [
       "backend/crates/services/qip-prediction/src/scoring.rs",
@@ -2038,7 +2038,7 @@
       "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::aggregate",
       "backend/crates/services/qip-learning-engine/src/forecast_market.rs::ForecastMarket"
     ],
-    "gap": "None for the requirement; not deployed.",
+    "gap": "2026-10-24: Closes when a tournament test asserts a forecaster's calibration score after resolved outcomes equals the hand-computed value (qip-learning-engine Tournament scorecard calibration_error), and the row's verification points at it; today `cargo test -p qip-prediction` scores the platform-versus-market Brier comparison and never reaches the tournament.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2049,7 +2049,7 @@
     "verification": "cargo test -p qip-prediction",
     "work_item": "",
     "size": "L",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4 2026-10-24: regraded, the named verification, qip-prediction, does not exercise the Tournament or ForecastMarket scoring the requirement names; replacing the per-forecaster calibration_error with 0.0 (tournament.rs:1302) passes qip-prediction, the whole qip-learning-engine crate and qip-kernel's model_tournament suite."
   },
   {
     "id": "R12-AMBIENT-10093",
@@ -4663,7 +4663,7 @@
   },
   {
     "id": "R12-CICD-10203",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "No model-weight file (.onnx, .pt, .safetensors, .gguf) is committed outside a declared registry path (the declared set is empty), and every QIP_* variable that catalogue.tf or the execution node's startup template sets is named in a page under docs/ops. Images are pinned by digest and Fabric schemas are versioned with a lock.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/gitops.rs no_model_weights_are_committed_outside_a_declared_registry_path",
@@ -4671,7 +4671,7 @@
       "docs/ops/runbooks/environment-variables.md",
       "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs:527"
     ],
-    "gap": "",
+    "gap": "2026-10-24: The requirement is four inspections (every image pinned by digest, registry tags immutable, schemas versioned and locked, and no hand-copied model or undocumented config); the named tests cover two (model weights, documented variables). No test the row names fails when registry tags become mutable or an image is unpinned. Closing: name infrastructure.rs the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it and a digest-pin test in evidence and verification.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4682,7 +4682,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- no_model_weights_are_committed_outside_a_declared_registry_path every_environment_variable_a_workload_reads_is_documented",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: a services_mutation.onnx file at the repository root failed the weights test naming it; deleting the QIP_FENCING_LEASE row from the new runbook page failed the documentation test naming the variable; a QIP_ variable appended to a copy of catalogue.tf text is reported by the same check in-test. The documentation test found 23 undocumented variables (of 54) before the page existed, among them the execution node's fencing lease, role and TLS settings. Scope: the weights test guards the tracked tree, not an image build; the images carry no weights because no crate loads one."
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: a services_mutation.onnx file at the repository root failed the weights test naming it; deleting the QIP_FENCING_LEASE row from the new runbook page failed the documentation test naming the variable; a QIP_ variable appended to a copy of catalogue.tf text is reported by the same check in-test. The documentation test found 23 undocumented variables (of 54) before the page existed, among them the execution node's fencing lease, role and TLS settings. Scope: the weights test guards the tracked tree, not an image build; the images carry no weights because no crate loads one. AUDIT-4: 2026-10-24 regraded, the named tests cover model weights and documented variables only; flipping the registry module's immutable_tags to false leaves both green and fails only infrastructure.rs, which the row does not name; no named test checks digest pinning."
   },
   {
     "id": "R12-OBS-10204",

@@ -3658,7 +3658,7 @@
   },
   {
     "id": "R12-OBS-9161",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Four service objectives are declared in critical_paths::service_objectives and evaluated at runtime: service-request-latency (p99 under 1000 ms over a day, SERVICE_LATENCY_MS), service-error-rate (99 percent, SERVICE_REQUESTS less SERVICE_ERRORS through the new SourceRule::TotalLessCounter) and service-saturation (readings at or under 0.8 of capacity, SERVICE_SATURATION_CHECKS counted in GoldenSignals::saturation) are evaluated by the deep brain against the registry that records the golden signals; mesh-circuit-closed (99 percent, EDGE_MESH_CIRCUIT_CHECKS counted in MeshSeries::observe) is evaluated by the node on every /metrics scrape. Pod disruption is named not applicable to Cloud Run in NOT_APPLICABLE_SERVICE_OBJECTIVES.",
     "evidence": [
       "backend/crates/libs/qip-observability/src/critical_paths.rs service_objectives, SourceRule::TotalLessCounter, NOT_APPLICABLE_SERVICE_OBJECTIVES, evaluate_where",
@@ -3668,7 +3668,7 @@
       "backend/crates/tests/qip-acceptance/tests/slo.rs the_service_objectives_are_declared_on_the_golden_signals_and_measured_when_their_series_move",
       "backend/crates/apps/qip-edge-node/src/telemetry.rs the_mesh_circuit_objective_is_measured_from_judged_readings_of_the_circuit"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when the pod-disruption objective is declared and measured for the one GKE cluster that exists (the GitOps control plane, ADR 0036), or an ADR amends the requirement to the platform's Cloud Run and Compute Engine workloads and names the objective that replaces it; today critical_paths::NOT_APPLICABLE_SERVICE_OBJECTIVES withdraws it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3679,7 +3679,7 @@
     "verification": "cargo test -p qip-acceptance --test slo the_service_objectives_are_declared_on_the_golden_signals_and_measured_when_their_series_move; cargo test -p qip-edge-node --lib mesh_circuit; cargo test -p qip-observability --test critical_paths",
     "work_item": "",
     "size": "M",
-    "notes": "Closed 2026-10-18 by lane L22. The targets (0.99, 1000 ms, 0.8) are declared, not measured; nothing has run long enough to say what a healthy deep brain does. Mutations that fired: stop subtracting errors in TotalLessCounter (error-rate reads 1.0); delete the SERVICE_SATURATION_CHECKS count (saturation stays unmeasured); count every circuit reading as closed (mesh test reads 1.0). critical_paths::evaluate now returns the service objectives after the eight critical paths, so tests/critical_paths.rs asserts the sum. No ingestion of these series is shown anywhere: workload_metrics_exist is still false and the node is not deployed."
+    "notes": "Closed 2026-10-18 by lane L22. The targets (0.99, 1000 ms, 0.8) are declared, not measured; nothing has run long enough to say what a healthy deep brain does. Mutations that fired: stop subtracting errors in TotalLessCounter (error-rate reads 1.0); delete the SERVICE_SATURATION_CHECKS count (saturation stays unmeasured); count every circuit reading as closed (mesh test reads 1.0). critical_paths::evaluate now returns the service objectives after the eight critical paths, so tests/critical_paths.rs asserts the sum. No ingestion of these series is shown anywhere: workload_metrics_exist is still false and the node is not deployed. AUDIT-4 2026-10-24: regraded, the requirement names four objectives, request p99/error, saturation, pod disruption and dependency circuit opens; the row declares three and withdraws pod disruption by a code comment, and the requirement does not allow withdrawing it. The three declared objectives are real: judging every saturation reading as within the ceiling fails slo.rs:531."
   },
   {
     "id": "R12-OBS-9162",

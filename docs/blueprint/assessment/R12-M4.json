@@ -93,7 +93,7 @@
   },
   {
     "id": "R12-MODEL-4005",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip_training::distill::distil fits a DistilledModel to a teacher's outputs and measures the gap; the deep brain calls it each learning round; evaluation is deterministic and bounded.",
     "evidence": [
       "backend/crates/services/qip-training/src/distill.rs:311 distil",
@@ -101,7 +101,7 @@
       "backend/crates/services/qip-training/tests/training.rs:1118 a_distilled_tree_is_bounded_and_evaluable_everywhere",
       "backend/crates/services/qip-training/tests/training.rs:1607 a_distillation_only_exists_with_its_fidelity_already_measured"
     ],
-    "gap": "Not deployed; otherwise none.",
+    "gap": "2026-10-24: Closes when a test asserts the measured fidelity values themselves: a student with a known gap reports that mean and maximum gap, R2, rank correlation and decision agreement, and FidelityPolicy::shortfalls refuses a student for each of R2, rank, decision agreement and mean gap in turn. Today only the failure-mode and parameter-byte shortfalls are driven.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -112,7 +112,7 @@
     "verification": "cargo test -p qip-training --test training",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "AUDIT-4 2026-10-24: regraded, overwriting the measured fidelity with a perfect report (R2, rank and decision agreement 1.0, gaps 0.0) after measure_fidelity passes the named qip-training training suite (55 passed), the whole qip-training crate and qip-deepbrain's learning tests; so do `false &&` on the mean-gap and R2 shortfalls and forcing every decision to agree. a_distillation_only_exists_with_its_fidelity_already_measured asserts gap >= 0, max >= mean and agreement within [0,1], all true of zeros."
   },
   {
     "id": "R12-MODEL-4006",
@@ -2025,14 +2025,14 @@
   },
   {
     "id": "R12-CAPITAL-4091",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Platform::new builds the counterfactual AlternativeMenu from the configuration: with_hedge from the first declared HedgePolicyDeclaration (instrument, beta) and with_venue from the first whitelisted arbitrage venue that is not the desk broker (taker cost carried into the twin cost model, quotes not assumed firm). score_filled and score_declined build the twin market through Platform::counterfactual_bars, which adds the hedge instrument bars so the hedged alternative can be sized. qip-capital shadow.rs allocation-level variants are a separate library claim outside this clause.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs Platform::new, the menu block after settlement.assign_venue (grep -n \"R12-CAPITAL-4091\" platform.rs)",
       "backend/crates/runtime/qip-kernel/src/platform.rs fn counterfactual_bars, called from score_declined and score_filled",
       "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge"
     ],
-    "gap": "",
+    "gap": "2026-10-24: The size and timing alternatives run by default; the venue and hedge alternatives the requirement asks for exist only if an operator supplies hedge_policies (no app sets them) and QIP_ARBITRAGE_POLICY_PATH (no environment sets it). Closing: a default hedge policy/venue source wired in a composition root or committed environment, with a test through that root.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2043,7 +2043,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test platform_outcomes a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge",
     "work_item": "",
     "size": "M",
-    "notes": "shadow.rs module doc claims shadows hold 'alternate sizes, hedges, timing, venues'; AllocationVariant has no timing arm. Closed 2026-10-18 (lane L01). Mutation 1: menu reverted to AlternativeMenu::standard made the test fail at its menu-venue premise; mutation 2: hedge bars dropped from counterfactual_bars made the production-path fill go unscored and the test fail at its fill_scores assertion; both restored byte-for-byte and the test passes. The menu is read once at assembly; a deployment with no hedge policy and no arbitrage whitelist still gets neither arm, which is the configured truth rather than an invented venue."
+    "notes": "shadow.rs module doc claims shadows hold 'alternate sizes, hedges, timing, venues'; AllocationVariant has no timing arm. Closed 2026-10-18 (lane L01). Mutation 1: menu reverted to AlternativeMenu::standard made the test fail at its menu-venue premise; mutation 2: hedge bars dropped from counterfactual_bars made the production-path fill go unscored and the test fail at its fill_scores assertion; both restored byte-for-byte and the test passes. The menu is read once at assembly; a deployment with no hedge policy and no arbitrage whitelist still gets neither arm, which is the configured truth rather than an invented venue. AUDIT-4: 2026-10-24 regraded, the venue and hedge arms of the menu are built only from config.hedge_policies (no composition root sets it) and config.central.arbitrage (set only by QIP_ARBITRAGE_POLICY_PATH, which no committed environment sets), so by default the twin prices size and timing only."
   },
   {
     "id": "R12-CAPITAL-4092",

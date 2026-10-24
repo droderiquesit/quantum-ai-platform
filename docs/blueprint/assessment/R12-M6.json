@@ -464,7 +464,7 @@
   },
   {
     "id": "R12-MODEL-6021",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Real marked P&L is joined to the forecaster (Model) keys stamped at order acceptance and split pro rata (qip-learning-engine keyed_attribution; Platform::attribute in LEARN). attribution::by_forecaster returns each forecaster's share and feeds the tournament's cumulative attributed P&L each LEARN. In a cycle: a hypothesis REASON formed, an order citing it filling and LEARN marking the position up credits the detector that raised it a positive share, and the shares sum to the position's marked P&L.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/attribution.rs::by_forecaster",
@@ -472,7 +472,7 @@
       "runtime/qip-kernel/tests/model_tournament.rs::each_forecaster_a_cycle_credited_is_attributed_a_share_of_the_marked_pnl_that_sums_to_the_position",
       "runtime/qip-kernel/tests/model_tournament.rs::an_order_citing_a_hypothesis_a_cycle_formed_is_attributed_its_model_and_evidence_source"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when downstream capital impact is attributed to each forecaster as well as P&L: a per-forecaster figure for the capital (grant, allocation or risk usage) its forecasts informed, journaled beside by_forecaster's P&L share; or an ADR narrows the requirement to P&L.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -485,7 +485,7 @@
     "verification": "cd backend && cargo test -p qip-kernel --test model_tournament",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: closed (same cycle fixture as R12-MODEL-6003). Mutations: by_forecaster reading Dimension::Belief -> credited map keyed by the hypothesis id, 'detector that raised the hypothesis is not among the credited'; dropping the note_hypothesis call -> credited map {unattributed}; both restored (model_tournament: 10 passed). Downstream capital impact per forecaster is not attributed separately and remains a later clause."
+    "notes": "Lane L07, 2026-10-18: closed (same cycle fixture as R12-MODEL-6003). Mutations: by_forecaster reading Dimension::Belief -> credited map keyed by the hypothesis id, 'detector that raised the hypothesis is not among the credited'; dropping the note_hypothesis call -> credited map {unattributed}; both restored (model_tournament: 10 passed). Downstream capital impact per forecaster is not attributed separately and remains a later clause. AUDIT-4 2026-10-24: regraded, the requirement attributes economic contribution and downstream capital impact to each forecaster; by_forecaster attributes marked P&L only, and the row's own notes say capital impact 'is not attributed separately and remains a later clause'. The P&L half is real: reading Dimension::Belief instead of Model fails model_tournament.rs:408."
   },
   {
     "id": "R12-MODEL-6022",
@@ -1997,7 +1997,7 @@
   },
   {
     "id": "R12-AGENCY-6089",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Comparison now weighs all nine axes: refusals (legal, downside envelope, time horizon), score effect x confidence x (1-conduct_risk), tie-breaks downside/reversibility/cost/capital/time. Test flips choice per axis incl. conduct_risk and downside; missing axis refused.",
     "evidence": [
       "backend/crates/services/qip-agency/src/comparison.rs:1-8",
@@ -2006,7 +2006,7 @@
       "backend/crates/services/qip-agency/src/plan.rs:309-318",
       "backend/crates/services/qip-agency/src/comparison.rs::Comparison::rank"
     ],
-    "gap": "None for the requirement; not deployed.",
+    "gap": "2026-10-24: The nine-axis ranking property (changing conduct risk or downside changes the ranking) is proved only by tests/causal.rs::every_one_of_the_nine_axes_changes_which_candidate_is_chosen; the row's verification (cargo test -p qip-agency --test agency) and its cited agency.rs test check only that a missing axis is refused. Closing: point verification and evidence at that causal.rs test (it fails the mutation) or add the flip assertion to agency.rs.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2017,7 +2017,7 @@
     "verification": "cargo test -p qip-agency --test agency",
     "work_item": "",
     "size": "M",
-    "notes": "comparison.rs's own module doc says seven of the nine axes are weighed by nothing. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
+    "notes": "comparison.rs's own module doc says seven of the nine axes are weighed by nothing. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the nine-axis ranking property (conduct risk and downside change the ranking) is proved only by tests/causal.rs, which the row does not name; the named agency.rs test checks only that a missing axis is refused, and mutating conduct_risk in score() or the downside tie-break leaves all 59 tests/agency.rs tests green."
   },
   {
     "id": "R12-AGENCY-6090",
