@@ -1268,14 +1268,15 @@
   },
   {
     "id": "R12-GCP-8057",
-    "status": "MISSING",
-    "current": "No NCC resources.",
+    "status": "PARTIAL",
+    "current": "modules/ncc declares a MESH preset-topology hub (google_network_connectivity_hub.latency) and one VPC spoke per Reflex/Fabric network exporting only its named prefixes (include_export_ranges), refused at plan unless every spoke names prefixes and each is /24 or narrower. Declared only when latency_spokes names spokes; tests/hubs.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/modules/edge-mesh/main.tf:47 PSC endpoint only"
+      "infrastructure/terraform/modules/ncc/main.tf google_network_connectivity_hub.latency, google_network_connectivity_spoke.latency",
+      "infrastructure/terraform/modules/ncc/tests/hubs.tftest.hcl"
     ],
-    "gap": "Latency hub module.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the module is not instantiated from the root (a root variable is a change to the protected infrastructure/terraform/variables.tf) and there is one region and no per-region Reflex/Fabric VPC to join (R12-GCP-8035, 8044, 8045); no real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1283,21 +1284,22 @@
       "R12-GCP-8056"
     ],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/ncc && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused."
   },
   {
     "id": "R12-GCP-8058",
-    "status": "MISSING",
-    "current": "No NCC resources.",
+    "status": "PARTIAL",
+    "current": "modules/ncc declares a STAR preset-topology hub (google_network_connectivity_hub.services) with VPC spokes in center and edge groups, refused at plan unless at least one center and one edge spoke are named. Declared only when star_spokes names spokes; tests/hubs.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf"
+      "infrastructure/terraform/modules/ncc/main.tf google_network_connectivity_hub.services, google_network_connectivity_spoke.services",
+      "infrastructure/terraform/modules/ncc/tests/hubs.tftest.hcl"
     ],
-    "gap": "Star hub module.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): not instantiated from the root (protected variables.tf) and the service, data and AI planes share one VPC per environment today, so there is nothing to make spokes of (R12-GCP-8046, 8049, 8050); 'stronger centralised inspection' needs an inspection appliance or Cloud NGFW endpoint in the centre VPC, which is not declared; no real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1305,10 +1307,10 @@
       "R12-GCP-8056"
     ],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/ncc && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/ncc 'Success! 5 passed, 0 failed.' Mutations, each restored by cp and cmp: the /24 floor lowered to /8 failed a_latency_spoke_exporting_a_wide_prefix_is_refused; the latency hub's topology set to STAR failed the_latency_hub_is_a_mesh_exporting_only_narrow_prefixes; the centre-group requirement weakened failed a_star_with_no_center_is_refused."
   },
   {
     "id": "R12-GCP-8059",
