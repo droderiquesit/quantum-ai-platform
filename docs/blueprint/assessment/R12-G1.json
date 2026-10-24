@@ -1381,12 +1381,13 @@
   {
     "id": "R12-SEC-8062",
     "status": "PARTIAL",
-    "current": "Execution node has no external address (tested) and SSH ingress only from the IAP range; no PAM entitlements or workforce identity pool in Terraform.",
+    "current": "Execution node has no external address (tested) and SSH ingress only from the IAP range. PAM entitlements are declared in Terraform (variables.tf pam_entitlements, security.tf google_privileged_access_manager_entitlement.this) with plan-time refusals of an entitlement nobody approves, self-approval, an elevation over eight hours, basic roles and every identity-administration and secret-reading role (tests/pam.tftest.hcl, tests/security.tftest.hcl). The list is empty in every environment. No workforce identity pool is declared (grep google_iam_workforce finds nothing).",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:662 the_execution_node_has_no_external_address_and_no_container_runtime",
-      "infrastructure/terraform/modules/execution-node/main.tf:683 iap_ssh firewall"
+      "infrastructure/terraform/modules/execution-node/main.tf:683 iap_ssh firewall",
+      "infrastructure/terraform/tests/pam.tftest.hcl (18 runs)"
     ],
-    "gap": "PAM entitlements / temporary grants and audit.",
+    "gap": "2026-10-24 (lane L6, current corrected: it said no PAM entitlements in Terraform): (1) pam_entitlements is empty in every environment, so no privileged role is in fact granted through PAM; enabling one is an infrastructure/environments/** change (protected) with a real plan, tracked with R12-SEC-9123/9060; (2) no workforce identity pool; (3) standing privileged grants outside PAM (the owner's own roles) are not inventoried, so 'privileged access must be temporary' is not proven of the project.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1397,7 +1398,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: scratch copy, terraform 1.9.8: terraform test -filter=tests/pam.tftest.hcl 'Success! 18 passed, 0 failed.' No code change. Stays PARTIAL."
   },
   {
     "id": "R12-REFLEX-8063",

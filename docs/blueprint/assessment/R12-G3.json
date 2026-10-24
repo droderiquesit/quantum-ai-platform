@@ -3556,9 +3556,10 @@
       "scripts/game-day/harness.test.mjs agent-escalation tests",
       "docs/ops/game-days/agent-escalation/2026-10-18-agent-escalation.json",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5073 the_infrastructure_workflow_cannot_touch_production",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1461 no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1461 no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell",
+      "docs/blueprint/lanes/l6-sec-10157-protected.patch"
     ],
-    "gap": "The drill is a scripted agent against the two judges, not a model. Its tests are in scripts/game-day/harness.test.mjs, which CI's scripts job already runs, so it runs on every pull request; but a secret read and a connection outside the egress allow-list need the sandbox's runner and firewall, so a step in .github/workflows/agent-sandbox.yml (protected) still has to run them and fail on success.",
+    "gap": "The drill is a scripted agent against the two judges, not a model. Its tests are in scripts/game-day/harness.test.mjs, which CI's scripts job runs on every pull request; but a secret read and a connection outside the egress allow-list need the sandbox's runner and firewall. 2026-10-24 (lane L6): that step is written as docs/blueprint/lanes/l6-sec-10157-protected.patch, a step appended to .github/workflows/agent-sandbox.yml that, after the egress verdict, runs as the lane's uid and lane-egress gid and must be refused five times: reading a root-only planted secret, a direct connection with the proxy bypassed, an off-list host through the proxy, a runner token in the lane's environment, and a token kept in either checkout's .git/config; any success fails the job. Checked only statically: the YAML parses, `bash -n` accepts the step, and agent-guard.mjs's sandbox judge still admits the file ('holds no secret, no credential and no write ...'). It has not run: it needs a person to apply the protected patch and a dispatched sandbox run, and its record would then belong in docs/ops/game-days/agent-escalation/.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3569,7 +3570,7 @@
     "verification": "node --test scripts/game-day/harness.test.mjs",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutations fired - runDrill recording every attempt as held (the relaxed-policy test failed); the outcome forced to 'refused' (the control, relaxed-policy, lying-record and command tests failed). Kept PARTIAL for the sandbox-run half."
+    "notes": "2026-10-18 lane L23: mutations fired - runDrill recording every attempt as held (the relaxed-policy test failed); the outcome forced to 'refused' (the control, relaxed-policy, lying-record and command tests failed). Kept PARTIAL for the sandbox-run half. 2026-10-24 lane L6: sandbox drill step written as a protected patch; not run (no runner, protected path). Stays PARTIAL."
   },
   {
     "id": "R12-RES-10158",
