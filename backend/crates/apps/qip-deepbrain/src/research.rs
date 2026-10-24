@@ -3780,7 +3780,10 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(named.len(), 4, "premise: four named-budget kinds");
-        assert_eq!(bid, named, "the loop bids exactly the four named-budget kinds");
+        assert_eq!(
+            bid, named,
+            "the loop bids exactly the four named-budget kinds"
+        );
         assert!(!bid.contains(&WorkKind::Agent) && !bid.contains(&WorkKind::Solver));
     }
 }
