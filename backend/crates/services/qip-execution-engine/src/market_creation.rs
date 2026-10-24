@@ -1373,4 +1373,122 @@ mod tests {
         )?;
         Ok(())
     }
+
+    /// A market is seeded only once it is listed, and listed only while it
+    /// is merely created. The failure this prevents is the ladder resting at
+    /// a venue that never took the empty listing: the List step is where the
+    /// venue's listing admission is spent and journaled, so a market seeded
+    /// straight from Created would hold capital at a venue with no record
+    /// that it was ever listed there. Every admission below is genuine and
+    /// the ladder verdict is this market's own, so the stage comparison is
+    /// the only thing that refuses.
+    ///
+    /// Mutation: drop the `market.stage != stage` comparison from `stage_of`
+    /// and the seed straight from Created succeeds.
+    #[test]
+    fn a_market_is_seeded_only_after_it_is_listed_and_listed_only_once() -> Result<()> {
+        let permissions = permitted()?;
+        let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 7);
+        let mut factory = MarketFactory::for_venue(&broker)?;
+        factory.create(&admit(&permissions, CreationAction::Create)?, rule()?, at())?;
+        let refused = factory
+            .seed(
+                &admit(&permissions, CreationAction::Seed)?,
+                &ladder()?,
+                d("30"),
+                &mut broker,
+                at(),
+            )
+            .expect_err("a market that was never listed was seeded");
+        assert!(
+            refused
+                .message()
+                .contains("is created, and this step needs it listed"),
+            "refused for another reason: {}",
+            refused.message()
+        );
+        assert!(broker.listed_book(PRODUCT).is_none(), "a book rests anyway");
+        assert_eq!(
+            factory.market(PRODUCT).map(|market| market.stage),
+            Some(MarketStage::Created)
+        );
+        // Listed and seeded in order, it is not listed again: a second List
+        // would replace the seeded ladder with an empty book.
+        factory.list(
+            &admit(&permissions, CreationAction::List)?,
+            &mut broker,
+            at(),
+        )?;
+        factory.seed(
+            &admit(&permissions, CreationAction::Seed)?,
+            &ladder()?,
+            d("30"),
+            &mut broker,
+            at(),
+        )?;
+        let refused = factory
+            .list(
+                &admit(&permissions, CreationAction::List)?,
+                &mut broker,
+                at(),
+            )
+            .expect_err("a seeded market was listed again");
+        assert!(
+            refused
+                .message()
+                .contains("is seeded, and this step needs it created"),
+            "refused for another reason: {}",
+            refused.message()
+        );
+        assert_eq!(
+            broker.listed_book(PRODUCT).map(OrderBook::total_depth),
+            Some(d("60")),
+            "the seeded ladder was replaced"
+        );
+        Ok(())
+    }
+
+    /// A market is created once. A second create for the same product would
+    /// otherwise replace the record in place: the stage falls back to
+    /// Created while the seeded ladder still rests at the venue, the
+    /// inventory reads zero, and the review that withdraws a market whose
+    /// permission lapsed checks only the Create permission of a market that
+    /// is in fact listed and seeded.
+    ///
+    /// Mutation: drop the `self.markets.contains_key(&request.product)`
+    /// guard from `create` and the second create succeeds.
+    #[test]
+    fn a_market_is_created_once_and_a_second_create_leaves_the_first_untouched() -> Result<()> {
+        let permissions = permitted()?;
+        let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 7);
+        let mut factory = listed(&mut broker)?;
+        factory.seed(
+            &admit(&permissions, CreationAction::Seed)?,
+            &ladder()?,
+            d("30"),
+            &mut broker,
+            at(),
+        )?;
+        factory.drain_journal();
+        let other = PricingRule::new(d("50"), d("0.5"), d("0.25"), d("1"), 1, d("0.05"))?;
+        let refused = factory
+            .create(&admit(&permissions, CreationAction::Create)?, other, at())
+            .expect_err("a market was created twice");
+        assert!(
+            refused.message().contains("a market is created once"),
+            "refused for another reason: {}",
+            refused.message()
+        );
+        let market = factory
+            .market(PRODUCT)
+            .ok_or_else(|| Error::invalid("the market vanished"))?;
+        assert_eq!(market.stage, MarketStage::Seeded);
+        assert_eq!(market.inventory, d("30"));
+        assert_eq!(market.rule.reference_price(), d("100"));
+        assert!(
+            factory.drain_journal().is_empty(),
+            "the refusal was journaled as a creation"
+        );
+        Ok(())
+    }
 }

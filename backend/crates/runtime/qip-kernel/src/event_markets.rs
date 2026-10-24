@@ -43,6 +43,20 @@
 //! itself, as is an entity out of jurisdiction, under age, ineligible, or
 //! without the venue. An empty book refuses everything.
 //!
+//! # Listed and quoted only while the creation register admits it
+//!
+//! The plane holds the three-authority creation register of
+//! `qip_execution_engine::creation` its market was created under, and asks
+//! it again at every act, each for the action the act performs
+//! (R12-COVERAGE-5107): a market and its outcome instruments are taken in
+//! at a listing only under `list`, and kept only while `create` and `list`
+//! still admit every one of them; a paper quote rests on an outcome only
+//! under `seed`, because resting a quote is putting liquidity into the
+//! market. [`EventMarketPlane::set_creation_permissions`] replaces the
+//! register, and the next pass withdraws a market whose permission lapsed.
+//! Until 2026-10-24 the register was consulted once, for `create`, at
+//! installation, and a revoked permission stopped nothing.
+//!
 //! # Pricing never reads availability (5089)
 //!
 //! [`EventMarketPlane::price`] takes no access book: the belief and the fair
@@ -56,6 +70,7 @@ use qip_core::error::{Error, Result};
 use qip_core::{Decimal, ObjectId, Timestamp};
 use qip_data_finder::admission::LicensingDecision;
 use qip_events::{EventBody, Topic};
+use qip_execution_engine::creation::{CreationAction, CreationPermissions, CreationRequest};
 use qip_financial::quality::LicensingClass;
 use qip_market::book::OrderBook;
 use qip_prediction::access::AccessBook;
@@ -120,6 +135,11 @@ pub struct EventMarketsDiscovered {
     pub resolutions: BTreeMap<String, String>,
     pub opportunities: Vec<EventOpportunity>,
     pub problems: Vec<String>,
+    /// Markets withdrawn this pass because the creation register no longer
+    /// admits them, each with the refusal. Defaulted so a record journaled
+    /// before the field existed still decodes.
+    #[serde(default)]
+    pub withdrawn: Vec<String>,
 }
 
 impl EventBody for EventMarketsDiscovered {
@@ -158,6 +178,10 @@ pub struct EventMarketsSimulated {
     /// Net paper cash settled from final resolutions this pass.
     pub settled: Decimal,
     pub problems: Vec<String>,
+    /// Markets withdrawn this pass because the creation register no longer
+    /// admits them, each with the refusal.
+    #[serde(default)]
+    pub withdrawn: Vec<String>,
 }
 
 impl EventBody for EventMarketsSimulated {
@@ -183,17 +207,34 @@ pub struct EventMarketPlane {
     settled: BTreeSet<ObjectId>,
     /// The newest book instant each market's arbitrage was last taken at.
     traded_at: BTreeMap<ObjectId, Timestamp>,
+    /// The creation register every listing and quote is admitted against.
+    creation: CreationPermissions,
+    /// The jurisdiction the plane's markets were created in.
+    jurisdiction: String,
+    /// Markets withdrawn because their permission lapsed. Withdrawn for
+    /// good: their books are dropped and nothing further is taken in, so a
+    /// permission recorded again later lists a market only through a new
+    /// installation, which asks every authority afresh.
+    withdrawn: BTreeSet<ObjectId>,
 }
 
 impl EventMarketPlane {
     /// Open the plane over `adapter`, refusing a source whose licensing
     /// posture has not been evaluated.
+    ///
+    /// `creation` is the register every listing and quote is admitted
+    /// against, in `jurisdiction`. There is no form of this that takes none:
+    /// an empty register is the fail-closed one, under which the plane
+    /// lists nothing and quotes nothing.
+    #[allow(clippy::too_many_arguments)] // each is a separate authority the plane answers to
     pub fn open(
         adapter: Box<dyn PredictionAdapter + Send + Sync>,
         licensing: Option<LicensingDecision>,
         access: AccessBook,
         entity: impl Into<String>,
         oracle: OracleIdentity,
+        creation: CreationPermissions,
+        jurisdiction: impl Into<String>,
     ) -> Result<Self> {
         let source = adapter.descriptor();
         let posture = if source.is_synthetic {
@@ -229,6 +270,13 @@ impl EventMarketPlane {
                 "the event-market plane needs the entity its paper orders are admitted for",
             ));
         }
+        let jurisdiction = jurisdiction.into();
+        if jurisdiction.trim().is_empty() {
+            return Err(Error::invalid(
+                "the event-market plane needs the jurisdiction its markets were created in, \
+                 which every listing and quote is admitted against; name it",
+            ));
+        }
         Ok(Self {
             adapter,
             source,
@@ -244,7 +292,83 @@ impl EventMarketPlane {
             cash: Decimal::ZERO,
             settled: BTreeSet::new(),
             traded_at: BTreeMap::new(),
+            creation,
+            jurisdiction,
+            withdrawn: BTreeSet::new(),
         })
+    }
+
+    /// Replace the creation register, as an operator recording or revoking a
+    /// permission does. The next pass withdraws every market it no longer
+    /// admits, and quotes only what it admits for `seed`.
+    pub fn set_creation_permissions(&mut self, creation: CreationPermissions) {
+        self.creation = creation;
+    }
+
+    pub fn creation_permissions(&self) -> &CreationPermissions {
+        &self.creation
+    }
+
+    /// Whether `market` was withdrawn because its permission lapsed.
+    pub fn is_withdrawn(&self, market: &ObjectId) -> bool {
+        self.withdrawn.contains(market)
+    }
+
+    /// Every refusal the register gives `action` on `market` and each of its
+    /// outcome instruments, at the market's venue in this plane's
+    /// jurisdiction. Empty when all are admitted.
+    fn refusals(&self, action: CreationAction, market: &EventMarket) -> Vec<String> {
+        std::iter::once(market.market_id.as_str())
+            .chain(
+                market
+                    .outcomes()
+                    .iter()
+                    .map(|outcome| outcome.object_id.as_str()),
+            )
+            .filter_map(|product| {
+                self.creation
+                    .admit(&CreationRequest::new(
+                        action,
+                        market.venue.as_str(),
+                        product,
+                        self.jurisdiction.as_str(),
+                    ))
+                    .err()
+                    .map(|error| format!("{product}: {}", error.message()))
+            })
+            .collect()
+    }
+
+    /// Withdraw every tracked market the register no longer admits for
+    /// `create` or `list` — the two acts already taken on a market the plane
+    /// holds — dropping its books so nothing is priced, traded or quoted on
+    /// it. Returns one line per market withdrawn.
+    fn withdraw_lapsed(&mut self) -> Vec<String> {
+        let mut withdrawn = Vec::new();
+        let live: Vec<ObjectId> = self
+            .markets
+            .keys()
+            .filter(|id| !self.withdrawn.contains(*id))
+            .cloned()
+            .collect();
+        for market_id in live {
+            let Some(market) = self.markets.get(&market_id) else {
+                continue;
+            };
+            let mut refused = self.refusals(CreationAction::Create, market);
+            refused.extend(self.refusals(CreationAction::List, market));
+            if refused.is_empty() {
+                continue;
+            }
+            self.books.remove(&market_id);
+            self.traded_at.remove(&market_id);
+            self.withdrawn.insert(market_id.clone());
+            withdrawn.push(format!(
+                "{market_id} withdrawn, its creation permission lapsed: {}",
+                refused.join("; ")
+            ));
+        }
+        withdrawn
     }
 
     pub fn source(&self) -> &PredictionSource {
@@ -297,10 +421,23 @@ impl EventMarketPlane {
             decision_grade: self.decision_grade(),
             ..EventMarketsDiscovered::default()
         };
+        found.withdrawn = self.withdraw_lapsed();
         for update in self.adapter.poll(now)? {
             match update {
                 PredictionUpdate::MarketListed(market) => {
                     let market = *market;
+                    // A listing is taken in only under `list` for the market
+                    // and every outcome instrument it trades as.
+                    let refused = self.refusals(CreationAction::List, &market);
+                    if !refused.is_empty() {
+                        found.problems.push(format!(
+                            "market {} was listed by the source and not taken in: the creation \
+                             register does not admit listing it; {}",
+                            market.market_id,
+                            refused.join("; ")
+                        ));
+                        continue;
+                    }
                     if !self.markets.contains_key(&market.market_id)
                         && self.markets.len() >= MAX_EVENT_MARKETS
                     {
@@ -339,6 +476,9 @@ impl EventMarketPlane {
                     outcome,
                     book,
                 } => {
+                    if self.withdrawn.contains(&market_id) {
+                        continue;
+                    }
                     let Some(market) = self.markets.get(&market_id) else {
                         found.problems.push(format!(
                             "a book for {market_id} arrived before its listing and was dropped"
@@ -392,6 +532,9 @@ impl EventMarketPlane {
             );
         }
         for (market_id, market) in &self.markets {
+            if self.withdrawn.contains(market_id) {
+                continue;
+            }
             let Some(books) = self.complete_books(market) else {
                 continue;
             };
@@ -438,7 +581,13 @@ impl EventMarketPlane {
             decision_grade: self.decision_grade(),
             ..EventMarketsSimulated::default()
         };
-        let ids: Vec<ObjectId> = self.markets.keys().cloned().collect();
+        run.withdrawn = self.withdraw_lapsed();
+        let ids: Vec<ObjectId> = self
+            .markets
+            .keys()
+            .filter(|id| !self.withdrawn.contains(*id))
+            .cloned()
+            .collect();
         for market_id in ids {
             let Some(market) = self.markets.get(&market_id).cloned() else {
                 continue;
@@ -525,11 +674,26 @@ impl EventMarketPlane {
                     error.message()
                 )),
             }
-            // Paper quotes around fair value, each admitted by the same gate.
+            // Paper quotes around fair value, each admitted by the same gate,
+            // and each under `seed` for its instrument: a resting quote puts
+            // liquidity into the market.
             for outcome in market.outcomes() {
                 let Some(fair) = valuation.fair_values.get(&outcome.id).copied() else {
                     continue;
                 };
+                if let Err(error) = self.creation.admit(&CreationRequest::new(
+                    CreationAction::Seed,
+                    market.venue.as_str(),
+                    outcome.object_id.as_str(),
+                    self.jurisdiction.as_str(),
+                )) {
+                    run.refusals.push(format!(
+                        "quote on {market_id}/{}: {}",
+                        outcome.id,
+                        error.message()
+                    ));
+                    continue;
+                }
                 if let Err(error) = self.access.admit_event_order(
                     &self.entity,
                     &market.venue,
