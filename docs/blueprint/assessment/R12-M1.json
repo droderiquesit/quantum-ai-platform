@@ -748,7 +748,7 @@
   },
   {
     "id": "R12-DATA-1033",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "backend/crates/services/qip-data-finder/src/reference.rs:588 from_digest fills entitlement (licensing class) and geography (manifest region) (Acquisition::of_admission at backend/crates/services/qip-data-finder/src/reference.rs:346); recorded to the event log by record_reference (backend/crates/runtime/qip-kernel/src/references.rs:383)",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/reference.rs:348 populated at construction",
@@ -758,7 +758,7 @@
       "backend/crates/apps/qip-fastbrain/src/node.rs:131 poll hook calls platform.reference_fetch",
       "backend/crates/apps/qip-api/src/routes.rs:2230 and backend/crates/apps/qip-deepbrain/src/connectors.rs:239 same hook"
     ],
-    "gap": "",
+    "gap": "2026-10-24: The constructor, the event-log round trip and both mutations are sound, but no committed environment configures a connector, so no deployed process fetches an external source and none persists an entitlement or geography. Closing: a committed environment enables a connector so a deployed process records references, or the row is narrowed to the library constructor.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -769,7 +769,7 @@
     "verification": "cargo test -p qip-kernel --test references",
     "work_item": "",
     "size": "S",
-    "notes": "The test every_data_reference_carries_and_exposes_etag_cursor_entitlement_geography_expiry_and_re_fetch_instructions asserts only that the fields are None; it would pass with them never populated. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Moved PARTIAL->COMPLETE: populated from the admission on every connector fetch in three binaries; test asserts the values and round-trip. Ran acquisition_manifest: 6 passed."
+    "notes": "The test every_data_reference_carries_and_exposes_etag_cursor_entitlement_geography_expiry_and_re_fetch_instructions asserts only that the fields are None; it would pass with them never populated. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Moved PARTIAL->COMPLETE: populated from the admission on every connector fetch in three binaries; test asserts the values and round-trip. Ran acquisition_manifest: 6 passed. AUDIT-4: 2026-10-24 regraded, references are built only from connector digests and no committed environment enables a connector, so no deployed process persists an entitlement or geography."
   },
   {
     "id": "R12-DATA-1034",

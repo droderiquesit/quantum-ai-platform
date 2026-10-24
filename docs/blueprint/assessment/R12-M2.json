@@ -400,7 +400,7 @@
   },
   {
     "id": "R12-DATA-2018",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Source cannot be built without ProbeEvidence; finder records findings per inspection attribute (access, terms, schema, freshness, cost, uniqueness, manipulation).",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/finder.rs:326 DataFinder::assess",
@@ -408,7 +408,7 @@
       "backend/crates/services/qip-data-finder/src/quality.rs:87 SourceCost",
       "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs:492 a_registered_source_records_a_finding_for_every_inspection_attribute_in_its_trail"
     ],
-    "gap": "None in code; discovery disabled in deployments.",
+    "gap": "2026-10-24: The finder is real and mutation-checked, but a deployed deep brain inspects no candidate until an operator commits source-candidates.json and sets source_candidates_file. Closing: a committed environment names a candidate catalogue so a deployed process runs the inspections, or the row is narrowed to the DataFinder library.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -419,7 +419,7 @@
     "verification": "cargo test -p qip-data-finder --test lifecycle_policy",
     "work_item": "",
     "size": "S",
-    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it."
+    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it. AUDIT-4: 2026-10-24 regraded, DataFinder inspects candidates only from QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH, rendered from source_candidates_file, commented out in dev and absent elsewhere, so a deployed deep brain inspects nothing."
   },
   {
     "id": "R12-DATA-2019",

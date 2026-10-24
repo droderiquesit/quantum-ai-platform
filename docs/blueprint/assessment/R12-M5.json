@@ -2465,7 +2465,7 @@
   },
   {
     "id": "R12-COVERAGE-5107",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "CreationPermissions::admit refuses any creation request unless venue, product and jurisdiction permissions are all recorded with a reference, naming every missing one (creation.rs:170-260); CreationAdmission has private fields and one mint (creation.rs:140-166). FactoryStage::install records the plan's permissions and passes a separate admission to each create/list/seed step (market_factory_stage.rs:150-210), and MarketFactory refuses an admission for another action or venue (market_creation.rs:622+). Reached from qip-deepbrain main.rs:321 -> Platform::install_breadth (breadth.rs:143-199) when a breadth plan is configured; event-contract markets are also checked against AccessBook::admit_creation (breadth.rs:157-178).",
     "evidence": [
       "backend/crates/services/qip-execution-engine/src/creation.rs:224-260",
@@ -2476,7 +2476,7 @@
       "qip-kernel/tests/breadth.rs::a_plan_missing_a_permission_is_refused_whole_and_creates_nothing",
       "qip-kernel/tests/breadth.rs::an_event_market_is_created_only_where_the_access_book_permits_creation"
     ],
-    "gap": "",
+    "gap": "2026-10-24: The permission gate is real and mutation-checked, but it runs only when an operator supplies a breadth plan through QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment does. Closing: a committed environment (or a default plan) sets the variable so a deployed process reaches the gate, or the row is narrowed to the library gate.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2487,6 +2487,6 @@
     "verification": "cargo test -p qip-acceptance --test market_creation",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Opt-in: only when QIP_DEEPBRAIN_BREADTH_PLAN is set (no committed deployment sets it), and only on the desk's simulated listing venue (breadth.rs:180-186). The kernel test drops only the jurisdiction permission; the unit test covers all three."
+    "notes": "Round-2 independent audit, 2026-10-11: Opt-in: only when QIP_DEEPBRAIN_BREADTH_PLAN is set (no committed deployment sets it), and only on the desk's simulated listing venue (breadth.rs:180-186). The kernel test drops only the jurisdiction permission; the unit test covers all three. AUDIT-4: 2026-10-24 regraded, the permission gate runs only when QIP_DEEPBRAIN_BREADTH_PLAN names a plan, which no committed environment sets, so no deployed process creates a market or reaches the gate."
   }
 ]
