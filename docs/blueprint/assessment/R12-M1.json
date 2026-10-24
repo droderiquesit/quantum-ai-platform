@@ -24,28 +24,31 @@
   },
   {
     "id": "R12-TICK-1002",
-    "status": "PARTIAL",
-    "current": "qip_kernel::fusion::fuse joins knowledge-graph events (occurred and recorded by as_of) with knowable tick traces into FusedState (posteriors, mismatches, opportunity_map); tests/fusion.rs covers it; called by qip-deepbrain tick_desk, which is off unless QIP_DEEPBRAIN_TICK_EVERY is set (no committed deployment sets it).",
+    "status": "COMPLETE",
+    "current": "qip_kernel::fusion::fuse joins knowledge-graph events with knowable tick traces into FusedState; FusedState::outside_priors hands each instrument's strongest directional posterior to the platform (qip-deepbrain node.rs sets them every cycle from TickDesk::outside_priors), and Platform::reason_about_the_queue multiplies the hypothesis confidence by m = 1 - max(0, 2p - 1), p being the posterior against the hypothesis's direction (ADR 0151 decision 3): it can narrow and never raise. The tick desk itself stays behind QIP_DEEPBRAIN_TICK_EVERY, which no committed deployment sets, so the seam is inert there until the desk is on.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/lib.rs world-model crate (central only)",
-      "backend/crates/edge/qip-feature-dag/src/engine.rs edge feature engine (edge only)",
-      "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse",
-      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk"
+      "backend/crates/runtime/qip-kernel/src/fusion.rs::OutsidePrior",
+      "backend/crates/runtime/qip-kernel/src/fusion.rs::FusedState::outside_priors",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::set_outside_priors",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::reason_about_the_queue (outside_narrowing)",
+      "backend/crates/apps/qip-deepbrain/src/node.rs (set_outside_priors before step)",
+      "backend/crates/runtime/qip-kernel/tests/outside_prior.rs::a_posterior_against_the_hypothesis_narrows_its_confidence_and_one_for_it_changes_nothing",
+      "backend/crates/runtime/qip-kernel/tests/fusion.rs::the_fused_state_hands_reason_each_instruments_strongest_directional_posterior"
     ],
-    "gap": "Tick desk off by default; no test that a decision consumes the fused record and changes when either input is removed. REASON (reason_about_the_queue in platform.rs) forms its hypothesis through the cost router and the agent panel and holds no seam for a prior from outside the opportunity; a fused posterior is a belief about an instrument reacting, so injecting it as the panel prior is a decision-path design choice (which confidence it moves, and under which gate) that needs an ADR, not a call-site change.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-TICK-1177"
     ],
     "blocked_by": "",
-    "verification": "an integration test in qip-kernel asserting a decision reads a fused record",
+    "verification": "cargo test -p qip-kernel --test outside_prior --test fusion",
     "work_item": "",
     "size": "XL",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; wiring FusedState::posteriors into REASON would change what a decision rests on without a recorded design. Left PARTIAL with the corrected gap."
+    "notes": "Lane N1-KERNEL-ACCEPT 2026-10-24: closed per ADR 0151 decision 3 (closure plan adr-c-2026-10-19.json). Mutations: m = 1 + (2p-1) fails the REASON-level test (a posterior for the hypothesis moved confidence) and the multiplier sweep (multiplier 2); dropping the confidence multiply fails the narrowing test; negating the prior direction fails the fusion test. Tick desk off by default by the ADR."
   },
   {
     "id": "R12-WORLD-1003",

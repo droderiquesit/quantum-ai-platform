@@ -89,6 +89,9 @@ pub const MAX_TICKS: usize = 2_000_000;
 
 /// The distilled map's capacity and lifetime.
 pub const MAP_CAPACITY: usize = 64;
+
+/// The most outside priors one round hands REASON; the kernel refuses more.
+pub const MAX_OUTSIDE_PRIORS: usize = 1_024;
 pub const MAP_TTL: Duration = Duration::from_mins(15);
 
 /// The desk's configuration, read once at the composition root.
@@ -430,6 +433,9 @@ pub struct TickDesk {
     /// (`FusedState::posteriors`), which the evolution engine reads as a
     /// search prior (R12-TICK-2085).
     posteriors: BTreeMap<String, f64>,
+    /// The same fused state as beliefs REASON may be narrowed by, never
+    /// raised (ADR 0151 decision 3, R12-TICK-1002).
+    outside_priors: Vec<qip_kernel::fusion::OutsidePrior>,
 }
 
 impl TickDesk {
@@ -445,6 +451,7 @@ impl TickDesk {
             rounds: 0,
             tree: None,
             posteriors: BTreeMap::new(),
+            outside_priors: Vec::new(),
         }
     }
 
@@ -455,6 +462,14 @@ impl TickDesk {
     /// What the last round's fused events believe about each instrument.
     pub const fn posteriors(&self) -> &BTreeMap<String, f64> {
         &self.posteriors
+    }
+
+    /// What the last round's fused events would have REASON be careful of: the
+    /// strongest directional posterior per instrument, at most
+    /// [`MAX_OUTSIDE_PRIORS`], ranked by strength so the cap drops the weakest
+    /// rather than whichever sorted last.
+    pub fn outside_priors(&self) -> &[qip_kernel::fusion::OutsidePrior] {
+        &self.outside_priors
     }
 
     /// The synthetic future tree the last round grew.
@@ -753,6 +768,15 @@ impl TickDesk {
         };
         let fused = fuse(graph, &traces, now, &fusion_config)?;
         self.posteriors = fused.posteriors();
+        let mut priors = fused.outside_priors();
+        // Strongest first: the smallest multiplier either way is the prior that
+        // can narrow most, and a stable sort keeps instrument order on ties.
+        let strength = |prior: &qip_kernel::fusion::OutsidePrior| {
+            prior.narrowing_for(1.0).min(prior.narrowing_for(-1.0))
+        };
+        priors.sort_by(|a, b| strength(a).total_cmp(&strength(b)));
+        priors.truncate(MAX_OUTSIDE_PRIORS);
+        self.outside_priors = priors;
         round.fused_events = fused.events.len();
         round.mismatches = fused.mismatches().len();
         let map = fused.opportunity_map(MAP_CAPACITY, MAP_TTL)?;
