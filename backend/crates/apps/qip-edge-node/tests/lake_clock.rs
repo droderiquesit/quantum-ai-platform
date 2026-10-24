@@ -200,6 +200,9 @@ fn a_skewed_venue_clock_reaches_the_lake_line_as_the_figures_arithmetic_predicts
         assert_eq!(event.event_time().as_nanos(), venue);
         assert_eq!(event.receive_time().as_nanos(), capture);
         assert_eq!(event.uncertainty().as_nanos(), OWN_UNCERTAINTY_NS);
+        // The venue and the feed's sequence survive as the event's origin.
+        assert_eq!(event.origin().venue.as_str(), "XLON");
+        assert_eq!(event.origin().sequence, index + 1);
     }
     assert_eq!(
         warmed,
