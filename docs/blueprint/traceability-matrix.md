@@ -10,7 +10,7 @@ register (ADR 0099), and there is no second one.
 |---|---|---|
 | Blueprint completion (COMPLETE) | 537 | 35.4% |
 | Implemented (behaviour exists in code) | 1333 | 87.8% |
-| Tested (a named test demonstrates it) | 1232 | 81.2% |
+| Tested (a named test demonstrates it) | 1233 | 81.2% |
 | Integrated (reached from a composition root) | 885 | 58.3% |
 | Deployable (provisionable from committed config) | 206 | 13.6% |
 | End-to-end demonstrated | 20 | 1.3% |
@@ -18,8 +18,8 @@ register (ADR 0099), and there is no second one.
 | Status | Requirements |
 |---|---|
 | COMPLETE | 537 |
-| PARTIAL | 837 |
-| MISSING | 111 |
+| PARTIAL | 838 |
+| MISSING | 110 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
 | NEEDS-VALIDATION | 1 |
@@ -30,7 +30,7 @@ register (ADR 0099), and there is no second one.
 |---|---|---|---|---|---|---|---|---|---|
 | [ARCH](#arch) | 23 | 9 | 14 | 0 | 0 | 0 | 21 | 19 | 0 |
 | [CONTRACT](#contract) | 43 | 22 | 21 | 0 | 0 | 0 | 43 | 43 | 0 |
-| [FABRIC](#fabric) | 94 | 34 | 50 | 9 | 1 | 0 | 75 | 69 | 0 |
+| [FABRIC](#fabric) | 94 | 34 | 51 | 8 | 1 | 0 | 75 | 70 | 0 |
 | [REFLEX](#reflex) | 56 | 28 | 25 | 1 | 0 | 2 | 55 | 49 | 0 |
 | [MESH](#mesh) | 45 | 10 | 35 | 0 | 0 | 0 | 43 | 40 | 0 |
 | [EXEC](#exec) | 18 | 6 | 11 | 0 | 1 | 0 | 14 | 14 | 0 |
@@ -209,7 +209,7 @@ register (ADR 0099), and there is no second one.
 | R12-FABRIC-7035 | Partition leaders/followers with replication | ADR 0111's managed log is implemented: Broker::with_managed_log commits P0/P1 batches under a fenced lease and followers catch up onto their own disks (qip-streaming event_fabric/managed.rs, broker.rs); SpannerManagedLog implements the port over Spanner REST with lease-first read-write transactions (qip-fabricd/src/spanner.rs:1-80); qip-fabricd seats it when QIP_EVENT_FABRIC_MANAGED_LOG=spanner (lib.rs:30-37, :412; config.rs:253-290). The kill-the-leader test runs against MemoryManagedLog, not Spanner; the Spanner adapter's tests use a fake transport. No Terraform provisions the fabric's Spanner database (infrastructure/event-fabric/spanner.ddl is unapplied; modules/data/main.tf:380-401 holds only 'positions'), and qip-fabricd is not deployed (lib.rs:37-38, ADR 0099 C8). | PARTIAL | Declare the fabric's regional Spanner database in Terraform (gated), prove SpannerManagedLog against the Spanner emulator, add fabricd to the image matrix, and deploy it in dev in ADR 0035's region once billing is enabled, plan shown first (ADR 0111 Amendment 1). |  | P1 | multi-broker replication test |  |
 | R12-FABRIC-7036 | Brokers apply backpressure | Broker enforces per-producer byte/message quotas and a lag limit for refuse_producer streams; refusals are typed (Quota with retry_after, Shed) and named on the wire. | COMPLETE |  |  | P1 | broker quota test |  |
 | R12-FABRIC-7037 | fabric-controller three-zone Raft metadata quorum | No fabric-controller or Raft quorum exists. ADR 0111 (accepted 2026-10-11) delegates replication and leadership to Spanner (a cloud database) and keeps ADR 0100's refusal of in-tree consensus; qip-fabricd's config refuses any managed log other than 'spanner', including 'raft' (config.rs:286, test at :707-742). Only partition leadership is held (as a Spanner lease row); stream definitions, placement, broker epochs and ACL metadata are not in any quorum. | PARTIAL | Already decided by ADR 0111 Amendment 1: The metadata quorum is decided: Spanner under lease-epoch checks, three brokers one per zone, openraft not taken (ADR 0111 Amendment 1). |  | P1 | controller quorum game day |  |
-| R12-FABRIC-7038 | fabric-mirror selective async cross-region replication | StreamPolicy refuses any mirroring other than None naming C8 (qip-events event_fabric/policy.rs:236-243, :451-456). No mirror process exists. | MISSING | Build fabric-mirror per ADR 0120: StreamPolicy Mirroring::Async arm, target-region replicating consumer into region-qualified streams, idempotent checkpoint in regional Spanner, Gap records, mTLS; prove with a two-broker local test. Deployment waits on a second region. |  | P1 | mirror integration test |  |
+| R12-FABRIC-7038 | fabric-mirror selective async cross-region replication | Slice 1 of ADR 0119 built 2026-10-24: qip_streaming::event_fabric::mirror::plan_copy is the mirror's copy-and-checkpoint logic as a pure function over committed source rows and a checkpoint. It copies only rows below the source's committed bound, drops duplicates by source position, reports a missing source offset as a MirrorGap for the caller to journal, verifies the ADR 0104 batch chain (row hash, embedded link, previous copy) before producing anything and refuses the whole plan on a break, and names the target stream <source-region>.<stream>. StreamPolicy still refuses every mirroring policy other than None, naming C8 (qip-events policy.rs), and no process runs the mirror. | PARTIAL | Remaining slices of ADR 0119 (the register said ADR 0120, which is the WebAuthn record): (1) the StreamPolicy Mirroring::Async arm, admitted only when a mirror exists to honour it; (2) the mirror role in qip-fabricd: mTLS client to the source fabric, producer into the region-qualified target stream that nothing else may write, and the Gap record journaled in the target; (3) the durable checkpoint in the target region's regional Spanner instance; (4) qip_fabric_mirror_lag_records and _seconds and the typed stale state a consumer reads past the stream's bound (R12-OBS-9148, R12-RES-7114); (5) replay from the source archive when the source no longer retains the records; (6) the two-fabricd local test and game day that kills the link. Deployment waits on a second execution region and a record superseding ADR 0035's 'one'. Corrected 2026-10-24. |  | P1 | cargo test -p qip-streaming --test event_fabric_mirror |  |
 | R12-FABRIC-7039 | fabric-schema: versioned descriptors, compatibility checks, schema hashes | Schema id from content, compatibility checks and retirement in qip-events; unregistered schema refused by fabricd; descriptors are serde shapes, not Protobuf. | PARTIAL | Owner decision O08 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit prost/protobuf codegen for generated fabric bindings. Enables: Versioned Protobuf descriptors and generated types. Costs: A codegen dependency and build-time tool on the allow-list. |  | P1 | cargo test -p qip-events --test schema_compat |  |
 | R12-FABRIC-7040 | fabric-archive exports sealed segments to Cloud Storage | Archiver copies sealed segments off the commit path exactly once; default store is a local FileBlobStore. | PARTIAL | No GCS archive configured in a deployment; entitlements/replay indexes in archive not shown. |  | P1 | cargo test -p qip-fabricd --test broker |  |
 | R12-FABRIC-7041 | fabric-bridge adapters are optional and edge-only | Bridge boundary acceptance suite enforces it. | COMPLETE |  |  | P2 | cargo test -p qip-acceptance --test event_fabric_bridge_boundary |  |
