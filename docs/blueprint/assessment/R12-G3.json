@@ -2036,9 +2036,11 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:8901 learn_from",
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs",
       "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::aggregate",
-      "backend/crates/services/qip-learning-engine/src/forecast_market.rs::ForecastMarket"
+      "backend/crates/services/qip-learning-engine/src/forecast_market.rs::ForecastMarket",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs tournament::tests::resolved_outcomes_give_each_forecaster_the_calibration_score_computed_by_hand (two forecasters, four resolved questions; expected calibration error 0.05 and 0.15 and Brier 0.38 asserted against the hand computation; no card before resolution)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_learn calls TournamentStage::learn, which resolves due questions through Tournament::resolve (model_tournament.rs) and journals the TournamentReview"
     ],
-    "gap": "2026-10-24: Closes when a tournament test asserts a forecaster's calibration score after resolved outcomes equals the hand-computed value (qip-learning-engine Tournament scorecard calibration_error), and the row's verification points at it; today `cargo test -p qip-prediction` scores the platform-versus-market Brier comparison and never reaches the tournament.",
+    "gap": "2026-10-24 (lane L2-INTEL): the closure AUDIT-4 named is built: a tournament test asserts each forecaster's calibration score after resolved outcomes equals the hand-computed value, and verification points at it. Promotion awaits the independent skeptic.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2046,10 +2048,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-prediction",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-learning-engine --lib resolved_outcomes_give_each_forecaster_the_calibration_score_computed_by_hand",
     "work_item": "",
     "size": "L",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4 2026-10-24: regraded, the named verification, qip-prediction, does not exercise the Tournament or ForecastMarket scoring the requirement names; replacing the per-forecaster calibration_error with 0.0 (tournament.rs:1302) passes qip-prediction, the whole qip-learning-engine crate and qip-kernel's model_tournament suite."
+    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4 2026-10-24: regraded, the named verification, qip-prediction, does not exercise the Tournament or ForecastMarket scoring the requirement names; replacing the per-forecaster calibration_error with 0.0 (tournament.rs:1302) passes qip-prediction, the whole qip-learning-engine crate and qip-kernel's model_tournament suite. 2026-10-24 L2-INTEL: mutations fired, each restored byte-for-byte (cp + cmp): tournament.rs resolve pushing `(p, !happened)` as a calibration point, and Scorecard calibration assessed over 1 bin instead of CALIBRATION_BINS, each fail the new test at the calibration assertion."
   },
   {
     "id": "R12-AMBIENT-10093",
