@@ -1536,9 +1536,10 @@
       ".github/workflows/deploy.yml:91-184 gate and PR refusal",
       ".claude/hooks/guard-dangerous-command.py",
       ".github/CODEOWNERS",
-      "backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs"
+      "backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs",
+      "docs/blueprint/lanes/l6-cicd-9066-protected.patch"
     ],
-    "gap": "infra.yml applies Terraform on dispatch from any branch with no CI/test gate, so infrastructure changes do not go through tests; branch protection is not in code.",
+    "gap": "infra.yml applies Terraform on dispatch of any commit with no ci gate, so an infrastructure change can reach a project without its tests having run; branch protection is not in code (R12-CICD-9095). 2026-10-24 (lane L6): the fix is docs/blueprint/lanes/l6-cicd-9066-protected.patch: a 'ci succeeded for this commit' step on infra.yml's up and apps actions (the two that move an environment toward a commit) requiring a successful push-started ci run of github.sha, with deploy.yml's not-a-number refusal, plus deploy_provenance.rs::an_infrastructure_apply_of_a_commit_ci_has_not_passed_is_refused, which executes the extracted step against a stub gh for counts 0, '', null, 1 and 3. .github/** is protected, so a person must apply it.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -1549,7 +1550,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L6: patch verified in a scratch worktree: cargo test -p qip-acceptance --test deploy_provenance 'test result: ok. 6 passed'; mutation '-lt 1' to '-lt 0' in the new step failed the new test at the count \"0\" case (left 0, right 1, '5 passed; 1 failed'); restored with cp and cmp, 6 passed. Not applied: protected path. Stays PARTIAL."
   },
   {
     "id": "R12-GOV-9067",
@@ -1653,13 +1654,14 @@
   {
     "id": "R12-ARCH-9071",
     "status": "PARTIAL",
-    "current": "The architecture suite enforces dependency direction, hot-path and paper-boundary invariants; CODEOWNERS covers critical paths. Nothing detects a silent edit to the test itself beyond review.",
+    "current": "The architecture suite enforces dependency direction, hot-path and paper-boundary invariants. .github/CODEOWNERS now names the four guard suites (architecture.rs, paper_boundary.rs, lane_placement.rs, arch_001_independent_reflex.rs) individually, but its only owner is the repository's one maintainer, so it adds no second reviewer. scripts/agent-policy.json's protected_paths, which agent-guard.mjs enforces on every agent-authored pull request, does not list them: an agent change rewriting a guard suite needs no person's approval.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:408-1816",
       "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs",
-      ".github/CODEOWNERS"
+      ".github/CODEOWNERS",
+      "docs/blueprint/lanes/l6-arch-9071-protected.patch"
     ],
-    "gap": "Protection of the guard tests themselves.",
+    "gap": "2026-10-24 (lane L6): the gate that refuses an agent's unapproved change (agent-guard.mjs, run by .github/workflows/agent-boundary.yml) protects workflows, gate scripts and the paper-boundary Terraform, but not the guard suites themselves. The fix is docs/blueprint/lanes/l6-arch-9071-protected.patch: it adds the four CODEOWNERS-named suites to protected_paths and a test in scripts/agent-guard.test.mjs that reads CODEOWNERS and refuses an agent change to each suite without approval. Both files are protected (scripts/agent-policy.json is itself in protected_paths), so a person must apply it. Still open after it lands: an agent session pushing as its user with no marker is caught only on protected paths by the unmarked-change rule, and branch protection requiring the agent-boundary check is a GitHub setting not visible in the tree (R12-CICD-9095).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1670,7 +1672,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: patch verified in a scratch worktree: with it applied, node --test scripts/agent-guard.test.mjs printed '# pass 39 / # fail 0'; mutation dropping paper_boundary.rs from protected_paths failed 'an agent change to a guard suite needs a person's approval' naming that file ('# fail 1'); restored, '# pass 39'. Not applied: protected path. Stays PARTIAL."
   },
   {
     "id": "R12-CICD-9072",

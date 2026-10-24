@@ -1,0 +1,120 @@
+diff --git a/.github/workflows/infra.yml b/.github/workflows/infra.yml
+index 6af98b52..5f7adc1c 100644
+--- a/.github/workflows/infra.yml
++++ b/.github/workflows/infra.yml
+@@ -190,6 +190,8 @@ jobs:
+     permissions:
+       contents: read
+       id-token: write
++      # Read-only, for the ci gate below: which ci runs this commit has.
++      actions: read
+     steps:
+       # No agent starts this workflow (R12 GOV-9067): it plans, applies and
+       # tears down infrastructure under a cloud credential, and a
+@@ -264,6 +266,41 @@ jobs:
+             exit 1
+           fi
+ 
++      # Infrastructure goes through the same tests as code (R12-CICD-9066).
++      # Without this an apply took whatever commit the dispatch named — any
++      # branch, any state — while deploy.yml refused a commit ci had not
++      # passed; an agent's Terraform change could reach a project without a
++      # test having run on it. `up` and `apps` are the actions that change
++      # the environment toward this commit's configuration, so they need a
++      # successful ci run started by a push of this repository's commit (a
++      # pull request's run carries a fork's head as `head_sha` and succeeds
++      # like any other). plan, diagnose and urls change nothing; suspend,
++      # down and teardown remove things and must stay available to recover
++      # from a commit that cannot pass. A count that is not a number is a
++      # refusal, not a pass, as in deploy.yml (R12 CICD-9106).
++      - name: ci succeeded for this commit
++        if: inputs.action == 'up' || inputs.action == 'apps'
++        env:
++          GH_TOKEN: ${{ github.token }}
++          THIS_REPOSITORY: ${{ github.repository }}
++          THIS_SHA: ${{ github.sha }}
++        run: |
++          set -euo pipefail
++          runs=$(gh api \
++            "repos/${THIS_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${THIS_SHA}&status=success&event=push" \
++            --jq '.total_count')
++          case "$runs" in
++            ''|*[!0-9]*)
++              echo "ci's run count for ${THIS_SHA} is not a number ('${runs}'); nothing is applied." >&2
++              exit 1
++              ;;
++          esac
++          if [ "$runs" -lt 1 ]; then
++            echo "no successful ci run for ${THIS_SHA}; nothing is applied. Push the commit, let ci pass, then dispatch this again." >&2
++            exit 1
++          fi
++          echo "ci succeeded for ${THIS_SHA}"
++
+       - uses: actions/checkout@v4
+ 
+       # Everything this workflow needs to authenticate is derived from the
+diff --git a/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs b/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
+index 6a426b7d..8cea50cb 100644
+--- a/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
++++ b/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
+@@ -400,3 +400,60 @@ fn a_deployment_whose_ci_run_did_not_succeed_is_refused_on_both_paths() {
+     }
+     let _ = std::fs::remove_dir_all(&bin);
+ }
++
++/// R12-CICD-9066: infrastructure goes through the same tests as code. The
++/// apply actions of `infra.yml` run the same refusal deploy.yml does: a
++/// commit with no successful push-started ci run is not applied. The step is
++/// executed against a stub `gh` that reports each count, because a step that
++/// reads correctly and exits 0 on every input is what a text check misses.
++#[test]
++fn an_infrastructure_apply_of_a_commit_ci_has_not_passed_is_refused() {
++    let workflow = read(".github/workflows/infra.yml");
++    let marker = "- name: ci succeeded for this commit\n";
++    let at = workflow
++        .find(marker)
++        .unwrap_or_else(|| panic!("infra.yml has no ci gate step"));
++    let condition = workflow[at + marker.len()..]
++        .lines()
++        .next()
++        .unwrap_or_default()
++        .trim();
++    assert_eq!(
++        condition, "if: inputs.action == 'up' || inputs.action == 'apps'",
++        "the ci gate must cover both apply actions"
++    );
++    let apply = workflow
++        .find("- name: up\n")
++        .unwrap_or_else(|| panic!("premise: infra.yml has an up step"));
++    assert!(at < apply, "the ci gate must run before the apply");
++
++    let script = step_script(&workflow, "ci succeeded for this commit");
++    assert!(
++        script.contains("head_sha=${THIS_SHA}&status=success&event=push"),
++        "the gate trusts a ci run not started by a push: {script}"
++    );
++    let dir = std::env::temp_dir().join(format!("qip-infra-gate-{}", std::process::id()));
++    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("scratch dir: {e}"));
++    let gh = dir.join("gh");
++    let path = format!("{}:/usr/bin:/bin", dir.display());
++    for (count, expected) in [("0", 1), ("", 1), ("null", 1), ("1", 0), ("3", 0)] {
++        std::fs::write(&gh, format!("#!/bin/bash\necho '{count}'\n"))
++            .unwrap_or_else(|e| panic!("stub gh: {e}"));
++        let status = Command::new("chmod")
++            .arg("+x")
++            .arg(&gh)
++            .status()
++            .unwrap_or_else(|e| panic!("chmod: {e}"));
++        assert!(status.success());
++        let code = {
++            let mut command = Command::new("bash");
++            command.arg("-c").arg(&script).env_clear();
++            command.env("PATH", &path);
++            command.env("THIS_REPOSITORY", "owner/repo");
++            command.env("THIS_SHA", "abc123");
++            command.output().map_or(-1, |o| o.status.code().unwrap_or(-1))
++        };
++        assert_eq!(code, expected, "ci run count {count:?}");
++    }
++    let _ = std::fs::remove_dir_all(&dir);
++}
