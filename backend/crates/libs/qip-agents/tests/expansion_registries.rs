@@ -222,3 +222,59 @@ mod memory_registry {
         assert_eq!(registry.retained_for("analyst-a"), 0);
     }
 }
+
+mod campaign_identity {
+    use qip_agents::research::{ResearchRegistry, Verdict, campaign_id, experiment_ref};
+
+    #[test]
+    fn a_campaign_has_a_stable_id_and_a_verdict_cites_its_experiment_references() {
+        // Case and spacing do not make a question new, and a different
+        // question is a different campaign.
+        let id = campaign_id("Does  momentum persist?").unwrap();
+        assert_eq!(id, campaign_id("does momentum persist?").unwrap());
+        assert_ne!(id, campaign_id("does reversal persist?").unwrap());
+        assert!(campaign_id("   ").is_err());
+
+        let mut registry = ResearchRegistry::new();
+        let null = Verdict::Null {
+            evidence: "failed leakage".to_string(),
+        };
+        // No experiment, another question's experiment, and a bare campaign
+        // id with no stage are each refused; the premise is that the id used
+        // below is the one a correct reference would carry.
+        let other = campaign_id("does reversal persist?").unwrap();
+        for bad in [
+            vec![],
+            vec![experiment_ref(&other, "historical")],
+            vec![format!("{id}/")],
+            vec![id.clone()],
+        ] {
+            assert!(
+                registry
+                    .record_concluded("Does momentum persist?", null.clone(), &bad)
+                    .is_err(),
+                "{bad:?} was accepted"
+            );
+        }
+        assert!(registry.history("does momentum persist?").is_empty());
+
+        let refs = [
+            experiment_ref(&id, "simulated"),
+            experiment_ref(&id, "historical"),
+            experiment_ref(&id, "historical"),
+        ];
+        let version = registry
+            .record_concluded("Does momentum persist?", null, &refs)
+            .unwrap();
+        assert_eq!(version, 1);
+        let held = registry.history("DOES MOMENTUM PERSIST?");
+        assert_eq!(
+            held[0].experiments,
+            vec![
+                experiment_ref(&id, "historical"),
+                experiment_ref(&id, "simulated")
+            ],
+            "sorted and de-duplicated"
+        );
+    }
+}
