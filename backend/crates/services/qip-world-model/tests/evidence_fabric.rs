@@ -898,3 +898,67 @@ fn an_open_contest_survives_a_fabric_filled_past_capacity_with_unrelated_claims(
         "a hypothesis of the open contest was evicted"
     );
 }
+
+fn journaled(id: &str, value: &str) -> qip_world_model::fabric::JournaledClaim {
+    qip_world_model::fabric::JournaledClaim {
+        record: claim(
+            id,
+            "https://ecb.example",
+            &format!("EURUSD {value}"),
+            value,
+            0,
+        ),
+        document_hash: Some(HASH_A.to_string()),
+        admitted_at: at(10),
+    }
+}
+
+/// ADR 0152 §2. A rebuild replays onto a fabric configured like the writer's,
+/// and onto nothing else: replaying onto a fabric that already holds claims
+/// would let the journal corroborate itself, and skipping a journaled claim
+/// the fabric refuses would rebuild a belief that quietly differs.
+///
+/// Mutation: delete the emptiness refusal at the top of `rebuild` — the
+/// first `expect_err` fires. Mutation: swallow the per-claim error in
+/// `rebuild` (`let _ = self.admit(..)`) — the duplicate-id `expect_err`
+/// fires.
+#[test]
+fn a_rebuild_refuses_a_fabric_that_holds_claims_and_a_journal_the_fabric_refuses() {
+    let mut occupied = EvidenceFabric::default();
+    occupied
+        .admit(
+            claim("x", "https://ecb.example", "EURUSD 1.10", "1.10", 0),
+            Some(HASH_A),
+            at(10),
+        )
+        .unwrap();
+    assert_eq!(
+        occupied.len(),
+        1,
+        "premise: the fabric already holds a claim"
+    );
+    let refused = occupied
+        .rebuild([journaled("a", "1.10")])
+        .expect_err("rebuilt onto a held fabric");
+    assert!(
+        refused.message().contains("empty fabric"),
+        "{}",
+        refused.message()
+    );
+
+    let empty = EvidenceFabric::default();
+    assert!(
+        empty.clone().rebuild([journaled("a", "1.10")]).is_ok(),
+        "premise: one journaled claim rebuilds"
+    );
+    let duplicate = empty
+        .rebuild([journaled("a", "1.10"), journaled("a", "1.20")])
+        .expect_err("a journal naming one claim twice was replayed");
+    assert!(
+        duplicate
+            .message()
+            .contains("journaled claim `a` is refused on replay"),
+        "{}",
+        duplicate.message()
+    );
+}

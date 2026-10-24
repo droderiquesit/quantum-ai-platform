@@ -89,6 +89,7 @@ pub enum Topic {
     EntityResolved,
     RelationshipUpdated,
     WorldModelUpdated,
+    EvidenceAdmitted,
     FeatureComputed,
 
     // --- DISCOVER ---
@@ -317,7 +318,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 89] = [
+    pub const ALL: [Self; 90] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -335,6 +336,7 @@ impl Topic {
         Self::EntityResolved,
         Self::RelationshipUpdated,
         Self::WorldModelUpdated,
+        Self::EvidenceAdmitted,
         Self::FeatureComputed,
         Self::SignalGenerated,
         Self::AnomalyDetected,
@@ -430,6 +432,7 @@ impl Topic {
             Self::EntityResolved => "entity.resolved",
             Self::RelationshipUpdated => "relationship.updated",
             Self::WorldModelUpdated => "world_model.updated",
+            Self::EvidenceAdmitted => "evidence.admitted",
             Self::FeatureComputed => "feature.computed",
             Self::SignalGenerated => "signal.generated",
             Self::AnomalyDetected => "anomaly.detected",
@@ -530,6 +533,7 @@ impl Topic {
             | Self::EntityResolved
             | Self::RelationshipUpdated
             | Self::WorldModelUpdated
+            | Self::EvidenceAdmitted
             | Self::FeatureComputed => TopicGroup::Understand,
 
             Self::SignalGenerated
@@ -666,6 +670,7 @@ impl Topic {
             | Self::EntityResolved
             | Self::RelationshipUpdated
             | Self::WorldModelUpdated
+            | Self::EvidenceAdmitted
             | Self::FeatureComputed => RetentionClass::DerivedState,
             // Signals, anomalies, opportunities: compressed state with an
             // outcome, indexed for retrieval, kept indefinitely.

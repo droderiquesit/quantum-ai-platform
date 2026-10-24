@@ -6,7 +6,7 @@
 
 use qip_core::error::{Error, Result};
 use qip_core::time::Timestamp;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// A claim extracted from a world source, wrapped in complete provenance.
@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 /// location, extraction method, authenticity signals, licence, confidence, and links to
 /// the evidence that corroborates or contradicts it. A claim that cannot be given these
 /// fields is refused and does not enter the world model.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceRecord {
     /// Unique identifier for this evidence item.
     pub id: String,
@@ -426,7 +426,7 @@ impl GeoPoint {
 }
 
 /// An authenticity signal: proof the claim came from a legitimate source.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AuthenticitySignal {
     /// TLS certificate verification succeeded.
     TlsVerified { domain: String },
@@ -445,7 +445,7 @@ pub enum AuthenticitySignal {
 /// Records whether a claim is consistent with known prior state, event ordering,
 /// and physically possible timelines, and on failure names the conflicting fact.
 /// EVID-010 requires this check to be recorded on every evidence item.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TemporalConsistency {
     /// Claim is consistent with prior known state and event ordering.
     Consistent,
@@ -479,7 +479,7 @@ pub enum TemporalConsistency {
 /// Records whether a claim about location, routing, shipping, weather, or
 /// jurisdiction is consistent with other geographic claims. EVID-011 requires
 /// this check to be recorded on every evidence item.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum GeographicConsistency {
     /// Claim is consistent with other geographic evidence.
     Consistent,
