@@ -41,6 +41,7 @@ pub mod bus_bridge;
 pub mod capacity_review;
 pub mod causal_review;
 pub mod central;
+pub mod class_exposure;
 pub mod commerce_research;
 pub mod compute_routing;
 pub mod confidence;

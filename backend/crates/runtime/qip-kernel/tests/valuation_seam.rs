@@ -1450,3 +1450,146 @@ fn a_thesis_whose_evidence_contradicts_itself_is_sized_on_a_narrower_conviction_
     );
     Ok(())
 }
+
+/// ADR 0125 decision 2, R12-REASON-1004: a hypothesis review approved and the
+/// symbolic rule pack finds a hard stop in forms no proposal, and the
+/// derivation that refused it is on the log. The stop used here is the pack's
+/// `r61-cash-short-of-one-lot`: one lot of the subject costs more than the
+/// book holds in cash. Before this the pack's disagreement was recorded as
+/// `agrees_with_review = false` and the thesis was sized anyway.
+///
+/// The control is the same tape with a one-unit lot, which review approves and
+/// the pack agrees with; without it a platform that vetoed everything would
+/// pass the vetoed half. This tape's evidence is contested and its thesis is
+/// still queued in the control, which is the other half of the rule: a
+/// contested or low-confidence approval is sized small and not vetoed
+/// (ADR 0150 decision 14).
+///
+/// Mutation: make `SymbolicDerivation::veto` return `None` — the vetoed
+/// platform queues the thesis ("sized on conviction") and the first assertion
+/// on the vetoed report fails.
+#[test]
+fn a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal()
+-> Result<()> {
+    let run = |lot: Decimal| -> Result<(Platform, qip_kernel::cycle::CycleReport)> {
+        let mut universe = Universe::new();
+        universe.insert(
+            FinancialObject::builder(
+                object("AAA"),
+                "AAA",
+                InstrumentType::CommonStock,
+                LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+            )
+            .venue("XNYS")
+            .geography("US")
+            .sector(Sector::InformationTechnology)
+            .price(dec!("100"))
+            .lot_size(lot)
+            .provenance(Provenance::synthetic("test", start()))
+            .build(start())?,
+        )?;
+        let mut platform = platform_over(universe, leverage_only())?;
+        platform.observe(tape("AAA"));
+        let report = platform.run_cycle(start());
+        Ok((platform, report))
+    };
+
+    let (controlled, report) = run(dec!("1"))?;
+    let reason = report.stage(Stage::Reason).expect("reason ran");
+    assert!(
+        reason.detail.contains("hypothesis approved at confidence "),
+        "premise: review approved the hypothesis: {}",
+        reason.detail
+    );
+    assert!(
+        reason.detail.contains("; sized on conviction"),
+        "premise: with a one-unit lot the approved thesis is queued: {}",
+        reason.detail
+    );
+    assert!(
+        reason.problems.iter().all(|p| !p.contains("vetoed")),
+        "premise: nothing is vetoed when the pack has no hard stop: {:?}",
+        reason.problems
+    );
+    assert_eq!(
+        qip_kernel::symbolic_stage::replay(&controlled)?.len(),
+        1,
+        "premise: the derivation is journaled either way"
+    );
+
+    // A million shares at 100 is a hundred million against a million of cash.
+    let (vetoed, report) = run(dec!("1000000"))?;
+    let reason = report.stage(Stage::Reason).expect("reason ran");
+    assert!(
+        reason.detail.contains("hypothesis approved at confidence "),
+        "premise: review approved this hypothesis too: {}",
+        reason.detail
+    );
+    assert!(
+        !reason.detail.contains("; sized on conviction"),
+        "a thesis the rule pack refused was queued for sizing: {}",
+        reason.detail
+    );
+    assert!(
+        reason
+            .problems
+            .iter()
+            .any(|p| p.contains("vetoed by the symbolic rule pack")
+                && p.contains("cash is short of one lot")),
+        "the veto and its cause were not reported: {:?}",
+        reason.problems
+    );
+    let derivations = qip_kernel::symbolic_stage::replay(&vetoed)?;
+    assert_eq!(derivations.len(), 1, "the refusing derivation is journaled");
+    assert!(!derivations[0].rules.agrees_with_review);
+    Ok(())
+}
+
+/// R12-AMBIENT-3113, ADR 0158 decisions 7-8: after a cycle sized and sent a
+/// position on a thesis, `Platform::class_exposure` puts that position's gross
+/// notional at cost under the thesis's class and nothing under `unattributed`;
+/// the buckets sum to the gross book at cost. The failure prevented is the
+/// ambient loop weighting every class's residual by the whole book's equity.
+///
+/// Mutation: make `Platform::class_exposure` pass no theses to the
+/// attribution — the position lands under `unattributed` and the class
+/// assertion fails.
+#[test]
+fn a_position_opened_on_a_thesis_is_that_thesis_classs_exposure_and_the_buckets_sum_to_the_book() {
+    let mut universe = Universe::new();
+    universe
+        .insert(listed("AAA").expect("a listed name"))
+        .expect("insertable");
+    let mut platform = platform_over(universe, leverage_only()).expect("a platform");
+    platform.observe(tape("AAA"));
+    platform.run_cycle(start());
+
+    let positions = platform.positions_at_cost();
+    let (quantity, average_price) = positions
+        .get("obj-AAA")
+        .copied()
+        .expect("premise: the cycle opened a position in obj-AAA");
+    let open: Vec<String> = platform
+        .predictions()
+        .iter()
+        .filter(|p| p.is_open())
+        .filter_map(|p| p.claim.as_ref())
+        .filter(|claim| claim.subject == "obj-AAA")
+        .map(|claim| claim.class.clone())
+        .collect();
+    assert_eq!(
+        open.len(),
+        1,
+        "premise: exactly one open thesis is held on obj-AAA: {open:?}"
+    );
+
+    let exposure = platform.class_exposure();
+    let notional = quantity.abs() * average_price;
+    assert_eq!(
+        exposure.by_class.get(&open[0]),
+        Some(&notional),
+        "the position was not attributed to the class that alone holds a thesis on it: {exposure:?}"
+    );
+    assert_eq!(exposure.unattributed, Decimal::ZERO, "{exposure:?}");
+    assert_eq!(exposure.total(), notional);
+}

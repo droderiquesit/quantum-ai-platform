@@ -521,6 +521,7 @@ const fn disposition_str(disposition: Disposition) -> &'static str {
         Disposition::Deferred => "deferred",
         Disposition::Shed => "shed",
         Disposition::Expired => "expired",
+        Disposition::Clustered => "clustered",
     }
 }
 
@@ -1629,7 +1630,11 @@ impl ResearchLoop {
         if let Some(calibration) = platform.calibration()
             && calibration.evaluated >= MIN_EVALUATED
         {
-            let exposure = platform.equity().abs();
+            // Each class's own exposure (ADR 0158 decisions 7-8), not the
+            // whole book's equity for every class: the weight must rank the
+            // money a class's error is applied to. A class with no
+            // instrument of its own carries zero and proposes nothing.
+            let exposure = platform.class_exposure();
             let residuals: Vec<DomainResidual> = calibration
                 .hit_rate_by_class
                 .iter()
@@ -1637,7 +1642,11 @@ impl ResearchLoop {
                 .map(|(class, rate)| DomainResidual {
                     domain: class.clone(),
                     residual: (HIT_RATE_FLOOR - rate) / HIT_RATE_FLOOR,
-                    exposure,
+                    exposure: exposure
+                        .by_class
+                        .get(class)
+                        .copied()
+                        .unwrap_or(Decimal::ZERO),
                 })
                 .collect();
             for proposal in self.meta.propose_specialists(&residuals)? {
@@ -1843,7 +1852,7 @@ impl ResearchLoop {
                 );
                 match event.disposition {
                     Disposition::Deferred => {}
-                    Disposition::Shed | Disposition::Expired => {
+                    Disposition::Shed | Disposition::Expired | Disposition::Clustered => {
                         self.pending.remove(&event.signal_id);
                         self.pending_wakes.remove(&event.signal_id);
                         self.pending_capital.remove(&event.signal_id);

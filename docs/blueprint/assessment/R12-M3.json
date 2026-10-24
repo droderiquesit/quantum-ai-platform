@@ -2593,25 +2593,29 @@
   },
   {
     "id": "R12-AMBIENT-3113",
-    "status": "PARTIAL",
-    "current": "MetaIntelligence::propose_specialists proposes a domain when residual x exposure >= specialist_threshold (qip-expansion/src/meta.rs:870-915). qip-deepbrain calls it every sweep with residuals from the platform's per-belief-class hit rates below HIT_RATE_FLOOR and exposure = platform.equity().abs() for every class (research.rs:862-899); each proposal becomes a research gap observation, counted on qip_meta_specialists_proposed_total.",
+    "status": "COMPLETE",
+    "current": "MetaIntelligence::propose_specialists proposes a domain when residual x exposure >= specialist_threshold (qip-expansion/src/meta.rs:870-915). qip-deepbrain's sweep now weights each belief class's residual by that class's own exposure from Platform::class_exposure: the gross notional at cost of the instruments only that class holds an open thesis on, with shared instruments (open theses from two or more classes) and unclaimed ones (a position, no open thesis) counted under `unattributed` and never spread, so the buckets sum to the gross book at cost. A class with no instrument of its own carries zero and proposes nothing. Each proposal becomes a research gap, counted on qip_meta_specialists_proposed_total.",
     "evidence": [
       "backend/crates/services/qip-expansion/src/meta.rs:870-915",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:862-899",
-      "backend/crates/services/qip-expansion/tests/meta.rs::a_specialist_population_is_proposed_on_economic_weight_and_not_on_residual_alone"
+      "backend/crates/runtime/qip-kernel/src/class_exposure.rs::attribute",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::class_exposure",
+      "backend/crates/apps/qip-deepbrain/src/research.rs: sweep_over's specialist block reads platform.class_exposure()",
+      "backend/crates/runtime/qip-kernel/src/class_exposure.rs::tests::a_class_that_alone_holds_an_open_thesis_on_an_instrument_owns_its_notional_and_a_shared_instrument_is_unattributed",
+      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs::a_position_opened_on_a_thesis_is_that_thesis_classs_exposure_and_the_buckets_sum_to_the_book",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_class_with_no_attributed_exposure_proposes_no_specialist"
     ],
-    "gap": "Economic weighting uses the whole book's equity as every class's exposure, so the weight ranks residuals, not the money each class's error is applied to. Nothing creates a specialist population: a proposal becomes a research gap. No test covers the production call site (removing research.rs:862-899 fails no test).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib class_exposure; cargo +1.94.1 test -p qip-kernel --test valuation_seam a_position_opened; cargo +1.94.1 test -p qip-deepbrain --test research a_class_with_no_attributed",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L03, 2026-10-18: not closable inside the research loop. The closure's per-class exposure does not exist: CalibrationReport::hit_rate_by_class is keyed by hypothesis class and no Platform accessor maps a hypothesis class to positions or notional, so 'that class's own exposure' needs a new kernel accessor in qip-kernel platform.rs (another lane's file). Registering a wakeable BrainSpec per proposal is possible but would mint specialists ranked on the same whole-book weight, so it was not done."
+    "notes": "Lane L03, 2026-10-18: not closable inside the research loop; the per-class exposure needed a kernel accessor. Closed 2026-10-24 by lane N3-MODEL-EDGE-INFRA per ADR 0158 decisions 7-8, in a new qip-kernel module (class_exposure.rs) so platform.rs gained only the thin accessor. Stated limits: exposure is gross at cost (the book's average entry price), not marked; an open thesis is an unresolved prediction that carries a claim; and a proposal stays a research gap by decision, so no specialist population is minted (ADR 0158 decision 8). The sweep now proposes for fewer classes than before, which is the intended direction. Mutations fired: attributing a shared instrument to the first class fails the unit test (momentum reads 210 not 10); passing no theses to the attribution leaves the position under `unattributed` (kernel test); restoring platform.equity().abs() as every class's exposure makes momentum propose too (specialists_proposed 2, not 1). qip-deepbrain: 205 passed in the lib suite and every test binary ok; qip-kernel valuation_seam test result: ok. 9 passed."
   },
   {
     "id": "R12-AMBIENT-3114",

@@ -1,0 +1,67 @@
+[
+  {
+    "id": "R12-MODEL-9030",
+    "class": "DESIGN_OPEN",
+    "reason": "ADR 0149/0140 decline scoring against ForecastState and a tournament-win gate; strategy:<id> admission needs a direction-stating shadow output, and `grep -rn '\"strategy:' backend/crates` finds only exploration fixtures. Gap restated, no code."
+  },
+  {
+    "id": "R12-SEC-10003",
+    "class": "PROTECTED_PATCH",
+    "reason": "infrastructure/terraform/security.tf::google_privileged_access_manager_entitlement.this exists (stale MISSING grade); remaining is pam_entitlements in infrastructure/environments/*/terraform.tfvars with the owner's real groups (protected, not inventable). Added acceptance scan infrastructure.rs::no_terraform_source_grants_a_human_or_public_principal_a_standing_role."
+  },
+  {
+    "id": "R12-TICK-2071",
+    "class": "CODE_CLOSABLE",
+    "reason": "ADR 0149 decision: regime change is an event; Platform::latest_regime_crossing had no kernel test. Added regime_boundary.rs::a_model_evaluated_before_the_market_crossed_a_regime_boundary_is_refused_promotion."
+  },
+  {
+    "id": "R12-CICD-10045",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "infrastructure/terraform/modules/build-pool/main.tf::google_cloudbuild_worker_pool.pool and build-pool.tf exist (stale MISSING grade); deploy.yml:837 submits to it; cloud_build_private_pool_enabled = false in dev tfvars (protected, owner's act, billed)."
+  },
+  {
+    "id": "R12-MESH-1018",
+    "class": "DEPLOY_DEPENDENT",
+    "reason": "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs::THE_PEER_MESH_HAS_NO_DEPLOYED_PEER: execution_nodes = {} in every environment, so no peer address or peer workload certificate exists to commit; a mesh needs two nodes."
+  },
+  {
+    "id": "R12-MODEL-4004",
+    "class": "LARGE_SPLITTABLE",
+    "reason": "No purpose-trained reflex model in the tree (grep for a trained fill-probability or order-book model finds none); depends on R12-MODEL-4024 (no compiled plan in the deploy path carries a model, no node deployed). Gap restated, no slice taken."
+  },
+  {
+    "id": "R12-QUANT-10066",
+    "class": "BILLED",
+    "reason": "No accelerator rung: qip-cost-router/src/tier.rs::IntelligenceTier::LADDER has nine rungs, none an accelerator, and no TPU or GPU is provisioned; a rung is a ladder reorder (behaviour change) needing an ADR and a billed resource."
+  },
+  {
+    "id": "R12-QUANT-4064",
+    "class": "CODE_CLOSABLE",
+    "reason": "ADR 0150 decision 3 makes qip-acceptance/tests/quantum_pretrade.rs::a_position_sized_from_a_winning_quantum_answer_is_still_refused_by_pre_trade_risk the evidence; mutation-verified here against qip-risk limits.rs MaxPositionWeight."
+  },
+  {
+    "id": "R12-REASON-1004",
+    "class": "CODE_CLOSABLE",
+    "reason": "ADR 0125 decision 2: platform.rs::reason_symbolically had no veto; added SymbolicDerivation::veto (hard stops only) and valuation_seam.rs test."
+  },
+  {
+    "id": "R12-REFLEX-5047",
+    "class": "CODE_CLOSABLE",
+    "reason": "ADR 0133 decision 4 leaves one pinning test; added qip-kernel/tests/central.rs::learning_reads_a_fill_from_the_cell_report_and_the_central_plane_names_no_fabric_fill_type."
+  },
+  {
+    "id": "R12-AGENCY-1065",
+    "class": "CODE_CLOSABLE",
+    "reason": "ADR 0146 decision 5 is test-only: qip-agency/tests/conduct_brain.rs::an_honest_action_description_with_a_resolving_cited_claim_is_released_and_an_unresolved_or_mismatched_claim_is_refused added; row stays PARTIAL because the clause is declined."
+  },
+  {
+    "id": "R12-AGENCY-1069",
+    "class": "CODE_CLOSABLE",
+    "reason": "ADR 0146 decision 5 is test-only: qip-agency/tests/conduct_brain.rs::a_claim_whose_evidence_id_resolves_to_no_record_or_whose_source_is_unauthorised_is_refused_as_rumour_while_an_uncited_action_phrase_alone_is_not_parsed added; row stays PARTIAL."
+  },
+  {
+    "id": "R12-AMBIENT-3113",
+    "class": "CODE_CLOSABLE",
+    "reason": "ADR 0158 decisions 7-8: research.rs:1632 `let exposure = platform.equity().abs()` is every class's exposure; no Platform::class_exposure exists (`grep -n class_exposure backend/crates/runtime/qip-kernel/src/platform.rs` empty)."
+  }
+]
