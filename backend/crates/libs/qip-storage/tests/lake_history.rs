@@ -12,6 +12,7 @@ use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_storage::lake::{Entitlement, Lake, Partition, RecordClass};
 use qip_storage::lake_history::HistoryQuery;
+use qip_storage::tick_capture::CapturedMarketEvent;
 use qip_storage::{BlobStore, MemoryBlobStore};
 use std::collections::BTreeSet;
 
@@ -23,6 +24,17 @@ fn at(ms: i64) -> Timestamp {
 /// One tick as the edge node's `LakeSink` writes it: the venue's instant,
 /// the capture instant and the sequence beside the serialised event.
 fn line(dataset: &str, sequence: u64, venue_ms: i64, capture_ms: i64) -> Result<String> {
+    uncertain_line(dataset, sequence, venue_ms, capture_ms, Duration::ZERO)
+}
+
+/// [`line`] with the clock uncertainty the capture path stored it with.
+fn uncertain_line(
+    dataset: &str,
+    sequence: u64,
+    venue_ms: i64,
+    capture_ms: i64,
+    uncertainty: Duration,
+) -> Result<String> {
     let message = MarketMessage::new(
         ObjectId::from_string("obj-ACME"),
         Origin::new(VenueId::new("XLON"), "itch-a", 0, sequence),
@@ -41,7 +53,7 @@ fn line(dataset: &str, sequence: u64, venue_ms: i64, capture_ms: i64) -> Result<
         at(venue_ms),
         at(capture_ms),
         at(capture_ms),
-        Duration::ZERO,
+        uncertainty,
         hash,
         Licence::Granted {
             dataset: dataset.to_string(),
@@ -57,6 +69,49 @@ fn line(dataset: &str, sequence: u64, venue_ms: i64, capture_ms: i64) -> Result<
         "sequence": sequence,
         "event": serde_json::to_value(&event)?,
     })))
+}
+
+/// One tick in the capture path's [`CapturedMarketEvent`] shape, whose
+/// `canonical` is the decoded message.
+fn captured_line(
+    dataset: &str,
+    sequence: u64,
+    venue_ms: i64,
+    capture_ms: i64,
+    uncertainty: Duration,
+) -> Result<String> {
+    let message = MarketMessage::new(
+        ObjectId::from_string("obj-ACME"),
+        Origin::new(VenueId::new("XLON"), "itch-a", 0, sequence),
+        MessageBody::LevelSet {
+            side: BookSide::Ask,
+            price: Decimal::from_int(101),
+            quantity: Decimal::from_int(5),
+            order_count: None,
+        },
+        at(venue_ms),
+        at(capture_ms),
+    );
+    let captured = CapturedMarketEvent {
+        venue: "XLON".into(),
+        feed: "itch-a".into(),
+        instrument: "obj-ACME".into(),
+        sequence: Some(sequence),
+        event_time: at(venue_ms),
+        receive_time: at(capture_ms),
+        normalized_time: at(venue_ms),
+        uncertainty,
+        corrections: Vec::new(),
+        arrival_order: None,
+        entitlement: dataset.into(),
+        canonical: serde_json::to_value(&message)?,
+        raw_sha256: None,
+        raw: None,
+    };
+    captured.validate()?;
+    Ok(qip_core::canonical::canonical_json(&serde_json::to_value(
+        &captured,
+    )?))
 }
 
 fn seal(store: &MemoryBlobStore, dataset: &str, id: &str, lines: &[String]) -> Result<()> {
@@ -205,5 +260,46 @@ fn a_segment_changed_after_it_was_pinned_fails_the_read_by_name() -> Result<()> 
         .read_market_history("run-1", &["vendor-depth".to_string()].into(), 100)
         .expect_err("a changed segment is not the pinned one");
     assert!(refusal.to_string().contains(&key), "{refusal}");
+    Ok(())
+}
+
+/// R12-RES-7103. The failure this prevents: the capture path widened an
+/// event's clock uncertainty when the cell's clock degraded, and the history
+/// reader dropped the field, so every consumer downstream read a two-second
+/// doubt as an exact instant and labelled across it.
+///
+/// Mutation: store `Duration::ZERO` for `clock_uncertainty` in either of
+/// `decode_line`'s arms (the edge node's event shape, or the capture path's
+/// `CapturedMarketEvent` shape) — that arm's widened tick reads back exact.
+#[test]
+fn a_tick_captured_under_a_degraded_clock_reads_back_with_its_widened_uncertainty() -> Result<()> {
+    let store = MemoryBlobStore::new();
+    seal(
+        &store,
+        "vendor-depth",
+        "seg-1",
+        &[
+            line("vendor-depth", 1, 0, 40)?,
+            uncertain_line("vendor-depth", 2, 10, 55, Duration::from_millis(2_000))?,
+            captured_line("vendor-depth", 3, 20, 70, Duration::from_millis(3_000))?,
+        ],
+    )?;
+    let lake = Lake::new(&store);
+    lake.pin_market_history("run-1", &query(&["vendor-depth"], 100))?;
+    let history = lake.read_market_history("run-1", &["vendor-depth".to_string()].into(), 100)?;
+    let read: Vec<(u64, Duration)> = history
+        .ticks
+        .iter()
+        .map(|tick| (tick.message.origin.sequence, tick.clock_uncertainty))
+        .collect();
+    assert_eq!(
+        read,
+        vec![
+            (1, Duration::ZERO),
+            (2, Duration::from_millis(2_000)),
+            (3, Duration::from_millis(3_000)),
+        ],
+        "a tick's stored clock uncertainty did not survive the read"
+    );
     Ok(())
 }

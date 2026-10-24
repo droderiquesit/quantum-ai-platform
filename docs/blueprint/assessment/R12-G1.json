@@ -582,15 +582,21 @@
   {
     "id": "R12-RES-8026",
     "status": "PARTIAL",
-    "current": "Cell::narrowing now records, beside the payload-fed rows, the dependency rows a cell can measure: Ledger (journal wire), Fabric (derived from what the policy carries), Feed (venues heard vs silent past max_staleness), VenueSession (venues quarantined by venue health) and Clock (venue time vs capture time). Capability::dependencies() has six rows, each with a declared stale and unavailable multiplier (FEED_/SESSION_STALE one because the per-venue gates already act, unavailable zero), and a contract test enumerates that every dependency has one. Ingestion stays per-book: the stale_book gate refuses a book the cell knows is wrong.",
+    "current": "qip_edge::degradation::DegradationEnvelope is built by Cell::new from the cell's configuration: one row per input the cell reads, each with a freshness bound (payload slot TTLs, max_staleness, max_clock_skew, the venue-health quarantine, the journal wire) and stale/unavailable multipliers read from qip-contracts' own sizing functions. Assembly refuses a table missing any input's row (naming it), a row for an input the cell does not read, a zero bound, and a multiplier above 1, below 0, or with unavailable > stale; ingestion has an explicit PerBook row (covered by the stale_book gate) and is refused as a cell-wide age. The pass takes the clock multiplier from the envelope, and qip_edge_capability_freshness now also charts feed, venue_session and clock, each once observed.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/degradation.rs Capability::Feed, Capability::VenueSession, dependency_row_multiplier",
       "backend/crates/edge/qip-edge/src/cell.rs:2867 narrowing",
       "backend/crates/libs/qip-contracts/tests/degradation_dependencies.rs every_dependency_declares_what_its_loss_does_to_size",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs a_cell_whose_feed_goes_silent_reads_its_feed_row_stale_then_unavailable; a_cell_reads_its_venue_session_row_from_how_many_venues_are_quarantined",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:380"
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs:380",
+      "backend/crates/edge/qip-edge/src/degradation.rs DegradationEnvelope",
+      "backend/crates/edge/qip-edge/tests/degradation_envelope.rs (8 tests)",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs::a_venue_feed_going_silent_moves_the_feed_row_from_fresh_to_unavailable",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs::a_venue_clock_running_ahead_of_the_cell_moves_the_clock_row",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs::a_venue_quarantined_for_rejecting_orders_moves_the_venue_session_row",
+      "docs/blueprint/lanes/l6-res-8026-observability-rule.patch"
     ],
-    "gap": "Ingestion has no table row in the cell (book staleness is judged per book, deliberately stricter), and the Feed, VenueSession and Clock rows are not charted: telemetry.rs publishes only the three policy-fed capabilities, and publishing more changes a documented series count (.claude/rules/domains/observability.md, a protected path).",
+    "gap": "2026-10-24 (lane L6): built and tested on the cell's assembly path. Open: (1) .claude/rules/domains/observability.md documents the series list and is protected; the change is docs/blueprint/lanes/l6-res-8026-observability-rule.patch; (2) a multiplier and bound are declared from configuration and contract values, not measured; (3) nothing scrapes qip-edge-node (NOT-SCRAPED.md) and no node is deployed. Pending an independent skeptic before any promotion.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -598,10 +604,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test degradation_dependencies; cargo test -p qip-edge --test venue_failure; cargo test -p qip-edge-node --test degraded",
+    "verification": "cd backend && cargo test -p qip-edge --test degradation_envelope --test telemetry --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: Feed and VenueSession rows added and derived by the cell; PARTIAL kept for ingestion and charting. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests."
+    "notes": "Lane L11, 2026-10-18: Feed and VenueSession rows added and derived by the cell; PARTIAL kept for ingestion and charting. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests. 2026-10-24 lane L6 (delegated agent, merged and gated here): agent reported 13 mutations each failing a named assertion (e.g. the missing-row check made always-true failed degradation_envelope.rs:118; the pass ignoring the clock row failed venue_failure.rs:1711, 3.75 vs 2.8125). On this branch: clippy --workspace --all-targets -D warnings exit 0; qip-edge + qip-edge-node + qip-acceptance --no-fail-fast 197 result lines, 1341 passed, 5 failed: the blueprint-view test (expected, matrix not committed), gcp_placement's no-NCC-hub test (caused by this lane's NCC module, since reverted), and three debug-profile performance scaling tests run in parallel under load, which passed twice alone with --test-threads=1 ('ok. 36 passed')."
   },
   {
     "id": "R12-FABRIC-8027",
@@ -967,171 +973,171 @@
   },
   {
     "id": "R12-GCP-8043",
-    "status": "MISSING",
-    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/resource-hierarchy declares a platform folder, one folder per environment, and in each a network-core project (<prefix>-<env>-net) beside the other planes' projects, with no default network and deletion_policy PREVENT; refused at plan when an id would exceed 30 characters, when production is absent, or when two planes would share an id. tests/hierarchy.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
-      "infrastructure/environments/prod/terraform.tfvars project_id"
+      "infrastructure/terraform/modules/resource-hierarchy/main.tf google_project.plane",
+      "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl"
     ],
-    "gap": "Folder/project hierarchy as code and resource placement into it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the named project exists in code under its environment's folder. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/resource-hierarchy && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
   },
   {
     "id": "R12-GCP-8044",
-    "status": "MISSING",
-    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/resource-hierarchy declares a platform folder, one folder per environment, and in each a exec project (<prefix>-<env>-exec-<region>) beside the other planes' projects, with no default network and deletion_policy PREVENT; refused at plan when an id would exceed 30 characters, when production is absent, or when two planes would share an id. tests/hierarchy.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
-      "infrastructure/environments/prod/terraform.tfvars project_id"
+      "infrastructure/terraform/modules/resource-hierarchy/main.tf google_project.plane",
+      "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl"
     ],
-    "gap": "Folder/project hierarchy as code and resource placement into it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the named project exists in code under its environment's folder. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/resource-hierarchy && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
   },
   {
     "id": "R12-GCP-8045",
-    "status": "MISSING",
-    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/resource-hierarchy declares a platform folder, one folder per environment, and in each a fabric project (<prefix>-<env>-fabric-<region>) beside the other planes' projects, with no default network and deletion_policy PREVENT; refused at plan when an id would exceed 30 characters, when production is absent, or when two planes would share an id. tests/hierarchy.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
-      "infrastructure/environments/prod/terraform.tfvars project_id"
+      "infrastructure/terraform/modules/resource-hierarchy/main.tf google_project.plane",
+      "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl"
     ],
-    "gap": "Folder/project hierarchy as code and resource placement into it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the named project exists in code under its environment's folder. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/resource-hierarchy && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
   },
   {
     "id": "R12-GCP-8046",
-    "status": "MISSING",
-    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/resource-hierarchy declares a platform folder, one folder per environment, and in each a services project (<prefix>-<env>-svc-<region>) beside the other planes' projects, with no default network and deletion_policy PREVENT; refused at plan when an id would exceed 30 characters, when production is absent, or when two planes would share an id. tests/hierarchy.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
-      "infrastructure/environments/prod/terraform.tfvars project_id"
+      "infrastructure/terraform/modules/resource-hierarchy/main.tf google_project.plane",
+      "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl"
     ],
-    "gap": "Folder/project hierarchy as code and resource placement into it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the named project exists in code under its environment's folder. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/resource-hierarchy && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
   },
   {
     "id": "R12-GCP-8047",
-    "status": "MISSING",
-    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/resource-hierarchy declares a platform folder, one folder per environment, and in each a ledger project (<prefix>-<env>-ledger) beside the other planes' projects, with no default network and deletion_policy PREVENT; refused at plan when an id would exceed 30 characters, when production is absent, or when two planes would share an id. tests/hierarchy.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
-      "infrastructure/environments/prod/terraform.tfvars project_id"
+      "infrastructure/terraform/modules/resource-hierarchy/main.tf google_project.plane",
+      "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl"
     ],
-    "gap": "Folder/project hierarchy as code and resource placement into it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the named project exists in code under its environment's folder. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/resource-hierarchy && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
   },
   {
     "id": "R12-GCP-8048",
-    "status": "MISSING",
-    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/resource-hierarchy declares a platform folder, one folder per environment, and in each a world-model project (<prefix>-<env>-world) beside the other planes' projects, with no default network and deletion_policy PREVENT; refused at plan when an id would exceed 30 characters, when production is absent, or when two planes would share an id. tests/hierarchy.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
-      "infrastructure/environments/prod/terraform.tfvars project_id"
+      "infrastructure/terraform/modules/resource-hierarchy/main.tf google_project.plane",
+      "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl"
     ],
-    "gap": "Folder/project hierarchy as code and resource placement into it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the named project exists in code under its environment's folder. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/resource-hierarchy && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
   },
   {
     "id": "R12-GCP-8049",
-    "status": "MISSING",
-    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/resource-hierarchy declares a platform folder, one folder per environment, and in each a data project (<prefix>-<env>-data) beside the other planes' projects, with no default network and deletion_policy PREVENT; refused at plan when an id would exceed 30 characters, when production is absent, or when two planes would share an id. tests/hierarchy.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
-      "infrastructure/environments/prod/terraform.tfvars project_id"
+      "infrastructure/terraform/modules/resource-hierarchy/main.tf google_project.plane",
+      "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl"
     ],
-    "gap": "Folder/project hierarchy as code and resource placement into it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the named project exists in code under its environment's folder. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/resource-hierarchy && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
   },
   {
     "id": "R12-GCP-8050",
-    "status": "MISSING",
-    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/resource-hierarchy declares a platform folder, one folder per environment, and in each a ai project (<prefix>-<env>-ai) beside the other planes' projects, with no default network and deletion_policy PREVENT; refused at plan when an id would exceed 30 characters, when production is absent, or when two planes would share an id. tests/hierarchy.tftest.hcl plans it against mocks.",
     "evidence": [
-      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
-      "infrastructure/environments/prod/terraform.tfvars project_id"
+      "infrastructure/terraform/modules/resource-hierarchy/main.tf google_project.plane",
+      "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl"
     ],
-    "gap": "Folder/project hierarchy as code and resource placement into it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the named project exists in code under its environment's folder. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy: cd infrastructure/terraform/modules/resource-hierarchy && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
   },
   {
     "id": "R12-GCP-8051",
@@ -1162,9 +1168,10 @@
     "evidence": [
       "infrastructure/environments/dev/terraform.tfvars",
       "infrastructure/environments/test/terraform.tfvars",
-      "infrastructure/terraform/main.tf"
+      "infrastructure/terraform/main.tf",
+      "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl every_environment_gets_the_same_planes_as_their_own_projects"
     ],
-    "gap": "Folder/project model replicated per environment.",
+    "gap": "2026-10-24 (lane L6): modules/resource-hierarchy gives every environment the same planes as its own projects (the test asserts prod's and dev's plane sets are equal, at fewer regions in dev). Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1175,7 +1182,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
   },
   {
     "id": "R12-GCP-8053",
@@ -2629,23 +2636,25 @@
   },
   {
     "id": "R12-GCP-8116",
-    "status": "MISSING",
-    "current": "No service-plane cluster; Cloud Run services have per-service limits.",
+    "status": "PARTIAL",
+    "current": "Every Cloud Run service manifest in every GitOps environment declares a positive maxInstanceCount and maxInstanceRequestConcurrency, and qip-acceptance service_ceilings.rs refuses one that does not (gitops.rs already holds each manifest's instance bounds equal to its catalogue.tf entry). There is no service-plane GKE cluster; the one cluster is ADR 0036's GitOps control plane.",
     "evidence": [
-      "infrastructure/terraform/modules/cloudrun/main.tf"
+      "backend/crates/tests/qip-acceptance/tests/service_ceilings.rs::every_cloud_run_service_in_every_environment_declares_an_instance_and_a_concurrency_ceiling",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs (catalogue/manifest instance-bound parity)",
+      "infrastructure/terraform/catalogue.tf max_instances, concurrency"
     ],
-    "gap": "Built as the Cloud Run equivalent (ADR 0114 Amendment 1): every catalogue service declares maximum instances and concurrency, research runs in separately budgeted Cloud Run Jobs, and a test refuses a service without a maximum. Node-pool taints are refused.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the Cloud Run equivalent's ceiling half is built and tested. Open: (1) the requirement's own text — separated node pools with taints/tolerations and PriorityClasses — is refused by ADR 0114 D4 / Amendment 1, so by bar part 4 the row stays PARTIAL until the owner changes the requirement; (2) 'research runs in separately budgeted Cloud Run Jobs' is not built: research runs inside qip-deepbrain's process (no RunJob manifest exists), so a research burst shares the deep brain's instances rather than its own budget.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection of catalogue.tf and the binary's composition",
+    "verification": "cd backend && cargo test -p qip-acceptance --test service_ceilings",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). 2026-10-24 lane L6: suite added, 'ok. 2 passed'. Mutation: deleting maxInstanceCount from infrastructure/gitops/envs/prod/api.yaml failed the scan naming prod/api.yaml; restored by cp and cmp, 2 passed."
   },
   {
     "id": "R12-CICD-8117",

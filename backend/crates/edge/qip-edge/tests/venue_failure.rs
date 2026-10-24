@@ -1625,6 +1625,89 @@ fn a_cell_with_one_skewed_venue_reads_its_clock_stale_and_pauses_cross_venue_ord
 }
 
 #[test]
+fn a_degraded_clock_row_widens_the_uncertainty_of_events_from_venues_the_cell_never_measured()
+-> Result<()> {
+    // R12-RES-7103. The failure this prevents: the feed stored each event
+    // with its own lead only, so an event from a venue the cell had never
+    // measured went into the lake as exact while the cell's clock row read
+    // stale and the arbitrage desk had already paused on it — a label that
+    // needs precise ordering written down beside a clock nobody could place.
+    let xams = venue("XAMS");
+    let mut cell = fed_cell(&[(XLON, "obj-ACME"), (XPAR, "obj-BETA")])?;
+
+    // Premise: nothing measured, nothing widened, and a level clock widens
+    // nothing either.
+    assert_eq!(cell.narrowing(t(10)).observed(Capability::Clock), None);
+    assert_eq!(
+        cell.clock_uncertainty(&xams, Duration::ZERO)?,
+        Duration::ZERO
+    );
+    feed(&mut cell, XLON, "1\tobj-ACME\tB\t99\t500", t(10))?;
+    feed(&mut cell, XPAR, "1\tobj-BETA\tB\t49\t500", t(10))?;
+    assert_eq!(
+        cell.narrowing(t(10)).observed(Capability::Clock),
+        Some(Freshness::Fresh)
+    );
+    assert_eq!(
+        cell.clock_uncertainty(&xams, Duration::from_millis(3))?,
+        Duration::from_millis(3),
+        "a fresh clock widened an unmeasured venue's bound"
+    );
+
+    // XLON leads by two seconds: the row reads stale.
+    feed(&mut cell, XLON, "2\tobj-ACME\tB\t99\t510\t2000", t(11))?;
+    assert_eq!(
+        cell.narrowing(t(11)).observed(Capability::Clock),
+        Some(Freshness::Stale),
+        "the premise failed"
+    );
+    assert_eq!(
+        cell.clock_uncertainty(&xams, Duration::ZERO)?,
+        Duration::from_millis(2000),
+        "a stale clock left an unmeasured venue's event exact"
+    );
+    // Never narrower: a lead wider than any measured one is kept.
+    assert_eq!(
+        cell.clock_uncertainty(&xams, Duration::from_millis(2500))?,
+        Duration::from_millis(2500)
+    );
+    // A measured venue carries its own batch's lead, not the other venue's.
+    assert_eq!(
+        cell.clock_uncertainty(&venue(XPAR), Duration::ZERO)?,
+        Duration::ZERO,
+        "a level venue the cell measured was widened by another venue's skew"
+    );
+    assert_eq!(
+        cell.clock_uncertainty(&venue(XLON), Duration::ZERO)?,
+        Duration::from_millis(2000),
+        "a level message in a skewed venue's batch was stored as exact"
+    );
+
+    // Every measured venue skewed: unavailable, widened to the widest.
+    feed(&mut cell, XPAR, "2\tobj-BETA\tB\t49\t510\t3000", t(11))?;
+    assert_eq!(
+        cell.narrowing(t(11)).observed(Capability::Clock),
+        Some(Freshness::Unavailable),
+        "the premise failed"
+    );
+    assert_eq!(
+        cell.clock_uncertainty(&xams, Duration::ZERO)?,
+        Duration::from_millis(3000)
+    );
+
+    // A negative lead is a subtraction run backwards, refused not floored.
+    let refused = cell
+        .clock_uncertainty(&xams, Duration::from_millis(-1))
+        .expect_err("a negative lead was accepted");
+    assert!(
+        refused.message().contains("negative clock lead"),
+        "{}",
+        refused.message()
+    );
+    Ok(())
+}
+
+#[test]
 fn a_clock_skew_tolerance_that_refuses_every_venue_stops_assembly() {
     let mut config = CellConfig::new(CELL, REGION).with_venue(venue(XLON));
     config.max_clock_skew = Duration::ZERO;

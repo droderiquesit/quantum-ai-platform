@@ -47,7 +47,8 @@
 //! to know where to look, then read each one — the count tells you nothing on
 //! its own. `source`, `kind` and `outcome` are
 //! enums, and `capability` is
-//! the three policy-fed variants of one. Nothing here is labelled by
+//! six variants of one: the three policy-fed rows, and the feed, venue
+//! session and clock rows once the cell has measured them. Nothing here is labelled by
 //! instrument, strategy or order id, and that is deliberate: a series per
 //! order id is a memory leak wearing a dashboard. Each `with(...)` call below
 //! says what bounds its own label.
@@ -820,7 +821,7 @@ impl CellMetrics {
     /// against, rather than what it would have sized against at some earlier
     /// instant.
     ///
-    /// Only the capabilities a policy payload feeds are published: the causal
+    /// The capabilities a policy payload feeds are always published: the causal
     /// graph, episodic memory and the belief state — the three
     /// `PolicyItem::capability` maps, and the two that set the sizing
     /// multiplier. `Ingestion` is deliberately absent because
@@ -835,24 +836,54 @@ impl CellMetrics {
     /// Each of the three is written on every pass, so a capability that goes
     /// from stale back to fresh is a series falling to zero rather than one
     /// that stopped being updated.
+    ///
+    /// Three dependency rows the cell measures itself are published beside
+    /// them (R12-RES-8026): [`Capability::Feed`], [`Capability::VenueSession`]
+    /// and [`Capability::Clock`], read from the same state the pass sized
+    /// against — the clock row's multiplier is compounded into the pass's
+    /// size, and the feed and session rows say how much of the venue set the
+    /// per-venue gates have withdrawn. Each is published **only once the cell
+    /// has observed it**: before a venue has been heard, or on a cell with no
+    /// venue health, [`DegradationState::freshness`] would answer
+    /// `unavailable` by default, and charting that would be the number nobody
+    /// computed the paragraph above refuses. A row once observed stays
+    /// observed — the cell never forgets a venue it heard or a lead it
+    /// measured — so these too fall back to zero rather than going quiet.
+    /// The ledger and fabric rows are not here: the ledger is the halt
+    /// gauge's `journal` source, and the fabric row is derived from the
+    /// three above and would chart them twice.
     pub fn narrowing(&self, state: &DegradationState) {
+        let severity = |freshness: Freshness| match freshness {
+            Freshness::Fresh => 0.0,
+            Freshness::Stale => 1.0,
+            Freshness::Unavailable => 2.0,
+        };
         for capability in [
             Capability::CausalGraph,
             Capability::EpisodicMemory,
             Capability::BeliefState,
         ] {
-            let severity = match state.freshness(capability) {
-                Freshness::Fresh => 0.0,
-                Freshness::Stale => 1.0,
-                Freshness::Unavailable => 2.0,
-            };
             // `capability` is one of the three variants named above; the
             // series count is three per cell, whatever the payload carries.
             self.metrics.gauge(
                 names::EDGE_CAPABILITY_FRESHNESS,
                 self.with("capability", capability.as_str()),
-                severity,
+                severity(state.freshness(capability)),
             );
+        }
+        for capability in [
+            Capability::Feed,
+            Capability::VenueSession,
+            Capability::Clock,
+        ] {
+            if let Some(observed) = state.observed(capability) {
+                // At most three more series per cell, each an enum variant.
+                self.metrics.gauge(
+                    names::EDGE_CAPABILITY_FRESHNESS,
+                    self.with("capability", capability.as_str()),
+                    severity(observed),
+                );
+            }
         }
         // The multiplier is `Decimal` because it scales money. This is the
         // crossing point to `f64`, and it is a reporting one: the number is
