@@ -730,7 +730,7 @@
       "backend/crates/apps/qip-fabricd/src/lib.rs FileBlobStore import",
       "backend/crates/libs/qip-storage/src/gcp/storage.rs"
     ],
-    "gap": "Enable data buckets; point fabricd archive at GCS.",
+    "gap": "Corrected 2026-10-24 (lane T8-RESIDUAL): two things, neither closable in this repo alone. (1) enable_cloud_storage=false in every environment; flipping it creates billed buckets and the tfvars and variables.tf are protected paths. (2) qip-fabricd/src/archiver.rs archives through whatever BlobStore the composition root hands qip_storage::segment::archive::Archiver; the root builds a FileBlobStore, and pointing it at qip_storage::gcp::storage::CloudStorageBlobStore needs a bucket, a workload identity and the egress proxy (nothing is applied; grep execution_nodes_enabled in the tfvars). A config switch without a bucket would be a path no deployment takes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -741,7 +741,7 @@
     "verification": "terraform plan with enable_cloud_storage=true; qip-fabricd test archiving to GCS adapter",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 (lane T8-RESIDUAL): graded DEPLOY_DEPENDENT; text and gap corrected, no code change."
   },
   {
     "id": "R12-DATA-10034",
@@ -1239,13 +1239,13 @@
   {
     "id": "R12-OBS-10057",
     "status": "PARTIAL",
-    "current": "Binaries record and expose Prometheus metrics; nine alert policies exist, all gated on workload_metrics_exist=false; the Cloud Run collector sidecar is blocked; no ingestion proven.",
+    "current": "Binaries record and expose Prometheus metrics; eleven alert policies exist (grep -c '^resource \"google_monitoring_alert_policy\"' modules/observability/main.tf printed 11 on 2026-10-24), all eleven gated on workload_metrics_exist=false (the count-line grep also prints 11) and two of them on qip_edge_* series (2); the Cloud Run collector sidecar is blocked; no ingestion proven.",
     "evidence": [
       "infrastructure/terraform/modules/observability/main.tf:23 alert policy kill_switch (gated)",
       "backend/crates/libs/qip-observability/src/metrics.rs",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:6428 the_metrics_collector_runs_only_under_a_digest_pinned_image_and_nothing_claims_a_scrape"
     ],
-    "gap": "Collector + proof of ingestion + flip gate.",
+    "gap": "Collector + proof of ingestion + flip gate. Re-read 2026-10-24 (lane T8-RESIDUAL): modules/cloudrun renders the managed-Prometheus sidecar only under metrics_collector_image_digest, null in every tfvars (commented out in dev); the only published image fails the Trivy gate (NOT-SCRAPED.md). workload_metrics_exist stays false until a scrape is observed in a deployed environment, and no alert policy may name a series nothing emits.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1256,7 +1256,7 @@
     "verification": "observed scrape in a deployed environment",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 (lane T8-RESIDUAL): the 'nine alert policies' in current was stale (eleven since outcome_backlog and belief_calibration); recounted, no code change."
   },
   {
     "id": "R12-OBS-10058",

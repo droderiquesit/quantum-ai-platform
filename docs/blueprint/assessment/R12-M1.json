@@ -851,7 +851,7 @@
       "backend/crates/apps/qip-deepbrain/src/connectors.rs::ConnectorArm::refetch",
       "backend/crates/apps/qip-deepbrain/src/evolution.rs::EvolutionEngine::maybe_refetch"
     ],
-    "gap": "Re-fetch is a cadence pass, not triggered by historical reasoning/backtests; the Revised (changed-hash) outcome is returned but no test asserts a revised extent is flagged.",
+    "gap": "Corrected 2026-10-24 (lane T8-RESIDUAL): the 2026-10-18 gap said no test asserts a revised extent is flagged; two do. acquisition_manifest.rs::a_re_fetch_reports_unchanged_and_revised_extents_with_both_hashes asserts the driver's Revised finding, and qip-kernel/tests/references.rs::a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_and_the_metrics asserts the ledger, the log and the metric once the revised reference is recorded. What is open: ConnectorArm::refetch reports a Revised finding and does not record it (the next poll's reference does), so a revision sits unflagged until that poll; the pass runs on a cadence and not from historical reasoning or backtests; and a deployed deep brain meets the default-deny egress rule (owner decision recorded in notes).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -862,7 +862,7 @@
     "verification": "cargo test -p qip-kernel --test references",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 (lane T8-RESIDUAL): graded DEPLOY_DEPENDENT; gap corrected, no code change."
   },
   {
     "id": "R12-EVID-1038",

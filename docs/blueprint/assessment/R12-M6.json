@@ -2505,26 +2505,29 @@
   },
   {
     "id": "R12-CONTRACT-6111",
-    "status": "PARTIAL",
-    "current": "qip-world-model federation.rs now constructs the contract: Federation::information_request returns qip_contracts::control::InformationRequest (question, expected information value, deadline, allowed sources, budget) through Validated::new, and FederationStage::run consumes it onto FederationReview::information_requests, which is journaled and decodes as the contract. The local federation InformationRequest (proposition, models) remains the arbitration decisions payload. A federation test proves the emitted request round-trips as the contract and is refused without a budget.",
+    "status": "COMPLETE",
+    "current": "qip-world-model federation.rs constructs the contract: Federation::information_request returns qip_contracts::control::InformationRequest (question, expected information value, deadline, allowed sources, budget) through Validated::new, and FederationStage::run consumes it onto FederationReview::information_requests, which is journaled and decodes as the contract. Platform::understand_federation now states the exposure at stake on each held instrument before every pass (FederationStage::set_stakes over TrackedCapital::exposure_at_cost, cost basis, unsigned), so on the default cycle a material disagreement on a held name issues the contract request and one on an unheld name does not. The local federation InformationRequest (proposition, models) remains the arbitration decision's payload; qip_contracts::ambient::InfoRequest is still what the ambient path uses.",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::understand_federation (self.federation.set_stakes(self.capital.exposure_at_cost()))",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::TrackedCapital::exposure_at_cost",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::idle_routing_tests::the_federation_pass_is_told_what_each_held_instrument_has_at_stake_and_forgets_it_when_flat",
       "backend/crates/services/qip-world-model/src/federation.rs::Federation::information_request",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationReview::information_requests",
       "backend/crates/services/qip-world-model/tests/federation.rs::a_material_disagreement_with_exposure_at_stake_issues_the_contract_information_request_and_a_small_one_does_not",
       "backend/crates/libs/qip-contracts/src/control.rs:48 InformationRequest = Validated<InformationRequestFields>"
     ],
-    "gap": "The constructing seam runs only when FederationStage::set_stakes has been called, and platform.rs does not call it yet (patch in the L14 lane report for L01); until then no deployed binary constructs or consumes the contract. qip_contracts::ambient::InfoRequest is still what the ambient path uses.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test federation a_material_disagreement_with_exposure",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib the_federation_pass_is_told && cargo +1.94.1 test -p qip-world-model --test federation a_material_disagreement_with_exposure",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 (lane L14). Mutation: inverting the exposure gate failed the test (no contract emitted for a million at stake)."
+    "notes": "Re-graded 2026-10-18 (lane L14). Mutation: inverting the exposure gate failed the test (no contract emitted for a million at stake). Re-graded 2026-10-24 (lane T8-RESIDUAL). Mutation: replacing the set_stakes call with a bare read of exposure_at_cost left the stage's stakes empty and the new test failed (None vs Some(300)); restored byte-for-byte, passes. Stakes are at cost, in the instrument's own units, because the platform holds no marks and no FX conversion to the account currency; a mark-to-market or converted stake would only raise the figure the information-value gate reads and is not part of this clause."
   },
   {
     "id": "R12-CONTRACT-6112",
@@ -2886,7 +2889,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs decide_tests::a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted",
       "backend/crates/services/qip-agency/src/guard.rs check_justification in ActionGuard::preflight"
     ],
-    "gap": "No test drives an approved hypothesis with no supporting evidence through stage_reason, so the call site in stage_reason is proven by reading, not by a mutated test; only justify_thesis itself is mutation-proven. Closing needs a kernel fixture that queues an opportunity whose reasoning outcome is approved with zero supporting items (red-team serious_tolerance >= 1) and asserts no thesis is queued and DECIDE forms no intent.",
+    "gap": "Unchanged on 2026-10-24 (lane T8-RESIDUAL), but the proposed closure is not writable as stated. Platform::synthesise always passes the triggering anomaly into SynthesisInput::direct_evidence as a Stance::Supports item, so no cycle fixture can reach an approved hypothesis with zero supporting evidence: the justify_thesis branch in reason_about_the_queue is a guard behind an invariant the caller keeps. Proving the call site needs a seam that lets a test hand reason_about_the_queue a ReasoningOutcome (or a synthesise that can omit the direct item), which is a design choice about test-only surface in platform.rs, not a fixture.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2897,6 +2900,6 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Wired into the agency engine; no production market-facing action consults it. 2026-10-18 (lane L01): justification wired into the kernel REASON->DECIDE seam. Mutation: grounds built from every evidence item instead of supporting ones admitted the contradicting-only set and the test failed at its expect_err; restored byte-for-byte, passes. Kept PARTIAL: call site not yet proven by a stage-level mutated test."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Wired into the agency engine; no production market-facing action consults it. 2026-10-18 (lane L01): justification wired into the kernel REASON->DECIDE seam. Mutation: grounds built from every evidence item instead of supporting ones admitted the contradicting-only set and the test failed at its expect_err; restored byte-for-byte, passes. Kept PARTIAL: call site not yet proven by a stage-level mutated test. 2026-10-24 (lane T8-RESIDUAL): read synthesise, the redteam verdict and Hypothesis::validate (which itself refuses a hypothesis with no supporting evidence); found the branch unreachable through a cycle, nothing changed."
   }
 ]

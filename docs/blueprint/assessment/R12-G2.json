@@ -1190,7 +1190,7 @@
       "backend/crates/services/qip-capital/src/shadow.rs",
       "backend/crates/tests/qip-acceptance/tests/capital_shadow_portfolios.rs"
     ],
-    "gap": "Compose and persist.",
+    "gap": "Corrected 2026-10-24 (lane T8-RESIDUAL): composing shadows needs an AllocationPlan per cycle and there is none. CentralPlane::allocate is called from Platform::issue_capital and the capital-envelope path (operator-driven), never from a cycle, so a shadow universe built at plan time would be built on operator calls only, with no resolved fills to score and nothing in the cycle to persist. Slices: (1) a cycle-time allocation pass (R12-CAPITAL-9039); (2) ShadowPortfolioUniverse built from that plan (alternate size and refused shadows) and journaled; (3) scoring from the twin's fills. Note for slice 3: score_shadow clamps regret_bp at 10000 and converts money through f64, both against the refuse-not-clamp rule.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1203,7 +1203,7 @@
     "verification": "cargo test -p qip-acceptance --test capital_shadow_portfolios",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 (lane T8-RESIDUAL): graded LARGE_SPLITTABLE; gap corrected, no code change."
   },
   {
     "id": "R12-DATA-9052",
