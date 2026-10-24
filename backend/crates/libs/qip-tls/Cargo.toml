@@ -42,7 +42,7 @@ rustls = { version = "=0.23.46", default-features = false, features = ["ring", "
 # mutual-TLS server checks a client certificate against the workload names
 # it admits (`PeerNames`). The version `rustls` resolves, so this adds no
 # package to the lockfile.
-webpki = { package = "rustls-webpki", version = "=0.103.15", default-features = false, features = ["ring", "std"] }
+webpki = { package = "rustls-webpki", version = "=0.103.16", default-features = false, features = ["ring", "std"] }
 
 [lints]
 workspace = true

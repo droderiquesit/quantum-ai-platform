@@ -69,7 +69,7 @@ pub use causal::{CausalIssue, CausalOutcome};
 pub use darkness::{LastHeard, RegionDarkness, RegionTransition};
 pub use dna::{DnaPayload, StrategyDna};
 pub use episodic::{EpisodicIssue, EpisodicOutcome};
-pub use factory::{StrategyCandidate, StrategyFactory, StrategyReview};
+pub use factory::{PromotionEligibility, StrategyCandidate, StrategyFactory, StrategyReview};
 pub use horizon::{HorizonArming, HorizonClaim, HorizonPolicy, PoolReconciler};
 pub use learning::{
     CellOutcome, DispositionInstruction, DispositionOutcome, DispositionRefused,

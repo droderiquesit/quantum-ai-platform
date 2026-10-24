@@ -175,6 +175,18 @@ pub struct CentralConfig {
     /// expired is a control that fires after the fact it exists to catch.
     #[serde(default)]
     pub region_dark_after: Option<Duration>,
+    /// The operating permission a promotion is judged against (ADR 0155
+    /// section 23), or `None` for a plane nobody armed.
+    ///
+    /// Off in the library for the reason `CellConfig::exposure_bounds_required`
+    /// is: every suite that promotes a strategy at an arbitrary clock and
+    /// family would otherwise stop on a register nobody wrote. Armed, it is
+    /// fail-closed and an expired seed stops every promotion at once. A
+    /// composition root arms it from the committed paper seed
+    /// (`data/datasets/paper-eligibility.json`) once that file is published
+    /// to the deployment.
+    #[serde(default)]
+    pub promotion_eligibility: Option<super::factory::PromotionEligibility>,
 }
 
 impl Default for CentralConfig {
@@ -200,6 +212,7 @@ impl Default for CentralConfig {
             arbitrage: None,
             horizons: None,
             region_dark_after: None,
+            promotion_eligibility: None,
         }
     }
 }
@@ -929,7 +942,8 @@ impl CentralPlane {
             config.per_venue,
         )?;
         Ok(Self {
-            factory: StrategyFactory::new(),
+            factory: StrategyFactory::new()
+                .with_promotion_eligibility(config.promotion_eligibility.clone()),
             allocator: CapitalAllocator::new(limits, config.drawdown.clone()),
             issuer: EnvelopeIssuer::new(signing_secret.to_vec(), CENTRAL_KEY_ID)?,
             compliance: CompliancePlane::new(

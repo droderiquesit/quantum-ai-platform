@@ -638,6 +638,16 @@ fn run() -> Result<()> {
     for line in choice.banner_lines(ceiling.as_str()) {
         println!("{line}");
     }
+    // Widened here, where the gateway choice is known: a replay under other
+    // gateway settings must refuse on the digest, not reproduce under a fill
+    // model nobody can name (ADR 0155 section 16).
+    let config_digest = match &choice {
+        VenueChoice::Simulated { .. } => qip_edge_node::gateway::widen_config_digest(
+            &config_digest,
+            &qip_edge_node::gateway::SimulatedGateway::default_settings(),
+        ),
+        VenueChoice::Live(_) => config_digest,
+    };
     let mut gateway = NodeGateway::open(&choice, gateway_venue.clone(), started)?;
 
     // The fencing lease, before the feed and before anything is served: a

@@ -1765,3 +1765,71 @@ fn a_non_finite_calibration_is_refused_rather_than_stored() {
     assert!(ModelCalibration::new(f64::NAN, 0.0).is_err());
     assert!(ModelCalibration::new(1.0, f64::INFINITY).is_err());
 }
+
+#[test]
+fn a_rule_that_declares_an_edge_raises_a_signal_stating_it_and_a_rule_that_does_not_raises_a_signal_stating_none()
+ {
+    // ADR 0155 §7. The edge is the author's claim about payoff; conviction is a
+    // probability that the claim holds. A runtime that multiplied the second
+    // into a payoff nobody declared would hand the net-edge gate a number
+    // nobody computed.
+    let at = Timestamp::from_secs(1_700_000_000);
+    let build = |name: &str, edge: Option<Expr>| {
+        let mut rule = Rule::new(
+            "lean",
+            SignalKind::Enter,
+            leaning(),
+            Expr::Exact(Decimal::from_int(100)),
+            Expr::Statistic(0.9),
+            200,
+        );
+        if let Some(edge) = edge {
+            rule = rule.with_expected_edge(edge);
+        }
+        let mut compiler = compiler();
+        let spec = StrategySpec::new(StrategyId::new(name), subject(), Duration::from_secs(60))
+            .with_rule(rule);
+        let compiled = compiler.compile(&spec).unwrap();
+        (
+            StrategyRuntime::new(compiler.into_program()).unwrap(),
+            compiled,
+        )
+    };
+    let vector = vector_of(&[(pressure(), FeatureValue::Statistic(0.7))], at);
+
+    let (mut declaring, declaring_compiled) = build("declares", Some(Expr::Statistic(35.0)));
+    let stated = declaring
+        .run(&declaring_compiled, &vector, at)
+        .unwrap()
+        .expect("premise: the declaring rule fires");
+    assert_eq!(stated.expected_edge_bp, Some(35.0));
+
+    let (mut silent, silent_compiled) = build("silent", None);
+    let unstated = silent
+        .run(&silent_compiled, &vector, at)
+        .unwrap()
+        .expect("premise: the silent rule fires on the same vector");
+    assert_eq!(
+        unstated.expected_edge_bp, None,
+        "a rule that declared no edge must raise a signal that states none, \
+         not one derived from its conviction"
+    );
+}
+
+#[test]
+fn a_declared_edge_must_type_as_a_statistic_and_is_refused_when_it_is_an_exact_quantity() {
+    let spec = StrategySpec::new(StrategyId::new("typed"), subject(), Duration::from_secs(60))
+        .with_rule(
+            Rule::new(
+                "lean",
+                SignalKind::Enter,
+                leaning(),
+                Expr::Exact(Decimal::from_int(100)),
+                Expr::Statistic(0.9),
+                200,
+            )
+            .with_expected_edge(Expr::Exact(Decimal::from_int(35))),
+        );
+    let refused = compiler().compile(&spec).unwrap_err().to_string();
+    assert!(refused.contains("expected_edge"), "{refused}");
+}

@@ -108,6 +108,12 @@ pub enum Decision {
         object: String,
         kind: String,
         conviction_shrunk_f64: f64,
+        /// The edge the rule declared (ADR 0155 §10), journaled so the
+        /// centre can join the realised result to it through attribution
+        /// lineage. Absent when the rule stated none, and not written back
+        /// then, so a sealed entry re-serialises byte for byte.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_edge_bp: Option<f64>,
     },
     /// An opportunity was priced and its net edge computed.
     EdgePriced {

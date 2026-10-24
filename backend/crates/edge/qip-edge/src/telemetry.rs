@@ -373,6 +373,14 @@ impl AdversaryPostureLabel {
 /// to project against. Written every pass, including a halted one.
 pub const EDGE_SETTLEMENT_UNPROJECTED: &str = "qip_edge_settlement_unprojected_venues";
 
+/// Directional signals this pass that stated no edge and so were not judged by
+/// the net-edge gate (ADR 0155 §9).
+///
+/// Written only by a cell that built the gate, and absent — not zero — on
+/// every other: a cell with no margin judges no signal, and zero would read as
+/// "all of them were judged".
+pub const EDGE_EDGELESS_SIGNALS: &str = "qip_edge_edgeless_signals";
+
 /// Buckets for the netting ratio.
 ///
 /// It is a ratio of gross intent to net order volume, so it starts at exactly
@@ -555,6 +563,11 @@ impl CellMetrics {
             EDGE_ARBITRAGE_EDGE_REFRESHES,
             "trade edges of the arbitrage graph by what the pass's edge update did with each: \
              repriced because its book moved, or unchanged",
+        );
+        m.describe(
+            EDGE_EDGELESS_SIGNALS,
+            "directional signals this pass that stated no expected edge and so were not \
+             judged by the net-edge gate",
         );
         m.describe(
             EDGE_SETTLEMENT_UNPROJECTED,
@@ -1084,6 +1097,15 @@ impl CellMetrics {
             self.with("outcome", "unchanged"),
             refresh.unchanged as u64,
         );
+    }
+
+    /// How many directional signals this pass stated no edge (ADR 0155 §9).
+    pub fn edgeless_signals(&self, signals: usize) {
+        // A per-pass count of strategies, small; the cast cannot lose one.
+        #[allow(clippy::cast_precision_loss)]
+        let signals = signals as f64;
+        self.metrics
+            .gauge(EDGE_EDGELESS_SIGNALS, self.base.clone(), signals);
     }
 
     /// How many configured venues the settlement gate cannot project

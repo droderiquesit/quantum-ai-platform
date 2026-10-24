@@ -154,6 +154,7 @@ fn a_decision_whose_json_cannot_be_produced_is_refused_and_never_hashed_as_its_k
             object: "obj-1".to_string(),
             kind: "enter".to_string(),
             conviction_shrunk_f64: conviction,
+            expected_edge_bp: None,
         };
         assert!(
             serde_json::to_string(&decision).is_ok(),
