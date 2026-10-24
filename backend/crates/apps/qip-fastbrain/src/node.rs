@@ -65,6 +65,9 @@ impl Stop {
 pub struct StepOutcome {
     pub report: CycleReport,
     pub observed: usize,
+    /// Records the connector released whose claim the world fabric would
+    /// not stand behind, so not observed (R12-EVID-1200).
+    pub withheld: usize,
     pub rejections: Vec<String>,
     /// Measured on a monotonic clock, so a wall-clock adjustment mid-cycle
     /// cannot invent or erase a breach.
@@ -152,22 +155,30 @@ pub fn step_with(
     // it stood, so the records are re-fetched next step rather than fed
     // into the cycle with unknown standing or dropped past a committed
     // cursor.
-    let batch = feed.poll(now, &mut |digest| {
+    let mut batch = feed.poll(now, &mut |digest| {
         platform.reference_fetch(digest, now).map(|_| ())
     })?;
     // The connector's checked evidence into the world fabric the poisoning
     // detector reads (R12-EVID-2031..2039); counted by the kernel on
     // `qip_evidence_absorbed_total`. Until 2026-10-11 nothing drained it and
     // the feed dropped the oldest at its bound.
-    platform.absorb_evidence(feed.drain_evidence(), now);
-    let observed = sensing.feed(platform, &feed.descriptor().name, batch.accepted, now)?;
+    //
+    // A record reaches `observe` only if the world fabric stood behind the
+    // claim it rests on (R12-EVID-1200): the connector's own check ran
+    // against one source's private fabric, the world's against every
+    // source's.
+    let intake = platform.absorb_evidence(feed.drain_evidence(), now);
+    let rejections = std::mem::take(&mut batch.rejections);
+    let (released, withheld) = batch.release(&intake);
+    let observed = sensing.feed(platform, &feed.descriptor().name, released, now)?;
     let report = platform.run_cycle(now);
     let elapsed = monotonic(began);
 
     Ok(StepOutcome {
         report,
         observed,
-        rejections: batch.rejections,
+        withheld,
+        rejections,
         elapsed,
         over_budget: elapsed > budget,
     })
