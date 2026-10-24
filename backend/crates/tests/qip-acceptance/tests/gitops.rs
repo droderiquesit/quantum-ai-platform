@@ -7750,3 +7750,366 @@ fn every_environment_variable_a_workload_reads_is_documented() {
         vec!["QIP_EMERGENCY_OVERRIDE_UNDOCUMENTED".to_string()]
     );
 }
+
+// --- R12-GCP-8114: what Config Connector may set IAM on -------------------------------
+
+/// Whether a manifest is one of Config Connector's IAM resources — any kind
+/// in `iam.cnrm.cloud.google.com`, which is every `IAM*` kind: the policy
+/// kinds that bind a member (`IAMPolicyMember`, `IAMPartialPolicy`,
+/// `IAMPolicy`, `IAMAuditConfig`) and the ones that mint an identity or a key
+/// (`IAMServiceAccount`, `IAMServiceAccountKey`, `IAMCustomRole`, …), which
+/// carry no `resourceRef` at all and so fail the rule below by construction.
+fn is_config_connector_iam(manifest: &Manifest) -> bool {
+    manifest.kind().starts_with("IAM")
+        || manifest
+            .api_version()
+            .starts_with("iam.cnrm.cloud.google.com/")
+}
+
+/// Why an IAM manifest binds something other than a Cloud Run service, or
+/// `None` when its `resourceRef` names a `RunService` in Config Connector's
+/// Cloud Run group.
+fn binds_beyond_a_run_service(manifest: &Manifest) -> Option<String> {
+    let kind = text_at(&manifest.value, &["spec", "resourceRef", "kind"]);
+    let group = text_at(&manifest.value, &["spec", "resourceRef", "apiVersion"]);
+    let admitted = kind.as_deref() == Some("RunService")
+        && group
+            .as_deref()
+            .is_some_and(|group| group.starts_with("run.cnrm.cloud.google.com/"));
+    (!admitted).then(|| {
+        format!(
+            "{} has resourceRef kind {kind:?} in {group:?}",
+            manifest.describe()
+        )
+    })
+}
+
+/// R12-GCP-8114, the manifest half: every IAM manifest Argo CD can apply
+/// binds a Cloud Run service and nothing wider. Config Connector applies
+/// these as its own identity, so an `IAMPolicyMember` whose `resourceRef` is
+/// the project, a secret or a service account is a grant no Terraform
+/// scanner reads — `roles/secretmanager.secretAccessor` on the venue
+/// credential for a Cloud Run account is one manifest away. The reconciler's
+/// project roles (the next test) refuse such a grant at the API; this
+/// refuses it in review, before a sync is attempted.
+///
+/// Read twice per environment: as committed files, which catches a manifest
+/// no kustomization lists yet, and as the kustomization renders them, which
+/// catches a patch rewriting a `resourceRef`.
+///
+/// Mutation: add an `IAMPolicyMember` with `resourceRef.kind: Project` under
+/// `infrastructure/gitops/envs/dev/`, and the test names it.
+#[test]
+fn every_iam_manifest_under_envs_binds_a_cloud_run_service_and_nothing_wider() {
+    // The rule, on documents whose answer is known.
+    let manifest = |value: Value| Manifest {
+        path: "premise".to_string(),
+        value,
+    };
+    let invoker = manifest(serde_json::json!({
+        "apiVersion": "iam.cnrm.cloud.google.com/v1beta1",
+        "kind": "IAMPolicyMember",
+        "metadata": {"name": "x"},
+        "spec": {"member": "group:g@example.com", "role": "roles/run.invoker",
+                 "resourceRef": {"apiVersion": "run.cnrm.cloud.google.com/v1beta1",
+                                 "kind": "RunService", "name": "qip-dev-api"}}
+    }));
+    let project = manifest(serde_json::json!({
+        "apiVersion": "iam.cnrm.cloud.google.com/v1beta1",
+        "kind": "IAMPolicyMember",
+        "metadata": {"name": "x"},
+        "spec": {"member": "serviceAccount:a@p.iam.gserviceaccount.com",
+                 "role": "roles/secretmanager.secretAccessor",
+                 "resourceRef": {"apiVersion": "resourcemanager.cnrm.cloud.google.com/v1beta1",
+                                 "kind": "Project", "external": "projects/p"}}
+    }));
+    let key = manifest(serde_json::json!({
+        "apiVersion": "iam.cnrm.cloud.google.com/v1beta1",
+        "kind": "IAMServiceAccountKey",
+        "metadata": {"name": "x"},
+        "spec": {"serviceAccountRef": {"name": "qip-dev-api"}}
+    }));
+    let service = manifest(serde_json::json!({
+        "apiVersion": "run.cnrm.cloud.google.com/v1beta1",
+        "kind": "RunService",
+        "metadata": {"name": "qip-dev-api"}
+    }));
+    assert!(
+        [&invoker, &project, &key]
+            .iter()
+            .all(|m| is_config_connector_iam(m))
+            && !is_config_connector_iam(&service),
+        "premise: the IAM-kind detector misreads a known document"
+    );
+    assert!(
+        binds_beyond_a_run_service(&invoker).is_none()
+            && binds_beyond_a_run_service(&project).is_some()
+            && binds_beyond_a_run_service(&key).is_some(),
+        "premise: the resourceRef rule admits a project grant or a key, or refuses an invoker \
+         on a RunService"
+    );
+
+    let mut iam_read = 0usize;
+    let mut wider = Vec::new();
+    for environment in environment_directories() {
+        let directory = format!("{ENVS}/{environment}");
+        let mut documents = manifests_under(&directory);
+        documents.extend(kustomize(&directory));
+        for document in documents.iter().filter(|m| is_config_connector_iam(m)) {
+            iam_read += 1;
+            if let Some(finding) = binds_beyond_a_run_service(document) {
+                wider.push(finding);
+            }
+        }
+    }
+    // Dev's two invoker bindings at least, read both ways: with none the
+    // rule below held over nothing.
+    assert!(
+        iam_read >= 2,
+        "premise: {iam_read} IAM manifest(s) were read under {ENVS}; dev's invoker bindings \
+         are not being seen"
+    );
+    assert!(
+        wider.is_empty(),
+        "an IAM manifest under {ENVS} binds something other than a Cloud Run service. Config \
+         Connector applies it as its own identity, and a grant on the project, a secret or an \
+         account here is one no Terraform scanner reads. Grant it in Terraform, in the module \
+         that owns the resource, or bind a RunService:\n{}",
+        wider.join("\n")
+    );
+}
+
+/// Config Connector's account, by every name the Terraform tree uses for it.
+const CONFIG_CONNECTOR_IDENTITY: [&str; 2] =
+    ["google_service_account.kcc.", "kcc_service_account_email"];
+
+/// The project roles Config Connector holds, pinned, and what each lets it
+/// do with IAM — which is the whole of the argument for the pin.
+const CONFIG_CONNECTOR_PROJECT_ROLES: [(&str, &str); 2] = [
+    (
+        "roles/run.admin",
+        "creates and updates Cloud Run services and sets IAM on them (run.services.setIamPolicy) \
+         and on nothing outside Cloud Run",
+    ),
+    (
+        "roles/secretmanager.viewer",
+        "reads a secret's metadata so a RunService's mount resolves; never a payload, never a \
+         policy",
+    ),
+];
+
+/// Whether a role lets its holder set IAM policy outside Cloud Run, or act as
+/// another identity that could. Fail closed on what cannot be read: a custom
+/// role's permissions are not in its name, so one is treated as able to.
+fn sets_iam_beyond_cloud_run(role: &str) -> bool {
+    let Some(id) = role.strip_prefix("roles/") else {
+        return true;
+    };
+    let folded = id.to_ascii_lowercase();
+    if folded.ends_with("serviceagent") {
+        return true;
+    }
+    if folded.starts_with("run.") {
+        return false;
+    }
+    matches!(
+        folded.as_str(),
+        "owner"
+            | "editor"
+            | "iam.serviceaccountuser"
+            | "iam.serviceaccounttokencreator"
+            | "iam.serviceaccountopenidtokencreator"
+            | "iam.workloadidentityuser"
+    ) || folded.ends_with("admin")
+}
+
+/// Every `resource "<kind>" "<name>"` block of the given kinds in the
+/// Terraform tree, as `(file, kind, name, body)` with comments gone.
+fn terraform_resources_of(kinds: &[&str]) -> Vec<(String, String, String, String)> {
+    let mut found = Vec::new();
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let text = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        let file = path
+            .strip_prefix(repository_root())
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        let mut lines = text.lines();
+        while let Some(line) = lines.next() {
+            let Some(kind) = kinds
+                .iter()
+                .find(|kind| line.starts_with(&format!("resource \"{kind}\" \"")))
+            else {
+                continue;
+            };
+            let name = line.split('"').nth(3).unwrap_or_default().to_string();
+            let mut body = vec![line];
+            let mut depth = line.matches('{').count() as i64 - line.matches('}').count() as i64;
+            while depth > 0 {
+                let Some(next) = lines.next() else { break };
+                depth += next.matches('{').count() as i64 - next.matches('}').count() as i64;
+                body.push(next);
+            }
+            found.push((file.clone(), (*kind).to_string(), name, body.join("\n")));
+        }
+    }
+    found
+}
+
+/// The literal on the right of `key = "…"` in a block, whitespace collapsed,
+/// or `None` when the value is not a single literal.
+fn literal_assignment(body: &str, key: &str) -> Option<String> {
+    body.lines().map(collapsed).find_map(|line| {
+        let value = line.strip_prefix(&format!("{key} = "))?;
+        let inner = value.strip_prefix('"')?.strip_suffix('"')?;
+        (!inner.contains('"') && !inner.contains("${")).then(|| inner.to_string())
+    })
+}
+
+/// R12-GCP-8114, the identity half: Config Connector — the account every
+/// manifest above is applied as — holds exactly `roles/run.admin` and
+/// `roles/secretmanager.viewer` at project scope and nowhere higher, neither
+/// of which can set IAM policy outside Cloud Run or act as another account;
+/// and the accounts it may act as (`iam.serviceAccountUser`, which Cloud Run
+/// demands of a deployer) are the Cloud Run workloads' own, never the
+/// execution node's. So the reconciler can neither grant a Cloud Run account
+/// the venue credential nor deploy a Cloud Run service running as the one
+/// account that reads it.
+///
+/// Read across the whole Terraform tree rather than the module alone: a
+/// grant to `module.gitops_control_plane[0].kcc_service_account_email`
+/// written in `catalogue.tf` is the same grant.
+///
+/// Mutation: add a `google_project_iam_member` granting
+/// `roles/iam.securityAdmin` to `google_service_account.kcc.email` in any
+/// `.tf` under `infrastructure/terraform/`; the rule names it. A viewer role
+/// instead fails the pin.
+#[test]
+fn config_connector_holds_a_pinned_set_of_project_roles_none_of_which_sets_iam_beyond_cloud_run() {
+    // The rule, on roles whose answer is known.
+    for refused in [
+        "roles/owner",
+        "roles/editor",
+        "roles/resourcemanager.projectIamAdmin",
+        "roles/iam.securityAdmin",
+        "roles/iam.serviceAccountUser",
+        "roles/iam.serviceAccountTokenCreator",
+        "roles/iam.workloadIdentityUser",
+        "roles/secretmanager.admin",
+        "roles/storage.admin",
+        "roles/run.serviceAgent",
+        "projects/p/roles/deployer",
+    ] {
+        assert!(
+            sets_iam_beyond_cloud_run(refused),
+            "premise: the rule admits {refused}"
+        );
+    }
+    for (role, _) in CONFIG_CONNECTOR_PROJECT_ROLES {
+        assert!(
+            !sets_iam_beyond_cloud_run(role),
+            "the pinned role {role} fails the rule it is pinned under"
+        );
+    }
+
+    let names_kcc = |body: &str| {
+        CONFIG_CONNECTOR_IDENTITY
+            .iter()
+            .any(|name| body.contains(name))
+    };
+    let above_a_resource = terraform_resources_of(&[
+        "google_project_iam_member",
+        "google_project_iam_binding",
+        "google_project_iam_policy",
+        "google_folder_iam_member",
+        "google_folder_iam_binding",
+        "google_folder_iam_policy",
+        "google_organization_iam_member",
+        "google_organization_iam_binding",
+        "google_organization_iam_policy",
+    ]);
+    assert!(
+        above_a_resource.len() > 10,
+        "premise: the walk found {} project, folder or organisation grants",
+        above_a_resource.len()
+    );
+    let mut held = BTreeSet::new();
+    let mut located = Vec::new();
+    for (file, kind, name, body) in above_a_resource
+        .iter()
+        .filter(|(_, _, _, body)| names_kcc(body))
+    {
+        let role = literal_assignment(body, "role").unwrap_or_else(|| {
+            panic!(
+                "{file}: {kind}.{name} grants Config Connector a role that is not a literal, so \
+                 it cannot be pinned; write the role out"
+            )
+        });
+        assert!(
+            !sets_iam_beyond_cloud_run(&role),
+            "{file}: {kind}.{name} grants Config Connector {role}, which sets IAM policy \
+             beyond Cloud Run services or acts as another identity. The reconciler applies \
+             every manifest under {ENVS} as itself; with this it could grant a Cloud Run \
+             account the venue credential"
+        );
+        held.insert(role);
+        located.push(format!("{file}:{kind}.{name}"));
+    }
+    located.sort();
+    let pinned: BTreeSet<String> = CONFIG_CONNECTOR_PROJECT_ROLES
+        .iter()
+        .map(|(role, _)| (*role).to_string())
+        .collect();
+    assert_eq!(
+        held, pinned,
+        "Config Connector's project roles are {held:?}, pinned at {pinned:?} (granted at \
+         {located:?}). A change here is a change to what every manifest under {ENVS} may do; \
+         re-pin it with the reason, in CONFIG_CONNECTOR_PROJECT_ROLES"
+    );
+    assert_eq!(
+        located,
+        [
+            "infrastructure/terraform/modules/gitops-control-plane/main.tf:google_project_iam_member.kcc_runs",
+            "infrastructure/terraform/modules/gitops-control-plane/main.tf:google_project_iam_member.kcc_sees_secrets",
+        ],
+        "Config Connector's project roles are granted somewhere other than its module's two \
+         named grants"
+    );
+
+    // Whom it may act as: Cloud Run's own workload accounts, one by one.
+    let acting_as: Vec<String> = terraform_resources_of(&[
+        "google_service_account_iam_member",
+        "google_service_account_iam_binding",
+        "google_service_account_iam_policy",
+    ])
+    .into_iter()
+    .filter(|(file, _, _, body)| {
+        names_kcc(body)
+            || (file.ends_with("modules/cloudrun/main.tf")
+                && body.contains("var.deployer_service_account"))
+    })
+    .map(|(file, kind, name, body)| {
+        let account = body
+            .lines()
+            .map(collapsed)
+            .find_map(|line| {
+                line.strip_prefix("service_account_id = ")
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        format!("{file}:{kind}.{name} on {account}")
+    })
+    .collect();
+    let mut acting_as = acting_as;
+    acting_as.sort();
+    assert_eq!(
+        acting_as,
+        [
+            "infrastructure/terraform/catalogue.tf:google_service_account_iam_member.portal_deployer on module.secrets.console_service_account_id",
+            "infrastructure/terraform/modules/cloudrun/main.tf:google_service_account_iam_member.deployer on google_service_account.workload.name",
+        ],
+        "Config Connector may act as an account other than a Cloud Run workload's own. One \
+         that may read the venue credential — the execution node's — lets it deploy a Cloud Run \
+         service that reads it"
+    );
+}

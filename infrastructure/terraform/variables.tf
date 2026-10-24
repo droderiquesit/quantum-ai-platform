@@ -1824,6 +1824,12 @@ variable "pam_entitlements" {
     to one of `requesters`, after one of `approvers` approves with a
     justification. Empty everywhere: no entitlement, no standing grant
     either — the operator roles this platform has are the pipeline's.
+
+    An entitlement is a person's, approved by a person, for a predefined
+    role that cannot reach a secret or act as another identity: no
+    `serviceAccount:` on either side, no `roles/secretmanager.*`, no
+    impersonation or IAM-administration role, no custom role (R12-GCP-8114 —
+    the venue credential is readable by the execution node and nothing else).
   EOT
 
   type = map(object({
@@ -1863,14 +1869,80 @@ variable "pam_entitlements" {
     error_message = "A basic role (owner, editor, viewer) is refused: an elevation names the one role the task needs."
   }
 
+  # People only, on both sides (R12-GCP-8114). This admitted `serviceAccount:`
+  # until 2026-10-24, so a Cloud Run workload's own account could be made a
+  # requester of any non-basic role — `roles/secretmanager.secretAccessor` at
+  # project scope among them, which reads the venue credential — behind one
+  # approval click, and no grant scanner saw it because an entitlement is not
+  # a binding until somebody asks. An approver that is an account is an
+  # approval a process gives. The allow-list is the refusal: `serviceAccount:`,
+  # `domain:`, `principal://`, `principalSet://`, `deleted:` and the two
+  # public members all fail it, so there is no second rule to keep in step.
   validation {
     condition = alltrue(flatten([
       for e in values(var.pam_entitlements) : [
         for p in setunion(e.requesters, e.approvers) :
-        can(regex("^(user|group|serviceAccount):[^,\\s]+@[^,\\s]+$", p))
+        can(regex("^(user|group):[^,\\s]+@[^,\\s]+$", p))
       ]
     ]))
-    error_message = "Requesters and approvers are IAM principals written user:, group: or serviceAccount:. allUsers, allAuthenticatedUsers and domains are refused."
+    error_message = "Requesters and approvers are people, written user: or group:. A serviceAccount: is refused on either side: a workload that needs a role is granted that role in its own module, where the identity and workload-identity suites read it, never handed an elevation a person approves on its behalf. allUsers, allAuthenticatedUsers, domain: and principal sets are refused too."
+  }
+
+  # Predefined roles only. A custom role (`projects/<p>/roles/<id>` or
+  # `organizations/<o>/roles/<id>`) carries whatever permissions were last
+  # written into it, which no rule here can read at plan — one holding
+  # `secretmanager.versions.access` under a harmless name would pass every
+  # check below.
+  validation {
+    condition = alltrue(flatten([
+      for e in values(var.pam_entitlements) : [
+        for r in e.roles : can(regex("^roles/[A-Za-z0-9._]+$", r))
+      ]
+    ]))
+    error_message = "An entitlement grants predefined roles only, written roles/<service>.<role>. A custom role's permissions cannot be judged at plan: name the predefined role the task needs, or grant the custom role in the module that defines it, where its permission list is reviewed."
+  }
+
+  # No Secret Manager role, by service prefix rather than by name: every
+  # predefined role whose id begins `roles/secretmanager.` is refused, so one
+  # Google adds later is refused too. The venue credential is read by the
+  # execution node's own account, granted on that one secret (ADR 0024);
+  # a project-scope Secret Manager role reads it, and every other secret.
+  validation {
+    condition = alltrue(flatten([
+      for e in values(var.pam_entitlements) : [
+        for r in e.roles : !startswith(lower(r), "roles/secretmanager.")
+      ]
+    ]))
+    error_message = "A roles/secretmanager.* role is refused: at project scope it reads the venue credential and every other secret. A person needing one secret's value is granted on that secret in modules/secrets, reviewed; seeding a secret is infra.yml's step, not an elevation."
+  }
+
+  # Acting as another identity, or rewriting who holds what. Each of these is
+  # every other role one call later — mint a token or a key as the execution
+  # node, rebind the project, rewrite a custom role an account already holds,
+  # repoint the pool the pipeline federates through, or open an entitlement
+  # outside this file where none of these rules runs. Exact ids, compared
+  # case-folded: `roles/iam.serviceAccountViewer` and
+  # `roles/iam.workloadIdentityPoolViewer` share prefixes with two of them and
+  # are admitted, which the harness proves.
+  validation {
+    condition = alltrue(flatten([
+      for e in values(var.pam_entitlements) : [
+        for r in e.roles : !contains([for refused in [
+          "roles/iam.serviceAccountTokenCreator",
+          "roles/iam.serviceAccountOpenIdTokenCreator",
+          "roles/iam.serviceAccountUser",
+          "roles/iam.serviceAccountAdmin",
+          "roles/iam.serviceAccountKeyAdmin",
+          "roles/iam.workloadIdentityUser",
+          "roles/iam.workloadIdentityPoolAdmin",
+          "roles/iam.securityAdmin",
+          "roles/iam.roleAdmin",
+          "roles/resourcemanager.projectIamAdmin",
+          "roles/privilegedaccessmanager.admin",
+        ] : lower(refused)], lower(r))
+      ]
+    ]))
+    error_message = "An impersonation or IAM-administration role is refused (serviceAccountTokenCreator, serviceAccountOpenIdTokenCreator, serviceAccountUser, serviceAccountAdmin, serviceAccountKeyAdmin, workloadIdentityUser, workloadIdentityPoolAdmin, iam.securityAdmin, iam.roleAdmin, resourcemanager.projectIamAdmin, privilegedaccessmanager.admin): each reaches the venue credential by acting as the account that may read it. Name the service role the task needs; a change to who holds what is a reviewed change to the module that grants it."
   }
 }
 

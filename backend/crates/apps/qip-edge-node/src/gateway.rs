@@ -50,6 +50,20 @@
 //!   register at all, so a gateway nobody has handed permissions to refuses
 //!   every instrument it does not already list, whether it arrives by
 //!   placement, by a seeded touch or from a tape.
+//! * **A listing is not a standing permission.** Every placement, every
+//!   release of a held order and every seed against an instrument already
+//!   listed is admitted again, against the register the gateway holds at
+//!   that moment. Until this was so, the admission was asked for once, at
+//!   the listing, and an instrument whose permission
+//!   [`SimulatedGateway::permit_listings`] had since withdrawn kept trading
+//!   and kept taking seeded depth on the strength of a register nobody held
+//!   any more. A lapsed permission is now refused as `denied`, before the
+//!   venue sees anything.
+//! * **Permission to list is not permission to seed.** A seeded touch puts
+//!   liquidity into the market, which is EXEC-007's `Seed` and not its
+//!   `List`, so [`SimulatedGateway::seed_touch`] asks for a `Seed` admission
+//!   for exactly that instrument here as well as the `List` one, and asks
+//!   for it first, so a refused seed lists nothing either.
 //!
 //! [`Cell`]: qip_edge::cell::Cell
 
@@ -74,7 +88,9 @@ use qip_edge::dispersion::DEFAULT_DISPERSION_BOUND;
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::resume::VenueAccount;
 use qip_execution_engine::broker::Broker;
-use qip_execution_engine::creation::{CreationAction, CreationPermissions, CreationRequest};
+use qip_execution_engine::creation::{
+    CreationAction, CreationAdmission, CreationPermissions, CreationRequest,
+};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::costs::LiquidityProfile;
 use qip_financial::object::FinancialObject;
@@ -212,9 +228,10 @@ pub struct SimulatedGateway {
     unreleased: Vec<UnreleasedOrder>,
     /// See [`DEFAULT_RELEASE_TOLERANCE`].
     release_tolerance: Duration,
-    /// What an on-demand listing is admitted against. `None` until
-    /// [`Self::permit_listings`] supplied it, and while it is `None` every
-    /// listing on demand is refused. Boxed so the gateway, and the
+    /// What every listing, placement and seed is admitted against, at the
+    /// moment it is made. `None` until [`Self::permit_listings`] supplied
+    /// it, and while it is `None` every one of them is refused. Boxed so the
+    /// gateway, and the
     /// `NodeGateway` variant holding it, grow by a pointer rather than by a
     /// register.
     listing: Option<Box<ListingAuthority>>,
@@ -333,7 +350,10 @@ impl SimulatedGateway {
     /// [`Self::with_listing_permissions`] on a gateway already held, such as
     /// the one inside a [`NodeGateway`]. Replaces the register rather than
     /// merging into it, so what this gateway may list is exactly what the
-    /// last caller recorded.
+    /// last caller recorded — and that includes what it has listed already:
+    /// an instrument the new register no longer admits is refused at its
+    /// next placement or seed, because each one is admitted against the
+    /// register held when it is made.
     pub fn permit_listings(
         &mut self,
         permissions: CreationPermissions,
@@ -396,6 +416,13 @@ impl SimulatedGateway {
         }
         self.now = now;
         let due: Vec<Timestamp> = self.held.range(..=now).map(|(at, _)| *at).collect();
+        // A refusal at release no longer ends the release. Until 2026-10-24
+        // the first one returned here with the rest of its instant already
+        // out of the hold, so the orders behind it were neither sent nor
+        // reported and the cell went on believing them sent; a lapsed listing
+        // permission made that reachable from an ordinary pass. Every other
+        // due order is released on time, and the refusals are returned after.
+        let mut refused: Vec<(String, Error)> = Vec::new();
         for scheduled in due {
             let Some(orders) = self.held.remove(&scheduled) else {
                 continue;
@@ -416,10 +443,28 @@ impl SimulatedGateway {
                 // one: the venue matched it now, and a fill stamped with an
                 // instant nobody matched at would make the fill time read as
                 // zero on a leg the gateway held for a whole pass.
-                self.submit_now(order, now)?;
+                let order_id = order.order_id.clone();
+                if let Err(refusal) = self.submit_now(order, now) {
+                    refused.push((order_id, refusal));
+                }
             }
         }
-        Ok(())
+        let others = refused.len().saturating_sub(1);
+        match refused.into_iter().next() {
+            None => Ok(()),
+            Some((order_id, refusal)) => {
+                let message = format!(
+                    "held order {order_id} was refused at release{}: {}",
+                    if others == 0 {
+                        String::new()
+                    } else {
+                        format!(" (and {others} more held order(s) beside it)")
+                    },
+                    refusal.message()
+                );
+                Err(refusal.relabelled(message))
+            }
+        }
     }
 
     /// The venue's clock: the latest pass instant this gateway has been
@@ -519,6 +564,14 @@ impl SimulatedGateway {
     /// against; the gateway itself never invents depth on the order path,
     /// because a venue that quotes whatever the taker asks for fills
     /// everything and proves nothing.
+    ///
+    /// Refused as `denied` unless the register this gateway holds now
+    /// admits both seeding and listing `object_id` here (R12-COVERAGE-5107).
+    /// Until 2026-10-24 a `List` admission alone was enough, so a register
+    /// that had permitted an instrument to be listed had, without anybody
+    /// recording it, permitted liquidity to be put into it — the widening
+    /// `qip_execution_engine::creation` names when it says permission to
+    /// list is not permission to seed.
     pub fn seed_touch(
         &mut self,
         object_id: &ObjectId,
@@ -527,6 +580,12 @@ impl SimulatedGateway {
         quantity: Decimal,
         at: Timestamp,
     ) -> Result<()> {
+        // Seed before list: a seed the register refuses must not leave the
+        // instrument listed behind it. The admission is asked for and not
+        // carried further because the venue's seed path takes none — so the
+        // refusal on this line is the whole of the control, and nothing
+        // below it may run first.
+        self.admission(CreationAction::Seed, object_id)?;
         self.ensure_listed(object_id, price, at)?;
         self.exchange
             .seed_liquidity(object_id, side, price, quantity, at)
@@ -539,6 +598,14 @@ impl SimulatedGateway {
     /// order of the cell's fills at this venue: seeded liquidity only rests,
     /// and the cell refuses to trade with itself. Like seeding, this exists
     /// for a test or a replay and is never on the order path.
+    ///
+    /// Flow taken against a listed instrument is a trade in that market, and
+    /// can fill the cell's own resting order there, so it is admitted against
+    /// the current register as a placement is: an instrument whose
+    /// permission to be listed here has lapsed takes no flow. It needs no
+    /// `Seed` admission, because it removes liquidity rather than putting
+    /// any in. An instrument the venue does not list is left to the venue to
+    /// refuse, since taking from a book that does not exist creates nothing.
     pub fn seed_aggressor(
         &mut self,
         object_id: &ObjectId,
@@ -547,6 +614,9 @@ impl SimulatedGateway {
         quantity: Decimal,
         at: Timestamp,
     ) -> Result<Decimal> {
+        if self.exchange.is_listed(object_id) {
+            self.admission(CreationAction::List, object_id)?;
+        }
         self.exchange
             .seed_aggressor(object_id, side, price, quantity, at)
     }
@@ -671,34 +741,68 @@ impl SimulatedGateway {
         self.exchange.quotes()
     }
 
+    /// Admit `action` on `object_id` at this venue, in this gateway's
+    /// jurisdiction, against the register it holds *now*.
+    ///
+    /// Asked on every placement and every seed, never remembered: a
+    /// remembered answer is the register as it stood when the instrument
+    /// was first listed, and [`Self::permit_listings`] exists to change it.
+    fn admission(&self, action: CreationAction, object_id: &ObjectId) -> Result<CreationAdmission> {
+        let Some(listing) = self.listing.as_deref() else {
+            return Err(Error::denied(format!(
+                "no market may be created here: the simulated venue {} holds no listing \
+                 permissions, so nothing may {} {} here. Record the venue, product and \
+                 jurisdiction permissions and supply them with \
+                 SimulatedGateway::with_listing_permissions; nothing was sent to the venue",
+                self.venue.as_str(),
+                action.as_str(),
+                object_id.as_str()
+            )));
+        };
+        let request = CreationRequest::new(
+            action,
+            self.venue.as_str(),
+            object_id.as_str(),
+            listing.jurisdiction.as_str(),
+        );
+        let admitted = listing.permissions.admit(&request);
+        if !self.exchange.is_listed(object_id) {
+            return admitted;
+        }
+        // Said in as many words, because an operator who finds an
+        // instrument listed and its order refused will otherwise look for
+        // the fault at the venue.
+        admitted.map_err(|refusal| {
+            let reason = format!(
+                "{} is listed at {}, but a listing is not a standing permission: each \
+                 placement and seed is admitted against the register this gateway holds now, \
+                 and that register refuses it. {}",
+                object_id.as_str(),
+                self.venue.as_str(),
+                refusal.message()
+            );
+            refusal.relabelled(reason)
+        })
+    }
+
+    /// List `object_id` on demand if the venue does not list it yet — and,
+    /// either way, refuse unless the current register admits listing it
+    /// here.
     fn ensure_listed(
         &mut self,
         object_id: &ObjectId,
         reference: Decimal,
         at: Timestamp,
     ) -> Result<()> {
+        // The admission first and the venue second, listed or not: a refused
+        // instrument returns here, before anything is built, written or sent.
+        // An instrument already listed used to return before this line, so
+        // a permission withdrawn by `permit_listings` never reached a
+        // placement against something it had once admitted.
+        let admission = self.admission(CreationAction::List, object_id)?;
         if self.exchange.is_listed(object_id) {
             return Ok(());
         }
-        // The admission first and the venue second: a refused instrument
-        // returns here, before anything is built or written.
-        let Some(listing) = self.listing.as_deref() else {
-            return Err(Error::denied(format!(
-                "no market may be created here: the simulated venue {} holds no listing \
-                 permissions, so {} cannot be listed on demand. Record the venue, product and \
-                 jurisdiction permissions and supply them with \
-                 SimulatedGateway::with_listing_permissions; nothing was sent to the venue",
-                self.venue.as_str(),
-                object_id.as_str()
-            )));
-        };
-        let request = CreationRequest::new(
-            CreationAction::List,
-            self.venue.as_str(),
-            object_id.as_str(),
-            listing.jurisdiction.as_str(),
-        );
-        let admission = listing.permissions.admit(&request)?;
         self.exchange.list_synthetic(
             object_id.clone(),
             object_id.as_str(),
@@ -784,7 +888,9 @@ impl Placer for SimulatedGateway {
         // this gateway is on is a hold, released by the first `advance_to`
         // that reaches it; anything else is released now. The listing is
         // made at placement either way, so a held order's instrument exists
-        // at the venue before the pass that matches it.
+        // at the venue before the pass that matches it — and is admitted
+        // again when the order is released, because the register may have
+        // changed in between.
         if at > self.now {
             self.ensure_listed(object_id, price, self.now)?;
             self.held.entry(at).or_default().push(order);

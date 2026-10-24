@@ -57,7 +57,21 @@ const PLAN: &str = r#"{
        "mark_source": "obj-NEVER-OBSERVED"}
     ]
   },
-  "event_markets": {"source": "synthetic", "entity": "desk"}
+  "event_markets": {"source": "synthetic", "entity": "desk", "jurisdiction": "GB",
+    "permissions": [
+      {"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-MARKET"},
+      {"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-MARKET"},
+      {"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-MARKET"},
+      {"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-CUT"},
+      {"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-CUT"},
+      {"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-CUT"},
+      {"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-HOLD"},
+      {"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-HOLD"},
+      {"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-HOLD"},
+      {"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-HIKE"},
+      {"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-HIKE"},
+      {"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-HIKE"}
+    ]}
 }"#;
 
 fn plan_file(name: &str, text: &str) -> Result<String> {
@@ -285,7 +299,11 @@ fn a_permission_revoked_in_the_plan_file_withdraws_the_created_market_at_the_nex
 }
 
 /// An event-markets plan naming one venue and one entity; `kind` and
-/// `jurisdiction` are what the three runs below vary.
+/// `jurisdiction` are what the three runs below vary. The section records the
+/// three creation permissions for the plane's market and each outcome
+/// instrument in GB, without which the plan is refused at install
+/// (R12-COVERAGE-5107); the entity's `jurisdiction` is the separate trading
+/// question these runs vary.
 fn event_plan(kind: &str, jurisdiction: &str) -> String {
     format!(
         r#"{{"event_markets": {{
@@ -299,7 +317,22 @@ fn event_plan(kind: &str, jurisdiction: &str) -> String {
   "entities": {{"desk": {{
     "jurisdiction": "{jurisdiction}", "eligible": true, "age_years": 30,
     "venues": ["SYNTH-PREDICT"]
-  }}}}
+  }}}},
+  "jurisdiction": "GB",
+  "permissions": [
+    {{"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-MARKET"}},
+    {{"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-MARKET"}},
+    {{"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-MARKET"}},
+    {{"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-CUT"}},
+    {{"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-CUT"}},
+    {{"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-CUT"}},
+    {{"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-HOLD"}},
+    {{"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-HOLD"}},
+    {{"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-HOLD"}},
+    {{"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-HIKE"}},
+    {{"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-HIKE"}},
+    {{"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-HIKE"}}
+  ]
 }}}}"#
     )
 }

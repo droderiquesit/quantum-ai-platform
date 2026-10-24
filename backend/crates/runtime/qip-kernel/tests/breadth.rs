@@ -22,7 +22,7 @@ use qip_financial::physical::{
     Customs, Leg, LogisticsTerms, MarketplaceFees, Returns, Spoilage, TransportMode,
 };
 use qip_financial::universe::Universe;
-use qip_kernel::breadth::{BreadthPlan, EventMarketPlan};
+use qip_kernel::breadth::{BreadthPlan, EventMarketCreationAdmitted, EventMarketPlan};
 use qip_kernel::commerce_research::{
     AccountEntry, CommercePlan, CommerceSimulated, LogisticsEntry, ResaleEntry,
     SYNTHETIC_COUNTERFEIT_SELLER, SyntheticCommerceFeed,
@@ -43,6 +43,7 @@ use qip_streaming::envelope::StreamEnvelope;
 const VENUE: &str = "simulated-venue";
 const PRODUCT: &str = "obj-CREATED";
 const EVENT_VENUE: &str = "SYNTH-PREDICT";
+const EVENT_MARKET: &str = "SYNTH-PREDICT-MARKET";
 const EVENT_PRODUCTS: [&str; 3] = [
     "SYNTH-PREDICT-CUT",
     "SYNTH-PREDICT-HOLD",
@@ -274,6 +275,35 @@ fn a_plan_missing_a_permission_is_refused_whole_and_creates_nothing() -> Result<
     Ok(())
 }
 
+/// The event plane's own market and the instrument each of its outcomes
+/// trades as: everything the synthetic venue brings into existence, so
+/// everything that needs a creation admission.
+fn event_instruments() -> Vec<&'static str> {
+    std::iter::once(EVENT_MARKET)
+        .chain(EVENT_PRODUCTS)
+        .collect()
+}
+
+/// `create` from all three authorities for every event instrument, at the
+/// event venue in GB — the register a plan that installs the event plane
+/// has to record.
+fn event_permissions() -> Vec<PermissionEntry> {
+    let mut permissions = Vec::new();
+    for product in event_instruments() {
+        for authority in ["venue", "product", "jurisdiction"] {
+            permissions.push(PermissionEntry {
+                authority: authority.to_string(),
+                action: "create".to_string(),
+                venue: EVENT_VENUE.to_string(),
+                product: product.to_string(),
+                jurisdiction: "GB".to_string(),
+                reference: format!("{authority} approval for {product}"),
+            });
+        }
+    }
+    permissions
+}
+
 fn event_plan(entity: EntityRecord, kind: VenueKind) -> Result<EventMarketPlan> {
     let gb = Jurisdiction::new("GB")?;
     Ok(EventMarketPlan {
@@ -288,7 +318,178 @@ fn event_plan(entity: EntityRecord, kind: VenueKind) -> Result<EventMarketPlan> 
             minimum_age: Some(18),
         }],
         entities: BTreeMap::from([("desk".to_string(), entity)]),
+        jurisdiction: "GB".to_string(),
+        permissions: event_permissions(),
     })
+}
+
+fn event_creations(platform: &Platform) -> Result<Vec<EventMarketCreationAdmitted>> {
+    let mut records = Vec::new();
+    for event in platform.event_log().by_topic(Topic::ComplianceEvaluated) {
+        if let Ok(decoded) =
+            StreamEnvelope::from_frame(event)?.decode::<EventMarketCreationAdmitted>()
+        {
+            records.push(decoded.body);
+        }
+    }
+    Ok(records)
+}
+
+/// R12-COVERAGE-5107, the event plane's half: its own market and the three
+/// outcome instruments its venue quotes are created only under a recorded
+/// `create` permission from the venue, the product rules and the
+/// jurisdiction, each. A plan missing any one is refused whole, and creates
+/// nothing — no venue, no market, no instrument, no record, and not the
+/// Market Factory's books either.
+///
+/// Until 2026-10-24 the event plane built `SYNTH-PREDICT-MARKET` and its
+/// instruments with no admission of any kind: the `event_plan` fixture here
+/// recorded no permission and installed. And the factory was installed
+/// first, so a plan refused for its event section would have left the
+/// factory's ladder resting on the desk's venue; the last case pairs the
+/// refused section with a fully permitted factory to catch that.
+///
+/// Mutations: (1) swallow the refusal — `admit_event_market(..)` with
+/// `.unwrap_or_default()` for `?` in `open_event_plane` — and every refused
+/// plan installs; (2) ask the register about the market id alone, not its
+/// outcome instruments, and the plan missing one outcome's permission
+/// installs; (3) build the factory before the event plane in
+/// `install_breadth` and the refused plan leaves the factory's book on the
+/// venue.
+#[test]
+fn an_event_plan_without_every_creation_permission_is_refused_whole_and_creates_nothing()
+-> Result<()> {
+    // Premise: with the full register the same plan installs and the
+    // factory's book rests on the desk's venue, so each refusal below is the
+    // missing permission and each absent book is one the refusal prevented.
+    let mut premise = platform()?;
+    premise.install_breadth(
+        &BreadthPlan {
+            market_factory: Some(factory_plan("obj-NEVER-OBSERVED")),
+            event_markets: Some(event_plan(eligible()?, VenueKind::Event)?),
+            ..BreadthPlan::default()
+        },
+        start(),
+    )?;
+    assert!(premise.event_markets().is_some());
+    assert!(premise.listed_book(PRODUCT).is_some());
+
+    let without = |authority: &str, product: &str| -> Result<EventMarketPlan> {
+        let mut plan = event_plan(eligible()?, VenueKind::Event)?;
+        plan.permissions
+            .retain(|entry| !(entry.authority == authority && entry.product == product));
+        Ok(plan)
+    };
+    let mut nothing = event_plan(eligible()?, VenueKind::Event)?;
+    nothing.permissions.clear();
+    let mut elsewhere = event_plan(eligible()?, VenueKind::Event)?;
+    elsewhere.jurisdiction = "US".to_string();
+    let cases = [
+        ("no permission recorded", nothing, EVENT_MARKET),
+        (
+            "the market lacks its product approval",
+            without("product", EVENT_MARKET)?,
+            EVENT_MARKET,
+        ),
+        (
+            "one outcome instrument lacks its legal opinion",
+            without("jurisdiction", "SYNTH-PREDICT-HIKE")?,
+            "SYNTH-PREDICT-HIKE",
+        ),
+        (
+            "every permission is for another jurisdiction",
+            elsewhere,
+            "SYNTH-PREDICT-CUT",
+        ),
+    ];
+    for (why, events, refused_instrument) in cases {
+        for with_factory in [false, true] {
+            let mut platform = platform()?;
+            let refused = platform
+                .install_breadth(
+                    &BreadthPlan {
+                        market_factory: with_factory.then(|| factory_plan("obj-NEVER-OBSERVED")),
+                        event_markets: Some(events.clone()),
+                        ..BreadthPlan::default()
+                    },
+                    start(),
+                )
+                .expect_err(why);
+            let message = refused.message();
+            assert!(
+                message.contains(&format!("{refused_instrument}: no market may be created")),
+                "{why}: the refusal does not name {refused_instrument}: {message}"
+            );
+            assert!(
+                message.contains("No venue, market or instrument was created"),
+                "{why}: {message}"
+            );
+            assert!(platform.event_markets().is_none(), "{why}");
+            assert!(platform.market_factory().is_none(), "{why}");
+            assert!(
+                platform.listed_book(PRODUCT).is_none(),
+                "{why}: the refused plan left the factory's book on the desk's venue"
+            );
+            assert!(event_creations(&platform)?.is_empty(), "{why}");
+            assert!(factory_records(&platform)?.is_empty(), "{why}");
+            // Nothing runs afterwards either: no listing reaches the plane,
+            // because there is no plane.
+            platform.run_cycle(start());
+            assert!(platform.event_markets().is_none(), "{why}");
+        }
+    }
+    Ok(())
+}
+
+/// R12-COVERAGE-5107: every instrument the installed event plane lists —
+/// the market and each outcome its venue quotes — is in the log with the
+/// admission it was created under, and nothing it lists is missing one.
+/// The set is read off the plane after a cycle, not off the constants the
+/// admission loop reads, so an outcome added to `qip_prediction::demo_market`
+/// without its admission fails here rather than trading unadmitted.
+///
+/// Mutations: (1) delete the loop journaling `created` in `install_breadth`
+/// and the log holds no admission; (2) give one of `demo_market`'s outcomes
+/// an instrument literal in place of its `DEMO_OUTCOME_INSTRUMENTS` entry
+/// and the plane lists an instrument with no admission.
+#[test]
+fn every_instrument_the_event_plane_lists_is_journaled_with_the_admission_it_was_created_under()
+-> Result<()> {
+    let (platform, _) = run_event_cycle(eligible()?, VenueKind::Event)?;
+    let plane = platform.event_markets().expect("installed");
+    let market = plane.markets().next().expect("the plane listed its market");
+    let listed: BTreeSet<String> = std::iter::once(market.market_id.as_str().to_string())
+        .chain(
+            market
+                .outcomes()
+                .iter()
+                .map(|outcome| outcome.object_id.as_str().to_string()),
+        )
+        .collect();
+    // Premise: the plane lists the market and three outcome instruments, so
+    // an empty or partial log below is a missing admission.
+    assert_eq!(listed.len(), 4, "{listed:?}");
+
+    let created = event_creations(&platform)?;
+    let admitted: BTreeSet<String> = created.iter().map(|r| r.product.clone()).collect();
+    assert_eq!(admitted, listed, "{created:?}");
+    assert_eq!(created.len(), listed.len(), "one admission per instrument");
+    for record in &created {
+        assert_eq!(record.venue, EVENT_VENUE);
+        assert_eq!(record.jurisdiction, "GB");
+        assert_eq!(
+            record.approvals,
+            ["venue", "product", "jurisdiction"]
+                .map(|authority| format!(
+                    "{authority}: {authority} approval for {}",
+                    record.product
+                ))
+                .to_vec(),
+            "the record cites the evidence each authority's permission rests on"
+        );
+    }
+    assert!(platform.event_log().verify_chain().is_ok());
+    Ok(())
 }
 
 fn eligible() -> Result<EntityRecord> {

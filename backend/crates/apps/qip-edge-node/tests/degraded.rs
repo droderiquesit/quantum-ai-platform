@@ -173,7 +173,7 @@ fn cut_off(
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
-    let mut gateway = permitting(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
+    let mut gateway = permitting_to_seed(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
 
@@ -478,22 +478,24 @@ fn a_cut_off_cells_orders_shrink_a_step_as_each_input_ages_and_stop_when_its_env
     Ok(())
 }
 
-/// `gateway`, permitted to list each of `objects` on demand: a recorded
-/// venue, product and jurisdiction permission for each (R12-COVERAGE-5107).
-/// A fixture; the refusal without one is proven in qip-edge-node's
-/// tests/gateway.rs.
-fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<SimulatedGateway> {
+/// `gateway`, permitted to list each of `objects` on demand and to seed
+/// liquidity into it: a recorded venue, product and jurisdiction permission
+/// for each action on each instrument (R12-COVERAGE-5107). `Seed` as well as
+/// `List`, because the tests here seed the touch they trade against and
+/// permission to list is not permission to seed. A fixture; the refusals
+/// without either are proven in qip-edge-node's tests/gateway.rs.
+fn permitting_to_seed(
+    gateway: SimulatedGateway,
+    objects: &[&ObjectId],
+) -> Result<SimulatedGateway> {
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        let request = CreationRequest::new(
-            CreationAction::List,
-            venue.as_str(),
-            object.as_str(),
-            "paper",
-        );
-        for authority in CreationAuthority::ALL {
-            permissions.record(authority, &request, "test fixture")?;
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
         }
     }
     gateway.with_listing_permissions(permissions, "paper")

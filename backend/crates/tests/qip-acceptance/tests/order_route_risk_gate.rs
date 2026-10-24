@@ -152,7 +152,9 @@ fn share_policy(grants: Vec<String>) -> Result<VerifiedPolicy> {
 /// A node assembled the way `main.rs` assembles it — `assemble_with_risk`
 /// under `limits` — funded with one firing strategy's grant, resting its
 /// orders at the mid for a minute. Its venue may list `object()` on demand,
-/// the one instrument this suite seeds and trades, and nothing else.
+/// the one instrument this suite seeds and trades, and nothing else; it may
+/// seed it only once `seed_book` has permitted that too, so a test here that
+/// seeds nothing runs under the listing permission alone.
 fn node(limits: &CellRiskLimits) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
@@ -209,6 +211,7 @@ fn risk_refusals(node: &NodeAssembly) -> Vec<String> {
 }
 
 fn seed_book(gateway: &mut SimulatedGateway) -> Result<()> {
+    permit_seeding(gateway, &[&object()])?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     Ok(())
@@ -535,8 +538,8 @@ enum Route {
     Delegation,
     Release,
     /// Lists an instrument at the venue with an *empty* book: nothing rests,
-    /// so there is nothing to gate. The walk checks the call builds the
-    /// book with `OrderBook::new(` on the same line, so a listing that
+    /// so there is nothing to gate. The walk checks the call's first
+    /// argument is a book built with `OrderBook::new(`, so a listing that
     /// starts carrying levels stops matching this row.
     EmptyListing,
 }
@@ -797,12 +800,20 @@ fn each_gated_route_runs_its_gate_before_the_venue_call_and_no_route_is_ungated(
             ),
             Route::Release => {}
             Route::EmptyListing => {
-                let call = std::fs::read_to_string(crates_root().join(&site.path))
+                // The call and the two lines after it, whitespace removed:
+                // since R12-COVERAGE-5107 `list_book` takes the admission
+                // as its second argument, so rustfmt breaks the call and its
+                // first argument onto lines of their own. What is checked is
+                // unchanged — the first thing handed to `list_book` is a
+                // new, empty book.
+                let call: String = std::fs::read_to_string(crates_root().join(&site.path))
                     .expect("a source file is readable")
                     .lines()
-                    .nth(site.line - 1)
-                    .unwrap_or_default()
-                    .to_string();
+                    .skip(site.line - 1)
+                    .take(3)
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect();
                 assert!(
                     call.contains(".list_book(OrderBook::new("),
                     "{}:{} is listed as an empty listing but rests something other than a new \
@@ -862,4 +873,25 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
         }
     }
     gateway.with_listing_permissions(permissions, "paper")
+}
+
+/// Permit `gateway` to seed each of `objects` as well as to list it, in
+/// place, where it is about to be seeded (R12-COVERAGE-5107: permission to
+/// list is not permission to seed). Called only there, so a test here that
+/// seeds nothing runs under `List` alone. It replaces the register
+/// `permitting` installed, so `objects` names every instrument the gateway
+/// lists, not only the one seeded. A fixture; the refusals without either
+/// permission are proven in qip-edge-node's tests/gateway.rs.
+fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Result<()> {
+    let venue = gateway.venue().to_string();
+    let mut permissions = CreationPermissions::new();
+    for object in objects {
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
+        }
+    }
+    gateway.permit_listings(permissions, "paper")
 }

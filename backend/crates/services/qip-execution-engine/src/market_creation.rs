@@ -38,6 +38,12 @@
 //! * **Seed** commits inventory and rests the rule's ladder on both sides,
 //!   refusing inventory that cannot cover the ask side it publishes.
 //!
+//! List and seed hand their admission on to [`ListingVenue::list_book`],
+//! which refuses one for another action, venue or instrument itself. The
+//! factory's checks are not the only ones between a caller and a resting
+//! book, so a holder of the listing surface that bypasses the factory meets
+//! the same register.
+//!
 //! Each step is a [`FactoryRecord`] in an append-only journal the composer
 //! drains into the event log, so the life of every market is reproducible
 //! from the log alone.
@@ -487,11 +493,17 @@ impl MarketFactory {
         self.bound_to(venue)?;
         let market = self.stage_of(&request, MarketStage::Created)?;
         let rule = market.rule.clone();
-        venue.list_book(OrderBook::new(
-            ObjectId::from_string(request.product.as_str()),
-            self.venue.as_str(),
-            now,
-        ));
+        // The admission goes to the venue as well as being checked here: the
+        // listing surface refuses a book nobody admitted, so the factory is
+        // not the only thing standing between a caller and a resting book.
+        venue.list_book(
+            OrderBook::new(
+                ObjectId::from_string(request.product.as_str()),
+                self.venue.as_str(),
+                now,
+            ),
+            admission,
+        )?;
         let approvals = references(admission);
         if let Some(market) = self.markets.get_mut(&request.product) {
             market.stage = MarketStage::Listed;
@@ -547,7 +559,7 @@ impl MarketFactory {
             )));
         }
         let book = rule.book(&request.product, &self.venue, now)?;
-        venue.list_book(book);
+        venue.list_book(book, admission)?;
         let approvals = references(admission);
         if let Some(market) = self.markets.get_mut(&request.product) {
             market.stage = MarketStage::Seeded;
@@ -810,6 +822,17 @@ mod tests {
         limits: qip_risk::limits::LimitSet,
         rule: &PricingRule,
     ) -> Result<LadderAdmission> {
+        ladder_under_at(limits, rule, PRODUCT, VENUE)
+    }
+
+    /// The same verdict, measured for `product` at `venue`: the only way to
+    /// hold one for a ladder other than this market's.
+    fn ladder_under_at(
+        limits: qip_risk::limits::LimitSet,
+        rule: &PricingRule,
+        product: &str,
+        venue: &str,
+    ) -> Result<LadderAdmission> {
         let mut manager =
             crate::oms::OrderManager::new(qip_risk_engine::pretrade::PreTradeChecker::new(limits));
         let state = qip_risk::limits::RiskState {
@@ -818,8 +841,8 @@ mod tests {
             ..qip_risk::limits::RiskState::default()
         };
         manager.admit_ladder(
-            PRODUCT,
-            VENUE,
+            product,
+            venue,
             rule,
             "market-factory",
             &qip_risk_engine::autonomy::AutonomyController::new(),
@@ -828,16 +851,18 @@ mod tests {
         )
     }
 
+    /// A 2x leverage limit `rule()`'s ladder is far inside.
+    fn leverage() -> qip_risk::limits::LimitSet {
+        use qip_risk::limits::{Limit, LimitKind, LimitSet};
+        LimitSet::new("factory-test").with(Limit::new(
+            "leverage",
+            LimitKind::MaxLeverage { limit: 2.0 },
+        ))
+    }
+
     /// `rule()`'s ladder under a 2x leverage limit it is far inside.
     fn ladder() -> Result<LadderAdmission> {
-        use qip_risk::limits::{Limit, LimitKind, LimitSet};
-        ladder_under(
-            LimitSet::new("factory-test").with(Limit::new(
-                "leverage",
-                LimitKind::MaxLeverage { limit: 2.0 },
-            )),
-            &rule()?,
-        )
+        ladder_under(leverage(), &rule()?)
     }
 
     fn notional_cap(limit: &str) -> qip_risk::limits::LimitSet {
@@ -1112,6 +1137,240 @@ mod tests {
                 .is_err()
         );
         assert!(broker.listed_book(PRODUCT).is_some_and(OrderBook::is_empty));
+        Ok(())
+    }
+    /// A factory created and listed at the simulated venue, under
+    /// `permitted()`: the state every seed test below starts from.
+    fn listed(broker: &mut SimulatedBroker) -> Result<MarketFactory> {
+        let permissions = permitted()?;
+        let mut factory = MarketFactory::for_venue(broker)?;
+        factory.create(&admit(&permissions, CreationAction::Create)?, rule()?, at())?;
+        factory.list(&admit(&permissions, CreationAction::List)?, broker, at())?;
+        // Premise: listed, and nothing seeded yet.
+        assert!(broker.listed_book(PRODUCT).is_some_and(OrderBook::is_empty));
+        Ok(factory)
+    }
+
+    /// R12-COVERAGE-5107's legal half: a market created under one
+    /// jurisdiction is neither listed nor seeded under an admission for
+    /// another, although that admission is genuine — venue, product and law
+    /// all recorded — and matches the market in action, venue and product.
+    /// The failure this prevents is a market whose legal opinion was given
+    /// in GB going live on the strength of a permission recorded for US;
+    /// nothing else on the path compares the jurisdiction, so the factory's
+    /// comparison is the whole of the control.
+    ///
+    /// Mutation: drop the `market.jurisdiction != request.jurisdiction`
+    /// comparison from `stage_of` and the US admission lists the GB market.
+    #[test]
+    fn an_admission_for_another_jurisdiction_neither_lists_nor_seeds_the_market() -> Result<()> {
+        let mut permissions = permitted()?;
+        for action in [CreationAction::List, CreationAction::Seed] {
+            let abroad = CreationRequest::new(action, VENUE, PRODUCT, "US");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &abroad, "legal opinion US-1")?;
+            }
+        }
+        let abroad = |action: CreationAction| {
+            permissions.admit(&CreationRequest::new(action, VENUE, PRODUCT, "US"))
+        };
+        let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 7);
+        let mut factory = MarketFactory::for_venue(&broker)?;
+        factory.create(&admit(&permissions, CreationAction::Create)?, rule()?, at())?;
+
+        let refused = factory
+            .list(&abroad(CreationAction::List)?, &mut broker, at())
+            .expect_err("a market created for GB was listed under an admission for US");
+        assert!(
+            refused
+                .message()
+                .contains("was created for GB and the admission is for US"),
+            "refused for another reason: {}",
+            refused.message()
+        );
+        assert!(broker.listed_book(PRODUCT).is_none(), "a book rests anyway");
+        assert_eq!(
+            factory.market(PRODUCT).map(|market| market.stage),
+            Some(MarketStage::Created)
+        );
+
+        // Listed under its own jurisdiction, it is still not seeded abroad.
+        factory.list(
+            &admit(&permissions, CreationAction::List)?,
+            &mut broker,
+            at(),
+        )?;
+        let refused = factory
+            .seed(
+                &abroad(CreationAction::Seed)?,
+                &ladder()?,
+                d("30"),
+                &mut broker,
+                at(),
+            )
+            .expect_err("a market created for GB was seeded under an admission for US");
+        assert!(
+            refused
+                .message()
+                .contains("was created for GB and the admission is for US"),
+            "refused for another reason: {}",
+            refused.message()
+        );
+        assert!(broker.listed_book(PRODUCT).is_some_and(OrderBook::is_empty));
+        Ok(())
+    }
+
+    /// A simulated surface under another name that takes whatever book it is
+    /// handed. It checks nothing on purpose, so that the factory's own venue
+    /// comparison is the only thing between an admission for
+    /// `simulated-venue` and a book resting somewhere else — which is the
+    /// position a future listing surface that forgot its own check would put
+    /// the factory in.
+    #[derive(Debug, Default)]
+    struct OtherSimulator {
+        books: BTreeMap<String, OrderBook>,
+    }
+
+    impl ListingVenue for OtherSimulator {
+        fn venue_name(&self) -> &str {
+            "other-simulator"
+        }
+        fn is_simulated(&self) -> bool {
+            true
+        }
+        fn listed_book(&self, object_id: &str) -> Option<&OrderBook> {
+            self.books.get(object_id)
+        }
+        fn list_book(&mut self, book: OrderBook, _admission: &CreationAdmission) -> Result<()> {
+            self.books.insert(book.object_id.as_str().to_string(), book);
+            Ok(())
+        }
+        fn withdraw_book(&mut self, object_id: &str) -> Option<OrderBook> {
+            self.books.remove(object_id)
+        }
+    }
+
+    /// A factory lists only on the venue it was built for. Both surfaces are
+    /// simulated, so `refuse_live` cannot be what refuses; the admission is
+    /// for this factory's venue, so `admitted_for` cannot either.
+    ///
+    /// Mutation: drop the `venue.venue_name() != self.venue` comparison from
+    /// `bound_to` and the market is listed on the other simulator.
+    #[test]
+    fn a_factory_lists_only_on_the_venue_it_was_built_for() -> Result<()> {
+        let permissions = permitted()?;
+        let broker = SimulatedBroker::new(SimulationSettings::frictionless(), 7);
+        let mut factory = MarketFactory::for_venue(&broker)?;
+        factory.create(&admit(&permissions, CreationAction::Create)?, rule()?, at())?;
+        let mut other = OtherSimulator::default();
+        let refused = factory
+            .list(
+                &admit(&permissions, CreationAction::List)?,
+                &mut other,
+                at(),
+            )
+            .expect_err("a factory bound to simulated-venue listed on another surface");
+        assert!(
+            refused
+                .message()
+                .contains("bound to simulated-venue and was handed other-simulator"),
+            "refused for another reason: {}",
+            refused.message()
+        );
+        assert!(other.books.is_empty(), "a book rests on the other surface");
+        assert_eq!(
+            factory.market(PRODUCT).map(|market| market.stage),
+            Some(MarketStage::Created)
+        );
+        // Contrast: the other surface takes the same book when handed it
+        // directly, so the refusal above was the factory's and not the
+        // double refusing everything.
+        other.list_book(
+            OrderBook::new(ObjectId::from_string(PRODUCT), "other-simulator", at()),
+            &admit(&permissions, CreationAction::List)?,
+        )?;
+        assert!(other.listed_book(PRODUCT).is_some());
+        Ok(())
+    }
+
+    /// A risk verdict for another product does not seed this market, though
+    /// its venue and pricing rule are this market's own.
+    ///
+    /// Mutation: drop `ladder.product != request.product ||` from `seed` and
+    /// the verdict measured for OTHER/USD rests TEST/USD's ladder.
+    #[test]
+    fn a_verdict_for_another_product_does_not_seed_the_market() -> Result<()> {
+        let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 7);
+        let mut factory = listed(&mut broker)?;
+        let other = ladder_under_at(leverage(), &rule()?, "OTHER/USD", VENUE)?;
+        // Premise: the verdict differs from this market's in its product alone.
+        assert_eq!((other.product(), other.venue()), ("OTHER/USD", VENUE));
+        let refused = factory
+            .seed(
+                &admit(&permitted()?, CreationAction::Seed)?,
+                &other,
+                d("30"),
+                &mut broker,
+                at(),
+            )
+            .expect_err("a verdict for OTHER/USD seeded TEST/USD");
+        assert!(
+            refused
+                .message()
+                .contains("was given for OTHER/USD at simulated-venue"),
+            "refused for another reason: {}",
+            refused.message()
+        );
+        assert!(broker.listed_book(PRODUCT).is_some_and(OrderBook::is_empty));
+        // Contrast: this market's own verdict seeds it.
+        factory.seed(
+            &admit(&permitted()?, CreationAction::Seed)?,
+            &ladder()?,
+            d("30"),
+            &mut broker,
+            at(),
+        )?;
+        Ok(())
+    }
+
+    /// A risk verdict measured at another venue does not seed this market:
+    /// the limit check charges a ladder to the venue's counterparty axis, so
+    /// a verdict for XOTHER says nothing about this venue's exposure.
+    ///
+    /// Mutation: drop `ladder.venue != self.venue ||` from `seed` and the
+    /// verdict measured at XOTHER rests the ladder here.
+    #[test]
+    fn a_verdict_for_another_venue_does_not_seed_the_market() -> Result<()> {
+        let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 7);
+        let mut factory = listed(&mut broker)?;
+        let other = ladder_under_at(leverage(), &rule()?, PRODUCT, "XOTHER")?;
+        // Premise: the verdict differs from this market's in its venue alone.
+        assert_eq!((other.product(), other.venue()), (PRODUCT, "XOTHER"));
+        let refused = factory
+            .seed(
+                &admit(&permitted()?, CreationAction::Seed)?,
+                &other,
+                d("30"),
+                &mut broker,
+                at(),
+            )
+            .expect_err("a verdict for XOTHER seeded the simulated venue");
+        assert!(
+            refused
+                .message()
+                .contains("was given for TEST/USD at XOTHER"),
+            "refused for another reason: {}",
+            refused.message()
+        );
+        assert!(broker.listed_book(PRODUCT).is_some_and(OrderBook::is_empty));
+        // Contrast: this venue's own verdict seeds it.
+        factory.seed(
+            &admit(&permitted()?, CreationAction::Seed)?,
+            &ladder()?,
+            d("30"),
+            &mut broker,
+            at(),
+        )?;
         Ok(())
     }
 }

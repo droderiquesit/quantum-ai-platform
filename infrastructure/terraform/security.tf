@@ -90,7 +90,13 @@ resource "google_project_service" "security" {
 # entitlement with no approver, a duration over eight hours, a basic role,
 # and a requester who is also an approver of the same entitlement — each of
 # which turns "elevation with approval" back into a standing grant with
-# extra steps.
+# extra steps. Since 2026-10-24 (R12-GCP-8114) it also refuses:
+# - a service-account requester or approver: entitlements are for people;
+# - any Secret Manager role, since a project-scope one reads the venue
+#   credential;
+# - impersonation and IAM-admin roles;
+# - custom roles, whose permissions a plan cannot read.
+# `tests/pam.tftest.hcl` plans each refusal and the admitting case.
 resource "google_privileged_access_manager_entitlement" "this" {
   for_each = var.pam_entitlements
 
