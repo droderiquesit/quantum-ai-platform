@@ -2224,7 +2224,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:193-197 causal_scenario",
       "backend/crates/services/qip-twin/src/futures.rs::FutureTree::grow"
     ],
-    "gap": "No weather, policy, default, supply-constraint or Algorik-action variation. Tree grown only by the tick desk, off by default.",
+    "gap": "2026-10-24 (re-read against the tree): FutureTree::grow varies only shock size, propagation and sign per untyped WorldDriver; SyntheticMarket and agents vary participants, liquidity and market structure in the simulation engine. Policy, weather, supply constraints, defaults and Algorik own actions vary nowhere, and no single generator test covers the named dimensions. ADR 0151 decision 5's typed DriverKind (Policy, Weather, Default, Supply, OwnAction, Price) is accepted but unbuilt and allows producers only for OwnAction and Price; the rest need data under ADR 0157 (owner decision) or an ADR amendment. Trees are grown by tick_desk (off) and qip-cli agency TwinScenarios.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2235,7 +2235,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-TICK-3098",
@@ -2247,7 +2247,7 @@
       "backend/crates/services/qip-world-model/tests/no_copied_documents.rs",
       "backend/crates/services/qip-twin/src/futures.rs::TwinState"
     ],
-    "gap": "Only instrument twins; no economically important entity twins. Used only by the tick desk, off by default.",
+    "gap": "2026-10-24 (re-read against the tree): The unit clause is met (qip-twin tests/futures.rs the_twin_is_a_compact_learned_state_whose_size_does_not_grow_with_history fails if TwinState keeps fitted points). The requirement asks for twins of economically important entities; qip_twin::futures::TwinState holds only per-instrument InstrumentDynamics, no company, macro or other entity twin. TwinState is reached only from qip-deepbrain tick_desk (off) and qip-cli agency shadow when a pass carries an optional twin. Entity twins need entity data under ADR 0157 licence records (owner decision) plus new code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2258,7 +2258,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-TICK-3099",
@@ -2413,7 +2413,7 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:620"
     ],
-    "gap": "Kinds and handlers.",
+    "gap": "2026-10-24 (re-read against the tree): InfoRequest (qip-contracts ambient.rs) has no kind: the research loop turns every launched request into one ScoutRequest (qip-deepbrain research.rs) whose only handler is the DiscoveryDesk (the 'new source query' kind, off by default). Alternative provider, microstructure probe, simulation, specialist agent, public filing fetch and additional measurement have no dispatch; qip-expansion AcquisitionAction is keyed on GapClass, not the request. Needs a qip-contracts schema change (architecture review or ADR), handlers that do not exist for filing fetch and alternative provider (vendor/connector), and the per-kind dispatch test.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2426,7 +2426,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: InfoRequest now sits near qip-contracts/src/ambient.rs:880."
   },
   {
     "id": "R12-AMBIENT-3106",

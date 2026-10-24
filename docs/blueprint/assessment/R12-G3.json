@@ -2357,7 +2357,7 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs no_workload_identity_can_delete_from_the_evidence_bucket",
       "backend/crates/services/qip-data-finder"
     ],
-    "gap": "Observation publisher to Fabric and evidence store.",
+    "gap": "2026-10-24 (re-read against the tree): No code writes an observation to the retention-locked evidence bucket: modules/evidence grants the deep brain a writer role but no Rust root writes connector observations to GCS (only the execution node is handed evidence_bucket). Connector evidence is journaled as EvidenceAdmittedRecord on evidence.admitted, but only from connector arms, which no committed environment configures (deepbrain_connector, market_data_connector null; cognition zone external_egress = {}). Needs code (an observation writer to the evidence bucket plus the integration test), a tfvar flip, and the owner's egress decision (or the ADR 0144 scout job deployed).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2370,7 +2370,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'No Fabric publication of observations' is stale: Platform::absorb_evidence journals each admitted claim with source and document hash on evidence.admitted (ADR 0152 §2), called from deepbrain ConnectorArm::poll, fastbrain node::step_with and api POST /cycle. Nothing goes to GCS."
   },
   {
     "id": "R12-EVID-10107",
@@ -2380,7 +2380,7 @@
       "backend/crates/services/qip-entity-resolution",
       "backend/crates/services/qip-world-model/src/evidence.rs"
     ],
-    "gap": "Graph persistence (Spanner Graph).",
+    "gap": "2026-10-24 (re-read against the tree): The unit clause is met (corroboration moves per-claim weight - confidence x authenticity x source reliability, qip-evidence fabric.rs - and per-source SourceHistory, tested in qip-world-model tests/evidence_fabric.rs ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it). Platform::absorb_evidence and WorldModel::absorb_evidence do not normalize claim subjects through the Resolver and never update the KnowledgeGraph; no graph persistence exists (no root uses the qip-mesh GraphStore; no Spanner Graph); the fabric is fed only by connectors no environment enables. Needs code (resolve entities, apply the delta to the graph), a deploy and ADR for graph persistence, and a connector tfvar plus owner egress decision.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2393,7 +2393,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: qip-world-model/src/evidence.rs does not exist; corroboration and trust live in qip-evidence/src/fabric.rs (re-exported by qip-world-model), and the Resolver is not on the evidence-intake path."
   },
   {
     "id": "R12-AMBIENT-10108",
@@ -3910,7 +3910,7 @@
     "evidence": [
       "backend/crates/services/qip-twin/src/counterfactual.rs"
     ],
-    "gap": "Remaining twins.",
+    "gap": "2026-10-24 (re-read against the tree): Present: future-state tree (qip_twin::futures::FutureTree, qip-twin tests/futures.rs) and a market twin as per-instrument TwinState; a portfolio outcome distribution over one tree (FutureTree::portfolio_outcomes), not a counterfactual portfolio farm. Missing: macro and company twins, a rare-event factory, and any defined phase-13 exit test. Needs an owner decision on the exit test, licensed macro/company data (ADR 0157) and new code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3923,7 +3923,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'no future-state tree' is false: FutureTree exists with tests, grown by tick_desk and qip-cli agency TwinScenarios; rare-event pieces (beyond_history branches, Monte Carlo, adversarial_sequence) exist without a factory."
   },
   {
     "id": "R12-QUANT-10173",

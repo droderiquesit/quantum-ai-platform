@@ -126,7 +126,7 @@
       "backend/crates/services/qip-market-ingestion/src/connectors/nyfed_effr.rs",
       "backend/crates/services/qip-market-ingestion/tests/narrative_feed.rs"
     ],
-    "gap": "No dockets, procurement, patents, corporate registries; narrative adapter needs a vendor configured.",
+    "gap": "2026-10-24 (re-read against the tree): Admitted connectors cover only government statistics and central-bank releases (ecb-key-interest-rates, nyfed-effr, frankfurter in qip-data-finder admission.rs catalogue). Filings and earnings rest on NarrativeAdapter, which ships unconfigured with no catalogue entry; regulatory portals, court/docket, procurement, patents and corporate registries have neither a connector nor a RefusedSource (the refusals list only option-quote vendors). Each missing class needs an ADR 0157 licence record or a quoted-terms RefusedSource (owner vendor choice or licence review), a connector and egress route where admitted, and an inspection test failing when a class has neither.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -137,7 +137,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_contract",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-2007",
@@ -170,7 +170,7 @@
       "backend/crates/services/qip-chain/src/rpc.rs",
       "backend/crates/runtime/qip-kernel/src/platform.rs observe_chain"
     ],
-    "gap": "No production chain feed wired in a composition root; no governance/token-flow source.",
+    "gap": "2026-10-24 (re-read against the tree): No blockchain, mempool, token-flow, smart-contract or governance source has an admitted connector or a documented RefusedSource; qip-chain's RPC adapter and Platform::observe_chain have no caller in any app root; TraceKind::GovernanceProposal exists but qip-chain state.rs discards it. Needs an ADR 0157 licence record or RefusedSource per class (owner vendor choice or licence review), a connector, egress route and tfvar to reach a root, and code to act on governance traces.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -181,7 +181,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_contract",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Governance and token-transfer trace kinds exist (qip-chain block.rs TraceKind::Transfer, GovernanceProposal); the absence is in wiring and admission, not modelling."
   },
   {
     "id": "R12-DATA-2009",
@@ -430,7 +430,7 @@
       "backend/crates/services/qip-data-finder/src/finder.rs:1146-1158 uniqueness from coverage",
       "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs:400 a_candidate_whose_records_are_dated_after_the_probe_is_refused_on_manipulation_risk"
     ],
-    "gap": "Manipulation inspection covers only future dating and plaintext; uniqueness is metadata overlap, not measured information.",
+    "gap": "2026-10-24 (re-read against the tree): The unit clause is met (lifecycle_policy.rs refuses the future-dated candidate). Uniqueness is 1 minus the largest coverage overlap with other registered sources (finder.rs) and ManipulationRisk::inspect (manipulation.rs) flags only a future-dated payload or last-modified, with plaintext elevated not refused; no cross-probe signal exists. The finder runs only through the deep brain's DiscoveryDesk, off in every committed environment, so nothing on a default path assesses any candidate. Needs an owner decision and tfvar flip (deepbrain_discover_every, source_candidates_file, cognition-zone egress).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -441,7 +441,7 @@
     "verification": "cargo test -p qip-data-finder --test lifecycle_policy",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Uniqueness evidence moved within qip-data-finder/src/finder.rs (now near lines 1310-1322)."
   },
   {
     "id": "R12-DATA-2020",
@@ -479,7 +479,7 @@
       "backend/crates/services/qip-data-finder/tests/sandbox_lifecycle.rs:11-35 test records strings into Reasoning and asserts them back",
       "backend/crates/services/qip-data-finder/src/decision.rs LifecycleStage enum"
     ],
-    "gap": "No sandbox execution environment, no gate that withholds a sandboxed source's records from the kernel, no promotion event.",
+    "gap": "2026-10-24 (re-read against the tree): There is no sandbox: DataFinder::assess goes from Register straight into the registry and nothing records LifecycleStage::Sandbox or Promote (decision.rs); Platform::observe has no gate holding a new source's records out of the world model; no promotion event or topic exists in qip-events; ADR 0157 §4 makes every connector a hand-written reviewed change, so no generated adapter exists to sandbox. Needs code (a kernel gate and a promotion topic) for the integration test, and for a default path a connector enabled by tfvar (deepbrain_connector, market_data_connector null in every env) and the owner's egress decision.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -492,7 +492,7 @@
     "verification": "a test that ingests from a sandboxed source and asserts the world model is unchanged",
     "work_item": "",
     "size": "M",
-    "notes": "The DATA-034 sandbox test is vacuous with respect to behaviour."
+    "notes": "The DATA-034 sandbox test is vacuous with respect to behaviour. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: tests/sandbox_lifecycle.rs now drives the real DataFinder (a_registered_source_reaches_the_registry_with_no_sandbox_or_promotion_stage_recorded) and pins the absence of a Sandbox stage."
   },
   {
     "id": "R12-DATA-2022",
@@ -571,7 +571,7 @@
       "backend/crates/services/qip-data-finder/tests/source_alpha.rs:71 a_sources_scores_are_recorded_over_time_within_a_bound",
       "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk::score"
     ],
-    "gap": "The outcome is the next price move, not a strategy outcome/LEARN attribution, and not conditioned on the source being used; nothing feeds routing.",
+    "gap": "2026-10-24 (re-read against the tree): SourceAlphaDesk::score's outcome is the own stream's next price change (qip-deepbrain source_alpha.rs), not a strategy outcome or LEARN attribution, and is not conditioned on the source having been used by a decision; its scores feed no routing or DataFinder score. The desk is gated by QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY (default 0, absent from catalogue.tf) and needs connector arms no environment configures. Needs code (score on attribution of decisions that consumed the source), a Terraform/tfvar addition, and a connector enabled with the owner's egress decision.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -582,7 +582,7 @@
     "verification": "cargo test -p qip-data-finder --test source_alpha",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: realised_contribution is wired into the deep brain but runs in no committed environment (QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY unset, no connector arm)."
   },
   {
     "id": "R12-DATA-2026",
@@ -994,7 +994,7 @@
       "grep with_tick_lake|TickLakeWriter::new in apps/runtime/services src: none",
       "backend/crates/apps/qip-deepbrain/src/connectors.rs::TickLakeSettings"
     ],
-    "gap": "Cloud Storage disabled in every environment; no test re-materialises a captured session byte-for-byte from the lake.",
+    "gap": "2026-10-24 (re-read against the tree): No raw tick is retained: LakeSink keeps only decoded canonical events (drain.rs deliver: 'there is no raw payload to keep here') and default_retention grants raw:false; ADR 0151 decision 8's raw-frame writer is not built and waits on a licence record permitting raw retention (ADR 0157, owner/vendor decision). Nothing is durable: the edge binary defaults to the memory store, enable_cloud_storage=false in every env, execution_nodes_enabled=false. No test re-materialises a captured session byte-for-byte from the lake.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1007,7 +1007,7 @@
     "verification": "cargo test -p qip-storage --test lake",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge ticks now reach a lake; not durable anywhere. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge ticks now reach a lake; not durable anywhere. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: The evidence 'grep with_tick_lake|TickLakeWriter::new ... none' is stale: qip-deepbrain main.rs and evolution.rs call with_tick_lake, only when QIP_DEEPBRAIN_TICK_LAKE_RETENTION is set, which no committed deployment sets; the edge LakeSink writes no raw bytes and no raw hash."
   },
   {
     "id": "R12-TICK-2043",
@@ -1089,7 +1089,7 @@
       "backend/crates/services/qip-chain/src/amm.rs",
       "backend/crates/services/qip-chain/src/mempool.rs"
     ],
-    "gap": "Crypto depth, perp funding and liquidations missing.",
+    "gap": "2026-10-24 (re-read against the tree): No typed record or capture path for crypto order books (only coinbase_ticker spot), liquidations, or dealer rates quotes (ecb_key_rates and nyfed_effr are policy reference rates). Perp funding has a typed qip_edge::funding::FundingRate but no capture path (only tests call Cell::set_funding_rate); mempool and AMM state have typed models in qip-chain but no capture connector. Each source needs an ADR 0157 licence record (owner/vendor decision) plus connector code. The row's verification command (qip-twin --test twin) tests none of this.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1100,7 +1100,7 @@
     "verification": "cargo test -p qip-twin --test twin",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-TICK-2047",
@@ -1516,7 +1516,7 @@
     "status": "MISSING",
     "current": "No learned representation or embedding code exists.",
     "evidence": [],
-    "gap": "Everything.",
+    "gap": "2026-10-24 (re-read against the tree): No market-state embedding model is trained, versioned or evaluated against a baseline anywhere: qip_contracts::market_state::StateKind::Embedding is a tag with no producer, and qip_ai::embedding::HashingEmbedder is a non-learned lexical text embedder. ModelRegistry/ModelCard (qip-ai) could version an artefact. The trainer is new code (a qip-training module or new crate), and a shipped path needs the off-by-default tick_desk enabled in a committed deployment.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1529,7 +1529,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Embedding code exists, not for market state: qip-ai embedding.rs Embedder trait and HashingEmbedder for text; qip-contracts market_state.rs StateKind::Embedding with no producer."
   },
   {
     "id": "R12-TICK-2065",
