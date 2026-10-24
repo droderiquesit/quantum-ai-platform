@@ -1591,3 +1591,122 @@ fn a_gap_admitted_by_the_research_loop_is_queued_at_the_urgency_its_deadline_giv
         "queued at urgency {urgency}, not the floor {floor}"
     );
 }
+
+// --- the federation's questions reach the sweep (R12-AMBIENT-10093) ----------
+
+/// A platform whose desk holds AAA, over bars the world models disagree on
+/// materially, so its federation pass issues a request.
+fn platform_holding_a_disputed_instrument() -> Platform {
+    use qip_execution_engine::order::Side;
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_reasoning_engine::redteam::ReviewPolicy;
+    use qip_risk::limits::{Limit, LimitKind};
+
+    let object = ObjectId::from_string("obj-AAA");
+    let mut universe = Universe::new();
+    universe
+        .insert(
+            FinancialObject::builder(
+                object.clone(),
+                "AAA",
+                InstrumentType::CommonStock,
+                qip_financial::costs::LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+            )
+            .venue("XNYS")
+            .sector(Sector::InformationTechnology)
+            .price(Decimal::from_int(100))
+            .provenance(Provenance::synthetic("test", start()))
+            .build(start())
+            .unwrap_or_else(|e| panic!("a valid object: {e}")),
+        )
+        .unwrap_or_else(|e| panic!("insertable: {e}"));
+    let limits = LimitSet::new("research-test")
+        .with(Limit::new(
+            "max-position-weight",
+            LimitKind::MaxPositionWeight { limit: 0.10 },
+        ))
+        .with(Limit::new(
+            "max-leverage",
+            LimitKind::MaxLeverage { limit: 2.0 },
+        ));
+    let config = PlatformConfig {
+        review: ReviewPolicy {
+            minimum_surviving_confidence: 0.10,
+            ..ReviewPolicy::default()
+        },
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe, limits)
+        .unwrap_or_else(|e| panic!("the platform assembles: {e}"));
+    // The same series the kernel's federation tests feed: noise with one jump.
+    let mut price = 100.0_f64;
+    let records: Vec<SensedRecord> = (0..120usize)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            let jump = if i == 80 { 0.09 } else { 0.0 };
+            price *= 1.0 + noise + jump;
+            let at = start().saturating_sub(Duration::from_days((120 - i) as i64));
+            bar("obj-AAA", at, price)
+        })
+        .collect();
+    platform.observe(records);
+    let order = platform.order_from(
+        object,
+        Side::Buy,
+        Decimal::from_int(100),
+        Decimal::from_int(100),
+        "prop-book",
+        vec!["hyp-book".to_string()],
+        start(),
+    );
+    platform
+        .submit_order(order, start())
+        .unwrap_or_else(|e| panic!("the paper venue takes the order: {e}"));
+    platform
+}
+
+/// The failure this guards: the federation priced a disagreement over capital
+/// at stake and the request went nowhere, because nothing in the deep brain
+/// read it — so the question sat on the review and no sweep ever ranked it.
+/// Mutation: drop the `admit_federation_requests` call in `sweep_over` — no
+/// request launches and the `info_launched` assertion fails.
+#[test]
+fn a_federation_request_on_a_held_instrument_is_launched_by_the_sweep_and_one_with_no_licensed_source_is_not()
+ {
+    let mut platform = platform_holding_a_disputed_instrument();
+    assert!(
+        platform.positions_at_cost().contains_key("obj-AAA"),
+        "premise: the desk holds AAA"
+    );
+    let _ = platform.run_cycle(start());
+    let requests = platform.federation_information_requests().to_vec();
+    assert_eq!(requests.len(), 1, "premise: the pass issued a request");
+    let sources = &requests[0].0.allowed_sources;
+    assert!(!sources.is_empty(), "premise: it names a source");
+
+    let mut unlicensed = research(coverage(&[]));
+    let round = unlicensed
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        unlicensed
+            .info_requests()
+            .all(|r| !r.id().starts_with("fed-")),
+        "no source is licensed, so nothing is asked: {round:?}"
+    );
+
+    let licensed: BTreeSet<String> = sources.iter().cloned().collect();
+    let mut licensed_loop = research(coverage(&[]));
+    let round = licensed_loop
+        .sweep(&platform, start(), &licensed, &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let federation: Vec<_> = licensed_loop
+        .info_requests()
+        .filter(|r| r.id().starts_with("fed-"))
+        .collect();
+    assert_eq!(federation.len(), 1, "{round:?}");
+    assert!(round.info_launched >= 1, "{round:?}");
+}

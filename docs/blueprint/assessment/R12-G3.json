@@ -2042,15 +2042,17 @@
   },
   {
     "id": "R12-AMBIENT-10093",
-    "status": "PARTIAL",
-    "current": "Federation::information_request builds the qip_contracts::control::InformationRequest for an arbitration whose spread is material (MATERIAL_DISAGREEMENT_SPREAD) on a proposition with positive exposure at stake: expected_information_value = spread x exposure, budget a stated share of it, deadline and allowed sources (the disagreeing models declared evidence lineages plus the stakes own); a small conflict or an unheld proposition issues nothing. FederationStage::run issues one per such arbitration using the exposure set through set_stakes and journals them on FederationReview::information_requests.",
+    "status": "COMPLETE",
+    "current": "Federation::information_request builds the qip_contracts::control::InformationRequest for an arbitration whose spread is material on a proposition with positive exposure at stake. Platform::understand_federation now states each held instrument's gross notional at cost (positions_at_cost, |quantity| x average price; an overflowing notional is left unstated) through FederationStage::set_stakes before every pass, stores the pass's requests with the spread behind each (FederationReview::request_spreads_bp) and exposes them as Platform::federation_information_requests. ResearchLoop::sweep_over admits them (admit_federation_requests) beside the gaps' candidates before launch_ranked: significance from the value of information on the loop's money scale, cost as budget over value in basis points, urgency from the deadline, uncertainty reduction from the spread; a request with no licensed allowed source is refused and one already held is not admitted twice. A launched request becomes a scout job on ResearchRound::scouted.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs::Federation::information_request and InformationStake",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::set_stakes, run (information_requests), REQUEST_BUDGET_SHARE_BP, REQUEST_DEADLINE",
-      "backend/crates/services/qip-world-model/tests/federation.rs::a_material_disagreement_with_exposure_at_stake_issues_the_contract_information_request_and_a_small_one_does_not",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::tests::a_material_disagreement_on_a_subject_with_exposure_at_stake_issues_an_information_request"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::understand_federation, federation_information_requests",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::set_stakes, FederationReview::request_spreads_bp",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::admit_federation_requests",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_material_disagreement_on_a_held_instrument_issues_a_request_and_on_an_unheld_one_issues_none",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_federation_request_on_a_held_instrument_is_launched_by_the_sweep_and_one_with_no_licensed_source_is_not",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::tests::a_federation_request_on_a_held_subject_reaches_the_research_loop_as_a_ranked_request_and_an_unlicensed_one_does_not"
     ],
-    "gap": "platform.rs::understand_federation does not yet call set_stakes from positions_at_cost before the pass, nor forward review.information_requests into the research intake the deep-brain sweep reads (both call sites are in the L14 lane report for L01), so on the deployed path no request is issued or consumed yet.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2058,10 +2060,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test federation a_material_disagreement_with_exposure && cargo +1.94.1 test -p qip-kernel --lib federation_stage",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation a_material_disagreement_on_a_held; cargo test -p qip-deepbrain --test research a_federation_request_on_a_held; cargo test -p qip-deepbrain --lib a_federation_request_on_a_held",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L14). Mutations: inverting the exposure gate in Federation::information_request failed the world-model test (no request for a million at stake); skipping the stake lookup in FederationStage::run failed the kernel test at 0 requests vs 1."
+    "notes": "Re-graded 2026-10-24 lane T6-MODEL-AGENTS per ADR 0158 d9-10. Mutations that fired: replacing the stakes with an empty map after set_stakes left the held platform at 0 requests (expected 1); dropping the platform requests from the sweep's admit call left info_launched at 0 (expected 1); accepting any source in admit_federation_requests launched a request with no licensed source; zeroing the spread ranked the request at nothing and halted it. Earlier L14 mutations (inverting the exposure gate, skipping the stake lookup in FederationStage::run) still hold."
   },
   {
     "id": "R12-AMBIENT-10094",
