@@ -955,6 +955,9 @@ pub struct Platform {
     /// so the chain's counter is monotonic across both kinds and never
     /// zero, which the treasury funding carries.
     capital_grant_operations: u64,
+    /// The mandates whose subscription is in the log, by the operation id's
+    /// mandate part, so a second funding of one mandate queues nothing.
+    subscribed_mandates: BTreeSet<String>,
     /// Fills declined for want of a ledger record, bounded like the declined
     /// queue and cleared by nobody: the list is the evidence a person works
     /// from.
@@ -4380,6 +4383,11 @@ impl EventBody for PrivateCommitmentMade {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+impl EventBody for MandateSubscribed {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 /// The journalled record that the central treasury recalled the deployable
 /// capital of a grant it had funded (ADR 0123, Amendment 1): the whole
 /// `CapitalGrantRecalled` [`qip_contracts::ledger_operation::LedgerOperation`]
@@ -4429,6 +4437,21 @@ pub struct PrivateCommitmentMade {
 /// The producer of [`PrivateCommitmentMade`]. Its own origin so a reader of
 /// the other `LedgerOperationRecorded` producers never meets this body.
 const PRIVATE_COMMITMENT_ORIGIN: &str = "kernel/private-commitment";
+
+/// The journalled record that a user's mandate first funded capital at work
+/// (ADR 0153 decision 4): the whole `MandateSubscription { Establish }`
+/// [`qip_contracts::ledger_operation::LedgerOperation`] (treasury ← mandate),
+/// written once per mandate by [`Platform::fund_user`] and before the
+/// operation is queued. Journalled whole for the reason
+/// [`PrivateCommitmentMade`] is: a restart re-sends the bytes the first
+/// process sent, and the ledger books each id once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MandateSubscribed {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+/// The producer of [`MandateSubscribed`].
+const MANDATE_SUBSCRIPTION_ORIGIN: &str = "kernel/mandate-subscription";
 
 impl EventBody for CapitalGrantRecalled {
     const TOPIC: Topic = Topic::LedgerOperationRecorded;
@@ -5574,6 +5597,7 @@ impl Platform {
             desk_operations: Vec::new(),
             capital_grant_fundings: BTreeMap::new(),
             capital_grant_operations: 0,
+            subscribed_mandates: BTreeSet::new(),
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
@@ -5739,6 +5763,8 @@ impl Platform {
         // Each private commitment the universe holds, booked once as a
         // journalled `Commit` operation (ADR 0153 decision 2).
         platform.queue_private_commitments(now)?;
+        // Every mandate subscription this log recorded, re-queued as written.
+        platform.requeue_mandate_subscriptions()?;
         // Every capital grant this log funded or recalled, re-queued as
         // written and in the order written: the plane's envelopes do not
         // survive a restart but the ledger's debt to the books they funded
@@ -7042,7 +7068,103 @@ impl Platform {
             },
             LEDGER_ORIGIN,
             now,
-        )
+        )?;
+        self.subscribe_mandate(user, currency, amount, now)
+    }
+
+    /// Queue the ledger's record that this user's mandate subscribed capital
+    /// into the treasury, journalling it first, once per mandate (ADR 0153
+    /// decision 4, R12-LEDGER-5010).
+    ///
+    /// The amount is the first funding's, and later fundings of the same
+    /// mandate queue nothing: the decision keys the operation by mandate, so
+    /// the ledger's mandate account states what the mandate first put to
+    /// work and not a running total. A mandate funding is a
+    /// `MandateSubscription`, not a `Transfer`: a transfer is a movement
+    /// between books, venues and custodies, and `TransferEnd` gains no mandate
+    /// arm. The treasury → book leg is the capital grant that already exists.
+    ///
+    /// A mandate the contract refuses (an id the ledger's account text cannot
+    /// carry) is reported and skipped: the funding has already happened and is
+    /// journalled, and nothing is journalled for the operation, so it is
+    /// retried on the next first funding rather than half-recorded.
+    fn subscribe_mandate(
+        &mut self,
+        user: &UserId,
+        currency: Currency,
+        amount: Decimal,
+        now: Timestamp,
+    ) -> Result<()> {
+        use qip_contracts::ledger_operation::{LedgerOperationFields, OperationKind, Phase};
+        let Some(registration) = self.user_ledger.registry().registration(user) else {
+            return Ok(());
+        };
+        let mandate = registration.id.to_string();
+        if self.subscribed_mandates.contains(&mandate) {
+            return Ok(());
+        }
+        let chain = self.desk_ledger.chain().to_string();
+        let built = qip_contracts::validated::Validated::new(LedgerOperationFields {
+            schema_version: 1,
+            operation_id: format!("{chain}:mandate-subscription:{mandate}"),
+            origin: chain,
+            sequence: self.subscribed_mandates.len() as u64 + 1,
+            recorded_at: now,
+            settlement: qip_contracts::ledger::Settlement::Simulated,
+            kind: OperationKind::MandateSubscription {
+                mandate: mandate.clone(),
+                treasury: CENTRAL_TREASURY.to_string(),
+                unit: currency.to_string(),
+                amount,
+                phase: Phase::Establish,
+            },
+        });
+        let operation = match built {
+            Ok(operation) => operation,
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "the subscription of mandate {mandate} could not be booked at the ledger: {}",
+                    error.message()
+                ));
+                return Ok(());
+            }
+        };
+        self.journal_record(
+            MandateSubscribed {
+                operation: operation.clone(),
+            },
+            MANDATE_SUBSCRIPTION_ORIGIN,
+            now,
+        )?;
+        self.subscribed_mandates.insert(mandate);
+        self.desk_operations.push(operation);
+        Ok(())
+    }
+
+    /// Re-queue every mandate subscription the log holds, as written and in
+    /// the order written, and remember which mandates they cover so the
+    /// first-funding rule survives a restart.
+    fn requeue_mandate_subscriptions(&mut self) -> Result<()> {
+        let mut recorded = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer == MANDATE_SUBSCRIPTION_ORIGIN
+                && record.event.topic == MandateSubscribed::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                recorded.push(frame.decode::<MandateSubscribed>()?.body.operation);
+            }
+        }
+        for operation in recorded {
+            if let qip_contracts::ledger_operation::OperationKind::MandateSubscription {
+                mandate,
+                ..
+            } = &operation.kind
+            {
+                self.subscribed_mandates.insert(mandate.clone());
+            }
+            self.desk_operations.push(operation);
+        }
+        Ok(())
     }
 
     /// Whether the product gate refuses this user this strategy, and under

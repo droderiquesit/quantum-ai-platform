@@ -220,14 +220,15 @@
   {
     "id": "R12-LEDGER-5010",
     "status": "PARTIAL",
-    "current": "A transfer OperationKind posts between accounts and refuses a self-transfer; tested in qip-contracts and through ledgerd's writer.",
+    "current": "A transfer OperationKind posts between accounts and refuses a self-transfer; tested in qip-contracts and through ledgerd's writer. Since 2026-10-24 Platform::fund_user queues one journalled MandateSubscription { Establish } (treasury <- the mandate's own id) on a mandate's first funding, once per mandate, re-queued as written after a restart; TransferEnd gains no mandate arm.",
     "evidence": [
-      "backend/crates/libs/qip-portfolio/src/ledger.rs:320 post only from fills",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs:374 add_transfer is pricing only",
-      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::fund_user",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::subscribe_mandate",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::MandateSubscribed",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs::funding_a_users_mandate_queues_one_mandate_subscription_and_a_second_funding_queues_none",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs::a_restart_resends_a_mandate_subscription_as_written_and_does_not_subscribe_the_mandate_again"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for transfers or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "2026-10-24: the producer is built and proven, but no binary calls Platform::fund_user (grep of backend/crates/apps finds no caller), so a mandate subscription is queued only by tests today; wiring a funding route into qip-api is the user-funding product row, not this one. By ADR 0153 decision 4 the operation records the mandate's first funding and later top-ups queue nothing, so the ledger's mandate account states what the mandate first put to work and not a running total. Real transfers between books, venues and custodies originate in qip-capital-fabric and have no kernel producer, by decision.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -235,10 +236,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
+    "verification": "cargo test -p qip-kernel --test ledger mandate",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane T4-LEDGER 2026-10-24 (ADR 0153 decision 4). Mutations that fired: removing the already-subscribed check made the once-only test fail (a second and third MandateSubscription queued for alice); dropping the subscribed-set rebuild on restart made the restart test fail (a top-up after restart queued a second operation). Kept PARTIAL: no production caller of fund_user."
   },
   {
     "id": "R12-LEDGER-5011",
