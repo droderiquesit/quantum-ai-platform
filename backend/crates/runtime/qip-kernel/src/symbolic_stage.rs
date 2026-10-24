@@ -371,9 +371,11 @@ impl SymbolicDerivation {
     /// ADR 0125 decision 2: why the rule pack refuses a hypothesis that
     /// review approved, or `None` when it does not.
     ///
-    /// Only the pack's hard stops veto: a tripped kill switch, a live
+    /// Only the pack's hard stops veto: a live
     /// ceiling, one lot that exceeds the position budget, cash short of one
-    /// lot. The other two conditions of `r10-eligible`, confidence under
+    /// lot. A tripped kill switch is deliberately not one: ACT's own
+    /// `kill-switch` refusal gate is the recorded halt, and vetoing earlier
+    /// would remove the refusal the gate journals. The other two conditions of `r10-eligible`, confidence under
     /// 5000 bp and contested evidence, are sizing inputs, not stops: a
     /// contested thesis is held small and scored because
     /// `Hypothesis::confidence_for_sizing` can only narrow (ADR 0150
@@ -404,9 +406,6 @@ impl SymbolicDerivation {
             return None;
         }
         let mut stops = Vec::new();
-        if fact("kill_switch") == Some(&Value::Bool(true)) {
-            stops.push("the kill switch is tripped");
-        }
         if fact("live_authority") == Some(&Value::Bool(true)) {
             stops.push("the ceiling is live");
         }
