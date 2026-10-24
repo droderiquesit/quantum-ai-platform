@@ -290,13 +290,13 @@
   },
   {
     "id": "R12-LEDGER-5013",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Ledgerd consumer (now also verifying lineage) applies each record once; same position+digest is a no-op, different content parks the cell.",
     "evidence": [
       "backend/crates/apps/qip-ledgerd/tests/store.rs:337",
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_fill_whose_lineage_was_edited_stalls_its_partition_and_a_good_one_names_its_chain"
     ],
-    "gap": "None.",
+    "gap": "2026-10-24: Closes when a committed environment sets `ledgerd` (and the fabric broker it consumes from) so qip-ledgerd runs and applies the journal, or the row is narrowed to the library property.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -309,7 +309,7 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. qip-ledgerd now starts, consumes and serves; dedup reached from main. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Still holds after 5ff50da9's consumer change."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. qip-ledgerd now starts, consumes and serves; dedup reached from main. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Still holds after 5ff50da9's consumer change. AUDIT-3 2026-10-24: regraded, the exactly-once and integrity-break behaviour is real and mutation-checked in qip-ledgerd's store, but qip-ledgerd is instantiated in no committed environment (ledgerd null everywhere), so no global journal applies any event"
   },
   {
     "id": "R12-LEDGER-5014",

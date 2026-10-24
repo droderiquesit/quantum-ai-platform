@@ -2963,7 +2963,7 @@
   },
   {
     "id": "R12-LEDGER-8132",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "google_spanner_instance.global pins edition = \"ENTERPRISE_PLUS\" with the nam-eur-asea multi-region config and 100 processing units; terraform validate and the module tftests pass with the attribute; the acceptance suite refuses its absence or a regional config. Still gated by enable_spanner, false in every environment, so no plan renders it.",
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:380-402 (edition at :395)",
@@ -2971,7 +2971,7 @@
       "infrastructure/terraform/modules/data/tests/spanner_edition.tftest.hcl",
       "infrastructure/terraform/modules/data/main.tf google_spanner_instance.global edition"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when a committed environment sets enable_spanner = true so a real plan of that environment shows google_spanner_instance.global on ENTERPRISE_PLUS in nam-eur-asea, or the requirement is narrowed to the module's contract.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2982,7 +2982,7 @@
     "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/spanner_edition.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18. The attribute and the acceptance text scan already existed; what was missing was a plan that reads it. A mocked-provider run with enable_spanner = true plans the instance on ENTERPRISE_PLUS (terraform 1.9.8, checksum-verified: `Success! 2 passed, 0 failed.`), and a second run proves no instance is planned while it is off, which is the state of every committed environment. Mutation, restored: edition set to ENTERPRISE failed the first run."
+    "notes": "2026-10-18. The attribute and the acceptance text scan already existed; what was missing was a plan that reads it. A mocked-provider run with enable_spanner = true plans the instance on ENTERPRISE_PLUS (terraform 1.9.8, checksum-verified: `Success! 2 passed, 0 failed.`), and a second run proves no instance is planned while it is off, which is the state of every committed environment. Mutation, restored: edition set to ENTERPRISE failed the first run. AUDIT-3 2026-10-24: regraded, the requirement is a plan showing the authoritative ledger database on Enterprise Plus multi-region; every committed environment plans no Spanner instance (enable_spanner false), and the check passes only on a mocked plan with the flag forced on"
   },
   {
     "id": "R12-LEDGER-8133",

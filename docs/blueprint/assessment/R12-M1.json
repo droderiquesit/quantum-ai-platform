@@ -4249,14 +4249,14 @@
   },
   {
     "id": "R12-REFLEX-1188",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "One node process takes a venue event through every Lane 0 stage to a paper order: the cell's FeatureEngine computes feature-DAG features from the book and the compiled plan carries the distilled model inline (the test asserts the premise that the plan carries a model and that the strategy fires only on the book the model admits); a reflex cell evaluates a named distilled model within the hot-path budget. The check (the cell consumes feature-DAG features and a distilled model in a pass) is met; 'features/embeddings' is an alternative and learned embeddings are not required.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs:77 FeatureEngine",
       "backend/crates/apps/qip-edge-node/tests/lane0.rs:204 one_node_process_takes_a_venue_event_through_every_lane_0_stage_to_a_paper_order",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs:227 a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when a committed deployment runs an edge node whose strategy plan carries a distilled model (an environment with execution_nodes_enabled and strategy_plan_path set to a committed plan, or the mesh dispatch enabled) so a running node's pass reads a feature and evaluates the model, or the row is narrowed to the in-process composition the test builds.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4267,7 +4267,7 @@
     "verification": "cargo test -p qip-edge-node --test lane0 one_node_process_takes_a_venue_event_through_every_lane_0_stage_to_a_paper_order; cargo test -p qip-edge --test model_manifest",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. No mutation run by this lane."
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. No mutation run by this lane. AUDIT-3 2026-10-24: regraded, the feature-and-model pass is real and mutation-checked in a test that assembles the node in process and installs the package by hand, but no committed deployment runs a node with a plan: strategy_plan_path is set nowhere, execution_nodes is empty or disabled, and the mesh policy dispatch is off"
   },
   {
     "id": "R12-REFLEX-1189",
