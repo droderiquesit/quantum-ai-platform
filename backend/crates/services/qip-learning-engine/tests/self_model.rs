@@ -414,6 +414,8 @@ fn an_ensemble_forecast_is_charged_by_the_side_it_took_and_never_freshens_the_se
     // 0.7 says true; true for eight of the twelve.
     assert_eq!(estimate.hits(), 8);
     assert_eq!(model.sample_facts().count(), 0);
+    Ok(())
+}
 
 /// R12-MODEL-6016: an ensemble's record, like a member's, never reaches the
 /// freshness facts. This is not hypothetical. When `ComponentKind::Ensemble`
