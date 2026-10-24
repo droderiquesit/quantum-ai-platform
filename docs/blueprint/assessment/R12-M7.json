@@ -31,7 +31,7 @@
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:67-85 refuses boot without isolcpus and preallocated huge pages; :352 CPUAffinity",
       "infrastructure/environments/dev/terraform.tfvars:234 execution_nodes = {} (same in stage:49, test:49, prod:51)"
     ],
-    "gap": "No node is declared in any environment; no plan showing a node rendered.",
+    "gap": "No node is declared in any environment (execution_nodes = {} in stage/test/prod; dev declares newyork-1 with execution_nodes_enabled = false) and there is no plan showing a node rendered. Needs infrastructure/environments/** and execution-nodes-enabled.tf, both protected, and a real plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -42,7 +42,7 @@
     "verification": "terraform plan with execution_nodes naming one region",
     "work_item": "",
     "size": "S",
-    "notes": "nothing deployed: execution_nodes = {} in every environment"
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL."
   },
   {
     "id": "R12-REFLEX-7003",
@@ -2152,7 +2152,7 @@
       "backend/crates/edge/qip-edge/tests/mesh.rs",
       "backend/crates/edge/qip-edge/tests/cross_region.rs"
     ],
-    "gap": "No test originates a cycle and then loses the peer mid-epoch to show the cycle refused at its TTL while the cell's single-venue strategy keeps trading; qip-peer-link's ReflexPort has no stop, so a test cannot take a peer down after the cycle starts without a lifecycle hook. Pre-positioned directional bands are not distinguished from the region's ordinary capital share.",
+    "gap": "Peer loss mid-epoch IS reproducible without a stop on ReflexPort: dropping the counterparty ReflexPort ends its session thread (host.rs Host::run returns on Disconnected). What a test cannot observe is the refusal at TTL: qip-peer-link PeerStatus has no counter for an originated epoch lapsing unfired (Saga::forget_gone silently drops it once the endpoint expires it), so the property a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading has no assertion to hang on. Closing needs a PeerStatus.cycles_expired counter in qip-peer-link (outside lane M1-KERNEL-EDGE territory: boundary.rs, host.rs, saga.rs) plus the degraded.rs test; DirectionalBand as a type reserved against the region share (ADR 0154) is also not built.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2163,7 +2163,7 @@
     "verification": "cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: not closed; the node-level half (local trading continues) is proven, the cycle-refusal half needs a peer-loss harness in qip-peer-link."
+    "notes": "Corrected 2026-10-24 by lane M1-KERNEL-EDGE: not closed; the missing seam is in qip-peer-link, not in qip-edge or qip-edge-node."
   },
   {
     "id": "R12-RES-7096",
@@ -2325,14 +2325,16 @@
   {
     "id": "R12-RES-7103",
     "status": "PARTIAL",
-    "current": "A clock-health signal now exists in the cell and disables ordering-sensitive strategies: Cell::narrowing derives Capability::Clock from the lead each venue's feed shows over the cell's capture time (fresh, stale while some venue is skewed, unavailable while all are), DegradationState::pauses_cross_venue_ordering pauses the arbitrage desk under GATE_CLOCK_SKEW, a skewed venue gets no order, and the pass compounds the clock row's 0.75/0.5 multiplier into its size.",
+    "current": "A clock-health signal now exists in the cell and disables ordering-sensitive strategies: Cell::narrowing derives Capability::Clock from the lead each venue's feed shows over the cell's capture time (fresh, stale while some venue is skewed, unavailable while all are), DegradationState::pauses_cross_venue_ordering pauses the arbitrage desk under GATE_CLOCK_SKEW, a skewed venue gets no order, and the pass compounds the clock row's 0.75/0.5 multiplier into its size. Since 2026-10-24 the node's feed also records the clock on the event: SimulatedFeed::capture stores each MarketEvent with the venue stamp's lead over the cell's receive instant as its clock uncertainty (a message cannot be received before it was sent, so the lead is a proven lower bound on the clock error), and zero when the stamp trails.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs:432 GATE_CLOCK_SKEW; :4017 observe_clock_lead measures each batch's venue time against capture time; :4045 clock_skewed; :4068 venue_withheld refuses a skewed venue; :2867 Cell::narrowing observes Clock, Feed and VenueSession; :7945 scan_cycles pauses the desk",
       "backend/crates/libs/qip-contracts/src/degradation.rs:895 pauses_cross_venue_ordering",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:1516 a_venue_stamping_its_messages_ahead_of_the_cell_gets_no_order_until_a_batch_shows_it_level_again; :1597 a_cell_with_one_skewed_venue_reads_its_clock_stale_and_pauses_cross_venue_ordering; :1673 a_pass_sizes_down_by_the_clock_row_once_any_venue_is_skewed",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs the_desk_opens_no_cycle_while_a_venues_clock_cannot_be_placed_against_the_cells"
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs the_desk_opens_no_cycle_while_a_venues_clock_cannot_be_placed_against_the_cells",
+      "backend/crates/apps/qip-edge-node/src/feed.rs::SimulatedFeed::capture (uncertainty = venue_time.since(now), floored at zero)",
+      "backend/crates/apps/qip-edge-node/tests/capture_uncertainty.rs a_venue_stamping_ahead_of_the_cell_is_captured_with_that_lead_as_its_clock_uncertainty; a_venue_stamping_behind_the_cell_is_captured_without_inventing_doubt"
     ],
-    "gap": "Two halves of the clause are not done: the cell does not widen a MarketEvent's uncertainty from the clock row (qip_contracts::captured_event carries uncertainty for storage and research; nothing feeds it the cell's clock reading), and precision-sensitive labels and replay are not blocked from promotion by it (a centre and research-lane control).",
+    "gap": "One half of the clause is not done: precision-sensitive labels and replay are not blocked from promotion by the widened uncertainty (a centre and research-lane control; nothing in qip-kernel or qip-edge reads CapturedMarketEvent.uncertainty to refuse a label). The cell-side widening is the lead only, a lower bound; it does not yet use the cell's Clock row (fresh/stale/unavailable) to widen events from venues it has not measured, and the capture path in qip-sequencing (CaptureStream, which derives uncertainty from ClockDiscipline) is a different producer that this does not touch.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2340,10 +2342,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test venue_failure --test arbitrage",
+    "verification": "cargo test -p qip-edge --test venue_failure --test arbitrage; cargo test -p qip-edge-node --test capture_uncertainty",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: the cell-side disable closed on the default path, PARTIAL kept for uncertainty widening and label promotion. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests."
+    "notes": "Lane L11, 2026-10-18: the cell-side disable closed on the default path, PARTIAL kept for uncertainty widening and label promotion. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests. Lane M1-KERNEL-EDGE, 2026-10-24: uncertainty widening closed for the simulated feed; PARTIAL kept for label/replay promotion. Mutations (each fired, restored): storing ZERO fails the ahead test; reversing the subtraction (now.since(venue_time)) fails both tests."
   },
   {
     "id": "R12-RES-7104",

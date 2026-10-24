@@ -1177,7 +1177,7 @@
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:498 raw_retention_permitted: false",
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs::parse_retention"
     ],
-    "gap": "No production writer stores venue-native raw bytes under a permitting right. The drain cannot: the spool's MARKET_EVENT_APPLIED records carry the decoded MarketEvent and its source_hash, never the wire frame, so LakeSink::deliver has no raw bytes to pass to Lake::write_segment (drain.rs, the trailing None). Closing it needs the applied record to carry the frame (a schema bump on that topic, through the schema gate) where the dataset's right permits raw retention, or a separate raw-capture writer on the feed side.",
+    "gap": "No raw-capture writer, by decision (ADR 0151 d8, ADR 0157): raw frames go to a separate raw-capture writer in the Transient class, only where a licence record permits raw retention. LakeSink::deliver (drain.rs) holds decoded events and passes None for raw bytes, and the MARKET_EVENT_APPLIED record is not extended to carry the frame.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1190,7 +1190,7 @@
     "verification": "cargo test -p qip-storage --test lake",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: the triage closure (hand the wire frame to LakeSink::deliver) needs the frame on the spool first; that schema change was not attempted in this lane."
+    "notes": "Corrected 2026-10-24 by lane M1-KERNEL-EDGE. Restated per ADR 0151 d8 (no-code-restate): no code change; closes when a licence record permitting raw retention exists and a feed-side writer is built."
   },
   {
     "id": "R12-TICK-2051",

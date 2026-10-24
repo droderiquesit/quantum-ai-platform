@@ -87,8 +87,8 @@ use qip_core::error::Error;
 use qip_core::time::Timestamp;
 use qip_execution_engine::order::{OrderType, Side};
 use qip_execution_engine::quoting::{
-    QueuePosition, QuoteDecision, QuoteInputs, QuotePair, QuotePolicy, QuoteReference,
-    VenueQuotingModel,
+    CorrelatedExposure, QueuePosition, QuoteDecision, QuoteInputs, QuotePair, QuotePolicy,
+    QuoteReference, VenueQuotingModel,
 };
 use qip_market::book::OrderBook;
 use qip_market::snapshot::InstrumentState;
@@ -258,11 +258,28 @@ impl QuoteLoopReview {
         // The guard borrows the shared market slot, so it is held for this
         // block and not for the cycle — `Platform::market_view`'s own note.
         let market = platform.market_view();
+        // The held instruments' returns, read once: every other instrument's
+        // correlated exposure is a sum over these.
+        let held_returns: BTreeMap<String, Vec<f64>> = market
+            .snapshot
+            .instruments()
+            .filter(|(object_id, _)| inventories.contains_key(*object_id))
+            .map(|(object_id, state)| (object_id.to_string(), state.bars.returns()))
+            .collect();
         for (object_id, state) in market.snapshot.instruments().take(QUOTE_PASS_LIMIT) {
             review.considered += 1;
             let inventory = inventories.get(object_id).copied().unwrap_or(Decimal::ZERO);
             let inputs = match build_inputs(platform, object_id, state, inventory, equity, now) {
-                Ok(inputs) => inputs,
+                Ok(mut inputs) => {
+                    inputs.correlated = correlated_exposure(
+                        object_id,
+                        &state.bars.returns(),
+                        &inventories,
+                        &held_returns,
+                        inputs.inventory_limit,
+                    );
+                    inputs
+                }
                 Err(reason) => {
                     review.unpriceable.insert(object_id.to_string(), reason);
                     continue;
@@ -404,6 +421,72 @@ fn inventories_of(platform: &Platform) -> BTreeMap<String, Decimal> {
     inventories
 }
 
+/// Exposure the portfolio already holds in the *other* instruments, as
+/// correlated with this one, for `QuoteInputs::correlated`.
+///
+/// `sum(rho(this, other) * inventory(other))` over every other instrument
+/// holding a filled position. Signed, so a hedge nets by construction: a
+/// short in a positively correlated instrument offsets a long, and a long in
+/// a negatively correlated one does the same. `None` when no other instrument
+/// holds anything, because there is then nothing correlated to be long of.
+///
+/// `rho` is the Pearson correlation of one-bar returns over the window the
+/// two series share, and a pair that cannot be measured (fewer than
+/// [`QUOTE_MIN_BARS`] shared returns, or a non-finite one) is charged as
+/// perfectly correlated, as `tail.rs` charges an unmeasurable pair: the
+/// quoting arithmetic only ever cuts the side that adds to this exposure, so
+/// an overstated correlation can make a quote smaller and never larger. A
+/// sum that overflows is read as the whole limit used, in the direction of the
+/// position that overflowed it, for the same reason.
+fn correlated_exposure(
+    object_id: &str,
+    own_returns: &[f64],
+    inventories: &BTreeMap<String, Decimal>,
+    held_returns: &BTreeMap<String, Vec<f64>>,
+    limit: Decimal,
+) -> Option<CorrelatedExposure> {
+    let mut net = Decimal::ZERO;
+    let mut any = false;
+    for (other, inventory) in inventories {
+        if other == object_id || inventory.is_zero() {
+            continue;
+        }
+        any = true;
+        let rho = held_returns
+            .get(other)
+            .and_then(|returns| shared_correlation(own_returns, returns))
+            .and_then(Decimal::from_f64)
+            .unwrap_or(Decimal::ONE);
+        let next = rho
+            .checked_mul(*inventory)
+            .and_then(|term| net.checked_add(term));
+        net = match next {
+            Some(sum) => sum,
+            None if inventory.is_positive() => limit,
+            None => -limit,
+        };
+    }
+    any.then_some(CorrelatedExposure {
+        net_units: net,
+        limit_units: limit,
+    })
+}
+
+/// Pearson correlation of two return series over their shared tail, or `None`
+/// when that window is shorter than [`QUOTE_MIN_BARS`] or holds a non-finite
+/// return.
+fn shared_correlation(a: &[f64], b: &[f64]) -> Option<f64> {
+    let window = a.len().min(b.len());
+    if window < QUOTE_MIN_BARS {
+        return None;
+    }
+    let (a, b) = (&a[a.len() - window..], &b[b.len() - window..]);
+    if !a.iter().chain(b).all(|value| value.is_finite()) {
+        return None;
+    }
+    Some(qip_numerics::stats::correlation(a, b))
+}
+
 /// Build one instrument's reading, or say why there is none.
 ///
 /// `Err(String)` is a sentence for the report rather than an
@@ -460,8 +543,8 @@ fn build_inputs(
         directional_persistence: stats.persistence,
         belief_confidence: belief,
         queue: queue_position(platform, object_id, state.book.as_ref()),
-        // No portfolio correlation view is wired into this per-instrument
-        // loop yet; `None` says so rather than claiming a zero exposure.
+        // Filled in by the caller, which holds every other instrument's
+        // inventory and returns; one instrument's reading cannot see them.
         correlated: None,
     })
 }
@@ -722,6 +805,77 @@ mod tests {
         })
     }
 
+    /// A zig-zag return series long enough to be measured; `sign` flips it,
+    /// which makes the pair perfectly anti-correlated.
+    fn zigzag(sign: f64) -> Vec<f64> {
+        (0..QUOTE_MIN_BARS + 5)
+            .map(|k| {
+                if k % 2 == 0 {
+                    0.01 * sign
+                } else {
+                    -0.01 * sign
+                }
+            })
+            .collect()
+    }
+
+    fn within(value: Decimal, expected: &str) -> bool {
+        (value - Decimal::parse(expected).expect("a decimal")).abs() < dec!("0.000001")
+    }
+
+    #[test]
+    fn a_hedge_in_an_anti_correlated_instrument_nets_the_correlated_exposure_down() {
+        // Premise first: with the hedge absent the whole long counts, so a
+        // test that only read the netted figure would pass on a loop that
+        // ignored the hedge's sign and happened to land on six.
+        let own = zigzag(1.0);
+        let limit = dec!("100");
+        let held = BTreeMap::from([
+            ("obj-B".to_string(), zigzag(1.0)),
+            ("obj-C".to_string(), zigzag(-1.0)),
+        ]);
+        let long_only = BTreeMap::from([("obj-B".to_string(), dec!("10"))]);
+        let bare = correlated_exposure("obj-A", &own, &long_only, &held, limit)
+            .expect("a long elsewhere is correlated exposure");
+        assert!(within(bare.net_units, "10"), "premise: {bare:?}");
+
+        let hedged = BTreeMap::from([
+            ("obj-B".to_string(), dec!("10")),
+            ("obj-C".to_string(), dec!("4")),
+        ]);
+        let netted =
+            correlated_exposure("obj-A", &own, &hedged, &held, limit).expect("both are held");
+        assert!(
+            within(netted.net_units, "6"),
+            "a long of 4 in an anti-correlated instrument should net 10 down to 6: {netted:?}"
+        );
+        assert_eq!(netted.limit_units, limit);
+    }
+
+    #[test]
+    fn an_instrument_alone_in_the_book_has_no_correlated_exposure_and_an_unmeasured_pair_counts_in_full()
+     {
+        let own = zigzag(1.0);
+        let limit = dec!("100");
+        // The instrument's own position is not exposure *correlated with* it.
+        let only_own = BTreeMap::from([("obj-A".to_string(), dec!("10"))]);
+        assert!(
+            correlated_exposure("obj-A", &own, &only_own, &BTreeMap::new(), limit).is_none(),
+            "the instrument's own inventory was counted as correlated with itself"
+        );
+        // A pair with too little history is charged as perfectly correlated,
+        // never read as independent.
+        let others = BTreeMap::from([("obj-B".to_string(), dec!("-7"))]);
+        let short_history = BTreeMap::from([("obj-B".to_string(), vec![0.01, -0.01])]);
+        let exposure = correlated_exposure("obj-A", &own, &others, &short_history, limit)
+            .expect("a short elsewhere");
+        assert_eq!(
+            exposure.net_units,
+            dec!("-7"),
+            "an unmeasurable pair was read as independent"
+        );
+    }
+
     fn reviewed(platform: &Platform) -> QuoteLoopReview {
         QuoteLoopReview::of(platform, start())
     }
@@ -863,6 +1017,130 @@ mod tests {
             "a long position did not move both quotes down: {} against {}",
             long.describe(),
             flat.describe()
+        );
+    }
+
+    #[test]
+    fn a_long_in_one_instrument_cuts_the_bid_of_a_correlated_one_and_leaves_its_ask() {
+        // The default path: `QuoteLoopReview::of` reads the order manager and
+        // both instruments' bars itself, so nothing here hands the sizing a
+        // correlated view. Before this, the loop passed `correlated: None`
+        // and a long in AAA left BBB's bid at full size however closely the
+        // two moved together.
+        use qip_market::bar::{Bar, Interval};
+        let both = |symbol: &str| ObjectId::from_string(format!("obj-{symbol}"));
+        let mut universe = universe();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    both("BBB"),
+                    "BBB",
+                    InstrumentType::CommonStock,
+                    qip_financial::costs::LiquidityProfile::listed(dec!("5000000"), 3.0),
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(dec!("100"))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("a valid object"),
+            )
+            .expect("insertable");
+        let config = PlatformConfig::default();
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(config, context, Telemetry::silent(), universe, limits())
+            .expect("a platform");
+        // Identical zig-zag closes: the two series are perfectly correlated.
+        let mut records = Vec::new();
+        for symbol in ["AAA", "BBB"] {
+            for day in 0..(QUOTE_MIN_BARS as i64 + 5) {
+                let close = if day % 2 == 0 {
+                    dec!("100")
+                } else {
+                    dec!("100.02")
+                };
+                records.push(SensedRecord::Bar(Box::new(Bar {
+                    object_id: both(symbol),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: start().saturating_sub(qip_core::Duration::from_days(30 - day)),
+                    open: close,
+                    high: close + dec!("0.01"),
+                    low: close - dec!("0.01"),
+                    close,
+                    volume: Decimal::from_int(1_000),
+                    trade_count: 100,
+                    vwap: Some(close),
+                    quality: DataQuality::default(),
+                })));
+            }
+            records.push(SensedRecord::Book(Box::new(OrderBook::from_levels(
+                both(symbol),
+                "XNYS",
+                start(),
+                vec![BookLevel::new(dec!("99.95"), dec!("100"))],
+                vec![BookLevel::new(dec!("100.05"), dec!("100"))],
+            ))));
+        }
+        assert!(platform.observe(records) >= 2);
+
+        let flat = reviewed(&platform);
+        let bbb_flat = flat
+            .quoted
+            .iter()
+            .find(|pair| pair.object_id == "obj-BBB")
+            .unwrap_or_else(|| {
+                panic!(
+                    "premise: BBB is priced: {:?} / {:?} / {:?}",
+                    flat.withheld, flat.unpriceable, flat.refused
+                )
+            });
+        assert!(
+            bbb_flat.bid_size.is_positive() && bbb_flat.bid_size == bbb_flat.ask_size,
+            "premise: with nothing held BBB shows the same size both sides: {}",
+            bbb_flat.describe()
+        );
+
+        let order = Order::new(
+            qip_core::ids::OrderId::from_string("ord-quote-loop-corr"),
+            both("AAA"),
+            Side::Buy,
+            dec!("100"),
+            OrderType::Market,
+            dec!("100"),
+            "prop-quote-loop",
+            vec!["hyp-quote-loop".to_string()],
+            "platform",
+            start(),
+        );
+        platform
+            .submit_order(order, start())
+            .expect("a paper order clears the controls");
+        assert!(
+            inventories_of(&platform)
+                .get("obj-AAA")
+                .is_some_and(|held| held.is_positive()),
+            "premise: the simulated broker filled AAA, so there is a long to be correlated with"
+        );
+
+        let held = reviewed(&platform);
+        let bbb = held
+            .quoted
+            .iter()
+            .find(|pair| pair.object_id == "obj-BBB")
+            .expect("BBB is still priced");
+        // Compared within the one quote: the fill moved equity, and with it
+        // the budget both sizes derive from, so a size across the two passes
+        // is not like for like.
+        assert!(
+            bbb.bid_size < bbb.ask_size,
+            "a long in a perfectly correlated instrument did not cut BBB's bid below its ask: {}",
+            bbb.describe()
+        );
+        assert!(
+            bbb.ask_size.is_positive(),
+            "the offsetting side was cut to nothing: {}",
+            bbb.describe()
         );
     }
 
