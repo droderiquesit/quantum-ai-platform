@@ -1,0 +1,16 @@
+[
+{"id":"R12-REFLEX-5031","class":"CODE_CLOSABLE","reason":"backend/crates/apps/qip-edge-node/tests/fabric_wiring.rs::a_node_given_a_fabric_endpoint_ships_its_journal_to_p2_and_its_chain_to_p1 drives the binary into a fabricd broker; register evidence 'grep FabricSink in tests: none' is stale. Mutation-verify on main.rs sink push, then regrade."},
+{"id":"R12-REFLEX-8067","class":"CODE_CLOSABLE","reason":"same fabric_wiring.rs test asserts the node is still alive (still deciding) when the fabric holds its journal; mutation-verify, regrade."},
+{"id":"R12-FABRIC-7058","class":"CODE_CLOSABLE","reason":"grep QIP_SPOOL_WRITER_CPU infrastructure/terraform/modules/execution-node finds none while placement.rs reads it; add module variable + startup template line + tftest (module is not a protected path)."},
+{"id":"R12-CAPITAL-5067","class":"CODE_CLOSABLE","reason":"adr-c entry decided: move rebalancing_tasks to qip-peer, saga calls at epoch close (qip-peer-link/src/saga.rs); qip-mesh/src/rebalance.rs::rebalancing_tasks has no kernel/app caller."},
+{"id":"R12-CONTRACT-7068","class":"CODE_CLOSABLE","reason":"adr-c closure kind no-code-restate: ADR 0154 d7 keeps PeerMessage::Token an epoch; restate gap in register."},
+{"id":"R12-FABRIC-10102","class":"LARGE_SPLITTABLE","reason":"ADR 0132 per-pass FeatureSnapshot P2 record from the node, bounded by configured instruments; do one slice if reached."},
+{"id":"R12-REFLEX-8069","class":"LARGE_SPLITTABLE","reason":"ADR 0137 GcsLeaseStore + lease scheme selection + execution-node bucket/IAM; needs a deployed node to exercise."},
+{"id":"R12-RES-10131","class":"LARGE_SPLITTABLE","reason":"ADR 0119 in-tree async fabric-mirror consumer plus a second region to deploy into."},
+{"id":"R12-REFLEX-6012","class":"LARGE_SPLITTABLE","reason":"three pieces: mesh delta wire change (needs ADR), recording seams for Microstructure/VenueBehaviour (cell.rs:4776 doc says unrecorded), central episode store."},
+{"id":"R12-EXEC-5079","class":"LARGE_SPLITTABLE","reason":"production workflow consuming CreationAdmission (qip-execution-engine/src/market_creation.rs takes it; no app caller); outside edge/arbitrage/peer territory."},
+{"id":"R12-TICK-2059","class":"DEPLOY_DEPENDENT","reason":"register gap says none for the requirement; deep brain tick desk off unless configured, nothing deployed."},
+{"id":"R12-TICK-2056","class":"PROTECTED_PATCH","reason":"enable_cloud_storage=false in infrastructure/environments/*/terraform.tfvars (protected path); also BILLED (storage)."},
+{"id":"R12-RES-9166","class":"DEPLOY_DEPENDENT","reason":"needs cross-zone lease store (ADR 0137), per-shard venue-session check and a game day on a deployed node; execution_nodes = {}."},
+{"id":"R12-REFLEX-10085","class":"EXTERNAL_BLOCKED","reason":"KMS-backed asymmetric verification and model registry staging; blocked_by ADR 0043 open gap; a billed KMS resource."}
+]
