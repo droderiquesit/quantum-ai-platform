@@ -3057,12 +3057,17 @@
   {
     "id": "R12-ARCH-7134",
     "status": "PARTIAL",
-    "current": "Code spans many phases at once (agency, ambient, quantum present before multi-region fabric); no phase gate artefact in code.",
+    "current": "ADR 0143's phase register is committed at docs/architecture/phase-register.json: the seventeen blueprint build phases (0-16) in order, each with its requirement row, exit capability, state, exit tests and the capabilities the tree carries ahead of it with the switch that keeps each off ('none' where nothing does). Phase 0 is entered with eight named exit tests; phases 1-16 are not entered. backend/crates/tests/qip-acceptance/tests/phase_register.rs refuses a phase entered or exited over an unexited predecessor, an exited phase with no exit test, an exit test that does not exist as a delimited #[test] in its named file, a row that is not the blueprint's requirement for that phase number, and a named switch that neither the Terraform root declares nor an app reads.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/m5_critical_path.rs",
-      "backend/crates/tests/qip-acceptance/tests/m6_foundation.rs"
+      "docs/architecture/phase-register.json",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs::the_committed_phase_register_is_admitted",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs::a_phase_entered_over_an_unexited_predecessor_is_refused",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs::an_exited_phase_with_no_exit_test_or_a_renamed_one_is_refused",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs::every_phase_is_the_blueprints_own_build_phase",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs::every_named_switch_exists_in_the_tree",
+      "docs/adr/0143-phases-are-gated-by-a-committed-phase-register-whose-exit-evidence-an-acceptance-test-checks-not-by-runtime-feature-flags.md"
     ],
-    "gap": "Decided by ADR 0143 (accepted 2026-10-18): A committed phase register lists each phase's exit capability and named tests, and an acceptance test refuses a phase entered over an unexited predecessor; no runtime feature flags. Code left: docs/architecture/phase-register.json populated from the blueprint phases and the acceptance test reading it, with its mutations.",
+    "gap": "2026-10-24 (lane L6): the register and its test landed. Still PARTIAL on the requirement's own text: 'later-phase features stay disabled until it passes' is withdrawn by ADR 0143 decision 3 (record, do not switch off), and the register itself shows the cost: phase 0 has not exited, yet every later phase carries capabilities in the tree, many with switch 'none' (the cycle, the agents, the warm Cloud Run services deployed to dev, the GitOps control plane turned on in dev). Bar part 4: an ADR-declined clause leaves the row PARTIAL until the owner changes the requirement or real switches are added. Phase 0's own exit is open (PAM, NCC, CA, SCC off; R12-ARCH-10159).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3070,10 +3075,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cd backend && cargo test -p qip-acceptance --test phase_register",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D19; gap before it: Machine-checkable phase exit gates. ADR lane 2026-10-18: gap re-graded against ADR 0143; gap before it: Delegable decision D19 (design-decisions-2026-10-18.json), ADR not yet written: A phase register with recorded exit checks read by an acceptance test, without runtime feature gating. Needs that ADR, then the code."
+    "notes": "ADR lane 2026-10-18: gap re-graded against decision D19; gap before it: Machine-checkable phase exit gates. ADR lane 2026-10-18: gap re-graded against ADR 0143; gap before it: Delegable decision D19 (design-decisions-2026-10-18.json), ADR not yet written: A phase register with recorded exit checks read by an acceptance test, without runtime feature gating. Needs that ADR, then the code. 2026-10-24 lane L6: register and suite added, 'test result: ok. 5 passed'. Mutations, each restored by cp and cmp: disabling the predecessor check failed a_phase_entered_over_an_unexited_predecessor_is_refused (:188); matching 'fn name' without the parenthesis failed an_exited_phase_with_no_exit_test_or_a_renamed_one_is_refused (:217); phase 1 set to entered in the committed register failed the_committed_phase_register_is_admitted (:126). Stays PARTIAL (ADR 0143 withdraws the disable clause)."
   },
   {
     "id": "R12-ARCH-7135",

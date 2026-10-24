@@ -3600,7 +3600,9 @@
     "evidence": [
       "infrastructure/terraform/main.tf",
       "infrastructure/terraform/modules/network/main.tf",
-      "infrastructure/terraform/modules/cicd/main.tf:24"
+      "infrastructure/terraform/modules/cicd/main.tf:24",
+      "docs/architecture/phase-register.json phase 0 (state entered, eight exit tests)",
+      "backend/crates/tests/qip-acceptance/tests/phase_register.rs"
     ],
     "gap": "PAM, NCC, CA, SCC enabled.",
     "implemented": true,
@@ -3618,7 +3620,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: phase 0 is recorded as entered, not exited, in the ADR 0143 register, with its eight Rust exit tests checked by phase_register.rs; the gap (PAM, NCC, CA, SCC enabled) is unchanged."
   },
   {
     "id": "R12-CICD-10160",
