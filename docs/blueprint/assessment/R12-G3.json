@@ -3057,7 +3057,7 @@
   },
   {
     "id": "R12-FINOPS-10136",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-cost-router's ComputeLedger carries an Attribution (strategy, data source, region; each optional and reported as 'unattributed' when unknown) and exposes entries(): every charge with its strategy, model (from the rung's ModelTier, 'no-model' for deterministic rungs), data-source and region keys. report_by(ledgers, CostDimension) sums spend per key exactly, read off the entries. The kernel's per-cycle ledger (Platform::charge_cycle) is attributed to the platform's region and to no strategy or source, because a cycle's compute serves every strategy it looked at.",
     "evidence": [
       "backend/crates/services/qip-cost-router/src/ledger.rs:81 Attribution",
@@ -3067,7 +3067,7 @@
       "backend/crates/services/qip-cost-router/tests/attribution.rs each_charge_carries_strategy_model_source_and_region_and_the_rollup_sums_per_strategy",
       "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:741 a_cycles_bill_is_attributed_to_its_region_and_reported_per_region"
     ],
-    "gap": "",
+    "gap": "2026-10-24: Closes when a shipped binary reports cost by dimension: a production caller of qip_cost_router::report_by (an api route, qip-cli command or journaled event) over the ledgers a cycle or decision actually opened, and production code that attributes a ledger to a strategy and to a data source (today only CostAttribution::region(HOME_REGION) in Platform::charge_cycle sets any key), or the requirement is narrowed to 'carries keys'.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3080,7 +3080,7 @@
     "verification": "cargo test -p qip-cost-router --test attribution && cargo test -p qip-kernel --test platform_outcomes a_cycles_bill_is_attributed_to_its_region_and_reported_per_region",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18. Mutations: dropping with_attribution in charge_cycle fails the kernel test (region unattributed); making entries() ignore the ledger's strategy fails the cost-router test at the strategy key. Both restored. Strategy and data-source keys are populated only where a ledger is opened for one decision about one strategy; the cycle ledger honestly reports them as unattributed rather than splitting a shared bill."
+    "notes": "Lane L24 2026-10-18. Mutations: dropping with_attribution in charge_cycle fails the kernel test (region unattributed); making entries() ignore the ledger's strategy fails the cost-router test at the strategy key. Both restored. Strategy and data-source keys are populated only where a ledger is opened for one decision about one strategy; the cycle ledger honestly reports them as unattributed rather than splitting a shared bill. AUDIT-4 2026-10-24: regraded, report_by and CostDimension have no caller outside qip-cost-router and tests; the only production attribution is the region on the cycle ledger (platform.rs:11859), and that ledger is discarded after total_cost(). Nothing in a shipped binary reports cost per strategy, model, data source or region. The attribution and kernel tests are real and mutation-checked (dropping with_attribution fails platform_outcomes.rs:819)."
   },
   {
     "id": "R12-FINOPS-10137",
