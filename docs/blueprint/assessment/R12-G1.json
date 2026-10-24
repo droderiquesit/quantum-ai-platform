@@ -2692,9 +2692,11 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/console_route.rs every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
       "infrastructure/gitops/envs/dev/portal.yaml QIP_API_AUDIENCE",
-      "frontend/portal/src/lib/server/upstream.ts AUDIENCE_VARIABLE"
+      "frontend/portal/src/lib/server/upstream.ts AUDIENCE_VARIABLE",
+      "backend/crates/tests/qip-acceptance/tests/no_service_mesh.rs::nothing_the_repository_deploys_enrols_a_workload_in_a_service_mesh",
+      "backend/crates/tests/qip-acceptance/tests/no_service_mesh.rs::the_scan_finds_a_sidecar_injection_label_and_a_mesh_feature"
     ],
-    "gap": "2026-10-24: Closes when an acceptance test asserts the clauses the check names and the named test does not: no execution, broker or ledger machine and no Fabric or Reflex workload carries a service-mesh sidecar or mesh membership, and the warm-service client in the Cloud Run hop enforces a timeout and a breaker (qip-transport breaker.rs) on the console-to-API call; or the requirement is reinterpreted by an ADR that withdraws the mesh clauses.",
+    "gap": "2026-10-24 (lane L6): the prohibition half now has its test: qip-acceptance no_service_mesh.rs::nothing_the_repository_deploys_enrols_a_workload_in_a_service_mesh scans every Terraform, template and GitOps file under infrastructure/ (premise: it reads the execution-node, broker and ledgerd modules and the dev portal manifest) for service-mesh enrolment or sidecar-injection markers and finds none, so no execution, broker or ledger machine and no Fabric or Reflex workload can be meshed without failing it. Still open, the warm-client half: the one Cloud Run hop (console to API, frontend/portal src/app/api/gateway/[...path]/route.ts) aborts at a timeout (QIP_API_TIMEOUT_MS, default 10 s) but has no circuit breaker, and upstream.ts falls back to 10 s on an invalid timeout rather than refusing it; the Rust clients that leave a process (fabric producer and consumer, mesh spine) carry qip-transport breakers. Closing needs a breaker on the console's gateway with a Playwright test, or an ADR withdrawing the breaker clause for that hop.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2705,7 +2707,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test console_route -- every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 (lane L08). The register text claimed the audience was minted against the named-invoker binding; the manifest set no audience until this change, see R12-GCP-8055. The audience equals the derived URL asserted per environment against its tfvars project_number and region. Same mutations as R12-GCP-8055. The test covers environments that carry a portal manifest (dev only). AUDIT-4 2026-10-24: regraded, the named console_route test proves only the IAM identity-token audience of the one Cloud Run hop, the ADR 0112 substitute for mTLS, and it fails when the portal's QIP_API_AUDIENCE is changed (console_route.rs:881). No test asserts that Fabric or Reflex traffic stays out of mesh sidecars or that warm-service clients enforce timeouts and breakers, which is what the requirement and its check say."
+    "notes": "Re-graded 2026-10-18 (lane L08). The register text claimed the audience was minted against the named-invoker binding; the manifest set no audience until this change, see R12-GCP-8055. The audience equals the derived URL asserted per environment against its tfvars project_number and region. Same mutations as R12-GCP-8055. The test covers environments that carry a portal manifest (dev only). AUDIT-4 2026-10-24: regraded, the named console_route test proves only the IAM identity-token audience of the one Cloud Run hop, the ADR 0112 substitute for mTLS, and it fails when the portal's QIP_API_AUDIENCE is changed (console_route.rs:881). No test asserts that Fabric or Reflex traffic stays out of mesh sidecars or that warm-service clients enforce timeouts and breakers, which is what the requirement and its check say. 2026-10-24 lane L6: suite added, 'test result: ok. 2 passed'. Mutation: an `istio-injection: enabled` label appended to infrastructure/gitops/envs/dev/portal.yaml failed nothing_the_repository_deploys_enrols_a_workload_in_a_service_mesh naming portal.yaml:224; restored by cp and cmp, 2 passed. Stays PARTIAL on the breaker clause."
   },
   {
     "id": "R12-DATA-8120",

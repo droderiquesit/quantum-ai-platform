@@ -42,7 +42,7 @@
     "verification": "terraform plan with execution_nodes naming one region",
     "work_item": "",
     "size": "S",
-    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL."
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL. 2026-10-24 lane L6: a conflict for the owner, not a code gap: modules/execution-node/variables.tf's machine_type validation admits only c4-highcpu-8/16 and c4d-highcpu-8/16 and refuses C3 and C3D, following R12-REFLEX-8002 (GCP v3.0 §1, 'a C3 or N2 shape must be refused at plan'), while this row's check asks that 'a non-C3 machine_type is refused'. The requirement's own text allows 'C3/C3D-class (or equivalent)', which C4/C4D can be read to meet; the check's literal wording cannot be met without breaking REFLEX-8002. Recorded, not changed."
   },
   {
     "id": "R12-REFLEX-7003",
@@ -2650,9 +2650,10 @@
     "current": "Simulation tests are part of the workspace test job that deploy depends on; no named simulation gate.",
     "evidence": [
       ".github/workflows/ci.yml:27-481 jobs format, lint, test, dependency-policy, security-audit, trivy, sbom, infrastructure, secrets",
-      ".github/workflows/deploy.yml:44,91 deploy runs on CI workflow_run and a gate job"
+      ".github/workflows/deploy.yml:44,91 deploy runs on CI workflow_run and a gate job",
+      "docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch"
     ],
-    "gap": "Explicit simulation gate.",
+    "gap": "2026-10-24 (lane L6): the gate is written as docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch: a ci.yml job named 'simulation gate' (qip-simulation-engine's tests, then qip-acceptance arch_042_twin_simulation, arch_056_simulation_engine, tick_replay, replay_queue_and_unwind) and a deploy.yml step that refuses a deploy unless the trusted ci run has that job by name and it succeeded (absent is a refusal), with deploy_provenance.rs::a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused executing the step against a stub gh and asserting ci.yml defines the job. The suites it runs pass today (lane run: 'test result: ok' for 13, 4, 4, 4 and 1 tests). The patch applies on top of docs/blueprint/lanes/l6-cicd-9066-protected.patch (both append to deploy_provenance.rs); with both applied in a scratch worktree, cargo test -p qip-acceptance --test deploy_provenance printed 'test result: ok. 7 passed'. Mutations, restored by cp and cmp: the deploy step's `!= \"success\"` turned into `= \"never\"` failed a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused at the missing-simulation-gate case; renaming ci.yml's job to 'perf gate' failed it at the job-definition assertion. .github/** is protected, so a person must apply it. Until it lands, a deploy is gated only on ci as a whole.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2663,7 +2664,7 @@
     "verification": "inspect ci.yml/deploy.yml",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: protected patch written and verified in a worktree; not applied. Stays PARTIAL."
   },
   {
     "id": "R12-CICD-7117",
@@ -2710,13 +2711,16 @@
   },
   {
     "id": "R12-CICD-7119",
-    "status": "MISSING",
-    "current": "No performance gate job; performance acceptance tests are unit-level.",
+    "status": "PARTIAL",
+    "current": "performance.rs and m5_performance.rs in qip-acceptance assert per-stage ceilings and run inside ci's acceptance partition (debug profile, opt-level 1); deploy.yml requires ci to have succeeded but has no performance job of its own to require.",
     "evidence": [
       ".github/workflows/ci.yml:27-481 jobs format, lint, test, dependency-policy, security-audit, trivy, sbom, infrastructure, secrets",
-      "backend/crates/tests/qip-acceptance/tests/performance.rs"
+      "backend/crates/tests/qip-acceptance/tests/performance.rs",
+      "docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch",
+      "backend/crates/tests/qip-acceptance/tests/performance.rs",
+      "backend/crates/tests/qip-acceptance/tests/m5_performance.rs"
     ],
-    "gap": "Add a performance gate with thresholds.",
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL: the thresholds exist, the gate does not): docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch adds a ci.yml job named 'performance gate' running performance and m5_performance in the release profile on one test thread, and the deploy.yml step that refuses a deploy unless that job succeeded in the trusted ci run. In this lane's session, the release suite failed twice under heavy machine load (central OMS submit scaling 2.04x vs a 2.0x tolerance; cell::work p99 11479us vs 10000us) and passed on three reruns on the same build (twice the two tests alone, then 'test result: ok. 36 passed' with --test-threads=1 and again in parallel), which is why the patch pins one thread; a hosted runner's noise is unmeasured. The patch applies on top of docs/blueprint/lanes/l6-cicd-9066-protected.patch (both append to deploy_provenance.rs); with both applied in a scratch worktree, cargo test -p qip-acceptance --test deploy_provenance printed 'test result: ok. 7 passed'. Mutations, restored by cp and cmp: the deploy step's `!= \"success\"` turned into `= \"never\"` failed a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused at the missing-simulation-gate case; renaming ci.yml's job to 'perf gate' failed it at the job-definition assertion. .github/** is protected, so a person must apply it.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2727,7 +2731,7 @@
     "verification": "ci.yml perf job",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: protected patch written and verified; release-profile performance run quoted in gap. Stays PARTIAL."
   },
   {
     "id": "R12-CICD-7120",

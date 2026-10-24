@@ -686,7 +686,8 @@
     "evidence": [
       "backend/crates/libs/qip-transport/src/mesh.rs:1-30 plaintext HTTP/1.1 mesh",
       "backend/crates/libs/qip-transport/src/mesh.rs:735 mTLS expected from a sidecar/ingress",
-      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277 no machine inside a mesh"
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277 no machine inside a mesh",
+      "backend/crates/tests/qip-acceptance/tests/no_service_mesh.rs::nothing_the_repository_deploys_enrols_a_workload_in_a_service_mesh (the mesh never carries Reflex traffic: no mesh is declared)"
     ],
     "gap": "mTLS for warm services is met by ADR 0112's hop table (Amendment 1): rustls mTLS with CA Service workload certificates on every Compute Engine hop, IAM invocation into Cloud Run. Needs CA Service issuance in Terraform and the composition roots, and the IAM evidence of API-8113. The mesh itself is refused.",
     "implemented": false,
@@ -699,7 +700,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). The mTLS obligation itself survives ADR 0024; the mechanism does not."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). The mTLS obligation itself survives ADR 0024; the mechanism does not. 2026-10-24 lane L6: the 'mesh never carries Reflex traffic' clause is now guarded by no_service_mesh.rs (mutation: an istio-injection label in the dev portal manifest fails it). CA Service issuance in the composition roots is unchanged."
   },
   {
     "id": "R12-GCP-10032",

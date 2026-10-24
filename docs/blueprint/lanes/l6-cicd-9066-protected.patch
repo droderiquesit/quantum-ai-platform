@@ -54,10 +54,10 @@ index 6af98b52..5f7adc1c 100644
  
        # Everything this workflow needs to authenticate is derived from the
 diff --git a/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs b/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
-index 6a426b7d..8cea50cb 100644
+index 6a426b7d..ea565614 100644
 --- a/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
 +++ b/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
-@@ -400,3 +400,60 @@ fn a_deployment_whose_ci_run_did_not_succeed_is_refused_on_both_paths() {
+@@ -400,3 +400,62 @@ fn a_deployment_whose_ci_run_did_not_succeed_is_refused_on_both_paths() {
      }
      let _ = std::fs::remove_dir_all(&bin);
  }
@@ -112,7 +112,9 @@ index 6a426b7d..8cea50cb 100644
 +            command.env("PATH", &path);
 +            command.env("THIS_REPOSITORY", "owner/repo");
 +            command.env("THIS_SHA", "abc123");
-+            command.output().map_or(-1, |o| o.status.code().unwrap_or(-1))
++            command
++                .output()
++                .map_or(-1, |o| o.status.code().unwrap_or(-1))
 +        };
 +        assert_eq!(code, expected, "ci run count {count:?}");
 +    }
