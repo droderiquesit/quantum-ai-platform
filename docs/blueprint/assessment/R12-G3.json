@@ -1863,7 +1863,7 @@
       "backend/crates/edge/qip-edge/src/mesh.rs:12-22 verify before deliver",
       "backend/crates/apps/qip-edge-node/src/main.rs:623-628 StrategyInstaller deploys only on a verified payload"
     ],
-    "gap": "Registry staging and KMS-backed asymmetric verification.",
+    "gap": "Registry staging of model bundles and KMS-backed asymmetric verification (corrected 2026-10-24): both wait on ADR 0043 (asymmetric signing is an open gap) and on a billed KMS key; the HMAC verify-before-apply path is real.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1877,7 +1877,7 @@
     "verification": "cargo test -p qip-edge",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class EXTERNAL_BLOCKED."
   },
   {
     "id": "R12-QUANT-10086",
@@ -2249,7 +2249,7 @@
       "backend/crates/apps/qip-edge-node/src/main.rs:924 SpoolWriter::open; :1095 Drain::open",
       "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:330 every_entry_reaches_p2_and_every_outcome_also_reaches_p1_with_its_journal_digest"
     ],
-    "gap": "Decided by ADR 0132 (accepted 2026-10-18): One admission header (three times, uncertainty, source hash, entitlement) shared by MarketEvent and every SensedRecord; SourceManifest v2 is additive and v1 stays readable; ticks reach the fabric only as bounded per-pass feature digests. Code left: a per-pass FeatureSnapshot P2 record from the node, bounded by configured instruments, with a test that ticks are counted and not shipped.",
+    "gap": "Per-pass FeatureSnapshot P2 record from the node, bounded by configured instruments, with a test that ticks are counted and not shipped (ADR 0132; corrected 2026-10-24): a new topic needs qip-events schemas.lock.json and consumers.lock.json entries and the fabric catalogue stream list, and Decision is a hash-chained enum, so it is a multi-crate change with acceptance suites, not a node-only slice.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2262,7 +2262,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement names ticks and feature snapshots, which are not appended as records. ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Per-tick and feature-snapshot records on P1/P2; fabric partition only drains when a URL is configured."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement names ticks and feature snapshots, which are not appended as records. ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Per-tick and feature-snapshot records on P1/P2; fabric partition only drains when a URL is configured. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
   },
   {
     "id": "R12-TICK-10103",
@@ -2942,7 +2942,7 @@
       "backend/crates/edge/qip-edge/tests/cross_region.rs:1054",
       "backend/crates/edge/qip-edge/tests/cross_region.rs:1308"
     ],
-    "gap": "Already decided by ADR 0119: Cross-region mirroring is decided: an in-tree asynchronous fabric-mirror consumer (ADR 0119, accepted 2026-10-11); the rows' 'C8 refuses mirroring' text is stale and what is left is the build and a second region to deploy into.",
+    "gap": "The ADR 0119 asynchronous fabric-mirror consumer is unbuilt and there is no second region to deploy it into (corrected 2026-10-24); darkness is still operator-declared or centre-derived.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2953,7 +2953,7 @@
     "verification": "cargo test -p qip-edge --test cross_region; cargo test -p qip-edge-node --test dark",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision E01; gap before it: Automatic peer-loss detection; mirror catch-up."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision E01; gap before it: Automatic peer-loss detection; mirror catch-up. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
   },
   {
     "id": "R12-RES-10132",

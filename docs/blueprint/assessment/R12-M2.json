@@ -1314,7 +1314,7 @@
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:458 LakeSink writes applied market events",
       "infrastructure/environments/dev/terraform.tfvars:280 enable_cloud_storage = false (same in test/stage/prod)"
     ],
-    "gap": "Enable storage with lifecycle; entitlement-scoped job reads.",
+    "gap": "Enable storage with lifecycle; entitlement-scoped job reads (corrected 2026-10-24): enable_cloud_storage = false in infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars, a protected path, and enabling it creates billed buckets, so no patch was written; the lifecycle rules and entitlement-scoped reads are not built.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1327,7 +1327,7 @@
     "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class PROTECTED_PATCH and BILLED."
   },
   {
     "id": "R12-TICK-2057",
@@ -1390,7 +1390,7 @@
       "backend/crates/services/qip-simulation-engine/src/tick_replay.rs::ReplaySession::resume",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::round"
     ],
-    "gap": "None for the requirement; not deployed (desk off unless configured).",
+    "gap": "Not deployed (corrected 2026-10-24): the requirement is met in code and test; the deep brain tick desk runs only when configured and no environment configures it or deploys a deep brain with lake history.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1403,7 +1403,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class DEPLOY_DEPENDENT."
   },
   {
     "id": "R12-TICK-2060",

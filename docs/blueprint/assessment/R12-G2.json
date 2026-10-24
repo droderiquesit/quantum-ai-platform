@@ -3778,7 +3778,7 @@
       "apps/qip-edge-node/tests/standby.rs::a_standby_places_nothing_until_it_promotes_and_the_primary_it_replaced_places_nothing_after",
       "apps/qip-edge-node/tests/standby.rs::a_standby_waits_while_any_venue_still_reports_the_old_holders_session"
     ],
-    "gap": "A cross-zone lease store, Terraform wiring of the lease to the standby, a per-shard venue-session check, and the game day.",
+    "gap": "A cross-zone lease store (ADR 0137 GcsLeaseStore, not built), a per-shard venue-session check replacing SimulatedSessions, and the game day (corrected 2026-10-24). The Terraform wiring of QIP_FENCING_LEASE to primary and standby exists (startup.sh.tftpl:263, standby.tftest.hcl) but the lease is a file on one host, so across zones the pair is not fenced; execution_nodes = {} so nothing is deployed.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -3789,7 +3789,7 @@
     "verification": "game day",
     "work_item": "",
     "size": "L",
-    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285)."
+    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285). Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class DEPLOY_DEPENDENT."
   },
   {
     "id": "R12-RES-9167",
