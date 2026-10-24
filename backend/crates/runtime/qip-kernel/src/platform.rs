@@ -1136,6 +1136,9 @@ pub struct Platform {
     /// thesis is queued once and drained once; re-expressing it every cycle
     /// would pyramid the same idea until the mandate cap alone stopped it.
     pending_theses: Vec<qip_portfolio_engine::construction::ApprovedThesis>,
+    /// Beliefs from outside the opportunity, by subject. REASON may only be
+    /// narrowed by them (ADR 0151 decision 3); empty unless a producer sets it.
+    outside_priors: BTreeMap<String, crate::fusion::OutsidePrior>,
     /// The capital survival kernel and the confidence governor: what DECIDE
     /// may size against, and the gross the Risk Gate holds orders to. See
     /// [`crate::survival`]. One field for both because they answer one
@@ -1192,6 +1195,9 @@ const PENDING_CORPORATE_ACTIONS: usize = 4_096;
 ///
 /// Large enough that a cycle can still see what the previous ones decided,
 /// small enough that the working set does not grow with uptime.
+/// The most outside priors REASON holds at once.
+const OUTSIDE_PRIOR_CAPACITY: usize = 1_024;
+
 const PROPOSAL_HISTORY: usize = 256;
 
 /// How many cycles of the book's own equity the platform keeps, for the tail
@@ -5602,6 +5608,7 @@ impl Platform {
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             pending_theses: Vec::new(),
+            outside_priors: BTreeMap::new(),
             governor: crate::survival::SurvivalGovernor::default(),
             ledger_obligations: None,
             unsettled_sales: Vec::new(),
@@ -10541,6 +10548,26 @@ impl Platform {
         self.governor.signals()
     }
 
+    /// Replace the beliefs from outside the opportunity that REASON may be
+    /// narrowed by (ADR 0151 decision 3). Replaced, not merged: a posterior
+    /// from an earlier tick that the desk no longer holds must stop acting.
+    /// Bounded like the proposal working set; a longer list is refused rather
+    /// than truncated, because which beliefs a truncation dropped would depend
+    /// on the order the producer happened to list them.
+    pub fn set_outside_priors(&mut self, priors: Vec<crate::fusion::OutsidePrior>) -> Result<()> {
+        if priors.len() > OUTSIDE_PRIOR_CAPACITY {
+            return Err(Error::invalid(format!(
+                "{} outside priors exceed the bound of {OUTSIDE_PRIOR_CAPACITY}; the producer ranks and caps them",
+                priors.len()
+            )));
+        }
+        self.outside_priors = priors
+            .into_iter()
+            .map(|prior| (prior.subject().to_string(), prior))
+            .collect();
+        Ok(())
+    }
+
     /// Withhold hedge capacity under `policy` from every construction from
     /// now on. Replaces the policy and keeps the governor's measurements.
     ///
@@ -14198,7 +14225,21 @@ impl Platform {
         // where the anomaly does not imply a mechanism, no hypothesis is
         // formed rather than one being invented.
         let outcome = match self.synthesise(&opportunity, &report, now) {
-            Ok(Some(reasoned)) => {
+            Ok(Some(mut reasoned)) => {
+                // An outside prior may only narrow (ADR 0151 decision 3). It
+                // runs before the confidence is counted, charted, written into
+                // a prediction or sized on, so every reader sees one number.
+                // A claim with no inherent direction has nothing to be against.
+                let outside_narrowing = opportunity
+                    .affected_objects
+                    .first()
+                    .and_then(|subject| self.outside_priors.get(subject.as_str()))
+                    .zip(reasoned.hypothesis.claim.implied_sign())
+                    .map(|(prior, sign)| prior.narrowing_for(sign))
+                    .filter(|multiplier| *multiplier < 1.0);
+                if let Some(multiplier) = outside_narrowing {
+                    reasoned.hypothesis.confidence *= multiplier;
+                }
                 let approved = reasoned.hypothesis.status.is_actionable();
                 // Recorded here, where review's verdict becomes known, rather
                 // than inferred later from the order count. `created` is the
