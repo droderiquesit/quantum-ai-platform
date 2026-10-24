@@ -448,8 +448,10 @@ impl AmbientAgency {
     /// answer does not gate the draft: the only effect this path measures is
     /// unidentified, and withholding a notice to a person on it would be
     /// acting on a correlation. What the ask proves is that the memory is
-    /// read on the running path, so a confidence-weighted recommendation
-    /// (AGENCY-028, in `qip-agency`) would reach a decision here.
+    /// read on the running path. The memory reads only records above zero
+    /// confidence (ADR 0145) and this path files every outcome at zero, so
+    /// the honest answer today is always "nothing"; an identified outcome
+    /// would change the answer and still not the draft.
     fn ask(
         &self,
         signal: &AmbientSignal,

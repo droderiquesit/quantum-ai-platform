@@ -1534,7 +1534,7 @@
       "backend/crates/services/qip-training/tests/labels.rs:31-148",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::round"
     ],
-    "gap": "None for the requirement; not deployed (desk off unless configured).",
+    "gap": "None in code. Not deployed: QIP_DEEPBRAIN_TICK_EVERY is unset and turning it on needs QIP_DEEPBRAIN_TICK_ENTITLEMENTS, a per-dataset licensing decision nobody has made (manifest_wiring.rs THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED). Checked 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1611,7 +1611,7 @@
       "backend/crates/services/qip-training/src/microstructure.rs::train_fill_model",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk"
     ],
-    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. Slippage, liquidity, regime and execution models not trained.",
+    "gap": "Tick desk is off until a licensing decision per dataset is made (QIP_DEEPBRAIN_TICK_ENTITLEMENTS, manifest_wiring.rs THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED), so this never runs in a deployed binary. Slippage, liquidity, regime and execution models are not trained and need licensed replay data. Checked 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": true,
