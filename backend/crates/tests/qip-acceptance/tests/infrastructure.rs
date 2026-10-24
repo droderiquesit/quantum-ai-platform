@@ -4952,6 +4952,159 @@ fn no_cloud_run_identity_can_be_granted_the_venue_credential_and_only_the_execut
 }
 
 #[test]
+fn no_cloud_run_workload_is_given_the_venue_credential_by_mount_or_by_environment_value() {
+    // R12-GCP-8114, the half the grant walk above cannot see. `modules/cloudrun`
+    // grants each workload `secretAccessor` on whatever its `secret_mounts`
+    // and `secret_env` name, keyed on `each.value.secret_id`, so a grant made
+    // that way carries no literal for a text walk to find and reads no
+    // ceiling. Until 2026-10-24 the module's precondition refused the venue
+    // credential only for a customer-class workload and only as a mount: a
+    // platform-class workload mounting it, or any workload taking it through
+    // `secret_env`, planned an accessor grant at the paper ceiling, and this
+    // suite passed (found by an independent skeptic of the GCP-8114
+    // promotion).
+    //
+    // Mutations: add a mount of `module.secrets.secret_ids["qip-venue-credential"]`
+    // to any catalogue entry, or restore the customer-only precondition.
+    let catalogue = without_comments(&read(CATALOGUE));
+    assert!(
+        catalogue.contains("secret_mounts") && catalogue.contains("module.secrets.secret_ids["),
+        "premise: the catalogue no longer mounts secrets from modules/secrets, so the check \
+         below reads nothing"
+    );
+    assert!(
+        !catalogue.contains("qip-venue-credential"),
+        "catalogue.tf names the venue credential, so a Cloud Run workload is handed it"
+    );
+    for path in files_with_extension("infrastructure/gitops", "yaml") {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            !text.contains("qip-venue-credential"),
+            "{} names the venue credential; no RunService may mount or reference it",
+            path.display()
+        );
+    }
+
+    // The module refuses it by either input, in every traffic class.
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    let lines: Vec<String> = module.lines().map(collapsed).collect();
+    for wanted in [
+        "[for mount in values(var.secret_mounts) : mount.secret_id],",
+        "[for secret in values(var.secret_env) : secret.secret_id],",
+        "!startswith(secret_id, \"qip-venue-credential\")",
+    ] {
+        assert!(
+            lines.iter().any(|line| line == wanted),
+            "modules/cloudrun's venue-credential precondition lacks `{wanted}`"
+        );
+    }
+    assert!(
+        !module.contains("var.traffic_class != \"customer\" ||"),
+        "the venue-credential refusal is conditional on the traffic class again; a platform \
+         workload could then mount the credential"
+    );
+    // And a plan proves it: the harness refuses both inputs and admits a
+    // secret that is not the venue's.
+    let harness =
+        read("infrastructure/terraform/modules/cloudrun/tests/venue-credential.tftest.hcl");
+    assert_eq!(
+        harness
+            .matches("expect_failures = [google_service_account.workload]")
+            .count(),
+        3,
+        "the cloudrun harness no longer plans the three refusals (platform mount, \
+         environment value, customer mount)"
+    );
+    assert!(
+        harness.contains("run \"a_workload_mounting_another_secret_is_admitted\""),
+        "the cloudrun harness no longer plans the admitting half, so a precondition that \
+         refused everything would pass it"
+    );
+}
+
+#[test]
+fn no_project_folder_or_organisation_grant_hands_out_secret_manager_beyond_the_two_recorded() {
+    // R12-GCP-8114: a project-level `secretAccessor` reads every secret in the
+    // project, the venue credential included, and no secret-level walk sees
+    // it. The tree holds exactly two grants above the secret that name Secret
+    // Manager:
+    // * the infra pipeline's `secretmanager.admin`, which creates the secrets
+    //   and their IAM and is no workload's;
+    // * Config Connector's `secretmanager.viewer`, which reads metadata and
+    //   never a payload.
+    // A third, for a Cloud Run workload or anyone else, fails here.
+    //
+    // Mutation: add a `google_project_iam_member` granting
+    // `roles/secretmanager.secretAccessor` to the workload account in
+    // `modules/cloudrun`.
+    let kinds = [
+        "google_project_iam_member",
+        "google_project_iam_binding",
+        "google_project_iam_policy",
+        "google_project_iam_custom_role",
+        "google_folder_iam_member",
+        "google_folder_iam_binding",
+        "google_folder_iam_policy",
+        "google_organization_iam_member",
+        "google_organization_iam_binding",
+        "google_organization_iam_policy",
+        "google_organization_iam_custom_role",
+    ];
+    let all: Vec<(String, String, String)> = kinds
+        .into_iter()
+        .flat_map(resource_blocks_in_tree)
+        .collect();
+    assert!(
+        all.len() > 10,
+        "premise: the walk found {} project, folder or organisation IAM blocks",
+        all.len()
+    );
+    let mut secret_manager: Vec<(String, String, String)> = all
+        .into_iter()
+        .filter(|(_, _, block)| block.contains("secretmanager."))
+        .collect();
+    secret_manager.sort();
+    let located: Vec<String> = secret_manager
+        .iter()
+        .map(|(file, name, _)| format!("{file}:{name}"))
+        .collect();
+    assert_eq!(
+        located,
+        [
+            "infrastructure/terraform/modules/cicd/main.tf:infra_roles",
+            "infrastructure/terraform/modules/gitops-control-plane/main.tf:kcc_sees_secrets",
+        ],
+        "a grant above the secret names Secret Manager beyond the infra pipeline's admin and \
+         Config Connector's metadata read; one at the project reads the venue credential too"
+    );
+    let block_of = |name: &str| {
+        secret_manager
+            .iter()
+            .find(|(_, n, _)| n == name)
+            .map(|(_, _, block)| block.lines().map(collapsed).collect::<Vec<String>>())
+            .unwrap_or_default()
+    };
+    assert!(
+        block_of("infra_roles")
+            .iter()
+            .any(|line| line == "member = \"serviceAccount:${google_service_account.infra.email}\""),
+        "the infra pipeline's Secret Manager admin grant names an account other than the \
+         pipeline's own"
+    );
+    let kcc = block_of("kcc_sees_secrets");
+    assert!(
+        kcc.iter()
+            .any(|line| line == "role = \"roles/secretmanager.viewer\"")
+            && kcc
+                .iter()
+                .any(|line| line
+                    == "member = \"serviceAccount:${google_service_account.kcc.email}\""),
+        "Config Connector's Secret Manager grant is no longer metadata-only for its own \
+         account: {kcc:?}"
+    );
+}
+
+#[test]
 fn every_cloud_run_workload_is_placed_in_a_declared_trust_zone_and_carries_its_tag() {
     // A workload with no zone has no subnet, no tag and no rule — and reads,
     // in the console, as a service in a VPC. The catalogue names a zone per

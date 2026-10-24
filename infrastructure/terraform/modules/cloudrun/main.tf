@@ -221,22 +221,29 @@ resource "google_service_account" "workload" {
       error_message = "The derived service account id qip-${var.name}-${var.environment} is ${length("qip-${var.name}-${var.environment}")} characters; Google allows 30. Shorten the workload name."
     }
 
-    # The venue credential belongs to the trading zone and reaches nothing
-    # else.
+    # No Cloud Run workload reads the venue credential, in any traffic class
+    # and by either input (R12-GCP-8114, ADR 0108 E3). Its one reader is the
+    # execution node, a Compute Engine machine, bound in
+    # `modules/execution-node`.
     #
-    # `modules/secrets` already makes it unreadable in an environment whose
-    # ceiling is paper trading. This is the neighbouring failure: an
-    # environment where it is readable, and a customer-facing workload mounting
-    # it because the mount list was copied from the service next door. Matched
-    # on the secret's own prefix rather than a substring of anything, because
-    # this repository has already been bitten by a check that matched a
-    # neighbouring token.
+    # This used to refuse only a customer-class workload, and only through
+    # `secret_mounts`, which left two ways in: a platform-class workload
+    # mounting it, and any workload taking it through `secret_env`. Either
+    # creates this module's own accessor grant below (`mounted` or `env`) at
+    # any ceiling, because neither grant reads the ceiling, so a mount list
+    # copied from the service next door would have handed a Cloud Run account
+    # the key to a venue. Matched on the secret's own prefix rather than a
+    # substring of anything, because this repository has already been bitten
+    # by a check that matched a neighbouring token.
     precondition {
-      condition = var.traffic_class != "customer" || alltrue([
-        for mount in values(var.secret_mounts) :
-        !startswith(mount.secret_id, "qip-venue-credential")
+      condition = alltrue([
+        for secret_id in concat(
+          [for mount in values(var.secret_mounts) : mount.secret_id],
+          [for secret in values(var.secret_env) : secret.secret_id],
+        ) :
+        !startswith(secret_id, "qip-venue-credential")
       ])
-      error_message = "A customer-facing workload may not read the venue credential. Customer traffic and trading traffic share no credential; the workload that needs it is in the trading class and is reached over the VPC."
+      error_message = "No Cloud Run workload may read the venue credential, by secret_mounts or secret_env. Its only reader is the execution node's own account (modules/execution-node); a workload that needs to reach a venue is not a Cloud Run workload."
     }
 
     # Two mounts producing the same file path silently leave one of the two
