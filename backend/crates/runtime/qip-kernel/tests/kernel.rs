@@ -1926,3 +1926,28 @@ fn lineage_completeness_counts_records_logged_under_a_lineage_against_records_ha
     );
     Ok(())
 }
+
+/// R12-GOV-6127: an order naming only blank hypotheses traces to nothing —
+/// the shape of an order justified by nothing but the trade — and is
+/// refused like one naming none. Mutation: in `Order::validate`, test
+/// `is_empty()` alone again and the blank order is admitted.
+#[test]
+fn an_order_naming_only_blank_hypotheses_is_refused_like_one_naming_none() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    let blank = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("1000"),
+        dec!("100"),
+        "prop-1",
+        vec!["  ".to_string(), String::new()],
+        start(),
+    );
+    let error = platform.submit_order(blank, start()).unwrap_err();
+    assert!(
+        error.message().contains("traces to no hypothesis"),
+        "{}",
+        error.message()
+    );
+    Ok(())
+}

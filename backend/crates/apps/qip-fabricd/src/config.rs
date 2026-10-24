@@ -65,7 +65,9 @@ pub const HOUSEKEEPING_MS: &str = "QIP_EVENT_FABRIC_HOUSEKEEPING_MS";
 pub const MANAGED_LOG: &str = "QIP_EVENT_FABRIC_MANAGED_LOG";
 /// With `spanner`: the database, `projects/<p>/instances/<i>/databases/<d>`.
 pub const SPANNER_DATABASE: &str = "QIP_EVENT_FABRIC_SPANNER_DATABASE";
-/// With a managed log: the region this broker's leases are keyed under.
+/// The region this broker serves: the region it stamps into every batch an
+/// authenticated session produces (ADR 0129 §1) and, with a managed log, the
+/// one its leases are keyed under. Required outside a `local` deployment.
 pub const REGION: &str = "QIP_EVENT_FABRIC_REGION";
 /// With a managed log: this instance's name, unique in its region (the zone
 /// and the VM name, say). The lease holder is this joined to the process's
@@ -189,6 +191,10 @@ pub struct Config {
     pub listener_tls: Option<TlsSource>,
     /// [`ADMITTED_PEERS`], validated as names a certificate can carry.
     pub admitted_peers: Vec<String>,
+    /// [`REGION`]: what the broker stamps as where a batch was produced
+    /// (ADR 0129). `None` only in a `local` deployment, whose broker stamps
+    /// no origin and whose consumers therefore refuse what it serves.
+    pub region: Option<String>,
 }
 
 /// The proxy endpoint and the one lasting credential a Google API is reached
@@ -558,6 +564,24 @@ impl Config {
                  from this broker"
             )));
         }
+        // ADR 0129 §1: the region is the broker's to stamp, so a deployed
+        // broker that does not know it would serve batches every consumer
+        // refuses. Refused here, at start, naming the variable.
+        let region = match present(variables, REGION) {
+            Some(_) => Some(label_name(
+                variables,
+                REGION,
+                "the region this broker stamps into every batch it accepts",
+            )?),
+            None if deployment != Deployment::Local => {
+                return Err(Error::invalid(format!(
+                    "{REGION} is not set and {DEPLOYMENT} is `{deployment}`; the broker stamps \
+                     its region into every batch it accepts (ADR 0129), and a consumer refuses \
+                     a batch that carries none rather than supply its own"
+                )));
+            }
+            None => None,
+        };
         if listener_tls.is_none() && !admitted_peers.is_empty() {
             return Err(Error::invalid(format!(
                 "{ADMITTED_PEERS} names workloads and the protocol listener is plaintext; a \
@@ -592,6 +616,7 @@ impl Config {
             hot_batches,
             listener_tls,
             admitted_peers,
+            region,
         })
     }
 }
@@ -717,6 +742,7 @@ mod tests {
                 ADMITTED_PEERS,
                 "edge-node.prod.qip.internal, ledgerd.prod.qip.internal",
             ),
+            (REGION, "europe-west2"),
         ] {
             tls.insert(name.to_string(), value.to_string());
         }
@@ -748,6 +774,7 @@ mod tests {
                 "/etc/qip/tls/google-roots.pem",
             ),
             (ADMITTED_PEERS, "edge-node.prod.qip.internal"),
+            (REGION, "europe-west2"),
         ] {
             cas.insert(name.to_string(), value.to_string());
         }
@@ -784,10 +811,37 @@ mod tests {
                 "/etc/qip/tls/roots.pem",
             ),
             (ADMITTED_PEERS, "edge-node.prod.qip.internal"),
+            (REGION, "europe-west2"),
         ] {
             tls.insert(name.to_string(), value.to_string());
         }
         tls
+    }
+
+    /// ADR 0129 §1: the broker stamps its region into every batch it
+    /// accepts, so a deployed broker that does not know it would serve
+    /// batches every consumer refuses. Refused at start; `local` may omit
+    /// it, and a region that is not a label is refused anywhere. Mutation:
+    /// drop the non-local refusal in `parse_with` and the regionless
+    /// deployed broker parses; this fails.
+    #[test]
+    fn a_deployed_broker_refuses_to_start_without_the_region_it_stamps() {
+        let config = Config::parse(&deployed_tls()).expect("premise: the deployed fixture parses");
+        assert_eq!(config.region.as_deref(), Some("europe-west2"));
+        let mut regionless = deployed_tls();
+        regionless.remove(REGION);
+        let error = Config::parse(&regionless).expect_err("a deployed broker started regionless");
+        assert!(
+            error.to_string().contains(&format!("{REGION} is not set")),
+            "{error}"
+        );
+        assert_eq!(
+            Config::parse(&complete()).map(|c| c.region).ok(),
+            Some(None)
+        );
+        let mut unlabelled = deployed_tls();
+        unlabelled.insert(REGION.to_string(), "Europe West".to_string());
+        assert!(Config::parse(&unlabelled).is_err());
     }
 
     /// The failure this prevents: with the list unset, `PeerNames::admit`

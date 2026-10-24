@@ -278,6 +278,16 @@ fn the_ledgers_decoder_accepts_the_desks_batch_as_it_accepts_a_cells() {
     );
     batch.producer_id = "desk".to_string();
     batch.base_offset = 0;
+    // As the broker that accepted it stamps it (ADR 0129): the ledger reads
+    // the producing region and principal off the batch, never its own.
+    qip_events::event_fabric::codec::stamp_broker_origin(
+        &mut batch,
+        qip_events::event_fabric::codec::BrokerOrigin {
+            region: "europe-west2".to_string(),
+            partition: 0,
+            principal: "desk".to_string(),
+        },
+    );
     let context = qip_ledgerd::consumer::fabric_context(OUTCOMES_STREAM, 0, "ledger");
     let decoded = qip_ledgerd::consumer::decode_batch("p0", &context, &batch, 0)
         .expect("the ledger's decoder takes the desk's records");

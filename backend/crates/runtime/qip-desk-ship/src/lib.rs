@@ -906,7 +906,7 @@ impl Shipping {
             check.producer_id = self.route.producer_id.clone();
             let context = FabricContext {
                 stream: self.route.stream.clone(),
-                region: self.region.clone(),
+                region: Some(self.region.clone()),
                 partition: self.route.partition,
                 qos_class: QosClass::P1Outcomes,
                 auth_context: format!("producer:{}", self.route.producer_id),
@@ -1017,7 +1017,7 @@ impl Shipping {
     fn preflight(&self, records: Vec<Record>) -> std::result::Result<Batch, (usize, String)> {
         let context = FabricContext {
             stream: self.route.stream.clone(),
-            region: self.region.clone(),
+            region: Some(self.region.clone()),
             partition: self.route.partition,
             qos_class: QosClass::P1Outcomes,
             auth_context: format!("producer:{}", self.route.producer_id),

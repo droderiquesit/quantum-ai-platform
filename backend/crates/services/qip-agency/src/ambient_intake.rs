@@ -355,6 +355,11 @@ impl AmbientIntake {
                 tool: DRAFT_TOOL.to_string(),
                 identity: config.acting_identity.clone(),
                 fingerprint: voice_fingerprint(&written.content),
+                // Kept within the guard's bound, and otherwise left out so
+                // the post-release check reports it unreadable rather than
+                // holding an unbounded text (R12-GOV-3030).
+                content: (written.content.len() <= crate::guard::MAX_RELEASED_CONTENT_BYTES)
+                    .then(|| written.content.clone()),
             });
         }
         guard.resume(decisions)?;

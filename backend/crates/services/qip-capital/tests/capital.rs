@@ -435,6 +435,7 @@ fn terms(gross: Decimal, validity: Duration) -> EnvelopeTerms {
         venues: vec![venue()],
         validity,
         exposure: qip_capital::ExposureTerms::default(),
+        drawdown_of_loss: qip_capital::envelope::DEFAULT_DRAWDOWN_OF_LOSS,
     }
 }
 
@@ -1854,5 +1855,53 @@ fn a_recall_needs_a_positive_window_and_an_outstanding_order_to_acknowledge() ->
         register.state("cell-lon-1", &StrategyId::new("momentum-v3")),
         Some(RecallState::Acknowledged { .. })
     ));
+    Ok(())
+}
+
+/// ADR 0126 decision 2: every envelope this issuer signs carries a drawdown
+/// stop inside its signed payload — the whole loss limit by default, a
+/// stated share of it when the terms narrow it — so no grant reaches a cell
+/// bounded by its net loss alone. A share outside `(0, 1]` is refused, never
+/// clamped: above one is a stop the loss limit always beats, zero a halt.
+#[test]
+fn every_issued_envelope_carries_a_drawdown_stop_and_a_share_outside_its_range_is_refused()
+-> Result<()> {
+    let issuer = issuer()?;
+    let standing = issuer.issue(
+        &terms(dec!("1000000"), Duration::from_hours(1)),
+        &approval(start())?,
+        start(),
+    )?;
+    let block = standing
+        .drawdown()
+        .expect("an issued envelope carries no drawdown stop");
+    assert_eq!(block.max_drawdown, standing.loss_limit());
+    assert!(
+        standing.signing_payload().contains("|drawdown.v1|"),
+        "the stop is outside the signed payload: {}",
+        standing.signing_payload()
+    );
+    issuer.verify(&standing, start())?;
+
+    let narrowed = issuer.issue(
+        &terms(dec!("1000000"), Duration::from_hours(1)).with_drawdown_of_loss(dec!("0.25")),
+        &approval(start())?,
+        start(),
+    )?;
+    let stop = narrowed.drawdown().map(|block| block.max_drawdown);
+    assert_eq!(
+        stop,
+        Some(dec!("50000")),
+        "a quarter of the 200000 loss limit"
+    );
+
+    for share in [dec!("0"), dec!("1.01"), dec!("-0.5")] {
+        let refused = issuer.issue(
+            &terms(dec!("1000000"), Duration::from_hours(1)).with_drawdown_of_loss(share),
+            &approval(start())?,
+            start(),
+        );
+        assert!(refused.is_err(), "a drawdown share of {share} was issued");
+    }
     Ok(())
 }

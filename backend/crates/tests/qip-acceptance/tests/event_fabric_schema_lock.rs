@@ -333,6 +333,8 @@ fn policy_payload_sample() -> PolicyPayload {
                 side: BookSide::Ask,
                 cost_fraction: dec!("0.001"),
                 costs: None,
+                from_terms: None,
+                to_terms: None,
             }],
             start_sizes: BTreeMap::from([("USD".to_string(), dec!("1000"))]),
         },

@@ -598,6 +598,10 @@ fn start_composed(
     // reading as the end of the partition.
     let broker =
         Broker::open(&config.data_dir, clock.clone())?.with_archive_reader(archive_store.clone());
+    let broker = match &config.region {
+        Some(region) => broker.with_region(region)?,
+        None => broker,
+    };
     let broker = match (&config.managed, managed) {
         (Some(settings), Some(log)) => broker.with_managed_log(log, &settings.instance)?,
         (Some(settings), None) => broker.with_managed_log(

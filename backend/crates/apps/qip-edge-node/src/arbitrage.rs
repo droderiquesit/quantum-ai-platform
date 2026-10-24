@@ -216,14 +216,21 @@ pub fn graph_from_whitelist_in(
             venue.clone(),
             VenueFacts::new(conversion.venue_class, VenueStatus::Open),
         );
+        // R12-MESH-5053: each end's representation and settlement stage as
+        // the centre stated them, so a wrapped or unsettled holding is a node
+        // of its own and no zero-cost edge reaches it from the native,
+        // settled one. Unstated is native and settled, as before the field.
         let index = graph.add_trade(
-            place(Node::new(
-                ObjectId::from_string(conversion.from.as_str()),
-                venue.clone(),
+            place(held_as(
+                Node::new(
+                    ObjectId::from_string(conversion.from.as_str()),
+                    venue.clone(),
+                ),
+                conversion.from_terms,
             )),
-            place(Node::new(
-                ObjectId::from_string(conversion.to.as_str()),
-                venue,
+            place(held_as(
+                Node::new(ObjectId::from_string(conversion.to.as_str()), venue),
+                conversion.to_terms,
             )),
             Decimal::ONE,
             conversion.cost_fraction,
@@ -332,6 +339,27 @@ pub fn desk_from_whitelist_with(
     search: SearchSettings,
 ) -> Result<ArbitrageDesk> {
     desk_from_whitelist_in(whitelist, venues, None, strategy, envelope, search)
+}
+
+/// A node placed in the representation and settlement stage `terms` state
+/// (R12-MESH-5053); unstated leaves it native and settled.
+fn held_as(node: Node, terms: Option<qip_contracts::policy::HoldingTerms>) -> Node {
+    use qip_arbitrage::{Representation, SettlementStage};
+    use qip_contracts::policy::{HoldingRepresentation, HoldingSettlement};
+    let Some(terms) = terms else {
+        return node;
+    };
+    node.with_representation(match terms.representation {
+        HoldingRepresentation::Native => Representation::Native,
+        HoldingRepresentation::Wrapped => Representation::Wrapped,
+        HoldingRepresentation::Tokenized => Representation::Tokenized,
+        HoldingRepresentation::Receipt => Representation::Receipt,
+    })
+    .with_settlement(match terms.settlement {
+        HoldingSettlement::Settled => SettlementStage::Settled,
+        HoldingSettlement::Pending => SettlementStage::Pending,
+        HoldingSettlement::InTransit => SettlementStage::InTransit,
+    })
 }
 
 /// [`desk_from_whitelist_with`], its graph's nodes placed in `region`.

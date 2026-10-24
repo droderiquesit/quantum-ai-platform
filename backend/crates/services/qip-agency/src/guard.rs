@@ -68,9 +68,19 @@ use std::sync::Arc;
 /// [`ActionGuard::resume_voices`] reads back on start.
 pub const VOICE_RETENTION: usize = 1024;
 
-/// One message as it was released: which tool said it, as whom, and the
-/// fingerprint of its words. Kept so a later pass cannot say the same thing
-/// as somebody else (R12-AGENCY-1064).
+/// The most bytes of a released message the guard keeps, and so the longest
+/// message it releases (R12-GOV-3030). A message the journal cannot hold
+/// whole cannot be re-read after release, and one that cannot be re-read
+/// cannot be monitored after release, so a longer draft is refused at
+/// preflight rather than kept in part. With [`VOICE_RETENTION`] this bounds
+/// what a guard holds in memory at four mebibytes.
+pub const MAX_RELEASED_CONTENT_BYTES: usize = 4096;
+
+/// One message as it was released: which tool said it, as whom, the
+/// fingerprint of its words and, since R12-GOV-3030, the words themselves.
+/// Kept so a later pass cannot say the same thing as somebody else
+/// (R12-AGENCY-1064), and so the message can be re-checked after release
+/// against the conduct rules as they later stand.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Voice {
@@ -78,6 +88,45 @@ pub struct Voice {
     pub identity: String,
     /// [`voice_fingerprint`] of the draft's content.
     pub fingerprint: String,
+    /// The released text, at most [`MAX_RELEASED_CONTENT_BYTES`]. `None` on
+    /// a voice journaled before the text was kept, which a post-release
+    /// check reports as unreadable rather than as clean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+/// What a post-release re-check of one released message found
+/// (R12-GOV-3030).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostReleaseFinding {
+    pub tool: String,
+    pub identity: String,
+    pub fingerprint: String,
+    /// The conduct rule the message now breaches, or `unreadable` (no text
+    /// was kept) or `fingerprint_mismatch` (the kept text is not the text
+    /// that was released).
+    pub rule: String,
+    pub detail: String,
+}
+
+/// The voice a cleared step releases: its words kept whole, or the draft
+/// refused when they are too long to keep (R12-GOV-3030).
+fn released_voice(tool: &str, draft: &CommunicationDraft) -> Result<Voice, Error> {
+    if draft.content.len() > MAX_RELEASED_CONTENT_BYTES {
+        return Err(Error::denied(format!(
+            "step `{tool}` drafts {} bytes and a released message is kept whole up to \
+             {MAX_RELEASED_CONTENT_BYTES}; a message that cannot be kept cannot be re-checked \
+             after release, so shorten it",
+            draft.content.len()
+        )));
+    }
+    Ok(Voice {
+        tool: tool.to_string(),
+        identity: draft.sender_identity.clone(),
+        fingerprint: voice_fingerprint(&draft.content),
+        content: Some(draft.content.clone()),
+    })
 }
 
 /// The fingerprint of a message: a digest of its words, lower-cased and
@@ -281,6 +330,53 @@ impl ActionGuard {
         self.voices.push_back(voice);
     }
 
+    /// Re-check every message this guard remembers releasing against the
+    /// conduct rules its gate holds now (R12-GOV-3030): a message released
+    /// under one policy and in breach of a rule added since, or of a phrase
+    /// the gate now prohibits, is a finding. Run on resume, where the gate is
+    /// the operator's current policy and the voices are the journal's. Also
+    /// a finding: a voice with no kept text, which cannot be re-read, and one
+    /// whose text does not hash to its fingerprint, which is not the message
+    /// that was released.
+    pub fn recheck_released(&self) -> Vec<PostReleaseFinding> {
+        let rules = self.gate.rules();
+        let mut findings = Vec::new();
+        for voice in &self.voices {
+            let finding = |rule: &str, detail: String| PostReleaseFinding {
+                tool: voice.tool.clone(),
+                identity: voice.identity.clone(),
+                fingerprint: voice.fingerprint.clone(),
+                rule: rule.to_string(),
+                detail,
+            };
+            let Some(content) = voice.content.as_deref() else {
+                findings.push(finding(
+                    "unreadable",
+                    "the release was journaled without its text, so it cannot be re-checked"
+                        .to_string(),
+                ));
+                continue;
+            };
+            if voice_fingerprint(content) != voice.fingerprint {
+                findings.push(finding(
+                    "fingerprint_mismatch",
+                    "the kept text does not hash to the fingerprint the release recorded"
+                        .to_string(),
+                ));
+                continue;
+            }
+            for rule in rules {
+                if let Some(phrase) = rule.breach(content) {
+                    findings.push(finding(
+                        &rule.name(),
+                        format!("the released message now breaches it with '{phrase}'"),
+                    ));
+                }
+            }
+        }
+        findings
+    }
+
     /// Every voice this guard remembers, oldest first.
     pub fn voices(&self) -> impl Iterator<Item = &Voice> {
         self.voices.iter()
@@ -435,11 +531,7 @@ impl ActionGuard {
                 step: step.clone(),
                 channel: draft.channel.clone(),
                 cost_units: budget_units(&step.tool, *cost)?,
-                voice: Voice {
-                    tool: step.tool.clone(),
-                    identity: draft.sender_identity.clone(),
-                    fingerprint: voice_fingerprint(&draft.content),
-                },
+                voice: released_voice(&step.tool, draft)?,
             });
             drafts.insert(step.tool.as_str(), draft);
             faces.push(StepConduct {

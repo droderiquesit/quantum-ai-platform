@@ -186,6 +186,8 @@ pub fn p1_batch(records: Vec<Record>) -> Result<Batch> {
         PayloadCodec::CanonicalJson,
         records,
     )
+    // ADR 0129 §2: a desk's record names itself a desk's on the wire.
+    .map(|batch| batch.with_provenance(qip_events::event_fabric::codec::Provenance::Desk))
 }
 
 #[cfg(test)]
