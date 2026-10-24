@@ -1430,7 +1430,7 @@
       "services/qip-mesh/tests/peer_guarantees.rs::a_node_whose_gate_refuses_a_leg_reserves_nothing_and_its_refusal_reaches_the_coordinator_and_blocks_fire",
       "services/qip-mesh/tests/peer_guarantees.rs::a_node_whose_book_cannot_hold_every_one_of_its_legs_holds_none_of_them_and_declines"
     ],
-    "gap": "Default-on peer mesh; reservation against RegionTable capital.",
+    "gap": "2026-10-24: peer mesh is default-off (spawned only when LISTEN/PEERS variables are set; no committed deployment sets them and no node is deployed); reservation against RegionTable capital not wired. Cited qip-mesh peer.rs path no longer exists; the protocol is in qip-peer.",
     "implemented": true,
     "tested": true,
     "integrated": false,

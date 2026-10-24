@@ -221,7 +221,7 @@
       "backend/crates/services/qip-mesh/src/peer.rs:1148 ReservationBook",
       "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:20 peer protocol has no transport (test header)"
     ],
-    "gap": "A peer transport between edge nodes and integration of epochs/reservations into Cell::work.",
+    "gap": "2026-10-24: register was stale. qip-edge-node depends on qip-peer-link (Cargo.toml:80) and spawns the peer mesh in main.rs; a two-node socket test is qip-peer-link/tests/peer_mesh.rs::two_nodes_carry_a_cycle_through_token_reserved_fire_fill_and_unwind_over_the_socket. Remaining: the mesh runs only when the peer env vars are set, no committed deployment sets them, and no qip-edge-node-level two-node test exists.",
     "implemented": true,
     "tested": true,
     "integrated": false,
