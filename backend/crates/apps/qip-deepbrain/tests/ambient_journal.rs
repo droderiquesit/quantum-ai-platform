@@ -193,6 +193,148 @@ fn the_run_loop_journals_each_sweeps_signals_and_attention_unprompted_and_a_disa
     );
 }
 
+/// R12-AMBIENT-1144: a running ambient loop, on its own schedule and with
+/// nobody asking, wakes a named specialist for a NOW surprise and journals
+/// the wake. The two tests on either side of this one split that clause. The
+/// run-loop test above runs the schedule over an empty universe, so nothing
+/// surprises it and no wake is ever journaled. The wake test below calls
+/// `sweep` and `record` itself, so the test is the request. Neither would
+/// notice a scheduled loop that journaled every wake as `woke: None` (the
+/// AUDIT-5 verification, 2026-10-24).
+///
+/// The node loop runs twice over one research loop and one journal: once on
+/// a calm tape, and once a day later, after a shock bar arrives. That is the
+/// order a deployed node sees: a forecast from the calm cycle, then the
+/// print that misses it.
+///
+/// Mutation: in `node::run_with`, journal a copy of the round with `woken`
+/// cleared. Every scheduled wake is then journaled unnamed, and this test
+/// fails while the other two pass.
+#[test]
+fn the_scheduled_loop_wakes_a_named_specialist_for_a_now_surprise_and_journals_it_unprompted() {
+    let manual = Arc::new(ManualClock::new(start()));
+    let clock: Arc<dyn Clock> = manual.clone();
+    let config = PlatformConfig::default();
+    let context = Context::new(clock.clone(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    platform.observe(
+        (0..30_i64)
+            .map(|i| {
+                let close = if i % 2 == 0 { 100.1 } else { 99.9 };
+                bar(
+                    "obj-N",
+                    start().saturating_sub(Duration::from_days(30 - i)),
+                    close,
+                )
+            })
+            .collect(),
+    );
+    let node_config = DeepBrainConfig {
+        cycle_interval: Duration::from_millis(1),
+        max_cycles: Some(1),
+        ..DeepBrainConfig::default()
+    };
+    let roster = qip_deepbrain::roster::clear(start()).unwrap_or_else(|e| panic!("{e}"));
+    let status = Arc::new(Mutex::new(NodeStatus::opening(
+        &roster,
+        &node_config,
+        start(),
+    )));
+    let archive = ChainArchive::open(Arc::new(MemoryKeyValueStore::default()))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut research = ResearchLoop::new(
+        ResearchConfig {
+            every_cycles: 1,
+            ..ResearchConfig::default()
+        },
+        BTreeMap::new(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let mut ambient = journal();
+    let run =
+        |platform: &mut Platform, research: &mut ResearchLoop, ambient: &mut AmbientJournal| {
+            node::run_with(
+                platform,
+                &archive,
+                &node_config,
+                &status,
+                &Arc::new(AtomicBool::new(false)),
+                &clock,
+                0,
+                None,
+                Loops {
+                    research: Some(research),
+                    ambient: Some(ambient),
+                    ..Loops::default()
+                },
+                |outcome| {
+                    assert!(
+                        outcome.side_failures.is_empty(),
+                        "{:?}",
+                        outcome.side_failures
+                    );
+                },
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        };
+
+    run(&mut platform, &mut research, &mut ambient);
+    let calm = read(ambient.log());
+    assert!(
+        !calm.iter().any(|r| matches!(
+            r,
+            AmbientRecord::Signal { signal, .. }
+                if signal.id().starts_with(qip_deepbrain::now::NOW_SIGNAL_PREFIX)
+        )),
+        "premise: the calm tape surprises nothing: {calm:?}"
+    );
+
+    // The shock is the day bar that opens at the calm cycle's instant, so it
+    // becomes knowable a day later, when the second run cycles.
+    let after = start().saturating_add(Duration::from_days(1));
+    platform.observe(vec![bar("obj-N", start(), 130.0)]);
+    manual.set(after);
+    run(&mut platform, &mut research, &mut ambient);
+    let journaled = read(ambient.log());
+
+    // Premise: the scheduled sweep raised the surprise, so a missing wake
+    // below can only mean the wake was not journaled.
+    assert!(
+        journaled.iter().any(|r| matches!(
+            r,
+            AmbientRecord::Signal { signal, .. }
+                if signal.id().starts_with(qip_deepbrain::now::NOW_SIGNAL_PREFIX)
+        )),
+        "premise: the scheduled sweep journaled a NOW surprise: {journaled:?}"
+    );
+    let woke: BTreeSet<String> = journaled
+        .iter()
+        .filter_map(|r| match r {
+            AmbientRecord::Attention {
+                event,
+                woke: Some(specialist),
+                ..
+            } if event.disposition == Disposition::Activated => Some(specialist.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !woke.is_empty(),
+        "the scheduled sweep that raised a surprise journaled no named wake: {journaled:?}"
+    );
+    assert!(
+        woke.iter().all(|name| !name.trim().is_empty()),
+        "a journaled wake names no specialist: {woke:?}"
+    );
+}
+
 /// The attention record's lineage names the signal record that caused it.
 /// Mutation: in `AmbientJournal::record`, use the root lineage for every
 /// attention event — no record carries a causation.
