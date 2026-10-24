@@ -24,15 +24,15 @@
   },
   {
     "id": "R12-REFLEX-8002",
-    "status": "INCORRECT",
-    "current": "The execution-node module admits C3 and C3D shapes alongside C4/C4D (infrastructure/terraform/modules/execution-node/variables.tf:150-164), its description still argues from §41.4's 'c3-highcpu-8 to -22' (variables.tf:132-147), and the one node declared anywhere is a c3-highcpu-8 (infrastructure/environments/dev/terraform.tfvars:217-222). It is not provisioned: execution_nodes_enabled = false (dev tfvars:245; infrastructure/terraform/main.tf:662). The MIG exists (modules/execution-node/main.tf:494) with no load balancer.",
+    "status": "PARTIAL",
+    "current": "The execution-node module's machine_type validation admits only c4-highcpu-8/-16 and c4d-highcpu-8/-16 and refuses C3, C3D, N2 and every other family at plan (infrastructure/terraform/modules/execution-node/variables.tf:132-165); the c4-highcpu-22 shape that Google does not offer is gone. The one declared node, newyork-1, is already c4-highcpu-8 (infrastructure/environments/dev/terraform.tfvars:217-222). Proved by qip-acceptance infrastructure::the_execution_node_has_no_external_address_and_no_container_runtime, mutation-verified 2026-10-24: adding \"c3-highcpu-8\" to the permitted list fails it with 'the execution node admits a \"c3-… shape'. Not provisioned: execution_nodes_enabled = false (dev tfvars:245) because the node's boot_image is null (no image has been baked); the MIG exists (modules/execution-node/main.tf:494) with no load balancer.",
     "evidence": [
       "infrastructure/terraform/modules/execution-node/variables.tf:132-165",
       "infrastructure/environments/dev/terraform.tfvars:217-245",
       "infrastructure/terraform/execution-nodes-enabled.tf:22-60",
       "infrastructure/terraform/modules/execution-node/main.tf:494"
     ],
-    "gap": "Refuse C3/C3D/N2 at plan (allow only C4/C4D), move the dev node to a C4/C4D shape, enable it, and show the plan.",
+    "gap": "Enabling the node and showing the plan needs a baked boot image: dispatch .github/workflows/image.yml for c4-highcpu-8 (a deployment run, never yet dispatched), write the self-link it prints into newyork-1's boot_image and set execution_nodes_enabled = true in dev (protected path infrastructure/environments/**). Corrected 2026-10-24: the C3/C3D/N2 refusal and the C4 dev shape are done; only the enable-and-plan half remains and it is deployment-dependent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -40,10 +40,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan with a populated execution_nodes map; cargo test -p qip-acceptance --test gcp_placement",
+    "verification": "cargo test -p qip-acceptance --test infrastructure the_execution_node_has_no_external_address_and_no_container_runtime; terraform plan with a populated execution_nodes map once a boot_image exists",
     "work_item": "",
     "size": "S",
-    "notes": "Round-2 independent audit, 2026-10-11: PARTIAL->INCORRECT: the verification requires a C3 shape to be refused at plan; the validation accepts it and the only declared node is C3. Separately unverified: whether c4-highcpu-22 is a real GCE shape."
+    "notes": "Round-2 independent audit, 2026-10-11: PARTIAL->INCORRECT: the verification requires a C3 shape to be refused at plan; the validation accepts it and the only declared node is C3. Separately unverified: whether c4-highcpu-22 is a real GCE shape. Regraded 2026-10-24 (lane T2-ACCEPT): INCORRECT->PARTIAL; the validation was fixed after the 2026-10-11 audit and the register had not caught up. Mutation: add c3-highcpu-8 to the machine_type allow-list -> infrastructure::the_execution_node_has_no_external_address_and_no_container_runtime fails; restored byte for byte, passes (154 passed)."
   },
   {
     "id": "R12-MESH-8003",
@@ -1427,7 +1427,7 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:662,823",
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:460"
     ],
-    "gap": "Deployment (execution_nodes = {} in every environment tfvars).",
+    "gap": "Deployment (execution_nodes = {} in test, stage and prod; dev declares newyork-1 with execution_nodes_enabled = false). Corrected 2026-10-24: blocked on a baked boot image (image.yml never dispatched), not on code.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1539,7 +1539,7 @@
       "apps/qip-edge-node/tests/standby.rs::a_standby_places_nothing_until_it_promotes_and_the_primary_it_replaced_places_nothing_after",
       "infrastructure/terraform/modules/execution-node/main.tf:724-731"
     ],
-    "gap": "Decided by ADR 0137 (accepted 2026-10-18): A GcsLeaseStore implements LeaseStore over one object whose generation is the version, in a regional bucket created with the nodes; no Spanner instance for a lock. Code left: GcsLeaseStore against the storage test server, lease scheme selection in the node, the bucket and IAM in the execution-node module, and a two-keeper test; a node must be deployed to exercise it.",
+    "gap": "Decided by ADR 0137 (corrected 2026-10-24): GcsLeaseStore over one object whose generation is the version, lease scheme selection in the node, the bucket and IAM in the execution-node module, and a two-keeper test; still unbuilt, FileLeaseStore is the only store (standby.rs) and a deployed node is needed to exercise the bucket.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1550,7 +1550,7 @@
     "verification": "property test over takeover interleavings",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Old note 'no code implements a fencing token' is no longer true. Latent defect: setting standby_enabled=true today boots the standby with the primary's startup template and no lease variable, so it would run unfenced as a second primary; the 'monitors the primary's liveness via a fencing token' comment at modules/execution-node/main.tf:726-727 is still not what the infrastructure does. ADR lane 2026-10-18: gap re-graded against decision D20; gap before it: A cross-zone lease store with a conditional write (ADR 0111/0113); Terraform passing the lease, role and name to primary and standby; a real venue-session check. ADR lane 2026-10-18: gap re-graded against ADR 0137; gap before it: Delegable decision D20 (design-decisions-2026-10-18.json), ADR not yet written: A cross-zone execution lease as a GCS object written under a generation precondition through the existing REST adapter. Needs that ADR, then the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Old note 'no code implements a fencing token' is no longer true. Latent defect: setting standby_enabled=true today boots the standby with the primary's startup template and no lease variable, so it would run unfenced as a second primary; the 'monitors the primary's liveness via a fencing token' comment at modules/execution-node/main.tf:726-727 is still not what the infrastructure does. ADR lane 2026-10-18: gap re-graded against decision D20; gap before it: A cross-zone lease store with a conditional write (ADR 0111/0113); Terraform passing the lease, role and name to primary and standby; a real venue-session check. ADR lane 2026-10-18: gap re-graded against ADR 0137; gap before it: Delegable decision D20 (design-decisions-2026-10-18.json), ADR not yet written: A cross-zone execution lease as a GCS object written under a generation precondition through the existing REST adapter. Needs that ADR, then the code. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
   },
   {
     "id": "R12-REFLEX-8070",

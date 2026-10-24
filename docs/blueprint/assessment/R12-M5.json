@@ -1825,7 +1825,7 @@
       "backend/crates/tests/qip-acceptance/tests/market_creation.rs:97",
       "backend/crates/tests/qip-acceptance/tests/market_creation.rs:177"
     ],
-    "gap": "A production workflow consuming CreationAdmission.",
+    "gap": "A production workflow consuming CreationAdmission (corrected 2026-10-24): qip-execution-engine market_creation.rs takes the admission but no app or kernel caller constructs one, and the consumer belongs to the execution engine, outside the edge, arbitrage and peer territory of this lane.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1836,7 +1836,7 @@
     "verification": "cargo test -p qip-acceptance --test market_creation",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
   },
   {
     "id": "R12-EXEC-5080",

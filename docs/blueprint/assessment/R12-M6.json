@@ -266,7 +266,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:4076 episodes(): four of six kinds recorded",
       "backend/crates/libs/qip-contracts/src/regional_episode.rs:68 RegionalEpisode"
     ],
-    "gap": "Three separate pieces, none a one-lane change. (1) Transport: the centre receives a cell only as a qip_mesh::delta::CellStanding folded by qip-api mesh.rs::report_from into central::plane::CellReport; Cell::episodes is on neither. Carrying episodes is a change to the mesh delta wire (ADR 0079 decision two took pains to add the region to the centre without a new wire field), so it needs a decision and likely its own ADR rather than a field added in passing. (2) Recording: EpisodeKind::Microstructure and VenueBehaviour have no recording seam in the cell, so there is nothing yet to ship under them; a book-anomaly or venue-health episode needs a stated trigger and bound, not a reuse of Anomaly. (3) Storage: the central plane has no episode store to ingest into. Missed fills and queue behaviour are separate and unmeasured.",
+    "gap": "Unchanged in substance (corrected 2026-10-24): carrying Cell::episodes to the centre is a mesh delta wire change that needs its own ADR, Microstructure and VenueBehaviour have no recording seam (cell.rs doc at the episodes accessor says so), and the central plane has no episode store.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -277,7 +277,7 @@
     "verification": "cargo test -p qip-edge && cargo test -p qip-kernel (new: ingested episode reaches central store)",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Nothing is deployed (execution_nodes = {} in every tfvars), so nothing is demonstrated end to end. The triage closure (carry Cell::episodes on the report and store them in CentralPlane::ingest) is the wire change in (1)."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Nothing is deployed (execution_nodes = {} in every tfvars), so nothing is demonstrated end to end. The triage closure (carry Cell::episodes on the report and store them in CentralPlane::ingest) is the wire change in (1). Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
   },
   {
     "id": "R12-WORLD-6013",

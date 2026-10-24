@@ -1277,3 +1277,76 @@ fn an_economic_value_is_refused_above_the_scale_and_an_unstated_one_does_not_cha
     assert_eq!(back, stated);
     assert_eq!(stated.attention_value(), 5_000 * 2_500);
 }
+
+/// ADR 0158 decision 11. Realised gain is fed back against the reading a
+/// request was raised on, and it can only shrink what the cost proxy left:
+/// feeding it back without that floor would let a purchase that bought nothing
+/// make buying more look better. A window that bought nothing halts the
+/// request as `no_gain`; a record that decodes without the new fields is a
+/// request with no measurement.
+///
+/// Mutation: let realised gain raise the remaining reduction (replace the
+/// `.min(..)` in `record_realised_gain` with an assignment of
+/// `launch - realised`) — the second assertion fails, because a small realised
+/// gain would lift the remaining value above the proxy's.
+#[test]
+fn realised_gain_can_only_shrink_the_value_left_below_the_cost_proxy() {
+    let request = || {
+        InfoRequest::new(
+            "req-gain",
+            "decision-1",
+            criteria(10_000, 8_000, 10_000, 1_000),
+            at(1_000),
+            at(0),
+        )
+        .expect("valid request")
+    };
+
+    // Premise: nothing can be measured before something was bought.
+    let mut unbought = request();
+    assert!(unbought.record_realised_gain(1_000).is_err());
+
+    // A purchase leaves 8,000 * 0.9 = 7,200 by the proxy. A realised gain of
+    // 6,000 bp leaves 8,000 - 6,000 = 2,000 by the measurement: smaller, so
+    // it wins.
+    let mut req = request();
+    req.record_acquisition(1_000).expect("valid cost");
+    assert_eq!(req.criteria().uncertainty_reduction_bp, 7_200, "premise");
+    req.record_realised_gain(6_000).expect("measured");
+    assert_eq!(req.criteria().uncertainty_reduction_bp, 2_000);
+    assert_eq!(req.realised_gain_bp(), 6_000);
+    assert!(!req.halted_for_no_gain());
+
+    // A realised gain of 500 bp would leave 7,500 by the measurement, more
+    // than the proxy's 7,200: the proxy stays as the floor.
+    let mut small = request();
+    small.record_acquisition(1_000).expect("valid cost");
+    small.record_realised_gain(500).expect("measured");
+    assert_eq!(small.criteria().uncertainty_reduction_bp, 7_200);
+
+    // A purchase that bought nothing halts as no_gain and is not repeated.
+    let mut nothing = request();
+    nothing.record_acquisition(1_000).expect("valid cost");
+    nothing.record_realised_gain(0).expect("measured");
+    assert_eq!(nothing.status(), AcquisitionStatus::Halted);
+    assert!(nothing.halted_for_no_gain());
+    assert!(nothing.record_acquisition(1_000).is_err());
+    assert!(nothing.record_realised_gain(100).is_err());
+
+    // A figure past the scale is refused, not clamped.
+    let mut over = request();
+    over.record_acquisition(1_000).expect("valid cost");
+    assert!(over.record_realised_gain(10_001).is_err());
+
+    // An old record, with none of the new fields, decodes to no measurement
+    // and a measured one survives a round trip.
+    let text = serde_json::to_string(&request()).expect("encodes");
+    assert!(!text.contains("realised_gain_bp") && !text.contains("launch_reduction_bp"));
+    let back: InfoRequest = serde_json::from_str(&text).expect("an old record decodes");
+    assert_eq!(back, request());
+    let measured = serde_json::to_string(&req).expect("encodes");
+    assert_eq!(
+        serde_json::from_str::<InfoRequest>(&measured).expect("decodes"),
+        req
+    );
+}
