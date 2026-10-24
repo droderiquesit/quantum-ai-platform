@@ -37,7 +37,7 @@ fn platform() -> Result<Platform> {
     )
 }
 
-const PLAN: &str = r#"{
+const PLAN_TEMPLATE: &str = r#"{
   "market_factory": {
     "permissions": [
       {"authority": "venue", "action": "create", "venue": "simulated-venue", "product": "obj-CREATED", "jurisdiction": "GB", "reference": "rulebook 4.2"},
@@ -58,21 +58,41 @@ const PLAN: &str = r#"{
     ]
   },
   "event_markets": {"source": "synthetic", "entity": "desk", "jurisdiction": "GB",
-    "permissions": [
-      {"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-MARKET"},
-      {"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-MARKET"},
-      {"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-MARKET"},
-      {"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-CUT"},
-      {"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-CUT"},
-      {"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-CUT"},
-      {"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-HOLD"},
-      {"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-HOLD"},
-      {"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-HOLD"},
-      {"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-HIKE"},
-      {"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-HIKE"},
-      {"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-HIKE"}
-    ]}
+    "permissions": [EVENT_PERMISSIONS]}
 }"#;
+
+/// The event plane's creation register as plan JSON: `create`, `list` and
+/// `seed` from all three authorities for its market and every outcome
+/// instrument in GB — creation to build it, listing to take it in, seeding to
+/// rest a paper quote on it (R12-COVERAGE-5107) — less any `(authority,
+/// action, product)` in `revoked`.
+fn event_permissions(revoked: &[(&str, &str, &str)]) -> String {
+    let mut permissions = Vec::new();
+    for product in [
+        "SYNTH-PREDICT-MARKET",
+        "SYNTH-PREDICT-CUT",
+        "SYNTH-PREDICT-HOLD",
+        "SYNTH-PREDICT-HIKE",
+    ] {
+        for action in ["create", "list", "seed"] {
+            for authority in ["venue", "product", "jurisdiction"] {
+                if revoked.contains(&(authority, action, product)) {
+                    continue;
+                }
+                permissions.push(format!(
+                    r#"{{"authority": "{authority}", "action": "{action}", "venue": "SYNTH-PREDICT", "product": "{product}", "jurisdiction": "GB", "reference": "{authority} approval for {product}"}}"#
+                ));
+            }
+        }
+    }
+    permissions.join(",\n      ")
+}
+
+/// The full plan: a factory market and the event plane, every permission
+/// recorded.
+fn full_plan() -> String {
+    PLAN_TEMPLATE.replace("EVENT_PERMISSIONS", &event_permissions(&[]))
+}
 
 fn plan_file(name: &str, text: &str) -> Result<String> {
     let path = std::env::temp_dir().join(format!(
@@ -108,7 +128,7 @@ fn an_unset_plan_installs_nothing() -> Result<()> {
 /// `breadth::install` and both are absent.
 #[test]
 fn a_plan_file_installs_the_factory_and_the_event_plane_into_the_running_platform() -> Result<()> {
-    let path = plan_file("good", PLAN)?;
+    let path = plan_file("good", &full_plan())?;
     let mut platform = platform()?;
     let set = lookup(BTreeMap::from([(PLAN_VARIABLE.to_string(), path)]));
     let lines = install(&mut platform, &set, start())?.expect("a plan was set");
@@ -299,12 +319,12 @@ fn a_permission_revoked_in_the_plan_file_withdraws_the_created_market_at_the_nex
 }
 
 /// An event-markets plan naming one venue and one entity; `kind` and
-/// `jurisdiction` are what the three runs below vary. The section records the
-/// three creation permissions for the plane's market and each outcome
-/// instrument in GB, without which the plan is refused at install
+/// `jurisdiction` are what the three runs below vary. The section records
+/// `create`, `list` and `seed` from the three authorities for the plane's
+/// market and each outcome instrument in GB, less any in `revoked`
 /// (R12-COVERAGE-5107); the entity's `jurisdiction` is the separate trading
 /// question these runs vary.
-fn event_plan(kind: &str, jurisdiction: &str) -> String {
+fn event_plan(kind: &str, jurisdiction: &str, revoked: &[(&str, &str, &str)]) -> String {
     format!(
         r#"{{"event_markets": {{
   "source": "synthetic",
@@ -319,21 +339,9 @@ fn event_plan(kind: &str, jurisdiction: &str) -> String {
     "venues": ["SYNTH-PREDICT"]
   }}}},
   "jurisdiction": "GB",
-  "permissions": [
-    {{"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-MARKET"}},
-    {{"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-MARKET"}},
-    {{"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-MARKET", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-MARKET"}},
-    {{"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-CUT"}},
-    {{"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-CUT"}},
-    {{"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-CUT", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-CUT"}},
-    {{"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-HOLD"}},
-    {{"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-HOLD"}},
-    {{"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HOLD", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-HOLD"}},
-    {{"authority": "venue", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "venue approval for SYNTH-PREDICT-HIKE"}},
-    {{"authority": "product", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "product approval for SYNTH-PREDICT-HIKE"}},
-    {{"authority": "jurisdiction", "action": "create", "venue": "SYNTH-PREDICT", "product": "SYNTH-PREDICT-HIKE", "jurisdiction": "GB", "reference": "jurisdiction approval for SYNTH-PREDICT-HIKE"}}
-  ]
-}}}}"#
+  "permissions": [{permissions}]
+}}}}"#,
+        permissions = event_permissions(revoked)
     )
 }
 
@@ -369,9 +377,11 @@ fn simulated_through_the_variable(name: &str, plan: &str) -> Result<EventMarkets
 #[test]
 fn an_event_plan_from_the_variable_prices_every_outcome_and_quotes_only_where_access_admits()
 -> Result<()> {
-    let admitted = simulated_through_the_variable("event-admitted", &event_plan("Event", "GB"))?;
-    let wagering = simulated_through_the_variable("event-wagering", &event_plan("Wagering", "GB"))?;
-    let abroad = simulated_through_the_variable("event-abroad", &event_plan("Event", "US"))?;
+    let admitted =
+        simulated_through_the_variable("event-admitted", &event_plan("Event", "GB", &[]))?;
+    let wagering =
+        simulated_through_the_variable("event-wagering", &event_plan("Wagering", "GB", &[]))?;
+    let abroad = simulated_through_the_variable("event-abroad", &event_plan("Event", "US", &[]))?;
 
     // The admitted run priced and quoted, so the empty sets below are
     // refusals and not a plane that did nothing.
@@ -406,6 +416,83 @@ fn an_event_plan_from_the_variable_prices_every_outcome_and_quotes_only_where_ac
         assert_eq!(
             refused.valuations, admitted.valuations,
             "{why}: the price moved with availability"
+        );
+    }
+    Ok(())
+}
+
+/// R12-COVERAGE-5107 from the binary's path: an operator deletes one outcome
+/// instrument's legal opinion to be listed from the event-markets section of
+/// the plan file the node was started with, and the next cycle the run loop
+/// drives withdraws the event market. Until 2026-10-24 `PermissionWatch`
+/// re-read only the factory's section and the event plane read its register
+/// once, at install, so the edit stopped nothing. An unreadable plan revokes
+/// both registers.
+///
+/// Mutations: (1) make `refresh` count the event entries without calling
+/// `revise_event_market_permissions` (`Ok(entries.len())`) and the market is
+/// still quoted after the edit; (2) make `revoke_all` skip
+/// `revoke_event_market_permissions` and the unreadable-plan half is still
+/// quoted.
+#[test]
+fn an_event_permission_revoked_in_the_plan_file_withdraws_the_event_market_at_the_next_cycle()
+-> Result<()> {
+    use qip_deepbrain::breadth::PermissionWatch;
+    use qip_deepbrain::node::step;
+    let interval = qip_core::Duration::from_secs(300);
+    let quotes = |platform: &Platform| -> Result<usize> {
+        let mut records = Vec::new();
+        for event in platform.event_log().by_topic(Topic::ScenarioEvaluated) {
+            if let Ok(decoded) =
+                StreamEnvelope::from_frame(event)?.decode::<EventMarketsSimulated>()
+            {
+                records.push(decoded.body);
+            }
+        }
+        Ok(records.pop().map_or(0, |record| record.quotes.len()))
+    };
+    let full = event_plan("Event", "GB", &[]);
+    let revoked = event_plan(
+        "Event",
+        "GB",
+        &[("jurisdiction", "list", "SYNTH-PREDICT-HOLD")],
+    );
+    for unreadable in [false, true] {
+        let path = plan_file(&format!("event-revocable-{unreadable}"), &full)?;
+        let set = lookup(BTreeMap::from([(PLAN_VARIABLE.to_string(), path.clone())]));
+        let mut platform = platform()?;
+        install(&mut platform, &set, start())?.expect("a plan was set");
+        let mut watch = PermissionWatch::from_lookup(&set).expect("a plan is named");
+        assert_eq!(
+            watch.refresh(&mut platform)?,
+            Some(36),
+            "four instruments, three acts, three authorities"
+        );
+        let _ = step(&mut platform, start(), interval);
+        assert_eq!(
+            quotes(&platform)?,
+            3,
+            "premise: the permitted market is quoted"
+        );
+
+        if unreadable {
+            std::fs::write(&path, "{ not json").unwrap();
+            assert!(watch.refresh(&mut platform).is_err());
+        } else {
+            std::fs::write(&path, &revoked).unwrap();
+            assert_eq!(watch.refresh(&mut platform)?, Some(35));
+        }
+        let later = start().saturating_add(qip_core::Duration::from_hours(1));
+        let _ = step(&mut platform, later, interval);
+        assert_eq!(
+            quotes(&platform)?,
+            0,
+            "unreadable={unreadable}: an event market kept quoting on a lapsed permission"
+        );
+        assert!(
+            platform.event_markets().is_some_and(|plane| plane
+                .is_withdrawn(&qip_core::ObjectId::from_string("SYNTH-PREDICT-MARKET"))),
+            "unreadable={unreadable}: the event market was not withdrawn"
         );
     }
     Ok(())

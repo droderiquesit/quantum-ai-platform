@@ -65,9 +65,9 @@ pub fn install(
     Ok(Some(lines))
 }
 
-/// The plan's permission register, re-read on every iteration of the run
+/// The plan's permission registers, re-read on every iteration of the run
 /// loop so a revocation reaches the Market Factory's validity monitor
-/// (R12-EXEC-5081).
+/// (R12-EXEC-5081) and the event plane (R12-COVERAGE-5107).
 ///
 /// Until 2026-10-11 the register was fixed when the plan was installed at
 /// start-up: `FactoryStage::set_permissions` had no caller outside a test,
@@ -76,20 +76,32 @@ pub fn install(
 /// and the monitor's legal check — which withdraws a market whose
 /// permission lapsed — could not fire in any binary. The operator's act is
 /// now the ordinary one: edit the plan file the node was started with and
-/// delete the entry. Only the factory's `permissions` are re-read; markets,
-/// event markets and commerce stay as installed, because adding a market
-/// is a decision made at start-up and removing a permission is not.
+/// delete the entry. The factory's `permissions` and, since 2026-10-24, the
+/// event-markets section's `permissions` are re-read — until then this
+/// watch re-read only the factory's, and a permission deleted from the
+/// event section stopped nothing, because the plane consulted its register
+/// once, at install. Markets, event sources and commerce stay as
+/// installed, because adding a market is a decision made at start-up and
+/// removing a permission is not.
 ///
 /// Fails closed. A plan file that cannot be read or parsed, that no longer
-/// holds a factory section, or whose register the factory refuses, revokes
-/// **every** permission — each live market is withdrawn at the next review
-/// — and the reason is returned for the cycle line. A register nobody can
-/// read is not one a market may keep trading under.
+/// holds a section the platform installed, or whose register the platform
+/// refuses, revokes **every** permission of both registers — each live
+/// market is withdrawn at the next review, and each event market at the
+/// next pass — and the reason is returned for the cycle line. A register
+/// nobody can read is not one a market may keep trading under.
 #[derive(Debug)]
 pub struct PermissionWatch {
     path: String,
-    applied: Option<Vec<qip_kernel::market_factory_stage::PermissionEntry>>,
+    applied: Option<Registers>,
 }
+
+/// The two registers as last applied: `None` for a section the platform
+/// did not install.
+type Registers = (
+    Option<Vec<qip_kernel::market_factory_stage::PermissionEntry>>,
+    Option<Vec<qip_kernel::market_factory_stage::PermissionEntry>>,
+);
 
 impl PermissionWatch {
     /// A watch over the plan [`PLAN_VARIABLE`] names, or `None` when it is
@@ -102,12 +114,15 @@ impl PermissionWatch {
         })
     }
 
-    /// Re-read the register and apply it if it changed. `Ok(Some(n))` is a
-    /// register of `n` entries newly applied, `Ok(None)` an unchanged one or
-    /// a platform with no factory, `Err` a register refused — after which
-    /// every permission has been revoked.
+    /// Re-read both registers and apply them if either changed.
+    /// `Ok(Some(n))` is `n` entries newly applied across the installed
+    /// sections, `Ok(None)` an unchanged pair or a platform with neither a
+    /// factory nor an event plane, `Err` a register refused — after which
+    /// every permission of both has been revoked.
     pub fn refresh(&mut self, platform: &mut Platform) -> Result<Option<usize>> {
-        if platform.market_factory().is_none() {
+        let factory = platform.market_factory().is_some();
+        let events = platform.event_markets().is_some();
+        if !factory && !events {
             return Ok(None);
         }
         let read = std::fs::read_to_string(&self.path)
@@ -119,34 +134,64 @@ impl PermissionWatch {
             })
             .and_then(|text| BreadthPlan::from_json(&text))
             .and_then(|plan| {
-                plan.market_factory
-                    .map(|factory| factory.permissions)
-                    .ok_or_else(|| {
-                        Error::invalid(format!(
-                            "{PLAN_VARIABLE}={} no longer holds a market_factory section",
-                            self.path
-                        ))
-                    })
+                let factory_entries = if factory {
+                    Some(
+                        plan.market_factory
+                            .map(|section| section.permissions)
+                            .ok_or_else(|| {
+                                Error::invalid(format!(
+                                    "{PLAN_VARIABLE}={} no longer holds a market_factory section",
+                                    self.path
+                                ))
+                            })?,
+                    )
+                } else {
+                    None
+                };
+                let event_entries = if events {
+                    Some(
+                        plan.event_markets
+                            .map(|section| section.permissions)
+                            .ok_or_else(|| {
+                                Error::invalid(format!(
+                                    "{PLAN_VARIABLE}={} no longer holds an event_markets section",
+                                    self.path
+                                ))
+                            })?,
+                    )
+                } else {
+                    None
+                };
+                Ok((factory_entries, event_entries))
             });
-        let entries = match read {
-            Ok(entries) => entries,
+        let registers = match read {
+            Ok(registers) => registers,
             Err(error) => return Err(self.revoke_all(platform, error)),
         };
-        if self.applied.as_ref() == Some(&entries) {
+        if self.applied.as_ref() == Some(&registers) {
             return Ok(None);
         }
-        match platform.revise_market_permissions(&entries) {
-            Ok(count) => {
-                self.applied = Some(entries);
-                Ok(Some(count))
+        let mut applied = 0;
+        if let Some(entries) = &registers.0 {
+            match platform.revise_market_permissions(entries) {
+                Ok(count) => applied += count,
+                Err(error) => return Err(self.revoke_all(platform, error)),
             }
-            Err(error) => Err(self.revoke_all(platform, error)),
         }
+        if let Some(entries) = &registers.1 {
+            match platform.revise_event_market_permissions(entries) {
+                Ok(count) => applied += count,
+                Err(error) => return Err(self.revoke_all(platform, error)),
+            }
+        }
+        self.applied = Some(registers);
+        Ok(Some(applied))
     }
 
     fn revoke_all(&mut self, platform: &mut Platform, error: Error) -> Error {
         platform.revoke_market_permissions();
-        self.applied = Some(Vec::new());
+        platform.revoke_event_market_permissions();
+        self.applied = Some((Some(Vec::new()), Some(Vec::new())));
         Error::denied(format!(
             "market permissions revoked, every created market will be withdrawn: {}",
             error.message()
