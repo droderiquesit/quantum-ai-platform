@@ -223,6 +223,13 @@ pub struct Resolution {
     /// from a review journaled before it existed, which reads as empty.
     #[serde(default)]
     pub forecasts: BTreeMap<String, f64>,
+    /// The federation's own arbitrated probability for the proposition at
+    /// its latest arbitration before it resolved: what the platform charges
+    /// to the federation as an ensemble (R12-MODEL-6016). `None` where no
+    /// arbitration merged a number, and on a review journaled before it
+    /// existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ensemble: Option<f64>,
 }
 
 /// The pass, once a cycle, as the log keeps it.
@@ -370,6 +377,10 @@ pub struct FederationStage {
     /// in the self-model (R12-MODEL-6016). Kept only for propositions still
     /// pending, so it is bounded by `pending`.
     views: BTreeMap<String, BTreeMap<String, f64>>,
+    /// The federation's latest arbitrated probability per pending
+    /// proposition: what a resolution charges to the federation as an
+    /// ensemble (R12-MODEL-6016). Bounded by `pending`, like `views`.
+    ensembles: BTreeMap<String, f64>,
     /// The previous cycle's slowest stage ([`Self::observe_cycle`]).
     slowest_stage: Option<Duration>,
     /// Each branch the stage opened, mapped to the member whose reading it
@@ -1301,6 +1312,9 @@ impl FederationStage {
                             }
                         }
                     }
+                    if let Some(merged) = a.arbitrated_probability {
+                        self.ensembles.insert(proposition.clone(), merged);
+                    }
                     arbitrations.push(a);
                 }
                 Err(error) => refused.push((proposition.clone(), error.message().to_string())),
@@ -1530,11 +1544,13 @@ impl FederationStage {
                         self.branches.remove(id);
                     }
                     let forecasts = self.views.remove(&proposition).unwrap_or_default();
+                    let ensemble = self.ensembles.remove(&proposition);
                     resolved.push(Resolution {
                         proposition,
                         outcome,
                         closed,
                         forecasts,
+                        ensemble,
                     });
                 }
                 Some(None) => {
@@ -1554,6 +1570,8 @@ impl FederationStage {
         }
         let pending = &self.pending;
         self.views
+            .retain(|proposition, _| pending.contains_key(proposition));
+        self.ensembles
             .retain(|proposition, _| pending.contains_key(proposition));
         (resolved, abandoned)
     }
