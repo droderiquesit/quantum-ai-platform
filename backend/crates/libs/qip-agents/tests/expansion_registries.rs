@@ -148,3 +148,77 @@ fn a_research_verdict_that_does_not_raise_the_version_is_refused_and_every_versi
         .unwrap();
     assert_eq!(registry.latest_version("credit leads equity"), Some(3));
 }
+
+mod memory_registry {
+    use qip_agents::memory::{
+        Disposition, Episode, EpisodeOutcome, MemoryRegistry, ResearchMemory,
+    };
+    use qip_core::ids::AgentRunId;
+    use qip_core::time::Timestamp;
+
+    fn at(text: &str) -> Timestamp {
+        Timestamp::parse_rfc3339(text).unwrap()
+    }
+
+    fn call(run: &str, conviction: f64, correct: bool) -> Episode {
+        Episode {
+            run_id: AgentRunId::from_string(run.to_string()),
+            agent_id: "analyst-a".to_string(),
+            occurred_at: at("2026-10-01T00:00:00Z"),
+            question: "which way would it move".to_string(),
+            conclusion: "positive".to_string(),
+            evidence: vec![run.to_string()],
+            conviction,
+            outcome: Some(EpisodeOutcome {
+                resolved_at: at("2026-10-01T00:00:00Z"),
+                correct,
+                realised_bps: Some(10.0),
+                explanation: "moved".to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_below_threshold_episode_is_kept_compressed_and_still_counts_in_the_hit_rate() {
+        let mut registry = MemoryRegistry::new(0.3).unwrap();
+        let mut memory = ResearchMemory::new();
+        // Nine confident calls that came off (surprise 0.1) and one confident
+        // call that missed (surprise 0.9): the registry keeps only the miss
+        // whole, and a hit rate over what it kept would read 0 rather than 0.9.
+        let mut calls: Vec<Episode> = (0..9)
+            .map(|n| call(&format!("hit-{n}"), 0.9, true))
+            .collect();
+        calls.push(call("miss", 0.9, false));
+        let mut dispositions = Vec::new();
+        for episode in calls {
+            dispositions.push(registry.consult(&episode).unwrap());
+            memory.record_episode(episode);
+        }
+        // The premise: both dispositions occurred, so the assertions below
+        // are not about a registry that only ever did one thing.
+        assert!(dispositions.contains(&Disposition::Retained));
+        assert!(dispositions.contains(&Disposition::Compressed));
+
+        assert_eq!(registry.retained_for("analyst-a"), 1);
+        let summary = registry.summary_for("analyst-a").unwrap();
+        assert_eq!(summary.episodes, 9);
+        assert_eq!(summary.correct, 9);
+        assert_eq!(memory.episode_count(), 10, "compression drops no episode");
+        let rate = memory
+            .hit_rate("analyst-a", at("2026-10-02T00:00:00Z"))
+            .unwrap();
+        assert!((rate - 0.9).abs() < 1e-9, "hit rate was {rate}");
+    }
+
+    #[test]
+    fn a_registry_refuses_a_threshold_that_could_never_compress_and_an_unresolved_episode() {
+        for bad in [0.0, -0.1, 1.5, f64::NAN, f64::INFINITY] {
+            assert!(MemoryRegistry::new(bad).is_err(), "{bad} was accepted");
+        }
+        let mut registry = MemoryRegistry::new(1.0).unwrap();
+        let mut open = call("open", 0.5, true);
+        open.outcome = None;
+        assert_eq!(registry.consult(&open), None);
+        assert_eq!(registry.retained_for("analyst-a"), 0);
+    }
+}
