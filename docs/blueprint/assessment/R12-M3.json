@@ -1173,14 +1173,17 @@
   {
     "id": "R12-REASON-3053",
     "status": "PARTIAL",
-    "current": "REASON runs rules, timeline, Bayesian network, constraint, lifecycle, abduction and intervention per hypothesis and journals the derivation, but only after review decided; nothing feeds back into hypothesis formation.",
+    "current": "REASON runs rules, timeline, Bayesian network, constraint, lifecycle, abduction and intervention per hypothesis (symbolic_stage::derive) and journals the derivation. Under ADR 0125 decision 2 the rule pack's verdict now feeds the decision: Platform::reason_symbolically returns SymbolicDerivation::veto, and a hypothesis review approved that the pack finds ineligible on a hard stop (live ceiling, one lot over the position budget, cash short of one lot) forms no thesis and no proposal, recorded as 'approved but vetoed by the symbolic rule pack'.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:537 derive",
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:18 advisory: called after REASON has decided"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:18 advisory: called after REASON has decided",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs::SymbolicDerivation::veto",
+      "backend/crates/runtime/qip-kernel/src/platform.rs reason_about_the_queue: the symbolic_veto arm before thesis_from (DecisionTaken::NotSizeable)",
+      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs::a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal (control queued, vetoed half forms none)"
     ],
-    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the same veto slice as REASON-1004, feeding the rule verdict into approval.",
+    "gap": "2026-10-24 (lane L2-INTEL): the code the gap named (the REASON-1004 veto slice) has landed, so the rule verdict is composed into whether an approved hypothesis becomes a thesis. Open for the skeptic: whether 'into hypothesis formation' is met by a veto applied after the hypothesis is formed and reviewed (it gates thesis and proposal formation, not hypothesis formation); and the requirement's 'alongside neural inference', since no neural model exists in the tree.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1188,10 +1191,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test valuation_seam a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Compose at least one symbolic verdict into hypothesis formation, as the verification requires."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Compose at least one symbolic verdict into hypothesis formation, as the verification requires. 2026-10-24 L2-INTEL: mutation re-run: SymbolicDerivation::veto returning None at entry fails the named test at valuation_seam.rs:1528 (the vetoed thesis is queued); restored by copy and cmp, the test passes (1 passed)."
   },
   {
     "id": "R12-REASON-3054",
