@@ -33361,3 +33361,112 @@ mod idle_routing_tests {
         assert_eq!(platform.parked_capital(later), Decimal::ZERO);
     }
 }
+
+#[cfg(test)]
+mod lattice_journal_tests {
+    //! R12-WORLD-9027 through the production cause. The integration test in
+    //! `tests/now_lattice.rs` freezes the weights by calling
+    //! `set_calibrator_available(false)` by hand, so the one production line
+    //! that makes the calibrator unavailable -- `understand_now` passing
+    //! whether the lattice review reached the log -- could be made always
+    //! `true` and every kernel test still passed (AUDIT-4, 2026-10-24). This
+    //! makes the journal genuinely refuse the review and reads the next pass.
+
+    use super::*;
+    use qip_core::time::Duration;
+    use qip_market::bar::{Bar, Interval};
+    use qip_market_ingestion::adapter::SensedRecord;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    const FROZEN: &str = "ensemble weights frozen at the last safe set";
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn calm_history() -> Vec<SensedRecord> {
+        let mut out = Vec::new();
+        for symbol in ["AAPL", "MSFT"] {
+            for i in 0..30_i64 {
+                let close = Decimal::from_int(if i % 2 == 0 { 101 } else { 99 });
+                let closes_at = start().saturating_sub(Duration::from_days(29 - i));
+                out.push(SensedRecord::Bar(Box::new(Bar {
+                    object_id: qip_core::ObjectId::from_string(symbol),
+                    venue: "XNAS".to_string(),
+                    interval: Interval::Day,
+                    open_time: closes_at.saturating_sub(Duration::from_days(1)),
+                    open: close,
+                    high: close,
+                    low: close,
+                    close,
+                    volume: Decimal::from_int(1_000_000),
+                    trade_count: 5_000,
+                    vwap: None,
+                    quality: qip_financial::quality::DataQuality::default(),
+                })));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_lattice_review_the_log_refused_freezes_the_ensemble_weights_on_the_next_pass() {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            listed_test_universe(&["AAPL", "MSFT"]),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        platform.observe(calm_history());
+
+        // Premise: a healthy pass issues forecasts and moves the weights, so
+        // a frozen report below is the refusal's doing and not an idle lattice.
+        let (healthy, problems) = platform.understand_now(start());
+        assert!(healthy.contains("forecast lattice issued"), "{healthy}");
+        assert!(!healthy.contains(FROZEN), "{healthy}");
+        assert!(
+            !problems.iter().any(|p| p.contains("not journalled")),
+            "{problems:?}"
+        );
+
+        // The log refuses every append from here: a read-only log is the
+        // honest stand-in for a full spool or a lost disk, because it fails
+        // inside `journal_record` exactly where those would.
+        let dir = std::path::PathBuf::from("/tmp").join(format!(
+            "qip-kernel-lattice-unjournalled-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, "").expect("an empty log file");
+        platform.event_log = EventLog::inspect(&path).expect("a read-only log");
+
+        let second = start().saturating_add(Duration::from_days(1));
+        let (refused, problems) = platform.understand_now(second);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("forecast lattice's review was computed and not journalled")),
+            "premise: the review really failed to journal: {problems:?}"
+        );
+        // The pass that failed to journal ran on weights computed while the
+        // calibrator was still available; the freeze is for the next one.
+        assert!(!refused.contains(FROZEN), "{refused}");
+        assert!(!platform.lattice().calibrator().frozen());
+
+        let third = start().saturating_add(Duration::from_days(2));
+        let (frozen, _) = platform.understand_now(third);
+        assert!(
+            frozen.contains(FROZEN),
+            "the weights moved on a review nobody kept: {frozen}"
+        );
+        assert!(platform.lattice().calibrator().frozen());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

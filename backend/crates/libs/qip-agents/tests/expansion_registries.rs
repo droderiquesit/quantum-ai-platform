@@ -18,6 +18,36 @@ fn a_tool_of_each_of_the_ten_kinds_resolves_by_kind_with_its_scope() {
     }
 }
 
+/// R12-EXPAND-6059: a tool's declared fields are its name, its kind and its
+/// scope. Kind is an enum and scope is fixed at read-only by construction, so
+/// the name is the one field a caller can leave out -- and until 2026-10-24
+/// the refusal of a blank one was tested by nothing: deleting it left this
+/// suite and the deep brain's green, and a nameless tool would then resolve
+/// under `""` for any caller that trimmed a typo to nothing.
+#[test]
+fn a_tool_proposed_or_registered_without_a_name_is_refused_and_nothing_is_registered() {
+    let mut registry = ToolRegistry::new();
+    // Premise: the same call with a name is admitted, so what follows is a
+    // refusal of the missing field and not of the kind or the registry.
+    registry.register("solver-a", ToolKind::Solver).unwrap();
+    assert_eq!(registry.by_kind(ToolKind::Solver).len(), 1);
+
+    for blank in ["", "   ", "\t\n"] {
+        let proposed = registry.propose(blank, ToolKind::Solver).unwrap_err();
+        assert!(
+            proposed.to_string().contains("a tool needs a name"),
+            "{proposed}"
+        );
+        let registered = registry.register(blank, ToolKind::Solver).unwrap_err();
+        assert!(
+            registered.to_string().contains("a tool needs a name"),
+            "{registered}"
+        );
+        assert!(registry.get(blank).is_none());
+    }
+    assert_eq!(registry.by_kind(ToolKind::Solver).len(), 1);
+}
+
 #[test]
 fn a_new_tool_is_read_only_and_sandboxed_until_a_promotion_widens_exactly_the_granted_scope() {
     let mut registry = ToolRegistry::new();
