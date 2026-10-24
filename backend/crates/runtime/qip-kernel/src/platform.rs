@@ -690,6 +690,11 @@ pub struct Platform {
     /// What the latest federation review earns each instrument in DECIDE's
     /// caps (ADR 0125 decision 4), with the spread behind it.
     federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
+    /// The active-sensing requests the latest federation pass issued, each
+    /// with the disagreement spread behind it in basis points (ADR 0158
+    /// decisions 9-10), replaced wholesale each pass so a disagreement that
+    /// has resolved stops asking. Read by the deep brain's research sweep.
+    federation_requests: Vec<(qip_contracts::control::InformationRequest, u32)>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -5497,6 +5502,7 @@ impl Platform {
             pending_routing: None,
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
+            federation_requests: Vec::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -12767,6 +12773,12 @@ impl Platform {
         // not.
         self.federation.set_stakes(self.capital.exposure_at_cost());
         let review = self.federation.run(&inputs, now);
+        self.federation_requests = review
+            .information_requests
+            .iter()
+            .cloned()
+            .zip(review.request_spreads_bp.iter().copied())
+            .collect();
         // What this review's disagreements earn each instrument in DECIDE
         // (ADR 0125 decision 4), replaced wholesale so a disagreement that
         // has resolved stops narrowing on the next pass.
@@ -12823,6 +12835,14 @@ impl Platform {
         &self,
     ) -> &BTreeMap<String, (crate::federation_stage::Narrowing, f64)> {
         &self.federation_narrowing
+    }
+
+    /// The active-sensing requests the latest federation pass issued, with
+    /// the disagreement spread behind each in basis points.
+    pub fn federation_information_requests(
+        &self,
+    ) -> &[(qip_contracts::control::InformationRequest, u32)] {
+        &self.federation_requests
     }
 
     /// The World Model Federation as the UNDERSTAND stage runs it.

@@ -1207,3 +1207,81 @@ fn the_constraint_encoders_qubo_is_solved_by_a_quantum_entrant_and_decodes_to_th
     assert_eq!(decoded.assignment, optimum.assignment);
     Ok(())
 }
+
+// --- a held instrument's disagreement is worth a question (R12-AMBIENT-10093)
+
+/// The failure this guards: `FederationStage::run` could price a disagreement
+/// but `Platform::understand_federation` never stated what was at stake, so
+/// every request was gated on a stake of nothing and the deployed path issued
+/// none. The desk holds AAA in one platform and nothing in the other; both
+/// see the same material disagreement on it, and only the held one asks.
+/// Mutation: drop the `set_stakes` call in `understand_federation` — the held
+/// platform issues no request and the first assertion fails.
+#[test]
+fn a_material_disagreement_on_a_held_instrument_issues_a_request_and_on_an_unheld_one_issues_none()
+-> Result<()> {
+    use qip_execution_engine::order::Side;
+    use qip_reasoning_engine::redteam::ReviewPolicy;
+    let build = || -> Result<Platform> {
+        let config = PlatformConfig {
+            review: ReviewPolicy {
+                minimum_surviving_confidence: 0.10,
+                ..ReviewPolicy::default()
+            },
+            ..PlatformConfig::default()
+        };
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform =
+            Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+        platform.observe(bars("AAA", 120));
+        Ok(platform)
+    };
+
+    let mut unheld = build()?;
+    unheld.run_cycle(start());
+    let reviews = federation_stage::replay(&unheld)?;
+    let spread = reviews[0]
+        .arbitrations
+        .iter()
+        .find(|a| a.proposition.contains("obj-AAA:next-close-up@"))
+        .expect("the instrument was arbitrated")
+        .disagreement
+        .spread;
+    assert!(
+        spread >= qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD,
+        "premise: a material disagreement, got {spread}"
+    );
+    assert!(
+        unheld.positions_at_cost().is_empty(),
+        "premise: nothing held"
+    );
+    assert!(unheld.federation_information_requests().is_empty());
+
+    let mut held = build()?;
+    let order = held.order_from(
+        ObjectId::from_string("obj-AAA"),
+        Side::Buy,
+        dec!("100"),
+        dec!("100"),
+        "prop-book",
+        vec!["hyp-book".to_string()],
+        start(),
+    );
+    held.submit_order(order, start())?;
+    assert!(
+        held.positions_at_cost().contains_key("obj-AAA"),
+        "premise: the desk holds AAA"
+    );
+    held.run_cycle(start());
+    let requests = held.federation_information_requests();
+    assert_eq!(requests.len(), 1, "one held instrument, one request");
+    let (request, spread_bp) = &requests[0];
+    assert!(request.question.contains("obj-AAA:next-close-up@"));
+    assert!(request.expected_information_value.is_positive());
+    // The spread travels beside the contract, which does not carry it.
+    assert!(
+        (f64::from(*spread_bp) / 10_000.0 - spread).abs() < 1e-4,
+        "{spread_bp} bp against {spread}"
+    );
+    Ok(())
+}
