@@ -93,7 +93,7 @@
   },
   {
     "id": "R12-MODEL-4005",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip_training::distill::distil fits a DistilledModel to a teacher's outputs and measures the gap; the deep brain calls it each learning round; evaluation is deterministic and bounded.",
     "evidence": [
       "backend/crates/services/qip-training/src/distill.rs:311 distil",
@@ -101,7 +101,7 @@
       "backend/crates/services/qip-training/tests/training.rs:1118 a_distilled_tree_is_bounded_and_evaluable_everywhere",
       "backend/crates/services/qip-training/tests/training.rs:1607 a_distillation_only_exists_with_its_fidelity_already_measured"
     ],
-    "gap": "Not deployed; otherwise none.",
+    "gap": "2026-10-24: Closes when a test asserts the measured fidelity values themselves: a student with a known gap reports that mean and maximum gap, R2, rank correlation and decision agreement, and FidelityPolicy::shortfalls refuses a student for each of R2, rank, decision agreement and mean gap in turn. Today only the failure-mode and parameter-byte shortfalls are driven.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -112,7 +112,7 @@
     "verification": "cargo test -p qip-training --test training",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "AUDIT-4 2026-10-24: regraded, overwriting the measured fidelity with a perfect report (R2, rank and decision agreement 1.0, gaps 0.0) after measure_fidelity passes the named qip-training training suite (55 passed), the whole qip-training crate and qip-deepbrain's learning tests; so do `false &&` on the mean-gap and R2 shortfalls and forcing every decision to agree. a_distillation_only_exists_with_its_fidelity_already_measured asserts gap >= 0, max >= mean and agreement within [0,1], all true of zeros."
   },
   {
     "id": "R12-MODEL-4006",
