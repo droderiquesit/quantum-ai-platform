@@ -47,7 +47,9 @@
 use qip_core::Decimal;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{SyncSender, TrySendError};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
+
+pub use qip_peer::rebalance::RebalanceTask;
 
 /// The most quotes one publish carries before the session thread truncates
 /// it: the protocol's bound on one edge state, so the node can trim before
@@ -132,7 +134,7 @@ pub struct EdgeQuote {
 
 /// What the peer link has done, as of the session thread's last turn. A copy:
 /// it is one turn behind the wire, and nothing decides on it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PeerStatus {
     /// Session turns completed on the session thread.
     pub turns: u64,
@@ -187,6 +189,23 @@ pub struct PeerStatus {
     pub unwinds: u64,
     /// Cycles rejected at the end of their TTL for want of a guarantee.
     pub cycles_rejected: u64,
+    /// Fired cycles closed because every leg's fill was known, whether or
+    /// not they left drift (ADR 0154 decision 6).
+    pub cycles_closed: u64,
+    /// Rebalancing tasks closed cycles have raised and the port had room
+    /// for, ever (ADR 0154 decision 6, MESH-033).
+    pub rebalance_tasks: u64,
+    /// Tasks the port had no room for: counted and never waited for, so a
+    /// decision loop that does not read its status costs the session thread
+    /// nothing.
+    pub rebalance_dropped: u64,
+    /// The tasks raised since the previous read of this status, oldest
+    /// first, each delivered exactly once. This is the one field that a read
+    /// consumes, and it is a field of the report rather than a method of the
+    /// port because the port may offer and report and do nothing else
+    /// (ADR 0116 §3): a reader that wants the tasks must be the only reader
+    /// that calls `status` for them.
+    pub rebalance_new: Vec<RebalanceTask>,
 }
 
 /// The cells [`PeerStatus`] is copied from. The session thread stores into
@@ -216,18 +235,31 @@ pub(crate) struct StatusCells {
     pub(crate) fills: AtomicU64,
     pub(crate) unwinds: AtomicU64,
     pub(crate) cycles_rejected: AtomicU64,
+    pub(crate) cycles_closed: AtomicU64,
+    pub(crate) rebalance_tasks: AtomicU64,
+    pub(crate) rebalance_dropped: AtomicU64,
 }
 
 /// The decision loop's whole view of the peer link.
 #[derive(Debug)]
 pub struct ReflexPort {
     offers: SyncSender<Offer>,
+    /// Rebalancing tasks the session thread raised, read by `status`.
+    tasks: Receiver<RebalanceTask>,
     cells: Arc<StatusCells>,
 }
 
 impl ReflexPort {
-    pub(crate) fn new(offers: SyncSender<Offer>, cells: Arc<StatusCells>) -> Self {
-        Self { offers, cells }
+    pub(crate) fn new(
+        offers: SyncSender<Offer>,
+        tasks: Receiver<RebalanceTask>,
+        cells: Arc<StatusCells>,
+    ) -> Self {
+        Self {
+            offers,
+            tasks,
+            cells,
+        }
     }
 
     /// Offer this cell's touch, and the legs its gate authorises, to the
@@ -273,6 +305,10 @@ impl ReflexPort {
             fills: cells.fills.load(Ordering::Relaxed),
             unwinds: cells.unwinds.load(Ordering::Relaxed),
             cycles_rejected: cells.cycles_rejected.load(Ordering::Relaxed),
+            cycles_closed: cells.cycles_closed.load(Ordering::Relaxed),
+            rebalance_tasks: cells.rebalance_tasks.load(Ordering::Relaxed),
+            rebalance_dropped: cells.rebalance_dropped.load(Ordering::Relaxed),
+            rebalance_new: self.tasks.try_iter().collect(),
         }
     }
 }

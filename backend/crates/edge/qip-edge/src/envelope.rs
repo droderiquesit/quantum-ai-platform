@@ -174,6 +174,23 @@ impl VerifiedEnvelope {
         self.inner.exposure()
     }
 
+    /// Whether the grant was signed with authority bounds (ADR 0155).
+    pub fn has_authority_bounds(&self) -> bool {
+        self.inner.bounds().is_some()
+    }
+
+    /// Check an order against the authority bounds; see
+    /// [`CapitalEnvelope::check_authority`].
+    pub fn check_authority(
+        &self,
+        product_class: &str,
+        leverage: Decimal,
+        regulated_function: Option<&str>,
+    ) -> std::result::Result<(), qip_contracts::AuthorityBreach> {
+        self.inner
+            .check_authority(product_class, leverage, regulated_function)
+    }
+
     /// Check an order against those bounds; see
     /// [`CapitalEnvelope::check_exposure`].
     pub fn check_exposure(

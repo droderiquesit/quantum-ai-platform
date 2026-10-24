@@ -49,28 +49,27 @@
   },
   {
     "id": "R12-WORLD-1003",
-    "status": "PARTIAL",
-    "current": "Federation of seven members is built and run each UNDERSTAND pass and journaled.",
+    "status": "COMPLETE",
+    "current": "Each UNDERSTAND pass derives a Narrowing per instrument from the federation's journaled arbitration spread (federation_stage::Narrowing::of_spread over NARROWING_SCHEDULE, every multiplier in (0,1)); DECIDE's Platform::construct_from multiplies it into that instrument's cap beside ADR 0063's and ADR 0066's through federation_stage::narrow and names it on the DECIDE detail. An agreeing or silent population earns no narrowing. FederationStage::run calls Federation::branch on a standing disagreement (one live branch per followed reading, FEDERATION_MAX_LIVE_BRANCHES) and merges the two best branches.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:362 Federation",
-      "backend/crates/services/qip-world-model/src/federation.rs:443 register",
-      "backend/crates/services/qip-world-model/tests/federation.rs crate tests",
-      "backend/crates/runtime/qip-kernel/src (no reference to qip_world_model::federation)",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::narrow",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::construct_from (federation_stage::narrow call)",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1396 Federation::branch caller",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_material_federation_disagreement_narrows_the_instruments_bound_and_an_agreeing_one_does_not",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_federation_narrowing_multiplies_into_the_cap_once_per_instrument_and_an_agreeing_one_leaves_it_at_one"
     ],
-    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the federation narrowing schedule in Platform::construct_from's caps map, with a test that an agreeing population leaves every cap at one and a disagreeing one narrows; Federation::branch still has no cycle caller.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel (new test: cycle consults >1 federated model)",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation; cargo test -p qip-kernel --lib federation_stage",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Advisory only: no REASON/DECIDE code reads the federation; decisions still use the single WorldModel. Federation::branch is never called in the cycle, so no hypothesis branches."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Advisory only: no REASON/DECIDE code reads the federation; decisions still use the single WorldModel. Federation::branch is never called in the cycle, so no hypothesis branches. 2026-10-24 lane T7-KERNEL: the gap text was older than the code (commit 3e934023 landed ADR 0125 decision 4 and Federation::branch has a cycle caller in FederationStage::run). The existing test read only DECIDE's detail line, which narrow() writes whether or not it multiplied; the new test asserts the cap itself (once per instrument, not squared, and unchanged for an agreeing population). Mutation: replace the `*= narrowing.multiplier()` in federation_stage::narrow with a bare entry() - the new test failed with 'narrowed once, not squared: 0.8'; restored, passes."
   },
   {
     "id": "R12-REASON-1004",
@@ -221,7 +220,7 @@
       "backend/crates/services/qip-mesh/src/peer.rs:1148 ReservationBook",
       "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:20 peer protocol has no transport (test header)"
     ],
-    "gap": "A peer transport between edge nodes and integration of epochs/reservations into Cell::work.",
+    "gap": "2026-10-24: register was stale. qip-edge-node depends on qip-peer-link (Cargo.toml:80) and spawns the peer mesh in main.rs; a two-node socket test is qip-peer-link/tests/peer_mesh.rs::two_nodes_carry_a_cycle_through_token_reserved_fire_fill_and_unwind_over_the_socket. Remaining: the mesh runs only when the peer env vars are set, no committed deployment sets them, and no qip-edge-node-level two-node test exists.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -851,7 +850,7 @@
       "backend/crates/apps/qip-deepbrain/src/connectors.rs::ConnectorArm::refetch",
       "backend/crates/apps/qip-deepbrain/src/evolution.rs::EvolutionEngine::maybe_refetch"
     ],
-    "gap": "Re-fetch is a cadence pass, not triggered by historical reasoning/backtests; the Revised (changed-hash) outcome is returned but no test asserts a revised extent is flagged.",
+    "gap": "Corrected 2026-10-24 (lane T8-RESIDUAL): the 2026-10-18 gap said no test asserts a revised extent is flagged; two do. acquisition_manifest.rs::a_re_fetch_reports_unchanged_and_revised_extents_with_both_hashes asserts the driver's Revised finding, and qip-kernel/tests/references.rs::a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_and_the_metrics asserts the ledger, the log and the metric once the revised reference is recorded. What is open: ConnectorArm::refetch reports a Revised finding and does not record it (the next poll's reference does), so a revision sits unflagged until that poll; the pass runs on a cadence and not from historical reasoning or backtests; and a deployed deep brain meets the default-deny egress rule (owner decision recorded in notes).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -862,7 +861,7 @@
     "verification": "cargo test -p qip-kernel --test references",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 (lane T8-RESIDUAL): graded DEPLOY_DEPENDENT; gap corrected, no code change."
   },
   {
     "id": "R12-EVID-1038",
@@ -3739,7 +3738,7 @@
       "backend/crates/apps/qip-ledgerd/src/main.rs:1",
       "backend/crates/tests/qip-acceptance/tests/arch_035_ledger_consistency.rs"
     ],
-    "gap": "Depends on three rows that are not done: tax lots (R12-LEDGER-5008, tried and dropped 2026-10-18 for three coupled reasons), margin, collateral, commitments and inventory (R12-COVERAGE-7164: operations are bookable and read back, no production producer), and settlement state (ADR 5011). Fees are booked from the fill's reported fee; accruals post through operations with no production producer.",
+    "gap": "2026-10-24: closes only on three things ADR 0153 settles separately and none is a missing wire: private commitments (decision 2, decided, producer not yet built: R12-LEDGER-5006/5020), margin and collateral (decision 3: rule only, no venue states one; modelled margin is never booked, proven by a test), and tax (decision 7: not built, proven by a test). Tax lots (R12-LEDGER-5008) and settlement state (ADR 0130) remain open. Fees are booked from the fill's reported fee; accruals post through operations with no production producer.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3750,7 +3749,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": "Gap corrected 2026-10-18 by lane L15; nothing in the code changed."
+    "notes": "Gap corrected 2026-10-18 by lane L15. Lane T4-LEDGER 2026-10-24: blockers restated to ADR 0153's decisions; no code change, no grade change."
   },
   {
     "id": "R12-REFLEX-1165",

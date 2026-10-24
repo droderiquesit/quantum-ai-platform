@@ -41,6 +41,7 @@
 use crate::boundary::{LegAuthority, Side};
 use crate::wire::PeerSession;
 use qip_core::{Decimal, Duration, Timestamp};
+use qip_peer::rebalance::{RebalanceTask, rebalancing_tasks};
 use qip_peer::{
     EpochDraft, EpochLeg, LegExecution, LegSide, OpportunityEpoch, ReservationBook,
     ReservationOutcome,
@@ -73,6 +74,9 @@ pub struct SagaStep {
     pub fills: u64,
     pub unwinds: u64,
     pub rejected: u64,
+    /// Cycles whose every leg's fill is known, closed this step (ADR 0154
+    /// decision 6).
+    pub closed: u64,
 }
 
 /// The session thread's cycle state.
@@ -91,6 +95,12 @@ pub struct Saga {
     /// Own legs sent, with the spread the authority priced at fill time.
     executed: BTreeMap<(String, String), Decimal>,
     unwound: BTreeSet<(String, String)>,
+    /// Fired cycles already closed: their drift was raised once and is not
+    /// raised again while the epoch is still held.
+    closed: BTreeSet<String>,
+    /// Rebalancing tasks closed cycles raised, until the host carries them
+    /// to the port.
+    rebalance: Vec<RebalanceTask>,
     /// How many refusals have been read for `guarantee_unmet`.
     refusals_read: usize,
     started_ns: i64,
@@ -130,6 +140,7 @@ impl Saga {
         self.fire(session, now, &mut step);
         self.execute(session, now, &mut step);
         self.unwind(session, &mut step);
+        self.close(session, &mut step);
         let refusals = session.refusals();
         step.rejected = refusals[self.refusals_read.min(refusals.len())..]
             .iter()
@@ -205,6 +216,7 @@ impl Saga {
             .retain(|(opportunity, _), _| held.contains(opportunity));
         self.unwound
             .retain(|(opportunity, _)| held.contains(opportunity));
+        self.closed.retain(|opportunity| held.contains(opportunity));
         for book in self.books.values_mut() {
             book.expire(now);
         }
@@ -583,6 +595,72 @@ impl Saga {
             {
                 session.send_to(recipients, frame);
                 step.unwinds += 1;
+            }
+        }
+    }
+    /// The tasks closed cycles have raised since the last call, in the order
+    /// they closed.
+    pub fn take_rebalance_tasks(&mut self) -> Vec<RebalanceTask> {
+        std::mem::take(&mut self.rebalance)
+    }
+
+    /// Raise the drift a fired cycle left, once every leg's fill is known
+    /// (ADR 0154 decision 6, MESH-033).
+    ///
+    /// Legs land wherever their venues are, and a leg that filled less than
+    /// planned leaves its place short while the protocol unwinds the others
+    /// down to the least fill. Without this the next cycle starts from a
+    /// position nobody chose. Held is each leg's fill capped at the least
+    /// fill, because that is where the unwind leaves it whichever node does
+    /// the unwinding; wanted is the leg's planned size. Places are one per
+    /// node, venue and instrument, because units of two instruments do not
+    /// add. A cycle with an unknown fill is not closed: drift measured
+    /// against a fill nobody has reported would be a guess.
+    fn close(&mut self, session: &PeerSession, step: &mut SagaStep) {
+        let endpoint = session.endpoint();
+        for opportunity in endpoint.opportunities() {
+            if self.closed.contains(&opportunity) || !endpoint.is_fired(&opportunity) {
+                continue;
+            }
+            let Some(epoch) = endpoint.epoch(&opportunity) else {
+                continue;
+            };
+            let fills: Option<Vec<(&EpochLeg, Decimal)>> = epoch
+                .legs
+                .iter()
+                .map(|leg| endpoint.filled(&opportunity, &leg.leg).map(|f| (leg, f)))
+                .collect();
+            let Some(fills) = fills else {
+                continue;
+            };
+            let Some(least) = fills.iter().map(|(_, filled)| *filled).min() else {
+                continue;
+            };
+            self.closed.insert(opportunity.clone());
+            let mut target: BTreeMap<String, Decimal> = BTreeMap::new();
+            let mut actual: BTreeMap<String, Decimal> = BTreeMap::new();
+            let mut overflow = false;
+            for (leg, filled) in fills {
+                let place = match &leg.execution {
+                    Some(e) => format!("{}/{}/{}", leg.node, e.venue, e.instrument),
+                    None => format!("{}/{}", leg.node, leg.leg),
+                };
+                for (book, add) in [(&mut target, leg.size), (&mut actual, filled.min(least))] {
+                    let held = book.entry(place.clone()).or_insert(Decimal::ZERO);
+                    match held.checked_add(add) {
+                        Some(sum) => *held = sum,
+                        None => overflow = true,
+                    }
+                }
+            }
+            if overflow {
+                continue;
+            }
+            // Zero tolerance: this only reports, it never moves anything, so
+            // reporting every unit short is the cautious reading.
+            if let Ok(tasks) = rebalancing_tasks(epoch, &target, &actual, Decimal::ZERO) {
+                step.closed += 1;
+                self.rebalance.extend(tasks);
             }
         }
     }

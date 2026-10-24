@@ -1683,7 +1683,7 @@
       "backend/crates/runtime/qip-kernel/src/now_stage.rs::world_observations POLICY_RATE_SERIES_PREFIX",
       "backend/crates/runtime/qip-kernel/tests/now_state.rs::a_policy_rate_surprise_moves_the_policy_belief_and_not_the_economys"
     ],
-    "gap": "Supply-chain latent state has a domain and no feed: RelationshipKind::Supplies edges are asserted only in tests (world.rs, platform.rs fixtures), no connector produces supplier edges, so second_order_exposure over them would measure a graph nobody ingests. Positioning is the platform's own book, not market positioning.",
+    "gap": "Supply-chain latent state has a domain and no feed: RelationshipKind::Supplies edges are asserted only in tests (world.rs, platform.rs fixtures), no connector produces supplier edges, so second_order_exposure over them would measure a graph nobody ingests. ADR 0151 decision 5 decides it: WorldDriver gets a typed DriverKind but only OwnAction and Price have a producer; Policy, Weather, Default and Supply need data this repository does not hold (licence-record gate, ADR 0157). Closing it means admitting a licensed supplier-relationship source, which is BILLED, not a kernel change. Positioning is the platform's own book, not market positioning. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1854,14 +1854,15 @@
   {
     "id": "R12-WORLD-3082",
     "status": "PARTIAL",
-    "current": "Five-horizon lattice with populations per row; per-horizon Brier, pinball and coverage gauges emitted in UNDERSTAND.",
+    "current": "Five-horizon lattice (LatticeHorizon::ALL) with a population per row: Population::standard admits a martingale and a drift model on every row and the specialist each row's section 9.7 names (event reaction at hours-days, regime path at weeks-months, structural claims at quarters-years, order flow at seconds-minutes), each fed on the default path by LatticeStage::context_for / signals_from_world (tests/lattice_specialists.rs). The central stage issues every Lane::Central row and never the microsecond row, whose outputs belong to the reflex lane alone (ADR 0151 decision 11). Per-horizon Brier, pinball and coverage gauges are emitted in UNDERSTAND with the bounded LatticeHorizon label; the belief calibration's horizon label is a fixed HorizonBucket, not a runtime duration.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8985-9010 BELIEF_BRIER_SCORE_BY_HORIZON",
-      "backend/crates/libs/qip-contracts/src/feature.rs:413 ForecastLattice (no horizons, no production caller)",
-      "backend/crates/tests/qip-acceptance/tests/m6_foundation.rs:549-597",
+      "backend/crates/services/qip-world-model/src/lattice.rs::Population::standard",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeStage::run (Lane::Central filter)",
+      "backend/crates/runtime/qip-kernel/tests/lattice_specialists.rs",
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_cycle_issues_at_every_central_horizon_and_never_the_microsecond_row",
       "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LATTICE_BRIER"
     ],
-    "gap": "Populations are two generic price models per row, not specialist; the microsecond row is never issued, so it has no calibration series.",
+    "gap": "The seconds-minutes order-flow specialist is admitted but never fed: LatticeStage::set_signals has no caller and the bar tape carries no aggressor side, so its flow_imbalance is always None. ADR 0151 decision 6 leaves it unfed until a licensed tape with aggressor side is admitted (BILLED, ADR 0157). The microsecond row has no central calibration series by design (ADR 0151 decision 11; the reflex lane issues it). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1872,7 +1873,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": "ForecastLattice is a disagreement set over one feature, not a horizon lattice despite its name. The horizon label on BELIEF_BRIER_SCORE_BY_HORIZON is formatted from a runtime duration (platform.rs ~8993), which conflicts with the observability rule that labels are enums/literals. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "ForecastLattice is a disagreement set over one feature, not a horizon lattice despite its name. The horizon label on BELIEF_BRIER_SCORE_BY_HORIZON is formatted from a runtime duration (platform.rs ~8993), which conflicts with the observability rule that labels are enums/literals. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane T7-KERNEL: the earlier gap ('two generic price models per row, not specialist') and the note about a duration-built horizon label were both older than the code (commit 2eb6ad62; HorizonBucket). Re-ran now_lattice and lattice_specialists; mutation - drop the Lane::Central filter AND issue with horizon.lane() in LatticeStage::run - the_cycle_issues_at_every_central_horizon_and_never_the_microsecond_row failed at now_lattice.rs:280. (Dropping the filter alone is held by the second guard inside issue(), which refuses a central microsecond forecast.)"
   },
   {
     "id": "R12-WORLD-3083",
@@ -2199,7 +2200,7 @@
       "backend/crates/services/qip-twin/src/futures.rs",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::tree"
     ],
-    "gap": "None for the requirement; not deployed (desk off unless configured).",
+    "gap": "None for the requirement in code: the tick desk's round grows, scores, reweights, splits and prunes the future tree (TickDesk::tree). It runs in no deployed binary: QIP_DEEPBRAIN_TICK_EVERY is unset in every committed deployment, so the desk is off. Missing is a deployment that sets it, with evidence from a run. Re-graded 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,

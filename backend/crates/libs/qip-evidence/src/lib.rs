@@ -17,6 +17,6 @@ pub use evidence::{
     AuthenticitySignal, EvidenceRecord, GeoPoint, GeographicConsistency, TemporalConsistency,
 };
 pub use fabric::{
-    Authenticity, ClaimKey, Contest, EvidenceFabric, EvidenceVerdict, KeyOutcome, KnowledgeDelta,
-    ProvenanceEdge, ProvenanceGraph, ProvenanceNode, SourceHistory,
+    Authenticity, ClaimKey, Contest, EvidenceFabric, EvidenceVerdict, JournaledClaim, KeyOutcome,
+    KnowledgeDelta, ProvenanceEdge, ProvenanceGraph, ProvenanceNode, SourceHistory,
 };

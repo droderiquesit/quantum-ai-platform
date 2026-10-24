@@ -907,8 +907,8 @@
   },
   {
     "id": "R12-CAPITAL-9039",
-    "status": "PARTIAL",
-    "current": "Kernel LEARN scores declined and filled alternatives via qip-twin CounterfactualEngine (planned on knowable data, settled on realised); qip-capital shadow portfolios exist but are not composed. Sequential and in process.",
+    "status": "COMPLETE",
+    "current": "Kernel shadows are the qip-twin menu arms (AlternativeMenu::alternatives_to), scored sequentially in LEARN under the per-cycle cap (COUNTERFACTUALS_PER_CYCLE) with deferral counted (COUNTERFACTUALS_DEFERRED); output is the cycle's CounterfactualJournal. qip-capital::shadow is an allocation-level vocabulary with no kernel caller by decision and is not composed (ADR 0148 decision 6); no parallel batch (tokio is off the decision core). Revisit when the allocator exposes alternate allocations.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined, :17410 score_filled",
       "backend/crates/services/qip-twin/src/counterfactual.rs",
@@ -916,7 +916,7 @@
       "backend/crates/services/qip-capital/src/shadow.rs (no kernel caller)",
       "backend/crates/tests/qip-acceptance/tests/capital_shadow_portfolios.rs"
     ],
-    "gap": "Compose shadow portfolios; parallel batch; compact pack output.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -924,10 +924,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cargo test -p qip-kernel --test learning declined",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane T7-KERNEL, closing by ADR 0148 decision 6 (no-code restate). Re-run the cap test on the production caller: mutation - drop `.take(COUNTERFACTUALS_PER_CYCLE)` in Platform::score_declined's loop - declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle failed at learning.rs:586; restored, passes."
   },
   {
     "id": "R12-QUANT-9040",
@@ -1190,7 +1190,7 @@
       "backend/crates/services/qip-capital/src/shadow.rs",
       "backend/crates/tests/qip-acceptance/tests/capital_shadow_portfolios.rs"
     ],
-    "gap": "Compose and persist.",
+    "gap": "Corrected 2026-10-24 (lane T8-RESIDUAL): composing shadows needs an AllocationPlan per cycle and there is none. CentralPlane::allocate is called from Platform::issue_capital and the capital-envelope path (operator-driven), never from a cycle, so a shadow universe built at plan time would be built on operator calls only, with no resolved fills to score and nothing in the cycle to persist. Slices: (1) a cycle-time allocation pass (R12-CAPITAL-9039); (2) ShadowPortfolioUniverse built from that plan (alternate size and refused shadows) and journaled; (3) scoring from the twin's fills. Note for slice 3: score_shadow clamps regret_bp at 10000 and converts money through f64, both against the refuse-not-clamp rule.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1203,7 +1203,7 @@
     "verification": "cargo test -p qip-acceptance --test capital_shadow_portfolios",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 (lane T8-RESIDUAL): graded LARGE_SPLITTABLE; gap corrected, no code change."
   },
   {
     "id": "R12-DATA-9052",
@@ -2510,7 +2510,7 @@
       "backend/crates/apps/qip-api/src/main.rs:306",
       "backend/crates/edge/qip-edge/tests/trust_bundle.rs"
     ],
-    "gap": "Write the four HSM signing keys and the publish workflow in Terraform, apply to dev through infra.yml with the plan shown, set QIP_ARTEFACT_SIGNER=kms in dev after a real-key verification (ADR 0110 Amendment 1).",
+    "gap": "2026-10-24: HSM signing keys are billed and need an infra.yml apply with the plan shown, then QIP_ARTEFACT_SIGNER=kms in dev after a real-key check; only modules/binaryauthorization declares an ASYMMETRIC_SIGN key today.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3778,7 +3778,7 @@
       "apps/qip-edge-node/tests/standby.rs::a_standby_places_nothing_until_it_promotes_and_the_primary_it_replaced_places_nothing_after",
       "apps/qip-edge-node/tests/standby.rs::a_standby_waits_while_any_venue_still_reports_the_old_holders_session"
     ],
-    "gap": "A cross-zone lease store, Terraform wiring of the lease to the standby, a per-shard venue-session check, and the game day.",
+    "gap": "A cross-zone lease store (ADR 0137 GcsLeaseStore, not built), a per-shard venue-session check replacing SimulatedSessions, and the game day (corrected 2026-10-24). The Terraform wiring of QIP_FENCING_LEASE to primary and standby exists (startup.sh.tftpl:263, standby.tftest.hcl) but the lease is a file on one host, so across zones the pair is not fenced; execution_nodes = {} so nothing is deployed.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -3789,7 +3789,7 @@
     "verification": "game day",
     "work_item": "",
     "size": "L",
-    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285)."
+    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285). Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class DEPLOY_DEPENDENT."
   },
   {
     "id": "R12-RES-9167",
@@ -3992,7 +3992,7 @@
       "infrastructure/terraform/modules/gitops-control-plane/main.tf:131",
       "infrastructure/terraform/modules/cloudrun/main.tf:1-40"
     ],
-    "gap": "Drill.",
+    "gap": "2026-10-24: a game day needs a deployed environment; no Cloud Run service exists in dev (ADR 0093).",
     "implemented": true,
     "tested": false,
     "integrated": false,

@@ -48,8 +48,8 @@ pub struct MarketStatePack {
 }
 
 impl MarketStatePack {
-    /// Build a pack over `events`, in tape order. Refuses an empty or inverted
-    /// interval, a non-positive horizon, an empty or blank lineage, and an
+    /// Build a pack over `events`, in tape order. Refuses an empty `events`
+    /// list, an empty or inverted interval, a non-positive horizon, an empty or blank lineage, and an
     /// event outside the interval — a pack that quietly included events from
     /// beyond its own bounds would not be time-bounded.
     pub fn new(
@@ -69,6 +69,13 @@ impl MarketStatePack {
         if horizon.as_nanos() <= 0 {
             return Err(Error::invalid(
                 "a market state pack needs a positive horizon; state how long it stays valid",
+            ));
+        }
+        if events.is_empty() {
+            return Err(Error::invalid(
+                "a market state pack needs at least one event; an interval with no drained \
+                 events records no tape, and a pack over none would report a clean tape nobody \
+                 read (ADR 0151 decision 2)",
             ));
         }
         if feature_lineage.is_empty() || feature_lineage.iter().any(|l| l.trim().is_empty()) {
