@@ -1350,3 +1350,132 @@ fn realised_gain_can_only_shrink_the_value_left_below_the_cost_proxy() {
         req
     );
 }
+
+/// A detector that re-raises one deviation every sweep must not spend the
+/// attention budget saying one thing. Mutation: delete the `Clustered` branch
+/// in `AttentionRouter::route` — the repeats activate and the third assertion
+/// fails. Mutation: skip the expiry retain — the lapse test below
+/// fails instead.
+#[test]
+fn a_repeat_of_a_live_signal_is_clustered_and_spends_no_budget() {
+    let clustered = || AttentionRouter::new(policy(3, 5).clustering_duplicates());
+    let mut router = clustered();
+    let first = router
+        .route(&signal(0, SignalClass::Surprise, 9_000, 0), at(0))
+        .expect("routes");
+    assert_eq!(
+        first.iter().map(|e| e.disposition).collect::<Vec<_>>(),
+        vec![Disposition::Activated],
+        "premise: the first raising activates"
+    );
+
+    let mut repeats = Vec::new();
+    for n in 1..=10usize {
+        repeats.extend(
+            router
+                .route(&signal(n, SignalClass::Surprise, 9_000, 1), at(1))
+                .expect("routes"),
+        );
+    }
+    assert_eq!(repeats.len(), 10, "every repeat is on the record");
+    assert!(
+        repeats
+            .iter()
+            .all(|e| e.disposition == Disposition::Clustered),
+        "{repeats:?}"
+    );
+    assert!(
+        repeats.iter().all(|e| e.budget.spent == 1),
+        "a clustered repeat charged the budget: {repeats:?}"
+    );
+    assert_eq!(router.deferred_len(), 0, "a repeat took a hold-queue slot");
+
+    // The control: the same ten signals about ten different entities are a
+    // storm, and the budget answers them — so clustering is not just the
+    // budget under another name.
+    let mut distinct = clustered();
+    let mut seen = Vec::new();
+    for n in 0..10usize {
+        let mut d = detection(0);
+        d.affected_entities = vec![format!("PAIR-{n}")];
+        seen.extend(
+            distinct
+                .route(&signal_with(n, SignalClass::Surprise, 9_000, 0, d), at(0))
+                .expect("routes"),
+        );
+    }
+    assert!(
+        seen.iter().all(|e| e.disposition != Disposition::Clustered),
+        "distinct deviations were clustered: {seen:?}"
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|e| e.disposition == Disposition::Activated)
+            .count(),
+        3,
+        "the budget, not the clustering, limits distinct signals"
+    );
+}
+
+/// Clustering must never hide a deviation getting worse, and must not outlive
+/// the signal it clusters under. Mutation: compare `<=` as `true` (cluster any
+/// repeat) — the escalation assertion fails. Mutation: skip the expiry retain
+/// — the lapse assertion fails.
+#[test]
+fn a_more_severe_repeat_routes_and_a_repeat_after_the_live_signal_lapsed_routes() {
+    let mut router = AttentionRouter::new(policy(10, 5).clustering_duplicates());
+    router
+        .route(&signal(0, SignalClass::Risk, 5_000, 0), at(0))
+        .expect("routes");
+    let worse = router
+        .route(&signal(1, SignalClass::Risk, 8_000, 1), at(1))
+        .expect("routes");
+    assert_eq!(
+        worse.iter().map(|e| e.disposition).collect::<Vec<_>>(),
+        vec![Disposition::Activated],
+        "a repeat that is more severe than the live signal is an escalation"
+    );
+    let milder = router
+        .route(&signal(2, SignalClass::Risk, 6_000, 2), at(2))
+        .expect("routes");
+    assert_eq!(
+        milder.iter().map(|e| e.disposition).collect::<Vec<_>>(),
+        vec![Disposition::Clustered],
+        "premise: a repeat milder than the escalation is a duplicate of it"
+    );
+
+    // Both live signals expire two hours after detection; a repeat past that
+    // is the deviation coming back, not a duplicate.
+    let later = 7_200 + 61;
+    let back = router
+        .route(&signal(3, SignalClass::Risk, 5_000, later), at(later))
+        .expect("routes");
+    assert_eq!(
+        back.iter().map(|e| e.disposition).collect::<Vec<_>>(),
+        vec![Disposition::Activated]
+    );
+}
+
+#[test]
+fn a_router_without_clustering_treats_identical_signals_as_the_budget_always_did() {
+    let mut router = AttentionRouter::new(policy(2, 0));
+    let mut dispositions = Vec::new();
+    for n in 0..4usize {
+        dispositions.extend(
+            router
+                .route(&signal(n, SignalClass::Surprise, 9_000, 0), at(0))
+                .expect("routes")
+                .into_iter()
+                .map(|e| e.disposition),
+        );
+    }
+    assert_eq!(
+        dispositions,
+        vec![
+            Disposition::Activated,
+            Disposition::Activated,
+            Disposition::Shed,
+            Disposition::Shed
+        ]
+    );
+}
