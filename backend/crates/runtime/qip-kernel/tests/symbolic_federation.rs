@@ -1074,6 +1074,50 @@ fn a_material_federation_disagreement_narrows_the_instruments_bound_and_an_agree
     Ok(())
 }
 
+#[test]
+fn a_federation_narrowing_multiplies_into_the_cap_once_per_instrument_and_an_agreeing_one_leaves_it_at_one()
+-> Result<()> {
+    // The failure this guards: the sibling test reads DECIDE's detail line, and
+    // `narrow` pushes that line whether or not it multiplied, so a narrowing
+    // that was named and never applied passed it. The cap is the number the
+    // constructor reads, so it is asserted here directly (ADR 0125 decisions 4
+    // and 6).
+    let (narrowing, spread) = federation_stage::Narrowing::of_spread(
+        qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD,
+    )
+    .map(|n| (n, qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD))
+    .expect("premise: the material spread earns a narrowing");
+    assert!(narrowing.multiplier() < 1.0, "premise: it narrows");
+    let narrowings =
+        std::collections::BTreeMap::from([("obj-AAA".to_string(), (narrowing, spread))]);
+    let objects = || ["obj-AAA", "obj-AAA", "obj-BBB"].map(String::from);
+
+    // A disagreeing instrument compounds with an existing cap, once however
+    // many theses name it; an instrument with no arbitration is untouched.
+    let mut caps = std::collections::BTreeMap::from([("obj-AAA".to_string(), 0.8)]);
+    let mut notes = Vec::new();
+    federation_stage::narrow(&mut caps, &mut notes, objects(), &narrowings);
+    assert!(
+        (caps["obj-AAA"] - 0.8 * narrowing.multiplier()).abs() < 1e-12,
+        "narrowed once, not squared: {}",
+        caps["obj-AAA"]
+    );
+    assert!(!caps.contains_key("obj-BBB"), "absence is not disagreement");
+    assert_eq!(notes.len(), 1, "one note per instrument: {notes:?}");
+
+    // An agreeing population leaves every cap where it was.
+    let mut caps = std::collections::BTreeMap::new();
+    let mut notes = Vec::new();
+    federation_stage::narrow(
+        &mut caps,
+        &mut notes,
+        objects(),
+        &std::collections::BTreeMap::new(),
+    );
+    assert!(caps.is_empty() && notes.is_empty());
+    Ok(())
+}
+
 /// R12-QUANT-4040. The symbolic reasoner's constraint encoder produced a QUBO
 /// for the quantum path's solver port and nothing ever ran a quantum solver on
 /// one, so "the constraint problem is compared to classical solvers" was a
