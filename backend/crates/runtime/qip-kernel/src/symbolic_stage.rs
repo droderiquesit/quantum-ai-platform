@@ -13,16 +13,19 @@
 //! explanations of the surprise and what an intervention on the subject
 //! would reach.
 //!
-//! # Advisory, and structurally so
+//! # A veto, and only a veto (ADR 0125)
 //!
 //! [`derive`] takes its inputs by value and the causal graph by shared
 //! reference and returns a record. It holds nothing that reaches a thesis, a
-//! size or an order, and the kernel calls it after REASON has already decided
-//! — so a rule pack that disagrees with the review is *recorded* as
-//! disagreeing (`agrees_with_review`), never acted on. Promoting any part of
-//! this to a control is a sizing decision for an ADR, not an implication of a
-//! derivation existing; pre-trade checks stay deterministic and stay where
-//! `Determinism::Required` puts them.
+//! size or an order. The kernel runs it beside REASON's verdict and reads one
+//! thing off the record, [`SymbolicDerivation::veto`]: when review approved a
+//! hypothesis and the rule pack, having evaluated, does not find it eligible,
+//! the hypothesis forms no proposal. That is the whole of the power ADR 0125
+//! decision 2 gives it: it subtracts a proposal and never creates, enlarges
+//! or re-signs one. A reasoner that refused its input is not a veto (a
+//! malformed timeline is a finding about the evidence, and vetoing on it
+//! would let a broken input silence every hypothesis). Pre-trade checks stay
+//! deterministic and stay where `Determinism::Required` puts them.
 //!
 //! # Why every part refuses rather than guesses
 //!
@@ -365,6 +368,62 @@ impl EventBody for SymbolicDerivation {
 }
 
 impl SymbolicDerivation {
+    /// ADR 0125 decision 2: why the rule pack refuses a hypothesis that
+    /// review approved, or `None` when it does not.
+    ///
+    /// Only the pack's hard stops veto: a tripped kill switch, a live
+    /// ceiling, one lot that exceeds the position budget, cash short of one
+    /// lot. The other two conditions of `r10-eligible`, confidence under
+    /// 5000 bp and contested evidence, are sizing inputs, not stops: a
+    /// contested thesis is held small and scored because
+    /// `Hypothesis::confidence_for_sizing` can only narrow (ADR 0150
+    /// decision 14), and its effective confidence has already been narrowed
+    /// by the conflict. Vetoing on them would reverse that decision and
+    /// refuse every contested thesis the review approved at a size the
+    /// platform chose to allow.
+    ///
+    /// `None` too for a hypothesis review did not approve (nothing to
+    /// subtract from), for one the pack finds eligible, and for a pack that
+    /// refused its input: `Step::Refused` is a finding about the evidence
+    /// and not a rule firing.
+    pub fn veto(&self) -> Option<String> {
+        let Step::Derived(verdict) = &self.rules.verdict else {
+            return None;
+        };
+        let fact = |name: &str| {
+            self.rules
+                .inputs
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v)
+        };
+        if fact("status") != Some(&Value::Text("approved".into())) {
+            return None;
+        }
+        if verdict.facts.get("eligible") == Some(&Value::Bool(true)) {
+            return None;
+        }
+        let mut stops = Vec::new();
+        if fact("kill_switch") == Some(&Value::Bool(true)) {
+            stops.push("the kill switch is tripped");
+        }
+        if fact("live_authority") == Some(&Value::Bool(true)) {
+            stops.push("the ceiling is live");
+        }
+        if verdict.facts.get("lot_exceeds_budget") == Some(&Value::Bool(true)) {
+            stops.push("one lot exceeds the position budget");
+        }
+        if verdict.facts.get("cash_short") == Some(&Value::Bool(true)) {
+            stops.push("cash is short of one lot");
+        }
+        (!stops.is_empty()).then(|| {
+            format!(
+                "{RULE_PACK} v{RULE_PACK_VERSION} does not find it eligible ({})",
+                stops.join("; ")
+            )
+        })
+    }
+
     /// The derivation as one clause for the REASON stage's detail line.
     pub fn detail(&self) -> String {
         let eligibility = match &self.rules.verdict {

@@ -14272,9 +14272,10 @@ impl Platform {
                     ));
                 }
                 // Blueprint §9.4: the symbolic reasoners over this hypothesis,
-                // journaled as a derivation trace. Advisory — run after review
-                // has decided, and read by nothing that sizes or sends.
-                let (symbolic_detail, symbolic_problem) =
+                // journaled as a derivation trace. Its one power is ADR 0125's
+                // veto: a hypothesis review approved and the rule pack does not
+                // find eligible forms no proposal. Nothing here sizes or sends.
+                let (symbolic_detail, symbolic_problem, symbolic_veto) =
                     self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
                 outcome.detail.push_str(&symbolic_detail);
                 if let Some(problem) = symbolic_problem {
@@ -14291,6 +14292,16 @@ impl Platform {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
                     DecisionTaken::RejectedOnReview
+                } else if let Some(veto) = symbolic_veto {
+                    // ADR 0125 decision 2: the rule pack refused what review
+                    // approved. Recorded under its own words, because "vetoed
+                    // by a rule" and "could not be sized" send an operator to
+                    // different places; the derivation that produced it is
+                    // already on the log under `kernel/symbolic`.
+                    outcome = outcome.with_problem(format!(
+                        "approved but vetoed by the symbolic rule pack: {veto}"
+                    ));
+                    DecisionTaken::NotSizeable
                 } else if let Err(refusal) = justify_thesis(&reasoned.hypothesis.evidence) {
                     // Approved on review and still not queued: a thesis whose
                     // only ground is the return it expects never reaches
@@ -14506,9 +14517,11 @@ impl Platform {
     /// derivation — REASON-3053 to -3060.
     ///
     /// Gathers only; the module decides. Takes the hypothesis by shared
-    /// reference and returns a clause and a problem, so the derivation has no
-    /// path back into the thesis, its conviction or any order: that is what
-    /// keeps it advisory by construction rather than by convention.
+    /// reference and returns a clause, a problem and, under ADR 0125
+    /// decision 2, the reason the rule pack vetoes an approved hypothesis (see
+    /// `SymbolicDerivation::veto`). The derivation has no path back into the
+    /// thesis, its conviction or any order: the caller may drop a proposal on
+    /// the veto and can do nothing else with it.
     /// What one lot of `subject` leaves of the position budget and of cash,
     /// in whole currency units, for the symbolic rule pack (REASON-3057).
     ///
@@ -14560,13 +14573,13 @@ impl Platform {
         reasoned: &ReasoningOutcome,
         contested: bool,
         now: Timestamp,
-    ) -> (String, Option<String>) {
+    ) -> (String, Option<String>, Option<String>) {
         use crate::symbolic_stage::{AnomalyFacts, SymbolicInput};
         let (Some(anomaly), Some(subject)) = (
             opportunity.anomalies.first(),
             opportunity.affected_objects.first(),
         ) else {
-            return (String::new(), None);
+            return (String::new(), None, None);
         };
         let hypothesis = &reasoned.hypothesis;
         let moves: BTreeMap<String, f64> = self
@@ -14627,6 +14640,7 @@ impl Platform {
             crate::symbolic_stage::derive(input, world.causal(), now)
         };
         let detail = derivation.detail();
+        let veto = derivation.veto();
         let problem = self
             .journal_record(derivation, "kernel/symbolic", now)
             .err()
@@ -14636,7 +14650,7 @@ impl Platform {
                     error.message()
                 )
             });
-        (detail, problem)
+        (detail, problem, veto)
     }
 
     /// The regime in force for `subject`, as the labels memory encodes.
