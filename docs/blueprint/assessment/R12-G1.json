@@ -903,7 +903,7 @@
       "infrastructure/terraform/modules/execution-node/main.tf:331-372 reservation + affinity",
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:373 every_machine_group_the_repository_defines_consumes_a_specific_reservation_sized_to_its_target"
     ],
-    "gap": "Declare a node; commitments decision.",
+    "gap": "Declare a node (execution_nodes is {} in dev/stage/test/prod tfvars, protected path infrastructure/environments/**) and decide on a committed-use commitment (a billed owner decision). Neither is closable from qip-kernel/qip-edge code.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -914,7 +914,7 @@
     "verification": "cargo test -p qip-acceptance --test gcp_placement",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and owner-decision gap; left PARTIAL."
   },
   {
     "id": "R12-FINOPS-8041",

@@ -2946,7 +2946,7 @@
     "evidence": [
       "infrastructure/terraform/security.tf:236 google_access_context_manager_service_perimeter count = vpc_on"
     ],
-    "gap": "Org-scoped policy and enablement.",
+    "gap": "Org-scoped policy and enablement. vpc_service_controls is null in every environment tfvars (protected path infrastructure/environments/**) and the perimeter needs an access-policy id from the organisation; no in-repo change closes it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2957,7 +2957,7 @@
     "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL."
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: outside the lane territory (Terraform, protected paths, org scope); left PARTIAL."
   },
   {
     "id": "R12-SEC-9130",
@@ -3055,7 +3055,7 @@
     "evidence": [
       "infrastructure/terraform/security.tf:291 inspect template; :334 discovery_config count = sdp_on"
     ],
-    "gap": "Enable over the lake/analytics with a plan.",
+    "gap": "Enable over the lake/analytics with a plan. sensitive_data_protection is null in every environment tfvars (protected path infrastructure/environments/**) and a real plan against a project is needed to show the templates render; no in-repo code change closes it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -3066,7 +3066,7 @@
     "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL."
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: outside the lane territory (Terraform, protected paths, GCP plan); left PARTIAL."
   },
   {
     "id": "R12-SEC-9135",

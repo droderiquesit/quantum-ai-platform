@@ -1707,15 +1707,17 @@
   },
   {
     "id": "R12-EXEC-5074",
-    "status": "PARTIAL",
-    "current": "CorrelatedExposure (hedge-netted, correlation-weighted) is an input to quote sizing: the side that adds to held correlated exposure is cut in proportion to the limit used and the offsetting side keeps full size, asserted and mutation-proven in qip-execution-engine. The kernel's per-instrument quote loop passes `correlated: None` (quote_loop.rs:407, 'No portfolio correlation view is wired into this per-instrument loop yet'), so on the running path no portfolio exposure reaches the sizing.",
+    "status": "COMPLETE",
+    "current": "CorrelatedExposure (hedge-netted, correlation-weighted) is an input to quote sizing: the side that adds to held correlated exposure is cut in proportion to the limit used and the offsetting side keeps full size, asserted and mutation-proven in qip-execution-engine. Since 2026-10-24 the kernel quote loop derives it: QuoteLoopReview::of passes every instrument quote_loop::correlated_exposure (the other instruments' filled inventory weighted by the Pearson correlation of one-bar returns over the shared window, signed so a hedge nets, an unmeasurable pair charged as perfectly correlated), so a long in one instrument cuts the bid of a correlated one on the ACT-stage path (Platform::stage_act via quote_loop::review). Tighten-only: the quoting arithmetic only cuts the side that adds to held exposure.",
     "evidence": [
       "backend/crates/services/qip-execution-engine/src/quoting.rs:338-352 CorrelatedExposure input",
       "backend/crates/services/qip-execution-engine/src/quoting.rs:803 the adding side is cut",
       "backend/crates/services/qip-execution-engine/src/quoting.rs:1234 the_side_that_adds_to_held_correlated_exposure_is_smaller_and_the_offsetting_side_is_not",
-      "backend/crates/runtime/qip-kernel/src/quote_loop.rs:407 correlated: None"
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs:407 correlated: None",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs::correlated_exposure and QuoteLoopReview::of (correlated set from inventories and bar returns)",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs::tests::a_long_in_one_instrument_cuts_the_bid_of_a_correlated_one_and_leaves_its_ask; ::a_hedge_in_an_anti_correlated_instrument_nets_the_correlated_exposure_down; ::an_instrument_alone_in_the_book_has_no_correlated_exposure_and_an_unmeasured_pair_counts_in_full"
     ],
-    "gap": "The kernel quote loop reads no portfolio exposure (quote_loop.rs:407 passes correlated: None), so hedges and correlated exposure affect quote size only when a caller supplies them; the unit check is met but the statement does not hold on the default path until the loop derives a CorrelatedExposure from the portfolio's positions and hedges.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1723,10 +1725,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-execution-engine --lib the_side_that_adds_to_held_correlated_exposure_is_smaller_and_the_offsetting_side_is_not",
+    "verification": "cargo test -p qip-kernel --lib quote_loop",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->PARTIAL. Mutation: matching on `None` instead of `inputs.correlated` fails the unit test at quoting.rs:1247. The triage's claim that the input is reached from quote_loop::review is wrong: review prices and reviews, and the only construction of QuoteInputs in the kernel passes None."
+    "notes": "Closed 2026-10-24 by lane M1-KERNEL-EDGE. Mutations (each fired, each restored): dropping the correlated_exposure assignment in QuoteLoopReview::of fails the two-instrument test; negating rho fails the hedge-netting, two-instrument and unmeasured-pair tests; reading an unmeasurable pair as independent (ZERO not ONE) fails the unmeasured-pair test. Quotes remain priced and never sent: the loop has no path to an order."
   },
   {
     "id": "R12-EXEC-5075",
@@ -1954,7 +1956,7 @@
       "backend/crates/services/qip-prediction/tests/belief.rs:181",
       "backend/crates/runtime/qip-kernel/src/event_markets.rs::EventMarketPlane::price"
     ],
-    "gap": "The distribution comes from venue books, not estimated from evidence (belief.rs unused); no leakage refusal on this path.",
+    "gap": "belief.rs Arrival has no producer by decision (ADR 0151 d10): the plane prices from venue books and labels the distribution venue-implied; an evidence-estimated belief and a leakage refusal on this path are not built.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1965,7 +1967,7 @@
     "verification": "cargo test -p qip-prediction",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Restated 2026-10-24 by lane M1-KERNEL-EDGE per ADR 0151 d10: no-code-restate, no code change; EventMarketPlane::price (event_markets.rs) is the venue-implied path by decision."
   },
   {
     "id": "R12-EVENT-5085",
@@ -2063,7 +2065,7 @@
       "backend/crates/services/qip-prediction/tests/access.rs:208 a_price_is_the_same_whether_every_venue_is_available_to_the_entity_or_none_is",
       "backend/crates/runtime/qip-kernel/src/event_markets.rs::EventMarketPlane"
     ],
-    "gap": "Breadth plan unset by default (an_unset_plan_installs_nothing); no tfvars sets it.",
+    "gap": "Breadth plan unset by default (an_unset_plan_installs_nothing); no tfvars sets it. Setting it needs infrastructure/environments/** (protected) and an owner choice of which markets to install; the plane itself (EventMarketPlane via Platform::install_breadth) is built and tested.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2074,7 +2076,7 @@
     "verification": "cargo test -p qip-prediction --test access",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path/owner-choice gap; left PARTIAL."
   },
   {
     "id": "R12-COMMERCE-5090",
