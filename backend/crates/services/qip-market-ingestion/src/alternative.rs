@@ -568,18 +568,14 @@ impl AlternativeFeedAdapter {
             .with_header("accept", "application/json")
             .with_header(&self.config.api_key_header, key);
 
-        let response = self.client.send(&request).map_err(Error::from)?;
-        if !response.is_success() {
-            return Err(self.status_refusal(response.status, &response.body_excerpt()));
-        }
-        let body = response.body_as_str().map_err(Error::from)?;
-        let feed: WireFeed = serde_json::from_str(body).map_err(|error| {
-            Error::schema(format!(
-                "{} sent a body this decoder cannot read: {error}. The first bytes of it were: {}",
-                self.config.name,
-                response.body_excerpt()
-            ))
-        })?;
+        let body = crate::fetched::get(
+            &self.client,
+            &request,
+            &self.config.name,
+            |status, excerpt| self.status_refusal(status, excerpt),
+        )?;
+        let feed: WireFeed =
+            crate::fetched::decode_json(body, &format!("{} sent a body", self.config.name))?;
 
         if feed.readings.len() > self.config.max_records {
             return Err(Error::guard(format!(

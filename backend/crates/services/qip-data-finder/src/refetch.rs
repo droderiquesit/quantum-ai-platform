@@ -45,8 +45,16 @@ pub const DRIVER_MEMORY: usize = 4_096;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReFetchOutcome {
     /// The source served bytes, with its etag if it sent one.
+    ///
+    /// Carries the SHA-256 of what was served, not the bytes. A re-fetch only
+    /// ever compares hashes, and until 2026-10-24 this variant copied the
+    /// vendor's body into a plain `Vec<u8>` to be hashed one line later — a
+    /// stranger's bytes held as an ordinary value for no reason the driver
+    /// had. The transport hands the body over as `Untrusted`, whose digest
+    /// needs neither of its exits (R12-SEC-9065).
     Fetched {
-        bytes: Vec<u8>,
+        /// Lower-case hex SHA-256 of the bytes as served.
+        content_hash: String,
         etag: Option<String>,
     },
     /// The source says the extent no longer exists.
@@ -105,7 +113,7 @@ impl Refetcher for TransportRefetcher<'_> {
         };
         Ok(match response.status {
             200..=299 => ReFetchOutcome::Fetched {
-                bytes: response.body.into_bytes(),
+                content_hash: response.body.sha256_hex(),
                 etag: response.etag,
             },
             404 | 410 => ReFetchOutcome::Withdrawn,
@@ -173,9 +181,9 @@ impl ReFetchDriver {
             );
             let outcome = fetcher.refetch(reference, at)?;
             let (check, failures) = match outcome {
-                ReFetchOutcome::Fetched { bytes, .. } => {
+                ReFetchOutcome::Fetched { content_hash, .. } => {
                     self.failures.remove(&key);
-                    (Some(reference.verify(&bytes)), 0)
+                    (Some(reference.verify_hash(content_hash)), 0)
                 }
                 ReFetchOutcome::Withdrawn | ReFetchOutcome::Denied => {
                     self.failures.remove(&key);

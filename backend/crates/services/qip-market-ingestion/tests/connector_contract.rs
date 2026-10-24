@@ -916,14 +916,15 @@ fn the_alpaca_transport_sends_both_headers_from_two_files_and_writes_neither_to_
         "{headers:?}"
     );
     assert!(
-        !response.body.contains(SECRET_KEY_VALUE) && !response.body.contains(KEY_ID_VALUE),
+        !response.body.inspect().contains(SECRET_KEY_VALUE)
+            && !response.body.inspect().contains(KEY_ID_VALUE),
         "a credential the vendor echoed left the transport in the body"
     );
     assert_eq!(
-        response.body.matches(REDACTED).count(),
+        response.body.inspect().matches(REDACTED).count(),
         2,
         "both echoed values are marked, not silently cut: {}",
-        response.body
+        response.body.inspect()
     );
 
     // And through the runtime's health probe, which quotes the excerpt into
