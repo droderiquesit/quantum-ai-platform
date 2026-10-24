@@ -2628,23 +2628,25 @@
   },
   {
     "id": "R12-GCP-8116",
-    "status": "MISSING",
-    "current": "No service-plane cluster; Cloud Run services have per-service limits.",
+    "status": "PARTIAL",
+    "current": "Every Cloud Run service manifest in every GitOps environment declares a positive maxInstanceCount and maxInstanceRequestConcurrency, and qip-acceptance service_ceilings.rs refuses one that does not (gitops.rs already holds each manifest's instance bounds equal to its catalogue.tf entry). There is no service-plane GKE cluster; the one cluster is ADR 0036's GitOps control plane.",
     "evidence": [
-      "infrastructure/terraform/modules/cloudrun/main.tf"
+      "backend/crates/tests/qip-acceptance/tests/service_ceilings.rs::every_cloud_run_service_in_every_environment_declares_an_instance_and_a_concurrency_ceiling",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs (catalogue/manifest instance-bound parity)",
+      "infrastructure/terraform/catalogue.tf max_instances, concurrency"
     ],
-    "gap": "Built as the Cloud Run equivalent (ADR 0114 Amendment 1): every catalogue service declares maximum instances and concurrency, research runs in separately budgeted Cloud Run Jobs, and a test refuses a service without a maximum. Node-pool taints are refused.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the Cloud Run equivalent's ceiling half is built and tested. Open: (1) the requirement's own text — separated node pools with taints/tolerations and PriorityClasses — is refused by ADR 0114 D4 / Amendment 1, so by bar part 4 the row stays PARTIAL until the owner changes the requirement; (2) 'research runs in separately budgeted Cloud Run Jobs' is not built: research runs inside qip-deepbrain's process (no RunJob manifest exists), so a research burst shares the deep brain's instances rather than its own budget.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection of catalogue.tf and the binary's composition",
+    "verification": "cd backend && cargo test -p qip-acceptance --test service_ceilings",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). 2026-10-24 lane L6: suite added, 'ok. 2 passed'. Mutation: deleting maxInstanceCount from infrastructure/gitops/envs/prod/api.yaml failed the scan naming prod/api.yaml; restored by cp and cmp, 2 passed."
   },
   {
     "id": "R12-CICD-8117",
