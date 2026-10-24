@@ -67,6 +67,8 @@ use qip_core::{Decimal, Duration, Timestamp, sha256_hex};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod rebalance;
+
 /// Fewest legs a distributed cycle has (MESH-010).
 pub const MIN_LEGS: usize = 2;
 /// Most legs a distributed cycle has (MESH-010).
