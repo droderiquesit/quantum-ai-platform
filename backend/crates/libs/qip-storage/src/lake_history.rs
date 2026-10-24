@@ -40,9 +40,9 @@ use crate::lake::{Entitlement, Lake, Manifest, Partition, RecordClass, SegmentRe
 use crate::lake_codec::SegmentCodec;
 use qip_contracts::market_event::MarketEvent;
 use qip_contracts::message::MarketMessage;
-use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256_hex;
+use qip_core::{Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -111,6 +111,14 @@ pub struct RecordedTick {
     pub event_time: Timestamp,
     /// When the platform received it: the instant it became knowable here.
     pub knowable_at: Timestamp,
+    /// The half-width of the clock error the capture path stored the event
+    /// with — the venue stamp's lead over receipt, widened by the capturing
+    /// cell's clock row where that row was degraded (R12-RES-7103). Carried
+    /// so a consumer that needs precise ordering can refuse a window through
+    /// `qip_training::clock_precision` before it labels or promotes it;
+    /// dropping it here was how a widened bound reached the lake and was
+    /// then read as exact.
+    pub clock_uncertainty: Duration,
     /// The entitlement it was obtained under.
     pub entitlement: String,
     /// The segment key it was read from, for lineage.
@@ -185,6 +193,7 @@ fn decode_line(line: &str, segment: &str, entitlement: &str) -> Option<RecordedT
             message: event.payload().clone(),
             event_time: event.event_time(),
             knowable_at: event.receive_time(),
+            clock_uncertainty: event.uncertainty(),
             entitlement: event.entitlement().dataset().to_string(),
             segment: segment.to_string(),
         });
@@ -195,6 +204,7 @@ fn decode_line(line: &str, segment: &str, entitlement: &str) -> Option<RecordedT
         message,
         event_time: captured.event_time,
         knowable_at: captured.receive_time,
+        clock_uncertainty: captured.uncertainty,
         entitlement: if captured.entitlement.is_empty() {
             entitlement.to_string()
         } else {

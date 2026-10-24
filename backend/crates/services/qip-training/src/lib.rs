@@ -135,6 +135,7 @@
 
 pub mod cadence;
 pub mod campaign;
+pub mod clock_precision;
 pub mod conformal;
 pub mod dataset;
 pub mod distill;

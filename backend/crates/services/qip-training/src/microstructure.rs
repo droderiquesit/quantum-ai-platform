@@ -31,6 +31,7 @@
 //! Every number here is a statistic and is `f64`. Prices cross from
 //! `Decimal` at the caller, when it builds a [`BookObservation`].
 
+use crate::clock_precision::ClockPrecision;
 use crate::labels::{LabelBuilder, MidSeries, Print, Side};
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
@@ -102,6 +103,20 @@ pub struct LabelPlan {
 }
 
 impl LabelPlan {
+    /// The clock precision this plan's labels need, from its shortest
+    /// horizon (R12-RES-7103): a window of recorded events whose clock
+    /// uncertainty exceeds it is refused before it is labelled, through
+    /// [`ClockPrecision::admit`]. Validates the plan first, so a plan with
+    /// no positive horizon is refused for that and not for a precision.
+    pub fn clock_precision(&self) -> Result<ClockPrecision> {
+        self.validate()?;
+        let shortest =
+            self.horizons.iter().copied().min().ok_or_else(|| {
+                Error::invalid("a label plan needs at least one positive horizon")
+            })?;
+        ClockPrecision::for_label_horizon(shortest)
+    }
+
     fn validate(&self) -> Result<()> {
         if self.horizons.is_empty() || self.horizons.iter().any(|h| h.as_nanos() <= 0) {
             return Err(Error::invalid(
