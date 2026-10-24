@@ -2752,9 +2752,13 @@
     "current": "infra.yml saves and applies a plan artifact (tested); no change-window enforcement.",
     "evidence": [
       ".github/workflows/infra.yml:164",
-      "backend/crates/tests/qip-acceptance/tests/cicd_governance.rs:48"
+      "backend/crates/tests/qip-acceptance/tests/cicd_governance.rs:48",
+      "infrastructure/change-windows.json",
+      "backend/crates/apps/qip-cli/src/change_window.rs",
+      "backend/crates/apps/qip-cli/tests/change_window.rs",
+      "docs/blueprint/lanes/l6-gcp-9120-protected.patch"
     ],
-    "gap": "Change windows.",
+    "gap": "2026-10-24 (lane L6): change windows are now code: infrastructure/change-windows.json names the core resource types (folders, projects, networks, routers, interconnect, VPN, NCC, firewall policy, DNS zones, Spanner, AlloyDB, Bigtable, Cloud SQL) and the windows (Tue-Thu 14:00-20:00 UTC), and `qip change-window` (qip-cli src/change_window.rs) judges the saved plan's JSON: a core create/update/replace/delete outside every window exits 3, a plan touching no core resource is admitted any time, and an unreadable plan, a change with no actions, or a policy with no or an empty window is refused. Not wired: running it on the saved plan before `up` is a step in .github/workflows/infra.yml (protected), written as docs/blueprint/lanes/l6-gcp-9120-protected.patch (static checks only: YAML parses). Until a person applies it, nothing refuses a core change outside a window.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2762,10 +2766,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test cicd_governance",
+    "verification": "cd backend && cargo test -p qip-cli --test change_window",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: 'test result: ok. 5 passed'. Mutations, restored by cp and cmp: the window check dropped from judge failed a_core_resource_change_is_refused_outside_the_window_and_admitted_inside_it (:43); the core-change check bypassed failed it (:42) and deleting_or_replacing_a_database_is_a_core_change (:50); the weekday computed one day off first survived and, after the test was extended to each weekday of one week, failed the_committed_policy_names_the_hierarchy_the_networks_and_the_databases_as_core (:107). End to end: a Spanner update judged at Saturday 03:00 UTC exited 3, at Wednesday 15:00 exited 0. Written first as a Node script; replaced by Rust because blueprint_rules.rs pins the non-Rust tooling set and a workflow-path script would need an ADR. Stays PARTIAL."
   },
   {
     "id": "R12-CONTRACT-9121",

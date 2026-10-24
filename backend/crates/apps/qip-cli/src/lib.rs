@@ -19,6 +19,7 @@
 
 pub mod agency;
 pub mod blueprint;
+pub mod change_window;
 pub mod demo;
 pub mod event_fabric;
 pub mod registrations;

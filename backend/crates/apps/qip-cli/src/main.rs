@@ -68,6 +68,8 @@ fn main() {
         "registrations" => registrations_command(&arguments[1..]),
         "replay" => replay_command(&arguments[1..]),
         "blueprint" => blueprint_command(&arguments[1..]),
+        // R12-GCP-9120: infra.yml runs this on the saved plan before `up`.
+        "change-window" => qip_cli::change_window::run(&arguments[1..], SystemClock.now()),
         // The agency's policy and journal may come from the environment;
         // read here, the composition root, and nowhere below it.
         "agency" => qip_cli::agency::run(&arguments[1..], &|name| std::env::var(name).ok()),
@@ -105,6 +107,9 @@ fn print_help() {
     println!("  registrations [--config <path>]");
     println!("                    every catalogued source's requirement and standing,");
     println!("                    and the exact secret-add command for a pending one");
+    println!("  change-window --plan <plan.json> --policy <policy.json> [--now <rfc3339>]");
+    println!("                    refuse a saved plan changing a core resource outside");
+    println!("                    the committed change window (exit 3)");
     println!("  replay --journal <path> [--config <path>]");
     println!("                    verify a journal's hash chain and rebuild the");
     println!("                    eligibility, registration and fabric registries from");
