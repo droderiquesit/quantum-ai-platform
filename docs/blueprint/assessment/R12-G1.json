@@ -70,15 +70,16 @@
   {
     "id": "R12-FABRIC-8004",
     "status": "PARTIAL",
-    "current": "qip-fabricd is a working single-node broker (composition root starts it; real-listener tests). modules/event-fabric-broker defines one template + DNS records but is not instantiated by infrastructure/terraform/main.tf, and caps broker_count at 1.",
+    "current": "qip-fabricd is a working broker (composition root starts it; real-listener tests); with QIP_EVENT_FABRIC_MANAGED_LOG=spanner two or three instances per region contend for each partition's lease (ADR 0111, qip-fabricd/tests/managed.rs). infrastructure/terraform/fabric.tf instantiates modules/event-fabric-broker (module \"event_fabric_broker\", gated on var.event_fabric_broker, which accepts additional_zones for further brokers); the variable is null in every environment, so no broker VM exists. The module itself still places one broker (broker_count = enabled ? 1 : 0, FABRIC-086 RF1).",
     "evidence": [
       "backend/crates/apps/qip-fabricd/src/main.rs:24-40 composition root",
-      "backend/crates/apps/qip-fabricd/src/lib.rs:338-356 start_with_archive",
+      "backend/crates/apps/qip-fabricd/src/lib.rs start_with_archive",
       "backend/crates/apps/qip-fabricd/tests/broker.rs:573 the_sdk_and_the_served_broker_agree_on_sequences_and_offsets_for_multi_record_batches",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:16 broker_count = enabled ? 1 : 0",
-      "infrastructure/terraform/main.tf (no module \"event_fabric_broker\" block)"
+      "infrastructure/terraform/fabric.tf module \"event_fabric_broker\" (count = var.event_fabric_broker == null ? 0 : 1)",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure.rs::fabric_106_the_broker_template_has_no_external_address_and_the_module_is_instantiated_but_off_in_every_environment",
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:16 broker_count"
     ],
-    "gap": "Instantiate the broker module per region, multi-broker replication, an image matrix entry for qip-fabricd.",
+    "gap": "2026-10-24: the module block exists and an acceptance test (fabric_106) pins its gate, so 'instantiate the module' is done; the row's evidence naming main.tf was stale. Left: (1) a committed event_fabric_broker value per environment under infrastructure/environments/*/terraform.tfvars (protected path, and each broker VM is billed: compute pricing was not read in the 2026-10-19 plan); (2) a qip-fabricd entry in the deploy image matrix (.github/workflows, protected; lib.rs and ADR 0010 keep it out until placement is decided); (3) multi-broker replication, which is ADR 0111's Spanner-backed managed log and needs the Spanner database applied (R12-FABRIC-10027, R12-FABRIC-7035, owned by T3-FABRIC).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -89,10 +90,10 @@
       "R12-FABRIC-8096"
     ],
     "blocked_by": "",
-    "verification": "terraform plan showing broker instances; cargo test -p qip-fabricd --test broker",
+    "verification": "cargo test -p qip-fabricd --test broker; cargo test -p qip-acceptance --test event_fabric_infrastructure; terraform plan showing broker instances (not run: no environment sets event_fabric_broker)",
     "work_item": "",
     "size": "L",
-    "notes": "fabricd's own doc says it is not deployed and is kept out of the image matrix (ADR 0010)."
+    "notes": "2026-10-24 N2-FABRIC-DATA: no code change. Gap restated against fabric.tf and fabric_106; nothing here is closable without a protected tfvars edit and billed resources."
   },
   {
     "id": "R12-GCP-8005",
@@ -357,7 +358,7 @@
       "infrastructure/terraform/modules/data/main.tf:322 google_bigtable_instance (enable_bigtable=false)",
       "backend/crates/libs/qip-storage/src/provider.rs:441 Bigtable refused"
     ],
-    "gap": "Bigtable adapter (needs TLS path), schema for features/deltas, sink from the fabric.",
+    "gap": "2026-10-24: not closable in-tree. Bigtable's data plane is gRPC only (ReadRows, MutateRows), so an adapter needs HTTP/2 framing, HPACK and a protobuf codec, and scripts/dependency-allowlist.txt admits none of tonic, prost or h2 (qip-storage/src/provider.rs StorageTarget::Bigtable refusal says the same). Adding a gRPC stack is a dependency decision that needs its own ADR (ADR 0109), the instance is billed (enable_bigtable=false in every environment), and the emulator the verification names is an outside download. Left undone with it: a schema for features and deltas, and a sink from the fabric (R12-FABRIC-8080).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -368,7 +369,7 @@
     "verification": "integration test against Bigtable emulator",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 N2-FABRIC-DATA: classified EXTERNAL_BLOCKED/BILLED. No code change. Route high-throughput series through Cloud Storage or BigQuery until a gRPC stack is admitted by ADR."
   },
   {
     "id": "R12-DATA-8017",
@@ -1733,12 +1734,14 @@
   },
   {
     "id": "R12-FABRIC-8078",
-    "status": "MISSING",
-    "current": "Mirroring is a declared stream policy value; no mirror process.",
+    "status": "PARTIAL",
+    "current": "The mirror's copy-and-checkpoint core is built and tested without a network: qip_streaming::event_fabric::mirror::plan_copy copies only committed batches, drops duplicates by source position, reports a gap rather than skipping, verifies the ADR 0104 batch chain before anything is produced and refuses non-ascending rows (tests/event_fabric_mirror.rs). Mirroring is still a declared stream policy value with only None admitted (policy.rs). No process runs the mirror: nothing composes the mTLS client to the source fabric, the producer into the target region's <region>.<stream> and the durable checkpoint.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:143 Mirroring"
+      "backend/crates/services/qip-streaming/src/event_fabric/mirror.rs plan_copy, MirrorCheckpoint, region_qualified",
+      "backend/crates/services/qip-streaming/tests/event_fabric_mirror.rs",
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:243 Mirroring"
     ],
-    "gap": "Mirror worker.",
+    "gap": "2026-10-24: the worker process. ADR 0119 places the mTLS source client, the producer into the target and the durable checkpoint in the binary that runs the mirror, and nothing in backend/crates/apps does (grep plan_copy finds no caller outside mirror.rs and its tests). Admitting Mirroring::Selective/Full in the policy is R12-FABRIC-7038 (T3-FABRIC). A real two-broker proof also needs a second region's broker, and no environment sets event_fabric_broker.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1746,10 +1749,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "integration test with two brokers",
+    "verification": "cargo test -p qip-streaming --test event_fabric_mirror; then an integration test with two brokers",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 N2-FABRIC-DATA: MISSING->PARTIAL because the core that decides what is copied and what is a gap exists and is tested; the row's clause, a worker, does not. Classified LARGE_SPLITTABLE and not started: the worker overlaps T3-FABRIC's R12-FABRIC-7038 policy arm, and writing both at once on a shared branch would collide."
   },
   {
     "id": "R12-FABRIC-8079",
@@ -1776,12 +1779,15 @@
   },
   {
     "id": "R12-FABRIC-8080",
-    "status": "MISSING",
-    "current": "No fabric sink exists; consumer groups and offsets are available in the broker.",
+    "status": "PARTIAL",
+    "current": "One destination has a sink: qip_streaming::event_fabric::sink::LedgerSink commits an offset through Broker::commit_offset only after every record was applied by an idempotent OutcomeWriter, retries a refusing writer forever with a capped backoff and refuses a batch that does not decode (tests/event_fabric_sink.rs), and qip-ledgerd's consumer applies the same write-then-commit rule. Sinks for the other destinations (Bigtable, BigQuery, Cloud Storage) do not exist.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1001 commit_offset"
+      "backend/crates/services/qip-streaming/src/event_fabric/sink.rs LedgerSink",
+      "backend/crates/services/qip-streaming/tests/event_fabric_sink.rs::a_sustained_ledger_outage_holds_the_checkpoint_skips_nothing_and_every_outcome_commits_once_in_effect",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs commit_offset"
     ],
-    "gap": "Sink workers per destination.",
+    "gap": "2026-10-24: a sink worker per remaining destination. The Bigtable one is blocked behind R12-DATA-8016 (no gRPC stack is admitted); BigQuery and Cloud Storage sinks need their landing resources (enable_bigquery, enable_cloud_storage, billed; the event-archive bucket's retention lock is irreversible) and an HTTP/TLS client path, and no environment enables them.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1791,10 +1797,10 @@
       "R12-DATA-8016"
     ],
     "blocked_by": "",
-    "verification": "integration test",
+    "verification": "cargo test -p qip-streaming --test event_fabric_sink; then an integration test per destination",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 N2-FABRIC-DATA: MISSING->PARTIAL because the row said no fabric sink exists and the ledger sink does. No code change; the other destinations are billed or blocked."
   },
   {
     "id": "R12-FABRIC-8081",
