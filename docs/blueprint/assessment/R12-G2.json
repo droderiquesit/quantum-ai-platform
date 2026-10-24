@@ -3462,21 +3462,25 @@
   },
   {
     "id": "R12-OBS-9152",
-    "status": "MISSING",
-    "current": "No package-activation metric.",
-    "evidence": [],
-    "gap": "Record activations.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "status": "PARTIAL",
+    "current": "qip_edge_package_activations_total{outcome} (qip-edge telemetry.rs EDGE_PACKAGE_ACTIVATIONS, outcome bounded by the PackageActivation enum: activated, rolled_back) is recorded by qip-edge-node's StrategyInstaller::install_compiled through Cell::record_package_activation, once per package (a compiled plan named by digest, REFLEX-10105) when a new digest is deployed at a pass boundary, and under rolled_back when the resident parent is redeployed. It lands in the cell's registry, which the node's /metrics scrape surface serves (telemetry_wiring.rs).",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/telemetry.rs EDGE_PACKAGE_ACTIVATIONS, PackageActivation, CellMetrics::package_activation",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs StrategyInstaller::install_compiled",
+      "backend/crates/apps/qip-edge-node/tests/strategies.rs::each_package_the_node_activates_is_counted_once_and_a_rollback_apart"
+    ],
+    "gap": "2026-10-24 (lane L6): emitted, not yet on a default path: the node activates a package only when QIP_STRATEGY_PLAN_PATH is set (main.rs builds the PlanCompiler only then), and the execution-node module's strategy_plan_path defaults to \"\" in every environment, so on a default configuration no package is ever activated and the series never moves (bar part 2). No collector scrapes the node either (modules/observability/NOT-SCRAPED.md), which matters if the requirement's 'carries' is read as collection.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cd backend && cargo test -p qip-edge-node --test strategies each_package_the_node_activates_is_counted_once_and_a_rollback_apart",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Mutations, each restored by cp and cmp: removing the recording call failed the new test at strategies.rs:708 ('plan A's activation was not counted'); dropping the active-digest update failed it at :716 ('a re-install was counted as an activation'); never setting rolled_back failed it at :742 ('the rollback was not counted apart'). qip-edge + qip-edge-node --no-fail-fast: 82 result lines, 748 passed, 0 failed."
   },
   {
     "id": "R12-OBS-9153",
