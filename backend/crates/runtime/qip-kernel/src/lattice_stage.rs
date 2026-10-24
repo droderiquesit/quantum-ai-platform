@@ -298,8 +298,11 @@ pub struct LatticeStage {
     population: Population,
     calibrator: Calibrator,
     pending: BTreeMap<String, Pending>,
-    /// When the latest forecast for each (subject, horizon) expires.
-    current: BTreeMap<(String, LatticeHorizon), Timestamp>,
+    /// When the latest forecast for each (subject, horizon) was issued and
+    /// when it expires. The issue instant is kept beside the expiry so
+    /// DECIDE can read how much of a tactical forecast's life is left
+    /// ([`Self::tactical_staleness`], R12-WORLD-9024).
+    current: BTreeMap<(String, LatticeHorizon), (Timestamp, Timestamp)>,
     strategic_available: bool,
     backlog: BTreeSet<(String, LatticeHorizon)>,
     calibrator_available: bool,
@@ -381,6 +384,54 @@ impl LatticeStage {
         entry.1 += 1;
     }
 
+    /// How much of `subject`'s tactical forecasts' life is left at `now`, as
+    /// the sizing multiplier ADR 0125 lets an advisory stage apply: the
+    /// minimum over the tactical horizons (seconds-to-minutes, hours-to-days)
+    /// of `1 - age / life`, in `(0, 1]`.
+    ///
+    /// `Some(Err(..))` when any tactical forecast the lattice holds for the
+    /// subject is past its expiry: the lattice could not refresh it this
+    /// pass (a refused route, a failed issue), and a forecast past its expiry
+    /// is not used, so DECIDE vetoes the thesis rather than sizing it on
+    /// what the lattice no longer stands behind (R12-WORLD-9024). `None`
+    /// when the lattice has never forecast the subject: there is nothing to
+    /// be stale, and the subject's other sizing controls still apply.
+    pub fn tactical_staleness(
+        &self,
+        subject: &str,
+        now: Timestamp,
+    ) -> Option<std::result::Result<f64, String>> {
+        let mut multiplier: Option<f64> = None;
+        for horizon in [LatticeHorizon::SecondsMinutes, LatticeHorizon::HoursDays] {
+            let Some(&(issued, expires)) = self.current.get(&(subject.to_string(), horizon)) else {
+                continue;
+            };
+            if expires <= now {
+                return Some(Err(format!(
+                    "{subject}: the forecast lattice's {} forecast expired at {} and was not \
+                     refreshed; a forecast past its expiry is not used, so the thesis is not sized",
+                    horizon.as_str(),
+                    expires.as_secs()
+                )));
+            }
+            // Statistic, not money: the share of the forecast's life left.
+            let life = expires.since(issued).as_secs_f64();
+            let left = if life > 0.0 {
+                1.0 - now.since(issued).as_secs_f64().max(0.0) / life
+            } else {
+                0.0
+            };
+            if !(left > 0.0 && left <= 1.0) {
+                return Some(Err(format!(
+                    "{subject}: the forecast lattice's {} forecast has no life left to size on",
+                    horizon.as_str()
+                )));
+            }
+            multiplier = Some(multiplier.map_or(left, |m: f64| m.min(left)));
+        }
+        multiplier.map(Ok)
+    }
+
     pub fn calibrator(&self) -> &Calibrator {
         &self.calibrator
     }
@@ -410,6 +461,12 @@ impl LatticeStage {
     /// the next pass (WORLD-9027).
     pub fn set_calibrator_available(&mut self, available: bool) {
         self.calibrator_available = available;
+    }
+
+    /// The last review reached the log: its weights become the safe set a
+    /// later freeze returns to (R12-WORLD-9027).
+    pub fn confirm_calibration(&mut self) {
+        self.calibrator.confirm_safe();
     }
 
     /// One pass.
@@ -512,7 +569,7 @@ impl LatticeStage {
                     continue;
                 }
                 let slot = (target.subject.clone(), horizon);
-                let due = self.current.get(&slot).is_none_or(|exp| *exp <= now);
+                let due = self.current.get(&slot).is_none_or(|(_, exp)| *exp <= now);
                 if !due && !surprised {
                     continue;
                 }
@@ -554,7 +611,7 @@ impl LatticeStage {
                 ) {
                     Ok(made) => {
                         let id = made.forecast.forecast_id.clone();
-                        self.current.insert(slot, made.forecast.expires_at);
+                        self.current.insert(slot, (now, made.forecast.expires_at));
                         self.pending.insert(
                             id.clone(),
                             Pending {
@@ -596,7 +653,7 @@ impl LatticeStage {
         // a slot whose forecast expired and whose subject no longer appears.
         let present: BTreeSet<&str> = by_subject.keys().copied().collect();
         self.current
-            .retain(|(s, _), exp| *exp > now || present.contains(s.as_str()));
+            .retain(|(s, _), (_, exp)| *exp > now || present.contains(s.as_str()));
         let slotted: BTreeSet<&str> = self.current.keys().map(|(s, _)| s.as_str()).collect();
         self.regime_returns
             .retain(|s, _| present.contains(s.as_str()) || slotted.contains(s.as_str()));
@@ -724,4 +781,27 @@ fn target_input(t: &LatticeTarget) -> Option<TargetInput> {
         )],
         context: ForecastContext::default(),
     })
+}
+
+/// Test seams. Kept below every shipped item: the acceptance suite's source
+/// scans read a file only up to its first test-only attribute.
+#[cfg(test)]
+impl LatticeStage {
+    /// Set a forecast slot's issue and expiry, for a DECIDE test that needs a
+    /// tactical forecast in a given state of its life.
+    pub(crate) fn set_slot(
+        &mut self,
+        subject: &str,
+        horizon: LatticeHorizon,
+        issued: Timestamp,
+        expires: Timestamp,
+    ) {
+        self.current
+            .insert((subject.to_string(), horizon), (issued, expires));
+    }
+
+    /// The calibrator, for a test that seeds resolved scores.
+    pub(crate) fn calibrator_mut(&mut self) -> &mut Calibrator {
+        &mut self.calibrator
+    }
 }

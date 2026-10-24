@@ -452,6 +452,8 @@ fn with_the_calibrator_unavailable_the_weights_equal_the_last_safe_set() {
             .unwrap();
     }
     assert_eq!(c.refresh_weights(true), WeightUpdate::Updated);
+    // The review carrying this set was kept, so it is the safe set.
+    c.confirm_safe();
     let safe = c.weights().clone();
     assert_eq!(safe.len(), 2, "premise: both members weighed");
     let drift = safe[&ReputationKey {
@@ -470,6 +472,36 @@ fn with_the_calibrator_unavailable_the_weights_equal_the_last_safe_set() {
     assert!(c.frozen());
     assert_eq!(c.refresh_weights(true), WeightUpdate::Updated);
     assert_ne!(c.weights(), &safe);
+}
+
+/// R12-WORLD-9027: a refreshed set whose review was never confirmed durable
+/// is not the safe set. Freezing returns to the last confirmed set, not to
+/// the one computed from scores the log refused. Mutation: make
+/// `refresh_weights` set `last_safe` on refresh again -- the frozen weights
+/// equal the unconfirmed set and the first equality fails.
+#[test]
+fn a_refreshed_set_whose_review_was_never_kept_is_not_the_safe_set() {
+    let mut c = Calibrator::new();
+    let h = LatticeHorizon::HoursDays;
+    for i in 0..5 {
+        c.score(&resolution(&format!("a{i}"), h, "r", 101.0, 0.1))
+            .unwrap();
+    }
+    assert_eq!(c.refresh_weights(true), WeightUpdate::Updated);
+    c.confirm_safe();
+    let kept = c.weights().clone();
+    assert_eq!(kept.len(), 2, "premise: both members weighed");
+    for i in 0..20 {
+        c.score(&resolution(&format!("b{i}"), h, "r", 110.0, 30.0))
+            .unwrap();
+    }
+    assert_eq!(c.refresh_weights(true), WeightUpdate::Updated);
+    let unkept = c.weights().clone();
+    assert_ne!(unkept, kept, "premise: the new scores moved the weights");
+    // Its review never reached the log: no confirm_safe.
+    assert_eq!(c.refresh_weights(false), WeightUpdate::Frozen);
+    assert_eq!(c.weights(), &kept);
+    assert_eq!(c.last_safe(), &kept);
 }
 
 /// Issue the row with the given context, routed by the default ensemble.

@@ -754,23 +754,24 @@
   },
   {
     "id": "R12-WORLD-3034",
-    "status": "MISSING",
-    "current": "Only a MemoryKind::Procedural label in a contract enum; no procedure store, versioning or retrieval.",
+    "status": "PARTIAL",
+    "current": "qip_agents::memory::ResearchMemory holds versioned procedures. record_procedure stores the next version of a named procedure only on at least MINIMUM_PROCEDURE_SUPPORT (3) distinct held episodes resolved correct by then, refusing a blank name, no steps or a blank step. Each name keeps up to VERSIONS_PER_PROCEDURE (16) versions, and MAX_PROCEDURES bounds the names. procedure_as_of retrieves the latest version known at a date, so past decisions stay reconstructable.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs:780 Procedural variant only"
+      "backend/crates/libs/qip-agents/src/memory.rs::ResearchMemory::record_procedure, procedure_as_of",
+      "backend/crates/libs/qip-agents/tests/memory.rs::a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version"
     ],
-    "gap": "Procedural memory store and reader.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (L4): the row said no procedure store existed. That was stale: store, versioning and retrieval exist and are tested. What is missing is the integration the requirement's test names. No production code calls record_procedure or procedure_as_of (grep finds only tests/memory.rs), so no procedure is distilled from the kernel's resolved episodes, and none is retrieved for reuse by a later run. Closing it needs LEARN to distil a procedure from an analyst's resolved-correct episodes, the next convening of that analyst to retrieve it, and a cycle-level test.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agents --test memory a_procedure_is_recorded_only_after_enough_correct_episodes",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->MISSING. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->MISSING. Unchanged. 2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed. Not promoted: there is no running path."
   },
   {
     "id": "R12-WORLD-3035",

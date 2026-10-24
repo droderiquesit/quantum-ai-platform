@@ -942,6 +942,11 @@ pub struct Calibrator {
     model_errors: BTreeMap<ReputationKey, (u64, f64)>,
     weights: Reputation,
     last_safe: Reputation,
+    /// The set the last available refresh computed, held until the caller
+    /// confirms the review that produced it reached durable storage. Until
+    /// then it is not safe: a set built from scores the log refused would,
+    /// if frozen on, be influence moved on a record nobody kept.
+    unconfirmed: Option<Reputation>,
     frozen: bool,
 }
 
@@ -1048,8 +1053,13 @@ impl Calibrator {
     /// `available` is false — hold them at the last safe set. A row whose
     /// members have not all reached [`MIN_RESOLVED`] gets no weights, so the
     /// router's default ensemble answers it.
+    ///
+    /// A recomputed set is used at once but becomes the last safe set only
+    /// through [`Self::confirm_safe`], once the review carrying it is
+    /// durable (R12-WORLD-9027). Freezing discards an unconfirmed set.
     pub fn refresh_weights(&mut self, available: bool) -> WeightUpdate {
         if !available {
+            self.unconfirmed = None;
             self.weights = self.last_safe.clone();
             self.frozen = true;
             return WeightUpdate::Frozen;
@@ -1082,9 +1092,18 @@ impl Calibrator {
             }
         }
         self.weights = weights.clone();
-        self.last_safe = weights;
+        self.unconfirmed = Some(weights);
         self.frozen = false;
         WeightUpdate::Updated
+    }
+
+    /// The review carrying the last refreshed set reached durable storage:
+    /// that set is now the one a later freeze returns to. A no-op when no
+    /// refresh is waiting.
+    pub fn confirm_safe(&mut self) {
+        if let Some(weights) = self.unconfirmed.take() {
+            self.last_safe = weights;
+        }
     }
 
     pub fn weights(&self) -> &Reputation {
