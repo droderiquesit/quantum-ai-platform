@@ -264,6 +264,7 @@ impl Host {
             (&cells.unwinds, step.unwinds),
             (&cells.cycles_rejected, step.rejected),
             (&cells.cycles_closed, step.closed),
+            (&cells.cycles_expired, step.expired),
         ] {
             cell.fetch_add(add, Ordering::Relaxed);
         }

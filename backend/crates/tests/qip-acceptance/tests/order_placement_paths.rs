@@ -1635,3 +1635,65 @@ fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Resu
     }
     gateway.permit_listings(permissions, "paper")
 }
+
+/// R12-EXEC-5079: every way to bring a book into existence or rest venue
+/// liquidity in it demands a creation admission in its own signature, so the
+/// guard sits on the primitive and not in one caller.
+///
+/// The previous test pins `list_book`. The independent skeptic on
+/// 2026-10-24 found the seeding half unpinned: `SimulatedExchange::
+/// seed_liquidity` took no admission (the one `Seed` check was in the edge
+/// node's `seed_touch`), and `MatchingEngine`, public and re-exported, could
+/// be built, opened and seeded by anyone. Both now take one; this keeps the
+/// parameter from quietly falling off, and pins that the engine's book map
+/// is written at exactly one place, `open`, so no second constructor of a
+/// book can appear beside it.
+///
+/// Mutation: drop `admission: &CreationAdmission` from any of the three
+/// signatures, or add a second `InstrumentBook::default()` in matching.rs.
+#[test]
+fn every_seeding_and_book_opening_primitive_demands_a_creation_admission() {
+    let root = crates_root();
+    let signature = |path: &str, needle: &str| -> String {
+        let text = std::fs::read_to_string(root.join(path)).expect("a source file is readable");
+        let start = text
+            .find(needle)
+            .unwrap_or_else(|| panic!("premise: {needle} is declared in {path}"));
+        let end = text[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .expect("a function body follows its signature");
+        text[start..end]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    for (path, needle) in [
+        (
+            "services/qip-brokers/src/exchange.rs",
+            "pub fn seed_liquidity(",
+        ),
+        ("services/qip-brokers/src/matching.rs", "pub fn open("),
+        ("services/qip-brokers/src/matching.rs", "pub fn seed("),
+    ] {
+        let declared = signature(path, needle);
+        assert!(
+            declared.contains("admission: &CreationAdmission"),
+            "{path}: `{declared}` no longer demands a creation admission"
+        );
+    }
+    let matching = std::fs::read_to_string(root.join("services/qip-brokers/src/matching.rs"))
+        .expect("matching.rs is readable");
+    let constructed: Vec<(usize, String)> = production_lines(&matching)
+        .into_iter()
+        .filter(|(_, code)| {
+            code.contains("InstrumentBook::default()") || code.contains("InstrumentBook {")
+        })
+        .filter(|(_, code)| !code.contains("struct InstrumentBook") && !code.contains("impl"))
+        .collect();
+    assert_eq!(
+        constructed.len(),
+        1,
+        "a book is constructed somewhere other than `MatchingEngine::open`: {constructed:?}"
+    );
+}

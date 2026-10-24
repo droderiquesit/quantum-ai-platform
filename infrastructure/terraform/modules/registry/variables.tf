@@ -100,3 +100,27 @@ variable "promotion_readers" {
     error_message = "Every promotion reader is one service account, written `serviceAccount:<name>@<domain>.iam.gserviceaccount.com`. A user, a group, a domain, allUsers or allAuthenticatedUsers is refused: the build registry is read by pipelines and service agents, not by people."
   }
 }
+
+# R12-RES-9177: a release artifact must survive the loss of the registry's
+# region. Null declares no second repository, which is every environment
+# today; a value is a region other than `region`, where the same immutable
+# image repository is declared for the release pipeline to copy each
+# promoted digest into before prod is promoted.
+variable "secondary_region" {
+  description = "The region of the secondary image repository release artifacts are replicated to before prod promotion, or null for none. Must differ from `region`."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.secondary_region == null || can(regex("^[a-z]+-[a-z]+[0-9]$", var.secondary_region))
+    error_message = "secondary_region is a Google Cloud region name such as us-west1, or null."
+  }
+
+  validation {
+    # A "secondary" in the primary's own region shares its failure domain:
+    # the region loss it exists for takes both. Refused rather than accepted
+    # as a copy that protects against nothing.
+    condition     = var.secondary_region != var.region
+    error_message = "secondary_region equals region; a secondary repository in the primary's region is lost with it. Name another region, or leave it null."
+  }
+}

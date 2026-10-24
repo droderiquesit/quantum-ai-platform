@@ -2255,22 +2255,27 @@ impl Api {
                             }
                         };
                         let released = sensed.records.len();
+                        // The connector's checked evidence into the world
+                        // fabric every source shares, and only the records
+                        // whose claim it stood behind on to `observe`
+                        // (R12-EVID-1200). Until 2026-10-24 this route never
+                        // drained the evidence, so the fabric held nothing
+                        // this process's connector claimed.
+                        let intake = platform.absorb_evidence(feed.drain_evidence(), now);
+                        let (believed, withheld) = sensed.release(&intake);
                         // `qip-api` owns no bus, so each record's lineage is
                         // minted here at the seam where the platform learns
                         // it. The event log and the cycle's journal entry
                         // then carry a correlation id per record, where
                         // `observe` left the cycle unable to name its inputs.
-                        let observed = platform.observe_fresh(
-                            std::mem::take(&mut sensed.records),
-                            "qip-api/sense",
-                            now,
-                        );
+                        let observed = platform.observe_fresh(believed, "qip-api/sense", now);
                         (
                             sensed.at,
                             Some(SenseSummary {
                                 source: sensed.source,
                                 at: sensed.at,
                                 released,
+                                withheld,
                                 observed,
                                 rejections: sensed.rejections,
                             }),
@@ -2987,6 +2992,8 @@ struct SenseSummary {
     source: String,
     at: Timestamp,
     released: usize,
+    /// Of `released`, records whose claim the world fabric withheld.
+    withheld: usize,
     observed: usize,
     rejections: Vec<String>,
 }
@@ -3039,10 +3046,11 @@ fn cycle_report(
     let sense = sensed
         .map(|sensed| {
             format!(
-                r#","sense":{{"source":{},"at":{},"released":{},"observed":{},"rejected":{},"rejections":[{}]}}"#,
+                r#","sense":{{"source":{},"at":{},"released":{},"withheld":{},"observed":{},"rejected":{},"rejections":[{}]}}"#,
                 json::string(&sensed.source),
                 json::string(&sensed.at.to_rfc3339()),
                 sensed.released,
+                sensed.withheld,
                 sensed.observed,
                 sensed.rejections.len(),
                 sensed

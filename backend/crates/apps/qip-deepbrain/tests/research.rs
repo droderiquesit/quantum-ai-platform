@@ -1228,6 +1228,29 @@ fn a_scout_job_handed_to_the_discovery_desk_becomes_a_target_of_its_next_pass() 
 /// would never answer. `tick-replay` stays unregistered because the node does
 /// not hold it (the deployed-sweep test in `expansion_rows.rs` depends on
 /// that).
+/// R12-EXPAND-6059: the registry the node's composition path builds
+/// (`registered_tools_holding`, reached from `ResearchLoop::new_for_node`)
+/// refuses a held tool with no name rather than starting with a tool nobody
+/// can resolve. The refusal lives in `ToolRegistry::propose`, which is the
+/// only way this path adds a tool.
+#[test]
+fn the_node_refuses_to_start_its_tool_registry_with_a_nameless_tool() {
+    use qip_agents::tools::ToolKind;
+    use qip_deepbrain::research::registered_tools_holding;
+
+    // Premise: the same held tool with a name is admitted.
+    let named = registered_tools_holding(&[("connector/src-a".to_string(), ToolKind::Connector)]);
+    assert!(named.is_ok(), "{:?}", named.err());
+
+    let refused = registered_tools_holding(&[("  ".to_string(), ToolKind::Connector)])
+        .err()
+        .unwrap_or_else(|| panic!("a nameless tool was registered"));
+    assert!(
+        refused.to_string().contains("a tool needs a name"),
+        "{refused}"
+    );
+}
+
 #[test]
 fn the_node_registers_every_tool_kind_it_actually_runs() {
     use qip_agents::tools::ToolKind;

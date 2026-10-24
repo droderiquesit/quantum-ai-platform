@@ -1,0 +1,212 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 905b58af..e44f4ebc 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -265,6 +265,63 @@ jobs:
+           cache-on-failure: true
+       - run: cargo test --workspace --all-features --doc --no-fail-fast
+ 
++  # The simulation and performance gates (R12-CICD-7116, R12-CICD-7119),
++  # as jobs of their own so deploy.yml can require each by name. Both suites
++  # already run inside `test`'s acceptance partition; a deploy gated only on
++  # "ci succeeded" could not say which of them had run on the commit, and a
++  # reshuffle of the partitions that dropped one would have shipped without
++  # anybody seeing it go. Each job is required by deploy.yml's step "the
++  # simulation and performance gates passed in that ci run"; a missing job is
++  # a refusal there, not a pass.
++  simulation-gate:
++    name: simulation gate
++    runs-on: ubuntu-latest
++    defaults:
++      run:
++        working-directory: backend
++    env:
++      CARGO_PROFILE_DEV_OPT_LEVEL: "1"
++      CARGO_PROFILE_TEST_OPT_LEVEL: "1"
++      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
++      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
++    steps:
++      - uses: actions/checkout@v4
++      - name: install the pinned toolchain
++        run: rustup show active-toolchain || rustup toolchain install
++      - uses: Swatinem/rust-cache@v2
++        with:
++          workspaces: backend
++          cache-on-failure: true
++      - run: >-
++          cargo test --locked --no-fail-fast -p qip-simulation-engine
++          && cargo test --locked --no-fail-fast -p qip-acceptance
++          --test arch_042_twin_simulation --test arch_056_simulation_engine
++          --test tick_replay --test replay_queue_and_unwind
++
++  # Release profile on purpose: performance.rs's ceilings are written for
++  # the profile each line prints, and a debug run measures the compiler's
++  # unoptimised output rather than the code. One test thread, because each
++  # test times one stage on an idle core: run beside the others, two of them
++  # (central OMS submit scaling, cell p99) failed once in a lane session on a
++  # loaded machine and passed alone on the same build.
++  performance-gate:
++    name: performance gate
++    runs-on: ubuntu-latest
++    defaults:
++      run:
++        working-directory: backend
++    steps:
++      - uses: actions/checkout@v4
++      - name: install the pinned toolchain
++        run: rustup show active-toolchain || rustup toolchain install
++      - uses: Swatinem/rust-cache@v2
++        with:
++          workspaces: backend
++          cache-on-failure: true
++      - run: >-
++          cargo test --locked --release --no-fail-fast -p qip-acceptance
++          --test performance --test m5_performance -- --test-threads=1
++
+   # CICD-102: Validate that environment configuration only pins digests
+   # with valid Binary Authorization attestations.
+   attestation-check:
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index b7f1d3d2..393dc206 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -338,6 +338,41 @@ jobs:
+           fi
+           echo "static analysis succeeded in ci run ${run_id} for ${DEPLOY_SHA}"
+ 
++      # The simulation and performance gates passed, by name, in the ci run
++      # being trusted (R12-CICD-7116, R12-CICD-7119). "ci succeeded" does not
++      # say which jobs it had: a commit whose ci.yml predates the gates, or
++      # one that dropped a gate job, has a successful ci run with no gate in
++      # it. Each gate job must be present and `success`; absent is a refusal.
++      - name: the simulation and performance gates passed in that ci run
++        env:
++          GH_TOKEN: ${{ github.token }}
++          THIS_REPOSITORY: ${{ github.repository }}
++          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
++        run: |
++          set -euo pipefail
++          run_id="${TRIGGER_RUN_ID:-}"
++          if [ -z "$run_id" ]; then
++            run_id=$(gh api \
++              "repos/${THIS_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${DEPLOY_SHA}&status=success&event=push" \
++              --jq '.workflow_runs[0].id // empty')
++          fi
++          case "$run_id" in
++            ''|*[!0-9]*)
++              echo "no ci run id to read the gates from for ${DEPLOY_SHA}; nothing is deployed." >&2
++              exit 1
++              ;;
++          esac
++          for gate in "simulation gate" "performance gate"; do
++            conclusion=$(gh api --paginate \
++              "repos/${THIS_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
++              --jq ".jobs[] | select(.name == \"${gate}\") | .conclusion")
++            if [ "$conclusion" != "success" ]; then
++              echo "ci run ${run_id}'s ${gate} is '${conclusion:-absent}', not success; nothing is deployed." >&2
++              exit 1
++            fi
++            echo "${gate} succeeded in ci run ${run_id} for ${DEPLOY_SHA}"
++          done
++
+       # The agent boundary held for every commit this deployment ships (R12
+       # GOV-9067, SEC-9068, ADR 0117). Each commit since the last successful
+       # deployment is judged against its own files and the pull request it
+diff --git a/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs b/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
+index ea565614..929aa52b 100644
+--- a/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
++++ b/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
+@@ -459,3 +459,93 @@ fn an_infrastructure_apply_of_a_commit_ci_has_not_passed_is_refused() {
+     }
+     let _ = std::fs::remove_dir_all(&dir);
+ }
++
++/// R12-CICD-7116 and R12-CICD-7119: a deploy is not promoted unless the
++/// simulation gate and the performance gate succeeded in the ci run it
++/// trusts. ci.yml must define both jobs under the names the deploy step reads,
++/// and the step is executed against a stub `gh` answering each job's
++/// conclusion, because a step that exits 0 on every answer is what a text
++/// check misses.
++#[test]
++fn a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused() {
++    let ci = read(".github/workflows/ci.yml");
++    for (job, name) in [
++        ("simulation-gate", "simulation gate"),
++        ("performance-gate", "performance gate"),
++    ] {
++        assert!(
++            ci.contains(&format!("\n  {job}:\n    name: {name}\n")),
++            "ci.yml does not define the {name} job the deploy gate requires"
++        );
++    }
++    assert!(
++        ci.contains("--test performance") && ci.contains("--test arch_056_simulation_engine"),
++        "a gate job no longer runs its suite"
++    );
++
++    let workflow = read(DEPLOY);
++    let script = step_script(
++        &workflow,
++        "the simulation and performance gates passed in that ci run",
++    );
++    let dir = std::env::temp_dir().join(format!("qip-gates-{}", std::process::id()));
++    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("scratch dir: {e}"));
++    let gh = dir.join("gh");
++    std::fs::write(
++        &gh,
++        r#"#!/bin/bash
++case "$*" in
++  *'simulation gate'*) echo "$SIM" ;;
++  *'performance gate'*) echo "$PERF" ;;
++  *) echo "unexpected gh call: $*" >&2; exit 2 ;;
++esac
++"#,
++    )
++    .unwrap_or_else(|e| panic!("stub gh: {e}"));
++    let status = Command::new("chmod")
++        .arg("+x")
++        .arg(&gh)
++        .status()
++        .unwrap_or_else(|e| panic!("chmod: {e}"));
++    assert!(status.success());
++    let path = format!("{}:/usr/bin:/bin", dir.display());
++    let code = |sim: &str, perf: &str| {
++        let mut command = Command::new("bash");
++        command.arg("-c").arg(&script).env_clear();
++        command.env("PATH", &path);
++        command.env("THIS_REPOSITORY", "owner/repo");
++        command.env("TRIGGER_RUN_ID", "42");
++        command.env("DEPLOY_SHA", "abc123");
++        command.env("SIM", sim);
++        command.env("PERF", perf);
++        command
++            .output()
++            .map_or(-1, |o| o.status.code().unwrap_or(-1))
++    };
++    assert_eq!(
++        code("success", "success"),
++        0,
++        "both gates passed and the deploy was refused"
++    );
++    assert_eq!(
++        code("", "success"),
++        1,
++        "a ci run with no simulation gate was admitted"
++    );
++    assert_eq!(
++        code("success", ""),
++        1,
++        "a ci run with no performance gate was admitted"
++    );
++    assert_eq!(
++        code("failure", "success"),
++        1,
++        "a failed simulation gate was admitted"
++    );
++    assert_eq!(
++        code("success", "cancelled"),
++        1,
++        "a cancelled performance gate was admitted"
++    );
++    let _ = std::fs::remove_dir_all(&dir);
++}

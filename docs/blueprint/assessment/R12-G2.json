@@ -1546,9 +1546,10 @@
       ".github/workflows/deploy.yml:91-184 gate and PR refusal",
       ".claude/hooks/guard-dangerous-command.py",
       ".github/CODEOWNERS",
-      "backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs"
+      "backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs",
+      "docs/blueprint/lanes/l6-cicd-9066-protected.patch"
     ],
-    "gap": "infra.yml applies Terraform on dispatch from any branch with no CI/test gate, so infrastructure changes do not go through tests; branch protection is not in code.",
+    "gap": "infra.yml applies Terraform on dispatch of any commit with no ci gate, so an infrastructure change can reach a project without its tests having run; branch protection is not in code (R12-CICD-9095). 2026-10-24 (lane L6): the fix is docs/blueprint/lanes/l6-cicd-9066-protected.patch: a 'ci succeeded for this commit' step on infra.yml's up and apps actions (the two that move an environment toward a commit) requiring a successful push-started ci run of github.sha, with deploy.yml's not-a-number refusal, plus deploy_provenance.rs::an_infrastructure_apply_of_a_commit_ci_has_not_passed_is_refused, which executes the extracted step against a stub gh for counts 0, '', null, 1 and 3. .github/** is protected, so a person must apply it.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -1559,7 +1560,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L6: patch verified in a scratch worktree: cargo test -p qip-acceptance --test deploy_provenance 'test result: ok. 6 passed'; mutation '-lt 1' to '-lt 0' in the new step failed the new test at the count \"0\" case (left 0, right 1, '5 passed; 1 failed'); restored with cp and cmp, 6 passed. Not applied: protected path. Stays PARTIAL. 2026-10-24 lane L6 (later): the patch was regenerated after `cargo fmt --all --check` flagged one line of the new test; the regenerated patch passes fmt and 'test result: ok. 6 passed'."
   },
   {
     "id": "R12-GOV-9067",
@@ -1663,13 +1664,14 @@
   {
     "id": "R12-ARCH-9071",
     "status": "PARTIAL",
-    "current": "The architecture suite enforces dependency direction, hot-path and paper-boundary invariants; CODEOWNERS covers critical paths. Nothing detects a silent edit to the test itself beyond review.",
+    "current": "The architecture suite enforces dependency direction, hot-path and paper-boundary invariants. .github/CODEOWNERS now names the four guard suites (architecture.rs, paper_boundary.rs, lane_placement.rs, arch_001_independent_reflex.rs) individually, but its only owner is the repository's one maintainer, so it adds no second reviewer. scripts/agent-policy.json's protected_paths, which agent-guard.mjs enforces on every agent-authored pull request, does not list them: an agent change rewriting a guard suite needs no person's approval.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:408-1816",
       "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs",
-      ".github/CODEOWNERS"
+      ".github/CODEOWNERS",
+      "docs/blueprint/lanes/l6-arch-9071-protected.patch"
     ],
-    "gap": "Protection of the guard tests themselves.",
+    "gap": "2026-10-24 (lane L6): the gate that refuses an agent's unapproved change (agent-guard.mjs, run by .github/workflows/agent-boundary.yml) protects workflows, gate scripts and the paper-boundary Terraform, but not the guard suites themselves. The fix is docs/blueprint/lanes/l6-arch-9071-protected.patch: it adds the four CODEOWNERS-named suites to protected_paths and a test in scripts/agent-guard.test.mjs that reads CODEOWNERS and refuses an agent change to each suite without approval. Both files are protected (scripts/agent-policy.json is itself in protected_paths), so a person must apply it. Still open after it lands: an agent session pushing as its user with no marker is caught only on protected paths by the unmarked-change rule, and branch protection requiring the agent-boundary check is a GitHub setting not visible in the tree (R12-CICD-9095).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1680,7 +1682,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: patch verified in a scratch worktree: with it applied, node --test scripts/agent-guard.test.mjs printed '# pass 39 / # fail 0'; mutation dropping paper_boundary.rs from protected_paths failed 'an agent change to a guard suite needs a person's approval' naming that file ('# fail 1'); restored, '# pass 39'. Not applied: protected path. Stays PARTIAL."
   },
   {
     "id": "R12-CICD-9072",
@@ -1755,7 +1757,7 @@
     "evidence": [
       "backend/crates/services/qip-evolution/src/promotion.rs"
     ],
-    "gap": "Build the role.",
+    "gap": "Build the role. Lane L5-EDGE 2026-10-24: the clause is GCP v2.1 §13's autonomous development agent, whose boundary is enforced by agent credentials and configuration (.claude/agents, .claude/settings.json, the guard hook) and the CI promotion gates under .github/**, all protected paths this lane does not edit; strategy promotion in qip-evolution/qip-lifecycle is not this role. Needs a person to define the learning agent's credential scope and the refused promotion run.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1766,7 +1768,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L5-EDGE: left MISSING; protected paths."
   },
   {
     "id": "R12-CICD-9076",
@@ -2632,7 +2634,7 @@
       "backend/crates/apps/qip-edge-node/src/event_fabric/pressure.rs:194,410",
       "backend/crates/apps/qip-edge-node/tests/event_fabric_pressure.rs"
     ],
-    "gap": "Node drain/activate orchestration.",
+    "gap": "Restated 2026-10-24 (lane L5-EDGE): the epoch fence a new incarnation takes before activating exists for the node (qip-edge-node/src/standby.rs: promotion swaps the lease to epoch+1 before the cell's Fence is granted, and a former holder reading a higher epoch fences itself; tests/standby.rs) and for fabric producers (event_fabric/pressure.rs). Not on a default path: the lease and role are written by the execution-node startup template only under standby_enabled (modules/execution-node/variables.tf), which no committed tfvars sets and execution_nodes is empty or disabled in every environment. The remaining step is a tfvar/deployment decision (standby_enabled with a cross-zone lease store, which standby.rs says is not in the tree), plus a drain step for the fabric writer before the new incarnation's activation.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2643,7 +2645,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_pressure",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L5-EDGE: gap made precise; no code changed."
   },
   {
     "id": "R12-CICD-9115",
@@ -3470,21 +3472,25 @@
   },
   {
     "id": "R12-OBS-9152",
-    "status": "MISSING",
-    "current": "No package-activation metric.",
-    "evidence": [],
-    "gap": "Record activations.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "status": "PARTIAL",
+    "current": "qip_edge_package_activations_total{outcome} (qip-edge telemetry.rs EDGE_PACKAGE_ACTIVATIONS, outcome bounded by the PackageActivation enum: activated, rolled_back) is recorded by qip-edge-node's StrategyInstaller::install_compiled through Cell::record_package_activation, once per package (a compiled plan named by digest, REFLEX-10105) when a new digest is deployed at a pass boundary, and under rolled_back when the resident parent is redeployed. It lands in the cell's registry, which the node's /metrics scrape surface serves (telemetry_wiring.rs).",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/telemetry.rs EDGE_PACKAGE_ACTIVATIONS, PackageActivation, CellMetrics::package_activation",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs StrategyInstaller::install_compiled",
+      "backend/crates/apps/qip-edge-node/tests/strategies.rs::each_package_the_node_activates_is_counted_once_and_a_rollback_apart"
+    ],
+    "gap": "2026-10-24 (lane L6): emitted, not yet on a default path: the node activates a package only when QIP_STRATEGY_PLAN_PATH is set (main.rs builds the PlanCompiler only then), and the execution-node module's strategy_plan_path defaults to \"\" in every environment, so on a default configuration no package is ever activated and the series never moves (bar part 2). No collector scrapes the node either (modules/observability/NOT-SCRAPED.md), which matters if the requirement's 'carries' is read as collection.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cd backend && cargo test -p qip-edge-node --test strategies each_package_the_node_activates_is_counted_once_and_a_rollback_apart",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Mutations, each restored by cp and cmp: removing the recording call failed the new test at strategies.rs:708 ('plan A's activation was not counted'); dropping the active-digest update failed it at :716 ('a re-install was counted as an activation'); never setting rolled_back failed it at :742 ('the rollback was not counted apart'). qip-edge + qip-edge-node --no-fail-fast: 82 result lines, 748 passed, 0 failed."
   },
   {
     "id": "R12-OBS-9153",
@@ -3957,23 +3963,24 @@
   },
   {
     "id": "R12-RES-9174",
-    "status": "MISSING",
-    "current": "Bigtable declares one cluster and no app profiles; disabled.",
+    "status": "PARTIAL",
+    "current": "modules/data/main.tf declares the Bigtable instance with two SSD clusters in different zones of the region (primary and secondary, autoscaled) and three app profiles by workload: ingest pinned single-cluster to the primary (read-your-writes), serve multi-cluster routed so lag-tolerant reads fail over, batch pinned to the secondary at low priority. modules/data/tests/scaling.tftest.hcl plans it against mocks. Behind enable_bigtable, false in every environment, and the storage-target adapter for Bigtable is refused as unimplemented (tests/storage-targets.tftest.hcl bigtable_is_rejected_as_unimplemented).",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:322-338"
+      "infrastructure/terraform/modules/data/main.tf google_bigtable_instance.timeseries, google_bigtable_app_profile.timeseries",
+      "infrastructure/terraform/modules/data/tests/scaling.tftest.hcl bigtable_has_two_clusters_in_different_zones_and_a_profile_per_workload"
     ],
-    "gap": "Second cluster and profiles.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6, row was stale at MISSING): the plan clause (≥2 clusters and app profiles) is met in code and off everywhere. Open: (1) enable_bigtable is false in every environment and enabling it is an infrastructure/environments/** change (protected) that bills, with no real plan shown; (2) no Rust adapter writes to or reads from Bigtable (StorageTarget::Bigtable refused), so no workload uses a profile; (3) 'single-cluster transactional workloads fail over explicitly with replay from Fabric/GCS' has no failover procedure or replay code: the ingest profile pins to the primary and nothing moves it.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy of infrastructure/: cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/data 'Success! 18 passed, 0 failed.' Mutation: the serve profile switched to single-cluster routing failed bigtable_has_two_clusters_in_different_zones_and_a_profile_per_workload at scaling.tftest.hcl:55 (multi_cluster_routing_use_any == true); restored by cp and cmp, 6 passed in that file."
   },
   {
     "id": "R12-RES-9175",
@@ -4021,23 +4028,25 @@
   },
   {
     "id": "R12-RES-9177",
-    "status": "MISSING",
-    "current": "Registries are regional with no secondary or replication.",
+    "status": "PARTIAL",
+    "current": "modules/registry declares an optional secondary DOCKER repository (secondary.tf google_artifact_registry_repository.images_secondary) in var.secondary_region with the primary's discipline (immutable tags, dry-run cleanup, CI writer only), refused at plan when the secondary region equals the primary's; null by default. tests/secondary.tftest.hcl plans none by default, one when a region is named, and refuses the same region. Existing nodes keep their pulled images (the execution node boots a baked image; Cloud Run keeps running revisions).",
     "evidence": [
-      "infrastructure/terraform/modules/registry/main.tf:22-24"
+      "infrastructure/terraform/modules/registry/secondary.tf",
+      "infrastructure/terraform/modules/registry/variables.tf secondary_region",
+      "infrastructure/terraform/modules/registry/tests/secondary.tftest.hcl"
     ],
-    "gap": "Secondary repository and check.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L6): (1) the root module does not pass secondary_region (wiring it needs a variable in infrastructure/terraform/variables.tf, a protected path) and no environment names one; (2) nothing copies a promoted digest into the secondary repository, and no prod promotion checks the digest is there: that belongs to the release pipeline (deploy.yml/Kargo, protected) and prod is never promoted from a workflow today; (3) no real plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "scratch copy of infrastructure/: cd infrastructure/terraform/modules/registry && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Scratch copy, terraform 1.9.8: modules/registry 'Success! 13 passed, 0 failed.' Mutations, restored by cp and cmp: the same-region validation weakened to `!= \"nowhere\"` failed a_secondary_repository_in_the_primarys_region_is_refused (secondary.tftest.hcl:62); immutable_tags = false on the secondary failed a_secondary_region_declares_an_immutable_repository_ci_can_push_to_and_not_delete_from."
   },
   {
     "id": "R12-RES-9178",

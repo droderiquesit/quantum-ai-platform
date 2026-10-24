@@ -658,6 +658,59 @@ fn a_stream_missing_any_of_the_seven_declarations_is_refused_naming_it_and_a_ful
     }
 }
 
+/// R12-FABRIC-7055's stated check, over every field the requirement names:
+/// byte quota, message quota, lag limit and overload policy. The test above
+/// samples `lag_limit` alone, so until this test either quota could have
+/// become a parser default — a stream nobody bounded, admitted with a bound
+/// nobody chose — and no test would have failed.
+///
+/// Mutation: in `catalogue.rs`, make `parse_stream`'s `required(...)` for
+/// `byte_quota_per_producer` (or `message_quota_per_producer`) fall back to
+/// a default instead of refusing — fails on that field's iteration, because
+/// the stream is then accepted.
+#[test]
+fn a_stream_missing_a_byte_or_message_quota_lag_limit_or_overload_policy_is_refused_naming_it() {
+    let full = valid_stream_json("outcomes", "p1_outcomes", "archived", 1, "none", vec![]);
+    let catalogue = Catalogue::parse(&catalogue_bytes(vec![full.clone()], vec![]))
+        .expect("a fully declared stream must be accepted");
+    let stored = &catalogue
+        .stream("outcomes")
+        .expect("the accepted stream is stored under its name")
+        .policy;
+    // The declared bounds are the stored bounds, so a refusal below is about
+    // absence and not about a value the parser would have rewritten anyway.
+    assert_eq!(stored.byte_quota_per_producer(), 1_048_576);
+    assert_eq!(stored.message_quota_per_producer(), 10_000);
+    assert_eq!(stored.lag_limit(), 1_000);
+
+    for field in [
+        "byte_quota_per_producer",
+        "message_quota_per_producer",
+        "lag_limit",
+        "overload_policy",
+    ] {
+        let mut broken = full.clone();
+        let removed = broken
+            .as_object_mut()
+            .expect("a stream declaration is an object")
+            .remove(field);
+        assert!(
+            removed.is_some(),
+            "premise: the fixture declares {field}, so removing it removes something"
+        );
+        let err = Catalogue::parse(&catalogue_bytes(vec![broken], vec![]))
+            .expect_err("a stream missing a quota, lag limit or overload policy must be refused");
+        // Match the field as a delimited token: `lag_limit` alone would also
+        // be a substring of a message naming some longer field.
+        let text = err.to_string();
+        assert!(
+            text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|token| token == field),
+            "the refusal for a missing {field} must name it: {text}"
+        );
+    }
+}
+
 /// CONTRACT-036's second half: a record with any mandatory field absent is
 /// refused. Removes each key of the wire document in turn, and empties each
 /// text fact in turn, so a field added later without validation is caught by

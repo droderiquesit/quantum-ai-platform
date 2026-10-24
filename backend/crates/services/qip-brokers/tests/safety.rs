@@ -36,7 +36,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, dec};
 use qip_execution_engine::broker::Broker;
 use qip_execution_engine::creation::{
-    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+    CreationAction, CreationAdmission, CreationAuthority, CreationPermissions, CreationRequest,
 };
 use qip_execution_engine::order::{Fill, Order, OrderType, Side};
 use qip_financial::asset_class::InstrumentType;
@@ -286,6 +286,7 @@ fn every_fill_the_venue_produces_is_marked_simulated() -> Result<()> {
         dec!("100.02"),
         Decimal::from_int(50),
         start(),
+        &seeding(VENUE, &object()),
     )?;
     exchange.bring_up(&credential_holding_a_secret(), start())?;
 
@@ -656,4 +657,21 @@ fn list_admitted(
         permissions.record(authority, &request, "test fixture")?;
     }
     exchange.list(object, &permissions.admit(&request)?)
+}
+
+/// An admission to seed `object` at `venue`, minted the one way there is:
+/// every authority's permission recorded, then `CreationPermissions::admit`.
+/// Seeding is governed like listing (R12-EXEC-5079), so a fixture that
+/// seeds a book carries one.
+fn seeding(venue: &str, object: &ObjectId) -> CreationAdmission {
+    let request = CreationRequest::new(CreationAction::Seed, venue, object.as_str(), "paper");
+    let mut permissions = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        permissions
+            .record(authority, &request, "test fixture")
+            .expect("a fixture permission with a reference is recorded");
+    }
+    permissions
+        .admit(&request)
+        .expect("all three authorities are recorded")
 }

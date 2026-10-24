@@ -2306,6 +2306,20 @@ impl Broker {
                     ))
                 })?
         };
+        // The open is serialised by the partitions lock, held from here to
+        // the insert. Two produces racing to a partition's first batch used
+        // to build their state outside the lock, and the loser did not get
+        // the winner's state: `SegmentLog::open`'s one-writer guard refused
+        // its second open, and the `?` returned that refusal to a producer
+        // whose batch was valid — a P0 or P1 append refused for nothing but
+        // timing. The re-check below is now what decides, before any second
+        // open is attempted. Opening is once per partition per process, so
+        // holding the table's lock across it costs other partitions a wait
+        // at their own first open, not on every produce.
+        let mut partitions = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(winner) = partitions.get(&key) {
+            return Ok(winner.clone());
+        }
         let log = PartitionLog::open(&self.data_dir, stream, partition, config)?;
         let last_batch_hash = recover_last_batch_hash(&log)?;
         // A restart finds whatever the previous process left unsealed. Its
@@ -2321,15 +2335,6 @@ impl Broker {
                 caught_up_epoch: None,
             }),
         });
-        let mut partitions = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
-        // Another call may have opened the same partition first while this
-        // one built `state` outside the lock; keep whichever won rather than
-        // hold two `SegmentLog`s open on the same directory, which
-        // `SegmentLog::open`'s own guard would refuse for the second one
-        // anyway.
-        if let Some(winner) = partitions.get(&key) {
-            return Ok(winner.clone());
-        }
         // Replayed while still holding the partitions lock, so no produce
         // can be admitted against this partition before the table knows what
         // the log already holds.

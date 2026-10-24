@@ -69,6 +69,95 @@ fn allow_lists() -> Vec<(&'static str, BTreeSet<String>)> {
             "infrastructure/terraform/fabric.tf",
             set(&["roles/logging.logWriter", "roles/monitoring.metricWriter"]),
         ),
+        // The identities R12-SEC-10050 left uncovered on 2026-10-18. Each
+        // list is the ceiling of the file today, pinned so that widening one
+        // is a diff a reviewer reads here; none is a measurement that every
+        // role is used, which is the half this test cannot prove.
+        (
+            // The CI and infra deploy identities. Wide because the infra
+            // identity applies the whole root: it creates accounts, keys,
+            // registries and services. Nothing here is a basic role, and
+            // `roles/iam.serviceAccountKeyAdmin` is deliberately absent: no
+            // key is ever minted (Workload Identity Federation only).
+            "infrastructure/terraform/modules/cicd/main.tf",
+            set(&[
+                "roles/artifactregistry.admin",
+                "roles/binaryauthorization.attestorsAdmin",
+                "roles/binaryauthorization.policyAdmin",
+                "roles/cloudkms.admin",
+                "roles/cloudkms.publicKeyViewer",
+                "roles/compute.admin",
+                "roles/containeranalysis.admin",
+                "roles/dns.admin",
+                "roles/iam.roleAdmin",
+                "roles/iam.serviceAccountAdmin",
+                "roles/iam.serviceAccountUser",
+                "roles/iam.workloadIdentityPoolAdmin",
+                "roles/iam.workloadIdentityUser",
+                "roles/logging.admin",
+                "roles/logging.viewer",
+                "roles/monitoring.admin",
+                "roles/pubsub.admin",
+                "roles/resourcemanager.projectIamAdmin",
+                "roles/run.admin",
+                "roles/run.developer",
+                "roles/secretmanager.admin",
+            ]),
+        ),
+        (
+            // The private build pool's keyless build identity.
+            "infrastructure/terraform/modules/build-pool/main.tf",
+            set(&[
+                "roles/cloudbuild.builds.editor",
+                "roles/cloudbuild.workerPoolUser",
+                "roles/cloudkms.cryptoKeyEncrypterDecrypter",
+                "roles/iam.serviceAccountUser",
+                "roles/logging.logWriter",
+                "roles/storage.legacyBucketReader",
+                "roles/storage.objectCreator",
+                "roles/storage.objectViewer",
+            ]),
+        ),
+        (
+            // The image bake reads its inputs and writes nothing.
+            "infrastructure/terraform/modules/image-bake/main.tf",
+            set(&["roles/storage.objectViewer"]),
+        ),
+        (
+            // Argo CD, Kargo and Config Connector on the one GKE cluster
+            // (ADR 0036): they reconcile Cloud Run, so `run.admin` is the
+            // job, and they hold no venue credential.
+            "infrastructure/terraform/modules/gitops-control-plane/main.tf",
+            set(&[
+                "roles/artifactregistry.reader",
+                "roles/cloudkms.cryptoKeyEncrypterDecrypter",
+                "roles/gkehub.gatewayEditor",
+                "roles/gkehub.viewer",
+                "roles/iam.workloadIdentityUser",
+                "roles/logging.logWriter",
+                "roles/monitoring.metricWriter",
+                "roles/run.admin",
+                "roles/run.viewer",
+                "roles/secretmanager.secretAccessor",
+                "roles/secretmanager.viewer",
+            ]),
+        ),
+        (
+            // ADR 0110's artefact signers, among them the model-pack
+            // publisher: each signs with exactly its own key.
+            "infrastructure/terraform/artefact-signing.tf",
+            set(&["roles/cloudkms.signer", "roles/iam.workloadIdentityUser"]),
+        ),
+        (
+            // The research fleet's worker (ADR 0102).
+            "infrastructure/fleet/main.tf",
+            set(&[
+                "roles/aiplatform.user",
+                "roles/monitoring.viewer",
+                "roles/storage.objectUser",
+                "roles/storage.objectViewer",
+            ]),
+        ),
     ]
 }
 

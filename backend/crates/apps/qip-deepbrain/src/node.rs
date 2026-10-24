@@ -980,6 +980,179 @@ mod tests {
         assert!(platform.lattice().strategic_available());
     }
 
+    /// A platform with two listed instruments and a month of calm daily
+    /// bars, so the lattice has strategic questions to hold or to answer.
+    fn platform_with_history(clock: Arc<dyn Clock>) -> Platform {
+        use qip_core::{Decimal, dec};
+        use qip_financial::asset_class::{InstrumentType, Sector};
+        use qip_financial::object::FinancialObject;
+        use qip_financial::quality::{DataQuality, Provenance};
+        use qip_market::bar::{Bar, Interval};
+        use qip_market_ingestion::adapter::SensedRecord;
+        let object = |symbol: &str| qip_core::ObjectId::from_string(format!("obj-{symbol}"));
+        let mut universe = Universe::new();
+        for symbol in ["AAA", "BBB"] {
+            universe
+                .insert(
+                    FinancialObject::builder(
+                        object(symbol),
+                        symbol,
+                        InstrumentType::CommonStock,
+                        qip_financial::costs::LiquidityProfile::listed(
+                            Decimal::from_int(5_000_000),
+                            3.0,
+                        ),
+                    )
+                    .venue("XNYS")
+                    .geography("US")
+                    .sector(Sector::InformationTechnology)
+                    .price(dec!("100"))
+                    .provenance(Provenance::synthetic("test", start()))
+                    .build(start())
+                    .expect("the fixture instrument builds"),
+                )
+                .expect("the fixture instrument is admitted");
+        }
+        let config = PlatformConfig::default();
+        let context = qip_core::Context::new(clock, config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        let mut bars = Vec::new();
+        for symbol in ["AAA", "BBB"] {
+            for i in 0..30_i64 {
+                let close = Decimal::from_f64(if i % 2 == 0 { 100.2 } else { 99.8 })
+                    .expect("a fixture close");
+                let closes_at = start().saturating_add(Duration::from_days(i - 29));
+                bars.push(SensedRecord::Bar(Box::new(Bar {
+                    object_id: object(symbol),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: closes_at.saturating_sub(Duration::from_days(1)),
+                    open: close,
+                    high: close,
+                    low: close,
+                    close,
+                    volume: dec!("1000000"),
+                    trade_count: 5_000,
+                    vwap: None,
+                    quality: DataQuality::default(),
+                })));
+            }
+        }
+        platform.observe(bars);
+        platform
+    }
+
+    /// The lattice's last review the cycle journaled.
+    fn last_lattice_review(platform: &Platform) -> qip_kernel::lattice_stage::LatticeReview {
+        platform
+            .event_log()
+            .by_topic(qip_events::Topic::WorldModelUpdated)
+            .into_iter()
+            .filter(|e| {
+                e.idempotency_key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("lattice:"))
+            })
+            .map(|e| {
+                qip_streaming::envelope::StreamEnvelope::from_frame(e)
+                    .and_then(|envelope| {
+                        envelope.decode::<qip_kernel::lattice_stage::LatticeReview>()
+                    })
+                    .expect("a lattice review decodes")
+                    .body
+            })
+            .next_back()
+            .expect("the cycle journaled a lattice review")
+    }
+
+    /// R12-RES-10130 through the shipped run loop rather than the gate
+    /// function: a node that is halted when the loop reaches its cycle takes
+    /// the strategic service down, so the lattice's strategic questions wait
+    /// in its bounded backlog while every stage still runs. AUDIT-4 found that
+    /// deleting the gate's one call in `run_with` failed no test; this one.
+    ///
+    /// Mutation: delete the `gate_strategic_service` call in `run_with`.
+    #[test]
+    fn a_node_halted_when_its_loop_runs_queues_strategic_questions_and_runs_every_stage() {
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        let config = DeepBrainConfig {
+            max_cycles: Some(1),
+            ..brisk()
+        };
+
+        // Premise: the same node, not halted, answers its strategic questions
+        // on the same cycle, so a backlog below is the outage and nothing else.
+        let mut healthy = platform_with_history(clock.clone());
+        let summary = run(
+            &mut healthy,
+            &archive(),
+            &config,
+            &shared(&config),
+            &Arc::new(AtomicBool::new(false)),
+            &clock,
+            0,
+            None,
+            |_| {},
+        )
+        .expect("the loop runs");
+        assert_eq!(summary.cycles, 1);
+        assert_eq!(
+            last_lattice_review(&healthy).backlog,
+            0,
+            "premise: a healthy node queues nothing"
+        );
+
+        let mut platform = platform_with_history(clock.clone());
+        let status = shared(&config);
+        status
+            .lock()
+            .expect("a fresh lock")
+            .cycle_finished(&CycleRecord {
+                started_at: start(),
+                finished_at: start(),
+                elapsed: Duration::ZERO,
+                traversed_every_stage: true,
+                problems: Vec::new(),
+                archived: 0,
+                halted: true,
+            });
+        let mut traversed = Vec::new();
+        let summary = run(
+            &mut platform,
+            &archive(),
+            &config,
+            &status,
+            &Arc::new(AtomicBool::new(false)),
+            &clock,
+            0,
+            None,
+            |outcome| traversed.push(outcome.report.traversed_every_stage()),
+        )
+        .expect("the loop runs");
+        assert_eq!(summary.cycles, 1);
+        assert_eq!(
+            traversed,
+            vec![true],
+            "a strategic outage stopped the cycle"
+        );
+        assert!(
+            !platform.lattice().strategic_available(),
+            "the run loop left the strategic service up through a halt"
+        );
+        let review = last_lattice_review(&platform);
+        assert!(
+            review.backlog > 0,
+            "the halted node's strategic questions did not wait in the backlog: {review:?}"
+        );
+    }
+
     #[test]
     fn one_step_runs_every_stage_of_a_cycle() {
         let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));

@@ -645,3 +645,109 @@ fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Resu
     }
     gateway.permit_listings(permissions, "paper")
 }
+
+/// The package-activation series' value for one outcome, read from the
+/// registry the node's scrape surface serves.
+fn activations(node: &NodeAssembly, outcome: &str) -> u64 {
+    let snapshot = node.cell.metrics_registry().snapshot();
+    snapshot
+        .series
+        .iter()
+        .filter(|series| {
+            series.name == qip_edge::telemetry::EDGE_PACKAGE_ACTIVATIONS
+                && series.labels.get("outcome").map(String::as_str) == Some(outcome)
+        })
+        .map(|series| snapshot.counter(&series.name, &series.labels))
+        .sum()
+}
+
+#[test]
+fn each_package_the_node_activates_is_counted_once_and_a_rollback_apart() -> Result<()> {
+    // R12-OBS-9152: the domain metric 'package activation'. A package is
+    // the compiled plan a verified payload names by digest; the series moves
+    // when a new one is deployed at a boundary and not on every pass, and a
+    // rollback to the resident parent is counted under its own outcome so an
+    // operator sees one without reading a journal.
+    use qip_contracts::policy::PlanDigest;
+    use qip_edge_node::strategies::CompiledPlan;
+    let dir = scratch("activation-series");
+    let (path, digest_a, count_a) = plan_file(&dir, &[spec("alpha", "10")]);
+    let plan_a = CompiledPlan::read_and_compile(
+        &path,
+        &PlanDigest {
+            digest: digest_a.clone(),
+            strategies: count_a,
+        },
+    )?;
+    let (_, digest_b, count_b) = plan_file(&dir, &[spec("alpha", "20")]);
+    let plan_b = CompiledPlan::read_and_compile(
+        &path,
+        &PlanDigest {
+            digest: digest_b.clone(),
+            strategies: count_b,
+        },
+    )?;
+    let (mut node, _gateway, _feed) = node_with_feed()?;
+    assert_eq!(
+        activations(&node, "activated"),
+        0,
+        "premise: nothing activated yet"
+    );
+    let mut installer = StrategyInstaller::new(Some(path.clone()), Some(PricingPolicy::Marketable));
+    installer.offer(grant("alpha")?)?;
+    node.cell
+        .apply_policy(policy(1, t(10), &digest_a, count_a)?, t(10))?;
+    installer.activate(plan_a);
+    let first = installer.install_compiled(&mut node.cell, t(10));
+    assert_eq!(
+        first.deployed,
+        vec!["alpha".to_string()],
+        "{}",
+        first.describe()
+    );
+    assert_eq!(
+        activations(&node, "activated"),
+        1,
+        "plan A's activation was not counted"
+    );
+    // The same package installed again at the next boundary is not a second
+    // activation.
+    installer.install_compiled(&mut node.cell, t(11));
+    assert_eq!(
+        activations(&node, "activated"),
+        1,
+        "a re-install was counted as an activation"
+    );
+
+    node.cell
+        .apply_policy(policy(2, t(20), &digest_b, count_b)?, t(20))?;
+    installer.activate(plan_b);
+    installer.install_compiled(&mut node.cell, t(20));
+    assert_eq!(
+        activations(&node, "activated"),
+        2,
+        "plan B's activation was not counted"
+    );
+    assert_eq!(activations(&node, "rolled_back"), 0);
+
+    fs::remove_dir_all(&dir).map_err(|error| qip_core::error::Error::io(error.to_string()))?;
+    node.cell.roll_back_policy(t(30))?;
+    let rolled = installer.install_compiled(&mut node.cell, t(30));
+    assert_eq!(
+        rolled.deployed,
+        vec!["alpha".to_string()],
+        "{}",
+        rolled.describe()
+    );
+    assert_eq!(
+        activations(&node, "rolled_back"),
+        1,
+        "the rollback was not counted apart"
+    );
+    assert_eq!(
+        activations(&node, "activated"),
+        2,
+        "the rollback was counted as a forward activation"
+    );
+    Ok(())
+}
