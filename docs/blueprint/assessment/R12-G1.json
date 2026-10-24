@@ -1243,23 +1243,26 @@
   },
   {
     "id": "R12-GCP-8056",
-    "status": "MISSING",
-    "current": "No google_network_connectivity_* resource in the tree.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/ncc declares google_network_connectivity_hub and a VPC spoke per plane; the root instantiates it with enabled = false and spokes for the reflex, fabric, service, data and engineering networks. Nothing is planned or enabled.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf (no NCC)"
+      "infrastructure/terraform/modules/ncc/main.tf",
+      "infrastructure/terraform/main.tf module \"ncc\"",
+      "infrastructure/terraform/modules/ncc/tests/ncc.tftest.hcl",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_ncc_hub_and_every_spoke_are_gated_on_a_flag_the_root_leaves_false"
     ],
-    "gap": "NCC hub/spoke module.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24: no terraform binary in the lane's session, so ncc.tftest.hcl and terraform validate have not run; networkconnectivity.googleapis.com is not in modules/services; enabling needs a plan shown to a person, and each VPC spoke bills for inter-spoke data.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure the_ncc; terraform test in infrastructure/terraform/modules/ncc",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 (T5-MESH-INFRA): Mutation: removed the enabled gate from the vpc spoke's for_each, set the root's enabled = true, set the hub count = 1; the test failed each time at the matching assertion; restored byte-for-byte."
   },
   {
     "id": "R12-GCP-8057",
@@ -1402,7 +1405,7 @@
       "infrastructure/terraform/modules/execution-node/main.tf:411,424 GVNIC/TIER_1",
       "infrastructure/terraform/modules/execution-node/variables.tf:138-150"
     ],
-    "gap": "No plan showing a node; no shard-sizing record; gVNIC/Tier-1 benefit not benchmarked.",
+    "gap": "2026-10-24: no node is enabled, so no plan shows one; shard sizing and gVNIC/Tier-1 benchmark need a deployed node.",
     "implemented": true,
     "tested": true,
     "integrated": false,
