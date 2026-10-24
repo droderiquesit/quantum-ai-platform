@@ -3659,7 +3659,7 @@
       "backend/crates/services/qip-portfolio-engine/tests/portfolio.rs:586",
       "backend/crates/libs/qip-financial/tests/valuation.rs:138"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "2026-10-24 (re-read against the tree): No inspection table maps each scope item to code reached from a composition root plus a named test. On today's tree construction (construct_from), mandates (desk mandate, qip-capital ledger), horizons (arm_horizon_gate), valuation (sizing_confidence), corporate actions (queue_/apply_due_/apply_corporate_action), commitments (record_capital_call via POST /ledger/commitments/:commitment/capital-calls), hedging (hedge_review in DECIDE) and attribution (LEARN) are on the kernel path. Divestment is not (Portfolio::begin_unwind and secondary_exit::plan_secondary_exit have no production caller), and lifecycle is partial (PositionLifecycle never moved to Flagged/Unwinding by the kernel; LifeStage unused, see R12-ASSET-4071). Plain code: wire begin_unwind at the kernel's close-to-flat seam, then commit the per-item mapping.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3670,7 +3670,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'corporate actions not evidenced' is stale: the kernel queues and applies corporate actions (queue_corporate_action, apply_due_corporate_actions, apply_corporate_action, with unit tests in platform.rs); hedging is a production DECIDE-stage survey."
   },
   {
     "id": "R12-CAPITAL-1161",

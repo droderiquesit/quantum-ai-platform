@@ -1934,7 +1934,7 @@
       "backend/crates/runtime/qip-kernel/src/falsification.rs:62",
       "backend/crates/runtime/qip-kernel/src/event_markets.rs::settle_final"
     ],
-    "gap": "ResolutionCriteria::evaluate against named observations from a named source is not on the running path; the plane takes the oracle's reported outcome.",
+    "gap": "2026-10-24 (re-read against the tree): EventMarketPlane::discover (qip-kernel event_markets.rs) passes the oracle's OracleReport.outcome straight to MarketResolution::observe; EventMarket::evaluate (qip-prediction market.rs), which checks ResolutionCriteria against named Observations from the market's ResolutionSource, has no caller outside tests (ResolutionCriteria::evaluate runs in production only for the kernel's own hypothesis predictions via Platform::calibrate_resolved, reading platform series, not a named external source). The whole event plane is reachable only through QIP_DEEPBRAIN_BREADTH_PLAN, which no gitops env sets. Needs code (check reports against market.evaluate on adapter-delivered observations) plus a deploy change setting a breadth plan in a committed environment.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1945,7 +1945,7 @@
     "verification": "cargo test -p qip-prediction",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Event-market resolution runs in the cycle' holds only when QIP_DEEPBRAIN_BREADTH_PLAN is set; no committed deployment sets it, so it is not on a shipped default path."
   },
   {
     "id": "R12-EVENT-5084",

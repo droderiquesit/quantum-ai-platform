@@ -1237,7 +1237,7 @@
       "infrastructure/terraform/modules/data/main.tf:322",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:967"
     ],
-    "gap": "Bigtable adapter and routing.",
+    "gap": "2026-10-24 (re-read against the tree): No mapping routes the named record kinds (ambient state, forecast reputation, model scores, live features, branch indexes) to StorageTarget::Bigtable; qip-storage classes.rs has only Blob/KeyValue classes and rowkey.rs is a pure key scheme with no adapter. The store is refused (provider.rs: no gRPC stack), not admitted by ADR 0113 §1, and enable_bigtable=false everywhere. A pure routing table would be plain code but would route to a store an ADR has declined, so the owner decides first on a Bigtable store record or a restatement.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1248,7 +1248,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence architecture.rs:967 is stale (guard now no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store)."
   },
   {
     "id": "R12-DATA-9054",

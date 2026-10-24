@@ -2146,7 +2146,7 @@
       "backend/crates/libs/qip-financial/tests/history.rs:69 a_replay_window_across_a_venue_outage_reports_the_outage",
       "backend/crates/runtime/qip-kernel/src/platform.rs:19350-19360 corporate action kinds"
     ],
-    "gap": "Backtests and training must draw universes from UniverseHistory.",
+    "gap": "2026-10-24 (re-read against the tree): qip-financial/src/history.rs UniverseHistory (members_as_of, rename, delist, outages_overlapping) still has no caller outside its tests; nothing on a shipped path fills it (the kernel keeps none, and Platform::apply_corporate_action does not call delist or rename on a Delisting/Renamed action). The only production backtest, qip-simulation-engine Backtester::run (called from qip-deepbrain src/evolution.rs), takes the current qip_financial::universe::Universe, which by its own doc drops delisted names; no kernel stage or adapter records a venue outage, so a replay has nothing to report. Plain code but multi-part: kernel-held history fed from corporate actions, a source of venue-outage facts, and Backtester/training reading members_as_of and outages_overlapping.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2157,7 +2157,7 @@
     "verification": "cargo test -p qip-financial --test history",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Corporate-action evidence line stale: corporate_action_class (Delisting, Renamed) now sits near platform.rs:24168; platform.rs:19350 is borrow-availability code."
   },
   {
     "id": "R12-TICK-2091",

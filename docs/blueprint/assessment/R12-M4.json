@@ -1424,7 +1424,7 @@
       "backend/crates/libs/qip-portfolio/src/lifecycle.rs:19 PositionLifecycle",
       "backend/crates/tests/qip-acceptance/tests/arch_006_lib_no_io.rs libs perform no I/O"
     ],
-    "gap": "A named Asset Brain owning the per-position record (see R12-ASSET-4066..4069).",
+    "gap": "2026-10-24 (re-read against the tree): The acceptance clause holds by manifest (qip-portfolio and qip-financial Cargo.toml depend only on qip-core, qip-events, qip-contracts, qip-financial for portfolio, and serde), but only the direct edge to qip-execution-engine is pinned (qip-acceptance architecture.rs the_execution_engine_is_reachable_from_almost_nothing); no test stops either crate reaching qip-brokers or qip-edge directly or transitively. The requirement's subject, an Asset Brain owning the economic lifecycle, does not exist: ownership depends on R12-ASSET-4066..4071 being integrated into the kernel book (plain code, large).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1435,7 +1435,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-ASSET-4066",
@@ -1446,7 +1446,7 @@
       "backend/crates/services/qip-capital/src/ledger/mandate.rs:69 Mandate",
       "backend/crates/libs/qip-financial/src/position_record.rs:104-232 PositionRecord (no production caller)"
     ],
-    "gap": "Integrate PositionRecord into the kernel's book.",
+    "gap": "2026-10-24 (re-read against the tree): Kernel positions are qip_portfolio::position::Position, with no mandate or target-exposure field; PositionRecordBuilder::build (qip-financial position_record.rs) is never called in production; Platform::construct_from writes ProposalLeg.target_weight but does not keep it per held position; nothing flags a held position without a mandate or target (Portfolio::flag_position has no kernel caller, only qip-simulation-engine backtest.rs). Missing caller: the kernel's MONITOR/DECIDE stage resolving each held object to (desk mandate, last target_weight) and flagging the rest, with an integration test that fails if the flag call is removed. Plain code.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1457,7 +1457,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-ASSET-4067",
@@ -1468,7 +1468,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:12626 arm_horizon_gate",
       "backend/crates/runtime/qip-kernel/tests/valuation_plane.rs:296 an_uncertain_mark_narrows_sizing_and_a_confident_one_does_not"
     ],
-    "gap": "Per-position horizon and expected liquidity on the record.",
+    "gap": "2026-10-24 (re-read against the tree): The refusal half is on the production path (Platform::sizing_confidence refuses a stale or unmarkable illiquid mark; sizeable_theses reads it every construction). No per-position record carries valuation confidence, investment horizon and expected liquidity together: PositionRecord holds horizon and expected_exit but is never built and has no getters; ApprovedThesis (qip-portfolio-engine construction.rs) carries no horizon; exit days exist only in the liquidity ladder (exit_days_with_forecast). Closing needs a horizon source chosen (thesis or proposition horizon) - a design/owner decision - then kernel code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1479,7 +1479,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted: sizing_confidence near platform.rs:15610, arm_horizon_gate near :15679."
   },
   {
     "id": "R12-ASSET-4068",
@@ -1491,7 +1491,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:15662 hedge_review::review",
       "backend/crates/libs/qip-financial/src/position_record.rs:25 Declared"
     ],
-    "gap": "Per-position linkage.",
+    "gap": "2026-10-24 (re-read against the tree): Pending corporate actions (corporate_actions_pending), the CommitmentBook and the per-cycle hedge survey (hedge_review::review in DECIDE) exist, but nothing resolves them per position and Declared::NoneApplicable (position_record.rs) is never constructed outside tests. The hedge survey is axis-level (factor exposures from RiskState::position_notionals), not per-instrument relationships, so mapping a position to its hedge or a stated 'none' needs a modelling decision (owner/ADR on hedge-to-position attribution) before the kernel accessor can be written.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1502,7 +1502,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted (corporate_actions_pending near platform.rs:1180, commitments near :777, hedge_review::review call near :19064)."
   },
   {
     "id": "R12-ASSET-4069",
@@ -1513,7 +1513,7 @@
       "backend/crates/services/qip-learning-engine/src/attribution.rs:142-155 residual/reconciles",
       "backend/crates/libs/qip-financial/src/position_record.rs:65 ExitPlan"
     ],
-    "gap": "Exit plan required at open.",
+    "gap": "2026-10-24 (re-read against the tree): The attribution half holds on LEARN (qip-learning-engine attribution.rs residual/reconciles; kernel Platform::last_attribution). Nothing refuses opening a position without an exit plan: ExitPlan (position_record.rs) is required only by the never-called PositionRecordBuilder::build, the kernel open path (construct_from, proposal legs, orders) carries no exit date or route, and ApprovedThesis has no horizon to derive one from. Needs an owner decision on the exit-plan policy for liquid theses before the open seam can require ExitPlan.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1524,7 +1524,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution."
   },
   {
     "id": "R12-ASSET-4070",
@@ -1535,7 +1535,7 @@
       "backend/crates/services/qip-capital/src/allocation.rs:377 allocate",
       "backend/crates/services/qip-optimization-engine/src/horizons.rs:689 reconcile"
     ],
-    "gap": "Joint construction across the four dimensions.",
+    "gap": "2026-10-24 (re-read against the tree): qip-portfolio-engine construction.rs Mandate has only target_gross, position_cap, long_only, maximum_holdings, minimum_position, turnover cost and risk aversion - no per-strategy, per-asset-class, per-region or per-horizon budgets - so one run cannot respect them together. Strategy budgets (qip-capital allocation.rs allocate) and horizon pools (qip-optimization-engine horizons.rs reconcile) are computed apart from construct_from. Needs grouped budget constraints in the optimiser fed from qip-capital and the horizon pools, crossing three service contracts: an architecture review/ADR on who owns joint construction first.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1546,7 +1546,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-ASSET-4071",
@@ -1556,7 +1556,7 @@
       "backend/crates/libs/qip-portfolio/src/life_stage.rs:15-27 LifeStage",
       "backend/crates/libs/qip-portfolio/src/life_stage.rs:120-159 tests (exit_cannot_reach_attribute_without_settling_first)"
     ],
-    "gap": "Drive positions through LifeStage in the kernel.",
+    "gap": "2026-10-24 (re-read against the tree): qip_portfolio::LifeStage is named outside its crate only as a display string (qip-kernel asset_class_registry.rs LifeStage::Discover.as_str()); no kernel position moves through it. The kernel's Portfolio tracks PositionLifecycle instead and never calls flag_position or begin_unwind. Missing caller: the kernel cycle advancing a per-position LifeStage with its checked transitions - acquire/resize/exit on fills, settle from SettlementBook (register_settlement), attribute only in LEARN after settle - with a kernel test that an exited, unsettled position is not attributed. Plain code.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1567,7 +1567,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-ASSET-4072",
@@ -1579,7 +1579,7 @@
       "backend/crates/libs/qip-financial/src/secondary_exit.rs:18 (unintegrated)",
       "backend/crates/libs/qip-financial/src/private_stage.rs (unintegrated)"
     ],
-    "gap": "Integrate lockup/stage and secondary-exit planning.",
+    "gap": "2026-10-24 (re-read against the tree): Commitments, capital calls (Platform::record_capital_call) and dated illiquid marks are integrated. The lockup only raises liquidity exit days; no production path refuses an exit inside a lockup; PrivateStage (private_stage.rs) is only displayed via asset_class_registry.rs; plan_secondary_exit and DiscountToMark (secondary_exit.rs) have no caller. Needs a kernel exit seam for private holdings using ExitPlan::new against the lockup, and a source of evidenced secondary-market discounts (a data-source/owner decision).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1590,7 +1590,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Capital-call writer evidence stale: now Platform::record_capital_call in qip-kernel platform.rs, served by qip-api routes.rs."
   },
   {
     "id": "R12-ASSET-4073",
@@ -1600,7 +1600,7 @@
       "backend/crates/libs/qip-financial/src/commerce.rs:1-12",
       "backend/crates/libs/qip-financial/tests/commerce.rs"
     ],
-    "gap": "Integration with the Asset lifecycle; any real merchant is BLOCKED by ADR 0021/0099.",
+    "gap": "2026-10-24 (re-read against the tree): Paper commerce is composed into the kernel (qip-kernel src/commerce_research.rs, DISCOVER/SIMULATE) but runs only when QIP_DEEPBRAIN_BREADTH_PLAN (qip-deepbrain src/breadth.rs) is set, and no committed environment sets it (infrastructure/gitops/envs/*/deepbrain.yaml). By its own doc no commerce unit becomes a position in the kernel's book; PositionRecord.product_economics (LandedCost) is never built and the record has no inventory-state field. Needs a gitops deploy change for the breadth plan plus a decision (ADR 0021/0099 scope) letting paper commerce units enter the asset book; any real merchant stays BLOCKED by ADR 0021/0099.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1611,7 +1611,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'not composed into the kernel' is stale: commerce_research.rs runs scout, resolver, PurchaseExecutor(SimulatedMerchant), logistics plan, inventory Ledger and resale when a breadth plan is installed (tests: qip-kernel tests/breadth.rs, qip-deepbrain tests/commerce.rs)."
   },
   {
     "id": "R12-ASSET-4074",

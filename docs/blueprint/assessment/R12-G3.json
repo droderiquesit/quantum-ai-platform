@@ -777,7 +777,7 @@
       "infrastructure/terraform/modules/data/main.tf:322 google_bigtable_instance timeseries (count enable_bigtable)",
       "infrastructure/environments/dev/terraform.tfvars:282 enable_bigtable = false"
     ],
-    "gap": "No writer/sink, no rebuild path.",
+    "gap": "2026-10-24 (re-read against the tree): google_bigtable_instance.timeseries (two autoscaling clusters, replication justified in a comment) is declared but enable_bigtable=false in all four envs, so no plan; no rebuild job from GCS/fabric and no Rust Bigtable client exist (provider refuses StorageTarget::Bigtable for want of a gRPC stack, ADR 0109 does not admit prost, ADR 0113 §1 does not admit Bigtable). Needs a Bigtable store ADR, a gRPC/protobuf dependency ADR or REST alternative, a rebuild job, a tfvar flip, and a plan.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -790,7 +790,7 @@
     "verification": "terraform plan; sink integration test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Line refs stale: the instance now carries a second cluster and app profiles in modules/data/main.tf; enable_bigtable in dev tfvars is at ~line 342."
   },
   {
     "id": "R12-DATA-10036",
@@ -819,7 +819,7 @@
     "status": "MISSING",
     "current": "No Dataplex/Knowledge Catalog resource.",
     "evidence": [],
-    "gap": "Declare catalog/lake/lineage.",
+    "gap": "2026-10-24 (re-read against the tree): No Knowledge Catalog/Dataplex resource (google_dataplex_*) anywhere under infrastructure/terraform, and no catalog, lineage or quality registration in code. ADR 0101 row C4 lists Knowledge Catalog among stores needing their own storage record, so this needs an ADR/owner decision, a managed service in Terraform, and a real plan.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -833,7 +833,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-10038",
@@ -1754,7 +1754,7 @@
     "status": "MISSING",
     "current": "No Bigtable writer in the workspace; Bigtable is gated off.",
     "evidence": [],
-    "gap": "Bigtable client + sink.",
+    "gap": "2026-10-24 (re-read against the tree): No Bigtable writer or fabric sink exists: StorageTarget::Bigtable is refused in qip-storage/src/provider.rs for want of a gRPC/HTTP2/protobuf stack, ADR 0109 does not admit prost, ADR 0113 §1 does not admit Bigtable. Needs a Bigtable store ADR plus a new-dependency ADR (NEW_DEPENDENCY), a running fabricd (event_fabric_broker null everywhere), and enable_bigtable flipped and applied. The ingest app profile it would write through is declared.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1767,7 +1767,7 @@
     "verification": "integration test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-10081",
@@ -1776,7 +1776,7 @@
     "evidence": [
       "backend/crates/services/qip-mesh/src/bigquery.rs"
     ],
-    "gap": "Fabric-driven sink.",
+    "gap": "2026-10-24 (re-read against the tree): No fabric-driven sink feeds qip_mesh::bigquery::BigQueryWarehouse; its only caller is qip-deepbrain's direct OutcomeSink, and nothing shows sink lag cannot affect producers. The adapter uses legacy tabledata.insertAll, not the Storage Write API the requirement names. Needs code (a fabric consumer driving the warehouse with a lag-isolation test), a running fabricd, QIP_BIGQUERY_* wiring in catalogue.tf and a deploy; the Storage Write API is gRPC/protobuf and needs a dependency ADR, or an owner restatement accepting insertAll.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1789,7 +1789,7 @@
     "verification": "cargo test -p qip-mesh --test bigquery",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'no Fabric sink drives it' is true but incomplete: qip-deepbrain/src/warehouse.rs OutcomeSink drives the adapter directly; it is off because no Terraform sets QIP_BIGQUERY_PROJECT/QIP_BIGQUERY_DATASET, though dev has enable_bigquery = true."
   },
   {
     "id": "R12-LEDGER-10082",
@@ -3292,7 +3292,7 @@
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/replay.rs:1-3"
     ],
-    "gap": "Environment.",
+    "gap": "2026-10-24 (re-read against the tree): No replay environment exists: var.environment (infrastructure/terraform/variables.tf) accepts only dev/test/stage/prod, ADR 0118 fixes those four projects, and infrastructure/environments/ holds only their tfvars. 'replay' is only a Kargo approval gate (infrastructure/gitops/gates/replay/freight.yaml, ADR 0115) with no project, read-only curated-data grants, governance, or proof of no venue route. Needs an owner decision and an ADR 0118 amendment for a fifth environment, then tfvars and a plan.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3305,7 +3305,7 @@
     "verification": "plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-EXEC-10147",
@@ -3716,7 +3716,7 @@
       "backend/crates/libs/qip-contracts/src/knowledge_pack.rs",
       "infrastructure/terraform/modules/data/main.tf"
     ],
-    "gap": "Enable stores, sinks, catalog.",
+    "gap": "2026-10-24 (re-read against the tree): Phase 5 deliverables missing or off: GCS tick/internal archive (enable_cloud_storage=false everywhere); Bigtable (enable_bigtable=false everywhere, no Rust client, not admitted by ADR 0113 §1); Knowledge Catalog (no google_dataplex_* resource; ADR 0101 row C4 needs a storage record); replay/feature sinks (no fabric-driven sink to any store). BigQuery is on in dev tfvars but no Terraform sets QIP_BIGQUERY_PROJECT/QIP_BIGQUERY_DATASET for qip-deepbrain, and nothing is applied. No phase-5 exit test exists (ADR 0143's docs/architecture/phase-register.json is not committed; no phase-5 suite beside phase12_exit.rs/phase_16_exit.rs). Needs tfvar flips and applies, store ADRs for Bigtable and Knowledge Catalog, managed services, and the register plus exit test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3732,7 +3732,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'data stores declared but disabled' is stale: dev sets enable_bigquery = true (owner-approved 2026-10-19), a regional segment bucket and a simulation bucket are declared, and a knowledge-pack writer exists (qip-deepbrain connectors with_knowledge_packs, behind QIP_DEEPBRAIN_KNOWLEDGE_PACKS, unset by default)."
   },
   {
     "id": "R12-GCP-10165",
@@ -4740,7 +4740,7 @@
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:322"
     ],
-    "gap": "App profiles.",
+    "gap": "2026-10-24 (re-read against the tree): Profiles are declared: google_bigtable_app_profile.timeseries with ingest (single-cluster to primary, high priority), serve (multi-cluster, medium) and batch (single-cluster to secondary, low) in modules/data/main.tf, planned only when enable_bigtable=true, which no env sets; no plan can run now. No Rust reader/writer picks a profile (Bigtable not admitted, ADR 0113 §1), and no acceptance test guards the profile-to-routing mapping. Needs a tfvar flip, a Bigtable store ADR, and a plan.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -4753,7 +4753,7 @@
     "verification": "plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'No Bigtable app profile declared' is false: three profiles (ingest/serve/batch) were added in commit 4f2da224 (local.bigtable_app_profiles, google_bigtable_app_profile.timeseries)."
   },
   {
     "id": "R12-CICD-10207",
