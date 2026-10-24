@@ -629,6 +629,7 @@ dependencies = [
 name = "qip-financial"
 version = "0.1.0"
 dependencies = [
+ "qip-contracts",
  "qip-core",
  "qip-events",
  "serde",

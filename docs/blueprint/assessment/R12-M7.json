@@ -1412,14 +1412,16 @@
   },
   {
     "id": "R12-CONTRACT-7063",
-    "status": "PARTIAL",
-    "current": "The contract BeliefState is now constructed in production: the central plane states each open belief as one and uses its expiry and validation as the gate for what is shipped to cells.",
+    "status": "COMPLETE",
+    "current": "The contract BeliefState (six fields) is constructed in production by central/belief.rs::belief_state and gates what ships to cells. The reasoning engine's freshness type is now qip_reasoning_engine::BeliefClock (belief.rs, accessor ReasoningEngine::belief_clock, read by platform.rs for Capability::BeliefState), so the contract owns the name. No wire carries either name; what crosses to cells stays ADR 0088's Beliefs slot beside BeliefPriors.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:274 a_belief_state_missing_any_of_its_six_fields_is_refused_on_decode",
-      "backend/crates/services/qip-reasoning-engine/src/engine.rs:17 production imports the reasoning-engine type",
-      "backend/crates/runtime/qip-kernel/src/central/belief.rs::belief_state"
+      "backend/crates/services/qip-reasoning-engine/src/belief.rs::BeliefClock",
+      "backend/crates/services/qip-reasoning-engine/src/engine.rs::ReasoningEngine::belief_clock",
+      "backend/crates/runtime/qip-kernel/src/platform.rs reasoning.belief_clock().last_updated()",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_does",
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:274 a_belief_state_missing_any_of_its_six_fields_is_refused_on_decode"
     ],
-    "gap": "Two different things share the name. qip-reasoning-engine's BeliefState (belief.rs, 70 lines) is a freshness clock - when a belief was last formed, read for Capability::BeliefState - and carries no probability, TTL or uncertainty, so a TryFrom to the contract's six-field BeliefState has nothing to convert. The contract BeliefState is built where it belongs, from episodes, in central/belief.rs and gates what ships to cells; what crosses to cells is still BeliefPriors slots. Closing needs either renaming the engine type (e.g. BeliefClock) so the contract owns the name, and a receiver that reads BeliefState rather than priors.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1427,10 +1429,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning forming_a_hypothesis_moves; cargo test -p qip-contracts --test section27_partial_contracts",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L23: not implemented; a conversion at engine.rs:17 would have invented the fields."
+    "notes": "Rename landed in 4c1fe46a (ADR 0149 d19); regraded 2026-10-24 lane T6-MODEL-AGENTS after re-running the test. Mutation re-fired: last_updated() returning Some(1ms) before any hypothesis formed failed the test at reasoning.rs:1551 (left Some(1970-01-01T00:00:00.001Z), right None); restored byte for byte, passes."
   },
   {
     "id": "R12-CONTRACT-7064",
@@ -1613,12 +1615,13 @@
   {
     "id": "R12-CONTRACT-7072",
     "status": "PARTIAL",
-    "current": "MarketStatePack refuses inverted interval, non-positive horizon, empty lineage, out-of-interval events.",
+    "current": "MarketStatePack refuses an empty event list, an inverted interval, a non-positive horizon, an empty lineage and out-of-interval events. It is built nowhere outside qip-contracts.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/market_state.rs:39-70",
-      "backend/crates/libs/qip-contracts/tests/market_state.rs"
+      "backend/crates/libs/qip-contracts/tests/market_state.rs",
+      "backend/crates/libs/qip-contracts/tests/market_state.rs::a_pack_over_no_events_is_refused_rather_than_reported_as_a_clean_tape"
     ],
-    "gap": "No production producer/consumer. The NOW stage holds instrument readings, not the MarketEvents a MarketStatePack is reconstructed over (qip-contracts market_state.rs computes its integrity flags from those events), so a pack built there would carry an empty event list and claim a clean tape nobody read; the producer belongs where the ingested tape or the edge book is held.",
+    "gap": "No production producer/consumer. ADR 0151 decision 2 names both: the edge capture drain builds a pack per interval over the MarketEvents it applied (never over zero, which is now refused in the constructor) and the pack rides in the pass's FeatureSnapshot P2 record; the consumer is the tick desk's fusion (fusion.rs), which removes a flagged instrument's input weight and never raises one. Neither is built: the drain (qip-edge-node event_fabric/drain.rs) holds MarketEvents only inside the lake writer, and fusion.rs is off by default (QIP_DEEPBRAIN_TICK_EVERY unset). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1629,7 +1632,7 @@
     "verification": "cargo test -p qip-contracts --test market_state",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L06: the grader closure (build a MarketStatePack in now_stage.rs) was not implemented because it would assert tape integrity over zero events; row left PARTIAL with the corrected gap."
+    "notes": "2026-10-18 lane L06: the grader closure (build a MarketStatePack in now_stage.rs) was not implemented because it would assert tape integrity over zero events; row left PARTIAL with the corrected gap. 2026-10-24 lane T7-KERNEL slice: MarketStatePack::new now refuses zero events, so the producer cannot claim a clean tape over an empty interval. Mutation - disable the events.is_empty() refusal - a_pack_over_no_events_is_refused_rather_than_reported_as_a_clean_tape failed; restored, passes. Remaining slices: edge drain producer, FeatureSnapshot P2 carriage, fusion consumer."
   },
   {
     "id": "R12-CONTRACT-7073",
@@ -2231,7 +2234,7 @@
       "backend/crates/services/qip-capital-fabric/src/gate.rs:273",
       "backend/crates/services/qip-capital-fabric/src/corridor.rs:615"
     ],
-    "gap": "2026-10-19: nobody asserts custody unavailable, by decision (ADR 0159 E): on a paper platform the venue is the custodian (ADR 0130 decision 4), so there is no third party to be down, and the only honest source is the freshness of the position statement the simulated venue publishes, read by the node (which hosts the gateway) and handed to the cell as a Capability::Custody observation that narrows only. ADR 0130's statement slice does not exist, so Custody stays unobserved and contributes one to dependency_multiplier. TransferGate::assess takes no custody input and none is added: an argument with no producer is a gate that always passes. Platform::survival_figures already withholds unsettled sale proceeds. Needs the venue position-statement record and a freshness threshold (RISK).",
+    "gap": "2026-10-24 (ADR 0159 E): no custody-availability signal exists and none is asserted by an operator: the venue is the custodian (ADR 0130 decision 4) and custody unavailability can only be read from the staleness of its position statement, whose record does not exist. Capability::Custody has no producer and stays unobserved, contributing to dependency_multiplier. TransferGate::assess takes no custody input and none is added, since an input with no producer always passes. Needs the venue position-statement record and a freshness threshold (RISK).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2242,7 +2245,7 @@
     "verification": "capital-fabric integration test",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: TransferGate::assess is veto-only and takes every input from its caller; adding a CustodyAvailability argument with no producer would be a gate input that is always 'available', the always-passing shape this repository refuses. Kept PARTIAL. Lane W8-159 2026-10-19 (ADR 0159). Gap restated; no grade change."
+    "notes": "Lane W8-159 2026-10-19 (ADR 0159). Lane T4-LEDGER 2026-10-24: grep finds Capability::Custody only in qip-contracts degradation.rs and its tests, no producer; no code change, no grade change."
   },
   {
     "id": "R12-RES-7100",

@@ -9,7 +9,7 @@
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-use qip_contracts::capital::{CapitalEnvelope, ExposureBounds};
+use qip_contracts::capital::{AuthorityBounds, CapitalEnvelope, ExposureBounds};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::{BeliefPriors, CausalDigest, EpisodicDigest, PolicyPayload, Slot};
 use qip_contracts::signal::{SignalKind, StrategyId};
@@ -18,7 +18,7 @@ use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_edge::cell::{
     Cell, CellConfig, ExecutionReport, GATE_ENVELOPE_LEVERAGE, GATE_ENVELOPE_LIQUIDITY,
-    GATE_ENVELOPE_UNBOUNDED, Placer, PricingPolicy, WorkReport,
+    GATE_ENVELOPE_PRODUCT, GATE_ENVELOPE_UNBOUNDED, Placer, PricingPolicy, WorkReport,
 };
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
@@ -390,5 +390,110 @@ fn a_cell_requiring_exposure_bounds_refuses_an_envelope_without_them() -> Result
             report.refusals
         );
     }
+    Ok(())
+}
+
+/// A grant carrying both blocks: exposure bounds at unit leverage and
+/// authority bounds naming `classes` and `functions` at the same leverage
+/// (ADR 0155 section 4 makes two different claims about one ratio a refusal).
+fn authority_grant(classes: &[&str], functions: &[&str]) -> Result<VerifiedEnvelope> {
+    let unsigned = CapitalEnvelope::new(
+        StrategyId::new(ALPHA),
+        CELL,
+        d("1000000"),
+        d("100000"),
+        d("50000"),
+        vec![venue()],
+        t(0),
+        t(3600),
+        "alice@example.com",
+        "",
+    )?
+    .with_exposure(ExposureBounds::bounded(2_500, Decimal::ONE, d("1000000"))?)?
+    .bound(AuthorityBounds::new(
+        Decimal::ONE,
+        classes.iter().map(|c| (*c).to_string()).collect(),
+        functions.iter().map(|f| (*f).to_string()).collect(),
+    )?)?;
+    let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, CELL, t(1))
+}
+
+fn armed_pass(config: CellConfig, envelope: &VerifiedEnvelope) -> Result<(usize, WorkReport)> {
+    let mut cell = cell_with(config)?;
+    quote(&mut cell, "99", "101", "1000")?;
+    deploy(&mut cell, SignalKind::Enter, "10", envelope)?;
+    let mut gateway = FillingVenue::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    Ok((gateway.placed, report))
+}
+
+/// Mutation: in `Cell::intent_for`, pass a fixed product class to the
+/// authority check instead of the instrument's mapped class — the
+/// out-of-class order is admitted and this test fails.
+#[test]
+fn an_armed_cell_admits_an_order_inside_a_bounded_envelope_and_refuses_one_outside_its_product_class_function_or_leverage_naming_which()
+-> Result<()> {
+    let armed_as = |class: &str| {
+        CellConfig::new(CELL, REGION)
+            .with_venue(venue())
+            .with_product_class(acme(), class)
+            .with_authority_bounds_required()
+    };
+    let armed = || armed_as("equity");
+
+    // Premise: inside the bounds the order goes out, so every refusal below
+    // is a bound and not an armed cell refusing everything.
+    let inside = authority_grant(&["equity"], &["order_taking"])?;
+    let (placed, report) = armed_pass(armed(), &inside)?;
+    assert_eq!(placed, 1, "premise: {:?}", report.refusals);
+
+    // Outside the product class: the instrument is mapped to a commodity and
+    // the grant names equity only. Refused under its own gate, naming both.
+    let (placed, report) = armed_pass(armed_as("commodity"), &inside)?;
+    assert_eq!(placed, 0);
+    let refusals = refused_under(&report, GATE_ENVELOPE_PRODUCT);
+    assert_eq!(refusals.len(), 1, "{:?}", report.refusals);
+    assert!(
+        refusals[0].contains("commodity") && refusals[0].contains("equity"),
+        "{}",
+        refusals[0]
+    );
+
+    // Outside the regulated function: a net performs order taking.
+    let (placed, report) = armed_pass(armed(), &authority_grant(&["equity"], &["routing"])?)?;
+    assert_eq!(placed, 0, "{:?}", report.orders);
+    assert!(
+        report
+            .refusals
+            .iter()
+            .any(|(_, reason)| reason.contains("order_taking")),
+        "{:?}",
+        report.refusals
+    );
+
+    // An instrument with no declared class is refused, never read as the
+    // first class on the list.
+    let (placed, report) = armed_pass(
+        CellConfig::new(CELL, REGION)
+            .with_venue(venue())
+            .with_authority_bounds_required(),
+        &inside,
+    )?;
+    assert_eq!(placed, 0);
+    assert_eq!(refused_under(&report, GATE_ENVELOPE_PRODUCT).len(), 1);
+
+    // The library default is unarmed: an envelope without the block trades.
+    let unbounded = grant(
+        "1000000",
+        "100000",
+        "50000",
+        Some(ExposureBounds::bounded(2_500, Decimal::ONE, d("1000000"))?),
+    )?;
+    let (placed, report) = armed_pass(
+        CellConfig::new(CELL, REGION).with_venue(venue()),
+        &unbounded,
+    )?;
+    assert_eq!(placed, 1, "{:?}", report.refusals);
     Ok(())
 }

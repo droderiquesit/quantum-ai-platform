@@ -300,6 +300,12 @@ impl EventBody for Trade {
 }
 
 /// A last-price update, the lightest market event.
+///
+/// States event time (`at`) and capture time (`capture_time`) and nothing
+/// finer: no normalised time and no clock uncertainty. The centre has no clock
+/// discipline to certify either, so a field here would claim a precision nobody
+/// measured. The edge lake line carries both, from the disciplined clock
+/// (ADR 0151 decision 9).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Tick {
     pub object_id: ObjectId,

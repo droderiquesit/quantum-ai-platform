@@ -329,12 +329,41 @@ mod belief_is_freshness_only {
     }
 
     fn pass(policy: VerifiedPolicy) -> Result<(WorkReport, Cell)> {
+        let (report, cell, _) = pass_as(policy, None)?;
+        Ok((report, cell))
+    }
+
+    /// [`payload`] carrying an `acceptable_builds` set naming `builds`.
+    fn payload_naming(builds: &[&str]) -> Result<VerifiedPolicy> {
+        let at = t(5);
+        let mut payload = payload(0.5, "digest")?.payload().clone();
+        payload.acceptable_builds = Slot::produced(
+            qip_contracts::policy::BuildSet {
+                builds: builds.iter().map(|b| (*b).to_string()).collect(),
+            },
+            at,
+        );
+        payload.signature = String::new();
+        VerifiedPolicy::verify(payload.signed(KEY)?, KEY, CELL, at)
+    }
+
+    fn pass_as(
+        policy: VerifiedPolicy,
+        identity: Option<&str>,
+    ) -> Result<(
+        WorkReport,
+        Cell,
+        std::sync::Arc<qip_observability::metrics::Metrics>,
+    )> {
         let venue = VenueId::new("XLON");
         let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
-        let mut cell = Cell::new(
-            CellConfig::new(CELL, "europe-west2").with_venue(venue.clone()),
-            features,
-        )?;
+        let mut config = CellConfig::new(CELL, "europe-west2").with_venue(venue.clone());
+        if let Some(identity) = identity {
+            config = config.with_build_identity(identity)?;
+        }
+        let metrics =
+            std::sync::Arc::new(qip_observability::metrics::Metrics::new("qip-edge-node"));
+        let mut cell = Cell::new(config, features)?.with_metrics(std::sync::Arc::clone(&metrics));
         cell.apply_policy(policy, t(5))?;
 
         let mut book = VenueState::aggregated(object(), venue.clone(), VenueStatus::Open);
@@ -391,7 +420,7 @@ mod belief_is_freshness_only {
         cell.deploy_with_pricing(compiled, program, envelope, PricingPolicy::Marketable)?;
 
         let report = cell.work(t(10), &mut PaperGateway)?;
-        Ok((report, cell))
+        Ok((report, cell, metrics))
     }
 
     #[test]
@@ -423,6 +452,60 @@ mod belief_is_freshness_only {
             low.signals[0].conviction, high.signals[0].conviction,
             "a belief prior reached the conviction the cell journals and sizes on"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_cell_whose_build_is_absent_from_a_produced_build_set_takes_no_new_exposure_while_an_unproduced_set_changes_nothing()
+    -> Result<()> {
+        // The failure this prevents: a cell left running a build the centre
+        // has stopped accepting keeps sizing new positions until somebody
+        // notices. The halt narrows only: it is derived from the applied
+        // payload, so a fresh payload naming the build is the release.
+        let halted_source = |metrics: &qip_observability::metrics::Metrics| {
+            metrics.snapshot().gauge(
+                qip_observability::metrics::names::EDGE_HALTED,
+                &qip_observability::metrics::labels([
+                    ("cell", CELL),
+                    ("region", "europe-west2"),
+                    ("source", "deployment"),
+                ]),
+            )
+        };
+
+        // Premises: with no set produced the cell trades and reports zero,
+        // and a set naming its build changes nothing.
+        let (unproduced, _, metrics) = pass_as(payload(0.5, "digest")?, Some("build-a"))?;
+        assert_eq!(unproduced.orders.len(), 1, "premise: {unproduced:?}");
+        assert!(!unproduced.halted);
+        assert_eq!(halted_source(&metrics), Some(0.0));
+        let (named, _, _) = pass_as(payload_naming(&["build-a", "build-b"])?, Some("build-a"))?;
+        assert_eq!(
+            named.orders.len(),
+            1,
+            "premise: a matching build sizes normally"
+        );
+        assert_eq!(named.orders[0].quantity, unproduced.orders[0].quantity);
+
+        // Absent from the produced set: halted, nothing sent, refused under
+        // its own gate, and charted under source=deployment.
+        let (stopped, _, metrics) = pass_as(payload_naming(&["build-b"])?, Some("build-a"))?;
+        assert!(stopped.halted, "{stopped:?}");
+        assert!(stopped.orders.is_empty());
+        assert!(
+            stopped
+                .refusals
+                .iter()
+                .any(|(gate, _)| gate == "deployment_halt"),
+            "{stopped:?}"
+        );
+        assert_eq!(halted_source(&metrics), Some(1.0));
+
+        // A cell built without the wire is not halted by the same set and
+        // reports no deployment series at all: absent, not zero.
+        let (wireless, _, metrics) = pass_as(payload_naming(&["build-b"])?, None)?;
+        assert_eq!(wireless.orders.len(), 1, "{wireless:?}");
+        assert_eq!(halted_source(&metrics), None);
         Ok(())
     }
 }
