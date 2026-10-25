@@ -2046,7 +2046,7 @@
     "verification": "cargo test -p qip-acceptance --test cicd_governance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: taken by the drift route, docs/blueprint/lanes/l9-CICD-8032.patch (shared with R12-CICD-8032), a scheduled plan of dev that fails on drift. The SCC Premium route is paid and was not taken (owner decision 5 of 2026-10-25). PARTIAL until the patch is applied and a scheduled run is seen."
   },
   {
     "id": "R12-RES-9087",
