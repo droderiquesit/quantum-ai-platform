@@ -19,9 +19,10 @@
 //! * **Origination** pairs an authority with a peer's edge state that crosses
 //!   it by at least [`MIN_EDGE_BPS`] after fees nobody stated — the touch is
 //!   the price — plus the expected adverse move over the measured round trip
-//!   to that peer, priced by `qip_arbitrage::netedge` with the round trip as
-//!   its coordination latency (R12-MESH-5069), and opens an epoch only to a
-//!   peer whose clock is measured. The two are one condition on purpose: a
+//!   to that peer, priced by the formula the desk's net-edge calculator
+//!   charges its own cycles with (`qip_core::exposure`, R12-MESH-5069), and
+//!   opens an epoch only to a peer whose clock is measured. The two are one
+//!   condition on purpose: a
 //!   crossing that clears the floor at zero latency and not once the wire's
 //!   own measurement is charged is a cycle that pays only on a wire nobody
 //!   has.
@@ -46,7 +47,7 @@
 
 use crate::boundary::{LegAuthority, Side};
 use crate::wire::PeerSession;
-use qip_arbitrage::netedge::{EdgeAssumptions, NetEdgeCalculator};
+use qip_core::exposure::expected_absolute_move_fraction;
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_peer::rebalance::{RebalanceTask, rebalancing_tasks};
 use qip_peer::{
@@ -708,15 +709,26 @@ impl Saga {
     }
 }
 
+/// The annualised volatility the coordination haircut is priced at: the same
+/// figure the desk's `EdgeAssumptions::default()` carries, so a peer crossing
+/// is not priced by a kinder model than a cycle inside one cell. The two
+/// constants are held equal by `qip-edge-node`'s `tests/peer_pricing.rs`,
+/// the one crate that links both and so can read both; this crate may not
+/// name `qip-arbitrage` (see `Cargo.toml`).
+pub const COORDINATION_VOLATILITY_ANNUAL_F64: f64 = 0.40;
+
 /// Whether selling at `sell` what was bought at `buy` clears
-/// [`MIN_EDGE_BPS`] and the expected adverse move over `coordination`, the
-/// measured round trip to the peer whose touch `sell` (or `buy`) is.
+/// [`MIN_EDGE_BPS`] plus the expected adverse move over `coordination`, the
+/// round trip the wire measured to the peer whose touch `sell` (or `buy`)
+/// is (R12-MESH-5069).
 ///
-/// The move is `qip_arbitrage::netedge`'s own latency deduction with that
-/// round trip as its coordination latency, on one unit bought at `buy` — the
-/// same figure the cell's desk charges a cycle of its own, so the peer
-/// crossing is not priced by a kinder model than the local one. A deduction
-/// the calculator refuses (a statistic it cannot carry) clears nothing.
+/// The move is `qip_core::exposure`'s — the formula the desk's net-edge
+/// calculator charges its own cycles' latency with — at
+/// [`COORDINATION_VOLATILITY_ANNUAL_F64`], over the measured round trip
+/// alone: a peer leg is exposed for the time it takes the peer to agree the
+/// epoch, which is what the wire measured. The move is a statistic in `f64`
+/// and crosses into `Decimal` here, where it is charged against the edge in
+/// basis points; a move the conversion cannot carry clears nothing.
 fn clears(buy: Decimal, sell: Decimal, coordination: Duration) -> bool {
     if !buy.is_positive() || sell <= buy {
         return false;
@@ -727,14 +739,13 @@ fn clears(buy: Decimal, sell: Decimal, coordination: Duration) -> bool {
     let Some(floor) = buy.checked_mul(Decimal::from_int(MIN_EDGE_BPS)) else {
         return false;
     };
-    let calculator = NetEdgeCalculator::new(EdgeAssumptions {
-        coordination_latency: coordination,
-        ..EdgeAssumptions::default()
-    });
-    let Ok(move_per_unit) = calculator.latency_deduction(buy) else {
-        return false;
-    };
-    let Some(move_bps) = move_per_unit.checked_mul(Decimal::from_int(10_000)) else {
+    let move_fraction =
+        expected_absolute_move_fraction(COORDINATION_VOLATILITY_ANNUAL_F64, coordination);
+    // The crossing point from statistic to money: the fraction becomes a
+    // decimal only to be charged, in basis points of the buying price.
+    let Some(move_bps) =
+        Decimal::from_f64(move_fraction * 10_000.0).and_then(|bps| bps.checked_mul(buy))
+    else {
         return false;
     };
     edge >= floor + move_bps
@@ -747,14 +758,12 @@ mod tests {
     #[test]
     fn a_crossing_clears_only_at_or_above_the_minimum_edge() {
         let d = |s: &str| Decimal::parse(s).expect("a literal");
+        // With no measured round trip there is nothing to charge beyond the
+        // floor, so exactly five basis points clears, as it always did.
         let none = Duration::from_nanos(0);
-        // At zero coordination latency the default assumptions still charge
-        // the venue round trip, so exactly five basis points no longer clears;
-        // the floor the venue round trip adds is under a third of one.
-        assert!(clears(d("100"), d("100.06"), none), "six basis points");
         assert!(
-            !clears(d("100"), d("100.05"), none),
-            "five, with the venue trip"
+            clears(d("100"), d("100.05"), none),
+            "exactly five basis points"
         );
         assert!(!clears(d("100"), d("100.049"), none));
         assert!(!clears(d("100"), d("99"), none));
@@ -763,20 +772,19 @@ mod tests {
 
     /// R12-MESH-5069: a crossing that clears at zero coordination latency is
     /// declined once the round trip the wire measured to the peer is priced.
-    /// Five and a half basis points clears the floor plus the venue round
-    /// trip's own move (about 0.28 bps at the default 250 ms and 40%
-    /// annualised volatility); a 900 ms measured round trip to the peer
-    /// raises that move to about 0.61 bps and the same crossing is refused.
+    /// Five and three-tenths basis points clears the five-point floor with
+    /// nothing measured; a 900 ms round trip to the peer, at 40% annualised
+    /// volatility, is an expected move of about 0.54 bps, and the same
+    /// crossing is refused.
     ///
-    /// Mutation (run, failed here, restored): `clears` passes
-    /// `Duration::from_nanos(0)` to the calculator in place of
-    /// `coordination` — the second assertion fails, the crossing clearing
-    /// whatever the wire measured.
+    /// Mutation (run, failed here, restored): `clears` prices the move over
+    /// `Duration::from_nanos(0)` in place of `coordination` — the second
+    /// assertion fails, the crossing clearing whatever the wire measured.
     #[test]
     fn a_peer_crossing_clearing_at_zero_latency_is_declined_once_the_measured_round_trip_is_priced()
     {
         let d = |s: &str| Decimal::parse(s).expect("a literal");
-        let (buy, sell) = (d("100"), d("100.055"));
+        let (buy, sell) = (d("100"), d("100.053"));
         assert!(
             clears(buy, sell, Duration::from_nanos(0)),
             "premise: the crossing clears with no coordination latency"
