@@ -115,6 +115,17 @@ resource "google_compute_interconnect_attachment" "partner" {
 
   description = each.value.description
   labels      = var.labels
+
+  lifecycle {
+    # R12-GCP-10011: an attachment and its HA VPN fallback are planned
+    # together or not at all. A partner circuit is one metro's fibre; when it
+    # goes, a region with no encrypted fallback loses its private path to
+    # every provider at once, and the plan that created it said nothing.
+    precondition {
+      condition     = var.enable_ha_vpn && contains(keys(var.ha_vpn_gateways), each.value.region)
+      error_message = "An Interconnect attachment needs an HA VPN fallback in its region: set enable_ha_vpn and give ha_vpn_gateways an entry for ${each.value.region}, with the peer's addresses."
+    }
+  }
 }
 
 # --- Private Service Connect for Google APIs --------------------------------
@@ -200,6 +211,27 @@ resource "google_compute_ha_vpn_gateway" "fallback" {
   labels      = var.labels
 }
 
+# The far end of each fallback: the colocated equipment's public interfaces.
+# Without it a tunnel names no peer and never comes up, which is a fallback in
+# the plan and none on the wire.
+resource "google_compute_external_vpn_gateway" "peer" {
+  for_each = local.vpn_gateways_needed
+
+  project         = var.project_id
+  name            = "${local.prefix}-vpn-peer-${each.key}"
+  redundancy_type = length(each.value.peer_ip_addresses) == 1 ? "SINGLE_IP_INTERNALLY_REDUNDANT" : "TWO_IPS_REDUNDANCY"
+  description     = "The colocated peer HA VPN in ${each.key} terminates on."
+  labels          = var.labels
+
+  dynamic "interface" {
+    for_each = each.value.peer_ip_addresses
+    content {
+      id         = interface.key
+      ip_address = interface.value
+    }
+  }
+}
+
 # Two tunnels per gateway for redundancy, each with its own external IP.
 resource "google_compute_vpn_tunnel" "fallback" {
   for_each = merge([
@@ -214,9 +246,12 @@ resource "google_compute_vpn_tunnel" "fallback" {
   region  = each.value.region
 
   vpn_gateway           = google_compute_ha_vpn_gateway.fallback[each.value.region].id
-  peer_external_gateway = null
-  shared_secret         = each.value.gw.preshared_key
-  router                = google_compute_router.interconnect[each.value.region].id
+  peer_external_gateway = google_compute_external_vpn_gateway.peer[each.value.region].id
+  # With one peer address both tunnels land on interface 0; with two, each
+  # tunnel has its own.
+  peer_external_gateway_interface = each.value.index % length(each.value.gw.peer_ip_addresses)
+  shared_secret                   = each.value.gw.preshared_key
+  router                          = google_compute_router.interconnect[each.value.region].id
 
   vpn_gateway_interface = each.value.index
 }
