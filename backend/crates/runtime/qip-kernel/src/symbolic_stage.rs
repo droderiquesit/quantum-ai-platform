@@ -54,7 +54,7 @@ use serde::{Deserialize, Serialize};
 
 /// The rule pack's name and version, cited by every verdict.
 pub const RULE_PACK: &str = "reason/advisory-eligibility";
-pub const RULE_PACK_VERSION: u32 = 2;
+pub const RULE_PACK_VERSION: u32 = 3;
 
 /// The hypothesis lifecycle's name and version.
 pub const HYPOTHESIS_LIFECYCLE: &str = "reason/hypothesis";
@@ -127,6 +127,16 @@ pub struct SymbolicInput {
     /// (R12-REASON-3057, accounting): negative means the cheapest trade the
     /// instrument allows would drive the book's cash negative.
     pub cash_headroom: Option<i64>,
+    /// Whole days between the hypothesis's deadline (`formed_at + horizon`)
+    /// and the expiry of the contract the subject is (R12-REASON-3057,
+    /// contracts): read from the derivative extension's `expiry` for a
+    /// future or an option, floored, so an expiry an hour before the
+    /// deadline reads as minus one. Negative means the contract stops
+    /// existing before the claim can resolve, so no position in it could be
+    /// held to the horizon. `None` for a subject that is not a dated
+    /// contract — an equity has no expiry to fall short of — and the rule
+    /// that needs it does not fire.
+    pub contract_expiry_margin_days: Option<i64>,
 }
 
 /// The ontology version this build seeds. A recorded typing names it, so a
@@ -522,6 +532,11 @@ pub fn rule_pack() -> RulePack {
                     // support; a readable negative one withholds eligibility.
                     Cond::Not(Box::new(cmp("lot_headroom", Op::Lt, Value::Int(0)))),
                     Cond::Not(Box::new(cmp("cash_headroom", Op::Lt, Value::Int(0)))),
+                    // Contracts (REASON-3057, v3): a dated contract that
+                    // expires before the claim's horizon cannot carry the
+                    // position to the horizon. Same "not below zero" shape,
+                    // so an undated subject withholds nothing.
+                    Cond::Not(Box::new(cmp("expiry_margin_days", Op::Lt, Value::Int(0)))),
                 ]),
                 "eligible",
                 Value::Bool(true),
@@ -557,6 +572,12 @@ pub fn rule_pack() -> RulePack {
                 Value::Bool(true),
             ),
             rule(
+                "r70-contract-expires-before-horizon",
+                cmp("expiry_margin_days", Op::Lt, Value::Int(0)),
+                "contract_expires_before_horizon",
+                Value::Bool(true),
+            ),
+            rule(
                 "r50-needs-corroboration",
                 Cond::And(vec![
                     cmp("thin_evidence", Op::Eq, Value::Bool(true)),
@@ -586,6 +607,13 @@ pub fn rule_pack() -> RulePack {
                 forbidden: Cond::And(vec![
                     cmp("eligible", Op::Eq, Value::Bool(true)),
                     cmp("cash_headroom", Op::Lt, Value::Int(0)),
+                ]),
+            },
+            Invariant {
+                id: "i40-no-eligibility-past-contract-expiry".into(),
+                forbidden: Cond::And(vec![
+                    cmp("eligible", Op::Eq, Value::Bool(true)),
+                    cmp("expiry_margin_days", Op::Lt, Value::Int(0)),
                 ]),
             },
         ],
@@ -643,6 +671,7 @@ fn rule_inputs(input: &SymbolicInput) -> Result<Vec<(String, Value)>> {
     for (name, headroom) in [
         ("lot_headroom", input.lot_headroom),
         ("cash_headroom", input.cash_headroom),
+        ("expiry_margin_days", input.contract_expiry_margin_days),
     ] {
         if let Some(units) = headroom {
             inputs.push((name.into(), Value::Int(units)));
@@ -1190,6 +1219,98 @@ mod tests {
             subject_class: Some("equity".into()),
             lot_headroom: Some(5_000),
             cash_headroom: Some(900_000),
+            contract_expiry_margin_days: None,
+        }
+    }
+
+    /// REASON-3057, contracts: a hypothesis on a dated contract that expires
+    /// before the claim's horizon is ruled against by the pack — the
+    /// position could not be carried to the deadline — and the journaled
+    /// record replays to the same verdict; a contract that outlives the
+    /// horizon, or one expiring on the deadline's own day, is eligible, as
+    /// is a subject with no expiry at all. Mutations, both run: drop the
+    /// `expiry_margin_days` condition from `r10-eligible` — the expiring
+    /// case derives `eligible` and the invariant `i40` refuses the pack, so
+    /// `derived()` is `None` and the expect on it fails; drop `i40` as well
+    /// — the expiring case is eligible and the `assert_ne!` fails. Each was
+    /// restored byte for byte.
+    #[test]
+    fn a_hypothesis_whose_contract_expires_before_its_horizon_is_ruled_against_and_replays() {
+        let eligible = |d: &SymbolicDerivation| {
+            d.rules
+                .verdict
+                .derived()
+                .and_then(|v| v.facts.get("eligible"))
+                == Some(&Value::Bool(true))
+        };
+        // Premise: the same hypothesis on a contract with a month to run
+        // is eligible, and the margin was read into the pack's inputs.
+        let healthy = derive(
+            SymbolicInput {
+                contract_expiry_margin_days: Some(30),
+                ..input()
+            },
+            &CausalGraph::default(),
+            at(20),
+        );
+        assert!(eligible(&healthy), "{:?}", healthy.rules.verdict);
+        assert!(
+            healthy
+                .rules
+                .inputs
+                .iter()
+                .any(|(name, value)| name == "expiry_margin_days" && *value == Value::Int(30)),
+            "the margin did not reach the pack: {:?}",
+            healthy.rules.inputs
+        );
+
+        let expiring = derive(
+            SymbolicInput {
+                contract_expiry_margin_days: Some(-1),
+                ..input()
+            },
+            &CausalGraph::default(),
+            at(20),
+        );
+        let verdict = expiring
+            .rules
+            .verdict
+            .derived()
+            .expect("the pack evaluated");
+        assert_ne!(verdict.facts.get("eligible"), Some(&Value::Bool(true)));
+        assert_eq!(
+            verdict.facts.get("contract_expires_before_horizon"),
+            Some(&Value::Bool(true))
+        );
+        assert!(
+            verdict
+                .trace
+                .iter()
+                .any(|step| step.rule == "r70-contract-expires-before-horizon"),
+            "{:?}",
+            verdict.trace
+        );
+        assert!(expiring.rules.verified);
+        assert!(!expiring.rules.agrees_with_review);
+        assert!(
+            matches!(expiring.acting, Step::Derived(Answer::Unsatisfiable { .. })),
+            "{:?}",
+            expiring.acting
+        );
+        verify(&expiring, &CausalGraph::default()).expect("the record replays");
+
+        // On the deadline's day the contract still exists: eligible. And an
+        // undated subject withholds nothing.
+        for margin in [Some(0), None] {
+            let d = derive(
+                SymbolicInput {
+                    contract_expiry_margin_days: margin,
+                    ..input()
+                },
+                &CausalGraph::default(),
+                at(20),
+            );
+            assert!(eligible(&d), "margin {margin:?}: {:?}", d.rules.verdict);
         }
     }
 
@@ -1247,6 +1368,7 @@ mod tests {
             SymbolicInput {
                 lot_headroom: None,
                 cash_headroom: None,
+                contract_expiry_margin_days: None,
                 ..input()
             },
             &CausalGraph::default(),

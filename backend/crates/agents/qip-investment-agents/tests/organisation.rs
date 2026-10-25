@@ -2420,3 +2420,215 @@ fn removing_the_risk_control_drops_forecast_stress_and_recommendation_from_cover
     }
     Ok(())
 }
+
+// --- the backlog (R12-AGENCY-10063) ------------------------------------------
+
+/// The standard agents with the macro analyst's manifest reviewed `age` ago
+/// instead of now, so the host refuses it once `age` passes the review
+/// interval; or with the macro analyst absent.
+fn agents_with_macro_analyst(
+    desk: Arc<Desk>,
+    macro_analyst: Option<Timestamp>,
+) -> Vec<Arc<dyn qip_agents::runtime::Agent>> {
+    let mut agents: Vec<Arc<dyn qip_agents::runtime::Agent>> =
+        qip_investment_agents::chief::standard_agents(
+            desk.clone(),
+            now(),
+            vec!["web-traffic".to_string()],
+            false,
+        )
+        .into_iter()
+        .filter(|agent| agent.manifest().id != ids::MACRO)
+        .collect();
+    if let Some(reviewed_at) = macro_analyst {
+        agents.insert(
+            1,
+            Arc::new(qip_investment_agents::analysts::MacroAnalyst::new(
+                manifests::macro_analyst(reviewed_at),
+                desk,
+            )),
+        );
+    }
+    agents
+}
+
+fn organisation_of(agents: Vec<Arc<dyn qip_agents::runtime::Agent>>) -> Result<Organisation> {
+    Organisation::new(
+        manifests::roster(now()),
+        agents,
+        AgentHost::new(42).with_language_model(Arc::new(DeterministicModel::new())),
+        now(),
+    )
+}
+
+/// What a dispatch said, less the agent under test: who found what in which
+/// direction, which scopes that covers, who deferred, who failed.
+type DispatchShape = (
+    Vec<(String, Direction, FindingStatus)>,
+    BTreeSet<Scope>,
+    Vec<String>,
+    Vec<String>,
+);
+
+fn shape(report: &qip_investment_agents::OrganisationReport, except: &str) -> DispatchShape {
+    (
+        report
+            .findings
+            .iter()
+            .filter(|f| f.agent_id != except)
+            .map(|f| (f.agent_id.clone(), f.direction, f.status))
+            .collect(),
+        report.covered_scopes(),
+        report
+            .deferred
+            .iter()
+            .filter(|id| id.as_str() != except)
+            .cloned()
+            .collect(),
+        report
+            .failed
+            .iter()
+            .filter(|id| id.as_str() != except)
+            .cloned()
+            .collect(),
+    )
+}
+
+/// R12-AGENCY-10063: an agent the runtime cannot run degrades to the
+/// organisation's bounded backlog, and the dispatch is otherwise identical
+/// to one in which that agent does not exist — no other agent fails, no
+/// other finding changes direction, no scope is lost beyond the agent's own.
+/// Before this the refused run was a `failed` line and nothing else: the
+/// work was dropped, and a reader could not tell a dropped run from a kept
+/// one. The backlog is bounded: a run deferred past `max_attempts` is
+/// dropped and reported, a backlog at capacity refuses rather than grows,
+/// and the dispatch goes on either way.
+///
+/// Mutation: delete the `self.backlog.defer(..)` arm for `RunStatus::Refused`
+/// in `Organisation::dispatch` (leave `failed.push`) — the backlog stays
+/// empty and the first backlog assertion fails. Verified and restored.
+#[test]
+fn a_panel_agent_that_cannot_run_is_deferred_and_the_findings_are_identical_to_its_absence()
+-> Result<()> {
+    let desk = populated_desk();
+    let expired = now().saturating_sub(Duration::from_days(200));
+    let mut refused = organisation_of(agents_with_macro_analyst(desk.clone(), Some(expired)))?;
+    let mut absent = organisation_of(agents_with_macro_analyst(desk.clone(), None))?;
+    // Premise: the macro analyst is in the first organisation, not the
+    // second, and on a fresh manifest it would run and find something.
+    assert_eq!(refused.len(), absent.len() + 1);
+    let mut fresh = organisation_of(agents_with_macro_analyst(desk, Some(now())))?;
+    let with_fresh = fresh.dispatch(&brief(), now(), &lineage());
+    assert!(
+        with_fresh.findings.iter().any(|f| f.agent_id == ids::MACRO),
+        "premise: a fresh macro analyst finds something on this brief"
+    );
+    assert!(
+        fresh.backlog().is_empty(),
+        "a fresh roster deferred something"
+    );
+
+    let report = refused.dispatch(&brief(), now(), &lineage());
+    let run = report
+        .runs
+        .iter()
+        .find(|run| run.agent_id == ids::MACRO)
+        .expect("the macro analyst was dispatched");
+    assert!(
+        matches!(run.status, RunStatus::Refused { .. }),
+        "the expired manifest was not refused: {:?}",
+        run.status
+    );
+    // Degraded to the backlog, and reported as such.
+    assert_eq!(report.backlogged, vec![ids::MACRO.to_string()]);
+    assert!(
+        report.backlog_refused.is_empty(),
+        "{:?}",
+        report.backlog_refused
+    );
+    let pending = refused
+        .backlog()
+        .pending(ids::MACRO)
+        .expect("the refused run is on the backlog");
+    assert_eq!(pending.attempts, 1);
+    assert_eq!(pending.brief.question, brief().question);
+    assert!(
+        pending.reason.contains("expired") || pending.reason.contains("review"),
+        "{}",
+        pending.reason
+    );
+    assert_eq!(refused.backlog().len(), 1);
+
+    // Identical to the agent's absence.
+    let without = absent.dispatch(&brief(), now(), &lineage());
+    assert_eq!(
+        report.failed,
+        vec![ids::MACRO.to_string()],
+        "another agent failed"
+    );
+    assert_eq!(shape(&report, ids::MACRO), shape(&without, ids::MACRO));
+    assert!(absent.backlog().is_empty());
+
+    // Bounded. The same question again moves the attempt count, not the
+    // length; past the bound the run is dropped and reported.
+    let max = refused.backlog().max_attempts();
+    for attempt in 2..=max {
+        let again = refused.dispatch(&brief(), now(), &lineage());
+        assert_eq!(again.backlogged, vec![ids::MACRO.to_string()]);
+        assert_eq!(refused.backlog().len(), 1, "a repeat grew the backlog");
+        assert_eq!(
+            refused
+                .backlog()
+                .pending(ids::MACRO)
+                .map(|run| run.attempts),
+            Some(attempt)
+        );
+    }
+    let dropped = refused.dispatch(&brief(), now(), &lineage());
+    assert!(dropped.backlogged.is_empty());
+    assert_eq!(
+        dropped.backlog_refused.len(),
+        1,
+        "{:?}",
+        dropped.backlog_refused
+    );
+    assert!(dropped.backlog_refused[0].contains("dropped from the backlog"));
+    assert!(refused.backlog().pending(ids::MACRO).is_none());
+    assert_eq!(refused.backlog().refused(), 1);
+    assert_eq!(
+        dropped.failed,
+        vec![ids::MACRO.to_string()],
+        "the drop stopped the dispatch"
+    );
+
+    // At capacity, a new question is refused rather than queued.
+    let expired_again = now().saturating_sub(Duration::from_days(200));
+    let mut tiny = organisation_of(agents_with_macro_analyst(
+        populated_desk(),
+        Some(expired_again),
+    ))?
+    .with_backlog(qip_agents::runtime::AgentBacklog::new(1)?);
+    let first = tiny.dispatch(&brief(), now(), &lineage());
+    assert_eq!(first.backlogged, vec![ids::MACRO.to_string()]);
+    let other = AgentBrief::new(
+        "is ACME mispriced given the rates path",
+        now(),
+        Duration::from_days(30),
+    )
+    .about_objects(vec![object("ACME")]);
+    let second = tiny.dispatch(&other, now(), &lineage());
+    assert!(second.backlogged.is_empty());
+    assert_eq!(second.backlog_refused.len(), 1);
+    assert!(
+        second.backlog_refused[0].contains("its capacity"),
+        "{}",
+        second.backlog_refused[0]
+    );
+    assert_eq!(tiny.backlog().len(), 1);
+    assert_eq!(
+        second.failed,
+        vec![ids::MACRO.to_string()],
+        "a refused deferral stopped the rest of the organisation"
+    );
+    Ok(())
+}
