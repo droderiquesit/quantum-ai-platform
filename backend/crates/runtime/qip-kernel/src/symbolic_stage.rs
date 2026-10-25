@@ -35,6 +35,22 @@
 //! [`Step::Refused`] with the reasoner's own sentence; the other parts still
 //! run. A derivation that silently dropped the part that refused would read
 //! as one where that reasoner agreed.
+//!
+//! # A contradiction is not a refusal, and it is not dissent (ADR 0212)
+//!
+//! Three things look alike on a dashboard and are kept apart here. *Dissent*
+//! is the panel disagreeing: a contested thesis is held small and scored
+//! (ADR 0150 decision 14) and nothing in this module stops it. A *refused
+//! part* is a reasoner rejecting a malformed input: a finding about the
+//! evidence, recorded in `violated_assumptions` and left to ADR 0150
+//! decision 13. A *symbolic contradiction* is the derivation's own parts
+//! being unable to hold together — the rule pack deriving a fact against one
+//! it already established or reaching a state its own invariant forbids, a
+//! verdict that does not reproduce, or the pack finding acting eligible while
+//! the acting constraints are unsatisfiable. [`Feasibility`] marks that on
+//! the record with what contradicted what and the revision tasks the pack's
+//! own contradiction search offers as alternates; the kernel reads
+//! [`SymbolicDerivation::infeasibility`] and forms no proposal on it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,7 +62,9 @@ use qip_events::{EventBody, Topic};
 use qip_reasoning_engine::constraint::{Answer, Constraint, Form, Problem, Variable};
 use qip_reasoning_engine::lifecycle::{Admissibility, Lifecycle};
 use qip_reasoning_engine::network::{Network, Node};
-use qip_reasoning_engine::rules::{Cond, Invariant, Op, Rule, RulePack, Value, Verdict};
+use qip_reasoning_engine::rules::{
+    Cond, Invariant, Op, RevisionTask, Rule, RulePack, Value, Verdict,
+};
 use qip_reasoning_engine::temporal::{self, Order, Timeline};
 use qip_world_model::causal::CausalGraph;
 use qip_world_model::inference::{Abduction, CausalPath, Surprise};
@@ -319,6 +337,32 @@ pub struct CounterfactualExplanation {
     pub paths: usize,
 }
 
+/// Whether a derivation's parts can all be true together (ADR 0212,
+/// R12-RES-7106).
+///
+/// `Infeasible` is a property of the record, not of the market: the platform
+/// reasoned to a conclusion its own steps cannot support, so nothing that
+/// moves money may rest on it. The trace that shows why is the rest of the
+/// record, kept whole; this enum only says which parts collided.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Feasibility {
+    /// No part contradicts another.
+    Feasible,
+    /// The derivation contradicts itself.
+    Infeasible {
+        /// What contradicted what, in the fixed order [`contradictions`]
+        /// produces. Never empty.
+        contradictions: Vec<String>,
+        /// The alternates the reasoning engine offers: the revision tasks
+        /// [`RulePack::contradictions`] raises on the facts the pack was
+        /// given, each naming the rule or invariant on either side. Advisory
+        /// (ADR 0125): a task changes no rule and nothing reads it to decide;
+        /// it is what a reviewer revising the pack starts from. A search the
+        /// engine refused is kept as its refusal, not as an empty list.
+        alternates: Step<Vec<RevisionTask>>,
+    },
+}
+
 /// One hypothesis's symbolic derivation, as the log keeps it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SymbolicDerivation {
@@ -356,6 +400,13 @@ pub struct SymbolicDerivation {
     /// `None` only on a record written before typing existed.
     #[serde(default)]
     pub subject_type: Option<SubjectTyping>,
+    /// Whether the parts above hold together (ADR 0212), computed from them
+    /// by [`feasibility_of`] so a replay recomputes it rather than trusting
+    /// it. `None` only on a record written before the mark existed, which
+    /// [`SymbolicDerivation::infeasibility`] reads as not established and so
+    /// not acted on.
+    #[serde(default)]
+    pub feasibility: Option<Feasibility>,
 }
 
 impl EventBody for SymbolicDerivation {
@@ -423,6 +474,32 @@ impl SymbolicDerivation {
         })
     }
 
+    /// ADR 0212: why no money may move on this conclusion, or `None` when
+    /// its parts hold together.
+    ///
+    /// Unlike [`Self::veto`] this does not ask whether review approved: a
+    /// conclusion that contradicts itself is infeasible whatever any reviewer
+    /// said of it, and the kernel forms no proposal on it either way. Fails
+    /// closed on a record with no mark at all — a derivation whose
+    /// feasibility was never established is not one money may rest on.
+    /// Dissent never reaches here: a contested thesis is eligible or not by
+    /// the pack's ordinary rules, and only a collision between parts is a
+    /// contradiction (ADR 0150 decision 14 stands).
+    pub fn infeasibility(&self) -> Option<String> {
+        match &self.feasibility {
+            Some(Feasibility::Feasible) => None,
+            Some(Feasibility::Infeasible { contradictions, .. }) => Some(format!(
+                "the symbolic derivation contradicts itself ({})",
+                contradictions.join("; ")
+            )),
+            None => Some(
+                "the symbolic derivation carries no feasibility mark, so whether its parts hold \
+                 together was never established"
+                    .to_string(),
+            ),
+        }
+    }
+
     /// The derivation as one clause for the REASON stage's detail line.
     pub fn detail(&self) -> String {
         let eligibility = match &self.rules.verdict {
@@ -477,9 +554,15 @@ impl SymbolicDerivation {
             Some(Step::Refused(_)) => ", subject untyped".to_string(),
             None => String::new(),
         };
+        let feasibility = match &self.feasibility {
+            Some(Feasibility::Infeasible { contradictions, .. }) => {
+                format!(", infeasible ({} contradiction(s))", contradictions.len())
+            }
+            Some(Feasibility::Feasible) | None => String::new(),
+        };
         format!(
             "; symbolic: rules {eligibility}{review}, lifecycle {lifecycle}, timeline {temporal}, \
-             P(claim) {posterior}, acting {acting}, abduction {abduction}{typed}"
+             P(claim) {posterior}, acting {acting}, abduction {abduction}{typed}{feasibility}"
         )
     }
 }
@@ -651,8 +734,7 @@ fn rule_inputs(input: &SymbolicInput) -> Result<Vec<(String, Value)>> {
     Ok(inputs)
 }
 
-fn rules(input: &SymbolicInput) -> RuleDerivation {
-    let pack = rule_pack();
+fn rules(pack: &RulePack, input: &SymbolicInput) -> RuleDerivation {
     let inputs = match rule_inputs(input) {
         Ok(inputs) => inputs,
         Err(error) => {
@@ -812,6 +894,76 @@ pub fn violated_assumptions(
     out
 }
 
+/// The symbolic contradictions among a derivation's parts (ADR 0212), in a
+/// fixed order: the rule pack's, then the acting problem's.
+///
+/// Read off the record alone, so [`verify`] recomputes the same list. What
+/// counts, and what deliberately does not:
+///
+/// - The pack refused facts it was actually given. [`rule_inputs`] refuses
+///   only a malformed confidence and then records no facts, so a refused
+///   verdict *with* facts is the pack's own evaluation colliding — a rule
+///   deriving a fact against an established one, or a step reaching a state
+///   an invariant forbids. A refused verdict without facts is a malformed
+///   input, ADR 0150 decision 13's refused part, and is not listed here.
+/// - A verdict the pack derived and could not re-derive.
+/// - The pack finding acting eligible while the acting constraints are
+///   unsatisfiable: the two parts answer "may the platform act" both ways.
+///   An unsatisfiable acting problem on an *ineligible* verdict is the two
+///   parts agreeing and is not a contradiction — that is how a contested or
+///   low-confidence thesis reads, and listing it would block dissent.
+///
+/// A refused timeline link is not listed either: it is a finding about the
+/// evidence, which ADR 0150 decision 13 narrows rather than blocks.
+pub fn contradictions(rules: &RuleDerivation, acting: &Step<Answer>) -> Vec<String> {
+    let mut out = Vec::new();
+    match &rules.verdict {
+        Step::Refused(why) if !rules.inputs.is_empty() => {
+            out.push(format!(
+                "rules: the pack refused the facts it was given: {why}"
+            ));
+        }
+        Step::Derived(_) if !rules.verified => {
+            out.push("rules: the verdict does not reproduce on re-evaluation".to_string());
+        }
+        _ => {}
+    }
+    let eligible = rules
+        .verdict
+        .derived()
+        .is_some_and(|v| v.facts.get("eligible") == Some(&Value::Bool(true)));
+    if eligible && let Step::Derived(Answer::Unsatisfiable { conflict }) = acting {
+        out.push(format!(
+            "acting: the pack finds acting eligible and the constraints {} make it unsatisfiable",
+            conflict.join("+")
+        ));
+    }
+    out
+}
+
+/// The feasibility mark for a derivation's parts, under `pack`: feasible
+/// when [`contradictions`] finds nothing, and otherwise infeasible with the
+/// pack's own revision search over the facts it was given as the alternates.
+///
+/// The search cites the derivation's own idempotency key as its evidence,
+/// because the record is what a reviewer reads the task against.
+pub fn feasibility_of(
+    pack: &RulePack,
+    hypothesis_id: &str,
+    rules: &RuleDerivation,
+    acting: &Step<Answer>,
+) -> Feasibility {
+    let contradictions = contradictions(rules, acting);
+    if contradictions.is_empty() {
+        return Feasibility::Feasible;
+    }
+    let evidence = [format!("{IDEMPOTENCY_PREFIX}{hypothesis_id}")];
+    Feasibility::Infeasible {
+        contradictions,
+        alternates: Step::of(pack.contradictions(&rules.inputs, &evidence)),
+    }
+}
+
 /// Normalised entropy of a posterior distribution: 0 when one state holds
 /// all the mass, 1 when it is spread evenly. `None` for a refused posterior,
 /// or one with fewer than two states, over which spread is undefined.
@@ -890,7 +1042,23 @@ fn acting(eligible: bool, halted: bool) -> Result<Answer> {
 
 /// Run every reasoner over one hypothesis and return the record.
 pub fn derive(input: SymbolicInput, causal: &CausalGraph, now: Timestamp) -> SymbolicDerivation {
-    let rules = rules(&input);
+    derive_under(&rule_pack(), input, causal, now)
+}
+
+/// [`derive`] with the rule pack named rather than assumed.
+///
+/// The kernel passes the pack it holds, which is [`rule_pack`]; the seam
+/// exists so a pack revision whose rules collide can be driven through the
+/// default cycle and shown to fail closed (ADR 0212). [`verify`] still
+/// re-derives against this build's [`rule_pack`], so a record written under
+/// any other pack does not replay as a proof.
+pub fn derive_under(
+    pack: &RulePack,
+    input: SymbolicInput,
+    causal: &CausalGraph,
+    now: Timestamp,
+) -> SymbolicDerivation {
+    let rules = rules(pack, &input);
     let fact = |name: &str| {
         rules
             .verdict
@@ -965,6 +1133,7 @@ pub fn derive(input: SymbolicInput, causal: &CausalGraph, now: Timestamp) -> Sym
     };
     let violated_assumptions = violated_assumptions(&rules, &temporal, &acting);
     let uncertainty = uncertainty_of(&posterior);
+    let feasibility = feasibility_of(pack, &input.hypothesis_id, &rules, &acting);
     SymbolicDerivation {
         cycle: input.cycle,
         hypothesis_id: input.hypothesis_id,
@@ -981,6 +1150,7 @@ pub fn derive(input: SymbolicInput, causal: &CausalGraph, now: Timestamp) -> Sym
         violated_assumptions,
         uncertainty,
         subject_type: Some(subject_type),
+        feasibility: Some(feasibility),
     }
 }
 
@@ -1037,7 +1207,9 @@ pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<SymbolicDeriva
 ///   re-estimation appends evidence to a live edge and never removes it.
 ///
 /// - the violated assumptions and the uncertainty, recomputed from the
-///   parts above (R12-REASON-3062).
+///   parts above (R12-REASON-3062);
+/// - the feasibility mark, recomputed from the rule and acting parts under
+///   this build's pack (ADR 0212).
 ///
 /// The posterior and acting checks need the rule facts; a record whose rule
 /// inputs were refused (a confidence outside `[0, 1]`) carries none, and its
@@ -1116,6 +1288,15 @@ pub fn verify(derivation: &SymbolicDerivation, causal: &CausalGraph) -> Result<(
         return Err(Error::invalid(format!(
             "derivation for {id}: the refusals its parts record do not match its journaled \
              violated assumptions; the violated-assumptions list is not reproducible"
+        )));
+    }
+    if let Some(recorded) = &derivation.feasibility
+        && feasibility_of(&pack, id, &derivation.rules, &derivation.acting) != *recorded
+    {
+        return Err(Error::invalid(format!(
+            "derivation for {id}: the contradictions its parts hold, or the pack's revision \
+             search over its facts, do not match its journaled feasibility; the feasibility \
+             mark is not reproducible"
         )));
     }
     if uncertainty_of(&derivation.posterior) != derivation.uncertainty {
