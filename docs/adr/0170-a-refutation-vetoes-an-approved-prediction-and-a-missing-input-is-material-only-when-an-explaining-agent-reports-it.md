@@ -10,7 +10,7 @@
 - **Implements**: ADR 0125 decision 2 for the verifier society, which that
   ADR already lists among the advisory stages that may veto a hypothesis.
 - **Rows**: R12-REASON-3108, R12-REASON-9032.
-- **Implementation**: pending in lane L2-INTEL at the time of acceptance.
+- **Implementation**: lane L2-INTEL, 2026-10-25, with Amendment 1 below.
 
 ## Context
 
@@ -54,6 +54,7 @@ proposals.
    attacks carries only the material missing inputs; the panel report keeps
    all of them, unchanged, for the record and for the controls that own them.
 3. Nothing else about the critics changes. The other seven attack as before.
+   (Superseded in part by Amendment 1, decision 4.)
 
 ## Consequences
 
@@ -81,3 +82,37 @@ proposals.
 A non-explaining agent whose missing input does bear on the explanation. If
 one appears, the remedy is to give that agent a research role for that input,
 not to widen the materiality rule.
+
+## Amendment 1 (2026-10-25): what building it decided
+
+Decided under the same delegation, in lane L2-INTEL, when the veto was
+built against the full `qip-kernel` suite.
+
+4. **A panel lean falsifies a claim only at the importance bar.** The
+   directional critics (bull and bear) refuted on the panel's *normalised*
+   lean, so one explaining analyst at conviction 0.19 opposing a claim read
+   as a lean of -1.00, even where the evidence weighed 0.49 to 0.15 for the
+   claim. Under the veto that stopped every private-market thesis in
+   `valuation_seam`. The opposing views' conviction must now sum to
+   `OPPOSING_CONVICTION_BAR` (0.6) before the lean alone refutes. 0.6 is the
+   kernel's `IMPORTANCE_CONFIDENCE` read the other way: a view not important
+   enough to be attacked is not strong enough to refute one that is. Below
+   the bar the critic argues from the evidence balance, as before. The
+   requirement's own unit case (an opposing panel at 0.9, and the bull case
+   at 0.6) still refutes.
+5. **Decision 2 covers the panel's views, not only its missing inputs.** The
+   dossier the society attacks carries only explaining agents' views. A risk
+   control's negative finding is about how the platform acts (ADR 0147), and
+   counted it read as a panel leaning against every bullish claim.
+6. **`quantum-optimization` is a Construction agent.** It chooses the solver
+   a construction runs on and states no view of any subject. It was filed as
+   Research, so its missing quantum backend counted as a variable every
+   explanation left out. This is the remedy "What would make this wrong"
+   names, applied in the other direction.
+
+**What the amendment costs.** A single weak contrary voice no longer refutes,
+so a thesis opposed by one analyst at low conviction is sized, not refused.
+It still meets the evidence balance and the other six critics. One
+`valuation_seam` fixture moved its compounding cycle to a fresh move, because
+on a stale plateau the society refuted it correctly. Its assertions are
+unchanged.

@@ -3274,9 +3274,9 @@ fn a_shadowed_pass_learns_its_simulated_effect_and_nothing_is_recommended_on_it(
 /// and no phrase rule fires; the same plan releasing it three times — the
 /// most one pass may — executes, so the gate is a rate and not a refusal of
 /// repetition as such.
-/// Mutation: in `guard::ActionGuard::preflight`, drop the
-/// `self.gate.step_failure(&faces)` push — the four-step pass executes and
-/// the first assertion fails.
+/// Mutation: in `guard::ActionGuard::preflight_observed`, drop the
+/// `check_step_conduct(&faces)` push — the four-step pass executes and the
+/// first assertion fails.
 #[test]
 fn a_pass_releasing_one_message_above_the_repetition_rate_is_withheld_before_any_adapter_call() {
     let policy = narrow();

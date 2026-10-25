@@ -12,9 +12,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use qip_agency::autonomy::Authority;
+use qip_agency::guard::{HealthDimension, HealthOutcome};
 use qip_agency::memory::Observed;
 use qip_agency::outbox::DRAFT_TOOL;
-use qip_agency::outbox::{OUTBOX_ORIGIN, drafts};
+use qip_agency::outbox::{OUTBOX_CHANNEL, OUTBOX_ORIGIN, drafts};
 use qip_contracts::ambient::Disposition;
 use qip_contracts::expansion::Identification;
 use qip_core::{Clock, Context, Duration, ManualClock, Timestamp};
@@ -29,7 +30,8 @@ use qip_deepbrain::status::NodeStatus;
 use qip_events::EventLog;
 use qip_financial::universe::Universe;
 use qip_kernel::{Platform, PlatformConfig};
-use qip_observability::Telemetry;
+use qip_observability::metrics::{labels, names};
+use qip_observability::{Snapshot, Telemetry};
 use qip_risk::limits::LimitSet;
 use qip_storage::{ChainArchive, MemoryKeyValueStore};
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,6 +61,9 @@ struct Ran {
     /// The platform's own event log, as event ids in order: what the
     /// decision loop recorded, independent of anything the agency did.
     platform_events: Vec<String>,
+    /// The platform's metrics before the node ran and after.
+    metrics_before: Snapshot,
+    metrics: Snapshot,
 }
 
 /// How to run the node for one test.
@@ -147,6 +152,7 @@ fn run(options: Run) -> Ran {
     }
     let mut rounds = Vec::new();
     let mut side_failures = Vec::new();
+    let metrics_before = platform.telemetry().metrics.snapshot();
     node::run_with(
         &mut platform,
         &archive,
@@ -200,6 +206,8 @@ fn run(options: Run) -> Ran {
             .events()
             .map(|e| e.event_id.as_str().to_string())
             .collect(),
+        metrics_before,
+        metrics: platform.telemetry().metrics.snapshot(),
     }
 }
 
@@ -331,6 +339,123 @@ fn a_full_outbox_defers_drafts_and_never_stops_the_node() {
         ran.rounds
     );
     assert!(ran.outbox_log_ok);
+}
+
+/// One channel-health series on the internal outbox channel.
+fn health(ran: &Ran, dimension: HealthDimension, outcome: HealthOutcome) -> u64 {
+    ran.metrics.counter(
+        names::AGENCY_CHANNEL_HEALTH,
+        &labels([
+            ("channel", OUTBOX_CHANNEL),
+            ("dimension", dimension.as_str()),
+            ("outcome", outcome.as_str()),
+        ]),
+    )
+}
+
+/// R12-OBS-7132: every channel-health dimension the requirement names —
+/// identity integrity, reach, provenance and disclosure, policy violations,
+/// coordination — is recorded for the internal outbox channel, on the deep
+/// brain's run loop, with the outcome the guard decided.
+///
+/// The guard decided all five on every draft and kept none of them: a
+/// refusal became one joined sentence on the cycle line and a pass became
+/// nothing, so a channel whose provenance had started failing read on any
+/// chart exactly like one that was healthy. The healthy run proves each
+/// dimension moved with `pass` and never `fail`; the full outbox proves the
+/// outcome is the one that happened rather than a constant, because reach
+/// fails there while the guard's four still pass.
+///
+/// Mutations: delete the provenance recording (the `"provenance"` arm of
+/// `HealthDimension::of_check`) — the provenance assertion fails at zero;
+/// note reach as `Pass` on a failed write — the full-outbox reach `fail`
+/// assertion fails.
+#[test]
+fn each_channel_health_dimension_is_recorded_for_the_internal_outbox_channel() {
+    let ran = run_node(1, true, EventLog::in_memory());
+    assert!(ran.side_failures.is_empty(), "{:?}", ran.side_failures);
+    for name in [names::AGENCY_CHANNEL_HEALTH, names::AGENCY_DRAFTS_APPENDED] {
+        assert_eq!(
+            ran.metrics_before.counter_total(name),
+            0,
+            "premise: nothing recorded `{name}` before the node ran"
+        );
+    }
+    let drafted: usize = ran.rounds.iter().map(|r| r.drafted).sum();
+    assert!(drafted > 0, "premise: the guard cleared drafts");
+    assert!(
+        ran.rounds
+            .iter()
+            .all(|r| r.withheld.is_empty() && r.deferred == 0 && r.abandoned == 0),
+        "premise: every draft the guard judged was cleared and written: {:?}",
+        ran.rounds
+    );
+    let drafted = u64::try_from(drafted).unwrap();
+    for dimension in HealthDimension::ALL {
+        assert_eq!(
+            health(&ran, dimension, HealthOutcome::Pass),
+            drafted,
+            "{} is recorded `pass` once per draft the guard cleared",
+            dimension.as_str()
+        );
+        assert_eq!(
+            health(&ran, dimension, HealthOutcome::Fail),
+            0,
+            "{} recorded a failure on a healthy run",
+            dimension.as_str()
+        );
+    }
+    assert_eq!(
+        ran.metrics.counter(
+            names::AGENCY_DRAFTS_APPENDED,
+            &labels([("channel", OUTBOX_CHANNEL)])
+        ),
+        drafted,
+        "every appended draft is counted"
+    );
+    assert_eq!(
+        u64::try_from(ran.outbox.len()).unwrap(),
+        drafted,
+        "and the outbox holds what the counter says"
+    );
+
+    // A full outbox: the guard clears every draft and the write fails.
+    let full = run_node(1, true, EventLog::in_memory().with_capacity(1).unwrap());
+    assert_eq!(full.outbox.len(), 1, "premise: room for exactly one draft");
+    let failed: usize = full.rounds.iter().map(|r| r.deferred + r.abandoned).sum();
+    assert!(failed > 0, "premise: a write failed: {:?}", full.rounds);
+    let failed = u64::try_from(failed).unwrap();
+    assert_eq!(
+        health(&full, HealthDimension::Reach, HealthOutcome::Pass),
+        1
+    );
+    assert_eq!(
+        health(&full, HealthDimension::Reach, HealthOutcome::Fail),
+        failed,
+        "every failed write is reach `fail`"
+    );
+    for dimension in [
+        HealthDimension::IdentityIntegrity,
+        HealthDimension::Provenance,
+        HealthDimension::Violations,
+        HealthDimension::Coordination,
+    ] {
+        assert_eq!(
+            health(&full, dimension, HealthOutcome::Pass),
+            1 + failed,
+            "{} passed on every draft that reached the adapter",
+            dimension.as_str()
+        );
+        assert_eq!(health(&full, dimension, HealthOutcome::Fail), 0);
+    }
+    assert_eq!(
+        full.metrics.counter(
+            names::AGENCY_DRAFTS_APPENDED,
+            &labels([("channel", OUTBOX_CHANNEL)])
+        ),
+        1,
+        "a held or abandoned draft is not counted appended"
+    );
 }
 
 /// Every stage of §24's loop, as the learning record spells them.

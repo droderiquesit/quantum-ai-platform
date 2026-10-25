@@ -4,7 +4,7 @@
 //! # The path, as built
 //!
 //! A hosted model is reached by exactly one route. The composition root
-//! (`qip-deepbrain`) builds the one hosted adapter, `qip-reasoning-engine`'s
+//! (`qip-deepbrain`) builds the one hosted adapter, `qip-language-providers`'
 //! `HuggingFaceModel` (ADR 0037), behind the `qip_ai::language::LanguageModel`
 //! port and hands it to the kernel. The kernel's REASON stage asks
 //! `qip-cost-router` to place the decision first — and the router's
@@ -72,7 +72,7 @@ const PROVIDER_MARKERS: [&str; 21] = [
 /// the list cannot become a record of permissions nobody uses.
 const DECLARED_PROVIDER_FILES: [(&str, &str); 3] = [
     (
-        "backend/crates/services/qip-reasoning-engine/src/providers/huggingface.rs",
+        "backend/crates/services/qip-language-providers/src/huggingface.rs",
         "the one hosted language-model adapter (ADR 0037): its upstream host and chat path",
     ),
     (
@@ -91,7 +91,7 @@ const DECLARED_PORT_IMPLEMENTATIONS: [&str; 2] = [
     // placeholder, the fallback chain and the reply-counting decorator the
     // deep brain's tally wraps a model in — none performs I/O.
     "backend/crates/libs/qip-ai/src/language.rs",
-    "backend/crates/services/qip-reasoning-engine/src/providers/huggingface.rs",
+    "backend/crates/services/qip-language-providers/src/huggingface.rs",
 ];
 
 /// The production files permitted to invoke a model.
@@ -227,7 +227,15 @@ fn a_model_is_invoked_only_through_the_agent_runtime() {
         let calls_plain = text
             .match_indices(".complete(")
             .any(|(at, needle)| !text[at + needle.len()..].starts_with(')'));
-        if calls_structured || calls_plain {
+        // The third entry point, and the fully-qualified forms of all three.
+        // An in-lane review on 2026-10-25 put `ctx.complete_over_untrusted(…)`
+        // in an agent and `LanguageModel::complete(model, …)` is the same call
+        // spelled as a path; this matcher saw neither.
+        let calls_untrusted = text.contains(".complete_over_untrusted(");
+        let calls_qualified = ["LanguageModel::complete", "LanguageModel>::complete"]
+            .iter()
+            .any(|path| text.contains(path));
+        if calls_structured || calls_plain || calls_untrusted || calls_qualified {
             invoking.insert(file.as_str());
         }
     }

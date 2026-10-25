@@ -65,6 +65,19 @@
 //! what is journaled. If the engine ever reports a step as executed this
 //! command refuses to print it.
 //!
+//! # What it records
+//!
+//! R12-OBS-7132: every channel-health dimension the guard judged in a pass —
+//! identity integrity, reach, provenance and disclosure, policy violations,
+//! coordination — per channel, as `qip_agency_channel_health_total
+//! {channel,dimension,outcome}` into the session's [`Metrics`] registry, and
+//! as one printed line each, so the operator reading the pass sees the same
+//! verdicts the series holds. They are the verdicts that decided the pass,
+//! carried out of the engine on [`Report::health`]; nothing here re-runs a
+//! check. `channel` is a channel the policy's tool registrations declare, or
+//! [`UNCONFIGURED_CHANNEL`] for a draft naming any other, so the label is
+//! bounded by the operator's file rather than by what a request writes.
+//!
 //! The exit code is the verdict, as for `registrations` and `replay`: zero
 //! when every pass cleared every gate, [`WITHHELD`] when any pass was
 //! declined or refused, and one when a document could not be read at all.
@@ -89,6 +102,7 @@ use qip_contracts::action::Method;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Decimal, SystemClock, Timestamp};
 use qip_events::EventLog;
+use qip_observability::metrics::{Metrics, labels, names};
 use qip_twin::futures::{FutureTree, TreeConfig, TwinState, WorldDriver};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -106,6 +120,14 @@ pub const POLICY_VARIABLE: &str = "QIP_AGENCY_POLICY_FILE";
 
 /// The variable naming the journal when `--journal` is absent.
 pub const JOURNAL_VARIABLE: &str = "QIP_AGENCY_JOURNAL";
+
+/// The `channel` label a channel-health verdict is filed under when the
+/// draft named a channel no tool in the policy declares. A request writes its
+/// drafts' channels, and a label taken from the request verbatim would be a
+/// series per string anybody can type; the registry refuses such a step
+/// anyway, but the guard has judged its draft by then, and that judgement is
+/// kept, under this literal.
+pub const UNCONFIGURED_CHANNEL: &str = "unconfigured";
 
 /// How many learned outcomes one invocation keeps in its working set. The
 /// durable record is the journal; this bounds what `recommend` could read.
@@ -373,6 +395,12 @@ pub struct Session {
     /// Post-release findings not yet journaled (R12-GOV-3030), bounded by
     /// the guard's own voice retention times the rule count.
     post_release: Vec<qip_agency::guard::PostReleaseFinding>,
+    /// Every channel the policy's tool registrations declare: the whole set
+    /// of values the channel-health `channel` label may take besides
+    /// [`UNCONFIGURED_CHANNEL`].
+    channels: BTreeSet<String>,
+    /// Where the channel-health verdicts are recorded (R12-OBS-7132).
+    metrics: Arc<Metrics>,
 }
 
 impl Session {
@@ -389,6 +417,12 @@ impl Session {
                  unregistered, so declare the tools the agency may use",
             ));
         }
+        let channels: BTreeSet<String> = policy
+            .guard
+            .tools
+            .iter()
+            .flat_map(|tool| tool.channels.iter().cloned())
+            .collect();
         let manifest = EvidenceManifest::new(policy.evidence)?;
         let holdings = HoldingsList::new(policy.holdings)?;
         let mut guard = ActionGuard::from_policy(policy.guard)?
@@ -449,7 +483,72 @@ impl Session {
             },
             next_pass: resumed.next_pass,
             post_release,
+            channels,
+            metrics: Arc::new(Metrics::new("qip-cli")),
         })
+    }
+
+    /// Record into `metrics` rather than the session's own registry, so a
+    /// caller that serves or inspects a registry hands the session that one.
+    pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    /// The registry the channel-health verdicts are recorded into.
+    pub fn metrics(&self) -> &Arc<Metrics> {
+        &self.metrics
+    }
+
+    /// The `channel` label for a verdict on `channel`: the policy's own
+    /// string when a tool declares it, [`UNCONFIGURED_CHANNEL`] otherwise.
+    fn channel_label<'a>(&'a self, channel: &str) -> &'a str {
+        self.channels
+            .get(channel)
+            .map_or(UNCONFIGURED_CHANNEL, String::as_str)
+    }
+
+    /// R12-OBS-7132: record each channel-health verdict the pass's act stage
+    /// decided, one count per channel, dimension and outcome, and return the
+    /// lines that tell the operator the same. Recorded where the report
+    /// arrives, before learning or journaling can stop the pass, because the
+    /// guard judged the drafts whether or not the pass is later refused.
+    fn record_channel_health(&self, report: &Report) -> Vec<String> {
+        let mut lines = Vec::new();
+        if report.health.is_empty() {
+            return lines;
+        }
+        self.metrics.describe(
+            names::AGENCY_CHANNEL_HEALTH,
+            "the action guard's verdict on each channel-health dimension of an agency pass, by \
+             channel, dimension and outcome",
+        );
+        for (channel, dimension, outcome) in report.health.verdicts() {
+            let label = self.channel_label(channel);
+            self.metrics.count(
+                names::AGENCY_CHANNEL_HEALTH,
+                labels([
+                    ("channel", label),
+                    ("dimension", dimension.as_str()),
+                    ("outcome", outcome.as_str()),
+                ]),
+            );
+            lines.push(if label == channel {
+                format!(
+                    "channel health: {label} {} {}",
+                    dimension.as_str(),
+                    outcome.as_str()
+                )
+            } else {
+                format!(
+                    "channel health: {label} {} {} (the draft names a channel no registered \
+                     tool declares)",
+                    dimension.as_str(),
+                    outcome.as_str()
+                )
+            });
+        }
+        lines
     }
 
     /// The post-release findings this session will file with its next pass.
@@ -614,6 +713,7 @@ impl Session {
             twin.as_ref().map(|t| t as &dyn ScenarioSource),
             &mut Unwired,
         )?;
+        let health = self.record_channel_health(&report);
         let learning = self.learn(number, &report, &goal_target)?;
         journal::record_pass(
             journal,
@@ -647,6 +747,7 @@ impl Session {
         })?;
         lineage.verify()?;
         let (mut lines, code) = render(number, &report, widening.as_ref(), &learning)?;
+        lines.extend(health);
         lines.push(format!(
             "lineage: pass {number} reads back as one connected chain (goal approval {}, plan \
              approval {}, execution {}, {} tool decision(s), {} voice(s) released)",

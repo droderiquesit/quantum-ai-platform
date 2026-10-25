@@ -25,13 +25,18 @@
   {
     "id": "R12-MODEL-4002",
     "status": "PARTIAL",
-    "current": "An acceptance suite proves every LanguageModel adapter under providers/ is constructed only in qip-deepbrain/src, that fastbrain/edge sources never name it, and that edge manifests do not link qip-reasoning-engine or qip-kernel.",
+    "current": "ADR 0138 implemented 2026-10-25: the hosted adapter (HuggingFaceModel, its config and token types) lives in services/qip-language-providers, which qip-deepbrain alone links. qip-reasoning-engine no longer holds it and no longer depends on qip-ai or qip-transport, so qip-kernel, qip-api, qip-fastbrain and qip-edge-node do not have the adapter in their link graph. A construction in any of them does not compile without adding the dependency, and that edge fails lane_placement.rs.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/language.rs:1-10 only root building the hosted adapter",
       "backend/crates/edge/qip-edge/Cargo.toml no qip-ai dependency",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178 fast lanes cannot depend on slower lanes"
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178 fast lanes cannot depend on slower lanes",
+      "backend/crates/services/qip-language-providers/src/huggingface.rs (moved from qip-reasoning-engine/src/providers)",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs::the_hosted_language_providers_are_linked_by_the_deep_brain_alone_and_reach_no_fast_lane",
+      "backend/crates/tests/qip-acceptance/tests/model_slow_lane_confinement.rs (construction site and edge manifests, repointed)",
+      "docs/architecture/lane-placement.md qip-language-providers lane 3",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::no_fast_reflex_or_decision_crate_reaches_the_hosted_language_providers_by_any_resolved_edge (cargo metadata graph: target tables, renames and build edges)"
     ],
-    "gap": "Decided by ADR 0138 (accepted 2026-10-18): The hosted language-model adapters move from qip-reasoning-engine/src/providers to services/qip-language-providers, linked by qip-deepbrain alone and pinned out of the fast lanes by lane_placement.rs. Code left: the crate move, the dependency edges, a lane_placement.rs closure test with its mutation, and the egress.rs and model_gateway_boundary.rs paths.",
+    "gap": "2026-10-25 (lane L2-INTEL): second in-lane skeptic REFUTED c7d8c332 on two counts. (1) model_gateway_boundary.rs's call matcher missed .complete_over_untrusted( and fully qualified LanguageModel::complete* calls; fixed and mutation-verified. (2) Still open: in the deep brain an agent may call the model through AgentRuntime (manifests grant CallLanguageModel), and an agent's finding sets a hypothesis's confidence, which DECIDE sizes. So model text could, in principle, reach a size through a finding's number, and no test drives a deep-brain cycle with an adversarial scripted model and shows sizes and orders unchanged. Today no agent makes a model call (grep shows calls only in qip-ai and the runtime), so nothing reaches a size on the default path; the remaining step is that behavioural test, mutation-verified, or a structural bar on a completion's text feeding a finding's direction or conviction.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -39,10 +44,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new acceptance test: hosted language adapter constructed only under apps/qip-deepbrain",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test lane_placement --test model_slow_lane_confinement --test model_gateway_boundary --test egress",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D14; gap before it: qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage. ADR lane 2026-10-18: gap re-graded against ADR 0138; gap before it: Delegable decision D14 (design-decisions-2026-10-18.json), ADR not yet written: LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs. Needs that ADR, then the code."
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D14; gap before it: qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage. ADR lane 2026-10-18: gap re-graded against ADR 0138; gap before it: Delegable decision D14 (design-decisions-2026-10-18.json), ADR not yet written: LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs. Needs that ADR, then the code. 2026-10-25 L2-INTEL: mutation: add qip-language-providers to qip-fastbrain's [dependencies]; the closure test fails at lane_placement.rs:662 ('the crates that link the hosted language providers changed'); manifest restored by cp+cmp. 2026-10-25 L2-INTEL: mutations on qip-fastbrain/Cargo.toml (build-dependency; target-specific dependency; target-specific renamed package) each fail the resolved-graph test at architecture.rs:4258; manifest and Cargo.lock restored by cp+cmp. 2026-10-25 L2-INTEL: matcher mutations: 'ctx.complete_over_untrusted(&request)' and 'LanguageModel::complete(model, &request, now)' appended to qip-investment-agents/src/chief.rs each fail a_model_is_invoked_only_through_the_agent_runtime at model_gateway_boundary.rs:243; restored by cp+cmp."
   },
   {
     "id": "R12-MODEL-4003",
@@ -436,7 +441,7 @@
       "backend/crates/libs/qip-ai/tests/regime_scope.rs a_model_validated_in_one_regime_is_refused_in_another",
       "backend/crates/apps/qip-deepbrain/src/learning.rs a_model_fitted_in_one_regime_is_listed_ineligible_in_another"
     ],
-    "gap": "The refusal is reported in the learning round and available at ModelRegistry::require_for_decision_in, but the decision-time admissions (qip_compliance ModelRiskRegister::admit via require_for_decision, the cost-router reputation filter) still call the regime-free decision_eligibility and carry no regime to pass. Nothing in a cell's pass reads validated_regimes.",
+    "gap": "The refusal is reported in the learning round and available at ModelRegistry::require_for_decision_in, but the decision-time admissions (qip_compliance ModelRiskRegister::admit via require_for_decision, the cost-router reputation filter) still call the regime-free decision_eligibility and carry no regime to pass. Nothing in a cell's pass reads validated_regimes. 2026-10-25 (lane L2-INTEL): narrower than stated. qip_compliance::ModelRiskRegister::admit has no production caller (only tests construct a ModelRiskRegister), and the kernel uses served models only to promote and to issue manifests, so no default-path decision consults a promoted model's output for the regime check to guard. The remaining step is where an output first drives a decision: a cell's inline model. The manifest entry would carry the card's validated_regimes, and the cell would refuse an inline model outside them. That needs a deployed node to be on a default path (execution_nodes = {}).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -506,7 +511,7 @@
       "backend/crates/edge/qip-edge/tests/model_release.rs",
       ".github/workflows/model-pack-publish.yml"
     ],
-    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: promote_model drafting a qip_contracts ModelPack with an additive lineage field, and a test that the draft's digest and lineage match the promoted member.",
+    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: promote_model drafting a qip_contracts ModelPack with an additive lineage field, and a test that the draft's digest and lineage match the promoted member. 2026-10-25 (lane L2-INTEL): not built, and not completable in code here. (1) The draft's calibration has no producer: LocalTrainer::fit sets TrainedTeacher.calibration to Calibration::default(), and no evaluation metric is a calibration in [0,1], so a drafted figure would be a guess (refuse rather than guess). Allowed universes have no source on the promotion record either. (2) Signing and attestation are the two-person KMS workflow (model-pack-publish.yml), which only a deploy exercises. Next step: a calibration producer in qip-training (e.g. a holdout reliability measure recorded on the card), then the ModelPack draft with an additive tagged lineage tail (the inline_model pattern, so signed bytes of existing packs do not move).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1961,16 +1966,21 @@
   {
     "id": "R12-CAPITAL-4088",
     "status": "PARTIAL",
-    "current": "Signed CapitalEnvelope carries gross, order and loss limits, venues, expiry and ExposureBounds (participation of visible depth, leverage on remaining equity); qip-edge-node requires the bounds and the cell refuses orders breaching liquidity or leverage before any intent.",
+    "current": "Every grant the centre issues (EnvelopeIssuer::issue, carried through ApprovalChain::grant's signed terms) now carries all five bounds: gross and order limits, liquidity and leverage (ExposureBounds), the loss limit, and since fe8185a7 a drawdown stop (DrawdownBounds, ADR 0126 decision 2) at the loss limit, inside the signed payload. The cell measures drawdown from its RealisedLedger's realised high-water mark and refuses under envelope_drawdown at both capital seams; qip-edge-node's assembled cell requires the stop as it requires exposure bounds; a decoded stop wider than the loss limit is refused at verification.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs:4876",
       "backend/crates/libs/qip-contracts/src/capital.rs:23-63",
       "backend/crates/libs/qip-contracts/src/capital.rs:435-462",
       "backend/crates/libs/qip-contracts/tests/authority_bounds.rs:85-123",
       "backend/crates/edge/qip-edge/tests/envelope_exposure.rs",
-      "backend/crates/libs/qip-contracts/src/capital.rs::ExposureBoundsFields"
+      "backend/crates/libs/qip-contracts/src/capital.rs::ExposureBoundsFields",
+      "backend/crates/libs/qip-contracts/src/capital.rs DrawdownBounds, CapitalEnvelope::with_drawdown/check_drawdown",
+      "backend/crates/libs/qip-contracts/tests/drawdown_bounds.rs",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs the_assembled_cell_refuses_envelopes_without_a_drawdown_stop",
+      "backend/crates/edge/qip-edge/tests/drawdown.rs a_strategy_that_gave_back_its_peak_by_the_drawdown_stop_is_refused_while_its_loss_limit_reads_no_loss, a_drawdown_stop_looser_than_the_loss_limit_is_refused_at_construction_and_at_the_cell, a_cell_that_requires_a_drawdown_stop_refuses_an_envelope_without_one",
+      "backend/crates/services/qip-capital/tests/capital.rs every_issued_envelope_carries_a_drawdown_stop_and_a_share_outside_its_range_is_refused"
     ],
-    "gap": "Decided by ADR 0126 (accepted 2026-10-18): The downward capital authority is the signed CapitalEnvelope alone; it gains a drawdown bound, the CapitalGrant is stated from it rather than sent beside it, and a hedge plan reaches a cell only as a narrowing frame it may refuse. Code left: the bounds block's max_drawdown in qip-contracts capital.rs and the RealisedLedger high-water measurement in Cell admission, with a test that a strategy past its drawdown but under its loss limit is refused.",
+    "gap": "2026-10-24 (lane L1-MONEY): the drawdown bound ADR 0126 decision 2 decided is built, carried, required and enforced. Skeptic REFUTED promotion on fe8185a7; two of its three points (the approval chain issuing without a stop; no cell requiring one) were fixed in b28acbf3. What remains is bar part 2: no shipped binary issues a grant unprompted — Platform::issue_capital is reached only from qip-api's capital-grant route, which requires attested operator presence, and Principal::presence is always Unattested until ADR 0120's per-person verifier exists (the R12-RISK-4111 slice). Recorded, not refuting: hedge_blind_position and unwind_cycle send risk-reducing exits without the capital or drawdown checks, as they did for the loss limit.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1980,10 +1990,10 @@
       "R12-CAPITAL-4082"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo +1.94.1 test -p qip-edge --test drawdown && cargo +1.94.1 test -p qip-contracts --test drawdown_bounds && cargo +1.94.1 test -p qip-capital --test capital an_issued_grant_carries_all_five_bounds_and_its_drawdown_stop_is_its_loss_limit",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D02; gap before it: No drawdown (peak-to-trough) bound is in the envelope the cell enforces, distinct from the loss limit; the five-bound CapitalGrant contract is not what cells hold."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D02; gap before it: No drawdown (peak-to-trough) bound is in the envelope the cell enforces, distinct from the loss limit; the five-bound CapitalGrant contract is not what cells hold. 2026-10-24 lane L1-MONEY (fe8185a7, b28acbf3): mutations fired — check_drawdown never refuses; RealisedLedger high-water update removed; with_drawdown skips the loss-limit check; verify skips the wide-stop refusal; DrawdownBoundsFields::check returns Ok; issue drops with_drawdown; drawdown_verdict's required branch disabled; assemble drops with_drawdown_stop_required; ApprovalChain::envelope drops the stop. All restored with cp+cmp. Independent security-engineer skeptic REFUTED (see gap). 2026-10-25 lane L1-MONEY (merge e6d76c51): the integration branch's parallel ADR 0126 block (288e5887, R12-CONTRACT-7066) supersedes this lane's DrawdownBounds. This lane's duplicate is dropped. Kept from this lane: CellConfig::drawdown_stop_required, armed by qip-edge-node assemble, re-seated on the integration branch's check_drawdown. Both of its mutations re-fired after the merge. Status unchanged: PARTIAL on bar part 2 (operator presence, ADR 0120)."
   },
   {
     "id": "R12-CAPITAL-4089",

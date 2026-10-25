@@ -4,11 +4,13 @@
 //!
 //! # The failure this closes
 //!
-//! The twin re-prices every fill the desk took against the same tape and
-//! cost model it prices every counterfactual and every replayed session
-//! against, and the difference — [`FillScore::trade_error_bps`] — was charted
-//! on `qip_venue_fill_error_bps` and folded into the venue's calibrated
-//! spread (R12-TICK-2080). Nothing that sizes capital read it. A twin a
+//! The twin re-prices every fill the desk took — and, since the cell arm
+//! landed, every fill a cell reported that the centre settled at a venue a
+//! registered strategy trades at (`Platform::queue_cell_fills`) — against
+//! the same tape and cost model it prices every counterfactual and every
+//! replayed session against, and the difference —
+//! [`FillScore::trade_error_bps`] — was charted on `qip_venue_fill_error_bps`
+//! and folded into the venue's calibrated spread (R12-TICK-2080). Nothing that sizes capital read it. A twin a
 //! thousand basis points wrong about a venue was the same twin whose replays
 //! had argued every strategy at that venue up the promotion ladder, and those
 //! strategies kept being granted the size the ladder had admitted, on

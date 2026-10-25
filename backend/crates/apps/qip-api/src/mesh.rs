@@ -892,10 +892,18 @@ pub fn pending_policy(
             Slot::unproduced()
         }
     };
+    // Once per issue, for every cell alike: the cycle whose state these
+    // payloads carry, and the correlation id `POST /cycle` returned for it.
+    // A cell copies it into every `ChainOpened` it journals under the
+    // payload, which is the one join from an API caller's id to a cell's
+    // order (ADR 0129 decision 5). `None` before the first cycle, and then
+    // the field is off the wire and out of the signature.
+    let decision = platform.decision_origin();
     for cell in cells {
         let sequence = now.as_nanos().max(0) as u64;
         let mut payload = PolicyPayload::unproduced(sequence, &cell, now);
         payload.halted = halted;
+        payload.decision = decision.clone();
         match manifests
             .as_ref()
             .and_then(|decided| decided.for_cell(&cell))

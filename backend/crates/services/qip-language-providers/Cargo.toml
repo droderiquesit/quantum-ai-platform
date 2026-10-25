@@ -1,0 +1,21 @@
+[package]
+name = "qip-language-providers"
+description = "Hosted language-model adapters, linked by the slow-lane composition root alone (ADR 0138)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+qip-core.workspace = true
+# The port and the deterministic stand-in (ADR 0037). A library, so an inward
+# edge; the adapter is here because it opens a socket and a library may not.
+qip-ai.workspace = true
+# The plaintext HTTP/1.1 client every outbound adapter speaks through, behind
+# the egress proxy. In-tree, under libs/.
+qip-transport.workspace = true
+
+[lints]
+workspace = true

@@ -453,7 +453,12 @@ pub struct CellIngestion {
     /// Recalls issued because of a concentration finding.
     pub recalls: Vec<RecallOrder>,
     /// What the report's orders and crosses did to the strategy books.
+    /// Empty when `replayed` is set.
     pub settlement: Settlement,
+    /// The report was one this plane had already settled, byte for byte —
+    /// a retry or a replayed spool — so nothing in it was settled again
+    /// (see [`SettledReports`]).
+    pub replayed: bool,
     /// The report's feasibility refusals the centre admitted: each names a
     /// feasibility gate and a venue the configuration or a live grant
     /// permits, stamped with the report's instant. The platform puts these
@@ -573,6 +578,29 @@ pub struct AbsorbedFill {
     /// would file a real fill under a counterparty named by nobody — which
     /// is the same failure wearing a name.
     pub venue: String,
+    /// The order the fill was reported against, as the cell named it —
+    /// unique within the cell, not across cells.
+    ///
+    /// This and the four fields below are what the twin scores a cell's fill
+    /// on (R12-RES-7104): `Platform::ingest_cell_report` queues every absorbed
+    /// fill for the same pricing `score_filled` gives a desk fill. Before
+    /// they were carried only the desk's fills reached the twin, so a twin a
+    /// thousand basis points wrong about a venue only cells traded at held
+    /// no strategy there. Read off this list, and not off the report, so a
+    /// fill the settlement refused or found unsent is never scored. This list
+    /// does **not** make a replay inert: an order whose fills complete it
+    /// leaves the sent register, so the same report arriving again
+    /// re-registers its orders and settles its fills a second time. The
+    /// twin's once-only scoring is `Platform::queue_cell_fills`'s own memory,
+    /// not this list's.
+    pub order_id: String,
+    /// The side of the book the order took: `Ask` bought, `Bid` sold.
+    pub side: BookSide,
+    pub quantity: Decimal,
+    /// The venue's price. Money, and exact.
+    pub price: Decimal,
+    /// When the venue reported it, as the cell recorded it.
+    pub at: Timestamp,
 }
 
 /// One strategy's execution cost over a settlement's fills, accumulated so a
@@ -760,6 +788,9 @@ pub struct CentralPlane {
     /// since filled — what a fill is matched against before it is billed.
     /// Bounded per cell; see [`SentOrders`].
     sent: BTreeMap<String, SentOrders>,
+    /// Per cell, the reports already settled, by instant and digest, so a
+    /// replay settles nothing. Bounded per cell; see [`SettledReports`].
+    settled_reports: BTreeMap<String, SettledReports>,
     /// Incidents raised here, so their ids are a deterministic counter rather
     /// than a generated id: a replay of the same reports produces the same
     /// incident record.
@@ -971,6 +1002,7 @@ impl CentralPlane {
             withdrawn_venues: BTreeSet::new(),
             reinstated_venues: BTreeSet::new(),
             last_heard: BTreeMap::new(),
+            settled_reports: BTreeMap::new(),
             announced_dark: BTreeSet::new(),
             lit_share_bounds: BTreeMap::new(),
         })
@@ -2198,13 +2230,31 @@ impl CentralPlane {
         // or not the report reconciles: they are what the cell did, and a
         // halt is about what it may do next. Settled before the halt so a
         // refusal in the recall step cannot leave a fill half-attributed.
-        let settlement = self.settle(&report, now);
-        self.record_realised(&report.cell, &settlement, report.at);
-        // The grant the cell held while it made this report, on the same day
-        // the settlement was booked into and at the report's own instant. A
-        // day that settled nothing is a day of the record too, and until this
-        // line it was thrown away.
-        self.retain_grants(&report.cell, report.at);
+        //
+        // Once only. A completed order leaves the sent register, so the same
+        // report arriving again — a retry, a replayed spool — had its sends
+        // admitted as new and its fills settled a second time: the strategy
+        // books, the realised series and every cost booked twice for one
+        // interval the cell traded once. A report this plane has settled
+        // byte for byte settles nothing; one with the same instant and
+        // different content is a different report and settles as before.
+        let replayed = !self
+            .settled_reports
+            .entry(report.cell.clone())
+            .or_default()
+            .admit(report.at, report_digest(&report)?);
+        let settlement = if replayed {
+            Settlement::default()
+        } else {
+            let settlement = self.settle(&report, now);
+            self.record_realised(&report.cell, &settlement, report.at);
+            // The grant the cell held while it made this report, on the same
+            // day the settlement was booked into and at the report's own
+            // instant. A day that settled nothing is a day of the record too,
+            // and until this line it was thrown away.
+            self.retain_grants(&report.cell, report.at);
+            settlement
+        };
 
         // The cell's breaks and the settlement's, halted together: a fill on
         // an order the centre never saw sent is the venue's channel and the
@@ -2271,6 +2321,7 @@ impl CentralPlane {
             crowded,
             recalls,
             settlement,
+            replayed,
             feasibility_refusals,
             feasibility_refusals_unattributed,
             feasibility_refusals_repeated,
@@ -2666,6 +2717,11 @@ impl CentralPlane {
                 // the report later: what the aggregate is charged and what the
                 // settlement says it absorbed stay one list.
                 venue: fill.venue.as_str().to_string(),
+                order_id: fill.order_id.clone(),
+                side: fill.side,
+                quantity: fill.quantity,
+                price: fill.price,
+                at: fill.at,
             });
         }
 
@@ -3038,6 +3094,49 @@ impl SentOrders {
     }
 }
 
+/// How many settled reports a cell's replay memory holds. A replay older
+/// than this many reports settles again; at one report per interval that is
+/// far longer than any retry or spool a cell keeps.
+const MAX_SETTLED_REPORTS_PER_CELL: usize = 4_096;
+
+/// The reports one cell has had settled, by instant and content digest,
+/// bounded, oldest evicted first.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct SettledReports {
+    seen: BTreeSet<(Timestamp, String)>,
+    arrival: VecDeque<(Timestamp, String)>,
+}
+
+impl SettledReports {
+    /// Record a report as settled; `false` if it already was.
+    fn admit(&mut self, at: Timestamp, digest: String) -> bool {
+        let key = (at, digest);
+        if !self.seen.insert(key.clone()) {
+            return false;
+        }
+        self.arrival.push_back(key);
+        while self.arrival.len() > MAX_SETTLED_REPORTS_PER_CELL {
+            if let Some(oldest) = self.arrival.pop_front() {
+                self.seen.remove(&oldest);
+            }
+        }
+        true
+    }
+}
+
+/// The digest a report is recognised by on replay: its canonical JSON.
+/// `CellReport` holds only ordered collections, so the same report always
+/// serialises to the same bytes.
+fn report_digest(report: &CellReport) -> Result<String> {
+    let bytes = serde_json::to_vec(report).map_err(|error| {
+        Error::invalid(format!(
+            "the report from {} could not be serialised to recognise a replay: {error}",
+            report.cell
+        ))
+    })?;
+    Ok(qip_core::hash::sha256_hex(&bytes))
+}
+
 /// The signed direction of an order from the side of the book it takes.
 ///
 /// A buy lifts the offer, so the cell records it against the ask — the same
@@ -3198,6 +3297,33 @@ mod tests {
             .envelopes
             .insert((CELL.to_string(), desk.clone()), envelope);
         (plane, desk, cell_venues)
+    }
+
+    /// A replay is recognised by instant and content together: the same
+    /// report settles once, while a different report at the same instant is
+    /// not swallowed as a replay of the first. Mutation: key on the instant
+    /// alone and the second assertion fails.
+    #[test]
+    fn a_settled_report_is_recognised_on_replay_and_a_different_one_at_the_same_instant_is_not() {
+        let mut settled = SettledReports::default();
+        let at = now();
+        assert!(settled.admit(at, "a".to_string()), "premise: first sight");
+        assert!(
+            !settled.admit(at, "a".to_string()),
+            "the same report was admitted twice"
+        );
+        assert!(
+            settled.admit(at, "b".to_string()),
+            "a different report at the same instant was taken for a replay"
+        );
+        for n in 0..MAX_SETTLED_REPORTS_PER_CELL {
+            settled.admit(at, format!("filler-{n}"));
+        }
+        assert!(
+            settled.seen.len() == MAX_SETTLED_REPORTS_PER_CELL
+                && settled.arrival.len() == MAX_SETTLED_REPORTS_PER_CELL,
+            "the replay memory is not bounded"
+        );
     }
 
     #[test]
