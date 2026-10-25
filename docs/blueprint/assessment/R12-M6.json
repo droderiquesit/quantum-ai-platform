@@ -1566,13 +1566,18 @@
   {
     "id": "R12-EXPAND-6070",
     "status": "PARTIAL",
-    "current": "Code changes: CI gate, image signing and Binary Authorization attestation in deploy.yml. Models: ModelStage ladder with shadow stage and calibrated-baseline gate. No platform-generated code path exists, and no single gate enforces the full sequence for self-proposed capabilities.",
+    "current": "Models: a model the deep brain fits for itself (ModelCard.self_fitted) reaches production only out of a completed shadow stage. ModelRegistry::promote refuses a self-fitted card unless it is in ModelStage::Shadow with MIN_SHADOW_ROUNDS (3) rounds won, whoever calls it, and the kernel's ModelProducer::SelfFitted check is a second layer. The learning desk enters a candidate that passes holdout, adversarial and verifier checks into shadow. Each later window scores it against every production incumbent, or the zero-return predictor, on rows strictly after everything it has read (seen_through), and a lost round retires it. Every promotion record lists its stages and carries the central plane's HMAC signature (Platform::promotion_verifies). Images: deploy.yml builds, scans, signs and attests, under Binary Authorization.",
     "evidence": [
       ".github/workflows/deploy.yml:1-2 build, scan, sign, attest",
       "backend/crates/libs/qip-ai/src/registry.rs:99-109 ModelStage incl. Shadow",
-      "backend/crates/runtime/qip-kernel/src/central/models.rs:65"
+      "backend/crates/runtime/qip-kernel/src/central/models.rs:65",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs::a_self_fitted_card_is_promoted_only_out_of_a_completed_shadow_whoever_asks",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs::a_shadow_round_is_counted_only_for_a_shadowed_model_once_per_window_with_evidence",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs::a_self_fitted_model_that_skipped_its_shadow_stage_is_refused_production",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs::a_promotion_record_lists_its_stages_under_a_signature_an_edit_breaks",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs::tests::a_self_fitted_candidate_runs_in_shadow_and_is_promoted_only_after_winning_its_rounds"
     ],
-    "gap": "A promotion record proving every stage for a self-proposed capability.",
+    "gap": "2026-10-24 (L4, wave580): the model half is built (commits e5d9f847 and 45bdbc87). The independent skeptic REFUTED e5d9f847; its two defects (in-sample shadow rounds, a guard keyed on the caller's producer label) were fixed in 45bdbc87. Still unmet: (1) 'shadow/paper operation' as the requirement means it. The shadow is an offline comparison against production on fresh windows, not the model running beside production on live paper decisions. (2) The requirement also names code, tools, agents, features and schemas. Code reaches production only as CI-signed images under Binary Authorization. Tools, agents, features and schemas have no staged branch, test, shadow and signed-promotion gate, and that needs an ADR naming each one's gate. (3) The signature is self-attestation by the promoting process, using the plane's HMAC key; ADR 0110's HSM model-pack key is unused because artefact_signing is null in every environment.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1580,10 +1585,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-ai --test model_infrastructure && cargo +1.94.1 test -p qip-kernel --test serving && cargo +1.94.1 test -p qip-deepbrain --lib a_self_fitted_candidate_runs",
     "work_item": "",
     "size": "L",
-    "notes": "Not deployed, so signed promotion has never run against a live environment."
+    "notes": "Not deployed, so signed promotion has never run against a live environment. 2026-10-24 (L4, wave580) mutations, all killed: enter_shadow without its evaluation check; record_shadow_round without its time check; rounds_won >= 0; require_completed_shadow returning Ok; signing an empty payload; stages dropped from the signed payload; a lost round counted as won; promoting as TrainingPipeline; no freshness filter; seen_through never advanced; no self_fitted check in ModelRegistry::promote. Gate on 45bdbc87: 338 binaries, 3383 passed, 1 failed (traceability-matrix render, parent's); qip-fastbrain --test tape: 3 passed."
   },
   {
     "id": "R12-EXPAND-6071",
