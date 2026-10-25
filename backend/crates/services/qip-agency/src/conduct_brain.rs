@@ -914,15 +914,24 @@ impl ConductGate {
     /// own seven, tagged with its id, then the cross-draft check. Empty means
     /// the whole set may be released.
     pub fn campaign_failures(&self, drafts: &[&CommunicationDraft]) -> Vec<(String, CheckResult)> {
-        let mut failed: Vec<(String, CheckResult)> = drafts
+        self.campaign_results(drafts)
+            .into_iter()
+            .filter(|(_, check)| !check.passed)
+            .collect()
+    }
+
+    /// Every result across a set of drafts released together, passed and
+    /// failed: each draft's own seven, tagged with its id, then the
+    /// cross-draft check under `*`. [`Self::campaign_failures`] is this,
+    /// filtered; the guard reads it whole, because a dimension that passed
+    /// is a channel-health fact too (R12-OBS-7132).
+    pub fn campaign_results(&self, drafts: &[&CommunicationDraft]) -> Vec<(String, CheckResult)> {
+        let mut results: Vec<(String, CheckResult)> = drafts
             .iter()
-            .flat_map(|d| self.failures(d).into_iter().map(move |f| (d.id.clone(), f)))
+            .flat_map(|d| self.evaluate(d).into_iter().map(move |r| (d.id.clone(), r)))
             .collect();
-        let voices = checks::check_coordinated_voices(drafts);
-        if !voices.passed {
-            failed.push(("*".to_string(), voices));
-        }
-        failed
+        results.push(("*".to_string(), checks::check_coordinated_voices(drafts)));
+        results
     }
 }
 
@@ -1352,5 +1361,50 @@ mod tests {
             rules(),
         );
         assert!(result.is_err());
+    }
+
+    /// R12-OBS-7132: every check the guard runs is placed in a channel-health
+    /// dimension, so a check added to the gate cannot have its verdict
+    /// dropped from the series without this failing. Mutation: delete the
+    /// `"disclosures"` name from `HealthDimension::of_check` — this fails
+    /// naming `disclosures`.
+    #[test]
+    fn every_check_the_guard_runs_is_placed_in_a_channel_health_dimension() {
+        use crate::guard::HealthDimension;
+        let draft = basic_draft();
+        let mut results = basic_gate().campaign_results(&[&draft]);
+        results.push((
+            "*".to_string(),
+            check_step_conduct(&[StepConduct {
+                tool: "quoter",
+                method: Method::Communication,
+                draft: &draft,
+            }]),
+        ));
+        assert_eq!(
+            results.len(),
+            9,
+            "premise: seven per-draft checks, coordinated voices and step conduct"
+        );
+        for (_, check) in &results {
+            assert!(
+                HealthDimension::of_check(&check.check_name).is_some(),
+                "`{}` is in no channel-health dimension",
+                check.check_name
+            );
+        }
+        // And all four dimensions the guard decides are reached; reach is
+        // the adapter's, noted by whoever calls it.
+        let reached: std::collections::BTreeSet<HealthDimension> = results
+            .iter()
+            .filter_map(|(_, c)| HealthDimension::of_check(&c.check_name))
+            .collect();
+        assert_eq!(
+            reached,
+            HealthDimension::ALL
+                .into_iter()
+                .filter(|d| *d != HealthDimension::Reach)
+                .collect()
+        );
     }
 }
