@@ -2221,6 +2221,58 @@ fn the_replay_and_paper_gates_are_promoted_by_a_person_and_record_what_passed() 
 }
 
 #[test]
+fn the_promotion_commit_skips_ci_so_an_auto_promoted_stage_cannot_feed_itself() {
+    // Dev promotes automatically (projectconfig.yaml), the promotion pushes
+    // to the default branch, `ci.yml` runs on every push there with no path
+    // filter, and `deploy.yml` follows ci and tags each image with the
+    // commit it built — a new tag, so new freight, so another promotion.
+    // `[skip ci]` in the commit's subject is what breaks that loop; nothing
+    // pinned it, and a reworded subject would restart the loop silently.
+    // Inferred from configuration: Kargo has never run in this repository.
+    for environment in ENVIRONMENTS {
+        let rendered = kargo_rendered(environment);
+        let tasks = of_kind(&rendered, "PromotionTask");
+        let promote = tasks
+            .iter()
+            .find(|task| task.name() == "promote-cloud-run")
+            .unwrap_or_else(|| {
+                panic!("{environment}'s chain declares no `promote-cloud-run` task")
+            });
+        let steps = list_at(&promote.value, &["spec", "steps"]);
+        // Premise: this is the task that writes digests, so its commit is the
+        // one that reaches the default branch.
+        assert!(
+            steps
+                .iter()
+                .any(|step| text_at(step, &["uses"]).as_deref() == Some("kustomize-set-image")),
+            "{environment}'s promote-cloud-run task no longer sets images; this test is reading \
+             the wrong task"
+        );
+        let commits: Vec<String> = steps
+            .iter()
+            .filter(|step| text_at(step, &["uses"]).as_deref() == Some("git-commit"))
+            .filter_map(|step| text_at(step, &["config", "message"]))
+            .collect();
+        assert_eq!(
+            commits.len(),
+            1,
+            "{environment}'s promote-cloud-run task has {} git-commit step(s) with a message; \
+             expected exactly one",
+            commits.len()
+        );
+        let subject = commits[0].lines().next().unwrap_or_default();
+        // The bracketed token, not the words: `skip ci` without the brackets
+        // is not something GitHub reads.
+        assert!(
+            subject.contains("[skip ci]"),
+            "{environment}'s promotion commit subject is `{subject}`; without `[skip ci]` the \
+             push re-runs ci, deploy.yml re-tags every image, and dev's auto-promotion promotes \
+             its own commit forever"
+        );
+    }
+}
+
+#[test]
 fn prod_is_promoted_by_nobody_until_an_adr_says_otherwise() {
     // The third prod refusal, beside `deploy.yml`'s and `infra.yml`'s.
     // ADR 0036 decision 6: the prod Stage exists so the chain is whole and a

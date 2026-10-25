@@ -115,6 +115,45 @@ resource "google_bigquery_dataset" "research" {
   # Terraform owns the schema. A hand-made table in this dataset is a table
   # nobody can reproduce in another environment.
   delete_contents_on_destroy = false
+
+  # The key above is used by BigQuery's own encryption account, not by the
+  # caller, so the dataset cannot be created until that account holds it.
+  # Without the edge Terraform is free to create both in parallel, and the
+  # dataset is refused for a missing key permission the same apply was about
+  # to grant.
+  depends_on = [google_kms_crypto_key_iam_member.warehouse_bigquery_agent]
+}
+
+# BigQuery encrypts a CMEK dataset as its per-project encryption service
+# account (`bq-<number>@bigquery-encryption.iam.gserviceaccount.com`), the
+# same arrangement as Cloud Storage's service agent in modules/evidence.
+# Until 2026-10-24 this module set `default_encryption_configuration` on the
+# research dataset and granted the key to nobody, so the first apply with
+# `enable_bigquery = true` (dev) had no way to create the dataset.
+data "google_bigquery_default_service_account" "bigquery" {
+  count = var.enable_bigquery ? 1 : 0
+
+  project = var.project_id
+}
+
+resource "google_kms_crypto_key_iam_member" "warehouse_bigquery_agent" {
+  count = var.enable_bigquery ? 1 : 0
+
+  crypto_key_id = google_kms_crypto_key.warehouse[0].id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:${data.google_bigquery_default_service_account.bigquery[0].email}"
+
+  lifecycle {
+    # The grant goes to BigQuery's encryption account and to no other. The
+    # neighbouring modules grant keys to the Cloud Storage agent with a
+    # data source of the same shape, and a copy of that block here would plan
+    # cleanly, apply cleanly, and leave the dataset as unable to use its key
+    # as it was with no grant at all.
+    precondition {
+      condition     = endswith(data.google_bigquery_default_service_account.bigquery[0].email, "@bigquery-encryption.iam.gserviceaccount.com")
+      error_message = "the warehouse key would be granted to ${data.google_bigquery_default_service_account.bigquery[0].email}, which is not BigQuery's encryption service account; the research dataset encrypts as that account and would still be refused its key."
+    }
+  }
 }
 
 # --- Object storage: archives and artifacts ---------------------------------

@@ -5,9 +5,15 @@ then retires the old one. The layout and the reasons are
 [ADR 0118](../../adr/0118-the-gcp-tenant-is-a-platform-folder-holding-one-labelled-budgeted-project-per-environment-and-a-seed-project-applied-once-by-the-owner.md);
 this page is the sequence.
 
-**Nothing on this page has been run.** It was written beside the code it
-drives, which was planned with a mocked provider and never applied. The first
-run is yours.
+**This page said "Nothing on this page has been run" until 2026-10-24, and
+that is no longer what the record shows.** `algorik-qip-dev` now has project
+number `101249892564` (`project_number` in
+`infrastructure/environments/dev/terraform.tfvars`; the portal's old URL in
+the same file carries the previous project's `523718313246`), and `infra.yml`
+runs 108–122 operated that project. Run 121 (`38988479925`, `apps dev`,
+2026-10-17) printed `qip-dev is Synced and Healthy`. Which command created the
+project is not recorded in the tree, so read the steps below as the sequence,
+not as a transcript of one run.
 
 Paper trading only, before, during and after: no step here moves an autonomy
 ceiling, and `infrastructure/terraform/variables.tf` still refuses the three
@@ -117,10 +123,13 @@ All under Workload Identity Federation, from GitHub → Actions:
 4. **`infra.yml`**, `action=apps`. Applies the Argo CD Application and the
    Kargo chain and waits for `qip-dev` Synced and Healthy.
 
-Known blocker, unchanged by any of this: the Argo CD image fails `vendor.yml`'s
-CRITICAL gate (ADR 0093), so step 3's mirror of it — and therefore step 4 —
-stops there until upstream ships a fixed release. The project, its identity,
-its network and its registry are healthy without it; serving is not.
+The Argo CD image is no longer the blocker this paragraph named until
+2026-10-24. Upstream `quay.io/argoproj/argocd` still fails `vendor.yml`'s
+CRITICAL gate (ADR 0093), but `vendor.yml` now derives
+`vendor/argocd-patched` (`infrastructure/egress/derived-images.txt`), and run
+31 (2026-10-12) scanned it at 0 CRITICAL and attested it (`e3f81695`). Step
+3's mirror therefore includes a gated Argo CD image, and step 4 reached
+Synced and Healthy in run 121.
 
 ## How to verify
 

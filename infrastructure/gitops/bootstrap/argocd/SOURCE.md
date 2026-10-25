@@ -19,6 +19,15 @@ v2 API (`docker-content-digest` of the tag's manifest list):
 | `public.ecr.aws/docker/library/redis:8.2.3-alpine` | `sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba` | yes |
 | `ghcr.io/dexidp/dex:v2.45.1` | `sha256:8499afd690c437f52301efd2b05b2455da5bd2dfc20332cd697dc9937f808462` | **no** — Dex is deleted by `base/kustomization.yaml`; the digest is recorded so a reviewer who re-enables SSO knows what the upstream file names |
 
+The redis row is what `install.yaml` names, and the bootstrap does not run
+those bytes: the dev overlay replaces the reference with `vendor/redis` at
+`sha256:e957842a3e7962bfe3e5ab9814eab06e029a2f0d7b0f5d74178af12713b9ab4d`,
+the `8.2.9-alpine` line in `infrastructure/egress/vendored-images.txt`. Read
+2026-10-24 at public.ecr.aws: `8.2.3-alpine` still names `08ad0b1d…`, the
+pinned `e957842a…` still resolves, and the tag `8.2.9-alpine` now names
+`sha256:5f2e6a105b2a8cc721911d5d29aadb032c25fe55b43e829e3d03413753ff47c2`
+(rebuilt upstream). The pin is by digest, so nothing it deploys moved.
+
 `upstream/kustomization.yaml` is the one file beside it that is not
 upstream's: a kustomization naming `install.yaml`, because kustomize refuses
 a base that references a file outside its own directory and admits a

@@ -830,8 +830,10 @@ resource "terraform_data" "openobserve_is_placed" {
 # The platform's metrics, logs and traces backend, adopted as a deliberate,
 # named exception to blueprint §2.1 (ADR 0028 decision 1) — not part of
 # `local.cloud_run_catalogue` above, and deliberately so: every entry there is
-# a binary `deploy.yml` builds, signs and attests, its digest read from
-# `var.image_digests`, and `catalogue_workloads()` in the acceptance suite
+# a binary `deploy.yml` builds, signs and attests, its digest named in
+# `infrastructure/gitops/envs/<env>/kustomization.yaml` (this said "read from
+# `var.image_digests`" until 2026-10-24; that variable was removed, see
+# variables.tf), and `catalogue_workloads()` in the acceptance suite
 # asserts the map holds exactly those three. OpenObserve has no such
 # pipeline — its digest is mirrored and attested by `vendor.yml` from the
 # reviewed line in `infrastructure/egress/vendored-images.txt` — so this is
