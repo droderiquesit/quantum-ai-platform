@@ -3573,7 +3573,7 @@ fn each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_re
     let market = identified(Method::Market);
     let compensated = |e: &mut WideningEvidence<'_>| {
         e.compensations
-            .push((Method::Market, "re-widen quotes; drill 2026-10-01".into()));
+            .push((Method::Market, drill("re-widen quotes", "drill-2026-10-01")));
     };
 
     let mut policy = narrow();
@@ -3656,9 +3656,12 @@ fn each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_re
     assert!(widen_broad(&mut policy, &broad).contains("compensating step for Research"));
     broad
         .compensations
-        .push((Method::Research, "retract note; drill 2026-10-02".into()));
+        .push((Method::Research, drill("retract note", "drill-2026-10-02")));
     assert!(widen_broad(&mut policy, &broad).contains("kill path"));
-    broad.kill_path = Some("agency:halt-all returns every class to shadow".into());
+    broad.kill_path = Some(drill(
+        "agency:halt-all returns every class to shadow",
+        "drill-2026-10-03",
+    ));
     let level = widen_broad(&mut policy, &broad);
     assert!(
         level.contains("reached only from NarrowCompensable"),
@@ -3680,6 +3683,105 @@ fn each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_re
 
     // Drift still returns a policy to shadow from the level it holds.
     assert_eq!(policy.observe(d(50), &[]), Authority::Shadow);
+}
+
+/// R12-EXPAND-6071: a rollback ADR 0141 asks to be "tested in a drill" is
+/// read as a drill, not as a name. Before this a non-blank string satisfied
+/// both the compensation and the kill path, so a rollback nobody had ever run
+/// met the row. Each shortfall is refused by name: a drill that did not
+/// restore the prior state, one with no record, one naming no step -- for the
+/// compensating step and for the kill path alike. Mutation: make
+/// `Drill::shortfall` return `None` -- every case below then reaches the
+/// grant refusal instead.
+#[test]
+fn a_rollback_named_but_never_rehearsed_meets_no_level_of_the_schedule() {
+    use qip_agency::autonomy::WideningEvidence;
+    let second = ActingIdentity {
+        name: "second-approver".into(),
+        authorities: BTreeSet::from([WIDEN_AUTHORITY.to_string()]),
+    };
+    let market = identified(Method::Market);
+    let research = identified(Method::Research);
+    let mut policy = narrow();
+    assert_eq!(policy.authority(), Authority::NarrowReversible, "premise");
+
+    let failed = |mutate: fn(&mut qip_agency::autonomy::Drill)| {
+        let mut d = drill("re-widen quotes", "drill-2026-10-01");
+        mutate(&mut d);
+        d
+    };
+    let cases: [(fn(&mut qip_agency::autonomy::Drill), &str); 3] = [
+        (|d| d.restored = false, "did not restore the prior state"),
+        (|d| d.record = " ".into(), "left no record"),
+        (|d| d.step = String::new(), "names no step"),
+    ];
+    for (mutate, why) in cases {
+        let mut evidence = WideningEvidence::attribution(&market);
+        evidence.clean_days = 30;
+        evidence
+            .compensations
+            .push((Method::Market, failed(mutate)));
+        let err = policy
+            .widen_to(
+                Authority::NarrowCompensable,
+                &evidence,
+                &[&operator(), &second],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("compensating step for Market tested in a drill") && err.contains(why),
+            "{why}: {err}"
+        );
+
+        let mut broad = WideningEvidence::attribution(&market);
+        broad.attributions.push(&research);
+        broad.classes = BTreeSet::from([Method::Market, Method::Research]);
+        broad.clean_days = 30;
+        broad
+            .compensations
+            .push((Method::Market, drill("re-widen quotes", "drill-2026-10-01")));
+        broad
+            .compensations
+            .push((Method::Research, drill("retract note", "drill-2026-10-02")));
+        broad.kill_path = Some(failed(mutate));
+        let err = policy
+            .widen_to(Authority::BroadInternal, &broad, &[&operator(), &second])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("kill path") && err.contains(why),
+            "kill path, {why}: {err}"
+        );
+    }
+    assert_eq!(policy.authority(), Authority::NarrowReversible);
+
+    // The same evidence with every drill rehearsed reaches the grant refusal:
+    // the drill check is what refused above, not something else on the row.
+    let mut evidence = WideningEvidence::attribution(&market);
+    evidence.clean_days = 30;
+    evidence
+        .compensations
+        .push((Method::Market, drill("re-widen quotes", "drill-2026-10-01")));
+    let err = policy
+        .widen_to(
+            Authority::NarrowCompensable,
+            &evidence,
+            &[&operator(), &second],
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("granted by no record"), "{err}");
+}
+
+/// A rehearsed rollback: it ran, restored the prior state, and left a record.
+fn drill(step: &str, record: &str) -> qip_agency::autonomy::Drill {
+    qip_agency::autonomy::Drill {
+        step: step.into(),
+        ran_at: qip_core::Timestamp::from_millis(1_790_000_000_000),
+        restored: true,
+        record: record.into(),
+    }
 }
 
 fn fresh_market_policy() -> ActionPolicy {
