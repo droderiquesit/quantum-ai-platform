@@ -21,7 +21,9 @@ use crate::support::{FindingBuilder, computed, no_data};
 use qip_agents::finding::{AgentBrief, AgentFinding, Direction, FindingStatus};
 use qip_agents::governance::{AuditTrail, GovernanceFinding, Roster};
 use qip_agents::manifest::AgentManifest;
-use qip_agents::runtime::{Agent, AgentContext, AgentHost, AgentRunRecord, RunStatus};
+use qip_agents::runtime::{
+    Agent, AgentBacklog, AgentContext, AgentHost, AgentRunRecord, Deferral, RunStatus,
+};
 use qip_ai::language::LanguageModel;
 use qip_core::error::Result;
 use qip_core::ids::AgentRunId;
@@ -46,6 +48,17 @@ pub struct OrganisationReport {
     pub failed: Vec<String>,
     /// Agents that reported missing data, and what was missing.
     pub missing_inputs: Vec<String>,
+    /// Agents the runtime could not run this dispatch — a manifest past
+    /// review, a budget it could not fund — whose run is held on the
+    /// organisation's bounded backlog (R12-AGENCY-10063). Each is also in
+    /// `failed`, because for this dispatch its finding is missing; this list
+    /// says the work was kept rather than lost.
+    #[serde(default)]
+    pub backlogged: Vec<String>,
+    /// Runs the backlog refused to hold — at capacity, or past the attempt
+    /// bound — with the reason. Reported, never silently dropped.
+    #[serde(default)]
+    pub backlog_refused: Vec<String>,
 }
 
 impl OrganisationReport {
@@ -213,6 +226,11 @@ pub struct Organisation {
     audit: AuditTrail,
     /// Monotonic run counter, so run ids are deterministic across a replay.
     sequence: u64,
+    /// Runs the host could not perform, held for a later dispatch
+    /// (R12-AGENCY-10063). Bounded, so a runtime outage degrades to a queue
+    /// of fixed size and never to a process that grows for as long as the
+    /// outage lasts.
+    backlog: AgentBacklog,
 }
 
 impl Organisation {
@@ -243,13 +261,31 @@ impl Organisation {
                 )));
             }
         }
+        // One entry per agent per distinct question, with room for the
+        // question to change once before the oldest entry's retries run out:
+        // a roster refused on every cycle of a lapse holds one entry per
+        // agent, not one per cycle (`AgentBacklog::defer` keys on both).
+        let backlog = AgentBacklog::new(agents.len().max(1) * 2)?;
         Ok(Self {
             roster,
             agents,
             host,
             audit: AuditTrail::new(),
             sequence: 0,
+            backlog,
         })
+    }
+
+    /// Replace the backlog, for a deployment or a test that wants a bound
+    /// other than two entries per agent.
+    pub fn with_backlog(mut self, backlog: AgentBacklog) -> Self {
+        self.backlog = backlog;
+        self
+    }
+
+    /// The runs the host could not perform and the organisation is holding.
+    pub fn backlog(&self) -> &AgentBacklog {
+        &self.backlog
     }
 
     /// The standard organisation: every agent [`standard_agents`] builds,
@@ -314,6 +350,8 @@ impl Organisation {
         let mut deferred = Vec::new();
         let mut failed = Vec::new();
         let mut missing_inputs = Vec::new();
+        let mut backlogged = Vec::new();
+        let mut backlog_refused = Vec::new();
 
         for agent in &self.agents {
             if !agent.accepts(brief) {
@@ -333,6 +371,9 @@ impl Organisation {
 
             match (&record.status, &record.finding) {
                 (RunStatus::Succeeded, Some(finding)) => {
+                    // The agent ran: whatever the backlog held for it is done
+                    // with, whether or not this finding is informative.
+                    self.backlog.retire(&finding.agent_id);
                     for missing in &finding.missing_inputs {
                         missing_inputs.push(format!("{}: {missing}", finding.agent_id));
                     }
@@ -340,6 +381,35 @@ impl Organisation {
                         FindingStatus::Deferred => deferred.push(finding.agent_id.clone()),
                         _ if finding.status.is_informative() => findings.push(finding.clone()),
                         _ => {}
+                    }
+                }
+                // The runtime could not run the agent: a manifest past
+                // review, or a budget it could not fund. The run degrades to
+                // the backlog and the dispatch goes on to the next agent; an
+                // execution that waited on this agent would be an execution
+                // dependency on the agent runtime, which R12-AGENCY-10063
+                // forbids. A `Failed` run is the agent's own error and is not
+                // retried: a bug is not work waiting for a runtime.
+                (RunStatus::Refused { reason }, _) => {
+                    let id = agent.manifest().id.clone();
+                    failed.push(id.clone());
+                    match self.backlog.defer(&id, brief, reason.as_str(), now) {
+                        Deferral::Queued | Deferral::Repeated { .. } => backlogged.push(id),
+                        Deferral::Refused { reason } => backlog_refused.push(reason),
+                    }
+                }
+                (RunStatus::Escalated { policy, to }, _) => {
+                    let id = agent.manifest().id.clone();
+                    failed.push(id.clone());
+                    let reason = match to {
+                        Some(to) => format!("budget exhausted; escalated to {to} under {policy:?}"),
+                        None => {
+                            format!("budget exhausted; escalation policy {policy:?} names nobody")
+                        }
+                    };
+                    match self.backlog.defer(&id, brief, reason, now) {
+                        Deferral::Queued | Deferral::Repeated { .. } => backlogged.push(id),
+                        Deferral::Refused { reason } => backlog_refused.push(reason),
                     }
                 }
                 _ => failed.push(agent.manifest().id.clone()),
@@ -356,6 +426,8 @@ impl Organisation {
             deferred,
             failed,
             missing_inputs,
+            backlogged,
+            backlog_refused,
         }
     }
 }
