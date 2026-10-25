@@ -80,7 +80,18 @@ fn config(base: &str) -> NarrativeFeedConfig {
         window: Duration::from_mins(30),
         max_records: 100,
         max_document_bytes: 512,
+        entitlement: Some(entitlement()),
+        freshness: Duration::from_hours(6),
         http: tight(),
+    }
+}
+
+/// The licence the fixture feed is read under, recorded on every manifest.
+fn entitlement() -> qip_contracts::governance::Entitlement {
+    qip_contracts::governance::Entitlement::Granted {
+        dataset: "vendor-documents".into(),
+        usage: qip_contracts::governance::Usage::Derive,
+        expires_at: at("2027-08-24T00:00:00Z"),
     }
 }
 
@@ -1252,14 +1263,18 @@ fn an_unconfigured_adapter_names_every_missing_piece_and_opens_no_connection() {
 
     assert!(!adapter.is_available());
     let missing = adapter.missing_configuration();
+    // Four since R12-DATA-8013: the entitlement every manifest records is
+    // configuration the default leaves unset, and is named on its own line
+    // like the other three rather than folded into one of them.
     assert_eq!(
         missing.len(),
-        3,
-        "three separate things are missing: {missing:?}"
+        4,
+        "four separate things are missing: {missing:?}"
     );
     let joined = missing.join(" | ");
     assert!(joined.contains("no endpoint"), "{joined}");
     assert!(joined.contains("no credential"), "{joined}");
+    assert!(joined.contains("no entitlement"), "{joined}");
     assert!(joined.contains("no coverage"), "{joined}");
 
     let requirement = adapter
@@ -1521,5 +1536,151 @@ fn a_canary_in_a_narrative_body_is_found_in_no_record_the_adapter_emits() {
     assert!(
         !format!("{adapter:?}").contains(CANARY),
         "the adapter retained the body"
+    );
+}
+/// R12-DATA-8013: the manifest a narrative fetch seals records all nine
+/// fields of the re-fetch descriptor — canonical locator and provider,
+/// retrieval time, version tag, content hash, entitlement, cursor,
+/// freshness, parser lineage and re-fetch instruction — and survives the
+/// trip through the bytes the event log stores.
+///
+/// The failure this prevents: `with_v2` and `ManifestV2` existed and only
+/// tests called them, so every document the adapter ingested was sealed as a
+/// version-1 manifest naming where the bytes were and nothing about the
+/// licence they were read under, how long they could be relied on, which
+/// code parsed them or how to read them again.
+///
+/// Mutation: drop the `.with_v2(v2)` call in `NarrativeAdapter::manifest_for`
+/// (return the v1 manifest) — the schema-version assertion fails.
+#[test]
+fn a_narrative_manifest_round_trips_all_nine_fields() {
+    let (server, mut adapter) = adapter_serving(FULL_PAYLOAD);
+    let records = adapter.poll(poll_instant()).expect("the fetch succeeds");
+    let item = news_of(&records);
+    let manifest = &item.manifest;
+
+    assert_eq!(
+        manifest.schema_version(),
+        2,
+        "the adapter sealed a version-1 manifest, which records no entitlement, freshness, \
+         parser lineage or re-fetch instruction"
+    );
+    let v2 = manifest
+        .v2()
+        .expect("a version-2 manifest carries its six fields");
+
+    // 1. canonical locator and provider id.
+    assert_eq!(manifest.source(), "vendor-documents");
+    assert_eq!(
+        manifest.locator(),
+        format!("{}/v1/narrative#wire-2026-08-24-4471", server.url())
+    );
+    // 2. retrieval time.
+    assert_eq!(manifest.retrieved_at(), poll_instant());
+    // 3. version tag: the wire carries none, and none is invented.
+    assert_eq!(v2.etag(), None);
+    // 4. content hash, over the bytes it says it covers.
+    assert_eq!(manifest.sha256().len(), 64);
+    assert!(manifest.bytes() > 0);
+    // 5. entitlement, as configured.
+    assert_eq!(v2.entitlement(), &entitlement());
+    // 6. cursor: this feed is polled by window, not resumed from a position.
+    assert_eq!(v2.cursor(), None);
+    // 7. freshness: the read instant plus the configured six hours.
+    assert_eq!(
+        v2.fresh_until(),
+        poll_instant().saturating_add(Duration::from_hours(6))
+    );
+    // 8. parser lineage, the decoder's own constants.
+    assert_eq!(
+        v2.parser(),
+        (
+            qip_market_ingestion::narrative::NARRATIVE_PARSER_NAME,
+            qip_market_ingestion::narrative::NARRATIVE_PARSER_VERSION
+        )
+    );
+    // 9. re-fetch: read the locator again and compare hashes.
+    assert_eq!(v2.refetch(), &qip_financial::manifest::Refetch::Locator);
+
+    // The sealed form: every field is in the bytes, and reading them back
+    // reproduces the manifest exactly.
+    let sealed = serde_json::to_value(manifest).expect("a manifest serialises");
+    for key in ["source", "locator", "bytes", "sha256", "retrieved_at"] {
+        assert!(sealed.get(key).is_some(), "{key} is missing from {sealed}");
+    }
+    let sealed_v2 = sealed
+        .get("v2")
+        .unwrap_or_else(|| panic!("the six version-2 fields are missing from {sealed}"));
+    for key in [
+        "etag",
+        "entitlement",
+        "cursor",
+        "fresh_until",
+        "parser_name",
+        "parser_version",
+        "refetch",
+    ] {
+        assert!(
+            sealed_v2.get(key).is_some(),
+            "{key} is missing from {sealed_v2}"
+        );
+    }
+    let read_back: qip_financial::manifest::SourceManifest =
+        serde_json::from_value(sealed).expect("a sealed manifest reads back");
+    assert_eq!(&read_back, manifest);
+
+    let item_back: qip_financial::intelligence::NewsItem =
+        serde_json::from_str(&serde_json::to_string(item).expect("a news item serialises"))
+            .expect("a sealed news item reads back");
+    assert_eq!(&item_back.manifest, manifest);
+}
+
+/// R12-DATA-8013: an adapter with no entitlement configured cannot fetch,
+/// because every manifest it would write must name the licence. Fails
+/// closed at availability rather than writing a manifest that names none.
+///
+/// Mutation: delete the `entitlement.is_none()` arm of
+/// `missing_configuration` — the adapter reports itself available. Mutation:
+/// delete the `freshness <= Duration::ZERO` refusal in `NarrativeAdapter::new`
+/// — a zero freshness builds and the last assertion fails.
+#[test]
+fn a_feed_with_no_entitlement_is_unavailable_rather_than_sealing_manifests_that_name_no_licence() {
+    let configured = NarrativeAdapter::new(config("http://127.0.0.1:9"), subjects(), series())
+        .expect("a fully specified configuration builds");
+    assert!(
+        configured.is_available(),
+        "premise: the fixture feed is available"
+    );
+
+    let adapter = NarrativeAdapter::new(
+        NarrativeFeedConfig {
+            entitlement: None,
+            ..config("http://127.0.0.1:9")
+        },
+        subjects(),
+        series(),
+    )
+    .expect("an unconfigured entitlement is unconfigured, not wrong");
+    assert!(!adapter.is_available(), "a feed with no licence can fetch");
+    assert!(
+        adapter
+            .missing_configuration()
+            .iter()
+            .any(|line| line.starts_with("no entitlement:")),
+        "the missing entitlement is not named: {:?}",
+        adapter.missing_configuration()
+    );
+
+    let zero = NarrativeAdapter::new(
+        NarrativeFeedConfig {
+            freshness: Duration::ZERO,
+            ..config("http://127.0.0.1:9")
+        },
+        subjects(),
+        series(),
+    );
+    assert!(
+        zero.is_err(),
+        "a freshness of zero, stale when read, was accepted"
     );
 }
