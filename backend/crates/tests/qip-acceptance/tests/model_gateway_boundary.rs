@@ -227,7 +227,15 @@ fn a_model_is_invoked_only_through_the_agent_runtime() {
         let calls_plain = text
             .match_indices(".complete(")
             .any(|(at, needle)| !text[at + needle.len()..].starts_with(')'));
-        if calls_structured || calls_plain {
+        // The third entry point, and the fully-qualified forms of all three.
+        // An in-lane review on 2026-10-25 put `ctx.complete_over_untrusted(…)`
+        // in an agent and `LanguageModel::complete(model, …)` is the same call
+        // spelled as a path; this matcher saw neither.
+        let calls_untrusted = text.contains(".complete_over_untrusted(");
+        let calls_qualified = ["LanguageModel::complete", "LanguageModel>::complete"]
+            .iter()
+            .any(|path| text.contains(path));
+        if calls_structured || calls_plain || calls_untrusted || calls_qualified {
             invoking.insert(file.as_str());
         }
     }
