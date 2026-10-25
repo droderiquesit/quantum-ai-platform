@@ -75,7 +75,7 @@ use qip_agency::attribution::{Effect, EffectAttribution, HorizonObservation, Ide
 use qip_agency::autonomy::{ActionPolicy, Authority};
 use qip_agency::engine::{self, Stage, StageLog};
 use qip_agency::memory::{ActionOutcome, ActionOutcomeDraft, ActionOutcomeMemory, Observed};
-use qip_agency::outbox::DRAFT_TOOL;
+use qip_agency::outbox::{DRAFT_TOOL, OUTBOX_CHANNEL};
 use qip_agency::plan::Step;
 use qip_contracts::action::Method;
 use qip_contracts::ambient::{AmbientSignal, AttentionEvent, Disposition, Pathway, SignalClass};
@@ -83,6 +83,7 @@ use qip_core::error::{Error, Result};
 use qip_core::lineage::Lineage;
 use qip_core::{CorrelationId, Decimal, EventId, Timestamp};
 use qip_events::{Envelope, EventBody, EventLog, Topic};
+use qip_observability::metrics::{Metrics, labels, names};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -299,6 +300,8 @@ pub struct AmbientAgency {
     memory: ActionOutcomeMemory,
     policy: ActionPolicy,
     pending: BTreeMap<(SignalClass, String), PendingDraft>,
+    /// Whether the channel-health series' help text has been registered.
+    described: bool,
 }
 
 impl AmbientAgency {
@@ -344,6 +347,7 @@ impl AmbientAgency {
             memory: ActionOutcomeMemory::with_capacity(MEMORY_CAPACITY)?,
             policy,
             pending: BTreeMap::new(),
+            described: false,
         })
     }
 
@@ -382,14 +386,72 @@ impl AmbientAgency {
     /// ambient journal's for the sweep; without a journal the draft is filed
     /// under a correlation of its own naming the cycle. The rate window is the
     /// cycle, which never goes backwards.
+    ///
+    /// The guard's channel-health verdicts and the drafts appended are
+    /// recorded into `metrics` whether the sweep ends cleanly or not, so a
+    /// refusal part-way through a sweep still reports what the guard had
+    /// already decided (R12-OBS-7132).
     pub fn route(
         &mut self,
         cycle: u64,
         round: &ResearchRound,
         correlation: Option<&CorrelationId>,
         now: Timestamp,
+        metrics: &Metrics,
     ) -> Result<AgencyRound> {
         let mut done = AgencyRound::default();
+        let routed = self.route_into(cycle, round, correlation, now, &mut done);
+        self.record_channel_health(metrics, done.drafted);
+        routed.map(|()| done)
+    }
+
+    /// R12-OBS-7132: each health dimension the guard decided on the internal
+    /// outbox channel, by outcome, and the drafts that landed. The verdicts
+    /// are drained from the door, which took them where the guard decided;
+    /// nothing here re-runs a check. Every label is a constant or an enum's
+    /// literal, so the series are bounded at ten health keys and one draft
+    /// key.
+    fn record_channel_health(&mut self, metrics: &Metrics, drafted: usize) {
+        if !self.described {
+            metrics.describe(
+                names::AGENCY_CHANNEL_HEALTH,
+                "the action guard's verdict on each channel-health dimension of the agency \
+                 door's drafts, by channel, dimension and outcome",
+            );
+            metrics.describe(
+                names::AGENCY_DRAFTS_APPENDED,
+                "drafts the agency door appended to its internal outbox, by channel",
+            );
+            self.described = true;
+        }
+        for ((dimension, outcome), times) in self.intake.take_channel_health() {
+            metrics.increment(
+                names::AGENCY_CHANNEL_HEALTH,
+                labels([
+                    ("channel", OUTBOX_CHANNEL),
+                    ("dimension", dimension.as_str()),
+                    ("outcome", outcome.as_str()),
+                ]),
+                times,
+            );
+        }
+        if drafted > 0 {
+            metrics.increment(
+                names::AGENCY_DRAFTS_APPENDED,
+                labels([("channel", OUTBOX_CHANNEL)]),
+                u64::try_from(drafted).unwrap_or(u64::MAX),
+            );
+        }
+    }
+
+    fn route_into(
+        &mut self,
+        cycle: u64,
+        round: &ResearchRound,
+        correlation: Option<&CorrelationId>,
+        now: Timestamp,
+        done: &mut AgencyRound,
+    ) -> Result<()> {
         for outcome in self.intake.retry(now, cycle)? {
             done.tally(outcome, true);
         }
@@ -401,7 +463,7 @@ impl AmbientAgency {
                 &own
             }
         };
-        self.observe(cycle, round, correlation, now, &mut done);
+        self.observe(cycle, round, correlation, now, done);
         for event in &round.attention_events {
             if event.disposition != Disposition::Activated {
                 continue;
@@ -417,20 +479,13 @@ impl AmbientAgency {
                     .or_default() += 1;
                 continue;
             };
-            self.ask(signal, event, &mut done)?;
+            self.ask(signal, event, done)?;
             let admitted = AmbientOpportunity::advise(signal, event, correlation)
                 .and_then(|advisory| self.intake.admit(advisory, PROMOTION_APPROVER, now, cycle));
             match admitted {
                 Ok(outcome) => {
                     if let Intake::Drafted { draft_id, .. } = &outcome {
-                        self.await_follow_up(
-                            draft_id.clone(),
-                            signal,
-                            event,
-                            cycle,
-                            now,
-                            &mut done,
-                        );
+                        self.await_follow_up(draft_id.clone(), signal, event, cycle, now, done);
                     }
                     done.tally(outcome, false);
                 }
@@ -440,7 +495,7 @@ impl AmbientAgency {
             }
         }
         done.awaiting = self.pending.len();
-        Ok(done)
+        Ok(())
     }
 
     /// R12-AGENCY-6108: ask the memory what worked in this regime for this

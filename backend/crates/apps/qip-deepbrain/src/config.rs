@@ -28,7 +28,7 @@ use crate::attestation::{ATTESTATION_PATH_VARIABLE, ProviderTermsAttestation};
 use qip_core::Duration;
 use qip_core::error::{Error, Result};
 use qip_kernel::EventLogDestination;
-use qip_reasoning_engine::providers::huggingface::{HF_TOKEN_VARIABLE, HuggingFaceToken};
+use qip_language_providers::huggingface::{HF_TOKEN_VARIABLE, HuggingFaceToken};
 use qip_storage::settings::StorageSettings;
 use std::collections::BTreeMap;
 

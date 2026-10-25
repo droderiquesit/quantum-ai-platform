@@ -24,6 +24,7 @@ qip-market.workspace = true
 qip-risk.workspace = true
 qip-investment-agents.workspace = true
 qip-reasoning-engine.workspace = true
+qip-language-providers.workspace = true
 qip-simulation-engine.workspace = true
 qip-optimization-engine.workspace = true
 qip-portfolio-engine.workspace = true

@@ -50,9 +50,10 @@
 //! not computed for an order that was never going to be sent.
 
 use crate::broker::Broker;
+use crate::conduct::{ConductPolicy, ConductWatch};
 use crate::feasibility::{self, VenueFeasibility};
 use crate::market_creation::{LadderAdmission, PricingRule};
-use crate::order::{Fill, Order, OrderState, OrderType};
+use crate::order::{Fill, Order, OrderState, OrderType, Side};
 use crate::session::{RecordedInstruction, RecordedSession, SealOutcome, SessionRecorder};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -137,6 +138,13 @@ pub enum RefusalReason {
     },
     /// The venue refused it.
     VenueRejected { detail: String },
+    /// The order would continue a place-and-cancel pattern on one side of
+    /// one book (R12-GOV-6126): the desk withdrew most of what it recently
+    /// placed there unfilled. Refused before the broker is asked, on the
+    /// same arithmetic the cell refuses the pattern with, because each such
+    /// order is within every per-order limit and only the pattern is not.
+    /// Additive on the wire, as [`Self::Infeasible`] was.
+    Conduct { venue: String, detail: String },
 }
 
 impl RefusalReason {
@@ -170,6 +178,9 @@ impl RefusalReason {
                 format!("risk refused: {}", reasons.join("; "))
             }
             Self::VenueRejected { detail } => format!("the venue refused: {detail}"),
+            Self::Conduct { venue, detail } => {
+                format!("market conduct refused it at {venue}: {detail}")
+            }
         }
     }
 
@@ -226,7 +237,9 @@ impl RefusalReason {
             // no bound in the limit set it could propose anything about, and
             // §12.3's per-rule rows would be counting order-validation
             // failures under a name nobody configured.
+            // A conduct refusal is a pattern, not a bound in the limit set.
             Self::Malformed { .. }
+            | Self::Conduct { .. }
             | Self::Halted { .. }
             | Self::AutonomyTooLow { .. }
             | Self::LiveVenueBelowLiveAutonomy { .. }
@@ -419,6 +432,15 @@ pub struct OrderManager {
     /// is the index the pre-trade check walks instead of every order ever
     /// sent.
     working_axes: BTreeMap<String, BTreeMap<String, String>>,
+    /// The desk's own place-and-cancel record, per venue, instrument and
+    /// side (R12-GOV-6126). Always on, with the cell's default policy: a
+    /// conduct check an operator could leave unconfigured would be one the
+    /// desk is not held to. Fed by [`Self::submit`] on every accepted order
+    /// and by [`Self::cancel`] on every order the desk withdraws with
+    /// nothing filled, and by nothing else — a kill switch's
+    /// [`Self::cancel_scope`] is an event the desk did not choose, and
+    /// counting it would convict the desk of a pattern it never ran.
+    conduct: ConductWatch,
     sequence: u64,
 }
 
@@ -435,6 +457,7 @@ impl OrderManager {
             withdrawn_venues: BTreeSet::new(),
             sessions: SessionRecorder::default(),
             working_axes: BTreeMap::new(),
+            conduct: ConductWatch::new(ConductPolicy::default()),
             sequence: 0,
         }
     }
@@ -796,6 +819,27 @@ impl OrderManager {
             }
         }
 
+        // 6b. Conduct (R12-GOV-6126): an order that would continue a
+        //     place-and-cancel pattern on this side of this book is refused
+        //     before risk spends a check on it and before any broker is
+        //     asked. Keyed on the broker's name, as every venue fact here is.
+        let book_side = book_side_of(order.side);
+        let conduct_venue = qip_contracts::venue::VenueId::new(broker.name());
+        if let Some(detail) = self
+            .conduct
+            .refusal(&conduct_venue, &order.object_id, book_side, at)
+        {
+            let result = refuse(
+                &order,
+                RefusalReason::Conduct {
+                    venue: broker.name().to_string(),
+                    detail,
+                },
+            );
+            self.record_refusal(order, at, result.clone());
+            return result;
+        }
+
         // 7. Pre-trade risk, against the state the order would produce.
         if let Some(counterparty) = counterparty {
             axes.insert(
@@ -955,6 +999,8 @@ impl OrderManager {
                     self.working_axes
                         .insert(order.order_id.as_str().to_string(), proposed.axes);
                 }
+                self.conduct
+                    .placed(&conduct_venue, &order.object_id, book_side, at);
                 self.orders
                     .insert(order.order_id.as_str().to_string(), order);
                 result
@@ -995,13 +1041,29 @@ impl OrderManager {
         }
     }
 
-    /// Cancel a working order.
+    /// Cancel a working order: the desk's own withdrawal, which the conduct
+    /// watch counts when nothing of the order traded.
     pub fn cancel(
         &mut self,
         order_id: &OrderId,
         broker: &mut dyn Broker,
         reason: impl Into<String>,
         at: Timestamp,
+    ) -> Result<()> {
+        self.withdraw(order_id, broker, reason.into(), at, true)
+    }
+
+    /// The withdrawal both [`Self::cancel`] and [`Self::cancel_scope`] make.
+    /// `chosen` says whether the desk chose it: only a chosen withdrawal is
+    /// evidence of a place-and-cancel pattern, and a kill switch's sweep is
+    /// an event the desk did not choose (R12-GOV-6126).
+    fn withdraw(
+        &mut self,
+        order_id: &OrderId,
+        broker: &mut dyn Broker,
+        reason: String,
+        at: Timestamp,
+        chosen: bool,
     ) -> Result<()> {
         let Some(order) = self.orders.get_mut(order_id.as_str()) else {
             return Err(Error::not_found(format!("no order {}", order_id.as_str())));
@@ -1014,13 +1076,18 @@ impl OrderManager {
             )));
         }
         broker.cancel(order, at)?;
-        order.transition(
-            OrderState::Cancelled {
+        order.transition(OrderState::Cancelled { at, reason }, at)?;
+        // The desk's own withdrawal, with nothing of it traded: the event
+        // the place-and-cancel pattern is made of (R12-GOV-6126).
+        if chosen && order.filled_quantity().is_zero() {
+            self.conduct.cancelled_unfilled(
+                &qip_contracts::venue::VenueId::new(broker.name()),
+                &order.object_id,
+                book_side_of(order.side),
                 at,
-                reason: reason.into(),
-            },
-            at,
-        )
+            );
+        }
+        Ok(())
     }
 
     /// Cancel every open order in a scope, for a kill switch.
@@ -1045,7 +1112,7 @@ impl OrderManager {
         let mut cancelled = Vec::new();
         let mut failed = Vec::new();
         for order_id in targets {
-            match self.cancel(&order_id, broker, reason.clone(), at) {
+            match self.withdraw(&order_id, broker, reason.clone(), at, false) {
                 Ok(()) => cancelled.push(order_id),
                 Err(error) => failed.push((order_id, error.message().to_string())),
             }
@@ -1250,4 +1317,14 @@ pub fn order_type_for(participation: f64, window_minutes: u32) -> Result<OrderTy
         // sensible way to work it.
         OrderType::Participation { rate: 0.10 }
     })
+}
+
+/// The book an order takes from, in the cell's vocabulary: a buy lifts the
+/// ask, a sale hits the bid. One mapping, so the desk's conduct key and the
+/// cell's name the same side of the same book.
+const fn book_side_of(side: Side) -> qip_contracts::message::BookSide {
+    match side {
+        Side::Buy => qip_contracts::message::BookSide::Ask,
+        Side::Sell => qip_contracts::message::BookSide::Bid,
+    }
 }

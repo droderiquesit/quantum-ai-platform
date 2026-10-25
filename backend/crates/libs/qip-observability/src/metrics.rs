@@ -1460,6 +1460,24 @@ pub mod names {
     pub const TICK_CAMPAIGNS_OPENED: &str = "qip_tick_campaigns_opened_total";
     /// Ambient attention decisions, by pathway and disposition.
     pub const AMBIENT_ATTENTION: &str = "qip_ambient_attention_total";
+    /// R12-OBS-7132: the action guard's verdict on one channel-health
+    /// dimension, by `channel`, `dimension` and `outcome`. Recorded from the
+    /// verdicts the guard decided on, never from a re-run of the checks, by
+    /// two writers: the deep brain's agency door
+    /// (`qip_deepbrain::ambient_agency`), where `channel` is one constant
+    /// (`qip_agency::outbox::OUTBOX_CHANNEL`, the only channel a draft may
+    /// use), and `qip agency shadow` (`qip_cli::agency`), where `channel` is
+    /// a channel the policy's tool registrations declare or the literal
+    /// `unconfigured`; `dimension` is
+    /// `qip_agency::guard::HealthDimension` — `identity_integrity`, `reach`,
+    /// `provenance`, `violations`, `coordination`; `outcome` is `pass` or
+    /// `fail`. A dimension the guard never reached for a draft is not
+    /// counted for it, so `pass` is never a check that did not run.
+    pub const AGENCY_CHANNEL_HEALTH: &str = "qip_agency_channel_health_total";
+    /// Drafts the agency door appended to its outbox, by `channel` (one
+    /// constant, as above). A retried draft that lands is counted when it
+    /// lands; one held or abandoned is not.
+    pub const AGENCY_DRAFTS_APPENDED: &str = "qip_agency_drafts_appended_total";
     /// Value-of-information requests, by outcome (`launched`, `halted`).
     pub const INFO_REQUESTS: &str = "qip_info_requests_total";
     /// The NOW estimate per domain, and its standard deviation.
