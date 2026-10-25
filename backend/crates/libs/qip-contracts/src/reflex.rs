@@ -643,11 +643,25 @@ pub enum Decision {
     /// order carries no copy: its id is derived from its own `order_id`.
     /// P2 only, because ADR 0100 §5's P1 row does not name this kind and
     /// widening that row is the ADR's to do.
+    ///
+    /// `policy_sequence` and `decision` are the join to the centre (ADR 0129
+    /// decision 5): the sequence of the policy payload the cell had applied
+    /// when it opened the chain, and the central cycle and correlation id
+    /// that payload was issued from. Without them a chain could be walked
+    /// back to its signals and no further, so the correlation id an operator
+    /// got from `POST /cycle` reached no cell record. Each is absent when the
+    /// cell holds no payload, or holds one that names no cycle, and absent
+    /// is off the wire — so a `ChainOpened` sealed before the fields existed
+    /// re-serialises, and re-digests, byte for byte.
     ChainOpened {
         correlation: String,
         order_id: String,
         pass: u64,
         signals: Vec<(String, u64)>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy_sequence: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision: Option<crate::policy::DecisionOrigin>,
     },
 }
 

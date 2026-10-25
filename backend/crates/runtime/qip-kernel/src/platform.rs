@@ -21161,6 +21161,32 @@ impl Platform {
         self.last_correlation.clone()
     }
 
+    /// The cycle a policy payload issued now was decided by, for the
+    /// payload's `decision` field (ADR 0129 decision 5, R12-OBS-7018,
+    /// R12-OBS-9154).
+    ///
+    /// The last cycle that *ran*: its number and the correlation id its
+    /// report carried, which is the id `POST /cycle` returned to the caller.
+    /// A cycle refused for running before the last one (`run_cycle`'s
+    /// time-travel refusal) mints a correlation id for its report and stores
+    /// none, so a payload issued after it is attributed to the cycle whose
+    /// state it actually carries rather than to one that moved nothing.
+    ///
+    /// `None` before the first cycle — a payload then ships with no origin
+    /// rather than one attributed to a cycle that never ran. Built without
+    /// [`qip_contracts::policy::DecisionOrigin::new`]'s checks because both
+    /// hold by construction here: `last_correlation` is set only after the
+    /// counter has been incremented, and the id generator never returns an
+    /// empty id.
+    pub fn decision_origin(&self) -> Option<qip_contracts::policy::DecisionOrigin> {
+        self.last_correlation
+            .clone()
+            .map(|correlation| qip_contracts::policy::DecisionOrigin {
+                cycle: self.cycle,
+                correlation,
+            })
+    }
+
     // --- the data finder, and the catalogue it feeds ------------------------
 
     /// The source registry: what this deployment has decided to collect.
