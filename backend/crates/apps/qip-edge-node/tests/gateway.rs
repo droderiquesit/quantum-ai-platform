@@ -482,6 +482,7 @@ fn a_synthetic_listing_refuses_nonsense_and_records_its_provenance() -> Result<(
                 dec!("1"),
                 stated_liquidity(),
                 start(),
+                &creation_admission("XLON", &object("X"))?,
                 &listing_admission("XLON", &object("X"))?,
             )
             .is_err(),
@@ -495,6 +496,7 @@ fn a_synthetic_listing_refuses_nonsense_and_records_its_provenance() -> Result<(
         dec!("0.01"),
         stated_liquidity(),
         start(),
+        &creation_admission("XLON", &object("X"))?,
         &listing_admission("XLON", &object("X"))?,
     )?;
     let listing = exchange.listing(&object("X")).expect("just listed");
@@ -1979,10 +1981,23 @@ fn permissions_for(
     Ok(permissions)
 }
 
-/// The permissions a listing of each of `objects` at `venue` needs: a recorded
-/// venue, product and jurisdiction permission for each. A fixture.
+/// The permissions a listing on demand of each of `objects` at `venue`
+/// needs: a recorded venue, product and jurisdiction permission for each, to
+/// create it and to list it, since listing on demand invents the instrument
+/// (R12-COVERAGE-5107). A fixture.
 fn listing_permissions(venue: &str, objects: &[&ObjectId]) -> Result<CreationPermissions> {
-    permissions_for(venue, &[CreationAction::List], objects)
+    permissions_for(
+        venue,
+        &[CreationAction::Create, CreationAction::List],
+        objects,
+    )
+}
+
+/// An admission to create `object` at `venue`, minted by a register holding
+/// all three permissions.
+fn creation_admission(venue: &str, object: &ObjectId) -> Result<CreationAdmission> {
+    let request = CreationRequest::new(CreationAction::Create, venue, object.as_str(), "paper");
+    listing_permissions(venue, &[object])?.admit(&request)
 }
 
 /// An admission to list `object` at `venue`, minted by a register holding
@@ -2013,7 +2028,11 @@ fn permitting_to_seed(
 ) -> Result<SimulatedGateway> {
     let permissions = permissions_for(
         gateway.venue(),
-        &[CreationAction::List, CreationAction::Seed],
+        &[
+            CreationAction::Create,
+            CreationAction::List,
+            CreationAction::Seed,
+        ],
         objects,
     )?;
     gateway.with_listing_permissions(permissions, "paper")
@@ -2283,7 +2302,11 @@ fn an_instrument_whose_permission_has_lapsed_is_refused_at_every_placement_and_s
     gateway.permit_listings(
         permissions_for(
             "XLON",
-            &[CreationAction::List, CreationAction::Seed],
+            &[
+                CreationAction::Create,
+                CreationAction::List,
+                CreationAction::Seed,
+            ],
             &[&kept],
         )?,
         "paper",
@@ -2339,15 +2362,18 @@ fn an_instrument_whose_permission_has_lapsed_is_refused_at_every_placement_and_s
     assert_eq!(gateway.held_count(), 1, "the refused order was held anyway");
 
     // The order held while the permission stood is admitted again at its
-    // release, and refused: the pass that reaches it sends nothing.
-    let released = gateway
-        .advance_to(t(5))
-        .expect_err("an order held under a permission that lapsed was released anyway");
-    assert_eq!(released.code(), "denied", "{}", released.message());
+    // release, and refused: the pass that reaches it sends nothing, and the
+    // refusal reaches the cell as a withdrawal carrying it.
+    gateway.advance_to(t(5))?;
+    let withdrawn = gateway.unreleased();
+    assert_eq!(withdrawn.len(), 1, "{withdrawn:?}");
+    let refusal = withdrawn[0]
+        .refused
+        .as_deref()
+        .expect("the release was withdrawn as late, not as refused");
     assert!(
-        released.message().contains(lapsed) && released.message().contains(to_list),
-        "the release was refused, but not as a listing whose permission lapsed: {}",
-        released.message()
+        refusal.contains(lapsed) && refusal.contains(to_list),
+        "the release was refused, but not as a listing whose permission lapsed: {refusal}"
     );
 
     assert_eq!(
@@ -2402,8 +2428,14 @@ fn an_instrument_whose_permission_has_lapsed_is_refused_at_every_placement_and_s
 /// same instant, the first on an instrument whose permission then lapses:
 /// the release names the refused order and still sends the second, on time.
 ///
-/// Mutation: return on the first refusal in `advance_to`, as it used to, and
-/// the second order is neither held nor sent.
+/// Since 2026-10-24 the refused order is not error text: `advance_to`
+/// succeeds and the refused order comes back through `Placer::unreleased`
+/// carrying the gateway's refusal, which is the seam the cell closes,
+/// journals and counts a withdrawn order on.
+///
+/// Mutations: return on the first refusal in `advance_to`, as it used to,
+/// and the second order is neither held nor sent; drop the refused order
+/// instead of pushing it onto `unreleased` and the cell is told nothing.
 #[test]
 fn a_held_order_refused_at_release_does_not_strand_the_orders_held_beside_it() -> Result<()> {
     let lapsing = object("LAPSING");
@@ -2440,25 +2472,97 @@ fn a_held_order_refused_at_release_does_not_strand_the_orders_held_beside_it() -
         "paper",
     )?;
 
-    let refusal = gateway
-        .advance_to(t(5))
-        .expect_err("an order held under a permission that lapsed was released");
-    assert!(
-        refusal
-            .message()
-            .contains("held order held-lapsing was refused at release"),
-        "the release refusal does not name the refused order: {}",
-        refusal.message()
-    );
+    gateway.advance_to(t(5))?;
     assert_eq!(
         (gateway.held_count(), gateway.submitted_count()),
         (0, 1),
         "the order held beside the refused one was not sent at its instant"
     );
-    assert!(
-        gateway.unreleased().is_empty(),
-        "an order was withdrawn as late when one beside it was refused"
+    let withdrawn = gateway.unreleased();
+    assert_eq!(
+        withdrawn
+            .iter()
+            .map(|order| (order.order_id.as_str(), order.refused.is_some()))
+            .collect::<Vec<_>>(),
+        vec![("held-lapsing", true)],
+        "the refused order, and only it, is withdrawn carrying its refusal: {withdrawn:?}"
     );
+    Ok(())
+}
+
+/// R12-COVERAGE-5107: listing on demand invents the instrument, so the
+/// gateway asks its register for `create` as well as `list`. Until
+/// 2026-10-24 it asked for `list` alone, and a register that permitted an
+/// instrument to be listed had, without anybody recording it, permitted it
+/// to be brought into existence. A gateway permitted to list and seed and
+/// not to create is refused by a placement and by a seed, names the missing
+/// creation permission, and leaves no listing, no order and no depth; one
+/// permitted to create too lists it.
+///
+/// Mutation: in `ensure_listed`, ask for `CreationAction::List` in place of
+/// `CreationAction::Create` and the refusal comes from the venue rather than
+/// from the gateway's register, without naming the creation permission
+/// missing.
+#[test]
+fn an_instrument_the_register_permits_to_list_but_not_to_create_is_never_invented() -> Result<()> {
+    let subject = object("NOCREATE");
+    let xlon = venue("XLON");
+    let mut no_create = SimulatedGateway::new(xlon.clone(), 7, start())?.with_listing_permissions(
+        permissions_for(
+            "XLON",
+            &[CreationAction::List, CreationAction::Seed],
+            &[&subject],
+        )?,
+        "paper",
+    )?;
+    let to_create = "to create obj-NOCREATE at XLON in paper needs";
+    let placed = no_create
+        .place(
+            "order-no-create",
+            &subject,
+            &xlon,
+            BookSide::Ask,
+            dec!("1"),
+            dec!("100"),
+            start(),
+        )
+        .expect_err("an instrument nobody permitted to be created was invented by a placement");
+    let seeded = no_create
+        .seed_touch(&subject, Side::Sell, dec!("100"), dec!("10"), start())
+        .expect_err("an instrument nobody permitted to be created was invented by a seed");
+    for (path, refusal) in [("placement", &placed), ("seed", &seeded)] {
+        assert_eq!(refusal.code(), "denied", "{path}: {}", refusal.message());
+        assert!(
+            refusal.message().contains(to_create)
+                && refusal
+                    .message()
+                    .contains("these are missing (venue, product, jurisdiction)"),
+            "the {path} was refused, but not for want of a creation permission: {}",
+            refusal.message()
+        );
+    }
+    assert!(
+        no_create.listing(&subject).is_none(),
+        "the instrument was invented anyway"
+    );
+    assert_eq!(no_create.submitted_count(), 0, "an order reached the venue");
+    assert_eq!(no_create.resting_count(), 0, "depth rested anyway");
+
+    // Contrast: with `create` recorded too, the same placement lists it.
+    let mut permitted = permitting(
+        SimulatedGateway::new(xlon.clone(), 7, start())?,
+        &[&subject],
+    )?;
+    permitted.place(
+        "order-create",
+        &subject,
+        &xlon,
+        BookSide::Ask,
+        dec!("1"),
+        dec!("100"),
+        start(),
+    )?;
+    assert!(permitted.listing(&subject).is_some());
     Ok(())
 }
 

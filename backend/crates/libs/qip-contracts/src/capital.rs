@@ -54,35 +54,45 @@ pub struct CapitalEnvelope {
     /// deployment does not grow by the bounds' size for every envelope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     exposure: Option<Box<ExposureBounds>>,
-    /// ADR 0126 decision 2 (R12-CAPITAL-4088): the drawdown stop, inside the
-    /// signed payload when present. Absent on an envelope issued before it
-    /// existed, which behaves as it always did — the loss limit is then the
-    /// only stop on realised losses.
+    /// ADR 0126 decision 2 and 3: the peak-to-trough drawdown stop, and the
+    /// liquidity reserve and ADV share when the issuer states them, inside
+    /// the signed payload when present. Absent on an envelope issued before
+    /// the block existed, which still verifies and is bounded by its loss
+    /// limit alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     drawdown: Option<Box<DrawdownBounds>>,
 }
 
-/// The fields of [`DrawdownBounds`] (ADR 0126 decision 2, R12-CAPITAL-4088).
+/// The fields of [`DrawdownBounds`] (ADR 0126, R12-CONTRACT-7066,
+/// R12-CAPITAL-4088).
 ///
-/// The loss limit stops a strategy whose realised P&L has fallen a given
-/// amount below where its grant began. It does not stop one that made money
-/// and then gave it back: a strategy up 9 on a loss limit of 10 can lose 19
-/// before the loss limit notices. The drawdown stop is measured from the
-/// realised P&L's high-water mark within the grant, so the give-back is what
-/// it bounds.
+/// The loss limit stops a strategy once its realised loss reaches it, and
+/// that number is net: a strategy that made a hundred and then lost a
+/// hundred has lost nothing by it, while the desk watched a peak-to-trough
+/// fall the size of the loss limit. The drawdown bound is that fall, so a
+/// grant can stop a strategy that has given back what it made and not only
+/// one that is under water. The reserve and the ADV share are what the
+/// `CapitalGrant` the ledger books used to *write* (zero and the whole);
+/// stated here, the grant reads them instead.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DrawdownBoundsFields {
     pub schema_version: u32,
-    /// The largest fall of realised P&L from its high-water mark within the
-    /// grant, in the account currency, that the strategy may take.
+    /// The realised peak-to-trough fall, in the account currency, at which
+    /// the cell stops the strategy. Never above the loss limit, which
+    /// [`CapitalEnvelope::with_drawdown`] checks.
     pub max_drawdown: Decimal,
+    /// Capital the grant must hold back from deployment, when the issuer
+    /// states one; `None` is "not stated", never zero.
+    pub liquidity_reserve: Option<Decimal>,
+    /// The largest share of average daily volume the grant may take, in
+    /// basis points, when the issuer states one; `None` is "not stated".
+    pub max_adv_share_bp: Option<u32>,
 }
 
-/// A validated drawdown stop. Built only through [`Validated::new`]; decode
-/// runs the same refusal. Whether it is within the envelope's loss limit is
-/// a fact about the pair, refused by [`CapitalEnvelope::with_drawdown`] and,
-/// for an envelope decoded off the wire, by the cell's verification.
+/// Validated drawdown bounds. Built only through [`Validated::new`];
+/// deserialisation runs the same refusals, so a bound widened on the wire
+/// is refused at decode rather than enforced as sent.
 pub type DrawdownBounds = Validated<DrawdownBoundsFields>;
 
 impl Contract for DrawdownBoundsFields {
@@ -93,20 +103,39 @@ impl Contract for DrawdownBoundsFields {
         self.schema_version
     }
 
-    /// Refuses a stop that is not positive: a drawdown stop of zero stops a
-    /// strategy before its first loss, which is a grant of nothing stated in
-    /// the wrong field.
+    /// Refuses a drawdown that is not positive (a zero stop is a halt
+    /// written as a limit), a negative reserve and an ADV share of zero or
+    /// above the whole volume. Nothing is clamped.
     fn check(&self) -> Result<()> {
-        positive(Self::NAME, "max_drawdown", self.max_drawdown)
+        let c = Self::NAME;
+        positive(c, "max_drawdown", self.max_drawdown)?;
+        if let Some(reserve) = self.liquidity_reserve {
+            non_negative(c, "liquidity_reserve", reserve)?;
+        }
+        if let Some(share) = self.max_adv_share_bp
+            && (share == 0 || share > MAX_BP)
+        {
+            return refuse(
+                c,
+                format!("states an ADV share of {share} bp; give one in (0, {MAX_BP}]"),
+            );
+        }
+        Ok(())
     }
 }
 
 impl DrawdownBounds {
-    /// The stop at the current schema version.
-    pub fn bounded(max_drawdown: Decimal) -> Result<Self> {
+    /// The bounds at the current schema version.
+    pub fn bounded(
+        max_drawdown: Decimal,
+        liquidity_reserve: Option<Decimal>,
+        max_adv_share_bp: Option<u32>,
+    ) -> Result<Self> {
         Validated::new(DrawdownBoundsFields {
             schema_version: DrawdownBoundsFields::SCHEMA_VERSION,
             max_drawdown,
+            liquidity_reserve,
+            max_adv_share_bp,
         })
     }
 }
@@ -326,58 +355,6 @@ impl CapitalEnvelope {
         })
     }
 
-    /// This envelope with a drawdown stop, and its signature cleared: the
-    /// stop enters the signed payload. Refuses an envelope already carrying
-    /// one — a changed stop is a new envelope — and a stop looser than the
-    /// loss limit, which would never fire before the loss limit did and so
-    /// is not a bound (ADR 0126 decision 2).
-    pub fn with_drawdown(mut self, drawdown: DrawdownBounds) -> Result<Self> {
-        if self.drawdown.is_some() {
-            return Err(Error::denied(
-                "this envelope already carries a drawdown stop; a changed stop is a new \
-                 envelope, signed anew",
-            ));
-        }
-        self.drawdown_within_loss_limit(&drawdown)?;
-        self.drawdown = Some(Box::new(drawdown));
-        self.signature = String::new();
-        Ok(self)
-    }
-
-    pub fn drawdown(&self) -> Option<&DrawdownBounds> {
-        self.drawdown.as_deref()
-    }
-
-    /// Refuse a drawdown stop above this envelope's loss limit. Public so a
-    /// cell can run it on an envelope decoded off the wire, where
-    /// [`Self::with_drawdown`] never ran.
-    pub fn drawdown_within_loss_limit(&self, drawdown: &DrawdownBounds) -> Result<()> {
-        if drawdown.max_drawdown > self.loss_limit {
-            return Err(Error::invalid(format!(
-                "a drawdown stop of {} is looser than the {} loss limit, so it could never fire \
-                 first; state one no wider than the loss limit",
-                drawdown.max_drawdown, self.loss_limit
-            )));
-        }
-        Ok(())
-    }
-
-    /// Refuse when `drawdown` — the strategy's realised P&L high-water mark
-    /// within the grant less its current realised P&L — has reached the
-    /// envelope's stop. An envelope with no stop refuses nothing here.
-    /// Separate from [`Self::admit`] so the cell journals it under its own
-    /// gate (ADR 0126 decision 2).
-    pub fn check_drawdown(&self, drawdown: Decimal) -> std::result::Result<(), String> {
-        match &self.drawdown {
-            Some(stop) if drawdown >= stop.max_drawdown => Err(format!(
-                "realised P&L has fallen {drawdown} from its high-water mark within the grant, \
-                 reaching the {} drawdown stop",
-                stop.max_drawdown
-            )),
-            _ => Ok(()),
-        }
-    }
-
     /// This envelope with liquidity and leverage bounds, and its signature
     /// cleared: the bounds enter the signed payload, so a signature taken
     /// before them is over the wrong thing. Refuses an envelope already
@@ -419,6 +396,70 @@ impl CapitalEnvelope {
 
     pub fn exposure(&self) -> Option<&ExposureBounds> {
         self.exposure.as_deref()
+    }
+
+    /// This envelope with a drawdown bounds block, and its signature
+    /// cleared: the block enters the signed payload. Refuses an envelope
+    /// already carrying one (a changed bound is a new envelope) and any
+    /// block [`Self::check_drawdown_consistent`] refuses.
+    pub fn with_drawdown(mut self, drawdown: DrawdownBounds) -> Result<Self> {
+        if self.drawdown.is_some() {
+            return Err(Error::denied(
+                "this envelope already carries drawdown bounds; a changed bound is a new \
+                 envelope, signed anew",
+            ));
+        }
+        self.drawdown = Some(Box::new(drawdown));
+        self.check_drawdown_consistent()?;
+        self.signature = String::new();
+        Ok(self)
+    }
+
+    pub fn drawdown(&self) -> Option<&DrawdownBounds> {
+        self.drawdown.as_deref()
+    }
+
+    /// The cross-field half of the drawdown block's validation, which a
+    /// block's own decode cannot see: a drawdown stop above the loss limit
+    /// is not a bound (the loss limit fires first on every path to it), and
+    /// a reserve above the gross limit holds back more than was granted.
+    /// Called by [`Self::with_drawdown`] and by the cell when it verifies an
+    /// envelope, so an envelope decoded off the wire meets the same refusal
+    /// as one built in process.
+    pub fn check_drawdown_consistent(&self) -> Result<()> {
+        let Some(drawdown) = self.drawdown.as_deref() else {
+            return Ok(());
+        };
+        if drawdown.max_drawdown > self.loss_limit {
+            return Err(Error::invalid(format!(
+                "a drawdown stop of {} is looser than the {} loss limit, so it could never fire; \
+                 state one at or below the loss limit",
+                drawdown.max_drawdown, self.loss_limit
+            )));
+        }
+        if let Some(reserve) = drawdown.liquidity_reserve
+            && reserve > self.gross_limit
+        {
+            return Err(Error::invalid(format!(
+                "a liquidity reserve of {reserve} holds back more than the {} gross limit granted",
+                self.gross_limit
+            )));
+        }
+        Ok(())
+    }
+
+    /// Refuse a further order once `drawdown` — the strategy's realised
+    /// peak-to-trough fall within this grant, as the cell measures it — has
+    /// reached the bound. `Ok` for an envelope with no drawdown block: it
+    /// was never signed over one, and its loss limit still binds.
+    pub fn check_drawdown(&self, drawdown: Decimal) -> std::result::Result<(), String> {
+        match self.drawdown.as_deref() {
+            Some(bounds) if drawdown >= bounds.max_drawdown => Err(format!(
+                "a realised drawdown of {drawdown} reached the grant's {} drawdown stop",
+                bounds.max_drawdown
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Check an order against the envelope's liquidity and leverage bounds
@@ -633,11 +674,21 @@ impl CapitalEnvelope {
                 exposure.capital
             ),
         };
+        // An unstated reserve or ADV share is `-`, never `0`: zero is a
+        // statement, and a payload that spelled "not stated" as zero would
+        // sign the two as one claim.
         match &self.drawdown {
             None => base,
-            Some(stop) => format!(
-                "{base}|drawdown.v{}|{}",
-                stop.schema_version, stop.max_drawdown
+            Some(drawdown) => format!(
+                "{base}|drawdown.v{}|{}|{}|{}",
+                drawdown.schema_version,
+                drawdown.max_drawdown,
+                drawdown
+                    .liquidity_reserve
+                    .map_or_else(|| "-".to_string(), |reserve| reserve.to_string()),
+                drawdown
+                    .max_adv_share_bp
+                    .map_or_else(|| "-".to_string(), |share| share.to_string())
             ),
         }
     }

@@ -27,7 +27,7 @@ const TRACE: &str = "trace-0042";
 fn context(class: QosClass) -> FabricContext {
     FabricContext {
         stream: "reflex-outcomes.local".to_string(),
-        region: "us-east".to_string(),
+        region: Some("us-east".to_string()),
         partition: 3,
         qos_class: class,
         auth_context: "consumer:ledger".to_string(),
@@ -73,7 +73,6 @@ fn over_the_wire(records: Vec<Record>) -> Batch {
     stamp_drain(&mut batch, "cell-a", 5, 40);
     stamp_broker(
         &mut batch,
-        0,
         17,
         9,
         LogicalTimestamp {

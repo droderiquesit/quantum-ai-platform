@@ -80,6 +80,20 @@ const DEFAULT_ORDER_FRACTION: Decimal = Decimal::from_raw(100_000_000);
 /// What fraction of an envelope may be lost before the cell stops itself.
 const DEFAULT_LOSS_FRACTION: Decimal = Decimal::from_raw(200_000_000);
 
+/// The drawdown stop as a share of the loss limit, by default: the whole of
+/// it (ADR 0126 decision 2).
+///
+/// Measured peak-to-trough on realised P&L, a fall can only equal or exceed
+/// the net loss over the same trades, so a stop the size of the loss limit
+/// never fires later than the loss limit does and fires earlier on a
+/// strategy that gave back what it made. It is the standing figure, not a
+/// calibration; a desk that wants a tighter stop states a smaller share.
+pub const DEFAULT_DRAWDOWN_OF_LOSS: Decimal = Decimal::ONE;
+
+fn default_drawdown_of_loss() -> Decimal {
+    DEFAULT_DRAWDOWN_OF_LOSS
+}
+
 /// The largest share of the visible depth on the side an order takes that a
 /// grant lets one order ask for, by default: a quarter (R12-CAPITAL-4088).
 ///
@@ -134,6 +148,13 @@ pub struct EnvelopeTerms {
     /// a capital equal to the gross limit as signed — after any narrowing,
     /// so a narrowed grant is backed by the narrowed figure.
     pub exposure: ExposureTerms,
+    /// The drawdown stop as a share of the loss limit, in `(0, 1]` (ADR
+    /// 0126). Every envelope the issuer signs carries the stop, so a cell
+    /// never has to read a grant from this issuer as bounded by its net loss
+    /// alone. Defaulted on decode so terms written before the field existed
+    /// still read, at the standing figure.
+    #[serde(default = "default_drawdown_of_loss")]
+    pub drawdown_of_loss: Decimal,
 }
 
 impl EnvelopeTerms {
@@ -148,7 +169,13 @@ impl EnvelopeTerms {
             venues: vec![allocation.venue.clone()],
             validity,
             exposure: ExposureTerms::default(),
+            drawdown_of_loss: DEFAULT_DRAWDOWN_OF_LOSS,
         }
+    }
+
+    pub fn with_drawdown_of_loss(mut self, share: Decimal) -> Self {
+        self.drawdown_of_loss = share;
+        self
     }
 
     pub fn with_exposure(mut self, exposure: ExposureTerms) -> Self {
@@ -313,6 +340,7 @@ impl EnvelopeIssuer {
         for (label, fraction) in [
             ("order", terms.order_fraction),
             ("loss", terms.loss_fraction),
+            ("drawdown-of-loss", terms.drawdown_of_loss),
         ] {
             if !fraction.is_positive() || fraction > Decimal::ONE {
                 return Err(Error::invalid(format!(
@@ -329,6 +357,17 @@ impl EnvelopeIssuer {
             .gross_limit
             .checked_mul(terms.loss_fraction)
             .ok_or_else(|| Error::numeric("the loss limit overflowed"))?;
+        let max_drawdown = loss_limit
+            .checked_mul(terms.drawdown_of_loss)
+            .filter(|stop| stop.is_positive())
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "a drawdown stop of {} of the {loss_limit} loss limit is not a positive \
+                     amount",
+                    terms.drawdown_of_loss
+                ))
+            })?;
+        let drawdown = DrawdownBounds::bounded(max_drawdown, None, None)?;
         let expires_at = now.saturating_add(terms.validity);
 
         // The bounds are validated before anything is signed: a participation
@@ -356,12 +395,7 @@ impl EnvelopeIssuer {
             String::new(),
         )?
         .with_exposure(exposure)?
-        // The drawdown stop at the loss limit: the loosest ADR 0126 decision
-        // 2 admits, so issuing it states the fifth bound without inventing a
-        // tighter limit nobody set. A grant's realised give-back from its
-        // high-water mark can then never exceed what its loss limit already
-        // allows from zero, which the loss limit alone did not ensure.
-        .with_drawdown(DrawdownBounds::bounded(loss_limit)?)?;
+        .with_drawdown(drawdown)?;
         let signature = self.sign(&unsigned.signing_payload())?;
         Ok(unsigned.signed(signature))
     }

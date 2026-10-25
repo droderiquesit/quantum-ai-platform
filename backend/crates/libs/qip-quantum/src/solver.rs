@@ -193,7 +193,7 @@ pub struct SearchTrace {
 }
 
 impl SearchTrace {
-    fn new(family: &str) -> Self {
+    pub(crate) fn new(family: &str) -> Self {
         Self {
             family: family.to_string(),
             moves_proposed: 0,

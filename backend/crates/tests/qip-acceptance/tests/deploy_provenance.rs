@@ -400,3 +400,152 @@ fn a_deployment_whose_ci_run_did_not_succeed_is_refused_on_both_paths() {
     }
     let _ = std::fs::remove_dir_all(&bin);
 }
+
+/// R12-CICD-9066: infrastructure goes through the same tests as code. The
+/// apply actions of `infra.yml` run the same refusal deploy.yml does: a
+/// commit with no successful push-started ci run is not applied. The step is
+/// executed against a stub `gh` that reports each count, because a step that
+/// reads correctly and exits 0 on every input is what a text check misses.
+#[test]
+fn an_infrastructure_apply_of_a_commit_ci_has_not_passed_is_refused() {
+    let workflow = read(".github/workflows/infra.yml");
+    let marker = "- name: ci succeeded for this commit\n";
+    let at = workflow
+        .find(marker)
+        .unwrap_or_else(|| panic!("infra.yml has no ci gate step"));
+    let condition = workflow[at + marker.len()..]
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim();
+    assert_eq!(
+        condition, "if: inputs.action == 'up' || inputs.action == 'apps'",
+        "the ci gate must cover both apply actions"
+    );
+    let apply = workflow
+        .find("- name: up\n")
+        .unwrap_or_else(|| panic!("premise: infra.yml has an up step"));
+    assert!(at < apply, "the ci gate must run before the apply");
+
+    let script = step_script(&workflow, "ci succeeded for this commit");
+    assert!(
+        script.contains("head_sha=${THIS_SHA}&status=success&event=push"),
+        "the gate trusts a ci run not started by a push: {script}"
+    );
+    let dir = std::env::temp_dir().join(format!("qip-infra-gate-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("scratch dir: {e}"));
+    let gh = dir.join("gh");
+    let path = format!("{}:/usr/bin:/bin", dir.display());
+    for (count, expected) in [("0", 1), ("", 1), ("null", 1), ("1", 0), ("3", 0)] {
+        std::fs::write(&gh, format!("#!/bin/bash\necho '{count}'\n"))
+            .unwrap_or_else(|e| panic!("stub gh: {e}"));
+        let status = Command::new("chmod")
+            .arg("+x")
+            .arg(&gh)
+            .status()
+            .unwrap_or_else(|e| panic!("chmod: {e}"));
+        assert!(status.success());
+        let code = {
+            let mut command = Command::new("bash");
+            command.arg("-c").arg(&script).env_clear();
+            command.env("PATH", &path);
+            command.env("THIS_REPOSITORY", "owner/repo");
+            command.env("THIS_SHA", "abc123");
+            command
+                .output()
+                .map_or(-1, |o| o.status.code().unwrap_or(-1))
+        };
+        assert_eq!(code, expected, "ci run count {count:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// R12-CICD-7116 and R12-CICD-7119: a deploy is not promoted unless the
+/// simulation gate and the performance gate succeeded in the ci run it
+/// trusts. ci.yml must define both jobs under the names the deploy step reads,
+/// and the step is executed against a stub `gh` answering each job's
+/// conclusion, because a step that exits 0 on every answer is what a text
+/// check misses.
+#[test]
+fn a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused() {
+    let ci = read(".github/workflows/ci.yml");
+    for (job, name) in [
+        ("simulation-gate", "simulation gate"),
+        ("performance-gate", "performance gate"),
+    ] {
+        assert!(
+            ci.contains(&format!("\n  {job}:\n    name: {name}\n")),
+            "ci.yml does not define the {name} job the deploy gate requires"
+        );
+    }
+    assert!(
+        ci.contains("--test performance") && ci.contains("--test arch_056_simulation_engine"),
+        "a gate job no longer runs its suite"
+    );
+
+    let workflow = read(DEPLOY);
+    let script = step_script(
+        &workflow,
+        "the simulation and performance gates passed in that ci run",
+    );
+    let dir = std::env::temp_dir().join(format!("qip-gates-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("scratch dir: {e}"));
+    let gh = dir.join("gh");
+    std::fs::write(
+        &gh,
+        r#"#!/bin/bash
+case "$*" in
+  *'simulation gate'*) echo "$SIM" ;;
+  *'performance gate'*) echo "$PERF" ;;
+  *) echo "unexpected gh call: $*" >&2; exit 2 ;;
+esac
+"#,
+    )
+    .unwrap_or_else(|e| panic!("stub gh: {e}"));
+    let status = Command::new("chmod")
+        .arg("+x")
+        .arg(&gh)
+        .status()
+        .unwrap_or_else(|e| panic!("chmod: {e}"));
+    assert!(status.success());
+    let path = format!("{}:/usr/bin:/bin", dir.display());
+    let code = |sim: &str, perf: &str| {
+        let mut command = Command::new("bash");
+        command.arg("-c").arg(&script).env_clear();
+        command.env("PATH", &path);
+        command.env("THIS_REPOSITORY", "owner/repo");
+        command.env("TRIGGER_RUN_ID", "42");
+        command.env("DEPLOY_SHA", "abc123");
+        command.env("SIM", sim);
+        command.env("PERF", perf);
+        command
+            .output()
+            .map_or(-1, |o| o.status.code().unwrap_or(-1))
+    };
+    assert_eq!(
+        code("success", "success"),
+        0,
+        "both gates passed and the deploy was refused"
+    );
+    assert_eq!(
+        code("", "success"),
+        1,
+        "a ci run with no simulation gate was admitted"
+    );
+    assert_eq!(
+        code("success", ""),
+        1,
+        "a ci run with no performance gate was admitted"
+    );
+    assert_eq!(
+        code("failure", "success"),
+        1,
+        "a failed simulation gate was admitted"
+    );
+    assert_eq!(
+        code("success", "cancelled"),
+        1,
+        "a cancelled performance gate was admitted"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -194,3 +194,42 @@ jobs:
             if [ "$accepted" -ne 0 ] || [ "$judged" -ne 0 ]; then exit 1; fi
             exit 0
           }
+
+      # The compromise drill's sandbox half (R12-SEC-10157): a process with
+      # the lane's identity tries what a hijacked agent would — read a
+      # secret, open a connection around the proxy, reach a host the policy
+      # does not allow, find a token in the checkouts — and every attempt
+      # must be refused. It runs after the verdict so its own refused
+      # requests are not judged as the lane's. A boundary that let one
+      # through fails the job, so the drill cannot pass silently.
+      - name: a hostile process with the lane's identity is refused
+        run: |
+          set -uo pipefail
+          lane_gid="$(getent group lane-egress | cut -d: -f3)"
+          proxy=http://127.0.0.1:3128
+          planted=/var/lib/agent-egress/planted-secret
+          echo "drill-canary-$(date +%s%N)" | sudo tee "$planted" > /dev/null
+          sudo chmod 600 "$planted"
+          as_lane() {
+            sudo setpriv --reuid="$(id -u)" --regid="$lane_gid" --clear-groups --no-new-privs -- \
+              env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 \
+                HTTPS_PROXY="$proxy" https_proxy="$proxy" "$@"
+          }
+          breached=0
+          if as_lane cat "$planted" > /dev/null 2>&1; then
+            echo "BREACH: the lane read a root-only secret" >&2; breached=1
+          else echo "held: secret read refused"; fi
+          if as_lane curl --silent --max-time 10 --noproxy '*' https://example.com/ -o /dev/null; then
+            echo "BREACH: the lane opened a connection around the egress proxy" >&2; breached=1
+          else echo "held: direct connection refused"; fi
+          if as_lane curl --silent --fail --max-time 10 https://example.com/ -o /dev/null; then
+            echo "BREACH: the proxy let the lane reach a host outside egress_allow" >&2; breached=1
+          else echo "held: off-list host refused by the proxy"; fi
+          if as_lane bash -c 'env | grep -E "^(GITHUB_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN|ACTIONS_RUNTIME_TOKEN)="' > /dev/null; then
+            echo "BREACH: a runner token is in the lane's environment" >&2; breached=1
+          else echo "held: no runner token in the lane's environment"; fi
+          if as_lane bash -c 'grep -rqi "extraheader" lane/.git/config trusted/.git/config 2>/dev/null'; then
+            echo "BREACH: a checkout kept the repository token" >&2; breached=1
+          else echo "held: no checkout kept the token"; fi
+          sudo rm -f "$planted"
+          exit "$breached"

@@ -85,7 +85,9 @@ fn grant() -> Result<VerifiedEnvelope> {
         capital,
     )?)?;
     let loss_limit = unsigned.loss_limit();
-    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(loss_limit)?)?;
+    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(
+        loss_limit, None, None,
+    )?)?;
     let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
     VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, CELL, t(1))
 }
@@ -300,14 +302,11 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        let request = CreationRequest::new(
-            CreationAction::List,
-            venue.as_str(),
-            object.as_str(),
-            "paper",
-        );
-        for authority in CreationAuthority::ALL {
-            permissions.record(authority, &request, "test fixture")?;
+        for action in [CreationAction::Create, CreationAction::List] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
         }
     }
     gateway.with_listing_permissions(permissions, "paper")
@@ -316,7 +315,7 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
 /// Permit `gateway` to seed each of `objects` as well as to list it, in
 /// place, where it is about to be seeded (R12-COVERAGE-5107: permission to
 /// list is not permission to seed). Called only there, so a test here that
-/// seeds nothing runs under `List` alone. It replaces the register
+/// seeds nothing runs under `Create` and `List` alone. It replaces the register
 /// `permitting` installed, so `objects` names every instrument the gateway
 /// lists, not only the one seeded. A fixture; the refusals without either
 /// permission are proven in qip-edge-node's tests/gateway.rs.
@@ -324,7 +323,11 @@ fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Resu
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        for action in [CreationAction::List, CreationAction::Seed] {
+        for action in [
+            CreationAction::Create,
+            CreationAction::List,
+            CreationAction::Seed,
+        ] {
             let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
             for authority in CreationAuthority::ALL {
                 permissions.record(authority, &request, "test fixture")?;

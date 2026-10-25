@@ -1780,21 +1780,24 @@ impl ComputeRouter {
                 problem.dimension()
             )));
         }
-        // The provider's energy is a number it computed; recomputing it on
-        // the QUBO it was given guards against a claim that does not match
-        // the assignment. This is the classical validation gate QUANT-012
-        // requires before any quantum result is used.
-        let recomputed = qubo.evaluate(&result.assignment);
-        let discrepancy = (recomputed - result.energy).abs();
-        if !discrepancy.is_finite() || discrepancy > ENERGY_TOLERANCE {
-            return Err(Error::guard(format!(
-                "quantum provider claimed QUBO energy {:.6} but the assignment is worth {:.6}: a gap of {:.3e} exceeds tolerance {:.3e}. The result is refused.",
-                result.energy, recomputed, discrepancy, ENERGY_TOLERANCE
-            )));
-        }
+        // The provider's energy is a claim. The validator recomputes it on
+        // the QUBO the job was sent and refuses a mismatch beyond tolerance,
+        // and the only thing it returns is a `ValidatedSolution`: the
+        // classical validation gate QUANT-012 requires, typed, so nothing
+        // below this line can read the provider's assignment unvalidated
+        // (R12-QUANT-1012). The quantum-inspired arm goes through the same
+        // door.
+        let validated = ClassicalValidator::new(ENERGY_TOLERANCE)?
+            .validate_qaoa(qubo, "quantum", &result)
+            .map_err(|refusal| {
+                Error::guard(format!(
+                    "the quantum answer failed classical validation and is refused: {}",
+                    refusal.message()
+                ))
+            })?;
 
         let encoding = self.encoding_for(problem);
-        let weights = encoding.to_weights(&result.assignment);
+        let weights = encoding.to_weights(validated.assignment());
         let mut relaxations = vec![
             encoding.describe(),
             "solved asynchronously on an earlier cycle's figures and re-scored on this cycle's \
@@ -1816,7 +1819,7 @@ impl ComputeRouter {
                 true,
                 relaxations,
             )
-            .with_assignment(&result.assignment))
+            .with_assignment(validated.assignment()))
     }
 
     /// The compiled task for a portfolio problem (§11.2 steps 1–3).

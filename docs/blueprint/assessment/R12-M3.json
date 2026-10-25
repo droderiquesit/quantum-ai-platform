@@ -663,23 +663,27 @@
   },
   {
     "id": "R12-GOV-3030",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "No post-publication monitoring in code.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs pre-release gate only"
+      "backend/crates/services/qip-agency/src/conduct_brain.rs pre-release gate only",
+      "backend/crates/services/qip-agency/src/guard.rs::Voice.content, MAX_RELEASED_CONTENT_BYTES, ActionGuard::recheck_released (288e5887)",
+      "backend/crates/services/qip-agency/tests/agency.rs::the_post_release_check_reports_a_later_breach_an_unreadable_release_and_an_altered_one",
+      "backend/crates/apps/qip-cli/tests/agency.rs::a_released_message_that_a_later_policy_prohibits_is_filed_as_a_finding_once",
+      "backend/crates/apps/qip-cli/tests/agency.rs::a_draft_too_long_to_keep_whole_is_not_released_and_one_at_the_bound_is"
     ],
-    "gap": "Entire capability. Lane L5-EDGE 2026-10-24: the agency is shadow-only (conduct_brain.rs module doc: no live channel anywhere), so nothing is published to monitor; the journal's VoiceReleased record keeps only a fingerprint of a released draft (guard.rs Voice), not its content, so even a post-release re-check of shadow releases on qip-cli agency resume has nothing to re-read. Building it needs the released content journaled (an additive AgencyRecord field) and a re-check against the conduct gate on resume that journals a finding; it would still read 'published' as a shadow release, which the owner should accept or reject.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-24 (lane L5-EDGE, after 288e5887; independent skeptic REFUTED): Any one of: (a) the owner records, in an ADR or a requirement amendment, that a shadow release counts as publication for R12-GOV-3030; or (b) a real publication channel exists and the re-check runs against it. In either case, also: the re-check runs on a scheduled or deployed path rather than only on the next operator CLI run; it uses the gate's full evaluation (not just phrase rules); someone runs the named test and its mutation and quotes the output; and the R12-M3.json record is updated.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test in qip-agency",
+    "verification": "cargo +1.94.1 test -p qip-agency --test agency the_post_release; cargo +1.94.1 test -p qip-cli --test agency",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L5-EDGE: left MISSING; facts above read from qip-agency guard.rs and journal.rs."
+    "notes": "2026-10-24 lane L5-EDGE: left MISSING; facts above read from qip-agency guard.rs and journal.rs. 2026-10-24 lane L5-EDGE: built in 288e5887. Mutations fired: recheck skips the fingerprint; the CLI files nothing; the length bound dropped. Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Findings: The mechanism is real, but it re-checks a shadow release, not a publication. Under Part 4 the requirement text decides.  What holds: - `backend/crates/services/qip-agency/src/guard.rs:341-378`: `ActionGuard::recheck_released` re-reads each kept `Voice.content`. It checks the fingerprint, then runs `rule.breach` for every current conduct rule. - `backend/crates/apps/qip-cli/src/agency.rs:392-396`: `Session::open` runs the re-check every time it opens, so it is on the default path of `qip agency shadow` (Part 2 is arguably met). Findings are filed with the next pass and cleared at `:582-588`. - Test: `backend/crates/apps/qip-cli/tests/agency.rs:1086` (`a_released_message_that_a_later_policy_prohibits_is_filed_as_a_finding_once`). Its doc comment states a mutation. I did not run this test or re-run the mutation, so Part 1 is claimed by the commit, not verified by me.  Why REFUTED: 1. The requirement (`docs/blueprint/requirements.md:1372`) says \"Post-publication monitoring of external communications … A published message is re-checked after publication\". The agency is shadow-only: `conduct_brain.rs:33` says \"no live channel anywhere\". Nothing is ever published, so the thing being re-checked is a shadow release. The row's own gap says reading \"published\" as a shadow release is something \"the owner should accept or reject\". No owner acceptance or ADR exists in the tree. 2. \"Monitors\" is weak. The check runs only when an operator next invokes `qip agency shadow`. Per `deploy.yml:468`, `qip-cli` is an operator tool with no deployed or scheduled instance. 3. The re-check applies only the conduct phrase rules (`rule.breach`), not the gate's full `evaluate()` checks (factual support, provenance). So a later evidence failure raises no finding. 4. `docs/blueprint/assessment/R12-M3.j"
   },
   {
     "id": "R12-GOV-3031",

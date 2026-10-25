@@ -45,13 +45,31 @@
 //! A node with no sink configured still runs this thread: segments then
 //! retire as soon as they seal, and the spool is the bounded local record
 //! the pressure gauge measures rather than an unbounded one.
+//!
+//! # The drain step of a rollout (R12-REFLEX-9114)
+//!
+//! Reflex components roll out by drain, fence and epoch activation, not by
+//! a pod canary: the old incarnation stops, ships what it holds, and the new
+//! one activates under a higher epoch. The epoch half is `standby.rs` (a
+//! promotion swaps the lease to `epoch + 1` before granting its fence) and
+//! the broker's producer epochs. This is the drain half. A drain spawned
+//! with the cell's [`Fence`] ([`Drain::spawn_fenced`]) watches it, and the
+//! first time a fence that held stops admitting — its lease lapsed or a
+//! higher epoch was read — it seals the spool and drives every sink to what
+//! the spool held at that instant ([`Drain::drain_to_tail`]), records how
+//! that ended ([`DrainThread::drained_on_fence`]), and stops. The standby's
+//! promotion waits `ttl + margin` after the holder's last renewal, and the
+//! holder's fence lapses at `ttl`, so the margin is the window this drain
+//! runs in before the new incarnation's producer epoch fences it out.
 
 use crate::event_fabric::pressure::DrainPublisher;
 use crate::event_fabric::telemetry::OutboxTelemetry;
 use crate::event_fabric::writer::{market_event, stream_of};
 use qip_contracts::captured_event::CapturedMarketEvent;
 use qip_contracts::market_event::MarketEvent;
+use qip_core::Clock;
 use qip_core::error::{Error, Result};
+use qip_edge::fencing::Fence;
 use qip_events::event_fabric::bindings;
 use qip_events::event_fabric::bindings::MARKET_EVENT_APPLIED;
 use qip_events::event_fabric::codec::Batch;
@@ -65,8 +83,8 @@ use qip_storage::segment::log::SegmentLog;
 use qip_storage::tick_capture::RetentionRight;
 use qip_transport::event_fabric::producer::Producer;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -79,6 +97,26 @@ pub const OUTCOMES_STREAM: &str = bindings::REFLEX_OUTCOMES_STREAM;
 /// The P2 stream the reflex journal, pass markers and tape events are
 /// produced to (streams.local.json).
 pub const JOURNAL_STREAM: &str = "reflex-journal.local";
+
+/// The most drain steps a drain-out on fence takes before it reports the
+/// spool stalled rather than drained: bounded, so a destination that never
+/// answers cannot hold the old incarnation open past its margin.
+pub const MAX_DRAIN_OUT_STEPS: usize = 64;
+
+/// What a drain-out ([`Drain::drain_to_tail`]) reached.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DrainedTo {
+    /// Every sink took everything the spool held when the drain-out began.
+    Tail { delivered: usize, steps: usize },
+    /// A sink was fenced, or the step bound passed, before every sink took
+    /// it all; what is left stays on the spool, named, never reported as
+    /// shipped.
+    Stalled {
+        delivered: usize,
+        steps: usize,
+        reason: String,
+    },
+}
 
 /// The manifest key prefix a sink's cursor is committed under.
 const CURSOR_PREFIX: &str = "drain.cursor.";
@@ -287,16 +325,96 @@ impl Drain {
         Ok(report)
     }
 
+    /// The drain step of a rollout: seal the spool, then step until every
+    /// sink has taken everything it held at this call, a sink is fenced, or
+    /// `max_steps` pass. A refusal from an unfenced sink is retried within
+    /// the bound, as an ordinary step retries it.
+    pub fn drain_to_tail(&mut self, max_steps: usize) -> Result<DrainedTo> {
+        self.log.seal_active()?;
+        self.last_seal = Instant::now();
+        let target = self.log.high_water();
+        let mut delivered = 0usize;
+        for steps in 1..=max_steps {
+            let step = self.step()?;
+            delivered += step.delivered;
+            if self.cursors.iter().all(|cursor| cursor.next >= target) {
+                return Ok(DrainedTo::Tail { delivered, steps });
+            }
+            if let Some(cursor) = self.cursors.iter().find(|cursor| cursor.sink.fenced()) {
+                return Ok(DrainedTo::Stalled {
+                    delivered,
+                    steps,
+                    reason: format!(
+                        "the {} sink is fenced by a newer producer epoch at spool offset {} of \
+                         {target}; what is left stays on the spool",
+                        cursor.sink.name(),
+                        cursor.next
+                    ),
+                });
+            }
+        }
+        let behind: Vec<String> = self
+            .cursors
+            .iter()
+            .filter(|cursor| cursor.next < target)
+            .map(|cursor| format!("{} at {}", cursor.sink.name(), cursor.next))
+            .collect();
+        Ok(DrainedTo::Stalled {
+            delivered,
+            steps: max_steps,
+            reason: format!(
+                "{max_steps} steps passed with {} short of spool offset {target}",
+                behind.join(", ")
+            ),
+        })
+    }
+
     /// Run [`Self::step`] on a thread of its own until stopped.
-    pub fn spawn(mut self) -> Result<DrainThread> {
+    pub fn spawn(self) -> Result<DrainThread> {
+        self.spawn_with(None)
+    }
+
+    /// [`Self::spawn`], watching `fence`: once a fence that has held stops
+    /// admitting, the thread drains the spool to its tail, records the
+    /// outcome and stops (see the module documentation's last section). A
+    /// fence that never held — a standby — triggers nothing.
+    pub fn spawn_fenced(self, fence: Fence, clock: Arc<dyn Clock>) -> Result<DrainThread> {
+        self.spawn_with(Some((fence, clock)))
+    }
+
+    fn spawn_with(mut self, fence: Option<(Fence, Arc<dyn Clock>)>) -> Result<DrainThread> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
+        let drained: Arc<Mutex<Option<DrainedTo>>> = Arc::new(Mutex::new(None));
+        let thread_drained = Arc::clone(&drained);
         let poll = self.config.poll;
         let handle = std::thread::Builder::new()
             .name(DRAIN_THREAD.to_string())
             .spawn(move || {
                 let mut failures: u64 = 0;
+                let mut held = false;
                 while !thread_stop.load(Ordering::Acquire) {
+                    if let Some((fence, clock)) = &fence {
+                        if fence.status(clock.now()).admits() {
+                            held = true;
+                        } else if held {
+                            let outcome =
+                                self.drain_to_tail(MAX_DRAIN_OUT_STEPS)
+                                    .unwrap_or_else(|error| DrainedTo::Stalled {
+                                        delivered: 0,
+                                        steps: 0,
+                                        reason: error.message().to_string(),
+                                    });
+                            eprintln!(
+                                "qip-edge-node: the fence stopped admitting; the spool drain \
+                                 drained out and stopped: {outcome:?}"
+                            );
+                            if let Ok(mut slot) = thread_drained.lock() {
+                                *slot = Some(outcome);
+                            }
+                            break;
+                        }
+                    }
                     match self.step() {
                         Ok(step) => {
                             for (sink, reason) in &step.refused {
@@ -333,6 +451,7 @@ impl Drain {
         Ok(DrainThread {
             stop,
             handle: Some(handle),
+            drained,
         })
     }
 }
@@ -356,9 +475,16 @@ fn parse_cursor(name: &str, bytes: &[u8]) -> Result<u64> {
 pub struct DrainThread {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    drained: Arc<Mutex<Option<DrainedTo>>>,
 }
 
 impl DrainThread {
+    /// How the drain-out on fence ended, once it has run; `None` before the
+    /// fence stopped admitting, and always for a drain spawned unfenced.
+    pub fn drained_on_fence(&self) -> Option<DrainedTo> {
+        self.drained.lock().ok().and_then(|slot| slot.clone())
+    }
+
     pub fn is_running(&self) -> bool {
         self.handle
             .as_ref()
@@ -439,7 +565,7 @@ impl Sink for FabricSink {
         // consumed and the drain's cursor does not move.
         let context = FabricContext {
             stream: producer.stream().to_string(),
-            region: self.region.clone(),
+            region: Some(self.region.clone()),
             partition: producer.partition(),
             qos_class: stream,
             auth_context: format!("producer:{}", producer.producer_id()),

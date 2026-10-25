@@ -523,7 +523,10 @@ impl Service {
                         ));
                     }
                 };
-                match self.broker.produce_to(r.stream(), r.partition(), batch)? {
+                match self
+                    .broker
+                    .produce_from(r.stream(), r.partition(), batch, Some(identity))?
+                {
                     Ok(ack) => {
                         seen.high_watermark = Some(ack.high_watermark());
                         seen.archived_through = Some(ack.archived_through());

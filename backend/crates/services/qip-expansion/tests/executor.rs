@@ -10,7 +10,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-use qip_agents::tools::{ToolKind, ToolRegistry};
+use qip_agents::tools::{ToolKind, ToolName, ToolRegistry};
 use qip_contracts::expansion::CapabilityVerb;
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_expansion::curriculum::{Budget, State};
@@ -33,7 +33,10 @@ fn t0() -> Timestamp {
 fn desk() -> ExpansionDesk {
     let mut tools = ToolRegistry::new();
     tools
-        .register("model-fit", ToolKind::ModelEndpoint)
+        .register(
+            ToolName::parse("model-fit").unwrap(),
+            ToolKind::ModelEndpoint,
+        )
         .unwrap();
     ExpansionDesk::new(
         DeskConfig {

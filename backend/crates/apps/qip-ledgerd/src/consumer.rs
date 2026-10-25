@@ -107,24 +107,26 @@ const LEDGER_BINDINGS: [TopicBinding; 4] = [
     LEDGER_OPERATION_RECORDED,
 ];
 
-/// The region the ledger stamps on the envelopes it opens: where they were
-/// read, not where they were produced. The batch wire carries no origin
-/// region (ADR 0100's codec header has none), so the producing region is an
-/// open item rather than something this reader may guess; the producing
-/// *cell* is the batch's producer id and is carried.
-pub const READ_REGION: &str = "central";
-
 /// The context the ledger opens every P1 record under: the stream and
-/// partition it reads, the class that stream carries, and the group identity
-/// the broker authenticated the fetch as.
+/// partition it reads and the class that stream carries — and no region,
+/// principal or provenance of its own.
+///
+/// Until ADR 0129 this said every record was produced in `"central"` (a
+/// `READ_REGION` constant: where the ledger read it, not where it was made)
+/// under `consumer-group:<group>`. The broker now stamps the producing
+/// region, partition and authenticated principal and the writer its
+/// provenance, so the envelope carries those, and a batch that carries no
+/// broker origin is refused at open rather than given the ledger's.
+/// `auth_context` and `provenance` below are read only for a batch with no
+/// origin — which the `region: None` refuses first — and say so.
 pub fn fabric_context(stream: &str, partition: u32, group: &str) -> FabricContext {
     FabricContext {
         stream: stream.to_string(),
-        region: READ_REGION.to_string(),
+        region: None,
         partition,
         qos_class: QosClass::P1Outcomes,
-        auth_context: format!("consumer-group:{group}"),
-        provenance: "qip-ledgerd".to_string(),
+        auth_context: format!("consumer-group:{group} (never stamped: no broker origin)"),
+        provenance: "qip-ledgerd (never stamped: no writer provenance)".to_string(),
     }
 }
 

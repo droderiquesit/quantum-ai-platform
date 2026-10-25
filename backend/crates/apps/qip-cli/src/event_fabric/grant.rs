@@ -1090,7 +1090,8 @@ pub fn publish(
         BATCH_SCHEMA_VERSION,
         PayloadCodec::CanonicalJson,
         records,
-    )?;
+    )?
+    .with_provenance(qip_events::event_fabric::codec::Provenance::Cli);
     producer.send(batch)
 }
 

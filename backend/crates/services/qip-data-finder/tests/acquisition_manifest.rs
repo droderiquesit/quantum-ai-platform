@@ -131,7 +131,7 @@ fn a_re_fetch_reports_unchanged_and_revised_extents_with_both_hashes() -> Result
     let same = driver.run(
         [&reference],
         &mut Scripted(vec![ReFetchOutcome::Fetched {
-            bytes: TABLE.as_bytes().to_vec(),
+            content_hash: qip_core::sha256_hex(TABLE.as_bytes()),
             etag: None,
         }]),
         10,
@@ -143,7 +143,7 @@ fn a_re_fetch_reports_unchanged_and_revised_extents_with_both_hashes() -> Result
     let revised = driver.run(
         [&reference],
         &mut Scripted(vec![ReFetchOutcome::Fetched {
-            bytes: REVISED.as_bytes().to_vec(),
+            content_hash: qip_core::sha256_hex(REVISED.as_bytes()),
             etag: None,
         }]),
         10,
@@ -192,7 +192,7 @@ fn a_withdrawn_extent_is_unretrievable_at_once_and_an_unanswered_one_only_after_
     silent.run(
         [&reference],
         &mut Scripted(vec![ReFetchOutcome::Fetched {
-            bytes: TABLE.as_bytes().to_vec(),
+            content_hash: qip_core::sha256_hex(TABLE.as_bytes()),
             etag: None,
         }]),
         10,

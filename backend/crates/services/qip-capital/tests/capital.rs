@@ -435,6 +435,7 @@ fn terms(gross: Decimal, validity: Duration) -> EnvelopeTerms {
         venues: vec![venue()],
         validity,
         exposure: qip_capital::ExposureTerms::default(),
+        drawdown_of_loss: qip_capital::envelope::DEFAULT_DRAWDOWN_OF_LOSS,
     }
 }
 
@@ -1857,42 +1858,50 @@ fn a_recall_needs_a_positive_window_and_an_outstanding_order_to_acknowledge() ->
     Ok(())
 }
 
-/// R12-CAPITAL-4088: every grant the issuer signs carries all five bounds the
-/// requirement names — exposure (gross and order limits), liquidity and
-/// leverage (the exposure bounds), drawdown and loss budget — and the
-/// drawdown stop sits at the loss limit, the loosest ADR 0126 decision 2
-/// admits, so issuing it invents no tighter limit. The stop is inside the
-/// signed payload, so the issued signature still verifies.
-///
-/// Mutation: drop `.with_drawdown(..)` from `EnvelopeIssuer::issue` — the
-/// grant carries no stop.
+/// ADR 0126 decision 2: every envelope this issuer signs carries a drawdown
+/// stop inside its signed payload — the whole loss limit by default, a
+/// stated share of it when the terms narrow it — so no grant reaches a cell
+/// bounded by its net loss alone. A share outside `(0, 1]` is refused, never
+/// clamped: above one is a stop the loss limit always beats, zero a halt.
 #[test]
-fn an_issued_grant_carries_all_five_bounds_and_its_drawdown_stop_is_its_loss_limit() -> Result<()> {
+fn every_issued_envelope_carries_a_drawdown_stop_and_a_share_outside_its_range_is_refused()
+-> Result<()> {
     let issuer = issuer()?;
-    let envelope = issuer.issue(
+    let standing = issuer.issue(
         &terms(dec!("1000000"), Duration::from_hours(1)),
         &approval(start())?,
         start(),
     )?;
-    assert!(envelope.gross_limit().is_positive());
-    assert!(envelope.order_limit().is_positive());
-    assert!(
-        envelope.exposure().is_some(),
-        "no liquidity or leverage bound"
-    );
-    assert_eq!(
-        envelope.loss_limit(),
-        dec!("200000"),
-        "premise: 0.2 of the gross"
-    );
-    let stop = envelope
+    let block = standing
         .drawdown()
-        .expect("the issued grant carries no drawdown stop");
-    assert_eq!(stop.max_drawdown, envelope.loss_limit());
+        .expect("an issued envelope carries no drawdown stop");
+    assert_eq!(block.max_drawdown, standing.loss_limit());
     assert!(
-        envelope.signing_payload().contains("|drawdown.v1|200000"),
+        standing.signing_payload().contains("|drawdown.v1|"),
         "the stop is outside the signed payload: {}",
-        envelope.signing_payload()
+        standing.signing_payload()
     );
-    issuer.verify(&envelope, start())
+    issuer.verify(&standing, start())?;
+
+    let narrowed = issuer.issue(
+        &terms(dec!("1000000"), Duration::from_hours(1)).with_drawdown_of_loss(dec!("0.25")),
+        &approval(start())?,
+        start(),
+    )?;
+    let stop = narrowed.drawdown().map(|block| block.max_drawdown);
+    assert_eq!(
+        stop,
+        Some(dec!("50000")),
+        "a quarter of the 200000 loss limit"
+    );
+
+    for share in [dec!("0"), dec!("1.01"), dec!("-0.5")] {
+        let refused = issuer.issue(
+            &terms(dec!("1000000"), Duration::from_hours(1)).with_drawdown_of_loss(share),
+            &approval(start())?,
+            start(),
+        );
+        assert!(refused.is_err(), "a drawdown share of {share} was issued");
+    }
+    Ok(())
 }

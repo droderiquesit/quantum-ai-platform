@@ -21,10 +21,13 @@ fn context() -> (Context, Timestamp) {
 }
 
 fn root_lineage(producer: &str) -> Lineage {
-    Lineage::root(
+    let mut lineage = Lineage::root(
         CorrelationId::from_string("COR00000000000000000000009"),
         producer,
-    )
+    );
+    // A fabric envelope requires a trace id (R12-CONTRACT-7089).
+    lineage.trace_id = Some(qip_core::TraceId::new("trace-event-fabric-test"));
+    lineage
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -764,6 +767,30 @@ fn an_envelope_with_any_mandatory_field_absent_or_emptied_is_refused() {
         assert!(
             serde_json::from_value::<FabricEnvelope>(broken).is_err(),
             "an envelope with `{key}` emptied must be refused"
+        );
+    }
+    // R12-CONTRACT-7089: the trace id and the idempotency key are required
+    // fields too, though they sit inside the event: absent or blank, the
+    // envelope is refused on decode. Premise: the wire form carries both.
+    // Mutation: drop either check in `FabricEnvelope::assemble` and the case
+    // naming it is admitted.
+    assert!(wire["event"]["lineage"]["trace_id"].is_string(), "{wire}");
+    assert!(wire["event"]["idempotency_key"].is_string(), "{wire}");
+    for (what, value) in [
+        ("absent", serde_json::Value::Null),
+        ("blank", serde_json::json!(" ")),
+    ] {
+        let mut no_trace = wire.clone();
+        no_trace["event"]["lineage"]["trace_id"] = value.clone();
+        assert!(
+            serde_json::from_value::<FabricEnvelope>(no_trace).is_err(),
+            "an envelope with its trace id {what} was admitted"
+        );
+        let mut no_key = wire.clone();
+        no_key["event"]["idempotency_key"] = value;
+        assert!(
+            serde_json::from_value::<FabricEnvelope>(no_key).is_err(),
+            "an envelope with its idempotency key {what} was admitted"
         );
     }
 }

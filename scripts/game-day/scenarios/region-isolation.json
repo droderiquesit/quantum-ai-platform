@@ -24,7 +24,8 @@
         "QIP_EVENT_FABRIC_ARCHIVE_DIR": "${WORK}/fabric/archive",
         "QIP_EVENT_FABRIC_LISTEN": "127.0.0.1:${PORT:fabric}",
         "QIP_EVENT_FABRIC_HEALTH_LISTEN": "127.0.0.1:${PORT:fabric-health}",
-        "QIP_EVENT_FABRIC_PARTITIONS": "1"
+        "QIP_EVENT_FABRIC_PARTITIONS": "1",
+        "QIP_EVENT_FABRIC_REGION": "local"
       },
       "ready": {
         "url": "http://127.0.0.1:${PORT:fabric-health}/health"

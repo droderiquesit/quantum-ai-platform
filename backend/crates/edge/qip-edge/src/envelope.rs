@@ -54,17 +54,22 @@ impl VerifiedEnvelope {
                 envelope.strategy().as_str()
             )));
         }
+        // A drawdown block decoded off the wire is checked against the
+        // envelope's own limits here, because the block's decode cannot see
+        // them: a correctly signed stop looser than the loss limit is still
+        // not a bound (ADR 0126 decision 2).
+        envelope.check_drawdown_consistent().map_err(|error| {
+            Error::denied(format!(
+                "the capital envelope for {} is refused: {}",
+                envelope.strategy().as_str(),
+                error.message()
+            ))
+        })?;
         if envelope.cell() != expected_cell {
             return Err(Error::denied(format!(
                 "an envelope for cell {} was presented to cell {expected_cell}",
                 envelope.cell()
             )));
-        }
-        // A drawdown stop wider than the loss limit is refused here too:
-        // the envelope arrived decoded, so `with_drawdown`'s refusal never
-        // ran on it (ADR 0126 decision 2).
-        if let Some(stop) = envelope.drawdown() {
-            envelope.drawdown_within_loss_limit(stop)?;
         }
         if !envelope.is_live(now) {
             return Err(Error::denied(format!(
@@ -100,17 +105,22 @@ impl VerifiedEnvelope {
                 error.message()
             ))
         })?;
+        // A drawdown block decoded off the wire is checked against the
+        // envelope's own limits here, because the block's decode cannot see
+        // them: a correctly signed stop looser than the loss limit is still
+        // not a bound (ADR 0126 decision 2).
+        envelope.check_drawdown_consistent().map_err(|error| {
+            Error::denied(format!(
+                "the capital envelope for {} is refused: {}",
+                envelope.strategy().as_str(),
+                error.message()
+            ))
+        })?;
         if envelope.cell() != expected_cell {
             return Err(Error::denied(format!(
                 "an envelope for cell {} was presented to cell {expected_cell}",
                 envelope.cell()
             )));
-        }
-        // A drawdown stop wider than the loss limit is refused here too:
-        // the envelope arrived decoded, so `with_drawdown`'s refusal never
-        // ran on it (ADR 0126 decision 2).
-        if let Some(stop) = envelope.drawdown() {
-            envelope.drawdown_within_loss_limit(stop)?;
         }
         if !envelope.is_live(now) {
             return Err(Error::denied(format!(
@@ -180,20 +190,20 @@ impl VerifiedEnvelope {
         self.inner.admit(venue, notional, used, now)
     }
 
+    /// Refuse a further order once the strategy's realised drawdown has
+    /// reached the grant's drawdown stop; see
+    /// [`CapitalEnvelope::check_drawdown`].
+    pub fn check_drawdown(&self, drawdown: Decimal) -> std::result::Result<(), String> {
+        self.inner.check_drawdown(drawdown)
+    }
+
     /// The liquidity and leverage bounds the grant was signed with, if any
     /// (R12-CAPITAL-4088).
     pub fn exposure(&self) -> Option<&ExposureBounds> {
         self.inner.exposure()
     }
 
-    /// Refuse once the strategy's realised drawdown within the grant has
-    /// reached the grant's drawdown stop (ADR 0126 decision 2). A grant with
-    /// no stop refuses nothing here.
-    pub fn check_drawdown(&self, drawdown: Decimal) -> std::result::Result<(), String> {
-        self.inner.check_drawdown(drawdown)
-    }
-
-    /// The drawdown stop the grant was signed with, if any.
+    /// The drawdown stop the grant was signed with, if any (ADR 0126).
     pub fn drawdown(&self) -> Option<&qip_contracts::DrawdownBounds> {
         self.inner.drawdown()
     }

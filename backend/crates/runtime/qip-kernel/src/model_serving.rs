@@ -100,8 +100,15 @@ impl EventBody for ModelRegistered {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-/// Whether two cards differ only in their drift reading.
+/// Whether two cards differ only in a drift reading that stays on the same
+/// side of the card's threshold. A reading that crosses it changes whether
+/// the model may inform a decision, so it is a record; one that does not is
+/// monitoring the next round re-measures.
 fn same_but_drift(a: &qip_ai::registry::ModelCard, b: &qip_ai::registry::ModelCard) -> bool {
+    let drifted = |card: &qip_ai::registry::ModelCard| card.drift_score > card.drift_threshold;
+    if drifted(a) != drifted(b) {
+        return false;
+    }
     let mut b = b.clone();
     b.drift_score = a.drift_score;
     *a == b
@@ -147,6 +154,12 @@ pub const SERVE_REFUSED: &str = "refused";
 #[serde(rename_all = "snake_case")]
 pub enum ModelProducer {
     TrainingPipeline,
+    /// A model the platform fitted and proposed for itself: the deep
+    /// brain's learning desk. Promoted only out of a shadow period of at
+    /// least [`MIN_SHADOW_ROUNDS`] won rounds (R12-EXPAND-6070), because a
+    /// self-proposed change must run beside production, acted on by
+    /// nothing, before it may replace what production runs.
+    SelfFitted,
     QuantumGateway,
     QuantumInformed {
         baseline: String,
@@ -239,7 +252,64 @@ pub struct ModelPromotion {
     /// otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permitted_locations: Option<BTreeSet<String>>,
+    /// Every stage the promotion passed, in order, as the kernel read each
+    /// off the registry and the verifier at that instant (R12-EXPAND-6070).
+    /// Absent from records written before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<String>,
+    /// The central plane's signature over [`Self::signed_payload`]: the
+    /// reference, the artifact digest and the stages. A stage list edited
+    /// after the fact does not verify (`Platform::promotion_verifies`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
     pub at: Timestamp,
+}
+
+impl ModelPromotion {
+    /// What [`Self::signature`] covers.
+    pub fn signed_payload(&self) -> String {
+        format!(
+            "model-promotion|{}|{}|{}",
+            self.reference,
+            self.artifact_digest,
+            self.stages.join("\u{1f}")
+        )
+    }
+}
+
+/// Shadow rounds a self-fitted model must win before it may be promoted.
+/// Chosen, not measured: three passes on data that arrived after the fit is
+/// the least that distinguishes a model from one lucky window.
+pub const MIN_SHADOW_ROUNDS: u32 = 3;
+
+/// The shadow stage a self-fitted candidate must have completed, as one
+/// stage line, or the refusal (R12-EXPAND-6070).
+fn require_completed_shadow(registry: &ModelRegistry, reference: &str) -> Result<String> {
+    let card = registry
+        .get(reference)
+        .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+    match (&card.stage, &card.shadow) {
+        (qip_ai::registry::ModelStage::Shadow, Some(shadow))
+            if shadow.rounds_won >= MIN_SHADOW_ROUNDS =>
+        {
+            Ok(format!(
+                "shadow since {}: {} round(s) won against production on data after the fit ({})",
+                shadow.since.as_secs(),
+                shadow.rounds_won,
+                shadow.evidence.join("; ")
+            ))
+        }
+        (qip_ai::registry::ModelStage::Shadow, Some(shadow)) => Err(Error::denied(format!(
+            "{reference} is not promoted: a self-fitted model completes its shadow stage first, \
+             and it has won {} of the {MIN_SHADOW_ROUNDS} shadow round(s) required",
+            shadow.rounds_won
+        ))),
+        (stage, _) => Err(Error::denied(format!(
+            "{reference} is not promoted: a self-fitted model that skipped its shadow stage is \
+             refused production (it is in {stage:?}); run it beside production through \
+             ModelRegistry::enter_shadow first"
+        ))),
+    }
 }
 
 impl EventBody for ModelPromotion {
@@ -677,6 +747,22 @@ impl Platform {
         promotions_in(self.event_log())
     }
 
+    /// Journal the cards a committed promotion or rollback moved. The record
+    /// is the commit, so a failure here must not report the move as refused:
+    /// the in-memory mirror is advanced only on a successful write, so the
+    /// caller's next `journal_model_registry` writes them again, and a
+    /// restart in between rebuilds their stages and lifecycle from the
+    /// promotion records (R12-MODEL-9003). The failure is counted where the
+    /// alerts look rather than dropped.
+    fn journal_moved_cards(&mut self, registry: &ModelRegistry, now: Timestamp) {
+        if self.journal_model_registry(registry, now).is_err() {
+            self.telemetry.metrics.count(
+                names::MODEL_PACKAGES,
+                labels([("outcome", "cards_unjournaled")]),
+            );
+        }
+    }
+
     /// Every registered card the log holds, the newest record per reference,
     /// in reference order: what a restarted deep brain registers before its
     /// first round (R12-MODEL-9003).
@@ -716,6 +802,16 @@ impl Platform {
     }
 
     /// Every promotion this process holds, by reference, in reference order.
+    /// Whether a promotion record carries the central plane's signature
+    /// over its reference, digest and stages (R12-EXPAND-6070). False for a
+    /// record with no signature and for one edited after it was signed.
+    pub fn promotion_verifies(&self, record: &ModelPromotion) -> bool {
+        record.signature.as_deref().is_some_and(|signature| {
+            self.central
+                .verifies_record(&record.signed_payload(), signature)
+        })
+    }
+
     pub fn model_promotions(&self) -> &BTreeMap<String, ModelPromotion> {
         &self.model_promotions
     }
@@ -844,8 +940,12 @@ impl Platform {
         displaced: &[String],
         now: Timestamp,
     ) -> Result<PublishedArtifact> {
+        let mut stages = Vec::new();
         match &producer {
             ModelProducer::TrainingPipeline => {}
+            ModelProducer::SelfFitted => {
+                stages.push(require_completed_shadow(registry, &artifact.reference)?);
+            }
             ModelProducer::QuantumGateway => {
                 return Err(Error::denied(format!(
                     "{} is not promoted: its producer is the quantum gateway, whose output is a \
@@ -927,6 +1027,7 @@ impl Platform {
             .verdict
             .is_refuted()
             .then(|| verification.verdict.summary());
+        let verified = verification.verdict.summary();
         self.journal_record(
             crate::model_tournament::ModelVerified { verification },
             crate::model_tournament::VERIFIER_ORIGIN,
@@ -974,7 +1075,12 @@ impl Platform {
         })?;
         let permitted_locations =
             (!card.data_entitlements.is_empty()).then(|| card.permitted_locations.clone());
-        let record = ModelPromotion {
+        // The stages in the order they ran: the shadow period (for a
+        // self-fitted candidate, checked above), the registry's evaluation,
+        // the verifier society's verdict.
+        stages.push(format!("evaluation: {evidence}"));
+        stages.push(format!("verifier: {verified}"));
+        let mut record = ModelPromotion {
             reference: artifact.reference.clone(),
             name,
             format: artifact.format,
@@ -989,12 +1095,24 @@ impl Platform {
             moved_by: Some(desk),
             evidence: Some(evidence),
             permitted_locations,
+            stages,
+            signature: None,
             at: now,
         };
+        // Signed first, so every copy of the record on the log carries the
+        // centre's signature (lane L4). Then every card as it stands *before*
+        // the move, journaled before the record (R12-MODEL-9003), so the
+        // candidate's card and its evaluation are on the log whatever happens
+        // next, and nothing on the log claims a promotion the record does not
+        // hold. Then the record, which is the commit; then the moved cards,
+        // whose write may not unmake it.
+        record.signature = Some(self.central.sign_record(&record.signed_payload()));
+        self.journal_model_registry(registry, now)?;
         self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
         *registry = scratch;
         self.succeed_model_pack(&record);
         apply_promotion(&mut self.model_promotions, record);
+        self.journal_moved_cards(registry, now);
         Ok(published)
     }
 
@@ -1077,10 +1195,14 @@ impl Platform {
                 at: now,
                 ..original.clone()
             };
+            // As in a promotion: the unmoved cards, the record, then the
+            // moved cards, whose write may not unmake the rollback.
+            self.journal_model_registry(registry, now)?;
             self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
             *registry = scratch;
             self.succeed_model_pack(&record);
             apply_promotion(&mut self.model_promotions, record);
+            self.journal_moved_cards(registry, now);
             return Ok(predecessor.clone());
         }
         Err(Error::not_found(format!(

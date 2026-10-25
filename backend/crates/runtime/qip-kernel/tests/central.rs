@@ -1572,6 +1572,8 @@ fn arbitrage_policy(venues: &[&str]) -> ArbitragePolicy {
                 base: "AAA".to_string(),
                 quote: "USD".to_string(),
                 costs: None,
+                base_terms: None,
+                quote_terms: None,
             })
             .collect(),
         start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
@@ -2220,6 +2222,8 @@ fn a_market_at_an_undescribed_venue_is_refused_when_the_plane_assembles() -> Res
         base: "AAA".to_string(),
         quote: "USD".to_string(),
         costs: None,
+        base_terms: None,
+        quote_terms: None,
     });
     let Err(error) = plane_with_arbitrage(policy) else {
         panic!("a market at an undescribed venue should not assemble");
@@ -8617,6 +8621,423 @@ fn learning_reads_a_fill_from_the_cell_report_and_the_central_plane_names_no_fab
     assert!(
         scanned > 3,
         "premise: the scan read the central plane's files"
+    );
+    Ok(())
+}
+// --- R12-RES-7104: the twin diverges from a venue, the grant shrinks ----------
+
+/// Register a candidate exactly as [`register`] does, but trading at `at`
+/// rather than the suite's listing venue — the candidate and the proposal
+/// the allocator sizes both name it, so the strategy depends on that venue
+/// in every record that says where it trades.
+fn register_at_venue(
+    plane: &mut CentralPlane,
+    id: &StrategyId,
+    cell: &str,
+    at: VenueId,
+) -> Result<()> {
+    let (compiled, program) = compile(id.as_str())?;
+    let candidate = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("central-tests")?,
+        cell,
+        at.clone(),
+        start(),
+    )?
+    .with_evidence(full_evidence(id, cell)?)
+    .with_model("microprice-distilled@3")
+    .with_evidence_artifacts(vec![
+        format!("sha256:holdout-{id}"),
+        format!("sha256:shadow-{id}"),
+    ]);
+    plane.factory_mut().register(candidate)?;
+    let mut sized = proposal(id, cell)?;
+    sized.venue = at;
+    plane.set_proposal(sized);
+    Ok(())
+}
+
+fn daily_bar(at: Timestamp, open: f64, close: f64) -> SensedRecord {
+    SensedRecord::Bar(Box::new(Bar {
+        object_id: ObjectId::from_string("obj-AAA"),
+        venue: VENUE.to_string(),
+        interval: Interval::Day,
+        open_time: at,
+        open: Decimal::from_f64(open).expect("a price"),
+        high: Decimal::from_f64(open.max(close) * 1.002).expect("a price"),
+        low: Decimal::from_f64(open.min(close) * 0.998).expect("a price"),
+        close: Decimal::from_f64(close).expect("a price"),
+        volume: dec!("1000000"),
+        trade_count: 5_000,
+        vwap: Decimal::from_f64((open + close) / 2.0),
+        quality: DataQuality::default(),
+    }))
+}
+
+/// Ninety quiet days of `AAA` around 100 before `start()`, the last of them
+/// opening at `last_open`. The twin enters a buy at the open of the bar
+/// covering the decision; the desk's simulated venue fills it at the
+/// arrival price of 100 plus its modelled cost. A `last_open` of 90 is a
+/// twin entering ten per cent below where the venue filled — a thousand
+/// basis points of divergence on every fill; one of 100 is a twin that
+/// agrees with the venue to within its cost model.
+fn tape_before_the_fills(last_open: f64) -> Vec<SensedRecord> {
+    let count = 90usize;
+    (0..count)
+        .map(|i| {
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            if i + 1 == count {
+                daily_bar(at, last_open, last_open)
+            } else {
+                let price = if i % 2 == 0 { 100.3 } else { 99.7 };
+                daily_bar(at, price, price)
+            }
+        })
+        .collect()
+}
+
+/// A flat 100 for five days after `start()`, so every fill's horizon has a
+/// bar to be marked against.
+fn tape_after_the_fills() -> Vec<SensedRecord> {
+    (1..=5)
+        .map(|day| {
+            daily_bar(
+                start().saturating_add(Duration::from_days(day)),
+                100.0,
+                100.0,
+            )
+        })
+        .collect()
+}
+
+/// Twelve buys of `AAA` the desk's simulated venue fills at `start()`, and
+/// two cycles three days later, so LEARN has priced every one of them.
+fn fill_and_score_twelve(platform: &mut Platform) -> Result<Timestamp> {
+    for n in 0..12 {
+        let fills_before = platform.orders().fills().len();
+        let proposal = format!("prop-replay-{n}");
+        let order = platform.order_from(
+            ObjectId::from_string("obj-AAA"),
+            qip_execution_engine::order::Side::Buy,
+            dec!("700"),
+            dec!("100"),
+            &proposal,
+            vec![format!("hyp-{proposal}")],
+            start(),
+        );
+        platform.submit_order(order, start())?;
+        assert!(
+            platform.orders().fills().len() > fills_before,
+            "premise: the desk's venue did not fill the buy"
+        );
+    }
+    platform.observe(tape_after_the_fills());
+    let scoring = start().saturating_add(Duration::from_days(3));
+    platform.run_cycle(scoring);
+    platform.run_cycle(scoring);
+    assert_eq!(
+        platform.fill_scores().len(),
+        12,
+        "premise: LEARN did not price every fill"
+    );
+    Ok(scoring)
+}
+
+/// Both operators' signatures on a grant, two minutes apart; the issued
+/// entry.
+fn grant_pair(
+    platform: &mut Platform,
+    id: &StrategyId,
+    at: Timestamp,
+) -> Result<qip_kernel::CapitalGrantEntry> {
+    platform.issue_capital(
+        id,
+        &operator("alice.chen", at),
+        at,
+        "the pilot gate passed and the allocator sized it inside the budget",
+        at,
+    )?;
+    let second = at.saturating_add(Duration::from_mins(2));
+    let issued = platform.issue_capital(
+        id,
+        &operator("bram.oduya", second),
+        second,
+        "reviewed the allocation and the pilot evidence independently",
+        second,
+    )?;
+    assert_eq!(issued.outcome, "issued", "{issued:?}");
+    Ok(issued)
+}
+
+fn replay_divergence_records(
+    platform: &Platform,
+) -> Result<Vec<qip_kernel::replay_divergence::ReplayDivergenceEntry>> {
+    platform
+        .event_log()
+        .records()
+        .iter()
+        .filter(|record| {
+            record.event.lineage.producer == qip_kernel::replay_divergence::REPLAY_DIVERGENCE_ORIGIN
+        })
+        .map(|record| {
+            qip_streaming::envelope::StreamEnvelope::from_frame(&record.event)
+                .and_then(|envelope| {
+                    envelope.decode::<qip_kernel::replay_divergence::ReplayDivergenceEntry>()
+                })
+                .map(|envelope| envelope.body)
+        })
+        .collect()
+}
+
+/// Mutations: in `Platform::review_replay_divergence`, never inserting the
+/// hold — fails at "did not hold its grant"; in
+/// `Platform::narrow_for_replay_divergence`, returning `decision` untouched —
+/// fails at "was granted … against the control's"; in
+/// `replay_divergence::repromotion_after`, dropping the `is_escalation`
+/// test — fails at "a demotion released the hold"; in
+/// `Platform::review_replay_divergence`, never removing a released hold —
+/// fails at "a re-promotion recorded after the hold did not release it".
+#[test]
+fn a_twin_that_diverges_from_a_venue_halves_the_grant_of_the_strategy_trading_there_until_it_is_promoted_again()
+-> Result<()> {
+    // R12-RES-7104. The twin re-prices every fill and its replays are the
+    // evidence strategies are promoted on; until this, a twin a thousand
+    // basis points wrong about a venue changed nobody's capital. Two pilot
+    // strategies, identical but for where they trade: `dependent` at the
+    // desk's own venue, which the twin is about to misprice, and `control`
+    // at the listing venue, which it never measures. The control is what
+    // makes "halved" a measurement rather than an inference: both are
+    // granted at the same instant under the same governor, so the only
+    // thing that can separate their grants is the hold.
+    let mut platform = platform()?;
+    let desk = VenueId::new(platform.desk_venue());
+    let dependent = StrategyId::new("replay-dependent");
+    let control = StrategyId::new("replay-control");
+    register_at_venue(platform.central_mut(), &dependent, CELL, desk.clone())?;
+    walk_to(platform.central_mut(), &dependent, GateStage::Pilot)?;
+    register_at_venue(platform.central_mut(), &control, CELL, venue())?;
+    walk_to(platform.central_mut(), &control, GateStage::Pilot)?;
+    assert_ne!(desk, venue(), "premise: the two strategies trade apart");
+
+    platform.observe(tape_before_the_fills(90.0));
+    assert!(platform.replay_divergence_holds().is_empty());
+    let scoring = fill_and_score_twelve(&mut platform)?;
+    let errors: Vec<f64> = platform
+        .fill_scores()
+        .iter()
+        .filter_map(|score| score.trade_error_bps)
+        .collect();
+    assert!(
+        errors.len() >= qip_kernel::replay_divergence::REPLAY_DIVERGENCE_MIN_SAMPLE
+            && errors.iter().all(|error| {
+                error.abs() > qip_kernel::replay_divergence::REPLAY_DIVERGENCE_THRESHOLD_BPS
+            }),
+        "premise: the twin was not past the threshold on a full sample: {errors:?}"
+    );
+
+    // The hold: on the dependent strategy, at half, and on nothing else.
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "a twin past the threshold at the strategy's venue did not hold its grant"
+    );
+    assert_eq!(
+        platform.replay_divergence_multiplier(&control),
+        Decimal::ONE,
+        "a strategy at a venue the twin never measured was held"
+    );
+    let records = replay_divergence_records(&platform)?;
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].strategy, dependent.as_str());
+    assert_eq!(records[0].outcome, "reduced");
+    assert_eq!(records[0].venue, desk.as_str());
+    assert_eq!(records[0].benchmark_rerun, "required before re-promotion");
+    assert!(
+        records[0].calibration_observations >= 12,
+        "the hold does not show the twin being recalibrated on the live fills: {:?}",
+        records[0]
+    );
+    assert!(
+        platform.withdrawn_venues().is_empty(),
+        "a divergence withdrew a venue, which ADR 0062 reserves for feasibility evidence"
+    );
+
+    // The size: the dependent strategy's grant is half the control's.
+    let granted_at = scoring.saturating_add(Duration::from_hours(1));
+    let held = grant_pair(&mut platform, &dependent, granted_at)?;
+    let full = grant_pair(&mut platform, &control, granted_at)?;
+    let held_gross = held.gross_limit.expect("an issued grant carries its size");
+    let full_gross = full.gross_limit.expect("an issued grant carries its size");
+    assert_eq!(
+        held_gross * dec!("2"),
+        full_gross,
+        "the held strategy was granted {held_gross} against the control's {full_gross}"
+    );
+    assert!(
+        held.detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("diverged from the venue")),
+        "the grant does not say why it is smaller: {:?}",
+        held.detail
+    );
+
+    // Across cycles, and across a renewal, the size does not come back on
+    // its own: the twin's error is not re-read as a release.
+    let mut later = granted_at;
+    for _ in 0..3 {
+        later = later.saturating_add(Duration::from_days(1));
+        platform.run_cycle(later);
+        assert_eq!(
+            platform.replay_divergence_multiplier(&dependent),
+            dec!("0.5")
+        );
+    }
+    let renewed_at = later.saturating_add(Duration::from_hours(1));
+    let renewed = grant_pair(&mut platform, &dependent, renewed_at)?;
+    let control_renewed = grant_pair(&mut platform, &control, renewed_at)?;
+    assert_eq!(
+        renewed.gross_limit.expect("sized") * dec!("2"),
+        control_renewed.gross_limit.expect("sized"),
+        "a renewal signed while the hold stood came back at full size"
+    );
+
+    // A demotion is not a re-promotion: pushed down, the strategy is still
+    // held when LEARN next runs.
+    let demoted_at = renewed_at.saturating_add(Duration::from_hours(1));
+    platform.central_mut().factory_mut().demote(
+        &dependent,
+        GateStage::Shadow,
+        "research.desk",
+        "re-benchmarking on the recalibrated twin",
+        demoted_at,
+    )?;
+    platform.run_cycle(demoted_at);
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "a demotion released the hold"
+    );
+
+    // The re-promotion, through the operator route the ladder already has.
+    // Until LEARN reads it the hold stands; once it has, the hold is
+    // released, on the record, and the next grant is the control's size.
+    let repromoted_at = demoted_at.saturating_add(Duration::from_hours(1));
+    platform.approve_promotion(
+        &dependent,
+        &operator("alice.chen", repromoted_at),
+        "re-benchmarked on the recalibrated twin and the shadow record still holds",
+        repromoted_at,
+    )?;
+    let countersigned_at = repromoted_at.saturating_add(Duration::from_mins(2));
+    platform.approve_promotion(
+        &dependent,
+        &operator("bram.oduya", countersigned_at),
+        "the rerun benchmark was read independently against the shadow record",
+        countersigned_at,
+    )?;
+    assert_eq!(
+        platform.central().factory().stage_of(&dependent),
+        GateStage::Pilot,
+        "premise: the pair did not re-promote the strategy"
+    );
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "the hold was released before LEARN read the re-promotion"
+    );
+    let released_at = countersigned_at.saturating_add(Duration::from_hours(1));
+    platform.run_cycle(released_at);
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        Decimal::ONE,
+        "a re-promotion recorded after the hold did not release it"
+    );
+    let records = replay_divergence_records(&platform)?;
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.outcome.as_str())
+            .collect::<Vec<_>>(),
+        vec!["reduced", "restored"],
+        "{records:?}"
+    );
+    assert_eq!(records[1].repromoted_to.as_deref(), Some("pilot"));
+    assert_eq!(records[1].repromoted_at, Some(countersigned_at));
+
+    let restored_at = released_at.saturating_add(Duration::from_hours(1));
+    let restored = grant_pair(&mut platform, &dependent, restored_at)?;
+    let control_now = grant_pair(&mut platform, &control, restored_at)?;
+    assert_eq!(
+        restored.gross_limit, control_now.gross_limit,
+        "the re-promoted strategy's grant did not return to the control's size"
+    );
+
+    // And the log alone says where every hold stands.
+    let (holds, windows) = qip_kernel::replay_divergence::resume(platform.event_log())?;
+    assert!(
+        holds.is_empty(),
+        "the log resumes a released hold: {holds:?}"
+    );
+    assert_eq!(windows.get(&dependent), Some(&countersigned_at));
+    Ok(())
+}
+
+/// Mutation: `Divergence::exceeds_threshold` returning `true` — fails at
+/// "an agreeing twin held the strategy".
+#[test]
+fn a_twin_that_agrees_with_the_venue_holds_no_strategy_trading_there() -> Result<()> {
+    // The premise of the test above, run on its own: the same twelve fills
+    // at the same venue, on a tape whose last open agrees with the venue's
+    // arrival price, leave the twin inside the threshold — and then nothing
+    // is held, nothing is journaled and the grant carries no divergence
+    // contraction. Without this, a hold raised on every scored sample would
+    // pass the test above.
+    let mut platform = platform()?;
+    let desk = VenueId::new(platform.desk_venue());
+    let dependent = StrategyId::new("replay-dependent");
+    register_at_venue(platform.central_mut(), &dependent, CELL, desk)?;
+    walk_to(platform.central_mut(), &dependent, GateStage::Pilot)?;
+
+    platform.observe(tape_before_the_fills(100.0));
+    let scoring = fill_and_score_twelve(&mut platform)?;
+    let errors: Vec<f64> = platform
+        .fill_scores()
+        .iter()
+        .filter_map(|score| score.trade_error_bps)
+        .collect();
+    assert!(
+        errors.len() >= qip_kernel::replay_divergence::REPLAY_DIVERGENCE_MIN_SAMPLE,
+        "premise: fewer than a sample of fills carried an error: {errors:?}"
+    );
+    let mean = errors.iter().map(|error| error.abs()).sum::<f64>() / errors.len() as f64;
+    assert!(
+        mean < qip_kernel::replay_divergence::REPLAY_DIVERGENCE_THRESHOLD_BPS,
+        "premise: the agreeing twin is past the threshold, mean {mean} bps"
+    );
+
+    assert!(
+        platform.replay_divergence_holds().is_empty(),
+        "an agreeing twin held the strategy: {:?}",
+        platform.replay_divergence_holds()
+    );
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        Decimal::ONE
+    );
+    assert!(replay_divergence_records(&platform)?.is_empty());
+    let granted = grant_pair(
+        &mut platform,
+        &dependent,
+        scoring.saturating_add(Duration::from_hours(1)),
+    )?;
+    assert!(
+        !granted
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("diverged from the venue")),
+        "an agreeing twin narrowed the grant: {:?}",
+        granted.detail
     );
     Ok(())
 }

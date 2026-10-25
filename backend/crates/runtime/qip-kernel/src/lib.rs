@@ -78,6 +78,7 @@ pub mod quote_loop;
 pub mod references;
 pub mod regime_allocation;
 pub mod regime_transition;
+pub mod replay_divergence;
 pub mod rule_review;
 pub mod self_watch;
 pub mod session_replay;

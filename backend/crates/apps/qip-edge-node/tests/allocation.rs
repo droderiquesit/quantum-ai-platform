@@ -105,7 +105,9 @@ fn grant(strategy: &str) -> Result<VerifiedEnvelope> {
         capital,
     )?)?;
     let loss_limit = unsigned.loss_limit();
-    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(loss_limit)?)?;
+    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(
+        loss_limit, None, None,
+    )?)?;
     let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
     VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, CELL, t(1))
 }
@@ -391,7 +393,11 @@ fn permitting_to_seed(
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        for action in [CreationAction::List, CreationAction::Seed] {
+        for action in [
+            CreationAction::Create,
+            CreationAction::List,
+            CreationAction::Seed,
+        ] {
             let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
             for authority in CreationAuthority::ALL {
                 permissions.record(authority, &request, "test fixture")?;

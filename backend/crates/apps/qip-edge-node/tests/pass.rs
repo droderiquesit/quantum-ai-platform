@@ -139,7 +139,9 @@ fn grant_for(
         capital,
     )?)?;
     let loss_limit = unsigned.loss_limit();
-    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(loss_limit)?)?;
+    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(
+        loss_limit, None, None,
+    )?)?;
     let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
     VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, cell, t(1))
 }
@@ -624,6 +626,82 @@ fn a_pass_with_nothing_listed_at_the_venue_refuses_under_the_venue_selection_gat
         snapshot.counter(names::EDGE_REFUSALS, &by("gate", "venue_selection")),
         1,
         "the refusal was not counted under its gate on the registry the scrape serves"
+    );
+    Ok(())
+}
+
+/// R12-COVERAGE-5107 on the shipped pass: an order the gateway held for a
+/// later release, whose listing permission is withdrawn before that
+/// release, reaches the cell as a structured refusal — journaled under
+/// `release_refused` with the gateway's reason and counted on the refusal
+/// series — and the pass runs. Until 2026-10-24 `advance_to` returned the
+/// refusal as error text, `run_pass` stopped on it before the cell was asked
+/// anything, and the cell's ledger and telemetry never saw it.
+///
+/// Mutation: in `SimulatedGateway::advance_to`, drop the refused order
+/// instead of pushing it onto `unreleased`, and nothing reaches the cell.
+#[test]
+fn a_held_order_refused_at_release_reaches_the_cell_as_a_refusal_and_the_pass_runs() -> Result<()> {
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    permit_seeding(&mut gateway, &[&object()])?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    use qip_edge::cell::Placer;
+    gateway.place(
+        "held-order",
+        &object(),
+        &venue(),
+        qip_contracts::message::BookSide::Ask,
+        dec!("1"),
+        dec!("101"),
+        t(20),
+    )?;
+    assert_eq!(
+        gateway.held_count(),
+        1,
+        "premise: the order is held for release"
+    );
+    // The permission is withdrawn between placement and release.
+    gateway.permit_listings(CreationPermissions::new(), "paper")?;
+
+    let mut stats = PassStats::default();
+    run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(20),
+    )?;
+    assert_eq!(gateway.held_count(), 0);
+    let refused: Vec<String> = node
+        .cell
+        .journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            Decision::Refused { gate, reason } if gate == qip_edge::cell::GATE_RELEASE_REFUSED => {
+                Some(reason.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        refused.len(),
+        1,
+        "the refused release did not reach the cell's journal"
+    );
+    assert!(
+        refused[0].contains("held-order")
+            && refused[0].contains("a listing is not a standing permission"),
+        "the journaled refusal does not carry the gateway's reason: {}",
+        refused[0]
+    );
+    assert_eq!(
+        node.scrape_registry()
+            .snapshot()
+            .counter(names::EDGE_REFUSALS, &by("gate", "release_refused")),
+        1,
+        "the refused release did not reach the refusal series"
     );
     Ok(())
 }
@@ -4216,14 +4294,11 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        let request = CreationRequest::new(
-            CreationAction::List,
-            venue.as_str(),
-            object.as_str(),
-            "paper",
-        );
-        for authority in CreationAuthority::ALL {
-            permissions.record(authority, &request, "test fixture")?;
+        for action in [CreationAction::Create, CreationAction::List] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
         }
     }
     gateway.with_listing_permissions(permissions, "paper")
@@ -4232,7 +4307,7 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
 /// Permit `gateway` to seed each of `objects` as well as to list it, in
 /// place, where it is about to be seeded (R12-COVERAGE-5107: permission to
 /// list is not permission to seed). Called only there, so a test here that
-/// seeds nothing runs under `List` alone. It replaces the register
+/// seeds nothing runs under `Create` and `List` alone. It replaces the register
 /// `permitting` installed, so `objects` names every instrument the gateway
 /// lists, not only the one seeded. A fixture; the refusals without either
 /// permission are proven in qip-edge-node's tests/gateway.rs.
@@ -4240,7 +4315,11 @@ fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Resu
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        for action in [CreationAction::List, CreationAction::Seed] {
+        for action in [
+            CreationAction::Create,
+            CreationAction::List,
+            CreationAction::Seed,
+        ] {
             let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
             for authority in CreationAuthority::ALL {
                 permissions.record(authority, &request, "test fixture")?;

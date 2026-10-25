@@ -169,7 +169,6 @@ fn a_batch_round_trips_byte_for_byte_with_every_contract_048_header_field() {
     stamp_drain(&mut batch, "producer-7", 4, 900);
     stamp_broker(
         &mut batch,
-        0,
         555,
         2,
         LogicalTimestamp {
@@ -402,7 +401,6 @@ fn a_blake3_content_hash_or_a_non_json_encoding_is_refused_naming_c2() {
     // has no Blake3 to verify one against.
     stamp_broker(
         &mut batch,
-        0,
         1,
         1,
         LogicalTimestamp::default(),
@@ -554,7 +552,6 @@ fn a_batch_stamped_by_the_drain_and_then_the_broker_changes_only_the_fields_each
     let mut broker_batch = drain_batch.clone();
     stamp_broker(
         &mut broker_batch,
-        0,
         1234,
         7,
         LogicalTimestamp {
@@ -586,42 +583,50 @@ fn a_batch_stamped_by_the_drain_and_then_the_broker_changes_only_the_fields_each
     assert_eq!(broker_batch.base_sequence, drain_batch.base_sequence);
 }
 
-/// R12-FABRIC-8084 (ADR 0129): the broker stamps the partition into the batch
-/// header, inside the batch CRC. It round-trips; a batch no broker stamped —
-/// and every batch written before the field existed — decodes with none; and
-/// a single flipped bit in the partition is refused as corruption rather than
-/// read as a different partition.
+/// R12-FABRIC-8084: the partition the broker appended a batch to rides the
+/// batch header inside the CRC, in the broker origin ADR 0129's format version
+/// 2 carries. It round-trips. A batch no broker stamped decodes with no origin.
+/// A single flipped bit in the partition is refused as corruption rather than
+/// read as a different partition, because a batch copied into another
+/// partition's log, or a flipped bit there, would otherwise change its key's
+/// order in silence.
 ///
 /// The partition's bytes are found by diffing two encodings that differ only
-/// in the partition, so the flip lands in that field and nowhere else.
+/// in the partition, so the flip lands in that field and nowhere else. This
+/// test came over from lane L1's flag-bit design (ADR 0160, not landed) and
+/// was re-pointed at the v2 origin, which already stamps the partition.
 ///
-/// Mutation: omit the partition from `Batch::encode` (keep the flag) — the
-/// round trip reads garbage and the decode is refused; omit it from the
-/// header the CRC covers and the flip decodes as another partition.
+/// Mutation: omit the origin's partition from `Batch::encode` and decode it
+/// as 0. The round trip then reads `Some(0)`, not `Some(7)`, and fails.
 #[test]
 fn a_broker_stamped_partition_round_trips_and_a_flipped_partition_bit_is_corruption() {
+    use qip_events::event_fabric::codec::{BrokerOrigin, stamp_broker_origin};
+
     let unstamped = tagged_batch(7, "evt-partition");
     let encoded = unstamped.encode().expect("an unstamped batch encodes");
     match Batch::decode(&encoded).expect("an unstamped batch decodes") {
-        DecodeOutcome::Complete(batch) => assert_eq!(batch.partition, None),
+        DecodeOutcome::Complete(batch) => assert_eq!(batch.origin, None),
         DecodeOutcome::Torn => panic!("a whole batch read as torn"),
     }
 
     let stamp = |partition: u32| {
         let mut batch = tagged_batch(7, "evt-partition");
-        stamp_broker(
+        stamp_broker(&mut batch, 41, 3, LogicalTimestamp::default(), None);
+        stamp_broker_origin(
             &mut batch,
-            partition,
-            41,
-            3,
-            LogicalTimestamp::default(),
-            None,
+            BrokerOrigin {
+                region: "europe-west2".to_string(),
+                partition,
+                principal: "qip-edge-node-london-1".to_string(),
+            },
         );
         batch.encode().expect("a stamped batch encodes")
     };
     let seven = stamp(7);
     match Batch::decode(&seven).expect("a stamped batch decodes") {
-        DecodeOutcome::Complete(batch) => assert_eq!(batch.partition, Some(7)),
+        DecodeOutcome::Complete(batch) => {
+            assert_eq!(batch.origin.map(|origin| origin.partition), Some(7));
+        }
         DecodeOutcome::Torn => panic!("a whole batch read as torn"),
     }
 

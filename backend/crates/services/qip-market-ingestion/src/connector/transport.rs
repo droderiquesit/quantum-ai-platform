@@ -35,6 +35,7 @@
 
 use super::manifest::{AuthScheme, SecretRef, SecretResolver, SourceManifest};
 use qip_core::error::{Error, Result};
+use qip_core::untrusted::Untrusted;
 use qip_core::{Duration, Timestamp};
 use qip_transport::{HttpClient, HttpRequest, Method, Url};
 use serde::{Deserialize, Serialize};
@@ -94,12 +95,22 @@ impl SourceRequest {
 }
 
 /// What the source answered.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Serialize`, `Deserialize` or `PartialEq`: the body is
+/// [`Untrusted`], which is none of those, so a response cannot be written
+/// into a record or compared against a guess without going through one of
+/// its named exits (R12-SEC-9065). Nothing persisted or compared a response;
+/// the derives were unused.
+#[derive(Clone, Debug)]
 pub struct SourceResponse {
     pub status: u16,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
-    pub body: String,
+    /// What the vendor sent, after the transport scrubbed any credential it
+    /// echoed. Untrusted until the runtime's JSON parse validates it; the
+    /// excerpt an operator reads goes through [`Self::body_excerpt`] and the
+    /// digest the evidence stage records through `sha256_hex`, neither of
+    /// which hands the content to anything that acts.
+    pub body: Untrusted<String>,
     /// Measured by the transport rather than by the caller around the call: a
     /// caller timing it would be reading a clock, and the emulator would then
     /// report the test harness's speed instead of the source's.
@@ -107,20 +118,17 @@ pub struct SourceResponse {
     /// What the source asked us to wait, from `retry-after`. Honoured over
     /// the computed backoff when it is longer — the source knows when it will
     /// serve again and the ladder is only a guess.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after: Option<Duration>,
     /// The source's own version tag for what it served (`etag`), where it
     /// sends one. Carried to the data reference so a later re-fetch can be
     /// compared against the source's own claim of change as well as the
     /// hash (R12-DATA-1033's etag field, never filled before 2026-10-11).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
     /// What the source declared its body's SHA-256 to be (`content-digest`,
     /// RFC 9530, or the older `digest`, RFC 3230), checked by the transport
     /// against the bytes as they arrived — before any redaction, which would
     /// otherwise make an honest body read as altered. `None` where the
     /// source declared no SHA-256 (R12-EVID-2034).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_digest: Option<ContentDigest>,
 }
 
@@ -165,11 +173,15 @@ impl ContentDigest {
 }
 
 impl SourceResponse {
+    /// A response built in process — a test's script, the emulator's
+    /// fixture. Untrusted all the same: a fixture is a recording of what a
+    /// stranger once sent, and code that trusted it in a test would be code
+    /// that trusts it in production.
     pub fn json(status: u16, body: impl Into<String>, latency: Duration) -> Self {
         Self {
             status,
             media_type: Some("application/json".to_string()),
-            body: body.into(),
+            body: Untrusted::new("a source response built in process", body.into()),
             latency,
             retry_after: None,
             etag: None,
@@ -179,7 +191,10 @@ impl SourceResponse {
 
     /// The source declared `declared` (hex SHA-256) for this body.
     pub fn with_declared_digest(mut self, declared: impl Into<String>) -> Self {
-        self.content_digest = Some(ContentDigest::check(declared, self.body.as_bytes()));
+        // Compared by digest, which needs neither of the body's exits.
+        let declared = declared.into().to_ascii_lowercase();
+        let matched = self.body.sha256_hex() == declared;
+        self.content_digest = Some(ContentDigest { declared, matched });
         self
     }
 
@@ -211,10 +226,17 @@ impl SourceResponse {
 
     /// The first bytes of the body, for an error message. Bounded, because an
     /// error that quotes a megabyte of HTML is an error nobody reads.
+    ///
+    /// The one place a connector response's content is read for display,
+    /// which is an `inspect` the `untrusted_content` acceptance suite admits
+    /// by name. The excerpt reaches health details, failure reports and the
+    /// quarantine — places a person reads — and nothing that chooses a tool
+    /// or a credential.
     pub fn body_excerpt(&self) -> String {
         const LIMIT: usize = 240;
-        let mut excerpt: String = self.body.chars().take(LIMIT).collect();
-        if self.body.chars().nth(LIMIT).is_some() {
+        let body = self.body.inspect();
+        let mut excerpt: String = body.chars().take(LIMIT).collect();
+        if body.chars().nth(LIMIT).is_some() {
             excerpt.push('…');
         }
         excerpt
@@ -453,7 +475,9 @@ impl SourceTransport for HttpSourceTransport {
             .map_err(Error::from)
             .map(str::to_string)
             .unwrap_or_else(|_| String::new());
-        let body = self.scrub(body);
+        // Wrapped here, at the socket, after the scrub: from this line on the
+        // vendor's text reaches a typed value only through `validate`.
+        let body = Untrusted::new(target, self.scrub(body));
         Ok(SourceResponse {
             status: response.status,
             media_type: response.header("content-type").map(str::to_string),

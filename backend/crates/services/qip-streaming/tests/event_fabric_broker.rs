@@ -871,44 +871,85 @@ fn a_batch_retried_after_a_broker_restart_appears_once_and_a_stale_epoch_is_stil
     Ok(())
 }
 
-/// R12-FABRIC-8084 on the broker's own path: every batch the broker appends
-/// reads back stamped with the partition it was appended to, in each of a
-/// stream's partitions, and across a restart (the stamp is in the stored
-/// bytes, not in the broker's memory).
+// --- ADR 0129: the broker stamps where a batch was produced -------------
+
+/// R12-CONTRACT-7089, R12-FABRIC-8022: a broker that knows its region stamps
+/// it, the partition it appends to and the session's principal into every
+/// batch an authenticated session produces, under the batch CRC; a producer
+/// with no session gets no stamp; and a batch that arrives already carrying
+/// one is refused, because those facts are the broker's and not the
+/// producer's to assert.
 ///
-/// Mutation: drop the `partition` argument's effect in `stamp_broker` —
-/// every fetched batch reads back with no partition.
+/// Mutation: make `Broker::stamp_origin` a no-op and the stamped batch reads
+/// back without its origin; drop the arrival refusal and the pre-stamped
+/// batch is appended.
 #[test]
-fn every_appended_batch_reads_back_stamped_with_its_partition() -> Result<()> {
-    let dir = temp_dir("partition-stamp");
-    let stream = "orders";
-    {
-        let broker = Broker::open(&dir, clock())?;
-        broker.declare_stream(stream, 3, policy(), config(10_000_000))?;
-        broker.register_schema(stream, 1, 1, sample_shape())?;
-        for partition in 0..3u32 {
-            let batch = drain_batch(
-                &format!("producer-{partition}"),
-                1,
-                0,
-                u64::from(partition),
-                b"stamped",
-            );
-            broker
-                .produce_to(stream, partition, batch)?
-                .map_err(|refused| qip_core::Error::invalid(format!("{:?}", refused.refusal)))?;
-        }
-    }
-    let broker = Broker::open(&dir, clock())?;
-    broker.declare_stream(stream, 3, policy(), config(10_000_000))?;
-    for partition in 0..3u32 {
-        let response = broker.fetch(stream, partition, 0, 65_536)?;
-        let batch = first_batch(response.batches());
-        assert_eq!(
-            batch.partition,
-            Some(partition),
-            "the batch in partition {partition} does not carry its partition"
-        );
-    }
+fn a_broker_stamps_its_region_partition_and_the_sessions_principal_and_refuses_a_producers_own()
+-> Result<()> {
+    use qip_events::event_fabric::codec::{BrokerOrigin, stamp_broker_origin};
+    let dir = temp_dir("origin");
+    let stream = "outcomes";
+    let broker = Broker::open(&dir, clock())?.with_region("europe-west2")?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+    broker.register_schema(stream, 1, 1, sample_shape())?;
+
+    let session = broker
+        .produce_from(
+            stream,
+            0,
+            drain_batch("cell-a", 1, 0, 0, b"from-a-session"),
+            Some("qip-edge-node-london-1"),
+        )?
+        .map_err(|refused| refused.error)?;
+    let in_process = broker
+        .produce_to(stream, 0, drain_batch("cell-a", 1, 1, 1, b"no-session"))?
+        .map_err(|refused| refused.error)?;
+    let stamped = first_batch(
+        broker
+            .fetch(stream, 0, session.base_offset(), 65_536)?
+            .batches(),
+    );
+    assert_eq!(
+        stamped.origin.map(|origin| *origin),
+        Some(BrokerOrigin {
+            region: "europe-west2".to_string(),
+            partition: 0,
+            principal: "qip-edge-node-london-1".to_string(),
+        })
+    );
+    let unstamped = first_batch(
+        broker
+            .fetch(stream, 0, in_process.base_offset(), 65_536)?
+            .batches(),
+    );
+    assert_eq!(
+        unstamped.origin, None,
+        "a producer with no session was given a principal"
+    );
+
+    let mut forged = drain_batch("cell-a", 1, 2, 2, b"forged");
+    stamp_broker_origin(
+        &mut forged,
+        BrokerOrigin {
+            region: "us-east4".to_string(),
+            partition: 0,
+            principal: "somebody-else".to_string(),
+        },
+    );
+    let high_water = broker.metadata(stream, 0)?.high_watermark();
+    let refused = broker
+        .produce_from(stream, 0, forged, Some("qip-edge-node-london-1"))?
+        .expect_err("a producer-stamped origin was appended");
+    assert!(
+        refused.error.message().contains("stamped by the broker"),
+        "{:?}",
+        refused.error
+    );
+    assert_eq!(broker.metadata(stream, 0)?.high_watermark(), high_water);
+    assert!(
+        Broker::open(temp_dir("blank-region"), clock())?
+            .with_region("  ")
+            .is_err()
+    );
     Ok(())
 }

@@ -1887,18 +1887,15 @@
   },
   {
     "id": "R12-FABRIC-8084",
-    "status": "COMPLETE",
-    "current": "The batch header now carries every field the requirement lists: magic/version, message type, schema id/version, flags, partition (broker-stamped since 11b4bc12, under FLAG_PARTITION, ADR 0160), producer id/epoch, sequence, logical timestamp and the CRC32C; event id, trace id, source timestamp and payload length ride each record under its own CRC. stamp_broker sets the partition on fabricd's produce_to and produce_managed paths; catch-up and archive restore keep the stored bytes.",
+    "status": "PARTIAL",
+    "current": "The batch header carries magic/version, message type, schema id/version, flags, producer id/epoch, sequence, logical timestamp and the CRC32C. Event id, trace id, source timestamp and payload length ride each record under its own CRC. The partition is broker-stamped inside ADR 0129's format-version-2 BrokerOrigin {region, partition, principal}, under the batch CRC, by Broker::stamp_origin. That runs only for batches an authenticated session produces (produce_from): a batch appended through produce_to carries no origin, and so no partition.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/codec.rs:12-24 field table, :324-339 Batch",
-      "backend/crates/libs/qip-events/src/event_fabric/crc32c.rs:47",
-      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs",
-      "backend/crates/libs/qip-events/src/event_fabric/codec.rs FLAG_PARTITION, Batch::partition, stamp_broker",
+      "backend/crates/libs/qip-events/src/event_fabric/codec.rs Batch::origin, BrokerOrigin, stamp_broker_origin",
       "backend/crates/libs/qip-events/tests/event_fabric_codec.rs::a_broker_stamped_partition_round_trips_and_a_flipped_partition_bit_is_corruption",
-      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs::every_appended_batch_reads_back_stamped_with_its_partition",
-      "docs/adr/0160-broker-stamped-batch-header-fields-ride-flag-bits-not-a-format-version-bump.md"
+      "backend/crates/libs/qip-events/tests/event_fabric_origin.rs",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs::a_broker_stamps_its_region_partition_and_the_sessions_principal_and_refuses_a_producers_own"
     ],
-    "gap": "None for the requirement's text. Residuals the skeptic recorded, not refutations: no reader compares a fetched batch's stamped partition with the partition it read (catch-up, archive rebuild and qip-ledgerd's fabric_context still take it from where they fetched — ADR 0129 decision 3, R12-FABRIC-8022's slice); a rolling upgrade must update readers before brokers (ADR 0160); the exhaustive bit-flip test runs on an unstamped batch; produce_managed's stamp has no dedicated test.",
+    "gap": "2026-10-24 (parent, wave580 merge 4): lane L1 stamped the partition on every append behind a flag bit (11b4bc12, ADR 0160). Lane L5 had already landed ADR 0129's format version 2, which carries the partition inside the session-only broker origin. The two encodings cannot both be the batch header, so the merge kept version 2 and did not land ADR 0160. What remains: stamp the partition on every broker append, produce_to included, inside the version-2 header (an origin with no principal, or a separate always-written field), and re-run a skeptic. The previous promotion's HOLDS judged the flag-bit code, not this code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1906,10 +1903,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo +1.94.1 test -p qip-events --test event_fabric_codec && cargo +1.94.1 test -p qip-streaming --test event_fabric_broker every_appended_batch_reads_back_stamped_with_its_partition",
+    "verification": "cargo +1.94.1 test -p qip-events --test event_fabric_codec --test event_fabric_origin && cargo +1.94.1 test -p qip-streaming --test event_fabric_broker",
     "work_item": "",
     "size": "S",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Partition field in the header (or ADR stating the route carries it). 2026-10-24 lane L1-MONEY (11b4bc12, ADR 0160): partition added under a flag bit. Mutations fired: encode omits the partition bytes ('batch CRC mismatch'), decode ignores the flag (round trip None), stamp_broker drops it (both tests fail); restored with cp+cmp. Independent code-reviewer skeptic: HOLDS against the requirement text (requirements.md:173); the ADR 0129 d4 deviation it flagged is now ADR 0160."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Partition field in the header (or ADR stating the route carries it). 2026-10-24 lane L1-MONEY (11b4bc12, ADR 0160): partition added under a flag bit. Mutations fired: encode omits the partition bytes ('batch CRC mismatch'), decode ignores the flag (round trip None), stamp_broker drops it (both tests fail); restored with cp+cmp. Independent code-reviewer skeptic: HOLDS against the requirement text (requirements.md:173); the ADR 0129 d4 deviation it flagged is now ADR 0160. 2026-10-24 parent session, merge 4: back to PARTIAL. L1's flag-bit partition (ADR 0160) and L5's version-2 origin collided in the codec. The version-2 format was kept; ADR 0160 was not landed. L1's flipped-bit test was re-pointed at the version-2 origin. Mutation: omitting the origin's partition from encode and decoding it as 0 fails it with left Some(0), right Some(7). Restored by copy, cmp clean, and the suite reads 'ok. 9 passed'."
   },
   {
     "id": "R12-FABRIC-8085",

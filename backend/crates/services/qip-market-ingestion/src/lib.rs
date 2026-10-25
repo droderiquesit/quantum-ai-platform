@@ -61,6 +61,7 @@ pub mod connector;
 pub mod connector_feed;
 pub mod connectors;
 pub mod depth;
+mod fetched;
 pub mod narrative;
 pub mod replay;
 pub mod rest;

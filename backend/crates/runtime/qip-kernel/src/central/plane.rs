@@ -1553,6 +1553,19 @@ impl CentralPlane {
     ///
     /// A deployment that never supplied real key material is otherwise
     /// indistinguishable from one that did, which is the failure this answers.
+    /// Sign a record's canonical payload with the plane's key, for a record
+    /// the centre issues outside the envelope and approval chains (a model
+    /// promotion, R12-EXPAND-6070). HMAC: see `qip_compliance::signing` for
+    /// what that scheme is not.
+    pub(crate) fn sign_record(&self, payload: &str) -> String {
+        self.key.sign(payload)
+    }
+
+    /// Whether `signature` is the plane's signature over `payload`.
+    pub(crate) fn verifies_record(&self, payload: &str, signature: &str) -> bool {
+        self.key.verifies(payload, signature)
+    }
+
     pub const fn signing_key_is_reproducible(&self) -> bool {
         self.key_is_reproducible
     }
@@ -2058,7 +2071,6 @@ impl CentralPlane {
             // the same liquidity and leverage the cell will enforce and the
             // payload comparison below covers them (R12-CAPITAL-4088).
             exposure: envelope.exposure().cloned(),
-            // And its drawdown stop, for the same reason (ADR 0126 d2).
             drawdown: envelope.drawdown().cloned(),
         };
         let approved =
@@ -3151,6 +3163,8 @@ mod tests {
             base: "AAA".to_string(),
             quote: "USD".to_string(),
             costs: None,
+            base_terms: None,
+            quote_terms: None,
         };
         let config = CentralConfig {
             arbitrage: Some(ArbitragePolicy {
@@ -3303,6 +3317,8 @@ mod tests {
             base: "AAA".to_string(),
             quote: "USD".to_string(),
             costs: None,
+            base_terms: None,
+            quote_terms: None,
         };
         let config = CentralConfig {
             arbitrage: Some(ArbitragePolicy {
