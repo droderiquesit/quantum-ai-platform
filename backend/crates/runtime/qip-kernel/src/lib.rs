@@ -71,6 +71,7 @@ pub mod model_tournament;
 pub mod model_trust;
 pub mod now_stage;
 pub mod platform;
+pub mod position_life;
 pub mod position_register;
 pub mod pre_positioning;
 pub mod precedent_declines;
