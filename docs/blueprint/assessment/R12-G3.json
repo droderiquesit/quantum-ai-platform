@@ -1794,9 +1794,10 @@
     "status": "PARTIAL",
     "current": "qip-mesh has a BigQuery streaming adapter outside the edge closure; no Fabric sink drives it.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/bigquery.rs"
+      "backend/crates/services/qip-mesh/src/bigquery.rs",
+      "docs/adr/0182-a-simulation-lesson-is-a-promoted-claim-an-embedding-is-a-fifth-model-form-and-event-arrival-and-the-warehouse-write-path-stay-as-decided.md"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No fabric-driven sink feeds qip_mesh::bigquery::BigQueryWarehouse; its only caller is qip-deepbrain's direct OutcomeSink, and nothing shows sink lag cannot affect producers. The adapter uses legacy tabledata.insertAll, not the Storage Write API the requirement names. Needs code (a fabric consumer driving the warehouse with a lag-isolation test), a running fabricd, QIP_BIGQUERY_* wiring in catalogue.tf and a deploy; the Storage Write API is gRPC/protobuf and needs a dependency ADR, or an owner restatement accepting insertAll.",
+    "gap": "Decided 2026-10-25 by ADR 0182 d4 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): No fabric-driven sink feeds qip_mesh::bigquery::BigQueryWarehouse; its only caller is qip-deepbrain's direct OutcomeSink, and nothing shows sink lag cannot affect producers. The adapter uses legacy tabledata.insertAll, not the Storage Write API the requirement names. Needs code (a fabric consumer driving the warehouse with a lag-isolation test), a running fabricd, QIP_BIGQUERY_* wiring in catalogue.tf and a deploy; the Storage Write API is gRPC/protobuf and needs a dependency ADR, or an owner restatement accepting insertAll.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1809,7 +1810,7 @@
     "verification": "cargo test -p qip-mesh --test bigquery",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'no Fabric sink drives it' is true but incomplete: qip-deepbrain/src/warehouse.rs OutcomeSink drives the adapter directly; it is off because no Terraform sets QIP_BIGQUERY_PROJECT/QIP_BIGQUERY_DATASET, though dev has enable_bigquery = true."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'no Fabric sink drives it' is true but incomplete: qip-deepbrain/src/warehouse.rs OutcomeSink drives the adapter directly; it is off because no Terraform sets QIP_BIGQUERY_PROJECT/QIP_BIGQUERY_DATASET, though dev has enable_bigquery = true. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0182 decision 4: the warehouse keeps insertAll until a gRPC dependency ADR or an owner restatement; the API clause stays unmet. Code left: a fabricd consumer driving BigQueryWarehouse with a test that a stalled sink never blocks a producer. Status unchanged."
   },
   {
     "id": "R12-LEDGER-10082",
@@ -3937,9 +3938,10 @@
     "status": "PARTIAL",
     "current": "qip-twin counterfactual/regret and simulation engine; no future-state tree or rare-event factory.",
     "evidence": [
-      "backend/crates/services/qip-twin/src/counterfactual.rs"
+      "backend/crates/services/qip-twin/src/counterfactual.rs",
+      "docs/adr/0182-a-simulation-lesson-is-a-promoted-claim-an-embedding-is-a-fifth-model-form-and-event-arrival-and-the-warehouse-write-path-stay-as-decided.md"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Present: future-state tree (qip_twin::futures::FutureTree, qip-twin tests/futures.rs) and a market twin as per-instrument TwinState; a portfolio outcome distribution over one tree (FutureTree::portfolio_outcomes), not a counterfactual portfolio farm. Missing: macro and company twins, a rare-event factory, and any defined phase-13 exit test. Needs an owner decision on the exit test, licensed macro/company data (ADR 0157) and new code.",
+    "gap": "Decided 2026-10-25 by ADR 0182 d5 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): Present: future-state tree (qip_twin::futures::FutureTree, qip-twin tests/futures.rs) and a market twin as per-instrument TwinState; a portfolio outcome distribution over one tree (FutureTree::portfolio_outcomes), not a counterfactual portfolio farm. Missing: macro and company twins, a rare-event factory, and any defined phase-13 exit test. Needs an owner decision on the exit test, licensed macro/company data (ADR 0157) and new code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3952,7 +3954,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'no future-state tree' is false: FutureTree exists with tests, grown by tick_desk and qip-cli agency TwinScenarios; rare-event pieces (beyond_history branches, Monte Carlo, adversarial_sequence) exist without a factory."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'no future-state tree' is false: FutureTree exists with tests, grown by tick_desk and qip-cli agency TwinScenarios; rare-event pieces (beyond_history branches, Monte Carlo, adversarial_sequence) exist without a factory. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0182 decision 5 defines phase 13's exit test (a default-path future tree, a twin beyond the per-instrument market twin, a promoted rare-event lesson surviving restart, a portfolio outcome distribution for the platform's own book); macro and company twins wait on licensed data under ADR 0157. Status unchanged."
   },
   {
     "id": "R12-QUANT-10173",

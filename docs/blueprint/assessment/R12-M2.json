@@ -546,9 +546,10 @@
     "current": "backend/crates/services/qip-data-finder/src/finder.rs:324 observe_health keeps a bounded history and assessment scores reliability from SourceHealth::over",
     "evidence": [
       "backend/crates/services/qip-data-finder/tests/reliability_history.rs:41 a_source_failing_most_of_its_window_scores_low_even_when_its_probe_answers",
-      "backend/crates/services/qip-data-finder/src/finder.rs:1307 monitor has no caller outside the crate"
+      "backend/crates/services/qip-data-finder/src/finder.rs:1307 monitor has no caller outside the crate",
+      "docs/adr/0180-connector-health-is-scored-world-documents-are-re-fetched-never-copied-and-the-scout-records-every-first-pass-verdict.md"
     ],
-    "gap": "Needs a decision first. Platform has no observe_source_health, and ConnectorArm::poll measures no latency (it holds only the poll's records or error), so a HealthObservation::served cannot be built honestly; the failure half could be. The scorer reads history only when a source is assessed, and connector source ids are admitted by the licence gate and never re-assessed through DataFinder::assess, so feeding history would be read by nothing. Decide whether connector sources enter the finder's registry for periodic re-assessment (and who measures latency) before wiring observe_health.",
+    "gap": "Decided 2026-10-25 by ADR 0180 d1 (see notes for the decision and the code it leaves). Needs a decision first. Platform has no observe_source_health, and ConnectorArm::poll measures no latency (it holds only the poll's records or error), so a HealthObservation::served cannot be built honestly; the failure half could be. The scorer reads history only when a source is assessed, and connector source ids are admitted by the licence gate and never re-assessed through DataFinder::assess, so feeding history would be read by nothing. Decide whether connector sources enter the finder's registry for periodic re-assessment (and who measures latency) before wiring observe_health.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -559,7 +560,7 @@
     "verification": "cargo test -p qip-data-finder --test source_alpha",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The scorer that runs (finder.rs:1111) is 0.9/0.1 from one HEAD probe minus TLS/schema penalties; SourceHealth::over has no production caller. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Scorer reads history now, but nothing feeds it in production. Gap corrected 2026-10-18 (lane L01) after reading ConnectorArm::poll and DataFinder::observe_health; handover item (3) from the previous session confirmed as a design decision."
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The scorer that runs (finder.rs:1111) is 0.9/0.1 from one HEAD probe minus TLS/schema penalties; SourceHealth::over has no production caller. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Scorer reads history now, but nothing feeds it in production. Gap corrected 2026-10-18 (lane L01) after reading ConnectorArm::poll and DataFinder::observe_health; handover item (3) from the previous session confirmed as a design decision. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0180 decision 1 (amends ADR 0157 §8): connector polls are recorded and scored for reliability by the finder's scorer, reported and journaled, routing nothing. Code left: time each ConnectorArm poll, keep a bounded window, score it, and test that a flaky connector scores lower than a stable one. Status unchanged."
   },
   {
     "id": "R12-DATA-2025",
@@ -994,9 +995,10 @@
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs:489",
       "infrastructure/environments/dev/terraform.tfvars:280 enable_cloud_storage = false (same in test/stage/prod)",
       "grep with_tick_lake|TickLakeWriter::new in apps/runtime/services src: none",
-      "backend/crates/apps/qip-deepbrain/src/connectors.rs::TickLakeSettings"
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs::TickLakeSettings",
+      "docs/adr/0181-the-simulated-depth-dataset-permits-raw-retention-raw-frames-reach-the-lake-off-the-decision-path-and-lake-segments-are-sized-at-the-seal.md"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No raw tick is retained: LakeSink keeps only decoded canonical events (drain.rs deliver: 'there is no raw payload to keep here') and default_retention grants raw:false; ADR 0151 decision 8's raw-frame writer is not built and waits on a licence record permitting raw retention (ADR 0157, owner/vendor decision). Nothing is durable: the edge binary defaults to the memory store, enable_cloud_storage=false in every env, execution_nodes_enabled=false. No test re-materialises a captured session byte-for-byte from the lake.",
+    "gap": "Decided 2026-10-25 by ADR 0181 d1-2 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): No raw tick is retained: LakeSink keeps only decoded canonical events (drain.rs deliver: 'there is no raw payload to keep here') and default_retention grants raw:false; ADR 0151 decision 8's raw-frame writer is not built and waits on a licence record permitting raw retention (ADR 0157, owner/vendor decision). Nothing is durable: the edge binary defaults to the memory store, enable_cloud_storage=false in every env, execution_nodes_enabled=false. No test re-materialises a captured session byte-for-byte from the lake.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1009,7 +1011,7 @@
     "verification": "cargo test -p qip-storage --test lake",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge ticks now reach a lake; not durable anywhere. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: The evidence 'grep with_tick_lake|TickLakeWriter::new ... none' is stale: qip-deepbrain main.rs and evolution.rs call with_tick_lake, only when QIP_DEEPBRAIN_TICK_LAKE_RETENTION is set, which no committed deployment sets; the edge LakeSink writes no raw bytes and no raw hash."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge ticks now reach a lake; not durable anywhere. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: The evidence 'grep with_tick_lake|TickLakeWriter::new ... none' is stale: qip-deepbrain main.rs and evolution.rs call with_tick_lake, only when QIP_DEEPBRAIN_TICK_LAKE_RETENTION is set, which no committed deployment sets; the edge LakeSink writes no raw bytes and no raw hash. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0181 decisions 1-2: the simulated depth dataset permits raw retention; raw frames travel the spool and LakeSink seals them in the segment's raw slot off the decision path. Code left: the frame record, the raw slot, default_retention raw:true for the simulated dataset, and a byte-for-byte re-materialisation test. Status unchanged."
   },
   {
     "id": "R12-TICK-2043",
@@ -1519,8 +1521,10 @@
     "id": "R12-TICK-2064",
     "status": "MISSING",
     "current": "No learned representation or embedding code exists.",
-    "evidence": [],
-    "gap": "2026-10-24 (re-read against the tree): No market-state embedding model is trained, versioned or evaluated against a baseline anywhere: qip_contracts::market_state::StateKind::Embedding is a tag with no producer, and qip_ai::embedding::HashingEmbedder is a non-learned lexical text embedder. ModelRegistry/ModelCard (qip-ai) could version an artefact. The trainer is new code (a qip-training module or new crate), and a shipped path needs the off-by-default tick_desk enabled in a committed deployment.",
+    "evidence": [
+      "docs/adr/0182-a-simulation-lesson-is-a-promoted-claim-an-embedding-is-a-fifth-model-form-and-event-arrival-and-the-warehouse-write-path-stay-as-decided.md"
+    ],
+    "gap": "Decided 2026-10-25 by ADR 0182 d2 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): No market-state embedding model is trained, versioned or evaluated against a baseline anywhere: qip_contracts::market_state::StateKind::Embedding is a tag with no producer, and qip_ai::embedding::HashingEmbedder is a non-learned lexical text embedder. ModelRegistry/ModelCard (qip-ai) could version an artefact. The trainer is new code (a qip-training module or new crate), and a shipped path needs the off-by-default tick_desk enabled in a committed deployment.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1533,7 +1537,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Embedding code exists, not for market state: qip-ai embedding.rs Embedder trait and HashingEmbedder for text; qip-contracts market_state.rs StateKind::Embedding with no producer."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Embedding code exists, not for market state: qip-ai embedding.rs Embedder trait and HashingEmbedder for text; qip-contracts market_state.rs StateKind::Embedding with no producer. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0182 decision 2 (amends ADR 0083): a market-state embedding is the fifth model form - an in-tree linear projection with a ModelCard version and a baseline it must beat. Code left: the trainer, the card and the baseline test. Status unchanged."
   },
   {
     "id": "R12-TICK-2065",
