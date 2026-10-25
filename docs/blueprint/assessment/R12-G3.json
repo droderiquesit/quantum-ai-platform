@@ -1407,7 +1407,7 @@
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_revoked_drafting_tool_withholds_every_draft_and_leaves_the_platform_log_identical",
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_full_outbox_defers_drafts_and_never_stops_the_node"
     ],
-    "gap": "The in-process qip-agents runtime (runtime.rs) has no backlog queue; backlog and refusal-isolation are proven for the agency door on the deepbrain node and for the edge node's reflex loop, not for that runtime.",
+    "gap": "The in-process qip-agents runtime (runtime.rs) has no backlog queue; backlog and refusal-isolation are proven for the agency door on the deepbrain node and for the edge node's reflex loop, not for that runtime. 2026-10-25 (lane L2-INTEL): the row's subject is a managed agent runtime (Vertex Agent Engine), new billed infrastructure that owner decision 5 (docs/blueprint/owner-decisions-2026-10-25.md) declines for now; no managed runtime exists to fail over to backlog. The in-process qip-agents runtime (runtime.rs AgentRuntime::run) is synchronous inside the cycle and returns a failed AgentRun record rather than raising. A backlog for it would be a queue for a dependency that does not exist. Reopens with an ADR admitting a managed runtime with a measured need and a monthly ceiling.",
     "implemented": true,
     "tested": true,
     "integrated": true,

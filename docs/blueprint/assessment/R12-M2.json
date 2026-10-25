@@ -844,9 +844,10 @@
       "backend/crates/services/qip-market-ingestion/src/connectors/coinbase_ticker.rs:195 Coinbase declares trade_id",
       "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs::feed_sequence_with",
       "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs:366 a_coinbase_print_numbered_after_another_but_dated_before_it_violates_event_ordering",
-      "qip-kernel/tests/evidence_intake.rs::production::a_feed_message_dated_before_its_numbered_predecessor_violates_event_ordering"
+      "qip-kernel/tests/evidence_intake.rs::production::a_feed_message_dated_before_its_numbered_predecessor_violates_event_ordering",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_claim_dated_before_its_declared_cause_is_journaled_with_an_event_ordering_violation"
     ],
-    "gap": "Kalshi's market list carries no vendor sequence (only updated_time), so ordering cannot fire for it, and it is a refused candidate source in any case. Results are in-memory only. Making an ordering violation inadmissible was tried and reverted: it quarantines out-of-order prints, contradicting the kernel test's premise that both are released and soak.rs's quarantine bound; that is a decision to take deliberately, not a side effect.",
+    "gap": "2026-10-25: the world fabric's temporal verdict (checked against every source's claims, including a declared cause from another source) is now what Platform::absorb_evidence journals on evidence.admitted. Still PARTIAL for one reason: no committed environment configures a connector (deepbrain_connector and market_data_connector are null), so no claim reaches the world fabric on a default path; the Kalshi ordering limitation and the deliberate admissibility choice for ordering violations stand as recorded below.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -859,7 +860,7 @@
     "verification": "cargo test -p qip-market-ingestion --test evidence_stage && cargo test -p qip-kernel --test evidence_intake",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutation fired - Coinbase's feed_sequence forced to None left the second print's caused_by empty."
+    "notes": "2026-10-18 lane L23: mutation fired - Coinbase's feed_sequence forced to None left the second print's caused_by empty. 2026-10-25 lane L3-DATA (wave580): journaled the world fabric's verdict. Mutation fired: dropping the temporal_consistency assignment - 'the journal does not carry the world fabric's ordering verdict: None'. Not promoted (default-path connector absent); no skeptic run."
   },
   {
     "id": "R12-EVID-2037",

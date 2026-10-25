@@ -828,3 +828,57 @@ fn a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys() 
     assert_eq!(second.conflicts, vec!["kd-a1".to_string()]);
     assert_eq!(second.merge_policy, MergePolicy::ReviewRequired);
 }
+
+/// R12-EVID-2036: the world fabric's temporal verdict is what the journal
+/// keeps. A claim whose declared cause, held from another source, happened
+/// after the claimed effect is on an impossible event ordering; the
+/// connector's private fabric never held that cause and could not see it,
+/// so only the world fabric's verdict says so, and the journal must carry
+/// that verdict rather than the pre-admission record. Mutation: drop the
+/// `temporal_consistency` assignment in `absorb_evidence` — the journaled
+/// effect carries no verdict and the assertion fails.
+#[test]
+fn a_claim_dated_before_its_declared_cause_is_journaled_with_an_event_ordering_violation() {
+    use qip_world_model::evidence::TemporalConsistency;
+    let mut platform = platform();
+    // The cause, from one source, happened at 8.
+    let mut cause = checked(
+        "cause-1",
+        "https://a.example",
+        "strike called",
+        "1",
+        &hash('a'),
+    );
+    cause.record = cause.record.with_claimed_at(at(8));
+    // The effect, from another, claims to have happened at 2 — before it.
+    let mut effect = checked(
+        "effect-1",
+        "https://b.example",
+        "plant idle",
+        "1",
+        &hash('b'),
+    );
+    effect.record = effect.record.with_claimed_at(at(2));
+    effect.record.caused_by = vec!["cause-1".to_string()];
+    assert!(
+        effect.record.temporal_consistency.is_none(),
+        "premise: the record reaches the kernel without the world's verdict"
+    );
+
+    let intake = platform.absorb_evidence(vec![cause, effect], at(30));
+    assert_eq!(intake.admitted, 2, "{intake:?}");
+
+    let journal = platform.journaled_evidence().unwrap();
+    let effect = journal
+        .iter()
+        .find(|claim| claim.record.id == "effect-1")
+        .expect("the effect was journaled");
+    assert!(
+        matches!(
+            effect.record.temporal_consistency,
+            Some(TemporalConsistency::ViolatesEventOrdering { ref cause_id, .. }) if cause_id == "cause-1"
+        ),
+        "the journal does not carry the world fabric's ordering verdict: {:?}",
+        effect.record.temporal_consistency
+    );
+}
