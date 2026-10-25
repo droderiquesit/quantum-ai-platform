@@ -384,6 +384,15 @@ pub enum Decision {
         cycle_id: String,
         orders: Vec<String>,
         net: String,
+        /// The origin desk's own record of the opportunity it acted on
+        /// (R12-CONTRACT-7068, ADR 0154 decision 7): the legs as they went
+        /// out, the size, the edge, the time to live, the region hold, and
+        /// how the cycle was worked and unwound. Absent on entries sealed
+        /// before it existed, and not written back then, so a sealed chain
+        /// still verifies; absent too on a cycle whose edge rounds below one
+        /// basis point, which the token's own contract refuses to describe.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<Box<crate::opportunity_token::OpportunityToken>>,
     },
     /// A leg of an arbitrage cycle went out smaller than the scanner priced
     /// it, because an earlier leg of the same cycle filled short (§32.1).

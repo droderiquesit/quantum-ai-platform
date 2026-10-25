@@ -219,6 +219,11 @@ pub fn assemble_with_risk(
     // one the centre did not issue, and reading its silence as "unbounded"
     // is how a disconnected cell builds the position the bounds exist for.
     config = config.with_exposure_bounds_required();
+    // R12-REFLEX-5038: a sale beyond what the cell holds long needs the
+    // venue's stated borrow and funding; the simulated feed states both for
+    // every instrument it quotes, so this refuses only what a venue left
+    // unstated.
+    config = config.with_borrow_required();
     // EXEC-020: the node enables only the two modes its paper path actually
     // performs, order taking and routing, and only at the venues the cell may
     // trade. The other six modes (quoting, liquidity provision, derivatives,

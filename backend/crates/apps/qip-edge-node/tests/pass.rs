@@ -4304,3 +4304,37 @@ fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Resu
     }
     gateway.permit_listings(permissions, "paper")
 }
+
+/// R12-REFLEX-5038 on the binary's path: the assembled node arms the borrow
+/// gate, and the simulated feed states no borrow or funding fact, because the
+/// simulated exchange models neither. A number written in for it would be a
+/// lender nobody modelled. So on this path a sale beyond the cell's confirmed
+/// long position is refused under the gate, rather than sent on silence.
+///
+/// Mutation: drop `with_borrow_required` from `assemble` and the gate is
+/// never armed, which the first assertion catches.
+#[test]
+fn an_assembled_node_arms_the_borrow_gate_and_its_simulated_feed_invents_no_lender() -> Result<()> {
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    assert!(
+        node.cell.config().borrow_required,
+        "the assembled node does not arm the borrow gate"
+    );
+    permit_seeding(&mut gateway, &[&object()])?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    feed.publish(&gateway, &mut node.cell, t(10))?;
+    let instrument = object().as_str().to_string();
+    assert!(
+        node.cell
+            .funding_state()
+            .borrow_availability(&instrument)
+            .is_none()
+            && node
+                .cell
+                .funding_state()
+                .funding_rate(&instrument)
+                .is_none(),
+        "the simulated feed stated a borrow or funding fact its venue does not model"
+    );
+    Ok(())
+}
