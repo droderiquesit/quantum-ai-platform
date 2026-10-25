@@ -99,8 +99,9 @@ fn what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_p
     // permission; granting it again, or registering more tools, widens nothing.
     for round in 0..200 {
         let mut tools = ToolRegistry::new();
+        let subject = ToolName::parse("subject").unwrap();
         tools
-            .register(ToolName::parse("subject").unwrap(), ToolKind::Connector)
+            .register(subject.clone(), ToolKind::Connector)
             .unwrap();
         let mut granted = BTreeSet::from([ToolPermission::Read]);
         for step in 0..(rng.next() % 4) {
@@ -109,7 +110,7 @@ fn what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_p
                 ToolPermission::Write,
                 ToolPermission::LeaveSandbox,
             ][usize::try_from(rng.next() % 3).unwrap()];
-            tools.promote("subject", grant, "evaluation").unwrap();
+            tools.promote(&subject, grant, "evaluation").unwrap();
             granted.insert(grant);
             tools
                 .register(
@@ -124,7 +125,7 @@ fn what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_p
             ToolPermission::LeaveSandbox,
         ] {
             assert_eq!(
-                tools.authorise("subject", permission).is_ok(),
+                tools.authorise(&subject, permission).is_ok(),
                 granted.contains(&permission),
                 "{permission:?} against a scope of {granted:?}"
             );

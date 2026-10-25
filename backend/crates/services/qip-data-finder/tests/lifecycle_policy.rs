@@ -87,7 +87,7 @@ fn source_with_history(
 
 fn payload_at(at: Timestamp) -> PayloadSample {
     PayloadSample {
-        body: QUOTE_PAYLOAD.to_string(),
+        body: qip_core::untrusted::Untrusted::new("a scripted sample", QUOTE_PAYLOAD.to_string()),
         media_type: "application/json".to_string(),
         payload_at: Some(at),
         latency: Duration::from_millis(55),

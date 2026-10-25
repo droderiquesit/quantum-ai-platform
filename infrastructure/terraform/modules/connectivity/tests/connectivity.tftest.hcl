@@ -40,6 +40,10 @@ run "two_attachments_in_one_region_share_one_router_with_bgp_and_stay_administra
       chicago-a = { region = "us-central1", edge_availability_domain = "AVAILABILITY_DOMAIN_1" }
       chicago-b = { region = "us-central1", edge_availability_domain = "AVAILABILITY_DOMAIN_2" }
     }
+    enable_ha_vpn = true
+    ha_vpn_gateways = {
+      us-central1 = { peer_asn = 65001, preshared_key = "test-key-chicago", peer_ip_addresses = ["203.0.113.10", "203.0.113.11"] }
+    }
   }
 
   assert {
@@ -72,7 +76,32 @@ run "an_attachment_that_leaves_the_availability_domain_to_google_is_refused" {
 }
 
 # HA VPN fallback (GCP-032): every Interconnect attachment region gets a VPN gateway with tunnels.
+#
+# Since R12-GCP-10011 an attachment with the VPN flag off is refused at plan
+# (the run after this one), so "off plans nothing" is proven with the
+# interconnect off too: a gateway map alone bills nothing.
 run "ha_vpn_flag_left_off_plans_no_gateway_or_tunnel" {
+  command = plan
+
+  variables {
+    enable_partner_interconnect = false
+    partner_interconnects = {
+      chicago-a = { region = "us-central1", edge_availability_domain = "AVAILABILITY_DOMAIN_1" }
+    }
+    enable_ha_vpn = false
+    ha_vpn_gateways = {
+      us-central1 = { peer_asn = 65001, preshared_key = "test-key", peer_ip_addresses = ["203.0.113.10"] }
+    }
+  }
+
+  assert {
+    condition     = length(google_compute_ha_vpn_gateway.fallback) == 0 && length(google_compute_vpn_tunnel.fallback) == 0
+    error_message = "a VPN gateway or tunnel was planned while enable_ha_vpn was false; they would bill for no fallback"
+  }
+}
+
+# R12-GCP-10011: an attachment without its fallback fails the module test.
+run "an_interconnect_attachment_with_no_ha_vpn_fallback_in_its_region_is_refused_at_plan" {
   command = plan
 
   variables {
@@ -81,15 +110,45 @@ run "ha_vpn_flag_left_off_plans_no_gateway_or_tunnel" {
       chicago-a = { region = "us-central1", edge_availability_domain = "AVAILABILITY_DOMAIN_1" }
     }
     enable_ha_vpn = false
+  }
+
+  expect_failures = [google_compute_interconnect_attachment.partner]
+}
+
+# The fallback must be in the attachment's own region; one elsewhere is none.
+run "an_attachment_whose_region_has_no_gateway_entry_is_refused_even_with_the_flag_on" {
+  command = plan
+
+  variables {
+    enable_partner_interconnect = true
+    partner_interconnects = {
+      chicago-a = { region = "us-central1", edge_availability_domain = "AVAILABILITY_DOMAIN_1" }
+    }
+    enable_ha_vpn = true
     ha_vpn_gateways = {
-      us-central1 = { peer_asn = 65001, preshared_key = "test-key" }
+      us-east1 = { peer_asn = 65002, preshared_key = "test-key-east", peer_ip_addresses = ["203.0.113.20"] }
     }
   }
 
-  assert {
-    condition     = length(google_compute_ha_vpn_gateway.fallback) == 0 && length(google_compute_vpn_tunnel.fallback) == 0
-    error_message = "a VPN gateway or tunnel was planned while enable_ha_vpn was false; they would bill for no fallback"
+  expect_failures = [google_compute_interconnect_attachment.partner]
+}
+
+# A fallback that names no peer address never comes up.
+run "a_fallback_with_no_peer_address_is_refused" {
+  command = plan
+
+  variables {
+    enable_partner_interconnect = true
+    partner_interconnects = {
+      chicago-a = { region = "us-central1", edge_availability_domain = "AVAILABILITY_DOMAIN_1" }
+    }
+    enable_ha_vpn = true
+    ha_vpn_gateways = {
+      us-central1 = { peer_asn = 65001, preshared_key = "test-key-chicago", peer_ip_addresses = [] }
+    }
   }
+
+  expect_failures = [var.ha_vpn_gateways]
 }
 
 run "each_interconnect_region_gets_a_vpn_gateway_with_two_tunnels_and_bgp_peers" {
@@ -103,7 +162,7 @@ run "each_interconnect_region_gets_a_vpn_gateway_with_two_tunnels_and_bgp_peers"
     }
     enable_ha_vpn = true
     ha_vpn_gateways = {
-      us-central1 = { peer_asn = 65001, preshared_key = "test-key-chicago" }
+      us-central1 = { peer_asn = 65001, preshared_key = "test-key-chicago", peer_ip_addresses = ["203.0.113.10", "203.0.113.11"] }
     }
   }
 
@@ -121,6 +180,15 @@ run "each_interconnect_region_gets_a_vpn_gateway_with_two_tunnels_and_bgp_peers"
     condition     = alltrue([for p in values(google_compute_router_peer.vpn_fallback) : p.advertised_route_priority == 200])
     error_message = "VPN peers must advertise with higher metric (200) than Interconnect (100), so traffic prefers the direct circuit"
   }
+  assert {
+    condition     = google_compute_external_vpn_gateway.peer["us-central1"].redundancy_type == "TWO_IPS_REDUNDANCY" && length(google_compute_external_vpn_gateway.peer["us-central1"].interface) == 2
+    error_message = "the fallback's tunnels must terminate on an external peer gateway carrying both peer addresses"
+  }
+
+  assert {
+    condition     = toset([for t in values(google_compute_vpn_tunnel.fallback) : t.peer_external_gateway_interface]) == toset([0, 1])
+    error_message = "with two peer addresses each tunnel must land on its own peer interface"
+  }
 }
 
 run "vpn_gateways_in_regions_with_no_interconnect_are_not_created" {
@@ -133,8 +201,8 @@ run "vpn_gateways_in_regions_with_no_interconnect_are_not_created" {
     }
     enable_ha_vpn = true
     ha_vpn_gateways = {
-      us-central1 = { peer_asn = 65001, preshared_key = "test-key-chicago" }
-      us-east1    = { peer_asn = 65002, preshared_key = "test-key-east" }
+      us-central1 = { peer_asn = 65001, preshared_key = "test-key-chicago", peer_ip_addresses = ["203.0.113.10", "203.0.113.11"] }
+      us-east1    = { peer_asn = 65002, preshared_key = "test-key-east", peer_ip_addresses = ["203.0.113.20"] }
     }
   }
 

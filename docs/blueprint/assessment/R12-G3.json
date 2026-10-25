@@ -229,9 +229,11 @@
     "evidence": [
       "infrastructure/terraform/modules/connectivity/main.tf:92 google_compute_interconnect_attachment partner",
       "infrastructure/terraform/modules/connectivity/main.tf:191 google_compute_ha_vpn_gateway fallback",
-      "infrastructure/environments/dev/terraform.tfvars partner_interconnects test-attachment-primary admin_enabled=false"
+      "infrastructure/environments/dev/terraform.tfvars partner_interconnects test-attachment-primary admin_enabled=false",
+      "infrastructure/terraform/modules/connectivity/main.tf google_compute_interconnect_attachment.partner precondition; google_compute_external_vpn_gateway.peer",
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl::an_interconnect_attachment_with_no_ha_vpn_fallback_in_its_region_is_refused_at_plan"
     ],
-    "gap": "No provider circuit; attachment disabled.",
+    "gap": "2026-10-25 (lane L6): the module now refuses an attachment without an HA VPN fallback in its own region and plans the external peer gateway the tunnels terminate on (mocked terraform test 9 passed). Remaining: the root module does not pass enable_ha_vpn or ha_vpn_gateways, so enabling partner interconnect at the root is refused at plan (fail closed) until the root wires a fallback whose pre-shared key comes from Secret Manager rather than a committed tfvars; the circuits themselves are external and billed (owner-decisions-2026-10-25 decision 5), and nothing is deployed. No provider circuit; attachment disabled.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -244,7 +246,7 @@
     "verification": "terraform test modules/connectivity",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L6: terraform 1.9.8 test in a scratch copy, mock provider: 9 passed, 0 failed. The run ha_vpn_flag_left_off_plans_no_gateway_or_tunnel now plans with the interconnect off as well, since an attachment with the flag off is refused by the new run; its billing assertion is unchanged. Mutation: the precondition's condition replaced by `true || var.enable_ha_vpn` failed an_interconnect_attachment_with_no_ha_vpn_fallback_in_its_region_is_refused_at_plan with 'Missing expected failure'; restored, cmp clean, 9 passed."
   },
   {
     "id": "R12-GCP-10012",

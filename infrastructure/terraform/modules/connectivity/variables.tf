@@ -190,11 +190,14 @@ variable "ha_vpn_gateways" {
 
       * `peer_asn` is the VPN peer's BGP ASN (e.g., 65001).
       * `preshared_key` is the tunnel pre-shared key.
+      * `peer_ip_addresses` are the far end's public interface addresses,
+        one or two: the external gateway the tunnels terminate on.
   EOT
 
   type = map(object({
-    peer_asn      = number
-    preshared_key = string
+    peer_asn          = number
+    preshared_key     = string
+    peer_ip_addresses = list(string)
   }))
 
   default = {}
@@ -205,5 +208,13 @@ variable "ha_vpn_gateways" {
       (gw.peer_asn >= 1 && gw.peer_asn <= 65534) || (gw.peer_asn >= 4200000000 && gw.peer_asn <= 4294967294)
     ])
     error_message = "Each peer ASN must be private: 1-65534, or 4200000000-4294967294 for a 32-bit one."
+  }
+
+  validation {
+    condition = alltrue([
+      for region, gw in var.ha_vpn_gateways :
+      contains([1, 2], length(gw.peer_ip_addresses)) && alltrue([for ip in gw.peer_ip_addresses : can(cidrhost("${ip}/32", 0))])
+    ])
+    error_message = "Each HA VPN fallback names one or two peer IPv4 addresses; a tunnel with no peer never comes up."
   }
 }

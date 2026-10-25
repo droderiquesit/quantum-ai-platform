@@ -499,8 +499,13 @@ fn a_task_needing_an_unregistered_parser_is_blocked_on_it_and_a_tool_proposal_an
  {
     let world = World::new();
     // The premise: there is a registry, and the parser is not in it.
-    assert!(world.tools.get("twin").is_some());
-    assert!(world.tools.get("filing-parser").is_none());
+    assert!(world.tools.get(&ToolName::parse("twin").unwrap()).is_some());
+    assert!(
+        world
+            .tools
+            .get(&ToolName::parse("filing-parser").unwrap())
+            .is_none()
+    );
 
     let needs_parser = |question: &str| {
         let mut task = candidate(TaskKind::DataAcquisition, question, 600, 20);
@@ -529,7 +534,12 @@ fn a_task_needing_an_unregistered_parser_is_blocked_on_it_and_a_tool_proposal_an
     assert_eq!(proposal.name(), "filing-parser");
     assert_eq!(proposal.kind(), ToolKind::Parser);
     assert_eq!(proposal.scope(), &BTreeSet::from([ToolPermission::Read]));
-    assert!(world.tools.get("filing-parser").is_none());
+    assert!(
+        world
+            .tools
+            .get(&ToolName::parse("filing-parser").unwrap())
+            .is_none()
+    );
 
     let builds: Vec<_> = queue
         .ranked()

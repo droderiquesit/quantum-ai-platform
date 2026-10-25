@@ -456,7 +456,10 @@ fn scripted_probe(entries: &[(&str, &str, RobotsFetch)]) -> InMemoryProbe {
             .with_sample(
                 url,
                 PayloadSample {
-                    body: r#"{"symbol":"ACME","bid":99.0,"ask":101.0,"volume":41000}"#.to_string(),
+                    body: qip_core::untrusted::Untrusted::new(
+                        "a scripted sample",
+                        r#"{"symbol":"ACME","bid":99.0,"ask":101.0,"volume":41000}"#.to_string(),
+                    ),
                     media_type: "application/json".to_string(),
                     payload_at: Some(start()),
                     latency: Duration::from_millis(55),

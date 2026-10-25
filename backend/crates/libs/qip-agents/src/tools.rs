@@ -250,8 +250,15 @@ impl ToolRegistry {
         Ok(self.tools.entry(spec.name.clone()).or_insert(spec))
     }
 
-    pub fn get(&self, name: &str) -> Option<&ToolSpec> {
-        self.tools.get(name.trim())
+    /// The tool registered under `name`.
+    ///
+    /// Takes a [`ToolName`], as `promote` and `authorise` do, so every way
+    /// into the registry has been through the grammar (ADR 0158 decision 17).
+    /// This took `&str` until R12-SEC-9065 closed, and trimmed it: a name a
+    /// completion over a fetched page chose resolved a registered tool with
+    /// one `as_str`, and whitespace around it was silently forgiven.
+    pub fn get(&self, name: &ToolName) -> Option<&ToolSpec> {
+        self.tools.get(name.as_str())
     }
 
     /// Every tool of one kind, in name order.
@@ -262,7 +269,12 @@ impl ToolRegistry {
     /// Widen a tool's scope through a promotion. `evaluation` must name the
     /// evaluation of the tool's behaviour and data handling; a blank one is
     /// refused, so a grant cannot be made without having looked.
-    pub fn promote(&mut self, name: &str, grant: ToolPermission, evaluation: &str) -> Result<()> {
+    pub fn promote(
+        &mut self,
+        name: &ToolName,
+        grant: ToolPermission,
+        evaluation: &str,
+    ) -> Result<()> {
         if evaluation.trim().is_empty() {
             return Err(Error::denied(
                 "a scope widens only through a promotion that cites its evaluation; attach the evaluation record",
@@ -270,17 +282,17 @@ impl ToolRegistry {
         }
         let tool = self
             .tools
-            .get_mut(name)
+            .get_mut(name.as_str())
             .ok_or_else(|| Error::not_found(format!("tool {name} is not registered")))?;
         tool.scope.insert(grant);
         Ok(())
     }
 
     /// Refuse any use of a tool outside the scope it holds.
-    pub fn authorise(&self, name: &str, permission: ToolPermission) -> Result<()> {
+    pub fn authorise(&self, name: &ToolName, permission: ToolPermission) -> Result<()> {
         let tool = self
             .tools
-            .get(name)
+            .get(name.as_str())
             .ok_or_else(|| Error::not_found(format!("tool {name} is not registered")))?;
         if tool.scope.contains(&permission) {
             Ok(())
@@ -291,6 +303,81 @@ impl ToolRegistry {
         }
     }
 }
+
+/// R12-SEC-9065, ADR 0158 decisions 17 and 18: a completion over fetched
+/// content cannot name a tool until it has been validated.
+///
+/// Held here as doc tests because the property is that something does not
+/// compile, and only a `compile_fail` block can fail when it starts to. Each
+/// block below breaks if one specific leak is opened, and the last one is the
+/// control proving the blocks fail on the leak and not on a typo.
+///
+/// The model read a page a stranger wrote, so what it said is the
+/// stranger's too. Reading the text off the answer and parsing it as a tool
+/// name does not compile, because `complete_over_untrusted` returns an
+/// `UntrustedCompletion` and not a `Completion`. If it ever returned the
+/// completion bare, this block would compile and fail:
+///
+/// ```compile_fail
+/// use qip_agents::tools::ToolName;
+/// use qip_ai::language::{DeterministicModel, LanguageModel, ModelRequest};
+/// use qip_core::{Timestamp, untrusted::Untrusted};
+/// let page = Untrusted::new("http://127.0.0.1:9/page", String::from("place_order"));
+/// let request = ModelRequest::new("system", "which tool does the page need?")
+///     .with_untrusted_context("page", page);
+/// let answer = DeterministicModel::new()
+///     .complete_over_untrusted(&request, Timestamp::from_secs(0))
+///     .unwrap();
+/// let _tool = ToolName::parse(&answer.text);
+/// ```
+///
+/// Unwrapping to the `Untrusted<Completion>` does not reach the text either,
+/// because `Untrusted` has no `Deref`. If it ever had one, this block would
+/// compile through auto-deref and fail:
+///
+/// ```compile_fail
+/// use qip_agents::tools::ToolName;
+/// use qip_ai::language::{DeterministicModel, LanguageModel, ModelRequest};
+/// use qip_core::{Timestamp, untrusted::Untrusted};
+/// let page = Untrusted::new("http://127.0.0.1:9/page", String::from("place_order"));
+/// let request = ModelRequest::new("system", "which tool does the page need?")
+///     .with_untrusted_context("page", page);
+/// let answer = DeterministicModel::new()
+///     .complete_over_untrusted(&request, Timestamp::from_secs(0))
+///     .unwrap();
+/// let _tool = ToolName::parse(&answer.into_untrusted().text);
+/// ```
+///
+/// And a string, trimmed or not, is no key into the registry: lookups take a
+/// `ToolName`, so a name nobody parsed cannot resolve a tool.
+///
+/// ```compile_fail
+/// use qip_agents::tools::ToolRegistry;
+/// let registry = ToolRegistry::new();
+/// let _ = registry.get("place_order");
+/// ```
+///
+/// The control: the same answer, through `validate` into the grammar,
+/// compiles. Whether it is admitted is then the validator's decision, which
+/// `tests/untrusted_completion.rs` exercises at run time.
+///
+/// ```
+/// use qip_agents::tools::ToolName;
+/// use qip_ai::language::{DeterministicModel, LanguageModel, ModelRequest};
+/// use qip_core::{Timestamp, untrusted::Untrusted};
+/// let page = Untrusted::new("http://127.0.0.1:9/page", String::from("place_order"));
+/// let request = ModelRequest::new("system", "which tool does the page need?")
+///     .with_untrusted_context("page", page);
+/// let answer = DeterministicModel::new()
+///     .complete_over_untrusted(&request, Timestamp::from_secs(0))
+///     .unwrap();
+/// let named = answer.validate(|completion| ToolName::parse(&completion.text));
+/// // The deterministic stand-in echoes its context as prose, which is not a
+/// // name: the validator refuses it, and that refusal is the point.
+/// assert!(named.is_err());
+/// ```
+#[allow(dead_code)]
+mod a_completion_over_fetched_content_cannot_name_a_tool_until_validated {}
 
 #[cfg(test)]
 mod tests {

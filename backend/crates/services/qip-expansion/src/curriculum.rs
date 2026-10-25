@@ -366,12 +366,17 @@ impl ResearchQueue {
                     name,
                     kind,
                     permission,
-                } => match bounds.tools.get(name) {
-                    Some(_) => bounds.tools.authorise(name.trim(), *permission)?,
-                    None => {
-                        missing.push(bounds.tools.propose(ToolName::parse(name.trim())?, *kind)?)
+                } => {
+                    // Parsed once, before the registry is asked anything: a
+                    // name outside the grammar is refused here rather than
+                    // looked up and found missing, and the lookup, the
+                    // authorisation and the proposal all see the same name.
+                    let tool = ToolName::parse(name.trim())?;
+                    match bounds.tools.get(&tool) {
+                        Some(_) => bounds.tools.authorise(&tool, *permission)?,
+                        None => missing.push(bounds.tools.propose(tool, *kind)?),
                     }
-                },
+                }
             }
         }
 

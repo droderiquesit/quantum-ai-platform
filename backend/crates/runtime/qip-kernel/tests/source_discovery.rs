@@ -132,7 +132,10 @@ fn probe() -> InMemoryProbe {
         .with_sample(
             COVER_URL,
             PayloadSample {
-                body: r#"{"symbol":"X","bid":10.25,"ask":10.27}"#.to_string(),
+                body: qip_core::untrusted::Untrusted::new(
+                    "a scripted sample",
+                    r#"{"symbol":"X","bid":10.25,"ask":10.27}"#.to_string(),
+                ),
                 media_type: "application/json".to_string(),
                 payload_at: Some(start()),
                 latency: Duration::from_millis(55),

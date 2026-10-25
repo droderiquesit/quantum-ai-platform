@@ -164,7 +164,10 @@ fn a_source_lacking_any_one_of_the_five_is_refused_and_a_complete_one_is_stored_
         .with_sample(
             worthless_url,
             PayloadSample {
-                body: QUOTE_PAYLOAD.to_string(),
+                body: qip_core::untrusted::Untrusted::new(
+                    "a scripted sample",
+                    QUOTE_PAYLOAD.to_string(),
+                ),
                 media_type: "application/json".to_string(),
                 payload_at: None,
                 latency: Duration::from_millis(55),

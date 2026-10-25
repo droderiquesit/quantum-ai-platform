@@ -49,52 +49,51 @@ fn a_tool_proposed_or_registered_without_a_name_is_refused_and_nothing_is_regist
             refused.to_string().contains("a tool needs a name"),
             "{refused}"
         );
-        assert!(registry.get(blank).is_none());
     }
-    assert!(registry.get("").is_none());
+    // This test also asserted `registry.get(blank).is_none()` for each blank
+    // and for `""`. Since `get` takes a `ToolName` those calls no longer
+    // compile — the refusal moved from a lookup that found nothing to a key
+    // that cannot be built, which the parse refusals above assert, and the
+    // `compile_fail` block on
+    // `tools::a_completion_over_fetched_content_cannot_name_a_tool_until_validated`
+    // holds that a string is no key at all. What a lookup can still be
+    // asked is whether the one registered name resolves and nothing else
+    // was registered beside it.
+    assert!(
+        registry
+            .get(&ToolName::parse("solver-a").unwrap())
+            .is_some()
+    );
     assert_eq!(registry.by_kind(ToolKind::Solver).len(), 1);
 }
 
 #[test]
 fn a_new_tool_is_read_only_and_sandboxed_until_a_promotion_widens_exactly_the_granted_scope() {
     let mut registry = ToolRegistry::new();
-    registry
-        .register(ToolName::parse("parser-a").unwrap(), ToolKind::Parser)
-        .unwrap();
-    registry
-        .authorise("parser-a", ToolPermission::Read)
-        .unwrap();
+    let parser = ToolName::parse("parser-a").unwrap();
+    registry.register(parser.clone(), ToolKind::Parser).unwrap();
+    registry.authorise(&parser, ToolPermission::Read).unwrap();
+    assert!(registry.authorise(&parser, ToolPermission::Write).is_err());
     assert!(
         registry
-            .authorise("parser-a", ToolPermission::Write)
-            .is_err()
-    );
-    assert!(
-        registry
-            .authorise("parser-a", ToolPermission::LeaveSandbox)
+            .authorise(&parser, ToolPermission::LeaveSandbox)
             .is_err()
     );
 
     assert!(
         registry
-            .promote("parser-a", ToolPermission::Write, "  ")
+            .promote(&parser, ToolPermission::Write, "  ")
             .is_err()
     );
-    assert!(
-        registry
-            .authorise("parser-a", ToolPermission::Write)
-            .is_err()
-    );
+    assert!(registry.authorise(&parser, ToolPermission::Write).is_err());
 
     registry
-        .promote("parser-a", ToolPermission::Write, "eval-2026-10-04")
+        .promote(&parser, ToolPermission::Write, "eval-2026-10-04")
         .unwrap();
-    registry
-        .authorise("parser-a", ToolPermission::Write)
-        .unwrap();
+    registry.authorise(&parser, ToolPermission::Write).unwrap();
     assert!(
         registry
-            .authorise("parser-a", ToolPermission::LeaveSandbox)
+            .authorise(&parser, ToolPermission::LeaveSandbox)
             .is_err()
     );
 }

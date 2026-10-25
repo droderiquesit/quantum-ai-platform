@@ -227,7 +227,8 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
     // evaluation -- here the attestation, the record that a named operator
     // read what the provider does with what it is sent.
     let mut tools = ToolRegistry::new();
-    tools.register(ToolName::parse(&hosted.model)?, ToolKind::ModelEndpoint)?;
+    let endpoint = ToolName::parse(&hosted.model)?;
+    tools.register(endpoint.clone(), ToolKind::ModelEndpoint)?;
 
     match precondition(hosted, &adapter_config) {
         Err(withheld) => Ok(AssembledModel {
@@ -237,7 +238,7 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
             replies: None,
         }),
         Ok(met) => {
-            tools.promote(&hosted.model, ToolPermission::LeaveSandbox, &met.attested)?;
+            tools.promote(&endpoint, ToolPermission::LeaveSandbox, &met.attested)?;
             let summary = HostedSummary {
                 model: hosted.model.clone(),
                 base_url: hosted.base_url.clone(),
@@ -273,7 +274,10 @@ fn hosted_adapter(
     adapter_config: HuggingFaceConfig,
     hosted: &HostedLanguageModel,
 ) -> Result<HuggingFaceModel> {
-    tools.authorise(&hosted.model, ToolPermission::LeaveSandbox)?;
+    tools.authorise(
+        &ToolName::parse(&hosted.model)?,
+        ToolPermission::LeaveSandbox,
+    )?;
     Ok(HuggingFaceModel::new(adapter_config, hosted.token.clone()))
 }
 

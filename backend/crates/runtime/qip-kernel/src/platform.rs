@@ -21277,11 +21277,18 @@ impl Platform {
             // being believed, so every belief and hypothesis read from the
             // graph afterwards is formed without it. A retirement is not a
             // finding against the facts — a feed retired for cost or
-            // staleness said nothing false — so it leaves them standing.
+            // staleness said nothing false — so it leaves them standing, but
+            // held less firmly: a stale source's beliefs are downweighted
+            // rather than kept at the confidence a fresh one earned.
             if transition.action == LifecycleAction::Quarantined {
                 let source = transition.source_id.clone();
                 self.world
                     .update(|world| world.quarantine_source(&source, now));
+            }
+            if transition.action == LifecycleAction::Retired {
+                let source = transition.source_id.clone();
+                self.world
+                    .update(|world| world.mark_source_stale(&source, now))?;
             }
             if matches!(
                 transition.action,
