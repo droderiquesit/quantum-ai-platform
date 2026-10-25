@@ -886,9 +886,13 @@
       "backend/crates/edge/qip-edge/tests/fills.rs:254 an_order_the_venue_accepted_is_not_a_fill_until_the_order_entry_channel_reports_one asserts position() moves only on the reported fill",
       "backend/crates/apps/qip-edge-node/src/lib.rs:167 with_venue_health",
       "backend/crates/edge/qip-edge/src/reservation.rs:370 reserve",
-      "backend/crates/apps/qip-edge-node/tests/feed_recovery.rs:262"
+      "backend/crates/apps/qip-edge-node/tests/feed_recovery.rs:262",
+      "backend/crates/edge/qip-edge/src/cell.rs::Cell::borrow_admit at Cell::send (GATE_BORROW), armed by CellConfig::with_borrow_required",
+      "backend/crates/apps/qip-edge-node/src/lib.rs::assemble arms with_borrow_required",
+      "cell.rs crossing_tests::a_short_sale_is_refused_when_the_venue_states_no_borrow",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::an_assembled_node_arms_the_borrow_gate_and_its_simulated_feed_invents_no_lender"
     ],
-    "gap": "Funding and borrow have no producer and no consumer: nothing in qip-edge-node (feed.rs SimulatedFeed or any decoder) calls Cell::set_funding_rate or set_borrow_availability, and no gate in qip-edge reads FundingState, so a sale needing borrow the venue says is unavailable is not refused on it. The inventory half of the old gap was wrong: positions are measured from confirmed fills.",
+    "gap": "2026-10-25 (lane L5-EDGE; independent skeptic REFUTED). Built: a fail-closed borrow gate at Cell::send (GATE_BORROW), armed by qip-edge-node, that refuses a sale beyond the confirmed long position on unstated, unavailable or insufficient borrow, or with no stated funding rate. Remaining: (1) nothing produces borrow or funding facts. The simulated exchange models neither, so the node's feed states none, rather than inventing an unlimited lender at zero carry; that needs a simulator lending/funding model or the owner's decision; (2) the pass checks only that a funding rate is present, never reads its value (carry, sizing); (3) borrow is not used up as it is used, and resting sells are not counted against it; (4) trade prints (VenueState::last_trade) have no reader in the pass; (5) passes run only with QIP_VENUE_FEED=simulated, and no committed environment enables an execution node.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -896,10 +900,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test reservation; cargo test -p qip-edge-node --test feed_recovery",
+    "verification": "cargo test -p qip-edge --test reservation; cargo test -p qip-edge-node --test feed_recovery; cargo +1.94.1 test -p qip-edge --lib a_short_sale; cargo +1.94.1 test -p qip-edge-node --test pass an_assembled_node_arms",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: gap corrected, PARTIAL kept. The grader's 'Cell::positions is never written from fills' is false (cell.rs:6537, tested in fills.rs). Closing the rest needs a funding/borrow print in qip-edge-node's feed (lane L09's crate) and a borrow gate in Cell's pre-order checks; neither was done here. 2026-10-24 lane L5-EDGE: not closed. A producer on the default simulated feed would have to state what the in-process venue lends, and the simulator (qip-brokers exchange.rs, qip-edge-node gateway.rs) has no inventory, borrow or funding concept: stating 'unavailable' refuses every short sale on the node, stating an amount invents one. That is a modelling decision (what the simulated venue lends and charges) to make before the feed print and a borrow gate beside authority_verdict in Cell's signal path; recorded rather than guessed."
+    "notes": "Lane L11, 2026-10-18: gap corrected, PARTIAL kept. The grader's 'Cell::positions is never written from fills' is false (cell.rs:6537, tested in fills.rs). Closing the rest needs a funding/borrow print in qip-edge-node's feed (lane L09's crate) and a borrow gate in Cell's pre-order checks; neither was done here. 2026-10-24 lane L5-EDGE: not closed. A producer on the default simulated feed would have to state what the in-process venue lends, and the simulator (qip-brokers exchange.rs, qip-edge-node gateway.rs) has no inventory, borrow or funding concept: stating 'unavailable' refuses every short sale on the node, stating an amount invents one. That is a modelling decision (what the simulated venue lends and charges) to make before the feed print and a borrow gate beside authority_verdict in Cell's signal path; recorded rather than guessed. 2026-10-25 lane L5-EDGE: funding and borrow now have a producer and a consumer. The simulated feed states, per quoted instrument, the facts its venue has (no borrow limit, zero funding); Cell::send refuses under GATE_BORROW a sale beyond the confirmed long position when borrow is unstated, stated unavailable or short of the need, or when no funding rate is stated; qip-edge-node's assemble arms it. Mutations fired: FundingState not read; gate not called at send; simulator states nothing; node does not arm. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED. The simulator statement first written (Decimal::MAX borrow, zero funding) was removed on its finding that it invents a lender the exchange does not model. The clause's named mutation was run: health.record_reject removed at Cell::send fails 4 qip-edge tests (telemetry.rs a_venue_quarantined_for_rejecting_orders_moves_the_venue_session_row; venue_failure.rs a_venue_that_rejects_its_orders_is_quarantined..., with_nowhere_else_to_go..., a_cell_reads_its_venue_session_row...); restored, cmp identical."
   },
   {
     "id": "R12-REFLEX-5039",
