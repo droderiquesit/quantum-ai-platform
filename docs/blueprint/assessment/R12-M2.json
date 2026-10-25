@@ -1572,7 +1572,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:19-24 assemble step",
       "backend/crates/services/qip-lifecycle/src/evidence.rs:38,50 LeakageAudit"
     ],
-    "gap": "The tick labelling pipeline has no production caller: qip-training microstructure::build_examples is called only from tests (the deep brain's tick desk replays decisions without labelling), so there is no default-path tick dataset to guard. build_examples sorts each instrument's observations by knowable instant before windowing, so a feature later than its label anchor is structurally unreachable there and a refusal could never fire. The bar pipeline on the default path already refuses look-ahead (qip-deepbrain learning.rs audit_features_as_of).",
+    "gap": "2026-10-25 (wave580, decided under the 2026-10-24 delegation): the tick desk's off-by-default guard is kept. Switching it on would not yield a working paper capability: the desk reads qip-deepbrain's own lake namespace (main.rs builds TickDesk over config.storage.blobs(LAKE_NAMESPACE)), which holds no market segments by default (the edge node's LakeSink writes to the edge node's store, and the deep brain's own with_tick_lake capture is behind QIP_DEEPBRAIN_TICK_LAKE_RETENTION, unset everywhere), so a default-on desk would replay an empty lake every round and build_examples would never run. Closing needs a lake the deep brain can read on its default path (the edge node's segments shipped to a store both read, or the deep brain's own capture on by default under a licensed or simulated dataset), and only then an ADR superseding the guard. The label refusals themselves (LabelBuilder's uncovered-horizon refusal, build_examples' sort by knowable instant) stand and are tested in qip-training.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1585,7 +1585,7 @@
     "verification": "cargo test -p qip-training --test labels",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L21 2026-10-18: the triage closure (refuse a BookObservation knowable after the anchor in build_examples) was not implemented, because sorting makes that refusal unable to fire, which is a control that reads as protection and is not. Closing needs a production tick-labelling path (e.g. the tick desk building MicroExamples) and a guard on whatever field could carry a later instant there."
+    "notes": "Lane L21 2026-10-18: the triage closure (refuse a BookObservation knowable after the anchor in build_examples) was not implemented, because sorting makes that refusal unable to fire, which is a control that reads as protection and is not. Closing needs a production tick-labelling path (e.g. the tick desk building MicroExamples) and a guard on whatever field could carry a later instant there. 2026-10-25 lane L3-DATA (wave580): default-on wiring considered and declined, per the parent's instruction to supersede the guard only if the default desk reads a real lake; it would read an empty one. No ADR claimed. Status unchanged."
   },
   {
     "id": "R12-TICK-2067",
