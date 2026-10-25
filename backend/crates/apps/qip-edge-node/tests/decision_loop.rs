@@ -575,7 +575,7 @@ fn market_events_the_feed_applied_reach_the_tick_lake_with_exchange_time_capture
     let waited = std::time::Instant::now();
     let keys = loop {
         drain.step()?;
-        let keys = lake.list("lake/class=market/")?;
+        let keys = segment_keys(lake.as_ref())?;
         if !keys.is_empty() {
             break keys;
         }
@@ -1868,7 +1868,7 @@ fn a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_
     while lines.len() < captured {
         drain.step()?;
         lines.clear();
-        for key in lake.list("lake/class=market/")? {
+        for key in segment_keys(lake.as_ref())? {
             let body = lake.get(&key)?.expect("a listed segment is readable");
             for line in String::from_utf8(body).expect("canonical JSON").lines() {
                 lines.push(serde_json::from_str(line)?);
@@ -2015,8 +2015,7 @@ fn the_lake_alone_rebuilds_the_book_the_venue_published() -> Result<()> {
     let waited = std::time::Instant::now();
     loop {
         drain.step()?;
-        let lines: usize = lake
-            .list("lake/class=market/")?
+        let lines: usize = segment_keys(lake.as_ref())?
             .iter()
             .map(|key| {
                 lake.get(key).ok().flatten().map_or(0, |body| {
@@ -2172,7 +2171,7 @@ fn a_circuit_breaker_the_venue_declares_reaches_the_cell_as_a_typed_status_and_i
 
     let statuses = |lake: &MemoryBlobStore| -> Result<Vec<VenueStatus>> {
         let mut found: Vec<(u64, VenueStatus)> = Vec::new();
-        for key in lake.list("lake/class=market/")? {
+        for key in segment_keys(lake)? {
             let body = lake.get(&key)?.expect("a listed segment is readable");
             for line in String::from_utf8(body).expect("canonical JSON").lines() {
                 let value: serde_json::Value = serde_json::from_str(line)?;
@@ -2190,8 +2189,7 @@ fn a_circuit_breaker_the_venue_declares_reaches_the_cell_as_a_typed_status_and_i
     let mut lines = 0usize;
     while lines < captured {
         drain.step()?;
-        lines = lake
-            .list("lake/class=market/")?
+        lines = segment_keys(lake.as_ref())?
             .iter()
             .filter_map(|key| lake.get(key).ok().flatten())
             .map(|body| {
@@ -2212,4 +2210,15 @@ fn a_circuit_breaker_the_venue_declares_reaches_the_cell_as_a_typed_status_and_i
         "the venue's breaker and its reopening are not sealed as typed statuses"
     );
     Ok(())
+}
+
+/// The lake's sealed market segments, without the raw slots beside them
+/// (`.raw`, ADR 0181): a segment holds canonical lines, a raw slot holds the
+/// venue's bytes, and a reader of lines must not parse bytes as JSON.
+fn segment_keys(lake: &MemoryBlobStore) -> Result<Vec<String>> {
+    Ok(lake
+        .list("lake/class=market/")?
+        .into_iter()
+        .filter(|key| !key.ends_with(".raw"))
+        .collect())
 }

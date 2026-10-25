@@ -40,15 +40,20 @@
    `default_retention` grants it `raw: true`. Every licensed dataset still
    keeps raw bytes only where its own retention right says so, as today.
 2. **Raw frames reach the lake off the decision path.** The simulated feed
-   keeps each frame's exact bytes as published. They travel to the lake the
-   way decoded events already do: as a P2 record on the spool, drained by
-   `LakeSink` on the drain thread, never written to storage from the pass.
-   `LakeSink` seals the frame bytes in the segment's raw slot
-   (`Lake::write_segment`'s `raw` argument, honoured only where the
-   partition's entitlement permits raw retention), so one sealed segment
-   holds both the decoded lines and the bytes they were decoded from, under
-   one key. A replay re-materialises the session by reading the raw slots in
-   sequence order.
+   already records, on every captured event, the SHA-256 of the exact line
+   it put on the wire (`MarketEvent::native_hash`). `LakeSink`, on the drain
+   thread, re-encodes each line with the feed's own encoder
+   (`qip_edge_node::feed::native_line`) and keeps it only when it hashes to
+   that recorded value, so the bytes it keeps are the published bytes by
+   construction and nothing raw travels the spool twice. It seals them in
+   the segment's raw slot (`Lake::write_segment`'s `raw` argument, honoured
+   only where the partition's entitlement permits raw retention), so one
+   sealed segment holds the decoded lines and the bytes they were decoded
+   from. A partition with any line that does not re-encode is sealed without
+   raw bytes and counted (`LakeSink::raw_unverified`): a raw slot is the
+   whole session or absent, never a session with a hole. A venue whose
+   encoder is not in this tree cannot be re-encoded; its raw bytes would
+   need a raw-frame record on the spool, decided when such a venue exists.
 3. **Lake segments are sized at the seal, never merged (DATA-9187; amends
    ADR 0156 §2.3).** No compaction pass merges sealed lake segments. Fewer,
    larger segments come from where they are cut: `LakeSink` accumulates a
@@ -62,18 +67,17 @@
 
 ## Consequences
 
-- TICK-2042 becomes closable by code: the frame record, the raw slot, and a
-  test that re-materialises a captured session byte for byte and fails when
-  one frame is dropped.
+- TICK-2042 becomes closable by code: the verified re-encoding, the raw
+  slot, and a test that re-materialises each published frame byte for byte
+  and fails when one line is dropped.
 - DATA-9187 becomes closable by code: seal-time batching with a size and age
   bound, a test that many small batches seal as few segments that read back
   the same ticks, and the `min_object_size` fix.
 
 ## What it costs
 
-- The spool carries each frame twice, once decoded and once raw. The
-  simulated feed's frames are small, and the spool's pressure gauges are the
-  existing guard.
+- The drain re-encodes each line once more than it did. The simulated
+  feed's lines are short, and the drain thread is off the decision path.
 - Batching across offsets means a segment's id names a range of spool
   offsets instead of one, and a crash before the seal re-drains the batch.
   The write-once refusal (`denied` on an existing key) keeps a re-drain from
