@@ -1222,3 +1222,53 @@ fn a_shadow_round_is_counted_only_for_a_shadowed_model_once_per_window_with_evid
     );
     assert!(!ModelStage::Shadow.allows_decisions());
 }
+
+/// R12-EXPAND-6070: the registry, not the caller's choice of producer label,
+/// holds a self-fitted model out of production until its shadow stage is
+/// complete. The same card not marked self-fitted promotes at once; marked,
+/// it is refused straight from validation and after two rounds, and promotes
+/// after the third.
+///
+/// Mutation: drop the `self_fitted` check in `ModelRegistry::promote` -- the
+/// unshadowed self-fitted card promotes and the first `unwrap_err` panics.
+#[test]
+fn a_self_fitted_card_is_promoted_only_out_of_a_completed_shadow_whoever_asks() {
+    use qip_ai::registry::MIN_SHADOW_ROUNDS;
+    let t0 = Timestamp::from_secs(1_760_000_000);
+    let minute = |n: i64| t0.saturating_add(Duration::from_mins(n));
+
+    // Premise: an ordinary card with a passing evaluation promotes.
+    let mut ordinary = ModelRegistry::new();
+    let card = evaluated_card(t0, true);
+    let reference = card.reference();
+    ordinary.register(card);
+    ordinary.promote(&reference, t0).unwrap();
+
+    let mut registry = ModelRegistry::new();
+    let mut card = evaluated_card(t0, true);
+    card.self_fitted = true;
+    registry.register(card);
+    let refused = registry.promote(&reference, t0).unwrap_err();
+    assert!(
+        refused.to_string().contains("completed shadow stage"),
+        "{refused}"
+    );
+    registry.enter_shadow(&reference, t0).unwrap();
+    for round in 1..i64::from(MIN_SHADOW_ROUNDS) {
+        registry
+            .record_shadow_round(&reference, "won", minute(round))
+            .unwrap();
+    }
+    assert!(
+        registry.promote(&reference, minute(9)).is_err(),
+        "promoted short of the rounds"
+    );
+    registry
+        .record_shadow_round(&reference, "won", minute(i64::from(MIN_SHADOW_ROUNDS)))
+        .unwrap();
+    registry.promote(&reference, minute(10)).unwrap();
+    assert_eq!(
+        registry.get(&reference).unwrap().stage,
+        ModelStage::Production
+    );
+}
