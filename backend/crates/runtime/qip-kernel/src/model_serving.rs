@@ -257,6 +257,17 @@ pub struct ModelPromotion {
     /// Absent from records written before the field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<String>,
+    /// The version the promoted card names as its rollback parent, as the
+    /// registry chose it at the promotion: the most recently deployed of the
+    /// displaced (`ModelRegistry::record_rollback_parent`). On the record so
+    /// that a desk restoring after a crash between the record and the moved
+    /// cards takes the same parent the live process did; the replay used to
+    /// take the first displaced reference, and with two production cards
+    /// displaced the two differed (R12-MODEL-9003). Absent from records
+    /// written before the field existed, and from a promotion that displaced
+    /// nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_parent: Option<String>,
     /// The central plane's signature over [`Self::signed_payload`]: the
     /// reference, the artifact digest and the stages. A stage list edited
     /// after the fact does not verify (`Platform::promotion_verifies`).
@@ -1095,6 +1106,7 @@ impl Platform {
         })?;
         let permitted_locations =
             (!card.data_entitlements.is_empty()).then(|| card.permitted_locations.clone());
+        let rollback_parent = card.rollback_parent.clone();
         // The stages in the order they ran: the shadow period (for a
         // self-fitted candidate, checked above), the registry's evaluation,
         // the verifier society's verdict.
@@ -1116,6 +1128,7 @@ impl Platform {
             evidence: Some(evidence),
             permitted_locations,
             stages,
+            rollback_parent,
             signature: None,
             at: now,
         };
