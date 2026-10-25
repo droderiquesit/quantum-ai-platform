@@ -40,7 +40,9 @@ use crate::causal::Objective;
 use crate::comparison::ComparisonDraft;
 use crate::generate::{ScenarioSource, Simulated, Structural, StructuralDecl};
 use crate::goal::GoalSpec;
-use crate::guard::{ActionGuard, ApprovalChain, GuardDecl, PassDecl, Voice};
+use crate::guard::{
+    ActionGuard, ApprovalChain, ChannelHealth, GuardDecl, HealthDimension, PassDecl, Voice,
+};
 use crate::memory::{
     ActionOutcome, ActionOutcomeDraft, ActionOutcomeMemory, FailureEpisode, Observed,
 };
@@ -294,6 +296,16 @@ pub enum Alternative {
 }
 
 /// Ask the guard, read-only, what of a withheld plan can be said truthfully.
+///
+/// These probes call the plain [`ActionGuard::preflight`] on purpose and
+/// record no channel health (R12-OBS-7132). Each asks about a subset of the
+/// plan nobody proposed — one step alone, or the steps that clear alone
+/// together — so its verdicts are hypotheticals: noting them would count a
+/// draft's provenance once for the plan that was judged and again for every
+/// subset probed, and a channel's series would then move with the size of
+/// the plan rather than with the health of what was said on it. The verdicts
+/// that decided are the ones [`execute`] took from
+/// [`ActionGuard::preflight_observed`].
 fn blocked_plan(
     guard: &ActionGuard,
     goal: &GoalSpec,
@@ -343,6 +355,13 @@ pub struct Acted {
     /// when acting (R12-CONTRACT-7082); empty when no guard ran or it
     /// refused.
     pub intents: Vec<ActionIntent>,
+    /// R12-OBS-7132: the guard's verdict on every channel-health dimension
+    /// its preflight of the plan reached, per channel, cleared or withheld,
+    /// and [`HealthDimension::Reach`] for every adapter call made — passed
+    /// when the call returned, failed when the adapter refused. A dimension
+    /// never reached is absent rather than passed: in shadow no adapter is
+    /// called, so there is no reach; with no guard there is nothing at all.
+    pub health: ChannelHealth,
 }
 
 /// A plan that has cleared the gate, and the context it is executed in.
@@ -408,6 +427,7 @@ pub fn execute(
             approvals: None,
             released: Vec::new(),
             intents: Vec::new(),
+            health: ChannelHealth::default(),
         });
     }
     let mut priced = Vec::with_capacity(steps.len());
@@ -456,9 +476,15 @@ pub fn execute(
             approvals: None,
             released: Vec::new(),
             intents: Vec::new(),
+            health: ChannelHealth::default(),
         });
     };
-    let (mut chain, cleared) = match guard.preflight(gated.goal, &priced) {
+    // R12-OBS-7132: the preflight that decides is the one that notes, so a
+    // channel's health series and the pass's verdict are one evaluation and
+    // cannot disagree. It runs once over the whole plan, in shadow as when
+    // acting, and its verdicts travel out on every path below.
+    let mut health = ChannelHealth::default();
+    let (mut chain, cleared) = match guard.preflight_observed(gated.goal, &priced, &mut health) {
         Ok(passed) => passed,
         Err(refusal) => {
             log.fail(Stage::Act)?;
@@ -469,6 +495,7 @@ pub fn execute(
                 approvals: None,
                 released: Vec::new(),
                 intents: Vec::new(),
+                health,
             });
         }
     };
@@ -481,15 +508,21 @@ pub fn execute(
             approvals: Some(chain),
             released: Vec::new(),
             intents,
+            health,
         });
     }
 
     guard.execution(&mut chain, &gated.goal.acting_identity, &steps)?;
     let voices_from = guard.voices().count();
     for step in &cleared {
-        let sent = guard
-            .authorise(step)
-            .and_then(|()| adapter.call(&step.step));
+        // Reach is the adapter's fact, so it is noted only where the adapter
+        // was called: a step the registry refused at `authorise` never left,
+        // and is neither a reach that failed nor one that held.
+        let sent = guard.authorise(step).and_then(|()| {
+            let called = adapter.call(&step.step);
+            health.note(&step.channel, HealthDimension::Reach, called.is_ok());
+            called
+        });
         if let Err(refusal) = sent {
             log.fail(Stage::Act)?;
             return Ok(Acted {
@@ -501,6 +534,7 @@ pub fn execute(
                 approvals: Some(chain),
                 released: guard.voices().skip(voices_from).cloned().collect(),
                 intents,
+                health,
             });
         }
     }
@@ -511,6 +545,7 @@ pub fn execute(
         approvals: Some(chain),
         released: guard.voices().skip(voices_from).cloned().collect(),
         intents,
+        health,
     })
 }
 
@@ -980,6 +1015,11 @@ pub struct Report {
     /// The objective the simulations were scored on, when a structural model
     /// was declared; a simulated effect is signed toward it.
     pub objective: Option<Objective>,
+    /// R12-OBS-7132: the act stage's channel-health verdicts, per channel
+    /// and dimension, as [`Acted::health`] carries them. Empty when the pass
+    /// stopped before the act stage or ran with no guard: a dimension the
+    /// guard never judged has no outcome to report.
+    pub health: ChannelHealth,
 }
 
 fn report(
@@ -1005,6 +1045,7 @@ fn report(
         act_shadowed: log.shadowed_act,
         chosen: None,
         objective: None,
+        health: ChannelHealth::default(),
     }
 }
 
@@ -1386,6 +1427,7 @@ fn stages(
     done.released = acted.released;
     done.intents = acted.intents;
     done.blocked = acted.blocked;
+    done.health = acted.health;
     done.audit = guard.map(|g| g.audit().to_vec()).unwrap_or_default();
     done.chosen = chosen;
     Ok(done)
