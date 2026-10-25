@@ -2577,6 +2577,20 @@ mod tests {
                     .ok_or_else(|| Error::not_found("premise: the record carries evidence"))?;
                 assert_eq!(moved.evidence, format!("displaced by {v2}: {evidence}"));
                 assert_eq!(Some(moved.moved_by.as_str()), last.moved_by.as_deref());
+                // The lifecycle the moved cards would have carried, from the
+                // record: the card on the log for each is the one written
+                // before the move.
+                assert_eq!(displaced.retired_at, Some(last.at), "v1's retirement");
+                let promoted = restarted
+                    .registry()
+                    .get(&v2)
+                    .ok_or_else(|| Error::not_found("v2"))?;
+                assert_eq!(promoted.deployed_at, Some(last.at), "v2's deployment");
+                assert_eq!(
+                    promoted.rollback_parent.as_deref(),
+                    Some(v1.as_str()),
+                    "v2's rollback parent"
+                );
             }
             // And nothing on the log claims a move the promotion records do
             // not hold: the card written before the record is the unmoved one.
@@ -2764,6 +2778,10 @@ mod tests {
             .find(|m| !m.assigned && m.at == rollback.at)
             .ok_or_else(|| Error::not_found("v2's move off the alias at the rollback"))?;
         assert_eq!(Some(moved.evidence.as_str()), rollback.evidence.as_deref());
+        // And the lifecycle the rollback set: the degraded model retired,
+        // and the reactivated one deployed, at the rollback's own instant.
+        assert_eq!(degraded.retired_at, Some(rollback.at), "v2's retirement");
+        assert_eq!(card.deployed_at, Some(rollback.at), "v1's redeployment");
         let _ = std::fs::remove_dir_all(&directory);
         Ok(())
     }
