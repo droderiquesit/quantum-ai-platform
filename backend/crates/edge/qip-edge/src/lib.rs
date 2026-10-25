@@ -36,8 +36,11 @@
 pub mod arbitrage;
 pub mod cell;
 /// The cell's own order conduct: a place-and-cancel pattern refused before
-/// the next order of its shape exists.
-pub mod conduct;
+/// the next order of its shape exists. The watch lives in
+/// `qip-execution-engine` since R12-GOV-6126, so the desk's order manager
+/// refuses the same pattern on the same arithmetic; re-exported here so the
+/// cell's own path is unchanged.
+pub use qip_execution_engine::conduct;
 /// §32.1's size decomposition: what a cycle does after a leg fills short.
 pub mod decomposition;
 /// The degradation envelope every input of a cell must have (R12-RES-8026).

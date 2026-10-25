@@ -631,7 +631,13 @@ pub fn run_with(
                     .ambient
                     .as_deref()
                     .and_then(|journal| journal.last_correlation().cloned());
-                match agency.route(cycles, round, shared.as_ref(), now) {
+                match agency.route(
+                    cycles,
+                    round,
+                    shared.as_ref(),
+                    now,
+                    &platform.telemetry().metrics,
+                ) {
                     Ok(routed) => outcome.agency = Some(routed),
                     Err(error) => outcome
                         .side_failures
