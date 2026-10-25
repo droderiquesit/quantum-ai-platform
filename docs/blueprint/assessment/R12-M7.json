@@ -3070,7 +3070,7 @@
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::each_channel_health_dimension_is_recorded_for_the_internal_outbox_channel",
       "backend/crates/services/qip-agency/src/conduct_brain.rs::every_check_the_guard_runs_is_placed_in_a_channel_health_dimension"
     ],
-    "gap": "2026-10-25 (lane L6): recorded on the deep brain's default path for the one channel that exists (internal-outbox). Awaiting an independent skeptic before promotion. Known limits: engine::execute still calls the plain preflight and records nothing; a conduct-dimension fail is not driven end to end (the mapping is covered by mutation); no collector scrapes the deep brain (emission only).",
+    "gap": "2026-10-25 (lane L6): an independent skeptic judged the COMPLETE claim REFUTED. The deep brain records all five dimensions for its one channel (internal-outbox) on its default path, but `qip-cli agency` (an operator-run default path under bar part 2) runs the same guard through qip-agency engine.rs's guard.preflight, which discards the per-dimension verdicts, so channels the CLI judges (e.g. 'press') record nothing and 'per channel' fails. Remaining: thread preflight_observed through engine::execute / run_governed_with and record per channel in qip-cli agency, with the channel label bounded by the policy's configured channel list. Lesser limits: a guard-side fail is not driven end to end through the series; cross-pass coordination notes fail only; reach is narrowed to a landed outbox write. No collector scrapes the deep brain (emission only).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3081,7 +3081,7 @@
     "verification": "cd backend && cargo test -p qip-deepbrain --test ambient_agency each_channel_health && cargo test -p qip-agency --lib every_check_the_guard_runs",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-25 lane L6 (delegated agent, cherry-picked as ecb5dbab): mutations: deleting the provenance arm of HealthDimension::of_check failed the deep-brain test at 'provenance is recorded `pass` once per draft the guard cleared left: 0 right: 2'; noting reach pass on a failed write failed it at the full-outbox reach assertion (left 2, right 1); dropping 'disclosures' failed the unit test at '`disclosures` is in no channel-health dimension'. Agent's gate: qip-deepbrain/observability/agency passed 545, failed 0; clippy -D warnings clean."
+    "notes": "2026-10-25 lane L6 (delegated agent, cherry-picked as ecb5dbab): mutations: deleting the provenance arm of HealthDimension::of_check failed the deep-brain test at 'provenance is recorded `pass` once per draft the guard cleared left: 0 right: 2'; noting reach pass on a failed write failed it at the full-outbox reach assertion (left 2, right 1); dropping 'disclosures' failed the unit test at '`disclosures` is in no channel-health dimension'. Agent's gate: qip-deepbrain/observability/agency passed 545, failed 0; clippy -D warnings clean. 2026-10-25 skeptic (read-only, independent): REFUTED on the qip-cli agency path (engine.rs:461 plain preflight); parts 1 and 3 and the deep-brain half of part 2 hold."
   },
   {
     "id": "R12-AGENCY-7133",
