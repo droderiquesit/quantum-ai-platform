@@ -360,9 +360,13 @@
       "backend/crates/services/qip-reasoning-engine/src/contradiction.rs:21 ResolutionMethod",
       "backend/crates/services/qip-world-model/tests/contradictions.rs",
       "backend/crates/services/qip-learning-engine/src/self_model.rs",
-      "backend/crates/tests/qip-acceptance/tests/uncertainty_records.rs"
+      "backend/crates/tests/qip-acceptance/tests/uncertainty_records.rs",
+      "backend/crates/libs/qip-ai/src/memory/episode.rs Episode::contradiction",
+      "backend/crates/runtime/qip-kernel/src/central/episodic.rs EpisodicOutcome::Produced.contradicted",
+      "backend/crates/libs/qip-ai/tests/episodic.rs::an_outcome_against_its_claim_is_recorded_beside_the_claim_and_the_claim_keeps_its_confidence",
+      "backend/crates/tests/qip-acceptance/tests/uncertainty_records.rs::contradicting_evidence_on_the_semantic_and_self_models_is_recorded_beside_the_belief"
     ],
-    "gap": "Uncertainty is shown on four of the five model kinds by acceptance tests (2026-10-18): world Fact (confidence refused outside [0,1]), episodic ClaimRecord.confidence, self-model CapabilityEstimate (refuses a thin sample, never reports certainty), reasoning-engine confidence-by-arithmetic. Contradiction records exist only for the world graph (graph::Contradiction, both beliefs kept) and the reasoning engine (ContradictionResolution); the episodic, semantic and self models hold no contradiction record, and nothing shows a semantic-memory type carrying confidence. Uniform fields across all five kinds are unbuilt.",
+    "gap": "2026-10-25 (L4, commit 4d26dd55, skeptic REFUTED). Closed since 2026-10-18: the episodic memory has a contradiction record (qip-ai Episode::contradiction / EpisodeContradiction: the claim kept as made, the realised move beside it), and the kernel episodic issue counts contradicted episodes; tests show the semantic lesson keeping its counter-examples and the self-model keeping a drifted record (Drift) beside the window accuracy. Still open: (1) causal model: no contradiction record. granger::establish_precedence_from_reaction ignores the reaction direction and adds a fresh edge, so two opposing reactions are two unlinked edges (its doc comment at granger.rs:329 and commit 4d26dd55 wrongly say confidence is lowered in place); only regime-failure marks (record_condition_failure) are kept. (2) Episodic issue reaches a binary only through qip-api mesh::pending_policy, which needs QIP_MESH_CELLS, unset in committed config; only the count is journaled, not the records. (3) Semantic: a Live lesson never accumulates later counter-evidence (platform.rs research_lessons tally is a sliding window, lesson only superseded); the acceptance test hand-builds the Lesson, so the kernel path is untested. (4) ResearchMemory::resolve overwrites an outcome unconditionally (qip-agents memory.rs). (5) Self-model Drift is recomputed from a bounded window, reports worsening only, is not journaled; CapabilityEstimate::record double-counts a regraded hypothesis_id without recording the conflict. (6) Uniform uncertainty fields across the five kinds are unbuilt.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -373,7 +377,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test uncertainty_records && cargo test -p qip-world-model --test contradictions",
     "work_item": "",
     "size": "M",
-    "notes": "Mutations 2026-10-18, each failing its named test and restored: Fact::new confidence check disabled; contradiction gap threshold unreachable; MINIMUM_SAMPLE check removed (the first version of the test survived this, because an empty record errs by another path; strengthened to MINIMUM_SAMPLE-1 outcomes); ContradictionResolution two-id minimum lowered."
+    "notes": "Mutations 2026-10-18, each failing its named test and restored: Fact::new confidence check disabled; contradiction gap threshold unreachable; MINIMUM_SAMPLE check removed (the first version of the test survived this, because an empty record errs by another path; strengthened to MINIMUM_SAMPLE-1 outcomes); ContradictionResolution two-id minimum lowered. 2026-10-25 (L4), commit 4d26dd55: four mutants killed at their own assertions (claimed direction from the move; count every resolved episode; clear contradicting_episodes in promote; never report drift), restored sha256-identical. Independent code-reviewer skeptic REFUTED (findings in gap). Stays PARTIAL."
   },
   {
     "id": "R12-GOV-1017",
@@ -2355,9 +2359,10 @@
     "current": "DiscoveryDesk wired into deepbrain evolution.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/main.rs:502",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:518"
+      "backend/crates/apps/qip-deepbrain/src/main.rs:518",
+      "docs/adr/0180-connector-health-is-scored-world-documents-are-re-fetched-never-copied-and-the-scout-records-every-first-pass-verdict.md"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Continuous search is not built and is ruled out: ADR 0157 §5 decides no crawl or search stage is built and candidates are written by an operator (discovery.rs module doc agrees). The desk's cadence is 0 in every environment (deepbrain_discover_every null), so the research loop's ScoutRequests queue in DiscoveryDesk::scout (bounded at 64) unread; a pass would journal only lifecycle transitions of registered sources, its targets/queries/decisions going to stdout only. Needs a new ADR superseding ADR 0157 §5, an owner decision and tfvar flip for the cadence, and code to journal the pass.",
+    "gap": "Decided 2026-10-25 by ADR 0180 d3 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): Continuous search is not built and is ruled out: ADR 0157 §5 decides no crawl or search stage is built and candidates are written by an operator (discovery.rs module doc agrees). The desk's cadence is 0 in every environment (deepbrain_discover_every null), so the research loop's ScoutRequests queue in DiscoveryDesk::scout (bounded at 64) unread; a pass would journal only lifecycle transitions of registered sources, its targets/queries/decisions going to stdout only. Needs a new ADR superseding ADR 0157 §5, an owner decision and tfvar flip for the cadence, and code to journal the pass.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2368,7 +2373,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Earlier main.rs:502/518 citations now point at replay-admission code; the desk is attached via with_discovery with default every_cycles = 0, so it never runs on a default path."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Earlier main.rs:502/518 citations now point at replay-admission code; the desk is attached via with_discovery with default every_cycles = 0, so it never runs on a default path. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0180 decision 3: no continuous search stage; ADR 0157 §5 stands. The row stays PARTIAL by decision; the owner may restate the requirement. Status unchanged."
   },
   {
     "id": "R12-DATA-1102",
@@ -2397,9 +2402,10 @@
     "evidence": [
       "backend/crates/services/qip-data-finder/src/legal.rs:28",
       "backend/crates/services/qip-data-finder/src/robots.rs:26",
-      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:784"
+      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:784",
+      "docs/adr/0180-connector-health-is-scored-world-documents-are-re-fetched-never-copied-and-the-scout-records-every-first-pass-verdict.md"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No scout run on a default path records anything in the event log: the only scout run is DiscoveryDesk::maybe_run (qip-deepbrain src/discovery.rs) and DiscoveryConfig::default sets every_cycles = 0; all four tfvars leave deepbrain_discover_every and source_candidates_file null; ADR 0144's scout entry point and Cloud Run job do not exist. Even with the desk on, Platform::assess_sources journals only SourceLifecycleChanged for already-registered sources (source_lifecycle.rs journal_source_transitions), so a first-pass legal or robots refusal never reaches the log; the quarantine path is proven only in a lib test. Needs an owner decision plus tfvar flip (ADR 0157 leaves the discovery cadence to the owner; the cognition zone has no external egress) or the ADR 0144 scout job deployed, plus code to journal first-pass access-rights verdicts.",
+    "gap": "Decided 2026-10-25 by ADR 0180 d2 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): No scout run on a default path records anything in the event log: the only scout run is DiscoveryDesk::maybe_run (qip-deepbrain src/discovery.rs) and DiscoveryConfig::default sets every_cycles = 0; all four tfvars leave deepbrain_discover_every and source_candidates_file null; ADR 0144's scout entry point and Cloud Run job do not exist. Even with the desk on, Platform::assess_sources journals only SourceLifecycleChanged for already-registered sources (source_lifecycle.rs journal_source_transitions), so a first-pass legal or robots refusal never reaches the log; the quarantine path is proven only in a lib test. Needs an owner decision plus tfvar flip (ADR 0157 leaves the discovery cadence to the owner; the cognition zone has no external egress) or the ADR 0144 scout job deployed, plus code to journal first-pass access-rights verdicts.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2410,14 +2416,16 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0180 decision 2: every first-pass access-rights verdict is journaled on the source topic; the discovery cadence stays off in committed environments (scout egress is unbuilt and billed). Code left: the journal write in Platform::assess_sources and a test that a first-pass robots refusal is in the event log. Status unchanged."
   },
   {
     "id": "R12-DATA-1104",
     "status": "MISSING",
     "current": "No code generates or synthesizes source adapters; connectors are hand-written per source.",
-    "evidence": [],
-    "gap": "2026-10-24 (re-read against the tree): No code creates adapters, and ADR 0157 §4 ('A descriptor never polls') forbids building a connector or DataAdapter from a RegisteredSource or IngestionPlan; the acceptance suite pins that absence; every connector is a hand-written reviewed change (connector_feed.rs shipped_manifest, KNOWN_SOURCES). Needs a new ADR superseding ADR 0157 §4, substantial new code, per-source licence records and egress routes, and a scout run on a default path (desk off; no scout job).",
+    "evidence": [
+      "docs/adr/0180-connector-health-is-scored-world-documents-are-re-fetched-never-copied-and-the-scout-records-every-first-pass-verdict.md"
+    ],
+    "gap": "Decided 2026-10-25 by ADR 0180 d3 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): No code creates adapters, and ADR 0157 §4 ('A descriptor never polls') forbids building a connector or DataAdapter from a RegisteredSource or IngestionPlan; the acceptance suite pins that absence; every connector is a hand-written reviewed change (connector_feed.rs shipped_manifest, KNOWN_SOURCES). Needs a new ADR superseding ADR 0157 §4, substantial new code, per-source licence records and egress routes, and a scout run on a default path (desk off; no scout job).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2428,7 +2436,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0180 decision 3: no generated adapters; ADR 0157 §4 stands. The row stays PARTIAL by decision; the owner may restate the requirement. Status unchanged."
   },
   {
     "id": "R12-DATA-1105",

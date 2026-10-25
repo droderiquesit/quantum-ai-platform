@@ -116,7 +116,7 @@ pub(crate) fn ok_head() -> HeadResponse {
 
 pub(crate) fn sample(body: &str) -> PayloadSample {
     PayloadSample {
-        body: body.to_string(),
+        body: qip_core::untrusted::Untrusted::new("a scripted sample", body.to_string()),
         media_type: "application/json".to_string(),
         payload_at: Some(now()),
         latency: Duration::from_millis(55),

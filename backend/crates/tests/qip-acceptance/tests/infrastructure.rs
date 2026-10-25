@@ -14143,6 +14143,11 @@ fn no_principal_holds_a_grant_on_keys_of_two_classes() {
                 } else {
                     // Encryption keys are used by Google's own service agents
                     // on the platform's behalf, never by a workload directly.
+                    // Two agents are named by data source rather than by
+                    // address: Cloud Storage's, and BigQuery's per-project
+                    // encryption account (`bq-<number>@bigquery-encryption`),
+                    // which `modules/data` grants the warehouse key and whose
+                    // address its own precondition checks.
                     assert_eq!(
                         role, "\"roles/cloudkms.cryptoKeyEncrypterDecrypter\"",
                         "{at}: a CMEK key grants {role}"
@@ -14150,7 +14155,10 @@ fn no_principal_holds_a_grant_on_keys_of_two_classes() {
                     let service_agent = principal.contains(".iam.gserviceaccount.com")
                         && (principal.contains("@gcp-sa-")
                             || principal.contains("@container-engine-robot."))
-                        || principal.contains("google_storage_project_service_account.");
+                        || principal.contains("google_storage_project_service_account.")
+                        || principal.starts_with(
+                            "\"serviceAccount:${data.google_bigquery_default_service_account.",
+                        );
                     assert!(
                         service_agent,
                         "{at}: a CMEK key grants {principal}, which is not a Google service agent"

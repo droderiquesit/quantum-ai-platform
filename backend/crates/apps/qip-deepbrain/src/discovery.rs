@@ -898,7 +898,10 @@ mod tests {
                 .with_sample(
                     URL,
                     PayloadSample {
-                        body: r#"{"symbol":"EU0001","bid":10.25,"ask":10.27}"#.to_string(),
+                        body: qip_core::untrusted::Untrusted::new(
+                            "a scripted sample",
+                            r#"{"symbol":"EU0001","bid":10.25,"ask":10.27}"#.to_string(),
+                        ),
                         media_type: "application/json".to_string(),
                         payload_at: Some(start()),
                         latency: Duration::from_millis(55),

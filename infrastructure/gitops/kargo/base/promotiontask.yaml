@@ -73,8 +73,16 @@ spec:
       as: commit
       config:
         path: ./repo
+        # `[skip ci]` in the subject, because without it the promotion feeds
+        # itself: this commit lands on the default branch, `ci.yml` runs on
+        # every push there, `deploy.yml` follows ci and tags each image with
+        # the commit, the warehouse makes freight of the new tag, and dev's
+        # auto-promotion (projectconfig.yaml) writes another commit. The
+        # commit changes digests only — images ci already gated at the commit
+        # their tag names — so skipping ci on it skips nothing that was not
+        # already run. `qip-acceptance`'s gitops suite pins the token.
         message: |
-          Promote freight ${{ ctx.targetFreight.name }} to ${{ ctx.stage }}
+          Promote freight ${{ ctx.targetFreight.name }} to ${{ ctx.stage }} [skip ci]
 
           Written by Kargo (infrastructure/gitops/kargo/base/promotiontask.yaml),
           promotion ${{ ctx.promotion }} in project ${{ ctx.project }}, from

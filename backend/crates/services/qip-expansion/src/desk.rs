@@ -20,7 +20,7 @@ use crate::gap::{GapTrigger, RaisedGap};
 use crate::plan::{AcquisitionAction, Derivation, ResearchPlan};
 use crate::promotion::{EvaluationRecord, ResearchCampaign, promote};
 use qip_agents::research::{ResearchRegistry, Verdict};
-use qip_agents::tools::{ToolPermission, ToolRegistry};
+use qip_agents::tools::{ToolName, ToolPermission, ToolRegistry};
 use qip_contracts::expansion::{CapabilityEntry, CurriculumItem, GapClass};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -343,7 +343,12 @@ impl ExpansionDesk {
             urgency,
         );
         let derivation = Derivation::of(&question, &raised);
-        let plan = ResearchPlan::synthesise_with(&question, class, |t| self.tools.get(t).is_some());
+        // The action's tool names are this crate's constants. One outside the
+        // grammar cannot be registered, so it reads as missing and the plan
+        // builds it, where `register` refuses it by name.
+        let plan = ResearchPlan::synthesise_with(&question, class, |t| {
+            ToolName::parse(t).is_ok_and(|name| self.tools.get(&name).is_some())
+        });
         let candidate = Candidate {
             kind,
             item: CurriculumItem {

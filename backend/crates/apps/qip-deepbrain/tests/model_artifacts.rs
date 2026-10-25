@@ -54,7 +54,10 @@ fn learnable(count: usize) -> Vec<Bar> {
                 high: price(level * 1.001),
                 low: price(level * 0.999),
                 close: price(level),
-                volume: price(1_000.0 + i as f64),
+                // Stationary, so a later window of the series is not read as
+                // drifted by construction (R12-EXPAND-6070's shadow rounds
+                // are later windows).
+                volume: price(1_000.0 * (1.0 + rng.uniform(-0.2, 0.2))),
                 trade_count: 100,
                 vwap: Decimal::from_f64(level),
                 quality: DataQuality::default(),
@@ -124,9 +127,12 @@ fn a_learning_round_writes_one_trained_artifact_named_by_the_digest_its_promotio
             break;
         }
         let later = at().saturating_add(qip_core::Duration::from_mins(round as i64));
+        // Each round slides the window forward, so it holds rows after
+        // everything the shadowed model has read.
+        let step = 150 * round as usize;
         desk.maybe_learn(
             &subject(),
-            &learnable(400),
+            &learnable(400 + step)[step..],
             "trending/calm",
             1 + round,
             later,

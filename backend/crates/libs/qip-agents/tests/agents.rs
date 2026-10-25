@@ -880,16 +880,22 @@ fn episode(n: u64, correct: bool, at: Timestamp) -> Episode {
 fn a_lesson_learned_tomorrow_cannot_inform_a_decision_today() {
     let mut memory = ResearchMemory::new();
     let later = now().saturating_add(Duration::from_days(10));
-    memory.record_lesson(Lesson {
-        lesson_id: LessonId::from_string("lesson-1"),
-        learned_at: later,
-        learned_by: "learning-engine".to_string(),
-        applies_when: "regime=stressed".to_string(),
-        statement: "credit leads equity by two days".to_string(),
-        supporting_episodes: vec![run_id(1)],
-        contradicting_episodes: Vec::new(),
-        superseded_at: None,
-    });
+    // R12-EXPAND-6023: `promote` is the only way a lesson enters memory.
+    memory
+        .promote(
+            Lesson {
+                lesson_id: LessonId::from_string("lesson-1"),
+                learned_at: later,
+                learned_by: "learning-engine".to_string(),
+                applies_when: "regime=stressed".to_string(),
+                statement: "credit leads equity by two days".to_string(),
+                supporting_episodes: (1..=4).map(run_id).collect(),
+                contradicting_episodes: Vec::new(),
+                superseded_at: None,
+            },
+            PromotionPolicy::default(),
+        )
+        .unwrap();
     assert!(memory.lessons_as_of(now()).is_empty());
     assert_eq!(memory.lessons_as_of(later).len(), 1);
 }
@@ -898,16 +904,21 @@ fn a_lesson_learned_tomorrow_cannot_inform_a_decision_today() {
 fn a_superseded_lesson_stays_readable_for_the_dates_it_governed() {
     let mut memory = ResearchMemory::new();
     let id = LessonId::from_string("lesson-1");
-    memory.record_lesson(Lesson {
-        lesson_id: id.clone(),
-        learned_at: now(),
-        learned_by: "learning-engine".to_string(),
-        applies_when: String::new(),
-        statement: "old rule".to_string(),
-        supporting_episodes: vec![run_id(1)],
-        contradicting_episodes: Vec::new(),
-        superseded_at: None,
-    });
+    memory
+        .promote(
+            Lesson {
+                lesson_id: id.clone(),
+                learned_at: now(),
+                learned_by: "learning-engine".to_string(),
+                applies_when: String::new(),
+                statement: "old rule".to_string(),
+                supporting_episodes: (1..=4).map(run_id).collect(),
+                contradicting_episodes: Vec::new(),
+                superseded_at: None,
+            },
+            PromotionPolicy::default(),
+        )
+        .unwrap();
     let retired = now().saturating_add(Duration::from_days(5));
     assert!(memory.supersede(&id, retired));
     assert_eq!(

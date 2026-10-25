@@ -86,6 +86,10 @@ pub fn respond(request: &[u8], metrics: &Metrics, health_body: &str) -> (&'stati
 pub struct PeerSeries {
     metrics: Arc<Metrics>,
     base: Labels,
+    /// `cycles_expired` as last read, so a turn publishes the difference.
+    /// Atomic rather than `&mut self` so a reader holding the series shared
+    /// still records; nothing else reads it.
+    expired_seen: std::sync::atomic::AtomicU64,
 }
 
 impl PeerSeries {
@@ -97,13 +101,35 @@ impl PeerSeries {
             names::EDGE_PEER_ROUND_TRIP_MS,
             "the shortest fresh peer clock round trip in milliseconds, net of the peer's holding time",
         );
-        Self { metrics, base }
+        metrics.describe(
+            names::EDGE_PEER_CYCLES_EXPIRED,
+            "cycles this cell originated that reached their ttl without fire, so no leg was sent",
+        );
+        Self {
+            metrics,
+            base,
+            expired_seen: std::sync::atomic::AtomicU64::new(0),
+        }
     }
 
     /// Record what the link last measured. `clock_round_trip_ns` is read
     /// only while `clocks_measured` says a sample exists; the nanosecond
     /// count crosses to `f64` milliseconds here, where the statistic lives.
+    ///
+    /// The cycles this cell originated and let lapse at their TTL
+    /// (R12-RES-7095) are counted as the difference since the last read.
+    /// Without the series a degraded mesh refused its cycles in silence: the
+    /// health body said so one turn behind, and nothing an alert could read
+    /// did. `saturating_sub` for the reason `MeshSeries::observe` gives.
     pub fn observe(&self, status: &PeerStatus) {
+        let seen = self
+            .expired_seen
+            .swap(status.cycles_expired, std::sync::atomic::Ordering::Relaxed);
+        let lapsed = status.cycles_expired.saturating_sub(seen);
+        if lapsed > 0 {
+            self.metrics
+                .increment(names::EDGE_PEER_CYCLES_EXPIRED, self.base.clone(), lapsed);
+        }
         if status.clocks_measured == 0 {
             return;
         }

@@ -869,7 +869,7 @@ impl DecisionLoop {
             Some(port) => {
                 let status = port.status();
                 format!(
-                    r#"{{"edge_states_held":{},"refusals":{},"sent":{},"send_failures":{},"queued_drops":{},"received":{},"inbound_drops":{},"publish_failures":{},"dropped_offers":{},"quotes_refused":{},"quotes_withheld":{},"session_turns":{},"clocks_measured":{},"cycles_originated":{},"reservations":{},"declines":{},"fires":{},"legs_sent":{},"fills":{},"unwinds":{},"cycles_rejected":{}}}"#,
+                    r#"{{"edge_states_held":{},"refusals":{},"sent":{},"send_failures":{},"queued_drops":{},"received":{},"inbound_drops":{},"publish_failures":{},"dropped_offers":{},"quotes_refused":{},"quotes_withheld":{},"session_turns":{},"clocks_measured":{},"cycles_originated":{},"reservations":{},"declines":{},"fires":{},"legs_sent":{},"fills":{},"unwinds":{},"cycles_rejected":{},"cycles_expired":{}}}"#,
                     status.edge_peers_held,
                     status.refusals,
                     status.sent,
@@ -891,6 +891,7 @@ impl DecisionLoop {
                     status.fills,
                     status.unwinds,
                     status.cycles_rejected,
+                    status.cycles_expired,
                 )
             }
             None => "null".to_string(),

@@ -463,6 +463,30 @@ impl EpisodeOutcome {
     }
 }
 
+/// An outcome that went against the claim it resolved, as a record beside the
+/// claim (R12-WORLD-1016).
+///
+/// The claim keeps the direction and confidence it was made at, and the
+/// outcome keeps the move that happened; this names the disagreement between
+/// them. A claim rewritten after the fact, its confidence lowered or its
+/// direction flipped to match what happened, would read as a belief that had
+/// been right all along. It would also take with it the one record a
+/// calibration review needs. Derived rather than stored, for the reason
+/// [`EpisodeOutcome::surprise_bps`] is: both sides already live in the
+/// episode, and a third copy is a third claim about one fact.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EpisodeContradiction {
+    pub episode_id: String,
+    /// The direction the claim pointed, as recorded.
+    pub claimed_direction: f64,
+    /// The confidence the claim was made at, as recorded.
+    pub claimed_confidence: f64,
+    /// The move the platform's own series recorded.
+    pub realised_move_bps: f64,
+    /// When the contradiction became knowable: the resolution instant.
+    pub resolved_at: Timestamp,
+}
+
 /// One reasoned situation and what came of it.
 ///
 /// `at` is when the situation was true; `known_at` is when the record became
@@ -611,6 +635,20 @@ impl Episode {
     /// it is computed here rather than held on the record.
     pub fn surprise_bps(&self) -> Option<f64> {
         self.outcome.as_ref().and_then(EpisodeOutcome::surprise_bps)
+    }
+
+    /// The disagreement between this episode's claim and its outcome, or
+    /// `None` where the outcome agreed, is not yet known, or cannot be graded
+    /// for direction (a directionless claim, or a move of exactly zero).
+    pub fn contradiction(&self) -> Option<EpisodeContradiction> {
+        let outcome = self.outcome.as_ref()?;
+        (outcome.agrees_with(self.claim.direction) == Some(false)).then(|| EpisodeContradiction {
+            episode_id: self.episode_id.clone(),
+            claimed_direction: self.claim.direction,
+            claimed_confidence: self.claim.confidence,
+            realised_move_bps: outcome.realised_move_bps,
+            resolved_at: outcome.resolved_at,
+        })
     }
 
     /// The query this episode would have been, before its outcome was known.

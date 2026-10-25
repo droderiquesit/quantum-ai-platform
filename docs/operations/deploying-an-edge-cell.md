@@ -117,7 +117,7 @@ between ADR 0035 and a node since it was written.
    | Input | Value | Why it is not free |
    |---|---|---|
    | `environment` | `dev` | The registry, the attestor and the project the bake reads |
-   | `machine_type` | `c3-highcpu-8` | **The same shape as the tfvars entry.** The isolated-core range is baked into the image's kernel command line, so one image is valid for one shape; the workflow reads the permitted list out of `modules/execution-node/variables.tf` rather than keeping a copy |
+   | `machine_type` | `c4-highcpu-8` | **The same shape as the tfvars entry.** The isolated-core range is baked into the image's kernel command line, so one image is valid for one shape; the workflow reads the permitted list out of `modules/execution-node/variables.tf` rather than keeping a copy |
    | `base_image` | a full Debian self-link, `projects/debian-cloud/global/images/debian-12-…` | A family is refused by the same regex `boot_image` applies. `gcloud compute images list --project debian-cloud --filter='family=debian-12' --format='value(selfLink)'` prints one |
    | `commit` | a commit `deploy.yml` has already built **and the attestor has signed** | The bake extracts the binary out of the attested container image and never compiles. An unattested digest stops the run |
    | `hugepages_gb` | `1` | At least `required_hugepages_gb`, which defaults to 1 |
@@ -184,9 +184,10 @@ precondition nor an API.
    or service range any more; the node is one machine with one address on one
    subnet and no external address (`main.tf:333-345` — no `access_config`).
 
-3. **Choose the machine.** One of `c3-highcpu-8`, `c3-highcpu-22`,
-   `c3d-highcpu-8`, `c3d-highcpu-16`; the module refuses anything else
-   (`modules/execution-node/variables.tf:90-98`). The isolated core range is
+3. **Choose the machine.** One of `c4-highcpu-8`, `c4-highcpu-16`,
+   `c4d-highcpu-8`, `c4d-highcpu-16`; the module refuses anything else, C3
+   and C3D included (the `machine_type` validation in
+   `modules/execution-node/variables.tf`). The isolated core range is
    derived from the shape (`main.tf:80-87`): on an 8-vCPU machine it is `2-7`
    and the blueprint's §41.3 thread assignment does not fit, which
    `terraform output execution_nodes` reports as `isolated_cpus` so a

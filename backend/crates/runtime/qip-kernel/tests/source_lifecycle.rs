@@ -103,7 +103,10 @@ fn source(
 
 fn payload_at(at: Timestamp) -> PayloadSample {
     PayloadSample {
-        body: r#"{"symbol":"US0001","bid":10.25,"ask":10.27}"#.to_string(),
+        body: qip_core::untrusted::Untrusted::new(
+            "a scripted sample",
+            r#"{"symbol":"US0001","bid":10.25,"ask":10.27}"#.to_string(),
+        ),
         media_type: "application/json".to_string(),
         payload_at: Some(at),
         latency: Duration::from_millis(55),
@@ -488,6 +491,77 @@ fn quarantining_a_source_stops_the_world_model_believing_what_it_said() -> Resul
                 && change.description.contains("`forger` quarantined")
         }),
         "the retraction is not on the world model's change journal"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_belief_citing_a_source_retired_as_stale_is_downweighted_not_retracted() -> Result<()> {
+    // R12-RES-7097, the stale half: a source retired because its data went
+    // stale has its beliefs downweighted. Before this a retirement stopped
+    // the feed and left everything it had told the graph at the confidence a
+    // fresh source earned, so the platform reasoned over stale figures as
+    // firmly as current ones.
+    use qip_market_ingestion::adapter::SensedRecord;
+    let mut platform = platform()?;
+    let mut probe = probe();
+    platform.assess_sources(candidates()?, &mut probe, start())?;
+    let absorbed = platform.observe(vec![
+        SensedRecord::News(Box::new(story_from("fading", "news-fading")?)),
+        SensedRecord::News(Box::new(story_from("rising", "news-clean")?)),
+    ]);
+    assert_eq!(absorbed, 2, "premise: both stories are absorbed");
+    let confidences = |platform: &Platform, source: &str, known_at: Timestamp| -> Vec<f64> {
+        let mut held: Vec<f64> = platform
+            .world()
+            .graph()
+            .facts_at(known_at, known_at)
+            .iter()
+            .filter(|fact| fact.relationship.source == source)
+            .map(|fact| fact.confidence)
+            .collect();
+        held.sort_by(f64::total_cmp);
+        held
+    };
+    let before = confidences(&platform, "fading", later());
+    assert!(
+        !before.is_empty() && before.iter().all(|c| *c > 0.0),
+        "premise: the graph believes facts from fading before it retires: {before:?}"
+    );
+    let rising_before = confidences(&platform, "rising", later());
+
+    platform.assess_sources(candidates()?, &mut probe, later())?;
+    assert!(
+        !platform.registered_sources().contains_key("fading"),
+        "premise: policy retired fading on the second pass"
+    );
+
+    let after = confidences(&platform, "fading", later());
+    let expected: Vec<f64> = before
+        .iter()
+        .map(|c| c * qip_world_model::world::STALE_SOURCE_CONFIDENCE)
+        .collect();
+    assert_eq!(
+        after, expected,
+        "a stale source's beliefs were not held at the downweighted confidence"
+    );
+    assert_eq!(
+        confidences(&platform, "rising", later()),
+        rising_before,
+        "a fresh source's beliefs moved with the stale one's"
+    );
+    // As of before the retirement, the confidence a decision was formed on.
+    assert_eq!(
+        confidences(&platform, "fading", start()),
+        before,
+        "the downweight rewrote what the platform believed before it"
+    );
+    assert!(
+        platform.world().changes().iter().any(|change| {
+            change.kind == qip_world_model::state::ChangeKind::BeliefRevised
+                && change.description.contains("`fading` retired as stale")
+        }),
+        "the downweight is not on the world model's change journal"
     );
     Ok(())
 }

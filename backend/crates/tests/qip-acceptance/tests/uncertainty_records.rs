@@ -8,8 +8,12 @@
 //! (evidence disagreement with a named resolution); the episodic memory's
 //! `ClaimRecord` (the confidence the claim was made at); and the self-model's
 //! `CapabilityEstimate` (refuses to estimate from a thin sample rather than
-//! reporting a guess). The episodic and self models hold no contradiction
-//! record of their own; the register row says so.
+//! reporting a guess). Contradiction beside the belief: the episodic
+//! memory's `EpisodeContradiction` (an outcome against its claim, the claim
+//! kept as made), the semantic memory's `Lesson.contradicting_episodes`, and
+//! the self-model's `Drift` (an earlier and a recent record kept side by
+//! side). The causal graph's edges still lower their confidence in place on
+//! a contradicting reaction; the register row says so.
 
 #![allow(clippy::panic_in_result_fn)]
 
@@ -145,6 +149,104 @@ fn a_capability_is_estimated_only_from_enough_graded_outcomes_and_never_as_certa
     assert!(
         (capability.hit_rate - 1.0).abs() < 1e-12 && capability.accuracy < 1.0,
         "a perfect record is still not reported as certainty: {capability:?}"
+    );
+    Ok(())
+}
+
+/// R12-WORLD-1016: contradicting evidence on the semantic and self models is
+/// recorded beside the belief, not overwritten. (The episodic case is
+/// `qip-ai`'s
+/// `an_outcome_against_its_claim_is_recorded_beside_the_claim_and_the_claim_keeps_its_confidence`
+/// and the kernel's `an_issue_counts_the_episodes_whose_outcome_contradicted_their_claim`;
+/// the world graph's is the test above.)
+///
+/// - Semantic: a lesson promoted with counter-examples keeps every one of
+///   them, and its trusted support is lowered by them rather than reset.
+/// - Self: a component that was well calibrated and then is not keeps both
+///   halves of its record. The window accuracy stays as measured and a
+///   `Drift` record beside it carries the earlier and recent Brier scores,
+///   and the weight a consumer applies is the lower of the two.
+///
+/// Mutations: in `ResearchMemory::promote`, clear `contradicting_episodes`
+/// before storing -- the read-back is empty; in `CapabilityEstimate::drift`,
+/// return `None` -- the estimate carries no record of the change.
+#[test]
+fn contradicting_evidence_on_the_semantic_and_self_models_is_recorded_beside_the_belief()
+-> Result<()> {
+    use qip_agents::memory::{Lesson, PromotionPolicy, ResearchMemory};
+    use qip_core::ids::{AgentRunId, LessonId};
+
+    // Semantic.
+    let runs = |from: u64, to: u64| -> Vec<AgentRunId> {
+        (from..=to)
+            .map(|n| AgentRunId::from_string(format!("run-{n}")))
+            .collect()
+    };
+    let lesson = |against: Vec<AgentRunId>| Lesson {
+        lesson_id: LessonId::from_string("lesson-credit-leads"),
+        learned_at: now(),
+        learned_by: "learn-stage".to_string(),
+        applies_when: "regime=stressed".to_string(),
+        statement: "credit spreads lead equity by two days".to_string(),
+        supporting_episodes: runs(1, 6),
+        contradicting_episodes: against,
+        superseded_at: None,
+    };
+    let unopposed = lesson(Vec::new());
+    let opposed = lesson(runs(7, 8));
+    assert!(
+        opposed.smoothed_support() < unopposed.smoothed_support(),
+        "two counter-examples must weaken the lesson: {} vs {}",
+        opposed.smoothed_support(),
+        unopposed.smoothed_support()
+    );
+    let mut memory = ResearchMemory::new();
+    memory
+        .promote(opposed, PromotionPolicy::default())
+        .map_err(Error::invalid)?;
+    let stored = memory.lessons_as_of(now());
+    assert_eq!(stored.len(), 1, "premise: one lesson stored");
+    assert_eq!(
+        stored[0].contradicting_episodes,
+        runs(7, 8),
+        "the counter-examples are kept beside the lesson, every one"
+    );
+    assert_eq!(stored[0].supporting_episodes, runs(1, 6));
+
+    // Self.
+    let mut estimate = CapabilityEstimate::new();
+    for i in 0..MINIMUM_SAMPLE {
+        estimate.record(ScoredOutcome::new(
+            format!("early-{i}"),
+            0.9,
+            true,
+            now().saturating_add(Duration::from_secs(i as i64)),
+        )?);
+    }
+    for i in 0..MINIMUM_SAMPLE {
+        estimate.record(ScoredOutcome::new(
+            format!("late-{i}"),
+            0.9,
+            false,
+            now().saturating_add(Duration::from_secs((MINIMUM_SAMPLE + i) as i64)),
+        )?);
+    }
+    let capability = estimate.estimate()?;
+    assert_eq!(capability.sample_count, 2 * MINIMUM_SAMPLE);
+    assert!(
+        (capability.hit_rate - 0.5).abs() < 1e-12,
+        "the window keeps every outcome, the early successes included: {}",
+        capability.hit_rate
+    );
+    let drift = capability
+        .drift
+        .clone()
+        .expect("the newer half contradicts the older; the record says so");
+    assert!((drift.earlier_brier - 0.01).abs() < 1e-9, "{drift:?}");
+    assert!((drift.recent_brier - 0.81).abs() < 1e-9, "{drift:?}");
+    assert!(
+        capability.weight() < capability.accuracy,
+        "the consumer weighs the recent record, without the window being rewritten"
     );
     Ok(())
 }

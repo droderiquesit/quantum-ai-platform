@@ -496,7 +496,7 @@
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127,154,178 reflex node compile set; no fast-lane crate depends on a slower lane",
       "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11,40 edge node has no compile-time dependency on cognitive crates; separate binaries"
     ],
-    "gap": "2026-10-24 (L4): the requirement has two halves. The first, world-model services that are long-running and versioned with domain-specific stores, is unmet: the world model runs in-process inside qip-kernel's cycle, and no world-model service or store is deployed (billing paused, nothing applied). Only the second half, no single model on the reflex critical path, is proven, by lane_placement and arch_001_independent_reflex. Closing it needs a deployed, versioned world-model service with its own store: a deploy and an ADR, not code in this lane.",
+    "gap": "2026-10-24 (L4, wave580): decided by ADR 0191 under the delegation. The central brains are the long-running world-model services, and the domain stores are the log's records by journalling stage. Still to do: (1) code: a versioned per-domain snapshot record on the world_model.snapshot topic, which has no producer today; (2) deploy: a separate world-model service with its own store, deferred to the deployment phase because it is billed infrastructure.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -507,7 +507,7 @@
     "verification": "cargo test -p qip-acceptance --test lane_placement --test arch_001_independent_reflex",
     "work_item": "",
     "size": "S",
-    "notes": "The not-on-critical-path half is proven; long-running versioned world-model services with domain stores are not deployed."
+    "notes": "The not-on-critical-path half is proven; long-running versioned world-model services with domain stores are not deployed. 2026-10-24 (L4, wave580): ADR 0191 recorded; no status change."
   },
   {
     "id": "R12-REASON-7024",
@@ -2176,9 +2176,10 @@
       "backend/crates/edge/qip-peer-link/src/saga.rs Saga::forget_gone (cycles_expired), Saga::fired",
       "backend/crates/edge/qip-peer-link/src/boundary.rs PeerStatus::cycles_expired",
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading",
-      "backend/crates/edge/qip-peer-link/tests/saga.rs::a_fired_cycle_that_outlives_its_ttl_is_not_counted_as_lapsed"
+      "backend/crates/edge/qip-peer-link/tests/saga.rs::a_fired_cycle_that_outlives_its_ttl_is_not_counted_as_lapsed",
+      "backend/crates/apps/qip-edge-node/src/telemetry.rs PeerSeries::observe (qip_edge_peer_cycles_expired_total)"
     ],
-    "gap": "2026-10-24 (lane L6): the refusal at TTL is now observable and tested. qip-peer-link PeerStatus::cycles_expired counts cycles this node originated that reached their TTL without FIRE, incremented only in Saga::forget_gone, with a fired set so a cycle that traded and then aged out is not miscounted; decision_loop.rs::a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading drives the shipped DecisionLoop::turn with real ports, drops the peer's port after a cycle opens, and asserts the cycle lapsed (cycles_expired >= 1, fires 0, legs_sent 0) while the single-venue strategy's orders kept growing. Still open: (1) 'reduced to pre-positioned directional bands' (ADR 0154 DirectionalBand) is not built; (2) cycles_expired is in PeerStatus only, not in the node's health body or PeerSeries; (3) the peer mesh runs only when QIP_MESH_PEER/peers are configured, which no committed environment does, so the multi-cell refusal is not on a default path (bar part 2).",
+    "gap": "2026-10-24 (lane L6): the refusal at TTL is now observable and tested. qip-peer-link PeerStatus::cycles_expired counts cycles this node originated that reached their TTL without FIRE, incremented only in Saga::forget_gone, with a fired set so a cycle that traded and then aged out is not miscounted; decision_loop.rs::a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading drives the shipped DecisionLoop::turn with real ports, drops the peer's port after a cycle opens, and asserts the cycle lapsed (cycles_expired >= 1, fires 0, legs_sent 0) while the single-venue strategy's orders kept growing. Still open: (1) 'reduced to pre-positioned directional bands' (ADR 0154 DirectionalBand) is not built; (2) closed 2026-10-25: cycles_expired is counted as qip_edge_peer_cycles_expired_total by PeerSeries and printed in the health body's peer_mesh object; (3) the peer mesh runs only when QIP_MESH_PEER/peers are configured, which no committed environment does, so the multi-cell refusal is not on a default path (bar part 2).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2189,7 +2190,7 @@
     "verification": "cargo test -p qip-edge-node --test decision_loop a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading; cargo test -p qip-peer-link --test saga",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-24 by lane M1-KERNEL-EDGE: not closed; the missing seam is in qip-peer-link, not in qip-edge or qip-edge-node. 2026-10-24 lane L6 (implemented by a delegated agent, re-verified on this branch): `lapsed += 1` made a no-op in forget_gone failed the new decision_loop test at :1557 after its 60 s bound ('0 passed; 1 failed'); restored by cp and cmp, it passes in 2.04 s. The agent also reported: dropping the Host::record line for cycles_expired failed it the same way; an always-true fired guard failed saga.rs:327 (left 2, right 1). qip-peer-link + qip-edge-node --no-fail-fast: 46 result lines, 301 passed, 0 failed; mesh_lane 'ok. 4 passed'. Stays PARTIAL."
+    "notes": "Corrected 2026-10-24 by lane M1-KERNEL-EDGE: not closed; the missing seam is in qip-peer-link, not in qip-edge or qip-edge-node. 2026-10-24 lane L6 (implemented by a delegated agent, re-verified on this branch): `lapsed += 1` made a no-op in forget_gone failed the new decision_loop test at :1557 after its 60 s bound ('0 passed; 1 failed'); restored by cp and cmp, it passes in 2.04 s. The agent also reported: dropping the Host::record line for cycles_expired failed it the same way; an always-true fired guard failed saga.rs:327 (left 2, right 1). qip-peer-link + qip-edge-node --no-fail-fast: 46 result lines, 301 passed, 0 failed; mesh_lane 'ok. 4 passed'. Stays PARTIAL. 2026-10-25 lane L6: PeerSeries::observe now counts the difference in cycles_expired as qip_edge_peer_cycles_expired_total {cell,region}, and the health body's peer_mesh object prints cycles_expired. The lost-peer decision_loop test now attaches the series as main.rs does and asserts the counter moved (>=1, never above the port's count). Mutation: the increment guarded by `lapsed > u64::MAX` failed it at 'a cycle that lapsed at its ttl did not move the peer cycles expired series: 0 counted'; restored, cmp clean, passed. cargo test -p qip-edge-node -p qip-observability --no-fail-fast: passed 357, failed 0. Still PARTIAL on (1) directional bands and (3) the env-gated mesh."
   },
   {
     "id": "R12-RES-7096",
@@ -2222,9 +2223,13 @@
       "backend/crates/services/qip-world-model/src/world.rs WorldModel::quarantine_source",
       "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources (Quarantined transition)",
       "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs::quarantining_a_source_stops_the_world_model_believing_what_it_said",
-      "backend/crates/services/qip-learning-engine/src/verifier.rs attack_model (quarantined training data)"
+      "backend/crates/services/qip-learning-engine/src/verifier.rs attack_model (quarantined training data)",
+      "backend/crates/services/qip-world-model/src/graph.rs KnowledgeGraph::downweight_source",
+      "backend/crates/services/qip-world-model/src/world.rs WorldModel::mark_source_stale, STALE_SOURCE_CONFIDENCE",
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs::a_belief_citing_a_source_retired_as_stale_is_downweighted_not_retracted",
+      "backend/crates/services/qip-world-model/tests/contradictions.rs::a_stale_downweight_that_would_not_lower_belief_is_refused"
     ],
-    "gap": "2026-10-24 (lane L6): (1) default path: qip-deepbrain assesses sources only when QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH names a candidate catalogue, which no committed environment sets, so the quarantine (and with it the retraction) never runs on a shipped binary's default path (bar part 2); (2) 'stale' half: a source retired for staleness or cost keeps its facts and nothing downweights beliefs citing a stale source; (3) a hypothesis or belief already formed and held (reasoning engine, episodic memory) is not re-scored when its evidence is retracted; only reads after the quarantine see the narrower graph.",
+    "gap": "2026-10-24 (lane L6): (1) default path: qip-deepbrain assesses sources only when QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH names a candidate catalogue, which no committed environment sets, so the quarantine (and with it the retraction) never runs on a shipped binary's default path (bar part 2); (2) closed 2026-10-25: a retired source's facts are restated at STALE_SOURCE_CONFIDENCE (0.5) of their confidence from the retirement, bitemporally, and journaled as BeliefRevised; (3) a hypothesis or belief already formed and held (reasoning engine, episodic memory) is not re-scored when its evidence is retracted; only reads after the quarantine see the narrower graph.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2235,7 +2240,7 @@
     "verification": "cd backend && cargo test -p qip-kernel --test source_lifecycle quarantining_a_source_stops_the_world_model_believing_what_it_said",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L6: implemented the propagation. Mutations, each restored by cp and cmp: replacing the kernel's quarantine_source call with a no-op failed the new test at source_lifecycle.rs:470 ('a quarantined source's facts are still believed'); dropping the source match in retract_source failed it at :475 ('a clean source's facts were retracted with the quarantined one's'). qip-kernel + qip-world-model --no-fail-fast: 90 result lines, 1355 passed, 0 failed. Stays PARTIAL on the default-path and stale clauses."
+    "notes": "2026-10-24 lane L6: implemented the propagation. Mutations, each restored by cp and cmp: replacing the kernel's quarantine_source call with a no-op failed the new test at source_lifecycle.rs:470 ('a quarantined source's facts are still believed'); dropping the source match in retract_source failed it at :475 ('a clean source's facts were retracted with the quarantined one's'). qip-kernel + qip-world-model --no-fail-fast: 90 result lines, 1355 passed, 0 failed. Stays PARTIAL on the default-path and stale clauses. 2026-10-25 lane L6: Platform::assess_sources calls WorldModel::mark_source_stale on a Retired transition. Mutations: the kernel call guarded `&& false` and the restated confidence left undivided each failed a_belief_citing_a_source_retired_as_stale_is_downweighted_not_retracted at 'a stale source's beliefs were not held at the downweighted confidence'; widening the factor range to 0.0..=1.0 failed a_stale_downweight_that_would_not_lower_belief_is_refused at 'a downweight by 1 was admitted'. Each restored, cmp clean, passed. cargo test -p qip-world-model -p qip-kernel --no-fail-fast: passed 1386, failed 0. Still PARTIAL on (1) the env-gated source assessment and (3) re-scoring held hypotheses."
   },
   {
     "id": "R12-RES-7098",
@@ -2396,7 +2401,7 @@
       "backend/crates/runtime/qip-kernel/tests/central.rs::a_twin_that_diverges_from_a_venue_halves_the_grant_of_the_strategy_trading_there_until_it_is_promoted_again",
       "backend/crates/runtime/qip-kernel/tests/central.rs::a_twin_that_agrees_with_the_venue_holds_no_strategy_trading_there"
     ],
-    "gap": "2026-10-24 (lane L6): two steps remain. (1) Platform::issue_capital is not reached on a shipped binary's default path past Principal::presence, so the narrowed grant is proven in the kernel test, not in a running binary (AUDIT-5 part 2). (2) The twin scores only the desk's fills, so a strategy trading at a cell's venue is never held; scoring cell fills is the remaining wire. The 100 bps threshold, 10-fill minimum and 0.5 multiplier are agent-chosen constants that can only narrow a grant; they need the owner's calibration review, since financial risk limits are not this lane's to set.",
+    "gap": "2026-10-24 (lane L6): two steps remain. (1) Platform::issue_capital is not reached on a shipped binary's default path past Principal::presence, so the narrowed grant is proven in the kernel test, not in a running binary (AUDIT-5 part 2). (2) The twin scores only the desk's fills, so a strategy trading at a cell's venue is never held; scoring cell fills is the remaining wire. The 100 bps threshold, 10-fill minimum and 0.5 multiplier were approved as written by the owner (docs/blueprint/owner-decisions-2026-10-25.md decision 2).",
     "implemented": true,
     "tested": true,
     "integrated": false,

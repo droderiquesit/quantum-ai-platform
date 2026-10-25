@@ -223,6 +223,9 @@ pub struct FeedTick {
 struct Published {
     bids: BTreeMap<Decimal, Decimal>,
     asks: BTreeMap<Decimal, Decimal>,
+    /// The status last published; `None` until the venue declares one
+    /// other than open, which is what a book starts as.
+    status: Option<VenueStatus>,
 }
 
 /// The simulated venue's quote feed.
@@ -247,6 +250,10 @@ pub struct SimulatedFeed {
     /// rather than appended to on every publication, so a caller that never
     /// takes them holds one frame's worth and no more.
     captured: Vec<MarketEvent>,
+    /// The bytes the last publication put on the wire, kept until the
+    /// next: one frame, so bounded. What a replay or a test compares the
+    /// lake's raw slots against (ADR 0181).
+    last_frame: String,
     /// Lines the cell took that could not be built into a market event.
     /// Counted rather than fatal: the pass has already applied the frame,
     /// and failing it now would make recording a reason to stop trading.
@@ -263,6 +270,7 @@ impl SimulatedFeed {
             omitted_total: 0,
             sequence: 0,
             captured: Vec::new(),
+            last_frame: String::new(),
             capture_failures: 0,
         }
     }
@@ -304,6 +312,12 @@ impl SimulatedFeed {
         std::mem::take(&mut self.captured)
     }
 
+    /// The exact bytes the last publication put on the wire; empty when it
+    /// published nothing.
+    pub fn last_frame(&self) -> &str {
+        &self.last_frame
+    }
+
     /// Lines the cell took that could not be captured as market events.
     pub fn capture_failures(&self) -> u64 {
         self.capture_failures
@@ -311,26 +325,50 @@ impl SimulatedFeed {
 
     fn capture(
         &self,
-        (sequence, id, side, price, size): &(u64, String, BookSide, Decimal, Decimal),
+        line: &WireLine,
         venue_time: Timestamp,
         now: Timestamp,
     ) -> Result<MarketEvent> {
+        let (sequence, id, body, native) = match line {
+            WireLine::Level {
+                sequence,
+                id,
+                side,
+                price,
+                size,
+            } => (
+                *sequence,
+                id,
+                MessageBody::LevelSet {
+                    side: *side,
+                    price: *price,
+                    quantity: *size,
+                    order_count: None,
+                },
+                // The line as the venue's publisher wrote it: the bytes the
+                // decoder read, which is what `source_hash`'s canonical
+                // re-encoding is not.
+                level_line(*sequence, venue_time, id, *side, *price, *size),
+            ),
+            WireLine::Status {
+                sequence,
+                id,
+                status,
+            } => (
+                *sequence,
+                id,
+                MessageBody::StatusChange { status: *status },
+                status_line(*sequence, venue_time, id, *status),
+            ),
+        };
         let payload = MarketMessage::new(
             ObjectId::from_string(id.clone()),
-            Origin::new(self.venue.clone(), FEED_NAME, 0, *sequence),
-            MessageBody::LevelSet {
-                side: *side,
-                price: *price,
-                quantity: *size,
-                order_count: None,
-            },
+            Origin::new(self.venue.clone(), FEED_NAME, 0, sequence),
+            body,
             venue_time,
             now,
         );
         let hash = MarketEvent::hash_payload(&payload)?;
-        // The line as the venue's publisher wrote it: the bytes the decoder
-        // read, which is what `source_hash`'s canonical re-encoding is not.
-        let native = level_line(*sequence, venue_time, id, *side, *price, *size);
         // The half-width of the clock error this event is stored with. A
         // message cannot be received before it was sent, so a venue stamp
         // that leads this cell's receive instant by `lead` proves one of the
@@ -500,6 +538,16 @@ impl SimulatedFeed {
                 BookSide::Ask,
                 &mut wire,
             );
+            // The venue's declared status, published when it changes
+            // (R12-TICK-2044): a breaker or a halt reaches the cell as a
+            // typed status message on the same wire, sequenced with the
+            // depth, rather than as a book that simply stopped moving.
+            let status = gateway.status_of(&depth.object_id);
+            if published.status.unwrap_or(VenueStatus::Open) != status {
+                wire.status(id, status);
+                published.status = Some(status);
+                tick.messages += 1;
+            }
         }
         self.omitted_total = self
             .omitted_total
@@ -511,6 +559,7 @@ impl SimulatedFeed {
         let venue_time = wire.venue_time;
         let frame = wire.frame;
         self.captured.clear();
+        self.last_frame.clear();
         if tick.messages > 0 {
             let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
             if decoded != tick.messages {
@@ -533,6 +582,7 @@ impl SimulatedFeed {
                     Err(_) => self.capture_failures = self.capture_failures.saturating_add(1),
                 }
             }
+            self.last_frame = frame;
         }
         Ok(tick)
     }
@@ -563,13 +613,101 @@ pub fn level_line(
     )
 }
 
+/// The exact line the simulated venue published for `event`, re-encoded
+/// with the encoder that wrote it, or `None` for an event this feed does not
+/// publish (R12-TICK-2042, ADR 0181).
+///
+/// The feed stamps every captured event with the SHA-256 of the line it put
+/// on the wire (`MarketEvent::native_hash`). Re-encoding here and comparing
+/// against that hash is how the lake keeps the venue's bytes without a
+/// second copy travelling the spool: a line whose re-encoding does not hash
+/// to what was published is not the published line, and the caller keeps
+/// nothing for it rather than something close.
+pub fn native_line(event: &MarketEvent) -> Option<String> {
+    let origin = event.origin();
+    if origin.feed != FEED_NAME {
+        return None;
+    }
+    let id = event.payload().object_id.as_str();
+    let line = match &event.payload().body {
+        MessageBody::LevelSet {
+            side,
+            price,
+            quantity,
+            ..
+        } => level_line(
+            origin.sequence,
+            event.event_time(),
+            id,
+            *side,
+            *price,
+            *quantity,
+        ),
+        MessageBody::StatusChange { status } => {
+            status_line(origin.sequence, event.event_time(), id, *status)
+        }
+        _ => return None,
+    };
+    let published = event.native_hash()?;
+    (qip_core::hash::sha256_hex(line.as_bytes()) == published).then_some(line)
+}
+
+/// One status line, as the venue's publisher writes it and the feed's
+/// decoder reads it: `sequence ⇥ venue_time_nanos ⇥ object_id ⇥ S ⇥ status ⇤`,
+/// where `status` is [`VenueStatus::as_str`]. Five fields where a level has
+/// six, and `S` where a level has `B` or `A`, so neither can be read as the
+/// other.
+pub fn status_line(
+    sequence: u64,
+    venue_time: Timestamp,
+    object_id: &str,
+    status: VenueStatus,
+) -> String {
+    format!(
+        "{sequence}\t{}\t{object_id}\tS\t{}\n",
+        venue_time.as_nanos(),
+        status.as_str()
+    )
+}
+
+/// The status a status line names, or `None` for a word no status spells.
+fn parse_status(word: &str) -> Option<VenueStatus> {
+    [
+        VenueStatus::Open,
+        VenueStatus::Auction,
+        VenueStatus::Halted,
+        VenueStatus::CircuitBreaker,
+        VenueStatus::Closed,
+        VenueStatus::Unreachable,
+    ]
+    .into_iter()
+    .find(|status| status.as_str() == word)
+}
+
+/// One line of a publication, as a fact.
+#[derive(Debug)]
+enum WireLine {
+    Level {
+        sequence: u64,
+        id: String,
+        side: BookSide,
+        price: Decimal,
+        size: Decimal,
+    },
+    Status {
+        sequence: u64,
+        id: String,
+        status: VenueStatus,
+    },
+}
+
 /// The frame one publication is building, and the two facts every line of
 /// it carries from the venue.
 struct Wire {
     frame: String,
     /// The same lines as facts, for the capture the feed keeps of what it
-    /// published (W1.13): sequence, instrument, side, price, size.
-    lines: Vec<(u64, String, BookSide, Decimal, Decimal)>,
+    /// published (W1.13).
+    lines: Vec<WireLine>,
     /// The sequence number of the last line written.
     sequence: u64,
     venue_time: Timestamp,
@@ -578,8 +716,13 @@ struct Wire {
 impl Wire {
     fn level(&mut self, id: &str, side: BookSide, price: Decimal, size: Decimal) {
         self.sequence = self.sequence.saturating_add(1);
-        self.lines
-            .push((self.sequence, id.to_string(), side, price, size));
+        self.lines.push(WireLine::Level {
+            sequence: self.sequence,
+            id: id.to_string(),
+            side,
+            price,
+            size,
+        });
         self.frame.push_str(&level_line(
             self.sequence,
             self.venue_time,
@@ -588,6 +731,17 @@ impl Wire {
             price,
             size,
         ));
+    }
+
+    fn status(&mut self, id: &str, status: VenueStatus) {
+        self.sequence = self.sequence.saturating_add(1);
+        self.lines.push(WireLine::Status {
+            sequence: self.sequence,
+            id: id.to_string(),
+            status,
+        });
+        self.frame
+            .push_str(&status_line(self.sequence, self.venue_time, id, status));
     }
 }
 
@@ -667,9 +821,7 @@ struct Level {
     sequence: u64,
     venue_time: Timestamp,
     object_id: ObjectId,
-    side: BookSide,
-    price: Decimal,
-    size: Decimal,
+    body: MessageBody,
 }
 
 /// One line's fields, or why it could not be read.
@@ -681,9 +833,34 @@ fn parse_line(line: &str) -> std::result::Result<Level, String> {
     let side = fields.next();
     let price = fields.next();
     let size = fields.next();
-    let (Some(sequence), Some(venue_time), Some(id), Some(side), Some(price), Some(size)) =
-        (sequence, venue_time, id, side, price, size)
+    let (Some(sequence), Some(venue_time), Some(id), Some(side)) = (sequence, venue_time, id, side)
     else {
+        return Err("a line needs at least four tab-separated fields".to_string());
+    };
+    if side == "S" {
+        // A status line: five fields, the fifth a status word.
+        let (Some(word), None, None) = (price, size, fields.next()) else {
+            return Err("a status line has exactly five fields".to_string());
+        };
+        let status =
+            parse_status(word).ok_or_else(|| format!("status {word:?} names no status"))?;
+        let sequence = sequence
+            .parse::<u64>()
+            .ok()
+            .filter(|sequence| *sequence > 0)
+            .ok_or_else(|| format!("sequence {sequence:?} is not a positive integer"))?;
+        let venue_time = venue_time
+            .parse::<i64>()
+            .map(Timestamp::from_nanos)
+            .map_err(|_| format!("venue time {venue_time:?} is not a count of nanoseconds"))?;
+        return Ok(Level {
+            sequence,
+            venue_time,
+            object_id: ObjectId::from_string(id),
+            body: MessageBody::StatusChange { status },
+        });
+    }
+    let (Some(price), Some(size)) = (price, size) else {
         return Err("a level needs six tab-separated fields".to_string());
     };
     if fields.next().is_some() {
@@ -715,9 +892,12 @@ fn parse_line(line: &str) -> std::result::Result<Level, String> {
         sequence,
         venue_time,
         object_id: ObjectId::from_string(id),
-        side,
-        price,
-        size,
+        body: MessageBody::LevelSet {
+            side,
+            price,
+            quantity: size,
+            order_count: None,
+        },
     })
 }
 
@@ -759,12 +939,7 @@ impl Decoder for DepthDecoder {
                     messages.push(MarketMessage::new(
                         level.object_id,
                         Origin::new(self.venue.clone(), FEED_NAME, 0, level.sequence),
-                        MessageBody::LevelSet {
-                            side: level.side,
-                            price: level.price,
-                            quantity: level.size,
-                            order_count: None,
-                        },
+                        level.body,
                         // Two facts from two sources: the venue's instant as
                         // the line states it, and this node's receipt.
                         level.venue_time,

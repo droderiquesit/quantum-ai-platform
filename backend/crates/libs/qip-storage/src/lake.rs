@@ -306,25 +306,31 @@ impl<'a> Lake<'a> {
         let canonical_sha256 = sha256_hex(&canonical);
         let raw_sha256 = raw.as_deref().map(sha256_hex);
         let stored = self.codec.encode(&canonical)?;
+        // The raw slot is written before the seal, and write-once. Sealed
+        // first, a crash between the two left a sealed segment whose raw slot
+        // was never written, and the re-drain read the seal as its own
+        // earlier write and stopped, so the venue's bytes for that segment
+        // were lost for good (R12-TICK-2042, found by the 2026-10-25
+        // skeptic). Raw first, a crash leaves raw bytes and no seal, and the
+        // retry seals. Write-once so a losing concurrent writer cannot
+        // replace the bytes already there: two writers on one segment id are
+        // one spool offset re-drained, carrying the same records.
+        let raw_key = match raw {
+            Some(bytes) if partition.entitlement.raw_retention_permitted => {
+                let raw_key = format!("{}/{segment_id}.raw", partition.prefix());
+                self.store.put_if_absent(&raw_key, bytes)?;
+                Some(raw_key)
+            }
+            _ => None,
+        };
         // The check above refuses the sequential overwrite; this refuses the
-        // concurrent one, which passed that check in both writers. The seal
-        // comes before the raw bytes, so only the writer that won it writes
-        // them: written first, a losing writer's raw bytes replaced the
-        // winner's under the one raw key.
+        // concurrent one, which passed that check in both writers.
         if !self.store.put_if_absent(&key, stored)? {
             return Err(Error::denied(format!(
                 "{key} was sealed by another writer while this one was writing it; history is \
                  never overwritten, write a new segment that references it"
             )));
         }
-        let raw_key = match raw {
-            Some(bytes) if partition.entitlement.raw_retention_permitted => {
-                let raw_key = format!("{}/{segment_id}.raw", partition.prefix());
-                self.store.put(&raw_key, bytes)?;
-                Some(raw_key)
-            }
-            _ => None,
-        };
         Ok(SegmentRecord {
             partition: partition.clone(),
             key,

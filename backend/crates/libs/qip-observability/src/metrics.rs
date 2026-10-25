@@ -1007,6 +1007,10 @@ pub mod names {
     /// the cell's peer links (MESH-007): the measured latency to the nearest
     /// peer. Absent, not zero, while no peer has a fresh sample.
     pub const EDGE_PEER_ROUND_TRIP_MS: &str = "qip_edge_peer_round_trip_ms";
+    /// Cycles this cell originated that reached their TTL without FIRE, so
+    /// the cycle was refused and no leg was sent (R12-RES-7095): the peer
+    /// mesh degrading, as a series an alert can read.
+    pub const EDGE_PEER_CYCLES_EXPIRED: &str = "qip_edge_peer_cycles_expired_total";
 
     pub const KILL_SWITCH_TRIPPED: &str = "qip_kill_switch_tripped";
     pub const LIVE_FILLS: &str = "qip_live_fills_total";

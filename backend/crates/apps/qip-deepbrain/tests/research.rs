@@ -131,7 +131,11 @@ fn every_wakeable_specialist_is_a_registered_brain_spec_naming_only_tools_this_n
             .unwrap_or_else(|e| panic!("{}: {e}", spec.id));
         for tool in &spec.tools {
             assert!(
-                tools.get(tool).is_some(),
+                tools
+                    .get(
+                        &qip_agents::tools::ToolName::parse(tool).unwrap_or_else(|e| panic!("{e}"))
+                    )
+                    .is_some(),
                 "{} names unregistered {tool}",
                 spec.id
             );
@@ -1295,11 +1299,16 @@ fn the_node_registers_every_tool_kind_it_actually_runs() {
     // tools it needs registered rather than queued to build.
     for (name, kind) in AcquisitionAction::FormulateSolver.tools() {
         let spec = held
-            .get(name)
+            .get(&qip_agents::tools::ToolName::parse(name).unwrap_or_else(|e| panic!("{e}")))
             .unwrap_or_else(|| panic!("{name} unregistered"));
         assert_eq!(spec.kind(), *kind);
     }
-    assert!(held.get("tick-replay").is_none());
+    assert!(
+        held.get(
+            &qip_agents::tools::ToolName::parse("tick-replay").unwrap_or_else(|e| panic!("{e}"))
+        )
+        .is_none()
+    );
 
     // The loop the root builds counts what it holds.
     let loop_ = ResearchLoop::new_for_node(

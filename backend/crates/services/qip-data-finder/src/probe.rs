@@ -79,9 +79,18 @@ impl HeadResponse {
 }
 
 /// A body actually read from the candidate.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The body is [`Untrusted`] (ADR 0158 decision 16, R12-SEC-9065): it is
+/// the publisher's own text, and until 2026-10-25 it was a `String` on a
+/// public field, one `.clone()` from a brief, a prompt or a tool argument.
+/// It now leaves only through `validate` — [`ProbeEvidence::gather`]
+/// narrows it to a schema fingerprint — and is measured and hashed for the
+/// [`SampleManifest`] without being read. For the same reason the type no
+/// longer derives `Serialize`, `Deserialize` or `PartialEq`: nothing
+/// wrote a sample out, and nothing should be able to.
+#[derive(Clone, Debug)]
 pub struct PayloadSample {
-    pub body: String,
+    pub body: Untrusted<String>,
     pub media_type: String,
     /// When the newest record in the body was true in the world, where the
     /// payload says. `None` means the payload carries no time of its own,
@@ -101,7 +110,7 @@ impl PayloadSample {
             media_type: self.media_type.clone(),
             payload_at: self.payload_at,
             bytes: self.body.len(),
-            content_hash: qip_core::hash::sha256_hex(self.body.as_bytes()),
+            content_hash: self.body.sha256_hex(),
             latency: self.latency,
         }
     }
@@ -215,17 +224,27 @@ impl ProbeEvidence {
         let robots_policy = robots.policy();
         let head = probe.head(endpoint, at)?;
         let sample = probe.sample(endpoint, at)?;
-        let schema = SourceSchema::parse(&sample.body).unwrap_or_else(|_| {
-            // A payload that is not JSON still has a shape; recording it as
-            // an empty schema keeps the source assessable and makes the
-            // absence visible in the fingerprint rather than aborting the
-            // lifecycle over a format this phase cannot parse.
-            SourceSchema::from_fields([])
-        });
-        // The shape has been read; the text's job is over. `sample` is a
-        // local and is dropped at the end of this function, so the body
-        // cannot reach the catalogue through any field of this type.
-        let sample = sample.manifest();
+        // Measured and hashed before the body is consumed, without reading
+        // it.
+        let manifest = sample.manifest();
+        // The validator: the body narrows to its shape — field names and
+        // types — and nothing else of it survives. The field names are still
+        // the publisher's words; they are bounded by being JSON keys of a
+        // payload this probe was pointed at, and they reach a fingerprint
+        // and a schema comparison, not a tool, a brief or a prompt.
+        let schema = sample.body.validate(|body| {
+            Ok(SourceSchema::parse(&body).unwrap_or_else(|_| {
+                // A payload that is not JSON still has a shape; recording it
+                // as an empty schema keeps the source assessable and makes
+                // the absence visible in the fingerprint rather than aborting
+                // the lifecycle over a format this phase cannot parse.
+                SourceSchema::from_fields([])
+            }))
+        })?;
+        // The shape has been read; the text's job is over. The body was
+        // consumed by `validate`, so it cannot reach the catalogue through
+        // any field of this type.
+        let sample = manifest;
         Ok(Self {
             robots,
             robots_policy,
@@ -562,6 +581,7 @@ impl SourceProbe for NetworkProbe {
         // The validator: a 2xx answer with a UTF-8 body is a sample, which
         // `ProbeEvidence::gather` then narrows to a schema fingerprint and a
         // manifest and drops.
+        let origin = response.origin().to_string();
         response.validate(|response| {
             if !response.is_success() {
                 return Err(Error::unavailable(format!(
@@ -592,7 +612,10 @@ impl SourceProbe for NetworkProbe {
             })?;
             Ok(PayloadSample {
                 media_type,
-                body,
+                // Wrapped again under the same origin: the status and headers
+                // have been validated into the media type and the 2xx check,
+                // and the body is still exactly what the publisher sent.
+                body: Untrusted::new(origin, body),
                 // As with `last_modified`: the payload's own instant needs a
                 // parser that knows this source's shape, which is the
                 // adapter's job and not the probe's. `None` is a freshness

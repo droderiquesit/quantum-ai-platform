@@ -18,8 +18,13 @@
 # layer was pulled from quay's v2 API and the Go build stamp read out of the
 # binary. v3.5.3 ships byte-identical kustomize and git-lfs layers to v3.5.2;
 # v3.6.0-rc1 rebuilds git-lfs and helm and still carries kustomize on
-# go1.24.0. Nor is there a newer kustomize to adopt: the Go module proxy ends
-# at v5.8.1, dated 2026-02-09, which is the version already in the image.
+# go1.24.0. Nor was there a newer kustomize to adopt when this was written:
+# the Go module proxy ended at v5.8.1, dated 2026-02-09, which is the version
+# already in the image. Since 2026-09-30 it no longer does — it lists v5.8.2
+# (2026-09-30) and v5.8.3 (2026-10-08), read 2026-10-24 — and
+# `KUSTOMIZE_VERSION` below stays v5.8.1 on purpose: Argo CD gates behaviour
+# on the parsed version (see "The version string" below), so moving it is a
+# behaviour change to be reviewed on its own, not a comment fix.
 #
 # The reason upstream's binary is old is worth stating, because it is what
 # makes this file the right answer rather than a workaround: Argo CD does not

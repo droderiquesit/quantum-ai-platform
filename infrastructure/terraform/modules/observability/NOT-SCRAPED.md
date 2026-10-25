@@ -140,6 +140,16 @@ What is not:
     plain semver tags only) returns `1.0.0 1.1.0 1.1.1 1.2.0 1.3.0 1.4.0
     1.6.0 1.7.0 1.8.0 1.9.1 1.9.2` and nothing above it. There is no 1.9.3
     or 1.10.0 to move to.
+  - **Stale since 2026-10-24, kept as the measurement it was.** The same tag
+    list now carries `1.9.3 1.9.4 1.9.5 1.9.6` above 1.9.2 (read
+    2026-10-24); 1.9.6 is
+    `sha256:14b20c7f07e00bf275c94c3df823815dd67bc55b656346e1e4f39688c35aeb87`,
+    uploaded 2026-10-23. Its status, from the build-stamp reading in
+    `docs/ops/runbooks/dev-redeploy-readiness.md` §6 and **not** from a
+    Trivy run: x/crypto v0.55.0, so CVE-2026-56854 (GO-2026-6303) reads as
+    cleared, and CVE-2026-78662 and CVE-2026-56855 (fixed in 0.56.0) do not.
+    The 0.56.0 bar below is therefore still unmet, and nothing here changes:
+    `metrics_collector_image_digest` stays null.
   - The bytes have not been rebuilt. `docker-content-digest` for tag 1.9.2 is
     still `sha256:ff1fc68871118f1032a3ce17e2b0abd703292e883989d220244330ebdf522fd1`,
     identical to the digest the commented line names and identical to what

@@ -278,3 +278,65 @@ fn a_file_store_creates_an_object_once_and_leaves_an_existing_one_untouched() ->
     let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
+
+/// A store whose first write of a raw slot fails, as a process would that
+/// crashed while writing it. Every other write, and every later one, works.
+#[derive(Debug, Default)]
+struct RawWriteCrashesOnce {
+    inner: MemoryBlobStore,
+    crashed: std::sync::atomic::AtomicBool,
+}
+
+impl RawWriteCrashesOnce {
+    fn crash_if_raw(&self, key: &str) -> Result<()> {
+        if key.ends_with(".raw") && !self.crashed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Err(qip_core::error::Error::io(format!(
+                "the process stopped while writing {key}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl BlobStore for RawWriteCrashesOnce {
+    fn put(&self, key: &str, bytes: Vec<u8>) -> Result<()> {
+        self.crash_if_raw(key)?;
+        self.inner.put(key, bytes)
+    }
+    fn put_if_absent(&self, key: &str, bytes: Vec<u8>) -> Result<bool> {
+        self.crash_if_raw(key)?;
+        self.inner.put_if_absent(key, bytes)
+    }
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.inner.get(key)
+    }
+    fn delete(&self, key: &str) -> Result<bool> {
+        self.inner.delete(key)
+    }
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix)
+    }
+}
+
+/// R12-TICK-2042: a crash while the raw slot is written must not leave a
+/// sealed segment whose raw bytes are gone for good. The retry — what a
+/// re-drain of the same spool offset is — finds no seal, writes the raw slot
+/// and seals. Mutation: write the raw slot after the seal again — the first
+/// attempt seals before crashing, the retry is refused as already sealed, and
+/// the raw bytes never land.
+#[test]
+fn a_crash_while_writing_raw_bytes_is_repaired_by_the_retry_not_sealed_without_them() -> Result<()>
+{
+    let store = RawWriteCrashesOnce::default();
+    let lake = Lake::new(&store);
+    let p = part("AAPL", ent("simulated", true))?;
+
+    let crashed = lake.write_segment(&p, "seg-1", b"lines".to_vec(), Some(b"bytes".to_vec()));
+    assert!(crashed.is_err(), "premise: the first attempt crashed");
+
+    let retried = lake.write_segment(&p, "seg-1", b"lines".to_vec(), Some(b"bytes".to_vec()))?;
+    let raw_key = retried.raw_key.expect("raw retention was permitted");
+    assert_eq!(store.inner.get(&raw_key)?, Some(b"bytes".to_vec()));
+    assert_eq!(store.inner.get(&retried.key)?, Some(b"lines".to_vec()));
+    Ok(())
+}

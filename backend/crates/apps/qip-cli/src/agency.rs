@@ -70,12 +70,12 @@
 //! declined or refused, and one when a document could not be read at all.
 
 use qip_agency::attribution::EffectAttribution;
-use qip_agency::autonomy::ActionPolicy;
+use qip_agency::autonomy::{ActionPolicy, Authority, Drill, WideningEvidence};
 use qip_agency::causal::Scenario;
 use qip_agency::conduct_brain::{EvidenceDecl, EvidenceManifest, HoldingsList};
 use qip_agency::engine::{
     Adapter, Governance, Learning, LearningOutcome, Outcome, Report, Request, learn_shadowed,
-    run_governed_with, widen,
+    run_governed_with, widen_to,
 };
 use qip_agency::estimate::EstimateInput;
 use qip_agency::generate::ScenarioSource;
@@ -176,6 +176,16 @@ pub struct AgencyPolicy {
 }
 
 /// A request to widen one class's policy, with the data to check it on.
+///
+/// R12-EXPAND-6071: `target` names the level asked for, and the request is
+/// judged against that level's row of ADR 0141's schedule through
+/// `ActionPolicy::widen_to`. Before this the binary could ask only for the
+/// first step, so the schedule's stronger demands -- a clean period, a
+/// rehearsed compensation, a second approver -- were enforced in tests and
+/// on no shipped path. Omitted, `target` is narrow-reversible, the level
+/// every existing document asked for. Naming a higher level grants nothing
+/// ADR 0141 has not granted; it means a request short of that level's
+/// evidence is refused by name.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WideningDecl {
@@ -183,6 +193,28 @@ pub struct WideningDecl {
     pub approver: ActingIdentity,
     pub attribution: EffectAttribution,
     pub evidence: EstimateInput,
+    #[serde(default)]
+    pub target: Option<Authority>,
+    /// Approvers beyond the first, for a level whose row wants several.
+    #[serde(default)]
+    pub co_approvers: Vec<ActingIdentity>,
+    /// Days the policy has held its level without drift.
+    #[serde(default)]
+    pub clean_days: u32,
+    /// Per class, the compensating step and the drill that rehearsed it.
+    #[serde(default)]
+    pub compensations: Vec<CompensationDecl>,
+    /// The kill path returning every class to shadow, and its drill.
+    #[serde(default)]
+    pub kill_path: Option<Drill>,
+}
+
+/// One class's compensating step, as the drill that rehearsed it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompensationDecl {
+    pub class: Method,
+    pub drill: Drill,
 }
 
 /// R12-AGENCY-6088: a market digital twin the pass is simulated against, in
@@ -492,7 +524,22 @@ impl Session {
         if let Err(error) = estimate.supports(&decl.attribution) {
             return refused(error.message().to_string());
         }
-        match widen(policy, &decl.attribution, &decl.approver) {
+        let target = decl.target.unwrap_or(Authority::NarrowReversible);
+        let evidence = WideningEvidence {
+            attributions: vec![&decl.attribution],
+            classes: BTreeSet::new(),
+            clean_days: decl.clean_days,
+            compensations: decl
+                .compensations
+                .iter()
+                .map(|c| (c.class, c.drill.clone()))
+                .collect(),
+            kill_path: decl.kill_path.clone(),
+        };
+        let approvers: Vec<&ActingIdentity> = std::iter::once(&decl.approver)
+            .chain(&decl.co_approvers)
+            .collect();
+        match widen_to(policy, target, &evidence, &approvers) {
             Ok(widening) => WideningOutcome::Granted {
                 class: widening.class,
                 goal_id: widening.goal_id,

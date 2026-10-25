@@ -197,3 +197,36 @@ fn two_contradicting_evidence_items_about_one_fact_are_linked_through_ingestion_
         "the state as known before the second feed arrived already shows the conflict"
     );
 }
+
+/// R12-RES-7097: a stale source's downweight refuses a factor that would not
+/// lower belief. A factor of one would journal a downweight that moved
+/// nothing; one above it would strengthen a source for going stale.
+///
+/// Mutation: widen the accepted range to `0.0..=1.0` and the factor-one case
+/// is admitted.
+#[test]
+fn a_stale_downweight_that_would_not_lower_belief_is_refused() {
+    let mut graph = KnowledgeGraph::new();
+    graph.assert_fact(says("ent-a", "sec-a", 0.6, "stale-feed", 10));
+    for factor in [1.0, 1.5, -0.1, f64::NAN] {
+        assert!(
+            graph
+                .downweight_source("stale-feed", factor, days_ago(1))
+                .is_err(),
+            "a downweight by {factor} was admitted"
+        );
+    }
+    let moved = graph
+        .downweight_source("stale-feed", 0.5, days_ago(1))
+        .unwrap();
+    assert_eq!(moved.len(), 1, "the admitted factor moved the one fact");
+    let held: Vec<f64> = graph
+        .facts_at(now(), now())
+        .iter()
+        .map(|fact| fact.confidence)
+        .collect();
+    assert!(
+        held.len() == 1 && approx_eq(held[0], 0.4, 1e-12),
+        "held at {held:?}"
+    );
+}
