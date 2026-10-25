@@ -2497,15 +2497,20 @@
   {
     "id": "R12-REASON-3108",
     "status": "PARTIAL",
-    "current": "CriticKind names all eight critics (backend/crates/services/qip-learning-engine/src/verifier.rs:79-88), each with an attack_prediction that can return refuted (e.g. DataPoisoning by late-knowable evidence or single-origin concentration, verifier.rs:570-597). The society attacks every important prediction in REASON through TournamentStage::observe_reasoning (backend/crates/runtime/qip-kernel/src/model_tournament.rs:443-453), reached from Platform::observe_hypothesis (platform.rs:12593-12645). A refutation only holds the question out of the tournament; the kernel states 'Neither module holds a path back into the thesis or its size' (platform.rs:12590-12592), so a refuted leading explanation is still sized and traded.",
+    "current": "Eight critics (verifier.rs) attack every important prediction in REASON (TournamentStage::observe_reasoning). Since 2026-10-25 (ADR 0170 with Amendment 1) a refutation vetoes: observe_reasoning returns a ReasonVerdict carrying the society's refutation, and REASON forms no proposal from an approved hypothesis the society refuted, recording 'approved but refuted by the verifier society: <summary>'. The dossier carries only explaining agents' views and missing inputs (Research and Adversarial roles); quantum-optimization is a Construction agent; and a panel lean refutes on its own only when the opposing conviction reaches OPPOSING_CONVICTION_BAR (0.6).",
     "evidence": [
       "backend/crates/services/qip-learning-engine/src/verifier.rs:79-88",
       "backend/crates/services/qip-learning-engine/src/verifier.rs:565-597",
       "backend/crates/services/qip-learning-engine/src/verifier.rs:824-885 (each critic refutes its case)",
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs:443-453",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12585-12592"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12585-12592",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs ReasonVerdict, ReasonObservation::explaining",
+      "backend/crates/runtime/qip-kernel/src/platform.rs reason_about_the_queue society_refutation arm",
+      "backend/crates/services/qip-learning-engine/src/verifier.rs OPPOSING_CONVICTION_BAR in directional_attack",
+      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs::an_approved_hypothesis_the_verifier_society_refutes_forms_no_proposal",
+      "docs/adr/0170 Amendment 1"
     ],
-    "gap": "Decided by ADR 0125 (veto) and ADR 0170 (accepted 2026-10-24: a refutation vetoes; only Research/Adversarial agents' missing inputs are material). 2026-10-25 lane L2-INTEL: the veto is built but not pushed. It sits on a local, unpushed commit 34140849 on branch wip/l2-intel-3108-veto in this lane's container. The commit holds ReasonVerdict returned by TournamentStage::observe_reasoning and honoured in REASON beside the symbolic veto; the dossier filtered to explaining agents; quantum-optimization's manifest role set to Construction; and the directional critics' panel lean counted only when the opposing conviction reaches OPPOSING_CONVICTION_BAR = 0.6, the kernel's IMPORTANCE_CONFIDENCE read the other way. That last rule stops one analyst at 0.19 conviction from reading as a -1.00 lean against evidence weighing 0.49 to 0.15 for the claim. With it, qip-learning-engine passes (including each_of_the_eight_critics_can_refute_a_prediction_on_its_own_failure, unchanged), and qip-kernel valuation_seam goes from 4 failures to 1. The remaining failure, a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_budget_with_a_halved_bound, is a legitimate refutation. Its compounded cycle is refuted by the bear critic (equity-analyst at 0.68 against) and by the data-poisoning critic (one detector carries 81-87% of the support), so the test's premise that the cycle sizes no longer holds; a fresh-drop fixture did not restore it. Remaining steps: rework that fixture so its compounded thesis survives the society without touching its assertions; record decision 4 (the opposing-conviction bar) in ADR 0170; run the full qip-kernel suite and acceptance under the veto; mutation-verify a kernel test that a refuted approved hypothesis forms no proposal; then a skeptic.",
+    "gap": "2026-10-25 (lane L2-INTEL): the veto is built on the default cycle path (every binary that runs Platform::run_cycle). Awaiting an in-lane skeptic before promotion.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2513,10 +2518,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test valuation_seam && cargo +1.94.1 test -p qip-learning-engine --lib verifier",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The poisoning critic is wired (old gap closed). 'Can refuse it' holds only at verdict level. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: A critic's refutation must be able to refuse the hypothesis it falsifies (today it is advisory: tournament hold-out only); a kernel test that a refuted thesis is not sized. 2026-10-24 L2-INTEL: veto prototype and its full qip-kernel run (27 failures, cause quoted in gap) recorded; nothing of it is committed. 2026-10-25 L2-INTEL: veto parked locally (see gap); nothing of it is pushed."
+    "notes": "Round-2 independent audit, 2026-10-11: The poisoning critic is wired (old gap closed). 'Can refuse it' holds only at verdict level. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: A critic's refutation must be able to refuse the hypothesis it falsifies (today it is advisory: tournament hold-out only); a kernel test that a refuted thesis is not sized. 2026-10-24 L2-INTEL: veto prototype and its full qip-kernel run (27 failures, cause quoted in gap) recorded; nothing of it is committed. 2026-10-25 L2-INTEL: veto parked locally (see gap); nothing of it is pushed. 2026-10-25 L2-INTEL: mutations, each fired, restored by copy + cmp. Disarming the society_refutation arm fails an_approved_hypothesis_the_verifier_society_refutes_forms_no_proposal. Removing the opposing-conviction bar fails 3 valuation_seam private-market tests. Dropping the missing-input explaining filter fails 14 (capital idle-cash suite and valuation_seam). Dropping the panel explaining filter fails a_cycle_over_a_book_that_cannot_be_exited_within_the_week_is_refused_new_risk. Reverting quantum-optimization to Research fails 14. Fixture change: a_declined_pattern_..._compound_... runs its compounding cycle on a fresh drop on day 8 instead of the stale plateau on day 5, assertions unchanged."
   },
   {
     "id": "R12-REASON-3109",
