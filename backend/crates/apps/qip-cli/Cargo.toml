@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 serde_json.workspace = true
 qip-core.workspace = true
+qip-data-finder.workspace = true
 qip-events.workspace = true
 qip-financial.workspace = true
 qip-observability.workspace = true

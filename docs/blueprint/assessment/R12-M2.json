@@ -30,9 +30,12 @@
       "backend/crates/services/qip-data-finder/src/ingestion.rs:52 plan_for",
       "backend/crates/services/qip-data-finder/src/ingestion.rs:79 descriptor_for",
       "backend/crates/services/qip-data-finder/tests/registration_is_not_ingestion.rs registration does not imply ingestion",
-      "backend/crates/services/qip-market-ingestion/src/connectors/manifests/ seven hand-written shipped manifests"
+      "backend/crates/services/qip-market-ingestion/src/connectors/manifests/ seven hand-written shipped manifests",
+      "backend/crates/apps/qip-cli/src/adapter_proposals.rs (propose)",
+      "backend/crates/apps/qip-cli/src/main.rs (qip registrations propose)",
+      "backend/crates/apps/qip-cli/tests/adapter_proposals.rs"
     ],
-    "gap": "No path from a discovered registration to a running adapter: the descriptor is not consumed by any composition root, and connectors are only the seven shipped by hand.",
+    "gap": "2026-10-25: owner decision (skeptic REFUTED on part 4): qip registrations propose prints, for each candidate the finder registers, the adapter plan and descriptor matching its access mechanism (refused ones get the finder's reason), but ADR 0157 §4/§5 and ADR 0180 decision 3 decline generated adapters and the requirement names the Scout, so whether an operator-run printed proposal meets 'the Scout ... proposes for review' is the owner's call.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -40,10 +43,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test registration_is_not_ingestion",
+    "verification": "cargo test -p qip-cli --test adapter_proposals",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-25: qip registrations propose --candidates <path> assesses each catalogue entry through Platform::assess_sources (reviewed egress route per entry, in-memory event log, print-only) and proposes plan_for/descriptor_for for registered sources. Mutation: route Rejected into the adapter arm; test fails. Skeptic (security-engineer): parts 1-3 hold; REFUTED on part 4 (ADR 0180 decision 3); only REST is exercised."
   },
   {
     "id": "R12-DATA-2003",
