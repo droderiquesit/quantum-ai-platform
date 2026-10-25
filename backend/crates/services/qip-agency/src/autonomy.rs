@@ -27,7 +27,7 @@
 use crate::affordance::Method;
 use crate::attribution::EffectAttribution;
 use crate::plan::ActingIdentity;
-use qip_core::{Decimal, Error};
+use qip_core::{Decimal, Error, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -209,10 +209,43 @@ pub struct WideningEvidence<'a> {
     pub classes: BTreeSet<Method>,
     /// Days held at the current level without drift.
     pub clean_days: u32,
-    /// Per class, the named compensating step and the drill that tested it.
-    pub compensations: Vec<(Method, String)>,
-    /// The kill path returning every class to shadow at once.
-    pub kill_path: Option<String>,
+    /// Per class, the compensating step and the drill that tested it.
+    pub compensations: Vec<(Method, Drill)>,
+    /// The kill path returning every class to shadow at once, and its drill.
+    pub kill_path: Option<Drill>,
+}
+
+/// A rollback that was rehearsed, not merely named (R12-EXPAND-6071). ADR
+/// 0141 asks for a compensating step "tested in a drill"; a name alone is a
+/// rollback nobody has run, and the first time it runs would be the time it
+/// is needed. A drill that did not restore the prior state, or that left no
+/// record a reviewer can open, is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Drill {
+    /// The step that was rehearsed.
+    pub step: String,
+    /// When the drill ran.
+    pub ran_at: Timestamp,
+    /// Whether the drill returned the state it compensated to what it was.
+    pub restored: bool,
+    /// Where the drill's own record lives: a journal id, a ticket, a run.
+    pub record: String,
+}
+
+impl Drill {
+    /// Why this drill is not evidence of a working rollback, if it is not.
+    fn shortfall(&self) -> Option<&'static str> {
+        if self.step.trim().is_empty() {
+            Some("names no step")
+        } else if self.record.trim().is_empty() {
+            Some("left no record")
+        } else if !self.restored {
+            Some("did not restore the prior state")
+        } else {
+            None
+        }
+    }
 }
 
 impl<'a> WideningEvidence<'a> {
@@ -342,27 +375,38 @@ impl ActionPolicy {
         }
         if row.compensation {
             for class in self.scope_of(evidence) {
-                let named = evidence
+                let drills: Vec<&Drill> = evidence
                     .compensations
                     .iter()
-                    .any(|(c, step)| *c == class && !step.trim().is_empty());
-                if !named {
+                    .filter(|(c, _)| *c == class)
+                    .map(|(_, drill)| drill)
+                    .collect();
+                if drills.is_empty() {
                     return Err(Error::denied(format!(
                         "{target:?} needs a compensating step for {class:?}, tested in a drill \
                          and named; none is"
                     )));
                 }
+                if let Some(why) = drills.iter().find_map(|d| d.shortfall()) {
+                    return Err(Error::denied(format!(
+                        "{target:?} needs a compensating step for {class:?} tested in a drill; \
+                         the drill offered {why}"
+                    )));
+                }
             }
         }
-        if row.kill_path
-            && evidence
-                .kill_path
-                .as_deref()
-                .is_none_or(|k| k.trim().is_empty())
-        {
-            return Err(Error::denied(format!(
-                "{target:?} needs a kill path that returns every class to shadow at once"
-            )));
+        if row.kill_path {
+            let Some(drill) = &evidence.kill_path else {
+                return Err(Error::denied(format!(
+                    "{target:?} needs a kill path that returns every class to shadow at once"
+                )));
+            };
+            if let Some(why) = drill.shortfall() {
+                return Err(Error::denied(format!(
+                    "{target:?} needs a kill path that returns every class to shadow at once, \
+                     tested in a drill; the drill offered {why}"
+                )));
+            }
         }
         let signed: BTreeSet<&str> = approvers
             .iter()
