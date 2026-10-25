@@ -5516,7 +5516,13 @@ impl Platform {
         // and the two gates are then re-pointed at these slots under the
         // capability and label `Desk::new` itself chose — not a second
         // spelling of either.
-        let world = Upstream::new(WorldModel::new());
+        // The evidence fabric is derived again from the claims the log holds
+        // as admitted (R12-EVID-2038): a restarted process otherwise begins
+        // with no contest, no kept contradiction and no resolution, and the
+        // next claim on either side is admitted as if it were the first.
+        let mut world_model = WorldModel::new();
+        world_model.rebuild_evidence(Self::journaled_evidence_in(&event_log)?)?;
+        let world = Upstream::new(world_model);
         let research_memory = Upstream::new(ResearchMemory::new());
         let market = Upstream::new(MarketView {
             snapshot: MarketSnapshot::new(now),
@@ -12963,6 +12969,25 @@ impl Platform {
                 state.contradiction_count
             )
         };
+        // R12-EVID-2038: the evidence fabric's contests, open and resolved,
+        // said on the stage so a restart that lost them reads differently
+        // from one that kept them.
+        let (open_contests, resolved_contests) = {
+            let world = self.world.read();
+            let contests = world.evidence().contests();
+            (
+                contests.values().filter(|c| c.is_contested()).count(),
+                contests.values().filter(|c| c.resolution.is_some()).count(),
+            )
+        };
+        let contest_detail = if open_contests == 0 && resolved_contests == 0 {
+            String::new()
+        } else {
+            format!(
+                "; {open_contests} evidence contest(s) held open as competing hypotheses, \
+                 {resolved_contests} resolved with the resolving claim named"
+            )
+        };
         let liquidity = if self.liquidity.observation_count() == 0 {
             String::new()
         } else {
@@ -13177,7 +13202,7 @@ impl Platform {
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                  {contradiction_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
+                  {contradiction_detail}{contest_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
                  {second_order_detail}{statistics_detail}{routing_detail}{federation_detail}\
                  {now_detail}",
                 state.object_count,

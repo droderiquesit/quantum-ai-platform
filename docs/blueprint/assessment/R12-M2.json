@@ -896,9 +896,13 @@
       "backend/crates/libs/qip-evidence/src/fabric.rs:54-56",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:121-131",
       "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:854 an_open_contest_survives_a_fabric_filled_past_capacity_with_unrelated_claims",
-      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them"
+      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them",
+      "backend/crates/services/qip-world-model/src/world.rs (WorldModel::rebuild_evidence)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::new rebuilds the evidence fabric; stage_understand contest detail)",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs a_contest_and_its_resolving_evidence_survive_a_restart_from_the_event_log",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them"
     ],
-    "gap": "2026-10-24 (re-read): the earlier 'unjournaled' is stale - since ADR 0152 §2 every admitted claim is journaled to evidence.admitted (Platform::absorb_evidence, EvidenceAdmittedRecord), Platform::journaled_evidence reads them back in log order and EvidenceFabric::rebuild re-admits them, so contests and resolutions are derivable from the log (kernel tests/evidence_intake.rs). What remains: no composition root restores the event log at start-up or calls EvidenceFabric::rebuild over journaled_evidence, so a restarted process starts with an empty fabric and no contest survives a restart on any default path; nothing outside qip-evidence and tests reads contests (grep of .contests() finds no production reader); and a fabric whose every held claim is contested still evicts the oldest contested claim. Closing needs a start-up restore of the journal (from the chain archive) in qip-deepbrain/qip-fastbrain/qip-api with a rebuild of the world fabric and a restart test proving a contest and its resolving id survive.",
+    "gap": "2026-10-25: deploy dependence (skeptic REFUTED on part 2): the fabric's contests now survive a restart and are reported on UNDERSTAND, but claims reach the fabric only through Platform::admit_world_records draining the fastbrain/api connector arm, which exists only under QIP_CONNECTOR_* and which every committed tfvars leaves off, so no committed deployment forms a contest; remaining step is evidence admission on a default path (or an operator qip-cli route).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -908,10 +912,10 @@
       "R12-EVID-2032"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test evidence_fabric",
+    "verification": "cargo test -p qip-kernel --test evidence_intake; cargo test -p qip-world-model --test evidence_fabric",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed). 2026-10-24 lane L3-DATA: gap corrected in both directions (journal and rebuild exist; start-up restore and a downstream reader do not). Kept PARTIAL."
+    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed). 2026-10-24 lane L3-DATA: gap corrected in both directions (journal and rebuild exist; start-up restore and a downstream reader do not). Kept PARTIAL. 2026-10-25: Platform::new now rebuilds the world's evidence fabric from the journaled EvidenceAdmitted claims, so contests, both hypotheses and the resolving claim survive a restart; UNDERSTAND reports open and resolved contests. Mutations: skip rebuild_evidence (restarted contests differ, test fails); drop contest_detail from the stage line (stage assertion fails). Skeptic (security-engineer) REFUTED on default path only; it also noted the rebuild fails closed: a later release whose EvidenceFabric::default differs from the writer's stops Platform::new on an existing log, by design (Principle 3), with no operator recovery path documented yet."
   },
   {
     "id": "R12-EVID-2039",
