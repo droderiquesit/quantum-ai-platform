@@ -7,6 +7,7 @@
 //! collector is unreachable is not observable.
 
 pub mod aiops;
+pub mod cloud_monitoring;
 pub mod critical_paths;
 pub mod golden;
 pub mod logs;
