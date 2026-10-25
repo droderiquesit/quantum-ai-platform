@@ -78,6 +78,11 @@ The agents cannot carry these out, whatever the delegation says.
   push it, or merge it in the rolling pull request (decision 1).
 - `git apply docs/blueprint/lanes/l6-res-8026-observability-rule.patch`
   (decision 3).
+- `git apply docs/blueprint/lanes/l9-P3.patch` (decision 3): lane L9's
+  correction of `.claude/rules/domains/infrastructure.md`'s "Known gap",
+  which `e2948eab` closed. Its six siblings P1, P2, P4, P5, P6 and P7 were
+  applied on the integration branch on 2026-10-25; each corrects a comment
+  or a printed line and changes no value.
 - Approve the rolling pull request's head, so that `agent boundary` passes
   (decision 3).
 - When ready to deploy, follow `docs/ops/runbooks/dev-redeploy-readiness.md`
