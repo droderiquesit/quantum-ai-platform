@@ -2679,19 +2679,32 @@ mod tests {
                     1,
                     at(),
                 )?;
-                let first = desk
-                    .promote_candidate(&mut platform, at())?
-                    .ok_or_else(|| Error::not_found("a first candidate"))?;
+                // Each fit is driven through its shadow stage (R12-EXPAND-6070),
+                // the second an hour after the first so its rounds are new ones.
+                let first = through_shadow(
+                    &mut desk,
+                    &mut platform,
+                    &super::tests_support::learnable(400),
+                    1,
+                    at(),
+                )?
+                .ok_or_else(|| Error::not_found("a first candidate"))?;
+                let second_start = at().saturating_add(qip_core::Duration::from_hours(1));
                 desk.maybe_learn(
                     &subject(),
                     &super::tests_support::learnable(1_200),
                     REGIME,
-                    2,
-                    at(),
+                    10,
+                    second_start,
                 )?;
-                let second = desk
-                    .promote_candidate(&mut platform, at())?
-                    .ok_or_else(|| Error::not_found("a second candidate"))?;
+                let second = through_shadow(
+                    &mut desk,
+                    &mut platform,
+                    &super::tests_support::learnable(1_200),
+                    10,
+                    second_start,
+                )?
+                .ok_or_else(|| Error::not_found("a second candidate"))?;
                 match (&first, &second) {
                     (
                         PromotionOutcome::Promoted { reference: v1, .. },
@@ -2825,16 +2838,24 @@ mod tests {
                 );
             }
 
+            // Promotable means it can complete the shadow stage after the
+            // restart (R12-EXPAND-6070), at an instant past every round above.
+            let third_start = at().saturating_add(qip_core::Duration::from_hours(3));
             restarted.maybe_learn(
                 &subject(),
                 &super::tests_support::learnable(2_400),
                 REGIME,
-                3,
-                at(),
+                20,
+                third_start,
             )?;
-            let after = restarted
-                .promote_candidate(&mut platform, at())?
-                .ok_or_else(|| Error::not_found("a candidate after the crash"))?;
+            let after = through_shadow(
+                &mut restarted,
+                &mut platform,
+                &super::tests_support::learnable(2_400),
+                20,
+                third_start,
+            )?
+            .ok_or_else(|| Error::not_found("a candidate after the crash"))?;
             let PromotionOutcome::Promoted {
                 reference,
                 displaced,
@@ -2906,27 +2927,44 @@ mod tests {
                 1,
                 at(),
             )?;
-            let first = desk
-                .promote_candidate(&mut platform, at())?
-                .ok_or_else(|| Error::not_found("a first candidate"))?;
+            // Each fit is driven through its shadow stage (R12-EXPAND-6070),
+            // the second an hour after the first so its rounds are new ones.
+            let first = through_shadow(
+                &mut desk,
+                &mut platform,
+                &super::tests_support::learnable(400),
+                1,
+                at(),
+            )?
+            .ok_or_else(|| Error::not_found("a first candidate"))?;
+            let second_start = at().saturating_add(qip_core::Duration::from_hours(1));
             desk.maybe_learn(
                 &subject(),
                 &super::tests_support::learnable(1_200),
                 REGIME,
-                2,
-                at(),
+                10,
+                second_start,
             )?;
-            let second = desk
-                .promote_candidate(&mut platform, at())?
-                .ok_or_else(|| Error::not_found("a second candidate"))?;
+            let second = through_shadow(
+                &mut desk,
+                &mut platform,
+                &super::tests_support::learnable(1_200),
+                10,
+                second_start,
+            )?
+            .ok_or_else(|| Error::not_found("a second candidate"))?;
             let (
                 PromotionOutcome::Promoted { reference: v1, .. },
                 PromotionOutcome::Promoted { reference: v2, .. },
             ) = (&first, &second)
             else {
-                return Err(Error::invalid("premise: both fits were promoted"));
+                return Err(Error::invalid(format!(
+                    "premise: both fits were promoted: {} / {}",
+                    first.describe(),
+                    second.describe()
+                )));
             };
-            let later = at().saturating_add(qip_core::Duration::from_mins(1));
+            let later = second_start.saturating_add(qip_core::Duration::from_hours(1));
             // The fixture's second window drifted v1 against its own fit; a
             // rollback needs a known-good predecessor, so it reads as one.
             desk.registry_mut().record_drift(v1, 0.0)?;
