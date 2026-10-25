@@ -47,7 +47,7 @@ grounds every order the cell sends.
 
 ## Decision
 
-### 1. Six forms of evidence reference, five of them checked
+### 1. Seven forms of evidence reference: five anchor, two corroborate
 
 An evidence ground on an order a cell sends is a reference in one of six
 forms. Five name something the cell holds and are resolved against the
@@ -170,17 +170,41 @@ nobody reads this record as closing the row:
    no recorded ground beyond profit, price impact and features. They are not
    resolved again, because a pass's signals are cleared with it and a ground
    re-resolved a pass later would refuse every honest requote.
-2. **A book reference may be read as the profit opportunity itself.** This
-   record reads the books a cycle was found over as the evidence and the
-   profit as the motive. The review reads the book as the price discrepancy,
-   so a relabelled profit ground. Closing it means a leg also cites a ground
-   that is not price — a signal, a policy instruction, or a signed
-   cycle-discovery record — or an owner-approved amendment of the
-   requirement's reading.
-3. **A desk hypothesis is checked for presence, not resolved.** `Order` can
-   see only its own fields, so `hypothesis:{id}` is not resolved against the
-   hypotheses REASON actually queued. Closing it means a registry of queued
-   hypotheses the order manager resolves against.
+2. **A book reference was the profit opportunity itself** — closed after
+   the review. A book reference now corroborates and never anchors: it is
+   still resolved, and a false one still refuses, but a leg on its books
+   alone is refused. A cycle leg is anchored on `grant:{signature}`, the
+   signed capital grant that mandates the arbitrage desk, which `Cell::send`
+   checks is the grant the installed desk holds and is live at the send
+   instant. That is an operator's instruction to run the strategy, not a
+   price; the books are what the strategy read when it acted on it.
+
+   **A second review (2026-10-25) refuted this as closing the finding, and
+   its reading is the one the requirement text supports.** The grant is the
+   same for every cycle the desk runs: it authorises the strategy and says
+   nothing about why this leg fires, which is the cycle's expected profit.
+   Profit under a standing mandate is profit. So this record states plainly
+   that **an arbitrage cycle leg rests on expected profit under an
+   operator's mandate**, and that R12-GOV-6127 is not met for cycle legs.
+   What the code now guarantees is narrower and still worth having: no leg
+   goes out on its books alone, and none goes out under a grant the desk
+   does not hold or that has lapsed. Closing the row for cycle legs needs
+   either a per-action ground that is neither the priced books nor a
+   standing authorisation, which this record cannot name for a pure
+   arbitrage, or an owner decision that a mandated arbitrage is outside
+   what the requirement forbids. Hedges, offsets, signal-driven nets and
+   disposition unwinds are unaffected: each anchors on a reason that is not
+   the price.
+3. **A desk hypothesis was checked for presence, not resolved** — closed
+   after the review. DECIDE registers each thesis it expresses beside its
+   justification, by hypothesis id, in a registry bounded at
+   `PROPOSAL_HISTORY` with the oldest out first. ACT resolves a proposal
+   leg's hypotheses there before an order exists, and refuses the leg, on
+   the stage's record, when none names a thesis DECIDE expressed on a
+   justification. ACT's release loop is the only production caller of
+   `Platform::submit_order`; every other caller is a test. The order's own
+   `Order::justification` stays as the validation-time statement of the
+   same rule on the order manager and broker seams.
 
 ## Not decided here
 
