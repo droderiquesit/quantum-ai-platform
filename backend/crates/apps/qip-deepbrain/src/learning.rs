@@ -1054,8 +1054,19 @@ impl LearningDesk {
             // "never promoted with an artifact" and its alias history
             // contradicts the log. A move the card already holds (same
             // instant, same direction) is not added twice.
+            //
+            // The displaced card's move is worded as the kernel worded it
+            // live: "displaced by <promoted>: <evidence>" on a promotion, the
+            // bare evidence on a rollback, whose two moves share one reading.
+            // A rollback record re-promotes a reference an earlier record
+            // already promoted, which is how the two are told apart; read
+            // bare, a restored history said the displaced model was moved on
+            // its successor's evaluation, and what it said depended on where
+            // the crash fell.
             let mut first_promotion = true;
+            let mut promoted_before: BTreeSet<&str> = BTreeSet::new();
             for record in &history {
+                let rollback = !promoted_before.insert(record.reference.as_str());
                 let moved_by = record
                     .moved_by
                     .clone()
@@ -1070,11 +1081,16 @@ impl LearningDesk {
                         .iter()
                         .any(|m| m.at == record.at && m.assigned == assigned);
                     if !held {
+                        let evidence = if assigned || rollback {
+                            evidence.clone()
+                        } else {
+                            format!("displaced by {}: {evidence}", record.reference)
+                        };
                         card.alias_moves.push(qip_ai::registry::AliasMove {
                             alias: qip_ai::registry::PRODUCTION_ALIAS.to_string(),
                             assigned,
                             moved_by: moved_by.clone(),
-                            evidence: evidence.clone(),
+                            evidence,
                             at: record.at,
                         });
                     }
@@ -2544,13 +2560,23 @@ mod tests {
                     .registry()
                     .get(&v1)
                     .ok_or_else(|| Error::not_found("v1"))?;
-                assert!(
-                    displaced
-                        .alias_moves
-                        .iter()
-                        .any(|m| !m.assigned && m.at == last.at),
-                    "v1's alias history lacks the displacement the log records"
-                );
+                let moved = displaced
+                    .alias_moves
+                    .iter()
+                    .find(|m| !m.assigned && m.at == last.at)
+                    .ok_or_else(|| {
+                        Error::not_found(
+                            "v1's alias history lacks the displacement the log records",
+                        )
+                    })?;
+                // Worded as the uncrashed kernel wrote it, so the history
+                // does not depend on where the crash fell.
+                let evidence = last
+                    .evidence
+                    .as_deref()
+                    .ok_or_else(|| Error::not_found("premise: the record carries evidence"))?;
+                assert_eq!(moved.evidence, format!("displaced by {v2}: {evidence}"));
+                assert_eq!(Some(moved.moved_by.as_str()), last.moved_by.as_deref());
             }
             // And nothing on the log claims a move the promotion records do
             // not hold: the card written before the record is the unmoved one.
@@ -2644,7 +2670,7 @@ mod tests {
                 Box::new(InTreeProvider),
             )
         };
-        let v1 = {
+        let (v1, v2) = {
             let mut platform = file_platform()?;
             let mut desk = learning_desk();
             desk.maybe_learn(
@@ -2680,7 +2706,7 @@ mod tests {
             desk.registry_mut().record_drift(v1, 0.0)?;
             let reactivated = platform.rollback_model(desk.registry_mut(), v2, later)?;
             assert_eq!(&reactivated, v1, "premise: the rollback reactivates v1");
-            v1.clone()
+            (v1.clone(), v2.clone())
         };
         let text =
             std::fs::read_to_string(&path).map_err(|e| Error::io(format!("read the log: {e}")))?;
@@ -2720,6 +2746,24 @@ mod tests {
         if let Err(why) = card.decision_eligibility(at()) {
             assert!(!why.contains("retired"), "{why}");
         }
+        // The degraded model's move off the alias carries the rollback's own
+        // reading, bare, as the kernel wrote it live: a rollback is not a
+        // displacement by a successor, and replayed as one it would say so.
+        let rollback = platform
+            .model_promotion_history()?
+            .into_iter()
+            .next_back()
+            .ok_or_else(|| Error::not_found("the rollback record"))?;
+        let degraded = restarted
+            .registry()
+            .get(&v2)
+            .ok_or_else(|| Error::not_found("v2"))?;
+        let moved = degraded
+            .alias_moves
+            .iter()
+            .find(|m| !m.assigned && m.at == rollback.at)
+            .ok_or_else(|| Error::not_found("v2's move off the alias at the rollback"))?;
+        assert_eq!(Some(moved.evidence.as_str()), rollback.evidence.as_deref());
         let _ = std::fs::remove_dir_all(&directory);
         Ok(())
     }
