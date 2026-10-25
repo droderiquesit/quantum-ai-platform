@@ -524,9 +524,10 @@
     "evidence": [
       "backend/crates/libs/qip-agents/src/tools.rs:126 promote requires evaluation",
       "backend/crates/libs/qip-ai/src/registry.rs:99 ModelStage",
-      "backend/crates/runtime/qip-kernel/src/central/models.rs:65"
+      "backend/crates/runtime/qip-kernel/src/central/models.rs:65",
+      "backend/crates/libs/qip-agents/src/memory.rs promote (record_lesson removed in f9edfe5f)"
     ],
-    "gap": "Gates for ontology, specialist, memory capability kinds.",
+    "gap": "An independent read-only skeptic (2026-10-25, defaulting to REFUTED) found the claim \"each capability kind widens only on a cited evaluation\" REFUTED after f9edfe5f removed ResearchMemory::record_lesson. Remaining ungated widening doors, by kind: (1) ontology: registries.rs register is pub and accepts any higher version without extend; extend only checks a non-blank CitedEvaluation id and never resolves it to a record; CapabilityRegistry::add_capability cites nothing. (2) model: ModelRegistry::register (qip-ai registry.rs) inserts any card unchecked and ModelCard.stage is pub, so a card built at Production skips promote (the deep brain restore path registers journaled cards this way). (3) research: record and record_version (research.rs) bypass record_concluded experiment-reference check. (4) tool: promote takes an attestation string, not a stored evaluation record. (5) memory: promote counts supporting_episodes without resolving them against held episodes, and PromotionPolicy fields are pub so floors can be lowered to zero (qip-investment-agents learning.rs with_promotion_policy). (6) specialist: BrainRegistry::register cites no evaluation; ADR 0158 decision 8 declines the clause, so it stays unmet under bar part 4. (7) knowledge: absorb_evidence gates on admissibility, not an evaluation. Closure: make register non-widening or crate-private, resolve evaluation arguments to stored records, make policy floors non-lowerable, verify episode ids in promote.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -537,7 +538,7 @@
     "verification": "cargo test -p qip-agents && cargo test -p qip-kernel --test models",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-25 L4-quant: f9edfe5f removed the one ungated memory door (record_lesson); skeptic verdict REFUTED for the whole row, findings recorded in gap. Stays PARTIAL."
   },
   {
     "id": "R12-EXPAND-6024",
