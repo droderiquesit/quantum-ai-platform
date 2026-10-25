@@ -337,3 +337,70 @@ fn a_drift_reading_that_crosses_the_threshold_is_journaled() -> Result<()> {
     );
     Ok(())
 }
+
+/// R12-MODEL-9003, eighth review: a version the log has taken out of
+/// production cannot be promoted again — only rolled back to. Promoted
+/// again, it skipped the rollback's checks, stood in production with its
+/// retirement on the card, and a restarted desk replayed the record as a
+/// rollback, restoring a history that differed from the live one. The
+/// refusal writes nothing, and the version still in production may be
+/// published again under the same bytes, which a restarted desk does.
+/// Mutation: delete the out-of-production refusal in `promote_model_from` —
+/// the re-promotion is admitted and the first assertion fails.
+#[test]
+fn a_version_taken_out_of_production_returns_only_through_a_rollback() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let old = teacher("returning-a", "0.1.0", 1e-6)?;
+    let new = teacher("returning-a", "0.2.0", 1.0)?;
+    let old_reference = registered(&mut registry, &old)?;
+    let new_reference = registered(&mut registry, &new)?;
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&old)?,
+        None,
+        &[],
+        start(),
+    )?;
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&new)?,
+        None,
+        std::slice::from_ref(&old_reference),
+        start().saturating_add(qip_core::Duration::from_mins(1)),
+    )?;
+    assert!(
+        !platform.model_promotions().contains_key(&old_reference),
+        "premise: the old version is out of production"
+    );
+    let records = promotion_records(&platform);
+
+    let again = platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&old)?,
+        None,
+        std::slice::from_ref(&new_reference),
+        start().saturating_add(qip_core::Duration::from_mins(2)),
+    );
+    let refusal = match again {
+        Ok(_) => panic!("{old_reference} went back into production without a rollback"),
+        Err(error) => error.message().to_string(),
+    };
+    assert!(refusal.contains("only through a rollback"), "{refusal}");
+    assert_eq!(
+        promotion_records(&platform),
+        records,
+        "the refusal wrote a record"
+    );
+    assert!(platform.model_promotions().contains_key(&new_reference));
+
+    // The version in production is still admitted under its own bytes.
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&new)?,
+        None,
+        &[],
+        start().saturating_add(qip_core::Duration::from_mins(3)),
+    )?;
+    Ok(())
+}

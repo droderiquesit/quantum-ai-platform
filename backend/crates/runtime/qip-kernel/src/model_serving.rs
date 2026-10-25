@@ -986,6 +986,26 @@ impl Platform {
                 artifact.reference, first.artifact_digest, artifact.digest
             )));
         }
+        // A version the log promoted and has since taken out of production
+        // returns only through `rollback_model`, which checks the reading it
+        // rolls back on and the predecessor's eligibility. Promoted again, it
+        // skipped both, stood in production with its retirement still on the
+        // card (so `decision_eligibility` refused it), and a restarted desk
+        // replayed the record as the rollback it was not, restoring a history
+        // that differed from the live one (R12-MODEL-9003, eighth review). A
+        // version still in production may be published again under the same
+        // bytes, as a restarted desk does.
+        if !self.model_promotions().contains_key(&artifact.reference)
+            && let Some(first) = promotions_in(self.event_log())?
+                .into_iter()
+                .find(|record| record.reference == artifact.reference)
+        {
+            return Err(Error::denied(format!(
+                "{} is not promoted: the log promoted it at {} and has since taken it out of \
+                 production; a version returns to production only through a rollback",
+                artifact.reference, first.at
+            )));
+        }
         let served = self.serve_model(artifact).map_err(|error| {
             Error::denied(format!(
                 "{} is not promoted: {}",
