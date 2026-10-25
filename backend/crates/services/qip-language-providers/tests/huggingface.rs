@@ -196,7 +196,7 @@ use qip_ai::language::{
     FieldSpec, FinishReason, LanguageModel, ModelRequest, NumericGuard, OutputSchema,
 };
 use qip_core::{Duration, Timestamp};
-use qip_reasoning_engine::providers::huggingface::{
+use qip_language_providers::huggingface::{
     CHAT_COMPLETIONS_PATH, HF_TOKEN_VARIABLE, HuggingFaceConfig, HuggingFaceModel, HuggingFaceToken,
 };
 use server::{Action, TestServer};

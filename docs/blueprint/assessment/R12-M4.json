@@ -25,13 +25,17 @@
   {
     "id": "R12-MODEL-4002",
     "status": "PARTIAL",
-    "current": "An acceptance suite proves every LanguageModel adapter under providers/ is constructed only in qip-deepbrain/src, that fastbrain/edge sources never name it, and that edge manifests do not link qip-reasoning-engine or qip-kernel.",
+    "current": "ADR 0138 implemented 2026-10-25: the hosted adapter (HuggingFaceModel, its config and token types) lives in services/qip-language-providers, which qip-deepbrain alone links. qip-reasoning-engine no longer holds it and no longer depends on qip-ai or qip-transport, so qip-kernel, qip-api, qip-fastbrain and qip-edge-node do not have the adapter in their link graph. A construction in any of them does not compile without adding the dependency, and that edge fails lane_placement.rs.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/language.rs:1-10 only root building the hosted adapter",
       "backend/crates/edge/qip-edge/Cargo.toml no qip-ai dependency",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178 fast lanes cannot depend on slower lanes"
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178 fast lanes cannot depend on slower lanes",
+      "backend/crates/services/qip-language-providers/src/huggingface.rs (moved from qip-reasoning-engine/src/providers)",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs::the_hosted_language_providers_are_linked_by_the_deep_brain_alone_and_reach_no_fast_lane",
+      "backend/crates/tests/qip-acceptance/tests/model_slow_lane_confinement.rs (construction site and edge manifests, repointed)",
+      "docs/architecture/lane-placement.md qip-language-providers lane 3"
     ],
-    "gap": "Decided by ADR 0138 (accepted 2026-10-18): The hosted language-model adapters move from qip-reasoning-engine/src/providers to services/qip-language-providers, linked by qip-deepbrain alone and pinned out of the fast lanes by lane_placement.rs. Code left: the crate move, the dependency edges, a lane_placement.rs closure test with its mutation, and the egress.rs and model_gateway_boundary.rs paths.",
+    "gap": "2026-10-25 (lane L2-INTEL): ADR 0138's code is in (crate move, dependency edges, closure test, egress/gateway/slow-lane paths). Awaiting an in-lane skeptic before promotion.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -39,10 +43,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new acceptance test: hosted language adapter constructed only under apps/qip-deepbrain",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test lane_placement --test model_slow_lane_confinement --test model_gateway_boundary --test egress",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D14; gap before it: qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage. ADR lane 2026-10-18: gap re-graded against ADR 0138; gap before it: Delegable decision D14 (design-decisions-2026-10-18.json), ADR not yet written: LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs. Needs that ADR, then the code."
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D14; gap before it: qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage. ADR lane 2026-10-18: gap re-graded against ADR 0138; gap before it: Delegable decision D14 (design-decisions-2026-10-18.json), ADR not yet written: LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs. Needs that ADR, then the code. 2026-10-25 L2-INTEL: mutation: add qip-language-providers to qip-fastbrain's [dependencies]; the closure test fails at lane_placement.rs:662 ('the crates that link the hosted language providers changed'); manifest restored by cp+cmp."
   },
   {
     "id": "R12-MODEL-4003",
@@ -506,7 +510,7 @@
       "backend/crates/edge/qip-edge/tests/model_release.rs",
       ".github/workflows/model-pack-publish.yml"
     ],
-    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: promote_model drafting a qip_contracts ModelPack with an additive lineage field, and a test that the draft's digest and lineage match the promoted member.",
+    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: promote_model drafting a qip_contracts ModelPack with an additive lineage field, and a test that the draft's digest and lineage match the promoted member. 2026-10-25 (lane L2-INTEL): not built, and not completable in code here. (1) The draft's calibration has no producer: LocalTrainer::fit sets TrainedTeacher.calibration to Calibration::default(), and no evaluation metric is a calibration in [0,1], so a drafted figure would be a guess (refuse rather than guess). Allowed universes have no source on the promotion record either. (2) Signing and attestation are the two-person KMS workflow (model-pack-publish.yml), which only a deploy exercises. Next step: a calibration producer in qip-training (e.g. a holdout reliability measure recorded on the card), then the ModelPack draft with an additive tagged lineage tail (the inline_model pattern, so signed bytes of existing packs do not move).",
     "implemented": true,
     "tested": true,
     "integrated": true,

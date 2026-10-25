@@ -116,7 +116,7 @@ const ALLOWED_UPSTREAMS: [(&str, &str); 7] = [
     (
         "router.huggingface.co",
         "HuggingFaceModel::UPSTREAM_HOST in \
-         crates/services/qip-reasoning-engine/src/providers/huggingface.rs, the \
+         crates/services/qip-language-providers/src/huggingface.rs, the \
          hosted language-model adapter ADR 0037 decides on; constructed by the \
          deep brain alone, reached on POST /v1/chat/completions and nothing \
          else, and dark until an environment sets the variables and mounts the \
@@ -133,7 +133,7 @@ const HUGGING_FACE_LISTENER: &str = "huggingface";
 const HUGGING_FACE_HOST: &str = "router.huggingface.co";
 const HUGGING_FACE_CLUSTER: &str = "router_huggingface_co";
 const HUGGING_FACE_ADAPTER: &str =
-    "backend/crates/services/qip-reasoning-engine/src/providers/huggingface.rs";
+    "backend/crates/services/qip-language-providers/src/huggingface.rs";
 
 /// The shipped manifest the market-data listener is derived from.
 ///
@@ -950,7 +950,7 @@ fn the_hugging_face_host_is_one_value_in_the_adapter_the_bootstrap_and_the_allow
     // listener whose requests carry a credential, the route is held to one
     // exact path and one method: a second route on this port is a second
     // thing the bearer token is sent to.
-    use qip_reasoning_engine::providers::huggingface::{CHAT_COMPLETIONS_PATH, HuggingFaceModel};
+    use qip_language_providers::huggingface::{CHAT_COMPLETIONS_PATH, HuggingFaceModel};
     let host = HuggingFaceModel::UPSTREAM_HOST;
 
     // Premise: the constant is a bare hostname. A URL or a path here would

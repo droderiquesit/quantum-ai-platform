@@ -128,6 +128,7 @@ dependencies = [
  "qip-financial",
  "qip-investment-agents",
  "qip-kernel",
+ "qip-language-providers",
  "qip-learning-engine",
  "qip-ledgerd",
  "qip-lifecycle",
@@ -414,6 +415,7 @@ dependencies = [
  "qip-financial",
  "qip-investment-agents",
  "qip-kernel",
+ "qip-language-providers",
  "qip-learning-engine",
  "qip-lifecycle",
  "qip-market",
@@ -701,6 +703,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qip-language-providers"
+version = "0.1.0"
+dependencies = [
+ "qip-ai",
+ "qip-core",
+ "qip-transport",
+ "serde_json",
+]
+
+[[package]]
 name = "qip-learning-engine"
 version = "0.1.0"
 dependencies = [
@@ -928,11 +940,9 @@ name = "qip-reasoning-engine"
 version = "0.1.0"
 dependencies = [
  "qip-agents",
- "qip-ai",
  "qip-contracts",
  "qip-core",
  "qip-numerics",
- "qip-transport",
  "qip-world-model",
  "serde",
  "serde_json",
