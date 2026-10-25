@@ -16545,9 +16545,12 @@ impl Platform {
         );
         // Lane 2's execution-quality narrowing (R12-ARCH-1191): an
         // instrument filled at a venue the twin no longer models has its
-        // bound multiplied by the replay-divergence multiplier, compounding
-        // with the caps above and never above one — `Narrowing` cannot hold
-        // a factor that is not strictly inside (0, 1).
+        // bound narrowed by the replay-divergence multiplier, never above
+        // one — `Narrowing` cannot hold a factor that is not strictly inside
+        // (0, 1). It compounds with the regime and federation caps, which
+        // read other evidence. With the fill-record cap above it combines as
+        // the stronger of the two and never their product: both read the
+        // same fill scores, and one fill error is evidence once.
         crate::tactical_lane::narrow(
             &mut caps,
             &mut capped,
@@ -16555,6 +16558,7 @@ impl Platform {
                 .iter()
                 .map(|thesis| thesis.object_id.as_str().to_string()),
             self.tactical.as_ref(),
+            |object| self.sizing_cap_multiplier(object),
         );
         // ADR 0125 decision 4 for the forecast lattice (R12-WORLD-9024): the
         // bound narrows by the share of its tactical forecasts' life left,

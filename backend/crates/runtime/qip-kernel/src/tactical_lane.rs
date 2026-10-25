@@ -30,7 +30,25 @@
 //!    [`REPLAY_DIVERGENCE_THRESHOLD_BPS`] has its weight narrowed to
 //!    [`REPLAY_DIVERGENCE_MULTIPLIER`], and every instrument filled there in
 //!    the scored window has its DECIDE weight bound narrowed by the same
-//!    factor ([`narrow`]).
+//!    factor ([`narrow`]), unless that instrument's own fill record has
+//!    already narrowed it as far or further (next section).
+//!
+//! # One fill error is evidence once
+//!
+//! Lane 2 reads the same [`FillScore`]s ADR 0063's sizing review reads. When
+//! both fire on one instrument they are two readings of one set of fills,
+//! not two findings, and multiplying them would halve the instrument twice
+//! for a single piece of evidence. This happened: the first version of this
+//! module multiplied, and `valuation_seam.rs`'s compounding test saw AAA's
+//! bound fall to 0.005 where ADR 0055 and ADR 0063 together put it at 0.01.
+//! So [`narrow`] combines Lane 2's factor with the fill-record factor already
+//! in DECIDE's caps map as **the stronger of the two — the minimum, never the
+//! product** ([`beyond_fill_record`]). Lane 2 still narrows an instrument the
+//! fill record left alone, and it still compounds with the regime,
+//! federation and lattice narrowings, which read evidence other than fills.
+//! The strategy hold `replay_divergence` raises on the same divergence
+//! narrows a strategy's capital grant, not this weight bound, so the two do
+//! not meet on any DECIDE bound.
 //!
 //! # No new number
 //!
@@ -282,8 +300,40 @@ pub fn refresh(
     )
 }
 
-/// Write the refresh's instrument narrowings into DECIDE's `caps` map,
-/// multiplying any entry already there and naming each in `notes`.
+/// The further factor Lane 2 applies to an instrument whose bound its own
+/// fill record has already narrowed to `fill_record`. It is the stronger of
+/// the two divided by the one already applied, so the bound ends at
+/// `min(lane, fill_record)` times every non-fill narrowing, never at their
+/// product. `None` where the fill record is already as strong or stronger:
+/// the same fills have been counted once and are not counted again.
+///
+/// Refuses a fill-record factor outside `(0, 1]` rather than guessing what it
+/// meant; [`narrow`] then applies Lane 2 in full, the restrictive reading.
+pub fn beyond_fill_record(lane: Narrowing, fill_record: Decimal) -> Result<Option<Decimal>> {
+    if !fill_record.is_positive() || fill_record > Decimal::ONE {
+        return Err(Error::invalid(format!(
+            "a fill-record factor of {fill_record} is outside (0, 1]; the sizing review cannot \
+             produce one, so Lane 2 does not net against it"
+        )));
+    }
+    let stronger = lane.multiplier().min(fill_record);
+    if stronger >= fill_record {
+        return Ok(None);
+    }
+    stronger.checked_div(fill_record).map(Some).ok_or_else(|| {
+        Error::numeric(format!(
+            "Lane 2's {} over the fill record's {fill_record} cannot be represented",
+            lane.multiplier()
+        ))
+    })
+}
+
+/// Write the refresh's instrument narrowings into DECIDE's `caps` map and
+/// name each in `notes`. `fill_record` reads the instrument's ADR 0063
+/// factor, which must be the one already folded into `caps`. Lane 2 and that
+/// factor combine as the stronger of the two, never their product
+/// ([`beyond_fill_record`]); every other entry already in `caps` is
+/// multiplied, because it reads evidence other than fills.
 ///
 /// Once per instrument however many theses name it, for the reason
 /// `regime_allocation::narrow` gives: per thesis would square it.
@@ -292,6 +342,7 @@ pub fn narrow(
     notes: &mut Vec<String>,
     objects: impl IntoIterator<Item = String>,
     refresh: Option<&TacticalRefresh>,
+    fill_record: impl Fn(&str) -> Decimal,
 ) {
     let Some(refresh) = refresh else {
         return;
@@ -301,9 +352,30 @@ pub fn narrow(
         let Some((narrowing, venue)) = refresh.instrument_narrowings.get(&object) else {
             continue;
         };
+        let already = fill_record(&object);
+        let further = match beyond_fill_record(*narrowing, already) {
+            Ok(Some(further)) => further,
+            Ok(None) => {
+                notes.push(format!(
+                    "{object}: filled at {venue}, whose fills the twin misses by more than \
+                     {REPLAY_DIVERGENCE_THRESHOLD_BPS} bps on average; Lane 2's {} is not \
+                     compounded, because the same fills already narrowed it to {already} on \
+                     its own fill record",
+                    narrowing.multiplier()
+                ));
+                continue;
+            }
+            Err(error) => {
+                notes.push(format!(
+                    "{object}: Lane 2 applied in full: {}",
+                    error.message()
+                ));
+                narrowing.multiplier()
+            }
+        };
         // `Decimal → f64` here, once: the constructor's bounds are f64, and
         // the one multiplier this lane produces, 0.5, is exact in both.
-        let multiplier = narrowing.multiplier().to_f64();
+        let multiplier = further.to_f64();
         *caps.entry(object.clone()).or_insert(1.0) *= multiplier;
         notes.push(format!(
             "{object}: filled at {venue}, whose fills the twin misses by more than \
@@ -411,5 +483,84 @@ mod tests {
             );
         }
         assert!(Narrowing::new(REPLAY_DIVERGENCE_MULTIPLIER).is_ok());
+    }
+
+    fn refresh_narrowing(object: &str) -> Result<TacticalRefresh> {
+        let mut instrument_narrowings = BTreeMap::new();
+        instrument_narrowings.insert(
+            object.to_string(),
+            (
+                Narrowing::new(REPLAY_DIVERGENCE_MULTIPLIER)?,
+                "venue-a".to_string(),
+            ),
+        );
+        Ok(TacticalRefresh {
+            refreshed_at: Timestamp::from_secs(0),
+            cycle: 1,
+            liquidity: BTreeMap::new(),
+            unmapped: BTreeSet::new(),
+            execution_quality: BTreeMap::new(),
+            instrument_narrowings,
+        })
+    }
+
+    /// One fill error is evidence once. The first version of Lane 2
+    /// multiplied its factor into a bound ADR 0063's fill record had already
+    /// halved on the same fills, and `valuation_seam.rs` caught the
+    /// instrument halved twice. With a non-fill narrowing of 0.5 (standing
+    /// in for the regime's) and the fill record's 0.5 already in the map,
+    /// Lane 2's 0.5 must leave the bound at 0.25, the stronger fill factor
+    /// times the regime, and not at the product's 0.125.
+    #[test]
+    fn lane_two_and_a_fill_record_narrowing_combine_as_the_stronger_not_the_product() {
+        let refresh = refresh_narrowing("AAA").expect("0.5 is a narrowing");
+        let half = REPLAY_DIVERGENCE_MULTIPLIER;
+        // Premise: both factors are real narrowings, so a product would move
+        // the bound and the minimum would not.
+        assert!(half.is_positive() && half < Decimal::ONE);
+
+        let mut caps = BTreeMap::new();
+        caps.insert("AAA".to_string(), half.to_f64() * 0.5);
+        let mut notes = Vec::new();
+        narrow(
+            &mut caps,
+            &mut notes,
+            ["AAA".to_string()],
+            Some(&refresh),
+            |_| half,
+        );
+        assert_eq!(
+            caps.get("AAA").copied(),
+            Some(0.25),
+            "Lane 2 and the fill record compounded on one set of fills: {notes:?}"
+        );
+
+        // On an instrument the fill record left alone Lane 2 still narrows:
+        // the stronger of 0.5 and one is 0.5.
+        let mut caps = BTreeMap::new();
+        let mut notes = Vec::new();
+        narrow(
+            &mut caps,
+            &mut notes,
+            ["AAA".to_string()],
+            Some(&refresh),
+            |_| Decimal::ONE,
+        );
+        assert_eq!(
+            caps.get("AAA").copied(),
+            Some(half.to_f64()),
+            "Lane 2 did not narrow an instrument its fill record left alone: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_fill_record_factor_outside_the_unit_interval_is_refused() {
+        let lane = Narrowing::new(REPLAY_DIVERGENCE_MULTIPLIER).expect("0.5 is a narrowing");
+        for refused in [Decimal::ZERO, Decimal::from_int(2), Decimal::from_int(-1)] {
+            assert!(
+                beyond_fill_record(lane, refused).is_err(),
+                "{refused} was taken as a fill-record factor"
+            );
+        }
     }
 }
