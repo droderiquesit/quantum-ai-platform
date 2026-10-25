@@ -8172,3 +8172,224 @@ fn config_connector_holds_a_pinned_set_of_project_roles_none_of_which_sets_iam_b
          service that reads it"
     );
 }
+
+// --- what the dev control plane's pods reserve -------------------------------
+
+/// The controllers whose dev overlay sets requests (owner decision 9 of
+/// 2026-10-25): every pod of each, since upstream sets none.
+const REQUESTING_CONTROLLERS: [&str; 3] = ["argocd", "kargo", "cert-manager"];
+
+/// Requests one container asks for, as `(millicores, mebibytes)`.
+type Requests = (u64, u64);
+
+/// What a bootstrap kustomization's inline patches do: the `(kind, name)` of
+/// every object it deletes, and the requests it sets per `(kind, name)` and
+/// container, `initContainers` included.
+#[allow(clippy::type_complexity)]
+fn bootstrap_patches(
+    directory: &str,
+) -> (
+    BTreeSet<(String, String)>,
+    BTreeMap<(String, String), BTreeMap<String, Requests>>,
+) {
+    let path = format!("{directory}/kustomization.yaml");
+    let documents = yaml::documents(&read(&path), &path);
+    let mut deleted = BTreeSet::new();
+    let mut requests: BTreeMap<(String, String), BTreeMap<String, Requests>> = BTreeMap::new();
+    for patch in list_at(&documents[0], &["patches"]) {
+        let Some(text) = text_at(patch, &["patch"]) else {
+            continue;
+        };
+        let body = &yaml::documents(&text, &format!("{path} (patch)"))[0];
+        let kind = text_at(body, &["kind"]).unwrap_or_default();
+        let name = text_at(body, &["metadata", "name"]).unwrap_or_default();
+        if body.get("$patch").and_then(Value::as_str) == Some("delete") {
+            deleted.insert((kind, name));
+            continue;
+        }
+        for key in ["initContainers", "containers"] {
+            for container in list_at(body, &["spec", "template", "spec", key]) {
+                let (Some(cpu), Some(memory)) = (
+                    text_at(container, &["resources", "requests", "cpu"]),
+                    text_at(container, &["resources", "requests", "memory"]),
+                ) else {
+                    continue;
+                };
+                let millicores = cpu
+                    .strip_suffix('m')
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or_else(|| panic!("{path}: cpu request `{cpu}` is not in millicores"));
+                let mebibytes = memory
+                    .strip_suffix("Mi")
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or_else(|| panic!("{path}: memory request `{memory}` is not in Mi"));
+                requests
+                    .entry((kind.clone(), name.clone()))
+                    .or_default()
+                    .insert(
+                        text_at(container, &["name"]).unwrap_or_default(),
+                        (millicores, mebibytes),
+                    );
+            }
+        }
+    }
+    (deleted, requests)
+}
+
+#[test]
+fn every_dev_control_plane_pod_requests_a_modest_cpu_and_a_memory_autopilot_will_not_resize() {
+    // Upstream Argo CD, Kargo and cert-manager set no requests, and GKE
+    // Autopilot bills a container with none at 0.5 vCPU and 2 GiB, so
+    // thirteen mostly idle controllers were billed as thirteen half-cores
+    // (the runbook's estimate: about $344 of $392 a month). Owner decision 9
+    // asks for explicit requests of 50-250m. Every workload the vendored
+    // manifest declares and dev keeps must carry one for every container,
+    // so an upstream bump that adds a controller — or a container — fails
+    // here rather than quietly billing at Autopilot's default. And each
+    // memory must sit in Autopilot's 1 to 6.5 GiB per vCPU, because outside
+    // it Autopilot raises the request and the figure in the overlay is not
+    // the figure billed.
+    let upstream = upstream_documents();
+    let mut checked = 0usize;
+    for controller in REQUESTING_CONTROLLERS {
+        let base = format!("{BOOTSTRAP}/{controller}/base");
+        let overlay = format!("{BOOTSTRAP}/{controller}/overlays/dev");
+        let (mut deleted, requests) = bootstrap_patches(&overlay);
+        deleted.extend(bootstrap_patches(&base).0);
+        let workloads: Vec<&UpstreamDocument> = upstream
+            .iter()
+            .filter(|doc| {
+                doc.path
+                    .starts_with(&format!("{BOOTSTRAP}/{controller}/upstream/"))
+            })
+            .filter(|doc| doc.kind == "Deployment" || doc.kind == "StatefulSet")
+            .filter(|doc| !deleted.contains(&(doc.kind.clone(), doc.name.clone())))
+            .collect();
+        // Premise: the walk found this controller's workloads at all.
+        assert!(
+            !workloads.is_empty(),
+            "no Deployment or StatefulSet of {controller} was read from its upstream manifest"
+        );
+        for workload in workloads {
+            let key = (workload.kind.clone(), workload.name.clone());
+            let containers = requests.get(&key).unwrap_or_else(|| {
+                panic!(
+                    "{overlay} sets no requests on {} `{}`, which dev runs; Autopilot bills it at \
+                     0.5 vCPU and 2 GiB",
+                    workload.kind, workload.name
+                )
+            });
+            let declared = images_in(&workload.text).len();
+            assert_eq!(
+                containers.len(),
+                declared,
+                "{overlay} requests for {} of `{}`'s {declared} containers; the rest bill at \
+                 Autopilot's default",
+                containers.len(),
+                workload.name
+            );
+            for (container, (millicores, mebibytes)) in containers {
+                assert!(
+                    workload
+                        .text
+                        .lines()
+                        .map(|line| line.trim().trim_start_matches("- "))
+                        .any(|line| line == format!("name: {container}")),
+                    "{overlay} patches container `{container}`, which `{}` does not declare, so \
+                     the patch adds a container instead of sizing one",
+                    workload.name
+                );
+                assert!(
+                    (50..=250).contains(millicores),
+                    "{overlay}: `{}`/`{container}` requests {millicores}m; decision 9 asks for \
+                     50-250m",
+                    workload.name
+                );
+                // GiB per vCPU, compared in integers: 1 <= (Mi/1024)/(m/1000) <= 6.5.
+                let ratio_floor = mebibytes * 1000 >= millicores * 1024;
+                let ratio_ceiling = mebibytes * 1000 * 2 <= millicores * 1024 * 13;
+                assert!(
+                    ratio_floor && ratio_ceiling,
+                    "{overlay}: `{}`/`{container}` requests {millicores}m and {mebibytes}Mi, \
+                     outside Autopilot's 1-6.5 GiB per vCPU, so Autopilot resizes it",
+                    workload.name
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(
+        checked >= 13,
+        "premise: only {checked} containers were checked; dev's Argo CD, Kargo and cert-manager \
+         run thirteen"
+    );
+}
+
+#[test]
+fn the_dev_argo_cd_runs_neither_the_applicationset_nor_the_notifications_controller() {
+    // Owner decision 9: two controllers nothing here uses, each a pod billed
+    // at Autopilot's default. Deleting only the Deployment would leave a
+    // Service selecting nothing, an identity nothing runs as and RBAC
+    // granted to nobody, so every object that exists only for them goes.
+    // The CRD, argocd-notifications-cm and argocd-notifications-secret stay
+    // on purpose: they run nothing, and deleting a CRD deletes its objects.
+    let overlay = format!("{BOOTSTRAP}/argocd/overlays/dev");
+    let (deleted, _) = bootstrap_patches(&overlay);
+    let kept_kinds = ["ConfigMap", "Secret", "CustomResourceDefinition"];
+    let upstream = upstream_documents();
+    let theirs: Vec<&UpstreamDocument> = upstream
+        .iter()
+        .filter(|doc| {
+            doc.path
+                .starts_with(&format!("{BOOTSTRAP}/argocd/upstream/"))
+        })
+        .filter(|doc| {
+            doc.name.starts_with("argocd-applicationset-controller")
+                || doc.name.starts_with("argocd-notifications-controller")
+        })
+        .collect();
+    // Premise: upstream still ships both, so a delete is still needed.
+    for controller in [
+        "argocd-applicationset-controller",
+        "argocd-notifications-controller",
+    ] {
+        assert!(
+            theirs
+                .iter()
+                .any(|doc| doc.kind == "Deployment" && doc.name == controller),
+            "upstream Argo CD no longer declares Deployment `{controller}`; this test is \
+             reading the wrong manifest"
+        );
+    }
+    let mut removed = 0usize;
+    for doc in theirs {
+        if kept_kinds.contains(&doc.kind.as_str()) {
+            continue;
+        }
+        assert!(
+            deleted.contains(&(doc.kind.clone(), doc.name.clone())),
+            "{overlay} keeps {} `{}`, which exists only for a controller dev does not run",
+            doc.kind,
+            doc.name
+        );
+        removed += 1;
+    }
+    assert!(
+        removed >= 14,
+        "premise: only {removed} objects of the two controllers were found to delete"
+    );
+    // Nothing here may need what was removed.
+    for path in files_with_extension(GITOPS, "yaml") {
+        if path.components().any(|c| c.as_os_str() == "upstream") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("readable");
+        assert!(
+            !text
+                .lines()
+                .any(|line| line.trim() == "kind: ApplicationSet"),
+            "{} declares an ApplicationSet, which dev's Argo CD has no controller to reconcile",
+            path.display()
+        );
+    }
+}
