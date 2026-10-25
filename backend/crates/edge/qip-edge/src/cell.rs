@@ -1397,6 +1397,13 @@ struct Working {
     /// recomputed from a different price. Zero for a cell with no allocation
     /// and for a cycle leg, whose cycle holds once for every leg.
     region_committed: Decimal,
+    /// The grounds `Cell::send` resolved when the order went out, rendered as
+    /// its `OrderSent` records them (ADR 0200). A replacement stands on
+    /// these, and [`Cell::admit_replacement`] refuses to requote an order
+    /// whose recorded grounds name no evidence: a new price with nothing
+    /// behind it but the price is the order R12-GOV-6127 forbids. Set by
+    /// `record_sent`, the one place a `Working` enters the set.
+    grounds: Vec<String>,
 }
 
 /// How many orders the cell will hold open at once.
@@ -6385,6 +6392,7 @@ impl Cell {
                 },
                 net: net_intent.clone(),
                 region_committed,
+                grounds: Vec::new(),
             },
             schedule.equalised(),
             grants,
@@ -6597,8 +6605,49 @@ impl Cell {
         price: Decimal,
         now: Timestamp,
     ) -> Result<()> {
+        self.replacement_grounded(order_id, now)?;
         self.fence_admit(now)?;
         self.risk_admit(Some(order_id), object_id, venue, side, quantity, price, now)
+    }
+
+    /// Refuse under [`GATE_JUSTIFICATION`] a replacement for `order_id` when
+    /// the order it replaces went out on no evidence (ADR 0200).
+    ///
+    /// A requote moves an order's price and nothing else: the intention, the
+    /// size the venue acknowledged and the reasons are the original's. So
+    /// the replacement stands on the grounds `Cell::send` resolved when the
+    /// original went out, and those are what is checked — not resolved
+    /// again, because the signals of a pass are cleared with it and a ground
+    /// re-resolved a pass later would refuse every honest requote. An order
+    /// the cell holds no grounds for, or whose grounds were only the profit
+    /// it expected, the price it wanted to move and corroborating features,
+    /// is not repriced: a new price for such an order is a price impact
+    /// with nothing behind it. Journaled and counted here, as at
+    /// [`Self::send`], because a requote has no report to push onto.
+    fn replacement_grounded(&mut self, order_id: &str, now: Timestamp) -> Result<()> {
+        let grounded = self.working.get(order_id).is_some_and(|working| {
+            working.grounds.iter().any(|ground| {
+                ground != "expected_profit"
+                    && ground != "desired_price_impact"
+                    && !ground.starts_with("feature:")
+            })
+        });
+        if grounded {
+            return Ok(());
+        }
+        let reason = format!(
+            "order {order_id} went out on no evidence the cell recorded, so a new price for it \
+             would be justified by the price alone; it is not requoted"
+        );
+        self.metrics.refusal(GATE_JUSTIFICATION);
+        self.journal.record(
+            Decision::Refused {
+                gate: GATE_JUSTIFICATION.to_string(),
+                reason: reason.clone(),
+            },
+            now,
+        );
+        Err(Error::denied(reason))
     }
 
     /// Refuse under [`crate::fencing::GATE_FENCED`] when an installed fence
@@ -6761,12 +6810,14 @@ impl Cell {
                 release_at: Some(order.release_at),
                 equalised,
                 grants,
-                grounds,
+                grounds: grounds.clone(),
             },
             now,
         );
         self.metrics.order_placed(&order.venue);
-        self.working.insert(order.order_id.clone(), working);
+        let order_id = order.order_id.clone();
+        self.working
+            .insert(order_id, Working { grounds, ..working });
     }
 
     /// The grounds a net intent stands on (R12-GOV-6127): its expected
@@ -10056,6 +10107,7 @@ impl Cell {
                 // stays zero and `return_region_capital_for_unfilled` passes
                 // a cycle leg over.
                 region_committed: Decimal::ZERO,
+                grounds: Vec::new(),
             },
             schedule.equalised(),
             grants,
@@ -12885,6 +12937,73 @@ mod crossing_tests {
                 grounds[0].contains(&expected),
                 "the order's record does not name {expected}: {:?}",
                 grounds[0]
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_requote_stands_on_the_grounds_its_order_went_out_on_and_none_is_refused() -> Result<()> {
+        // ADR 0200. `qip-edge-node`'s repricer sends a replacement after
+        // `Cell::admit_replacement` and never through `Cell::send`, so until
+        // the replacement was checked a new price reached the venue on the
+        // fence and the risk gate alone — a price move nothing justified,
+        // which is R12-GOV-6127's own example.
+        let price = Decimal::parse("100").expect("a decimal literal");
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+        let mut report = WorkReport::default();
+        cell.place_net(&one_sided_net(price), at(10), &mut gateway, &mut report)?;
+        let order_id = gateway
+            .placed
+            .first()
+            .cloned()
+            .expect("the premise: one order went out");
+        let requote = |cell: &mut Cell| {
+            cell.admit_replacement(
+                &order_id,
+                &object(),
+                &venue(),
+                BookSide::Bid,
+                Decimal::from_int(1),
+                price,
+                at(11),
+            )
+        };
+        // Premise: the grounded order is requoted.
+        requote(&mut cell)?;
+
+        for (case, grounds) in [
+            ("no grounds recorded", vec![]),
+            (
+                "profit, price impact and a feature only",
+                vec![
+                    "expected_profit".to_string(),
+                    "desired_price_impact".to_string(),
+                    "feature:mid@1".to_string(),
+                ],
+            ),
+        ] {
+            if let Some(working) = cell.working.get_mut(&order_id) {
+                working.grounds = grounds;
+            }
+            let before = cell.journal().entries().len();
+            let error = match requote(&mut cell) {
+                Ok(()) => panic!("{case}: the replacement was admitted"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), "denied", "{case}: {error}");
+            assert_eq!(
+                justification_refusals(&cell, before),
+                1,
+                "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
             );
         }
         Ok(())

@@ -162,13 +162,14 @@ The review that read this change refused to grade R12-GOV-6127 complete,
 and its three findings stand as the remaining work, recorded here so that
 nobody reads this record as closing the row:
 
-1. **A requote is not re-justified.** `qip-edge-node`'s repricer sends a
-   replacement through `Cell::admit_replacement`, which runs the fence and
-   the risk gate and not `Cell::unresolved_ground`. The original order was
-   justified; the new price is not. Resolving the original grounds again at
-   requote time would refuse every requote made after the pass that raised
-   its signal, because the signals of a pass are cleared with it, so the
-   fix needs the grounds a requote stands on decided, not a call added.
+1. **A requote was not re-justified** — closed after the review. A
+   requote moves an order's price and nothing else, so a replacement stands
+   on the grounds `Cell::send` resolved when the original went out, kept on
+   the working order. `Cell::admit_replacement` refuses under
+   `justification`, journaled and counted, when the order it replaces holds
+   no recorded ground beyond profit, price impact and features. They are not
+   resolved again, because a pass's signals are cleared with it and a ground
+   re-resolved a pass later would refuse every honest requote.
 2. **A book reference may be read as the profit opportunity itself.** This
    record reads the books a cycle was found over as the evidence and the
    profit as the motive. The review reads the book as the price discrepancy,
