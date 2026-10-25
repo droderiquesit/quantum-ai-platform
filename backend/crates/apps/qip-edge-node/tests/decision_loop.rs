@@ -1510,7 +1510,20 @@ fn a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_v
 
     let store = Arc::new(MemoryKeyValueStore::new());
     let rig = rig(store as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
-    let mut decisions = rig.decisions.with_peers(london);
+    // The series the node's scrape serves, given the loop as `main.rs`
+    // gives it, so the lapse is proven to reach a counter an alert can read
+    // and not only the port's status.
+    let metrics = Arc::new(qip_observability::metrics::Metrics::new("qip-edge-node"));
+    let expired_key = qip_observability::metrics::labels([("cell", CELL), ("region", REGION)]);
+    let expired_series = |metrics: &qip_observability::metrics::Metrics| {
+        metrics.snapshot().counter(
+            qip_observability::metrics::names::EDGE_PEER_CYCLES_EXPIRED,
+            &expired_key,
+        )
+    };
+    let mut decisions = rig.decisions.with_peers(london).with_peer_series(
+        qip_edge_node::telemetry::PeerSeries::new(Arc::clone(&metrics), CELL, REGION),
+    );
     let status = |decisions: &DecisionLoop| -> PeerStatus {
         decisions.peers().expect("the loop holds the port").status()
     };
@@ -1571,6 +1584,16 @@ fn a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_v
         "a cycle whose peer was lost was fired: {after:?}"
     );
     assert_eq!(after.legs_sent, 0, "a leg was sent without FIRE: {after:?}");
+    // One more turn so the series has read the status that showed the lapse,
+    // then the series carries what the port counted (R12-RES-7095).
+    decisions.turn(clock.now())?;
+    let counted = expired_series(&metrics);
+    assert!(
+        counted >= 1 && counted <= status(&decisions).cycles_expired,
+        "a cycle that lapsed at its ttl did not move the peer cycles expired series: \
+         {counted} counted against {:?}",
+        status(&decisions)
+    );
 
     // The same passes traded locally: the strategy kept placing paper
     // orders at the simulated venue while the cycle waited and lapsed.
