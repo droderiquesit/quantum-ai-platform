@@ -1175,6 +1175,11 @@ pub struct Platform {
     /// Desk sale proceeds the venue's settlement calendar has not yet made
     /// usable (R12-CAPITAL-4087). See [`UnsettledSale`].
     unsettled_sales: Vec<UnsettledSale>,
+    /// Each desk position's life, discover to attribute (R12-ASSET-4071).
+    /// Advanced by [`Self::book_desk_fill`], scheduled by
+    /// [`Self::register_settlement`], settled and attributed only in LEARN.
+    /// See [`crate::position_life`] for what a resumed position gets.
+    position_lives: crate::position_life::PositionLives,
     /// Proposals produced since assembly, including those aged out above.
     proposals_made: u64,
     /// Corporate actions absorbed whose ex-date the tape has not yet reached,
@@ -5657,6 +5662,7 @@ impl Platform {
             governor: crate::survival::SurvivalGovernor::default(),
             ledger_obligations: None,
             unsettled_sales: Vec::new(),
+            position_lives: crate::position_life::PositionLives::default(),
             episodes: EpisodicMemory::default(),
             pending_episodes: Vec::new(),
             precedents: Vec::new(),
@@ -8364,18 +8370,11 @@ impl Platform {
                             ));
                         }
                     }
-                    let moved = self.capital.apply_fill(
-                        &fill.object_id,
-                        fill.side,
-                        fill.price,
-                        fill.quantity,
-                        fill.costs,
-                        fill.at,
-                    );
-                    self.aggregate_fill(&fill.object_id, moved);
                     // From the same record, so a restart withholds what the
-                    // process it replaced withheld.
-                    self.register_settlement(
+                    // process it replaced withheld, and every position's life
+                    // is rebuilt from the fills that walked it.
+                    self.book_desk_fill(
+                        &fill.object_id,
                         &fill.venue,
                         fill.side,
                         fill.price,
@@ -10760,8 +10759,15 @@ impl Platform {
     /// release instant rather than read as instant — the permissive guess —
     /// and the problem is said on the cycle. Purchases owe nothing later
     /// here: the broker has already debited the cash.
+    ///
+    /// The same quote schedules the settlement of a desk position this fill
+    /// exited, on either side (R12-ASSET-4071): a short closed by a purchase
+    /// owes its settlement as much as a long closed by a sale, so the
+    /// position life is scheduled before the purchase early-return below.
+    #[allow(clippy::too_many_arguments)]
     fn register_settlement(
         &mut self,
+        object_id: &str,
         venue: &str,
         side: Side,
         price: Decimal,
@@ -10769,6 +10775,18 @@ impl Platform {
         costs: Decimal,
         at: Timestamp,
     ) {
+        let quoted = self
+            .pre_positioner
+            .settlement()
+            .calendar_for(&VenueId::new(venue), &CapitalRegion::new(HOME_REGION))
+            .and_then(|calendar| calendar.quote(at))
+            .map(|quote| quote.available_at);
+        if let Some(problem) = self
+            .position_lives
+            .schedule_settlement(object_id, quoted.as_ref().ok().copied())
+        {
+            self.capture_problems.push(problem);
+        }
         if side != Side::Sell {
             return;
         }
@@ -10779,13 +10797,8 @@ impl Platform {
         else {
             return;
         };
-        let available_at = match self
-            .pre_positioner
-            .settlement()
-            .calendar_for(&VenueId::new(venue), &CapitalRegion::new(HOME_REGION))
-            .and_then(|calendar| calendar.quote(at))
-        {
-            Ok(quote) => Some(quote.available_at),
+        let available_at = match quoted {
+            Ok(available_at) => Some(available_at),
             Err(error) => {
                 self.capture_problems.push(format!(
                     "a sale at {venue} has no settlement date ({}); its {proceeds} of proceeds \
@@ -18525,6 +18538,19 @@ impl Platform {
         // See `crate::blueprint_objectives` for why a reader that reported
         // only the first number would be worse than no reader.
         outcome = crate::blueprint_objectives::fold(outcome, &self.objectives, now);
+        // R12-ASSET-4071: settle every exited desk position whose calendar
+        // instant has passed, then attribute only what settled. Here, in
+        // LEARN, because attribution is a judgement on a finished position
+        // and nothing earlier in the cycle may credit one whose ownership has
+        // not cleared.
+        let lives = self.position_lives.settle_and_attribute(now);
+        if let Some(described) = lives.describe() {
+            let detail = format!("{}; {described}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in lives.problems {
+            outcome = outcome.with_problem(problem);
+        }
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);
         }
@@ -20554,16 +20580,8 @@ impl Platform {
                     error.message()
                 ));
             }
-            let moved = self.capital.apply_fill(
+            self.book_desk_fill(
                 object_id.as_str(),
-                side,
-                fill.price,
-                fill.quantity,
-                fill.costs,
-                fill.at,
-            );
-            self.aggregate_fill(object_id.as_str(), moved);
-            self.register_settlement(
                 venue.as_str(),
                 side,
                 fill.price,
@@ -20713,6 +20731,57 @@ impl Platform {
                 error.message()
             ));
         }
+    }
+
+    /// Book one desk fill: the lot, the risk aggregate, the position's life
+    /// and the settlement register, in that order and from one place.
+    ///
+    /// One seam for the live path and [`Self::resume_book`], so a restart
+    /// folds a journaled fill through exactly what booked it. The life is
+    /// advanced from the lot's signed quantity before and after the fill —
+    /// the book's own answer to whether this fill opened, resized or closed
+    /// the position — and before the settlement is registered, so an exit
+    /// exists for the venue's calendar to schedule.
+    #[allow(clippy::too_many_arguments)]
+    fn book_desk_fill(
+        &mut self,
+        object_id: &str,
+        venue: &str,
+        side: Side,
+        price: Decimal,
+        quantity: Decimal,
+        costs: Decimal,
+        at: Timestamp,
+    ) {
+        let held = |capital: &TrackedCapital| {
+            capital
+                .positions
+                .get(object_id)
+                .map_or(Decimal::ZERO, |lot| lot.quantity)
+        };
+        let before = held(&self.capital);
+        let moved = self
+            .capital
+            .apply_fill(object_id, side, price, quantity, costs, at);
+        self.aggregate_fill(object_id, moved);
+        let after = held(&self.capital);
+        let problems = self.position_lives.on_fill(object_id, before, after, at);
+        self.capture_problems.extend(problems);
+        self.register_settlement(object_id, venue, side, price, quantity, costs, at);
+    }
+
+    /// Where `object_id`'s latest desk position is in its life
+    /// (R12-ASSET-4071): `None` for an instrument the desk has never held
+    /// since assembly or resume, or whose attribution has aged out of the
+    /// bounded record.
+    pub fn position_life_stage(&self, object_id: &str) -> Option<qip_portfolio::LifeStage> {
+        self.position_lives.stage_of(object_id)
+    }
+
+    /// The whole position-life register: lives not yet attributed and the
+    /// most recently attributed ones.
+    pub fn position_lives(&self) -> &crate::position_life::PositionLives {
+        &self.position_lives
     }
 
     /// The running risk counters, as the pre-trade check reads them.
