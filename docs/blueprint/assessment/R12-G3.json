@@ -1243,9 +1243,11 @@
     "current": "infrastructure/terraform/security.tf declares a Sensitive Data Protection inspect template (minimum likelihood POSSIBLE), a de-identification template and a RUNNING discovery config over the project's BigQuery tables and Cloud Storage buckets, behind var.sensitive_data_protection, null in every environment. tests/security.tftest.hcl refuses a discovery scan for nothing.",
     "evidence": [
       "infrastructure/terraform/security.tf google_data_loss_prevention_discovery_config.lake",
-      "infrastructure/terraform/tests/security.tftest.hcl a_discovery_scan_for_nothing_is_refused"
+      "infrastructure/terraform/tests/security.tftest.hcl a_discovery_scan_for_nothing_is_refused",
+      "infrastructure/terraform/security.tf google_bigquery_dataset.sdp_logs, google_logging_project_sink.sdp_logs, discovery big_query_target for the log dataset (all gated on local.sdp_on)",
+      "infrastructure/terraform/tests/security.tftest.hcl::discovery_covers_the_platforms_logs_once_sensitive_data_protection_is_on"
     ],
-    "gap": "2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere; enabling it is an infrastructure/environments/** change (protected) that bills, and needs a real plan. Logs are not inspected: the requirement names stores and logs, and the discovery config covers BigQuery and Cloud Storage only (log redaction would need a log sink into one of them or a Logging exclusion/redaction, neither declared).",
+    "gap": "2026-10-25 (lane L6): the code half is built: with sensitive data protection on, the qip workload logs are copied by a dedicated sink into a CMEK BigQuery dataset that the discovery config names ahead of its catch-all; with it off nothing is planned (mocked terraform test, 123 passed across the root). Remaining: sensitive_data_protection is off in every environment (protected tfvars, billed); the sink writer holds a five-permission dataset-scoped custom role rather than dataEditor (FINOPS-019's guard forbids dataEditor outside modules/data), unverified against a live sink; the CI infra identity's permissions for the sink, custom role and dataset were not checked; no real plan (billing paused). Earlier: 2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere; enabling it is an infrastructure/environments/** change (protected) that bills, and needs a real plan. Logs are not inspected: the requirement names stores and logs, and the discovery config covers BigQuery and Cloud Storage only (log redaction would need a log sink into one of them or a Logging exclusion/redaction, neither declared).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1256,7 +1258,7 @@
     "verification": "scratch copy: terraform test -filter=tests/security.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation setting the discovery config's status to PAUSED (security.tf:468) failed every_security_service_plans_when_named_soundly; restored (cmp), 13 passed."
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation setting the discovery config's status to PAUSED (security.tf:468) failed every_security_service_plans_when_named_soundly; restored (cmp), 13 passed. 2026-10-25 lane L6 (delegated agent, cherry-picked): mutations in a scratch copy: sink ungated failed no_log_copy_exists_while_sensitive_data_protection_is_off; destination pointed at the research dataset, delete permission added to the writer role, and the discovery regex pointed elsewhere each failed the sdp-on run. Agent's acceptance: infrastructure 161, security 29, security_controls 12, terraform_contract 12, terraform_plan 13, identity_separation 5, data_infrastructure_guards 8 passed, 0 failed."
   },
   {
     "id": "R12-OBS-10057",
