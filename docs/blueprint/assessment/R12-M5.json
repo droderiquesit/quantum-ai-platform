@@ -662,16 +662,17 @@
   },
   {
     "id": "R12-REFLEX-5029",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Cell::work does no I/O; the node's Scheduler::apply_mesh drains MeshLink::take_inbound through try_recv off the link's own thread, so a slow or dead centre cannot hold a pass. With the centre unreachable the node works the same passes, sends the same orders and refuses the same, and a cell cut off from everything keeps placing paper orders inside its envelope and journals that it is degraded. The check is met.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs Cell::work",
       "backend/crates/apps/qip-edge-node/src/scheduler.rs:633 apply_mesh",
       "backend/crates/apps/qip-edge-node/src/mesh.rs:681 take_inbound is a try_recv",
       "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:350 a_node_works_the_same_passes_sends_the_same_orders_and_refuses_the_same_when_the_centre_stops_answering",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:253 a_cell_cut_off_from_everything_keeps_placing_paper_orders_inside_its_envelope_and_journals_that_it_is_degraded"
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs:253 a_cell_cut_off_from_everything_keeps_placing_paper_orders_inside_its_envelope_and_journals_that_it_is_degraded",
+      "backend/crates/apps/qip-edge-node/tests/reasoning_outage_loop.rs::a_node_driven_by_its_decision_loop_trades_the_same_when_the_centre_accepts_and_never_answers (2026-10-25)"
     ],
-    "gap": "2026-10-24: Closes when verification names a test through DecisionLoop::turn with the centre silent that hangs or fails under `try_recv` -> `recv` (decision_loop.rs does), or reasoning_outage drives the loop instead of exchange. 2026-10-24 (AUDIT-5 verification): the mutated line runs only inside MeshWorker, which qip-edge-node spawns only when QIP_MESH_PEER is set, and no committed configuration sets it (the startup template writes no such line). The requirement's own proof, that a test asserting the same passes and orders hangs or diverges when the pass calls the mesh, does not hold: reasoning_outage asserts sameness but drives link.exchange directly and stays green, and the aborting test asserts no sameness. Closes with a sameness test through DecisionLoop::turn on a committed mesh configuration.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -679,10 +680,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test reasoning_outage; cargo test -p qip-edge-node --test degraded",
+    "verification": "cargo test -p qip-edge-node --test reasoning_outage; cargo test -p qip-edge-node --test degraded; cargo +1.94.1 test -p qip-edge-node --test reasoning_outage_loop",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap (a synchronous mesh exchange before each pass) predated Scheduler::apply_mesh and the off-thread link. No mutation run by this lane. Not deployed, so deployable stays false. AUDIT-4 2026-10-24: regraded, the named tests drive MeshLink::exchange, a synchronous exchange the shipped node never calls; the production read (DecisionLoop::turn apply_mesh -> mesh.rs take_inbound_at_most) is proven only by tests/decision_loop.rs, which the row does not name.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap (a synchronous mesh exchange before each pass) predated Scheduler::apply_mesh and the off-thread link. No mutation run by this lane. Not deployed, so deployable stays false. AUDIT-4 2026-10-24: regraded, the named tests drive MeshLink::exchange, a synchronous exchange the shipped node never calls; the production read (DecisionLoop::turn apply_mesh -> mesh.rs take_inbound_at_most) is proven only by tests/decision_loop.rs, which the row does not name.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL 2026-10-25 lane L5-EDGE: the sameness test the 2026-10-24 audit asked for, through DecisionLoop::turn, against a centre that accepts and never answers (the worker held inside an unanswered request before the first silent turn): turns, passes, orders, refusals and the shipped journal equal the answering run, and every post-silence turn is under 1s. Mutation: MeshWorker::take_inbound_at_most try_recv made recv; the test then aborts on its watchdog ('watchdog: a decision-loop turn — the turn blocked, which is the centre holding the cell did not finish within 10s', SIGABRT); restored, cmp identical; unmutated 'test result: ok. 2 passed'. Bar: part 2 — a prohibition; MeshWorker is the only consumer on qip-edge-node's turn path (main.rs) and the decision thread's every outbound call is non-waiting. Part 3 caveat recorded: MeshLink::exchange is public and synchronous, called only from tests. Independent skeptic (security-engineer, read-only, default REFUTED): HOLDS after part 1's captured log was supplied; parts 2-4 held on first reading."
   },
   {
     "id": "R12-REFLEX-5030",
@@ -2443,9 +2444,10 @@
     "current": "PrivateMarket and RealAsset registered (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:618, :633); private_stage/cashflow in qip-financial.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:618",
-      "backend/crates/libs/qip-financial/tests/cashflow.rs"
+      "backend/crates/libs/qip-financial/tests/cashflow.rs",
+      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::a_private_fund_and_a_real_asset_assemble_and_trade_on_paper_and_withdrawing_either_class_refuses_it (2026-10-25)"
     ],
-    "gap": "Commitment/capital-call ledger; integration.",
+    "gap": "2026-10-25 (lane L5-EDGE; independent skeptic REFUTED): a private fund and a real asset assemble and trade on paper only under a limit set no shipped root can load. Every root runs LimitSet::conservative_default unless QIP_RISK_LIMITS_PATH names a file, and a file cannot drop a shipped control. The shipped MinLiquidity { days: 5.0 } floor refuses both orders. Closing it needs a risk-domain decision, with an ADR and the owner's sign-off, on how the five-day liquidity floor applies to non-continuously priced classes. That is a financial risk limit, which this lane may not change (out of bounds per the 2026-10-24 delegation).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2453,10 +2455,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test asset_classes",
+    "verification": "cargo test -p qip-kernel --test asset_classes; cargo +1.94.1 test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " 2026-10-25 lane L5-EDGE: a private equity fund (PrivateMarket) and a real-estate holding (RealAsset) assemble beside a listed name, each takes an order through the desk's control path that fills simulated, the fund's 250,000 undrawn commitment reaches the commitment book; withdrawing PrivateMarket makes the fund refused by name, and withdrawing RealAsset is refused by the hedge map (commodity hedges with it). The orders run under a private-holdings limit set (leverage only), because the conservative default's five-day liquidity floor refuses them, as it should for a desk that never agreed to hold them. Mutations, over every qip-kernel test binary with --no-fail-fast: PrivateMarket record deleted (asset_classes fails with assembly refusing obj-FUND, plus 5 lib and 6 capital_calls tests); RealAsset record deleted (asset_classes fails, the hedge-map refusal, plus 20+ lib tests). Log m5105.log. Skeptic (code-reviewer, read-only, default REFUTED), second reading: REFUTED. Part 1 held (both deletions fail the test; RealAsset's refusal comes from shipped() itself via the hedge map, accepted as in the sibling test). Part 2: the bar requires the default code path, not shipped data holding the class. The refutation is the mandate: on every default path the five-day liquidity floor refuses the orders."
   },
   {
     "id": "R12-COVERAGE-5106",

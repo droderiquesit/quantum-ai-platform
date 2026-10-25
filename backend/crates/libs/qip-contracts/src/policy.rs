@@ -1085,6 +1085,26 @@ pub struct PolicyPayload {
     /// existed keep their digest.
     #[serde(default, skip_serializing_if = "is_unproduced_slot")]
     pub acceptable_builds: Slot<BuildSet>,
+    /// The central cycle this payload was issued from (ADR 0129 decision 5,
+    /// R12-OBS-7018 and R12-OBS-9154).
+    ///
+    /// Without it the centre's lineage ids and a cell's chain ids are two
+    /// id spaces with no join between them: an operator holding the
+    /// correlation id `POST /cycle` returned could find every central record
+    /// of that cycle and no cell record at all, because nothing a cell wrote
+    /// named the decision state it was acting under. A cell copies this, with
+    /// [`Self::sequence`], into every `ChainOpened` it journals while the
+    /// payload is applied.
+    ///
+    /// Off the wire and out of the signing string while absent — the same
+    /// skip-if-absent rule as the thirteenth slot — so a payload signed
+    /// before the field existed keeps its digest byte for byte. Present, it
+    /// is signed, so a relay cannot re-attribute a payload to another cycle.
+    /// The skew follows `deny_unknown_fields`: a cell built before the field
+    /// refuses a payload carrying it and keeps the last it applied, so cells
+    /// upgrade before the centre, as they did for [`Dispositions`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionOrigin>,
     /// Hex MAC over [`Self::signing_payload`]. Empty until signed.
     pub signature: String,
 }
@@ -1114,6 +1134,7 @@ impl PolicyPayload {
             dispositions: Slot::unproduced(),
             opportunity_definitions: Slot::unproduced(),
             acceptable_builds: Slot::unproduced(),
+            decision: None,
             signature: String::new(),
         }
     }
@@ -1244,6 +1265,18 @@ impl PolicyPayload {
         for (name, digest) in self.slot_digests()? {
             parts.push(format!("{name}={digest}"));
         }
+        // Appended only when present, after every slot, so a payload with no
+        // decision signs to the byte as it did before the field existed. The
+        // `decision=` name cannot be confused with a slot digest's: no
+        // `PolicyItem` is called that, and the correlation is length-prefixed
+        // because it is free text.
+        if let Some(decision) = &self.decision {
+            parts.push(format!(
+                "decision={}:{}",
+                decision.cycle,
+                length_prefixed(decision.correlation.as_str())
+            ));
+        }
         Ok(parts.join("|"))
     }
 
@@ -1323,6 +1356,45 @@ impl PolicyPayload {
             payload.as_bytes(),
         )?;
         Ok(self)
+    }
+}
+
+/// The central decision a [`PolicyPayload`] was issued from: the cycle
+/// number and that cycle's correlation id (ADR 0129 decision 5).
+///
+/// The correlation is the one the cycle stamped on every central record and
+/// the one `POST /cycle` returns, so it is the key an operator already holds.
+/// What the join answers is "which central decision state was the cell
+/// acting under", not "which central decision caused this order": a cell's
+/// orders come from its own signals (ADR 0008), and this does not pretend
+/// otherwise.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionOrigin {
+    /// The platform's cycle counter at the cycle that preceded the issue.
+    pub cycle: u64,
+    /// That cycle's `Lineage::correlation_id`.
+    pub correlation: qip_core::CorrelationId,
+}
+
+impl DecisionOrigin {
+    /// Refuses cycle zero and an empty correlation: neither names a cycle
+    /// that ran, and a payload attributed to a cycle that never ran is a
+    /// join that lands nowhere while looking like one that landed.
+    pub fn new(cycle: u64, correlation: qip_core::CorrelationId) -> Result<Self> {
+        if cycle == 0 {
+            return Err(Error::invalid(
+                "a policy payload cannot be attributed to cycle zero; issue it with no decision \
+                 origin until a cycle has run",
+            ));
+        }
+        if correlation.as_str().is_empty() {
+            return Err(Error::invalid(
+                "a policy payload cannot be attributed to an empty correlation id; pass the \
+                 correlation the cycle's report carries",
+            ));
+        }
+        Ok(Self { cycle, correlation })
     }
 }
 

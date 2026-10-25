@@ -77,6 +77,17 @@ fn main() {
         // `qip_cli::event_fabric` is reachable without this file changing,
         // and an unknown one is refused by the family naming its list.
         "event-fabric" => qip_cli::event_fabric::run(&arguments[1..]),
+        // R12-CONTRACT-7064: the publish workflow's three steps from an
+        // unsigned draft to a release pack, and the check that decides
+        // whether one loads. The verdict is the exit code.
+        "model-pack" => {
+            qip_cli::model_pack::run(&arguments[1..], SystemClock.now()).map(|(lines, code)| {
+                for line in lines {
+                    println!("{line}");
+                }
+                code
+            })
+        }
         other => Err(Error::invalid(format!(
             "unknown command: {other}. Run `qip help` for the list."
         ))),
@@ -107,6 +118,10 @@ fn print_help() {
     println!("  registrations [--config <path>]");
     println!("                    every catalogued source's requirement and standing,");
     println!("                    and the exact secret-add command for a pending one");
+    println!("  model-pack signing-message <pack.json> --key-version <name>");
+    println!("  model-pack attach-signature <pack.json> --key-version <name> --der <hex>");
+    println!("  model-pack verify <pack.json> --trust-bundle <path> [--now <rfc3339>]");
+    println!("                    sign a draft release pack through KMS and check it loads");
     println!("  change-window --plan <plan.json> --policy <policy.json> [--now <rfc3339>]");
     println!("                    refuse a saved plan changing a core resource outside");
     println!("                    the committed change window (exit 3)");

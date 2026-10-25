@@ -16,7 +16,6 @@ qip-events.workspace = true
 qip-storage.workspace = true
 qip-transport.workspace = true
 qip-portfolio.workspace = true
-qip-capital.workspace = true
 qip-observability.workspace = true
 
 [dev-dependencies]
