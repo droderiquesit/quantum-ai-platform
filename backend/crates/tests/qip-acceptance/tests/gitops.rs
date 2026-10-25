@@ -4647,8 +4647,15 @@ fn infra_step_script(step_name: &str) -> String {
         .find(|line| !line.trim().is_empty())
         .map(|line| line.len() - line.trim_start().len())
         .unwrap_or_default();
+    // The block ends at the first non-blank line indented less than its
+    // content, as YAML ends it. `infra_steps` hands a step everything up to the
+    // next `- `, so a comment that introduces the following step rode along
+    // here and was cut mid-word into a line bash could not parse: R12-CICD-9066
+    // put one after the prod refusal, and this test failed on a syntax error
+    // in a script the runner never produces.
     let script: String = body
         .lines()
+        .take_while(|line| line.trim().is_empty() || line.len() - line.trim_start().len() >= indent)
         .map(|line| {
             if line.len() >= indent {
                 &line[indent..]

@@ -1,5 +1,5 @@
 {
-  "comment": "R12-GCP-9120: when a plan that changes a core resource may be applied. Read by scripts/change-window.mjs against the saved plan infra.yml applies. Core resources are the hierarchy, the networks and the databases: a change to one of them reaches every workload at once, so it lands while a person is watching, never at 03:00 because a dispatch happened then. Times are UTC. Editing this file changes when a core change may land; it is reviewed like any other change.",
+  "comment": "R12-GCP-9120: when a plan that changes a core resource may be applied. Read by `qip change-window` (backend/crates/apps/qip-cli/src/change_window.rs) against the saved plan infra.yml applies, in the step before `up`. Core resources are the hierarchy, the networks and the databases: a change to one of them reaches every workload at once, so it lands while a person is watching, never at 03:00 because a dispatch happened then. Times are UTC. Editing this file changes when a core change may land; it is reviewed like any other change.",
   "core_resource_types": [
     "google_folder",
     "google_project",

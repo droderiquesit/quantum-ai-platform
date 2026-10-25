@@ -243,7 +243,10 @@ Run these in this order. All dispatches go from `main`. `infra.yml`, `deploy.yml
    - New billable items: warehouse key and dataset (approved 2026-10-19), asset-feed key, topic and 2 feeds, the `qip-dev-workloads` bucket, the firewall policy. Prices are in §5.
 
 6. **`infra.yml` with `environment=dev`, `action=up`.**
-   - Order: grants, reclaim (expect nothing), `plan for up` (shown), `apply tfplan`, then bootstrap: Argo CD, Config Connector operator, `.status.healthy` wait of 900s, cert-manager, Kargo.
+   - Two refusals come before the apply (R12-CICD-9066 and R12-GCP-9120, applied 2026-10-25):
+     - `ci succeeded for this commit` refuses a commit with no successful push-started ci run. Main's ci stays red until the CodeQL barrier lands (decision 1 in `docs/blueprint/owner-decisions-2026-10-25.md`), so land that first. Refusal: `no successful ci run for <sha>; nothing is applied.`
+     - `a core change lands only inside its change window` judges the saved plan with `qip change-window` against `infrastructure/change-windows.json`. Step 4's plan creates a firewall policy and its rules, which are core types. So dispatch `up` on a Tuesday, Wednesday or Thursday between 14:00 and 20:00 UTC. Refusal: exit 3 from `qip change-window`.
+   - Order: grants, reclaim (expect nothing), `plan for up` (shown), the change-window check, `apply tfplan`, then bootstrap: Argo CD, Config Connector operator, `.status.healthy` wait of 900s, cert-manager, Kargo.
    - Success: `Apply complete! Resources: …, 0 destroyed`, artifact `terraform-applied-plan-dev`, the rollout `successfully rolled out` lines, and Kargo's webhook rollout.
    - Failure signatures (all UNVERIFIED):
      - 403 creating the asset feed or the BigQuery dataset: covered by step 3 / P1 / §2.3.
@@ -261,10 +264,11 @@ Run these in this order. All dispatches go from `main`. `infra.yml`, `deploy.yml
    - The redis source digest still resolves upstream (§6), so the copy by digest should not fail on redis.
 
 8. **`deploy.yml` with `environment=dev`.** It runs automatically on ci success of a push to `main`. If the run started by the §3 merge died on the 403, dispatch it.
-   - Needs: green ci on the head SHA, every `sast /` job green, the registry reachable. The agent-boundary range verdict is advice only in dev (`deploy_range_advisory`, ADR 0124 §3).
+   - Needs: green ci on the head SHA, every `sast /` job green, the `simulation gate` and `performance gate` jobs `success` in that ci run (R12-CICD-7116/7119, applied 2026-10-25), the registry reachable. The agent-boundary range verdict is advice only in dev (`deploy_range_advisory`, ADR 0124 §3).
    - Success: job `record what was pushed (dev)` prints `api|fastbrain|deepbrain: …@sha256:…`. The portal digest is in its push log as `<sha>: digest: sha256:…`.
    - Failure signatures:
      - `ci concluded 'failure'; nothing is deployed.`
+     - `ci run <id>'s performance gate is '<conclusion>', not success; nothing is deployed.` (or `simulation gate`)
      - push `failed to fetch oauth token ... 403 Forbidden`. The `registry already holds` step hides an earlier error with `2>/dev/null || true`.
      - the `a second build of the commit is the same image` mismatch
      - a Trivy CRITICAL
