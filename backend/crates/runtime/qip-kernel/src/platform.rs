@@ -16529,6 +16529,78 @@ impl Platform {
         Ok((outcome, unsizeable, capped))
     }
 
+    /// Each held position's hedge relationships, pending corporate actions
+    /// and commitments, every one present or declared not applicable with
+    /// the reason (R12-ASSET-4068), keyed by object id over the book every
+    /// limit reads.
+    ///
+    /// Read from the records the platform already holds: the declared hedge
+    /// policies classified through the catalogue
+    /// ([`crate::hedge_review::policies_relating_to`]), the corporate actions
+    /// awaiting their ex-date, and the commitment book. A position whose
+    /// catalogue record cannot be classified is refused with the object
+    /// named, rather than reported unhedged.
+    pub fn position_obligations(
+        &self,
+    ) -> Result<BTreeMap<String, crate::position_register::PositionObligations>> {
+        use qip_financial::position_record::Declared;
+        let market = self.market.read();
+        let mut obligations = BTreeMap::new();
+        for object in self.capital.positions.keys() {
+            let related = crate::hedge_review::policies_relating_to(
+                &self.config.hedge_policies,
+                object,
+                &market.universe,
+            )?;
+            let hedges = if !related.is_empty() {
+                Declared::Present(related)
+            } else if self.config.hedge_policies.is_empty() {
+                Declared::NoneApplicable {
+                    reason: "no hedge policy is declared for this deployment".to_string(),
+                }
+            } else {
+                Declared::NoneApplicable {
+                    reason: format!(
+                        "none of the {} declared hedge policies names this position's \
+                         instrument or classification, or hedges with it",
+                        self.config.hedge_policies.len()
+                    ),
+                }
+            };
+            let pending: Vec<String> = self
+                .corporate_actions_pending
+                .iter()
+                .filter(|(_, action)| action.object_id.as_str() == object)
+                .map(|(key, _)| key.clone())
+                .collect();
+            let corporate_actions = if pending.is_empty() {
+                Declared::NoneApplicable {
+                    reason: "no corporate action on this instrument is announced and awaiting \
+                             its ex-date"
+                        .to_string(),
+                }
+            } else {
+                Declared::Present(pending)
+            };
+            let commitments = match self.commitments.get(object) {
+                Some(commitment) => Declared::Present(commitment.clone()),
+                None => Declared::NoneApplicable {
+                    reason: "the commitment book holds no capital commitment on this instrument"
+                        .to_string(),
+                },
+            };
+            obligations.insert(
+                object.clone(),
+                crate::position_register::PositionObligations::new(
+                    hedges,
+                    corporate_actions,
+                    commitments,
+                ),
+            );
+        }
+        Ok(obligations)
+    }
+
     /// The mandate and target weight `object_id` was last sized under, or
     /// `None` where no construction this process ran has sized it
     /// (R12-ASSET-4066).
@@ -19030,6 +19102,52 @@ impl Platform {
         outcome = crate::blueprint_objectives::fold(outcome, &self.objectives, now);
         for problem in self.review_position_mandates() {
             outcome = outcome.with_problem(problem);
+        }
+        // What each held position is hedged by, owes and is about to have
+        // done to it (R12-ASSET-4068), counted on the stage line every
+        // cycle the book holds anything, so a position nobody has stated
+        // obligations for is a refusal on the record and not an absence.
+        if !self.capital.positions.is_empty() {
+            match self.position_obligations() {
+                Ok(obligations) => {
+                    let count =
+                        |present: fn(&crate::position_register::PositionObligations) -> bool| {
+                            obligations.values().filter(|o| present(o)).count()
+                        };
+                    let hedged = count(|o| {
+                        matches!(
+                            o.hedges(),
+                            qip_financial::position_record::Declared::Present(_)
+                        )
+                    });
+                    let actions = count(|o| {
+                        matches!(
+                            o.corporate_actions(),
+                            qip_financial::position_record::Declared::Present(_)
+                        )
+                    });
+                    let committed = count(|o| {
+                        matches!(
+                            o.commitments(),
+                            qip_financial::position_record::Declared::Present(_)
+                        )
+                    });
+                    let detail = format!(
+                        "{}; of {} held position(s), {hedged} hedged, {actions} with a pending \
+                         corporate action, {committed} with a capital commitment",
+                        outcome.detail,
+                        obligations.len()
+                    );
+                    outcome = StageOutcome { detail, ..outcome };
+                }
+                Err(error) => {
+                    outcome = outcome.with_problem(format!(
+                        "the held positions' hedges, corporate actions and commitments could \
+                         not be stated: {}",
+                        error.message()
+                    ));
+                }
+            }
         }
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);

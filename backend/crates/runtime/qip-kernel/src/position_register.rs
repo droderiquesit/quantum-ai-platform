@@ -15,6 +15,8 @@
 //! [`crate::platform::Platform`], because the inputs live there.
 
 use qip_core::Timestamp;
+use qip_financial::cashflow::Commitment;
+use qip_financial::position_record::Declared;
 use serde::{Deserialize, Serialize};
 
 /// The mandate a held object was sized under and the weight it was sized
@@ -70,5 +72,53 @@ impl PositionMandate {
 
     pub fn sized_at(&self) -> Timestamp {
         self.sized_at
+    }
+}
+
+/// A held position's hedge relationships, pending corporate actions and
+/// capital commitments, each either present or declared not to apply with
+/// the reason (R12-ASSET-4068).
+///
+/// [`Declared`] rather than three collections, because "no hedge" and "no
+/// commitment" are real states that must be *stated*: an empty list nobody
+/// filled in and a list the platform looked for and found empty read
+/// identically, and only the second is an answer. Built by
+/// `Platform::position_obligations` from the declared hedge policies, the
+/// corporate actions awaiting their ex-date and the commitment book — the
+/// records the platform already holds, keyed by the same object id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PositionObligations {
+    hedges: Declared<Vec<String>>,
+    corporate_actions: Declared<Vec<String>>,
+    commitments: Declared<Commitment>,
+}
+
+impl PositionObligations {
+    pub(crate) fn new(
+        hedges: Declared<Vec<String>>,
+        corporate_actions: Declared<Vec<String>>,
+        commitments: Declared<Commitment>,
+    ) -> Self {
+        Self {
+            hedges,
+            corporate_actions,
+            commitments,
+        }
+    }
+
+    /// Every declared hedge policy relating to the position, in words.
+    pub fn hedges(&self) -> &Declared<Vec<String>> {
+        &self.hedges
+    }
+
+    /// The idempotency keys of the corporate actions announced on the
+    /// instrument and not yet past their ex-date on the tape.
+    pub fn corporate_actions(&self) -> &Declared<Vec<String>> {
+        &self.corporate_actions
+    }
+
+    /// The capital commitment the book holds on the instrument.
+    pub fn commitments(&self) -> &Declared<Commitment> {
+        &self.commitments
     }
 }

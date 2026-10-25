@@ -23,17 +23,22 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::costs::LiquidityProfile;
+use qip_financial::extensions::{Extension, PrivateAssetDetails};
 use qip_financial::object::FinancialObject;
+use qip_financial::position_record::Declared;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::{CycleReport, Stage};
+use qip_kernel::hedge_review::HedgePolicyDeclaration;
 use qip_kernel::platform::Platform;
 use qip_market::bar::{Bar, Interval};
+use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_portfolio::PositionLifecycle;
 use qip_reasoning_engine::redteam::ReviewPolicy;
+use qip_risk::hedge::HedgeAxis;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
 /// See the module note: low enough that the panel approves a thesis on the
@@ -261,5 +266,171 @@ fn every_held_position_resolves_to_a_mandate_and_target_or_is_flagged() -> Resul
             .starts_with("obj-AAA is held with no mandate and target exposure on record")),
         "the flag was not said on the LEARN stage: {problems:?}"
     );
+    Ok(())
+}
+/// A private fund with an undrawn commitment the commitment book will hold:
+/// 400,000 promised against 150,000 drawn, and a residual the valuation
+/// plane marks from.
+fn private_fund(symbol: &str) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        object(symbol),
+        symbol,
+        InstrumentType::PrivateEquityFund,
+        LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .geography("US")
+    .price(dec!("100"))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: dec!("400000"),
+        called_capital: dec!("150000"),
+        distributed_capital: Decimal::ZERO,
+        residual_value: dec!("160000"),
+        stage: "buyout".to_string(),
+        lockup_years: 7.0,
+        capital_call_notice_days: 10,
+        call_schedule: None,
+    }))
+    .provenance(Provenance::synthetic("administrator", start()))
+    .build(start())
+}
+
+fn in_memory(universe: Universe, config: PlatformConfig) -> Result<Platform> {
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        leverage_only(),
+    )
+}
+
+fn present<T: Clone>(declared: &Declared<T>, what: &str) -> T {
+    match declared {
+        Declared::Present(value) => value.clone(),
+        Declared::NoneApplicable { reason } => {
+            panic!("{what} was declared not applicable ({reason}) where it applies")
+        }
+    }
+}
+
+fn none_reason<T: std::fmt::Debug>(declared: &Declared<T>, what: &str) -> String {
+    match declared {
+        Declared::NoneApplicable { reason } => reason.clone(),
+        Declared::Present(value) => {
+            panic!("{what} was stated as {value:?} where none applies; 'none' must be declared")
+        }
+    }
+}
+
+/// R12-ASSET-4068: each held position resolves its hedge relationship, its
+/// pending corporate actions and its commitments, with "none" *stated* —
+/// `Declared::NoneApplicable` with a reason — rather than inferred from an
+/// empty collection nobody filled in.
+///
+/// Two books, so every one of the three facts is seen both present and
+/// absent. The listed name is held under a sector hedge policy and has a
+/// dividend announced and not yet ex, and owes nothing; the private fund
+/// owes an undrawn commitment, is under no hedge policy and has nothing
+/// announced.
+///
+/// The failure prevented: before this the facts lived in three records keyed
+/// by object id and nothing joined them to a holding, so "this position is
+/// unhedged" was an absence anyone could read into an empty list.
+///
+/// Mutation: return `Declared::Present(Vec::new())` instead of
+/// `NoneApplicable` for an unhedged position in
+/// `Platform::position_obligations` — the private fund's hedges read as an
+/// empty list and the stated-none assertion fails.
+#[test]
+fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none() -> Result<()> {
+    let policies = vec![
+        HedgePolicyDeclaration::new(
+            "tech-beta",
+            HedgeAxis::Sector,
+            Sector::InformationTechnology.as_str(),
+            object("HEDGE"),
+            dec!("1"),
+        ),
+        HedgePolicyDeclaration::new(
+            "energy-beta",
+            HedgeAxis::Sector,
+            Sector::Energy.as_str(),
+            object("HEDGE"),
+            dec!("1"),
+        ),
+    ];
+
+    // --- the listed name -------------------------------------------------
+    let mut listed_book = in_memory(universe()?, config().with_hedge_policies(policies))?;
+    listed_book.observe(tape("AAA"));
+    let report = listed_book.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    assert!(
+        listed_book.positions_at_cost().contains_key("obj-AAA"),
+        "premise: the cycle opened a position in obj-AAA"
+    );
+    let ex_date = start().saturating_add(Duration::from_days(30));
+    listed_book.observe(vec![SensedRecord::CorporateAction(Box::new(
+        CorporateAction {
+            object_id: object("AAA"),
+            ex_date,
+            record_date: None,
+            payment_date: None,
+            kind: CorporateActionKind::CashDividend {
+                amount: dec!("0.5"),
+            },
+            announced_at: start(),
+        },
+    ))]);
+
+    let obligations = listed_book.position_obligations()?;
+    let aaa = obligations
+        .get("obj-AAA")
+        .expect("the held position states its obligations");
+    let hedges = present(aaa.hedges(), "obj-AAA's hedge relationship");
+    assert_eq!(hedges.len(), 1, "{hedges:?}");
+    assert!(
+        hedges[0].starts_with("tech-beta (hedged with obj-HEDGE on sector "),
+        "{hedges:?}"
+    );
+    let actions = present(
+        aaa.corporate_actions(),
+        "obj-AAA's pending corporate actions",
+    );
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert!(
+        actions[0].starts_with(&format!("obj-AAA:{}:", ex_date.as_nanos())),
+        "{actions:?}"
+    );
+    let owed = none_reason(aaa.commitments(), "obj-AAA's commitments");
+    assert!(!owed.trim().is_empty());
+
+    // --- the private fund ------------------------------------------------
+    let mut fund_universe = Universe::new();
+    fund_universe.insert(private_fund("PRIV")?)?;
+    let mut fund_book = in_memory(fund_universe, config())?;
+    fund_book.observe(tape("PRIV"));
+    let report = fund_book.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    assert!(
+        fund_book.positions_at_cost().contains_key("obj-PRIV"),
+        "premise: the cycle opened a position in obj-PRIV: {}",
+        report.summarise()
+    );
+    let obligations = fund_book.position_obligations()?;
+    let fund = obligations
+        .get("obj-PRIV")
+        .expect("the held position states its obligations");
+    let commitment = present(fund.commitments(), "obj-PRIV's commitment");
+    assert_eq!(commitment.subject(), "obj-PRIV");
+    assert_eq!(
+        none_reason(fund.hedges(), "obj-PRIV's hedge relationship"),
+        "no hedge policy is declared for this deployment"
+    );
+    let announced = none_reason(fund.corporate_actions(), "obj-PRIV's corporate actions");
+    assert!(!announced.trim().is_empty());
     Ok(())
 }
