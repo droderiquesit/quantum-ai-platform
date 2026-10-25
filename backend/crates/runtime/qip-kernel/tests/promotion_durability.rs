@@ -404,3 +404,76 @@ fn a_version_taken_out_of_production_returns_only_through_a_rollback() -> Result
     )?;
     Ok(())
 }
+
+/// R12-MODEL-9003: a promotion that displaces two production cards records
+/// the rollback parent the registry chose — the more recently deployed of
+/// them — so a desk restoring from the log takes the same one. The replay
+/// used to take the first displaced reference, which here is the older
+/// card. Mutation: record `displaced.first()` as the parent in
+/// `promote_model_from` — the record names the older card and the first
+/// assertion fails.
+#[test]
+fn a_promotion_displacing_two_production_cards_records_the_parent_the_registry_chose() -> Result<()>
+{
+    let mut platform = platform(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let old = teacher("two-parents-a", "0.1.0", 1e-6)?;
+    let middle = teacher("two-parents-a", "0.2.0", 1e-2)?;
+    let new = teacher("two-parents-a", "0.3.0", 1.0)?;
+    let old_reference = registered(&mut registry, &old)?;
+    let middle_reference = registered(&mut registry, &middle)?;
+    let new_reference = registered(&mut registry, &new)?;
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&old)?,
+        None,
+        &[],
+        start(),
+    )?;
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&middle)?,
+        None,
+        &[],
+        start().saturating_add(qip_core::Duration::from_mins(1)),
+    )?;
+    assert!(
+        platform.model_promotions().contains_key(&old_reference)
+            && platform.model_promotions().contains_key(&middle_reference),
+        "premise: two versions are in production at once"
+    );
+    // Listed older first, so the first displaced reference is not the
+    // registry's choice and the two rules disagree.
+    let displaced = vec![old_reference.clone(), middle_reference.clone()];
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&new)?,
+        None,
+        &displaced,
+        start().saturating_add(qip_core::Duration::from_mins(2)),
+    )?;
+    let live = registry
+        .get(&new_reference)
+        .and_then(|card| card.rollback_parent.clone());
+    assert_eq!(
+        live.as_deref(),
+        Some(middle_reference.as_str()),
+        "premise: the registry chose the more recently deployed card"
+    );
+    let history = promotion_history(&platform)?;
+    let record = history
+        .iter()
+        .rev()
+        .find(|record| record.reference == new_reference)
+        .ok_or_else(|| qip_core::error::Error::not_found("the third promotion's record"))?;
+    assert_eq!(
+        record.rollback_parent, live,
+        "the record does not carry the parent the registry chose"
+    );
+    assert_ne!(
+        record.displaced.first(),
+        live.as_ref(),
+        "premise: the first displaced reference is not the registry's choice"
+    );
+    Ok(())
+}
