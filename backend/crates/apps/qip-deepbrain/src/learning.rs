@@ -2484,12 +2484,13 @@ mod tests {
     /// Bars per shadow round: each round's window has moved on by this many.
     const SHADOW_STEP: usize = 150;
 
-    /// [`through_shadow`] over any window: round `n` fits `window(SHADOW_STEP
-    /// * n)`, which must be the same window moved on by that many bars. For a
-    /// test whose premise needs a later fit to beat an earlier one, the
-    /// window must make that true by construction (`learnable_regimes`, with
-    /// each fit's window inside one regime), because on a stationary series
-    /// the rounds are a coin flip between two fits of the same model.
+    /// [`through_shadow`] over any window: round `n` fits the bars
+    /// `window(n * SHADOW_STEP)` returns, which must be the same window moved
+    /// on by that many bars. For a test whose premise needs a later fit to
+    /// beat an earlier one, the window must make that true by construction
+    /// (`learnable_regimes`, with each fit's window inside one regime),
+    /// because on a stationary series the rounds are a coin flip between two
+    /// fits of the same model.
     fn through_shadow_on(
         desk: &mut LearningDesk,
         platform: &mut Platform,
