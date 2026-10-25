@@ -2267,9 +2267,10 @@
     "current": "Functionality lives in qip-risk limits + qip-risk-engine autonomy, used every cycle; no single 'brain' boundary or autonomous loop is defined.",
     "evidence": [
       "backend/crates/libs/qip-risk/src/limits.rs:118",
-      "backend/crates/services/qip-risk-engine/src/autonomy.rs:120"
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs:120",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs (5873c09d)"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the risk brain (qip-risk, qip-risk-engine).",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the risk brain (qip-risk, qip-risk-engine). 2026-10-24 (lane L1-MONEY): brain_closure.rs landed (mutations fired: qip-capital added to qip-risk-engine; qip-risk added to qip-capital; qip-capital added to qip-execution-engine; a qip_capital import in the settlement module). Independent code-reviewer skeptic REFUTED: The suite's crate-level graph leaves qip-edge out of the brain list, yet ADR 0127 names qip-edge's settlement gate as half of the Settlement Brain, and qip-edge depends on qip-risk and qip-risk-engine directly; the closure must check module-hosted brains at module level (the settlement module names no risk crate) or the ADR must say the cell crate is not a brain crate. The manifest parser also misses [target.*.dependencies], [dependencies.qip-x] tables and  renames. Contracts (PreTradeChecker/PreTradeDecision, RiskMonitor/MonitorAction, AutonomyController/KillSwitch), composition-root reach (qip-kernel every cycle; qip-api, qip-fastbrain, qip-deepbrain) and contract tests (qip-risk/tests, qip-risk-engine/tests) held.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2280,7 +2281,7 @@
     "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-10-24 lane L1-MONEY: closure suite added; kept PARTIAL on the skeptic's findings recorded in gap."
   },
   {
     "id": "R12-CAPITAL-1098",
@@ -2330,9 +2331,10 @@
     "current": "Functionality lives in capital-fabric settlement + edge settlement gate; no single 'brain' boundary or autonomous loop is defined.",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/settlement.rs",
-      "backend/crates/edge/qip-edge/tests/settlement.rs:274"
+      "backend/crates/edge/qip-edge/tests/settlement.rs:274",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs (5873c09d)"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the settlement brain (qip-capital-fabric settlement and qip-edge settlement).",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the settlement brain (qip-capital-fabric settlement and qip-edge settlement). 2026-10-24 (lane L1-MONEY): brain_closure.rs landed (mutations fired: qip-capital added to qip-risk-engine; qip-risk added to qip-capital; qip-capital added to qip-execution-engine; a qip_capital import in the settlement module). Independent code-reviewer skeptic REFUTED: Bar part 4: the requirement says 'A crate owns the Settlement Brain', and ADR 0127 keeps it as two modules in two crates that host other domains (corridors, custody, wallet; the cell) — an owner decision whether the requirement changes. ADR 0127 also assumes the two halves share qip_contracts settlement terms; none exist: each half defines its own SettlementConvention (qip-capital-fabric settlement.rs, qip-edge settlement.rs), two claims about one fact. qip-capital-fabric depends on qip-capital (the Capital Brain) directly, and qip-edge on qip-strategy (alpha), so the crate-level closure the ADR asks for fails for both hosts; only the modules are clean.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2343,7 +2345,7 @@
     "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-10-24 lane L1-MONEY: closure suite added; kept PARTIAL on the skeptic's findings recorded in gap."
   },
   {
     "id": "R12-DATA-1101",

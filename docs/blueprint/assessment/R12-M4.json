@@ -1958,16 +1958,21 @@
   {
     "id": "R12-CAPITAL-4088",
     "status": "PARTIAL",
-    "current": "Signed CapitalEnvelope carries gross, order and loss limits, venues, expiry and ExposureBounds (participation of visible depth, leverage on remaining equity); qip-edge-node requires the bounds and the cell refuses orders breaching liquidity or leverage before any intent.",
+    "current": "Every grant the centre issues (EnvelopeIssuer::issue, carried through ApprovalChain::grant's signed terms) now carries all five bounds: gross and order limits, liquidity and leverage (ExposureBounds), the loss limit, and since fe8185a7 a drawdown stop (DrawdownBounds, ADR 0126 decision 2) at the loss limit, inside the signed payload. The cell measures drawdown from its RealisedLedger's realised high-water mark and refuses under envelope_drawdown at both capital seams; qip-edge-node's assembled cell requires the stop as it requires exposure bounds; a decoded stop wider than the loss limit is refused at verification.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs:4876",
       "backend/crates/libs/qip-contracts/src/capital.rs:23-63",
       "backend/crates/libs/qip-contracts/src/capital.rs:435-462",
       "backend/crates/libs/qip-contracts/tests/authority_bounds.rs:85-123",
       "backend/crates/edge/qip-edge/tests/envelope_exposure.rs",
-      "backend/crates/libs/qip-contracts/src/capital.rs::ExposureBoundsFields"
+      "backend/crates/libs/qip-contracts/src/capital.rs::ExposureBoundsFields",
+      "backend/crates/libs/qip-contracts/src/capital.rs DrawdownBounds, CapitalEnvelope::with_drawdown/check_drawdown",
+      "backend/crates/edge/qip-edge/tests/drawdown.rs a_strategy_past_its_drawdown_but_under_its_loss_limit_is_refused, a_decoded_drawdown_stop_wider_than_the_loss_limit_is_refused_at_verification, a_cell_that_requires_a_drawdown_stop_refuses_an_envelope_without_one",
+      "backend/crates/libs/qip-contracts/tests/drawdown_bounds.rs",
+      "backend/crates/services/qip-capital/tests/capital.rs an_issued_grant_carries_all_five_bounds_and_its_drawdown_stop_is_its_loss_limit",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs the_assembled_cell_refuses_envelopes_without_a_drawdown_stop"
     ],
-    "gap": "Decided by ADR 0126 (accepted 2026-10-18): The downward capital authority is the signed CapitalEnvelope alone; it gains a drawdown bound, the CapitalGrant is stated from it rather than sent beside it, and a hedge plan reaches a cell only as a narrowing frame it may refuse. Code left: the bounds block's max_drawdown in qip-contracts capital.rs and the RealisedLedger high-water measurement in Cell admission, with a test that a strategy past its drawdown but under its loss limit is refused.",
+    "gap": "2026-10-24 (lane L1-MONEY): the drawdown bound ADR 0126 decision 2 decided is built, carried, required and enforced. Skeptic REFUTED promotion on fe8185a7; two of its three points (the approval chain issuing without a stop; no cell requiring one) were fixed in b28acbf3. What remains is bar part 2: no shipped binary issues a grant unprompted — Platform::issue_capital is reached only from qip-api's capital-grant route, which requires attested operator presence, and Principal::presence is always Unattested until ADR 0120's per-person verifier exists (the R12-RISK-4111 slice). Recorded, not refuting: hedge_blind_position and unwind_cycle send risk-reducing exits without the capital or drawdown checks, as they did for the loss limit.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1977,10 +1982,10 @@
       "R12-CAPITAL-4082"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo +1.94.1 test -p qip-edge --test drawdown && cargo +1.94.1 test -p qip-contracts --test drawdown_bounds && cargo +1.94.1 test -p qip-capital --test capital an_issued_grant_carries_all_five_bounds_and_its_drawdown_stop_is_its_loss_limit",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D02; gap before it: No drawdown (peak-to-trough) bound is in the envelope the cell enforces, distinct from the loss limit; the five-bound CapitalGrant contract is not what cells hold."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D02; gap before it: No drawdown (peak-to-trough) bound is in the envelope the cell enforces, distinct from the loss limit; the five-bound CapitalGrant contract is not what cells hold. 2026-10-24 lane L1-MONEY (fe8185a7, b28acbf3): mutations fired — check_drawdown never refuses; RealisedLedger high-water update removed; with_drawdown skips the loss-limit check; verify skips the wide-stop refusal; DrawdownBoundsFields::check returns Ok; issue drops with_drawdown; drawdown_verdict's required branch disabled; assemble drops with_drawdown_stop_required; ApprovalChain::envelope drops the stop. All restored with cp+cmp. Independent security-engineer skeptic REFUTED (see gap)."
   },
   {
     "id": "R12-CAPITAL-4089",

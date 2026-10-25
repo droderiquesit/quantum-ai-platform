@@ -136,6 +136,10 @@ fn grant() -> Result<VerifiedEnvelope> {
         qip_capital::DEFAULT_MAX_LEVERAGE,
         dec!("1000000"),
     )?)?;
+    // ADR 0126 decision 2: the assembled cell requires a drawdown stop, as
+    // the centre's issuer signs one at the loss limit into every grant.
+    let loss_limit = unsigned.loss_limit();
+    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(loss_limit)?)?;
     let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
     VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, CELL, t(1))
 }
