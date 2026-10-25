@@ -588,6 +588,157 @@ impl SimulatedFeed {
     }
 }
 
+/// Ticks read back from the tick lake, presented to a cell as this feed's
+/// wire (R12-TICK-9006).
+///
+/// A replay that wrote recorded ticks into a cell's books directly would
+/// skip the decoder, the sequencer and the feature path that the recorded
+/// session went through. A cell replayed that way decides from a book the
+/// live cell never held. So each recorded tick is written back as the
+/// publisher's line ([`level_line`], [`status_line`]), and the frame goes
+/// through `Cell::on_bytes` and the feed's own decoder. That is the same
+/// path [`SimulatedFeed::publish`] takes.
+///
+/// What it cannot reproduce, stated so a divergence is not a mystery:
+///
+/// * **A resynchronisation.** A book the original cell discarded after a
+///   gap was rebuilt from the venue's whole depth by `Cell::apply_snapshot`.
+///   That is out of band and is not in the lake (see
+///   [`SimulatedFeed::take_captured`]). A replayed cell that asks for a
+///   snapshot keeps asking, and its book stays discarded.
+/// * **An instrument listed but never published.** The original feed began
+///   tracking an instrument when the venue listed it. The replay begins
+///   when the instrument's first tick appears.
+///
+/// Bounded like the feed it replays: at most [`MAX_FEED_INSTRUMENTS`]
+/// instruments, and one frame per call.
+#[derive(Debug)]
+pub struct ReplayFeed {
+    venue: VenueId,
+    key: FeedKey,
+    tracked: std::collections::BTreeSet<String>,
+}
+
+impl ReplayFeed {
+    /// A replay of `venue`'s simulated depth feed.
+    pub fn new(venue: VenueId) -> Self {
+        Self {
+            key: FeedKey::new(venue.clone(), FEED_NAME),
+            venue,
+            tracked: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Bind the feed's decoder and the venue's settlement terms to `cell`,
+    /// exactly as [`SimulatedFeed::attach`] does. A replay bound any other
+    /// way would decode and settle differently from the session it replays.
+    pub fn attach(&self, cell: &mut Cell) -> Result<()> {
+        SimulatedFeed::new(self.venue.clone()).attach(cell)
+    }
+
+    /// Present one pass's recorded `ticks` to `cell` at `now`.
+    ///
+    /// Sorted by the publisher's sequence before they are written, which is
+    /// the order the publisher put them on the wire. Refused, before
+    /// anything reaches the cell, when a tick is not one this feed could
+    /// have published: another venue's or another feed's, a body the
+    /// publisher has no line for, an id the wire cannot carry, or an
+    /// instrument past [`MAX_FEED_INSTRUMENTS`]. Replaying such a tick
+    /// through this decoder would invent a session that never happened.
+    pub fn publish(
+        &mut self,
+        cell: &mut Cell,
+        ticks: &[MarketMessage],
+        now: Timestamp,
+    ) -> Result<FeedTick> {
+        let mut ordered: Vec<&MarketMessage> = ticks.iter().collect();
+        ordered.sort_by_key(|tick| tick.origin.sequence);
+        let mut frame = String::new();
+        let mut instruments = std::collections::BTreeSet::new();
+        let mut first_seen = Vec::new();
+        for tick in &ordered {
+            if tick.origin.venue != self.venue || tick.origin.feed != FEED_NAME {
+                return Err(Error::invalid(format!(
+                    "a recorded tick of {}/{} cannot be replayed as {}/{FEED_NAME}: its \
+                     decoder is not this one",
+                    tick.origin.venue, tick.origin.feed, self.venue
+                )));
+            }
+            let id = tick.object_id.as_str();
+            if id.contains('\t') || id.contains('\n') || id.contains('\r') {
+                return Err(Error::invalid(format!(
+                    "recorded instrument {id:?} cannot be written on this feed's wire, so the \
+                     publisher never sent it"
+                )));
+            }
+            let line = match &tick.body {
+                MessageBody::LevelSet {
+                    side,
+                    price,
+                    quantity,
+                    ..
+                } => level_line(
+                    tick.origin.sequence,
+                    tick.venue_time,
+                    id,
+                    *side,
+                    *price,
+                    *quantity,
+                ),
+                MessageBody::StatusChange { status } => {
+                    status_line(tick.origin.sequence, tick.venue_time, id, *status)
+                }
+                other => {
+                    return Err(Error::invalid(format!(
+                        "recorded tick {} carries {other:?}, which the simulated publisher \
+                         has no line for; replay it through the decoder of the feed that \
+                         published it",
+                        tick.origin.sequence
+                    )));
+                }
+            };
+            if !self.tracked.contains(id) && !first_seen.iter().any(|seen: &String| seen == id) {
+                first_seen.push(id.to_string());
+            }
+            instruments.insert(id.to_string());
+            frame.push_str(&line);
+        }
+        if self.tracked.len() + first_seen.len() > MAX_FEED_INSTRUMENTS {
+            return Err(Error::invalid(format!(
+                "the recorded session names more than {MAX_FEED_INSTRUMENTS} instruments, \
+                 which the feed it replays would not have tracked"
+            )));
+        }
+        // As the live feed does: the venue was read, so its feed is alive
+        // whether or not anything moved.
+        cell.feed_heartbeat(&self.venue, now);
+        for id in first_seen {
+            cell.track(VenueState::aggregated(
+                ObjectId::from_string(id.clone()),
+                self.venue.clone(),
+                VenueStatus::Open,
+            ));
+            self.tracked.insert(id);
+        }
+        let mut tick = FeedTick {
+            instruments: instruments.len(),
+            ..FeedTick::default()
+        };
+        if !ordered.is_empty() {
+            let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
+            if decoded != ordered.len() {
+                return Err(Error::invalid(format!(
+                    "the replay wrote {} recorded tick(s) and the cell decoded {decoded}; the \
+                     feed's wire and its decoder disagree",
+                    ordered.len()
+                )));
+            }
+            tick.messages = decoded;
+        }
+        Ok(tick)
+    }
+}
+
 /// One level, as the venue's publisher writes it and the feed's decoder
 /// reads it:
 /// `sequence ⇥ venue_time_nanos ⇥ object_id ⇥ B|A ⇥ price ⇥ size ⇤`.

@@ -38,9 +38,10 @@
 //! [`RequotingPlacer`], so a replacement's fresh venue id reaches the cell
 //! as the id the cell sent — see `crate::reprice`.
 
-use crate::feed::{FeedTick, SimulatedFeed};
+use crate::feed::{FeedTick, ReplayFeed, SimulatedFeed};
 use crate::gateway::SimulatedGateway;
 use crate::reprice::{Requote, Requoter, RequotingPlacer};
+use qip_contracts::message::MarketMessage;
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 use qip_edge::cell::{Cell, ConfirmedFill, WorkReport};
@@ -356,6 +357,49 @@ pub fn run_pass(
     // the book it changed and before the cell asks what filled.
     gateway.advance_to(now)?;
     let tick = feed.publish(gateway, cell, now)?;
+    decide_act_reconcile(cell, gateway, tick, requoter, stats, now)
+}
+
+/// [`run_pass`] with the cell's market view taken from retained history
+/// rather than from the venue (R12-TICK-9006): `ticks`, read back from the
+/// tick lake, are presented through [`ReplayFeed`]. Everything after the
+/// feed step is the same function [`run_pass`] runs.
+///
+/// One function after the feed, not a copy of it. A replay pass that
+/// skipped a step of the live pass (the expiry withdrawal, the requote, the
+/// drop-copy reconciliation) would decide from a cell in a state the live
+/// cell never reached. Its decisions would then differ for a reason the
+/// lake had nothing to do with, and "a replay yields the same decisions"
+/// would be untestable.
+///
+/// The gateway is the simulated one here too. A replay places orders
+/// against a venue that matches them, and the replay venue is the
+/// simulator, never a live venue.
+pub fn run_replay_pass(
+    cell: &mut Cell,
+    gateway: &mut SimulatedGateway,
+    feed: &mut ReplayFeed,
+    ticks: &[MarketMessage],
+    requoter: Option<&mut Requoter>,
+    stats: &mut PassStats,
+    now: Timestamp,
+) -> Result<PassOutcome> {
+    gateway.advance_to(now)?;
+    let tick = feed.publish(cell, ticks, now)?;
+    decide_act_reconcile(cell, gateway, tick, requoter, stats, now)
+}
+
+/// The pass after its feed step: drain the venue's reports, withdraw what
+/// expired, stop if halted, observe the venue's account, requote, work, and
+/// reconcile.
+fn decide_act_reconcile(
+    cell: &mut Cell,
+    gateway: &mut SimulatedGateway,
+    tick: FeedTick,
+    requoter: Option<&mut Requoter>,
+    stats: &mut PassStats,
+    now: Timestamp,
+) -> Result<PassOutcome> {
     // §36.3's node-crash row. While the cell is reconciling before it
     // resumes, the venue's own account of what it holds open is taken here —
     // from the gateway itself, before it is wrapped, because the account is
