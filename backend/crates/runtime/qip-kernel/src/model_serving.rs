@@ -270,10 +270,10 @@ impl ModelPromotion {
     }
 }
 
-/// Shadow rounds a self-fitted model must win before it may be promoted.
-/// Chosen, not measured: three passes on data that arrived after the fit is
-/// the least that distinguishes a model from one lucky window.
-pub const MIN_SHADOW_ROUNDS: u32 = 3;
+/// Shadow rounds a self-fitted model must win before it may be promoted: the
+/// registry's own figure, which `ModelRegistry::promote` enforces for every
+/// self-fitted card whoever calls it.
+pub use qip_ai::registry::MIN_SHADOW_ROUNDS;
 
 /// The shadow stage a self-fitted candidate must have completed, as one
 /// stage line, or the refusal (R12-EXPAND-6070).
