@@ -118,6 +118,7 @@ fn order(id: &str, grants: Vec<(String, String)>) -> Decision {
         release_at: None,
         equalised: false,
         grants,
+        grounds: Vec::new(),
     }
 }
 

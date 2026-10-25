@@ -1970,9 +1970,10 @@
       "backend/crates/services/qip-prediction/tests/belief.rs:83",
       "backend/crates/services/qip-prediction/tests/belief.rs:109",
       "backend/crates/services/qip-prediction/tests/belief.rs:181",
-      "backend/crates/runtime/qip-kernel/src/event_markets.rs::EventMarketPlane::price"
+      "backend/crates/runtime/qip-kernel/src/event_markets.rs::EventMarketPlane::price",
+      "docs/adr/0182-a-simulation-lesson-is-a-promoted-claim-an-embedding-is-a-fifth-model-form-and-event-arrival-and-the-warehouse-write-path-stay-as-decided.md"
     ],
-    "gap": "belief.rs Arrival has no producer by decision (ADR 0151 d10): the plane prices from venue books and labels the distribution venue-implied; an evidence-estimated belief and a leakage refusal on this path are not built.",
+    "gap": "Decided 2026-10-25 by ADR 0182 d3 (see notes for the decision and the code it leaves). belief.rs Arrival has no producer by decision (ADR 0151 d10): the plane prices from venue books and labels the distribution venue-implied; an evidence-estimated belief and a leakage refusal on this path are not built.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1983,7 +1984,7 @@
     "verification": "cargo test -p qip-prediction",
     "work_item": "",
     "size": "M",
-    "notes": "Restated 2026-10-24 by lane M1-KERNEL-EDGE per ADR 0151 d10: no-code-restate, no code change; EventMarketPlane::price (event_markets.rs) is the venue-implied path by decision."
+    "notes": "Restated 2026-10-24 by lane M1-KERNEL-EDGE per ADR 0151 d10: no-code-restate, no code change; EventMarketPlane::price (event_markets.rs) is the venue-implied path by decision. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0182 decision 3: event arrival stays venue-implied; ADR 0151 decision 10 stands for want of a licensed evidence source. The row stays PARTIAL by decision. Status unchanged."
   },
   {
     "id": "R12-EVENT-5085",

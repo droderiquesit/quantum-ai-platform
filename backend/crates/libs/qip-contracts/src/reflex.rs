@@ -162,6 +162,13 @@ pub enum Decision {
         equalised: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         grants: Vec<(String, String)>,
+        /// The grounds the order was sent on (R12-GOV-6127, ADR 0200), as
+        /// [`crate::action::Justification::rendered`] writes them: each one
+        /// a reference the cell resolved against its own state at the send
+        /// seam. Empty, and so absent for the reason `release_at` is, on
+        /// entries sealed before the field existed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        grounds: Vec<String>,
     },
     /// The venue reported part or all of an order traded, and the cell
     /// booked it.
@@ -217,6 +224,9 @@ pub enum Decision {
         object: String,
         quantity: String,
         simulated: bool,
+        /// The grounds the hedge was sent on, as on [`Self::OrderSent`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        grounds: Vec<String>,
     },
     /// A resting order passed its time to live and the cell withdrew what
     /// remained, `withdrawn` being the venue's own answer to the cancel.

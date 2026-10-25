@@ -937,25 +937,27 @@
   },
   {
     "id": "R12-QUANT-4043",
-    "status": "PARTIAL",
-    "current": "qip-agency builds plans only when every hard constraint holds and ranks only constrained plans; there is no quantum search, no simulation step and the path is reached only from qip-cli.",
+    "status": "COMPLETE",
+    "current": "qip-agency's Structural::generate searches intervention plans combinatorially: every single step and every two-step pair on distinct levers. Each candidate is simulated under every structural causal model and scenario, and its expected causal effect is the mean over those branches. select applies the policy gates (stray levers, hard comparison constraints, the risk envelope, unplannable plans). engine::execute, the only path to an Adapter call, refuses to act unless every simulated branch moves the objective toward the goal (counterfactually_supported). It holds for any caller, and acting with no guard is refused. The searcher is classical: ADR 0150 and 0190 build no quantum one. The CLI's adapter refuses every call (ADR 0114).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/plan.rs header (select ranks only constrained plans)"
+      "backend/crates/services/qip-agency/src/engine.rs::execute, counterfactually_supported",
+      "backend/crates/services/qip-agency/src/generate.rs::Structural::generate",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_searched_plan_acts_only_with_a_causal_score_a_policy_gate_pass_and_a_simulation_record"
     ],
-    "gap": "Simulation and classical causal re-scoring before execution; any search producer.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-MODEL-4014"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency a_searched_plan_acts_only_with_a_causal_score_a_policy_gate_pass_and_a_simulation_record",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 (L4, wave580), commit f9edfe5f. Mutation: drop the counterfactually_supported refusal in engine::execute; the contested searched plan executes (agency.rs:3749). Restored; sha256sum checked. Independent security-engineer skeptic: HOLDS. It recorded one reading for the owner: '(quantum)' describes the search, so the requirement does not demand a quantum searcher exist. If the owner reads it as a declined clause, the row returns to PARTIAL under ADR 0150/0190. Promoted to COMPLETE."
   },
   {
     "id": "R12-QUANT-4044",
@@ -1429,7 +1431,8 @@
     "current": "qip-portfolio holds positions, lots, lifecycle and exposures separately from qip-execution-engine; there is no Asset Brain component that owns the whole lifecycle.",
     "evidence": [
       "backend/crates/libs/qip-portfolio/src/lifecycle.rs:19 PositionLifecycle",
-      "backend/crates/tests/qip-acceptance/tests/arch_006_lib_no_io.rs libs perform no I/O"
+      "backend/crates/tests/qip-acceptance/tests/arch_006_lib_no_io.rs libs perform no I/O",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::position_economics_reach_no_execution_venue_or_edge_crate"
     ],
     "gap": "2026-10-24 (re-read against the tree): The acceptance clause holds by manifest (qip-portfolio and qip-financial Cargo.toml depend only on qip-core, qip-events, qip-contracts, qip-financial for portfolio, and serde), but only the direct edge to qip-execution-engine is pinned (qip-acceptance architecture.rs the_execution_engine_is_reachable_from_almost_nothing); no test stops either crate reaching qip-brokers or qip-edge directly or transitively. The requirement's subject, an Asset Brain owning the economic lifecycle, does not exist: ownership depends on R12-ASSET-4066..4071 being integrated into the kernel book (plain code, large).",
     "implemented": true,
@@ -1442,7 +1445,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25 lane L3-DATA (wave580): added the transitive guard the gap named - qip-portfolio and qip-financial reach none of qip-execution-engine, qip-brokers, qip-edge, qip-edge-node. Cargo already forbids the edge today (each mechanics crate depends on qip-financial, so the reverse would be a cycle); the guard holds the line if that changes. Verified by injecting qip-portfolio -> qip-edge into the graph the test reads: it failed with 'qip-portfolio reaches qip-execution-engine'; restored by cp + cmp. Kept PARTIAL: the Asset Brain itself depends on R12-ASSET-4066..4071."
   },
   {
     "id": "R12-ASSET-4066",

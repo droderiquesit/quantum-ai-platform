@@ -1417,6 +1417,13 @@ struct Working {
     /// recomputed from a different price. Zero for a cell with no allocation
     /// and for a cycle leg, whose cycle holds once for every leg.
     region_committed: Decimal,
+    /// The grounds `Cell::send` resolved when the order went out, rendered as
+    /// its `OrderSent` records them (ADR 0200). A replacement stands on
+    /// these, and [`Cell::admit_replacement`] refuses to requote an order
+    /// whose recorded grounds name no evidence: a new price with nothing
+    /// behind it but the price is the order R12-GOV-6127 forbids. Set by
+    /// `record_sent`, the one place a `Working` enters the set.
+    grounds: Vec<String>,
 }
 
 /// How many orders the cell will hold open at once.
@@ -1785,10 +1792,17 @@ pub struct Cell {
     /// entry has never been measured, which the clock row reads as unknown
     /// and not as healthy.
     clock_lead: BTreeMap<VenueId, Duration>,
-    /// The venues currently journaled as silent, and the instant each was
-    /// last heard — so the incident is recorded once, not once per pass, and
-    /// the reconciliation entry can name where the blind interval began.
-    feed_silent: BTreeMap<VenueId, Timestamp>,
+    /// The venues currently journaled as silent, the instant each was last
+    /// heard, and the journal sequence of the `FeedSilent` entry — so the
+    /// incident is recorded once, not once per pass, the reconciliation
+    /// entry can name where the blind interval began, and a hedge the
+    /// silence prompts can cite the entry it answers (ADR 0200).
+    feed_silent: BTreeMap<VenueId, (Timestamp, u64)>,
+    /// The cycles being unwound right now, each with the journal sequence of
+    /// the refusal that broke it (ADR 0200). Filled by `break_cycle` for the
+    /// length of one `unwind_cycle` call and emptied after it, so an offset
+    /// can cite the break it answers and nothing else can cite one.
+    unwinding_breaks: BTreeMap<String, u64>,
     /// The silent venues the feed-loss playbook has already acted on, so a
     /// silence is hedged once and a venue heard again can be hedged on its
     /// next silence.
@@ -1933,6 +1947,7 @@ impl Cell {
             feed_heard: BTreeMap::new(),
             clock_lead: BTreeMap::new(),
             feed_silent: BTreeMap::new(),
+            unwinding_breaks: BTreeMap::new(),
             feed_loss_handled: BTreeSet::new(),
             venue_health,
             degradation,
@@ -4189,7 +4204,7 @@ impl Cell {
     /// there and how many of its books are still awaiting resynchronisation.
     pub fn feed_heartbeat(&mut self, venue: &VenueId, now: Timestamp) {
         self.feed_heard.insert(venue.clone(), now);
-        let Some(silent_from) = self.feed_silent.remove(venue) else {
+        let Some((silent_from, _)) = self.feed_silent.remove(venue) else {
             return;
         };
         let resting_orders = self
@@ -4418,15 +4433,18 @@ impl Cell {
             .map(|(venue, heard)| (venue.clone(), *heard))
             .collect();
         for (venue, last_heard) in silent {
-            self.journal.record(
-                Decision::FeedSilent {
-                    venue: venue.as_str().to_string(),
-                    last_heard,
-                    limit_ms: limit.as_millis(),
-                },
-                now,
-            );
-            self.feed_silent.insert(venue, last_heard);
+            let entry = self
+                .journal
+                .record(
+                    Decision::FeedSilent {
+                        venue: venue.as_str().to_string(),
+                        last_heard,
+                        limit_ms: limit.as_millis(),
+                    },
+                    now,
+                )
+                .sequence;
+            self.feed_silent.insert(venue, (last_heard, entry));
         }
 
         let Some(health) = self.venue_health.as_ref() else {
@@ -4548,13 +4566,19 @@ impl Cell {
             return;
         };
         // The hedge answers a fact the cell journaled: the venue fell
-        // silent with a position open there.
-        let Ok(justification) = Justification::of(vec![Ground::Evidence(format!(
-            "journal:feed_silent:{}:{}",
-            blind.as_str(),
-            object_id.as_str()
-        ))]) else {
-            return;
+        // silent with a position open there. It cites that entry by
+        // sequence, which `Cell::send` resolves against `feed_silent`.
+        let grounds = self
+            .feed_silent
+            .get(blind)
+            .map(|(_, entry)| vec![Ground::Evidence(format!("journal:feed_silent:{entry}"))])
+            .unwrap_or_default();
+        let justification = match Justification::of(grounds) {
+            Ok(justification) => justification,
+            Err(error) => {
+                self.refuse(report, GATE_JUSTIFICATION, error.message(), now);
+                return;
+            }
         };
         match self.send(
             object_id,
@@ -4576,6 +4600,7 @@ impl Cell {
                         object: object_id.as_str().to_string(),
                         quantity: quantity.to_string(),
                         simulated,
+                        grounds: justification.rendered(),
                     },
                     now,
                 );
@@ -6387,9 +6412,11 @@ impl Cell {
                 },
                 net: net_intent.clone(),
                 region_committed,
+                grounds: Vec::new(),
             },
             schedule.equalised(),
             grants,
+            justification.rendered(),
             now,
         );
         self.open_chain(&order_id, net_intent, now);
@@ -6456,15 +6483,21 @@ impl Cell {
     /// any, is journaled at. The two differ by the leg's offset on its
     /// cycle's release schedule and by nothing else.
     ///
-    /// `_justification` is the proof the order stands on more than the
+    /// `justification` is the proof the order stands on more than the
     /// profit it expects (R12-GOV-6127): a value only
     /// [`qip_contracts::action::Justification::of`] makes, and only for
     /// grounds naming independent evidence — the signals and feature
-    /// revisions a net intent was formed from, the cycle a leg belongs to,
-    /// the failure a hedge or an offset answers. This is the one place a
-    /// `Placer` is called, so no order reaches a venue from this cell
-    /// without one; a caller that cannot name evidence refuses before it
-    /// gets here, under [`GATE_JUSTIFICATION`].
+    /// revisions a net intent was formed from, the books a cycle leg was
+    /// found over, the journaled silence a hedge or the journaled break an
+    /// offset answers. This is the one place a `Placer` is called, so no
+    /// order reaches a venue from this cell without one; a caller that
+    /// cannot name evidence refuses before it gets here, under
+    /// [`GATE_JUSTIFICATION`]. And because a reference is only text, the
+    /// type proves that one was named, not that it is true: so here, before
+    /// the sequence advances, every reference is resolved against what the
+    /// cell itself holds (ADR 0200, [`Self::unresolved_ground`]), and an
+    /// order citing something the cell does not hold is refused and
+    /// journaled under the same gate.
     #[allow(clippy::too_many_arguments)]
     fn send(
         &mut self,
@@ -6476,7 +6509,7 @@ impl Cell {
         now: Timestamp,
         release_at: Timestamp,
         mode: qip_execution_engine::modes::ExecutionMode,
-        _justification: &Justification,
+        justification: &Justification,
         gateway: &mut dyn Placer,
     ) -> Result<(String, bool)> {
         let simulated = gateway.is_simulated();
@@ -6512,6 +6545,21 @@ impl Cell {
                 now,
             );
             return Err(error);
+        }
+        // After the posture checks, which say what may be sent at all, and
+        // before the fence and the risk gate, which say whether this order
+        // may be sent now: an order that names nothing the cell can re-read
+        // has no reason to be asked about either.
+        if let Some(reason) = self.unresolved_ground(justification) {
+            self.metrics.refusal(GATE_JUSTIFICATION);
+            self.journal.record(
+                Decision::Refused {
+                    gate: GATE_JUSTIFICATION.to_string(),
+                    reason: reason.clone(),
+                },
+                now,
+            );
+            return Err(Error::denied(reason));
         }
         // The fence, before the risk gate: a process that does not own the
         // venue session has no business asking whether an order is within
@@ -6577,8 +6625,49 @@ impl Cell {
         price: Decimal,
         now: Timestamp,
     ) -> Result<()> {
+        self.replacement_grounded(order_id, now)?;
         self.fence_admit(now)?;
         self.risk_admit(Some(order_id), object_id, venue, side, quantity, price, now)
+    }
+
+    /// Refuse under [`GATE_JUSTIFICATION`] a replacement for `order_id` when
+    /// the order it replaces went out on no evidence (ADR 0200).
+    ///
+    /// A requote moves an order's price and nothing else: the intention, the
+    /// size the venue acknowledged and the reasons are the original's. So
+    /// the replacement stands on the grounds `Cell::send` resolved when the
+    /// original went out, and those are what is checked — not resolved
+    /// again, because the signals of a pass are cleared with it and a ground
+    /// re-resolved a pass later would refuse every honest requote. An order
+    /// the cell holds no grounds for, or whose grounds were only the profit
+    /// it expected, the price it wanted to move and corroborating features,
+    /// is not repriced: a new price for such an order is a price impact
+    /// with nothing behind it. Journaled and counted here, as at
+    /// [`Self::send`], because a requote has no report to push onto.
+    fn replacement_grounded(&mut self, order_id: &str, now: Timestamp) -> Result<()> {
+        let grounded = self.working.get(order_id).is_some_and(|working| {
+            working.grounds.iter().any(|ground| {
+                ground != "expected_profit"
+                    && ground != "desired_price_impact"
+                    && !ground.starts_with("feature:")
+            })
+        });
+        if grounded {
+            return Ok(());
+        }
+        let reason = format!(
+            "order {order_id} went out on no evidence the cell recorded, so a new price for it \
+             would be justified by the price alone; it is not requoted"
+        );
+        self.metrics.refusal(GATE_JUSTIFICATION);
+        self.journal.record(
+            Decision::Refused {
+                gate: GATE_JUSTIFICATION.to_string(),
+                reason: reason.clone(),
+            },
+            now,
+        );
+        Err(Error::denied(reason))
     }
 
     /// Refuse under [`crate::fencing::GATE_FENCED`] when an installed fence
@@ -6721,12 +6810,14 @@ impl Cell {
     /// `grants` is what each grant was charged for this order, as
     /// [`Decision::OrderSent`] documents; the caller charged them and passes
     /// the same figures, so the record is the charge and not a second account
-    /// of it.
+    /// of it. `grounds` is the justification [`Self::send`] resolved, rendered,
+    /// so the chain says why the order went and not only that it went.
     fn record_sent(
         &mut self,
         working: Working,
         equalised: bool,
         grants: Vec<(String, String)>,
+        grounds: Vec<String>,
         now: Timestamp,
     ) {
         let order = &working.order;
@@ -6739,11 +6830,14 @@ impl Cell {
                 release_at: Some(order.release_at),
                 equalised,
                 grants,
+                grounds: grounds.clone(),
             },
             now,
         );
         self.metrics.order_placed(&order.venue);
-        self.working.insert(order.order_id.clone(), working);
+        let order_id = order.order_id.clone();
+        self.working
+            .insert(order_id, Working { grounds, ..working });
     }
 
     /// The grounds a net intent stands on (R12-GOV-6127): its expected
@@ -6779,6 +6873,95 @@ impl Cell {
             }
         }
         grounds
+    }
+
+    /// Why `justification` cannot be sent, or `None` when it can (ADR 0200).
+    ///
+    /// Every evidence ground is a reference in one of six forms, and five
+    /// of them name something this cell holds and can be checked against:
+    ///
+    /// - `journal:signal_raised:{sequence}` — a signal raised this pass;
+    /// - `policy:{sequence}:disposition:{strategy}:{object}` — the signed
+    ///   policy in force instructed that lot unwound;
+    /// - `journal:feed_silent:{sequence}` — a venue is silent, journaled at
+    ///   that entry, and still silent;
+    /// - `journal:cycle_broken:{sequence}` — a cycle broke at that entry and
+    ///   is being unwound now;
+    /// - `book:{venue}:{object}@{sequence}` — the cell holds that book, it is
+    ///   not stale, and it has applied that venue message.
+    ///
+    /// The sixth, `feature:{name}@{revision}`, corroborates and is not
+    /// checked: the revision belongs to a contributor's own feature graph,
+    /// which the send seam does not hold. So it never carries an order
+    /// alone. A reference in any other form, or in a checked form naming
+    /// something the cell does not hold, refuses the order: a citation that
+    /// does not resolve is a false statement about why the order went, and
+    /// one false ground beside a true one is still a false record.
+    fn unresolved_ground(&self, justification: &Justification) -> Option<String> {
+        let mut anchored = false;
+        for ground in justification.grounds() {
+            let Ground::Evidence(reference) = ground else {
+                continue;
+            };
+            match self.resolves(reference) {
+                Some(true) => anchored = true,
+                Some(false) => {
+                    return Some(format!(
+                        "the ground {reference} names nothing this cell holds; an order is sent \
+                         on evidence the cell can re-read, or not at all"
+                    ));
+                }
+                None => {}
+            }
+        }
+        (!anchored).then(|| {
+            "no ground names a signal, an instruction, a journaled failure or a held book; \
+             expected profit and corroborating features do not carry an order alone"
+                .to_string()
+        })
+    }
+
+    /// Whether `reference` resolves against this cell's state: `Some(true)`
+    /// or `Some(false)` for a checked form, `None` for the one corroborating
+    /// form. See [`Self::unresolved_ground`] for the forms.
+    fn resolves(&self, reference: &str) -> Option<bool> {
+        if reference.starts_with("feature:") {
+            return None;
+        }
+        let sequence_of = |rest: &str| rest.parse::<u64>().ok();
+        let resolved = if let Some(rest) = reference.strip_prefix("journal:signal_raised:") {
+            sequence_of(rest)
+                .is_some_and(|entry| self.signal_sequences.values().any(|held| *held == entry))
+        } else if let Some(rest) = reference.strip_prefix("journal:feed_silent:") {
+            sequence_of(rest)
+                .is_some_and(|entry| self.feed_silent.values().any(|(_, held)| *held == entry))
+        } else if let Some(rest) = reference.strip_prefix("journal:cycle_broken:") {
+            sequence_of(rest)
+                .is_some_and(|entry| self.unwinding_breaks.values().any(|held| *held == entry))
+        } else if let Some(rest) = reference.strip_prefix("book:") {
+            rest.rsplit_once('@')
+                .and_then(|(key, applied)| Some((key.split_once(':')?, sequence_of(applied)?)))
+                .is_some_and(|((venue, object), applied)| {
+                    self.liquidity
+                        .get(&VenueId::new(venue), &ObjectId::from_string(object))
+                        .is_some_and(|book| {
+                            !book.is_stale()
+                                && book.last_sequence().is_some_and(|last| last >= applied)
+                        })
+                })
+        } else if let Some(rest) = reference.strip_prefix("policy:") {
+            rest.split_once(":disposition:")
+                .and_then(|(entry, lot)| Some((sequence_of(entry)?, lot.split_once(':')?)))
+                .is_some_and(|(entry, (strategy, object))| {
+                    self.policy_sequence() == Some(entry)
+                        && self
+                            .instructed_unwinds
+                            .contains(&(strategy.to_string(), object.to_string()))
+                })
+        } else {
+            false
+        };
+        Some(resolved)
     }
 
     /// Journal the join between the signals a netted order answered and the
@@ -9823,9 +10006,39 @@ impl Cell {
         };
         let price = leg.reference_price;
         let release_at = now.saturating_add(schedule.offset(&leg.venue));
-        // A leg stands on the cycle the desk found over the books it holds.
-        let justification =
-            Justification::of(vec![Ground::Evidence(format!("cycle:{}", cycle.cycle_id))])?;
+        // A leg stands on the books the cycle was found over: every leg's
+        // book, by the venue sequence of the last message the cell applied
+        // to it, which `Cell::send` resolves against the books it holds
+        // (ADR 0200). The cycle id names the trade, not a reason for it.
+        let grounds: Vec<Ground> = std::iter::once(Ground::ExpectedProfit)
+            .chain(cycle.legs.iter().filter_map(|member| {
+                self.liquidity
+                    .get(&member.venue, &member.object_id)
+                    .and_then(VenueState::last_sequence)
+                    .map(|sequence| {
+                        Ground::Evidence(format!(
+                            "book:{}:{}@{sequence}",
+                            member.venue.as_str(),
+                            member.object_id.as_str()
+                        ))
+                    })
+            }))
+            .collect();
+        let justification = match Justification::of(grounds) {
+            Ok(justification) => justification,
+            Err(error) => {
+                self.break_cycle(
+                    gateway,
+                    &cycle.cycle_id,
+                    position,
+                    cycle.legs.len(),
+                    &error,
+                    now,
+                    report,
+                );
+                return Err(error);
+            }
+        };
         let sent = self.send(
             &leg.object_id,
             &leg.venue,
@@ -9936,9 +10149,11 @@ impl Cell {
                 // stays zero and `return_region_capital_for_unfilled` passes
                 // a cycle leg over.
                 region_committed: Decimal::ZERO,
+                grounds: Vec::new(),
             },
             schedule.equalised(),
             grants,
+            justification.rendered(),
             now,
         );
         if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) {
@@ -10067,7 +10282,12 @@ impl Cell {
         // never reaches this line. A predicate distinction no input can
         // exercise would be a guard no test can prove.
         if sent > 0 {
+            // The refusal just journaled is the break each offset answers.
+            if let Some(entry) = self.journal.entries().last().map(|entry| entry.sequence) {
+                self.unwinding_breaks.insert(cycle_id.to_string(), entry);
+            }
             self.unwind_cycle(cycle_id, gateway, now);
+            self.unwinding_breaks.remove(cycle_id);
         }
         if sent > 0 && !self.is_halted() {
             self.autonomy.kill_switch_mut().trip_global(
@@ -10143,11 +10363,29 @@ impl Cell {
                 );
                 continue;
             };
-            // The offset answers the broken cycle that left the position.
-            let Ok(justification) =
-                Justification::of(vec![Ground::Evidence(format!("cycle_broken:{cycle_id}"))])
-            else {
-                continue;
+            // The offset answers the broken cycle that left the position,
+            // citing the refusal that broke it by sequence.
+            let grounds = self
+                .unwinding_breaks
+                .get(cycle_id)
+                .map(|entry| vec![Ground::Evidence(format!("journal:cycle_broken:{entry}"))])
+                .unwrap_or_default();
+            let justification = match Justification::of(grounds) {
+                Ok(justification) => justification,
+                Err(error) => {
+                    self.break_on(
+                        format!(
+                            "cycle {cycle_id} left {} {} open at {} and the offset names no \
+                             ground: {}; the position stands until an operator closes it",
+                            offset.quantity,
+                            offset.object_id.as_str(),
+                            offset.venue.as_str(),
+                            error.message()
+                        ),
+                        now,
+                    );
+                    continue;
+                }
             };
             match self.send(
                 &offset.object_id,
@@ -10169,6 +10407,7 @@ impl Cell {
                             object: offset.object_id.as_str().to_string(),
                             quantity: offset.quantity.to_string(),
                             simulated,
+                            grounds: justification.rendered(),
                         },
                         now,
                     );
@@ -12461,6 +12700,28 @@ mod crossing_tests {
         netted(&[("alpha", "100"), ("beta", "40")], reference_price)
     }
 
+    /// Journal a signal for `strategy` as a pass would before netting, so a
+    /// net driven straight into `place_net` stands on what a pass's net
+    /// stands on: `Cell::send` resolves a net's grounds against the signals
+    /// raised this pass (ADR 0200), and a fixture net with features alone
+    /// is refused there by design.
+    fn raise_signal(cell: &mut Cell, strategy: &str) {
+        let raised = cell
+            .journal
+            .record(
+                Decision::SignalRaised {
+                    strategy: strategy.to_string(),
+                    object: "ACME".to_string(),
+                    kind: "entry".to_string(),
+                    conviction_shrunk_f64: 0.5,
+                    expected_edge_bp: None,
+                },
+                at(10),
+            )
+            .sequence;
+        cell.signal_sequences.insert(strategy.to_string(), raised);
+    }
+
     #[test]
     fn the_send_seam_refuses_a_live_class_venue_and_the_gateway_is_never_called() -> Result<()> {
         // `Cell::work` refuses a live-class gateway for the whole pass, so
@@ -12479,6 +12740,8 @@ mod crossing_tests {
         let mut cell = cell_with_book()?;
         deploy_marketable(&mut cell, "alpha")?;
         deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
         let mut simulated = ClassedGateway {
             simulated: true,
             placed: Vec::new(),
@@ -12497,6 +12760,8 @@ mod crossing_tests {
         let mut cell = cell_with_book()?;
         deploy_marketable(&mut cell, "alpha")?;
         deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
         let mut live = ClassedGateway {
             simulated: false,
             placed: Vec::new(),
@@ -12539,6 +12804,250 @@ mod crossing_tests {
             gates.iter().any(|gate| gate == GATE_LIVE_VENUE),
             "the chain does not name the {GATE_LIVE_VENUE} gate: {gates:?}"
         );
+        Ok(())
+    }
+
+    /// Send one order of `object()` at `venue()` straight through the seam,
+    /// on `grounds`, as any caller of `Cell::send` would.
+    fn send_on(
+        cell: &mut Cell,
+        grounds: Vec<Ground>,
+        gateway: &mut ClassedGateway,
+    ) -> Result<(String, bool)> {
+        let justification = Justification::of(grounds)?;
+        cell.send(
+            &object(),
+            &venue(),
+            BookSide::Bid,
+            Decimal::from_int(1),
+            Decimal::parse("100").expect("a decimal literal"),
+            at(10),
+            at(10),
+            qip_execution_engine::modes::ExecutionMode::OrderTaking,
+            &justification,
+            gateway,
+        )
+    }
+
+    fn justification_refusals(cell: &Cell, before: usize) -> usize {
+        cell.journal()
+            .entries()
+            .iter()
+            .skip(before)
+            .filter(|entry| {
+                matches!(&entry.decision, Decision::Refused { gate, .. } if gate == GATE_JUSTIFICATION)
+            })
+            .count()
+    }
+
+    #[test]
+    fn an_order_citing_evidence_the_cell_does_not_hold_is_refused_at_the_send_seam() -> Result<()> {
+        // ADR 0200. `Justification::of` proves a reference was named, not
+        // that it is true: before this seam resolved references, an order
+        // citing a signal nobody raised went to the venue on the strength
+        // of the text alone, which is a profit-only order wearing a label.
+        //
+        // Premise: the same seam, the same order, citing the signal the
+        // cell did raise, reaches the venue — so the refusals below are the
+        // citation's and not some other gate's.
+        let mut cell = cell_with_book()?;
+        raise_signal(&mut cell, "alpha");
+        let raised = cell.signal_sequences["alpha"];
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+        send_on(
+            &mut cell,
+            vec![
+                Ground::ExpectedProfit,
+                Ground::Evidence(format!("journal:signal_raised:{raised}")),
+            ],
+            &mut gateway,
+        )?;
+        assert_eq!(
+            gateway.placed.len(),
+            1,
+            "the premise failed: the true citation was refused"
+        );
+
+        let refused: [(&str, Vec<Ground>); 5] = [
+            (
+                "a signal never raised",
+                vec![Ground::Evidence(format!(
+                    "journal:signal_raised:{}",
+                    raised + 1000
+                ))],
+            ),
+            (
+                "a corroborating feature alone",
+                vec![
+                    Ground::ExpectedProfit,
+                    Ground::Evidence("feature:mid@1".to_string()),
+                ],
+            ),
+            (
+                "a true signal beside a book the cell does not hold",
+                vec![
+                    Ground::Evidence(format!("journal:signal_raised:{raised}")),
+                    Ground::Evidence(format!("book:{}:NOT-HELD@1", venue().as_str())),
+                ],
+            ),
+            (
+                "a held book cited at a message it never applied",
+                vec![Ground::Evidence(format!(
+                    "book:{}:{}@{}",
+                    venue().as_str(),
+                    object().as_str(),
+                    u64::MAX
+                ))],
+            ),
+            (
+                "a reference in no known form",
+                vec![Ground::Evidence("because the desk said so".to_string())],
+            ),
+        ];
+        for (case, grounds) in refused {
+            let before = cell.journal().entries().len();
+            let sequence = cell.order_sequence;
+            let error = match send_on(&mut cell, grounds, &mut gateway) {
+                Ok(placed) => panic!("{case}: the order was sent: {placed:?}"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), "denied", "{case}: {error}");
+            assert_eq!(
+                gateway.placed.len(),
+                1,
+                "{case}: the venue was called anyway"
+            );
+            assert_eq!(
+                cell.order_sequence, sequence,
+                "{case}: a refusal burned an order number"
+            );
+            assert_eq!(
+                justification_refusals(&cell, before),
+                1,
+                "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_net_order_is_journaled_with_the_grounds_the_send_seam_resolved() -> Result<()> {
+        // ADR 0200: the chain says why an order went, not only that it went.
+        // `OrderSent` carried no reason before, so a reader auditing
+        // R12-GOV-6127 had to re-derive the grounds from the signals around
+        // it and could not tell a profit-only order from a grounded one.
+        let price = Decimal::parse("100").expect("a decimal literal");
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
+        let (alpha, beta) = (
+            cell.signal_sequences["alpha"],
+            cell.signal_sequences["beta"],
+        );
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+        let mut report = WorkReport::default();
+        let sent = cell.place_net(&one_sided_net(price), at(10), &mut gateway, &mut report)?;
+        assert!(
+            sent.is_some(),
+            "the premise failed: refusals {:?}",
+            report.refusals
+        );
+        let grounds: Vec<Vec<String>> = cell
+            .journal()
+            .entries()
+            .iter()
+            .filter_map(|entry| match &entry.decision {
+                Decision::OrderSent { grounds, .. } => Some(grounds.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(grounds.len(), 1, "the premise failed: {grounds:?}");
+        for expected in [
+            "expected_profit".to_string(),
+            format!("journal:signal_raised:{alpha}"),
+            format!("journal:signal_raised:{beta}"),
+        ] {
+            assert!(
+                grounds[0].contains(&expected),
+                "the order's record does not name {expected}: {:?}",
+                grounds[0]
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_requote_stands_on_the_grounds_its_order_went_out_on_and_none_is_refused() -> Result<()> {
+        // ADR 0200. `qip-edge-node`'s repricer sends a replacement after
+        // `Cell::admit_replacement` and never through `Cell::send`, so until
+        // the replacement was checked a new price reached the venue on the
+        // fence and the risk gate alone — a price move nothing justified,
+        // which is R12-GOV-6127's own example.
+        let price = Decimal::parse("100").expect("a decimal literal");
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+        let mut report = WorkReport::default();
+        cell.place_net(&one_sided_net(price), at(10), &mut gateway, &mut report)?;
+        let order_id = gateway
+            .placed
+            .first()
+            .cloned()
+            .expect("the premise: one order went out");
+        let requote = |cell: &mut Cell| {
+            cell.admit_replacement(
+                &order_id,
+                &object(),
+                &venue(),
+                BookSide::Bid,
+                Decimal::from_int(1),
+                price,
+                at(11),
+            )
+        };
+        // Premise: the grounded order is requoted.
+        requote(&mut cell)?;
+
+        for (case, grounds) in [
+            ("no grounds recorded", vec![]),
+            (
+                "profit, price impact and a feature only",
+                vec![
+                    "expected_profit".to_string(),
+                    "desired_price_impact".to_string(),
+                    "feature:mid@1".to_string(),
+                ],
+            ),
+        ] {
+            if let Some(working) = cell.working.get_mut(&order_id) {
+                working.grounds = grounds;
+            }
+            let before = cell.journal().entries().len();
+            let error = match requote(&mut cell) {
+                Ok(()) => panic!("{case}: the replacement was admitted"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), "denied", "{case}: {error}");
+            assert_eq!(
+                justification_refusals(&cell, before),
+                1,
+                "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
+            );
+        }
         Ok(())
     }
 

@@ -587,6 +587,50 @@ fn the_execution_engine_is_reachable_from_almost_nothing() {
     }
 }
 
+/// R12-ASSET-4065: position economics do not perform execution mechanics.
+/// The crates that hold a position's economic record — `qip-portfolio`
+/// (positions, lots, lifecycle) and `qip-financial` (the position record,
+/// valuation, corporate actions) — reach neither the execution engine, nor
+/// a venue adapter, nor the edge cell, directly or through anything they
+/// depend on. The direct edge to the execution engine is already refused
+/// above for both; a transitive path through some third crate was not.
+///
+/// Today cargo already forbids the edge: each of the four depends, directly
+/// or not, on `qip-financial`, so the reverse dependency would be a cycle
+/// and the workspace would not resolve. This test is what still holds the
+/// line the day one of them stops depending on the economic crates — a
+/// refactor that makes the cycle disappear also makes the edge legal.
+#[test]
+fn position_economics_reach_no_execution_venue_or_edge_crate() {
+    let graph = dependency_graph();
+    let mechanics = [
+        "qip-execution-engine",
+        "qip-brokers",
+        "qip-edge",
+        "qip-edge-node",
+    ];
+    for name in mechanics {
+        assert!(
+            graph.contains_key(name),
+            "premise: {name} is a workspace crate, so its absence below means something"
+        );
+    }
+    for economics in ["qip-portfolio", "qip-financial"] {
+        let closure = reachable_from(&graph, economics);
+        assert!(
+            closure.contains("qip-core"),
+            "premise: the closure of {economics} was walked ({closure:?})"
+        );
+        for name in mechanics {
+            assert!(
+                !closure.contains(name),
+                "{economics} reaches {name}; position economics must not depend on execution \
+                 mechanics (R12-ASSET-4065)"
+            );
+        }
+    }
+}
+
 #[test]
 fn nothing_outside_a_composition_root_holds_an_order_manager() {
     // The manifest rule above says which crates may *reach* the execution

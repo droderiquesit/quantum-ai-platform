@@ -80,7 +80,7 @@ use qip_brokers::exchange::{ExchangeSettings, SimulatedDepth, SimulatedExchange}
 use qip_brokers::rest::{RestOrderEntryAdapter, RestOrderStats};
 use qip_contracts::message::BookSide;
 use qip_contracts::replay::ReplayAssumptions;
-use qip_contracts::venue::VenueId;
+use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, OrderId};
@@ -225,9 +225,6 @@ pub struct SimulatedGateway {
     /// [`MAX_WORKING_ORDERS`] with the working set, because a held order is
     /// one this gateway has promised to follow.
     held: BTreeMap<Timestamp, Vec<HeldOrder>>,
-    /// Orders withdrawn at release because their instant was further past
-    /// than [`Self::release_tolerance`], awaiting collection by the cell.
-    unreleased: Vec<UnreleasedOrder>,
     /// See [`DEFAULT_RELEASE_TOLERANCE`].
     release_tolerance: Duration,
     /// What every listing, placement and seed is admitted against, at the
@@ -237,6 +234,24 @@ pub struct SimulatedGateway {
     /// `NodeGateway` variant holding it, grow by a pointer rather than by a
     /// register.
     listing: Option<Box<ListingAuthority>>,
+    /// The trading status this venue declares per instrument, where it has
+    /// declared one other than open (R12-TICK-2044): what the feed
+    /// publishes as a status line beside the depth. Bounded by the listed
+    /// instruments, since only a listed instrument has a status to declare.
+    /// Held in [`Notices`] with the unreleased orders.
+    notices: Box<Notices>,
+}
+
+/// What the venue holds for the cell outside the order path: orders
+/// withdrawn at release, and the statuses it has declared. Boxed together
+/// so the `NodeGateway` variant holding the gateway grows by a pointer.
+#[derive(Debug, Default)]
+struct Notices {
+    /// Orders withdrawn at release because their instant was further past
+    /// than the gateway's `release_tolerance`, awaiting collection by
+    /// the cell.
+    unreleased: Vec<UnreleasedOrder>,
+    statuses: BTreeMap<ObjectId, VenueStatus>,
 }
 
 /// The recorded permissions a gateway lists on demand under, and the
@@ -328,9 +343,9 @@ impl SimulatedGateway {
             working: BTreeMap::new(),
             now: at,
             held: BTreeMap::new(),
-            unreleased: Vec::new(),
             release_tolerance: DEFAULT_RELEASE_TOLERANCE,
             listing: None,
+            notices: Box::default(),
         })
     }
 
@@ -439,7 +454,7 @@ impl SimulatedGateway {
             let lag = now.since(scheduled);
             for order in orders {
                 if lag > self.release_tolerance {
-                    self.unreleased.push(UnreleasedOrder {
+                    self.notices.unreleased.push(UnreleasedOrder {
                         order_id: order.order_id,
                         venue: order.venue,
                         scheduled,
@@ -456,7 +471,7 @@ impl SimulatedGateway {
                 let order_id = order.order_id.clone();
                 let venue = order.venue.clone();
                 if let Err(refusal) = self.submit_now(order, now) {
-                    self.unreleased.push(UnreleasedOrder {
+                    self.notices.unreleased.push(UnreleasedOrder {
                         order_id,
                         venue,
                         scheduled,
@@ -748,6 +763,46 @@ impl SimulatedGateway {
         self.exchange.quotes()
     }
 
+    /// Declare `object_id`'s trading status at this venue: a halt, a
+    /// circuit breaker, an auction, or open again (R12-TICK-2044).
+    ///
+    /// The simulated venue's own announcement, published by `crate::feed`
+    /// as a typed status line the cell decodes like any venue's status
+    /// message, so a breaker reaches the book and the tick lake through the
+    /// same capture path a depth change does. Like seeding, this exists for
+    /// a test or a replay and is never on the order path; it refuses an
+    /// instrument the venue does not list, because a status for a market
+    /// that does not exist is an announcement nobody could have made.
+    pub fn declare_status(&mut self, object_id: &ObjectId, status: VenueStatus) -> Result<()> {
+        if !self
+            .exchange
+            .quotes()
+            .iter()
+            .any(|depth| &depth.object_id == object_id)
+        {
+            return Err(Error::invalid(format!(
+                "{} does not list {object_id}; a status is declared for a listed instrument",
+                self.venue
+            )));
+        }
+        if status == VenueStatus::Open {
+            self.notices.statuses.remove(object_id);
+        } else {
+            self.notices.statuses.insert(object_id.clone(), status);
+        }
+        Ok(())
+    }
+
+    /// The status this venue declares for `object_id`: open unless declared
+    /// otherwise.
+    pub fn status_of(&self, object_id: &ObjectId) -> VenueStatus {
+        self.notices
+            .statuses
+            .get(object_id)
+            .copied()
+            .unwrap_or(VenueStatus::Open)
+    }
+
     /// Admit `action` on `object_id` at this venue, in this gateway's
     /// jurisdiction, against the register it holds *now*.
     ///
@@ -911,7 +966,7 @@ impl Placer for SimulatedGateway {
     }
 
     fn unreleased(&mut self) -> Vec<UnreleasedOrder> {
-        std::mem::take(&mut self.unreleased)
+        std::mem::take(&mut self.notices.unreleased)
     }
 
     /// The currency the venue's own listing quotes the instrument in, read

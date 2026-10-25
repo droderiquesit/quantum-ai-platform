@@ -317,7 +317,19 @@ pub struct ModelCard {
     /// [`ModelRegistry::record_shadow_round`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<ShadowRecord>,
+    /// Whether the platform fitted this model for itself (the deep brain's
+    /// learning desk). A self-fitted card reaches production only out of a
+    /// completed shadow stage, whichever caller asks: the guard is here in
+    /// [`ModelRegistry::promote`] rather than in a producer label a caller
+    /// chooses (R12-EXPAND-6070).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub self_fitted: bool,
 }
+
+/// Shadow rounds a self-fitted model must win before it may be promoted.
+/// Chosen, not measured: three windows of data that arrived after the fit is
+/// the least that distinguishes a model from one lucky window.
+pub const MIN_SHADOW_ROUNDS: u32 = 3;
 
 /// A model's shadow period: it ran beside production, scored on data that
 /// arrived after it was fitted, with its output acted on by nothing
@@ -444,6 +456,7 @@ impl ModelCard {
             campaign_id: None,
             code_version: None,
             shadow: None,
+            self_fitted: false,
         }
     }
 
@@ -999,6 +1012,21 @@ impl ModelRegistry {
                  beautifully and cannot trade",
                 leaks.join("; ")
             )));
+        }
+        if card.self_fitted {
+            let completed = card.stage == ModelStage::Shadow
+                && card
+                    .shadow
+                    .as_ref()
+                    .is_some_and(|shadow| shadow.rounds_won >= MIN_SHADOW_ROUNDS);
+            if !completed {
+                return Err(Error::denied(format!(
+                    "{reference} cannot be promoted: a self-fitted model reaches production only \
+                     out of a completed shadow stage ({MIN_SHADOW_ROUNDS} round(s) won), and this \
+                     one is in {:?}",
+                    card.stage
+                )));
+            }
         }
         card.stage = ModelStage::Production;
         card.deployed_at = Some(at);
