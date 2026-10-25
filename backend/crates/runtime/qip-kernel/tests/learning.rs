@@ -2320,3 +2320,101 @@ fn borrow_availability_that_is_negative_or_from_the_future_is_refused() -> Resul
     );
     Ok(())
 }
+
+/// R12-WORLD-1156, "hypothesis generation": on the default composition
+/// (`Platform::new` with `PlatformConfig::default()`), a sensed tape whose
+/// last bars jump leaves REASON with a hypothesis recorded as a falsifiable
+/// claim. That is a hypothesis id, a proposition that resolves after the
+/// cycle, and the confidence it was made at. A cycle with nothing sensed forms
+/// none, which is the premise that the tape and not the composition made it.
+///
+/// Mutation: in `Platform::keep_prediction`, drop the push -- the sensed cycle
+/// then records no hypothesis and the assertion fails.
+#[test]
+fn reason_forms_a_hypothesis_from_a_sensed_anomaly_on_the_default_composition() -> Result<()> {
+    let mut quiet = platform()?;
+    quiet.run_cycle(start());
+    assert!(
+        quiet.predictions().is_empty(),
+        "premise: a cycle with nothing sensed formed a hypothesis"
+    );
+
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+    assert!(report.stage(Stage::Reason).is_some(), "REASON ran");
+    let formed = platform.predictions();
+    assert!(
+        !formed.is_empty(),
+        "REASON formed no hypothesis from a sensed anomaly:\n{}",
+        report.summarise()
+    );
+    for prediction in formed {
+        assert!(
+            !prediction.hypothesis.trim().is_empty(),
+            "an unnamed hypothesis"
+        );
+        assert!(
+            prediction.proposition.resolves_at > start(),
+            "a claim already resolved"
+        );
+        let claim = prediction
+            .claim
+            .as_ref()
+            .expect("a hypothesis is recorded with the confidence it was made at");
+        assert!((0.0..=1.0).contains(&claim.confidence));
+    }
+    Ok(())
+}
+
+/// R12-WORLD-1156, "uncertainty": a resolved prediction updates the
+/// calibration report the platform measures its own confidence by. Before
+/// anything resolves there is no report; once the claim's horizon passes on a
+/// move large enough to grade it, the report exists, counts the evaluation,
+/// and carries a Brier score in `[0, 1]`.
+///
+/// Mutation: in `Platform::learn_from`, which `calibrate_resolved` reaches,
+/// never store the report (`last_calibration`) -- the platform then reports
+/// none after the resolution.
+#[test]
+fn a_resolved_prediction_updates_the_calibration_report() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let horizon = platform
+        .predictions()
+        .first()
+        .map(|p| p.proposition.resolves_at)
+        .expect("premise: the first cycle made a claim");
+    assert!(
+        platform.calibration().is_none(),
+        "premise: nothing calibrated yet"
+    );
+
+    let swings: Vec<SensedRecord> = (0..20)
+        .map(|i| {
+            let (open, close) = if i % 2 == 0 {
+                (100.0, 150.0)
+            } else {
+                (150.0, 100.0)
+            };
+            bar(
+                "AAA",
+                horizon.saturating_sub(Duration::from_mins((20 - i) * 60)),
+                open,
+                close,
+            )
+        })
+        .collect();
+    platform.observe(swings);
+    platform.run_cycle(horizon.saturating_add(Duration::from_mins(1)));
+    let calibration = platform
+        .calibration()
+        .expect("a resolved prediction updates the calibration report");
+    assert!(calibration.evaluated >= 1, "{calibration:?}");
+    assert!(
+        (0.0..=1.0).contains(&calibration.brier_score),
+        "{calibration:?}"
+    );
+    Ok(())
+}

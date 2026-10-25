@@ -90,7 +90,7 @@ const FINANCIAL_AGI_CORE: [(&str, &str, &str, &str, &str); 10] = [
         "crates/runtime/qip-kernel/src/platform.rs",
         "fn stage_reason",
         "crates/runtime/qip-kernel/tests/learning.rs",
-        "fn a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series",
+        "fn reason_forms_a_hypothesis_from_a_sensed_anomaly_on_the_default_composition",
     ),
     (
         "causal reasoning",
@@ -118,7 +118,7 @@ const FINANCIAL_AGI_CORE: [(&str, &str, &str, &str, &str); 10] = [
         "crates/runtime/qip-kernel/src/platform.rs",
         "fn calibrate_resolved",
         "crates/runtime/qip-kernel/tests/learning.rs",
-        "fn a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series",
+        "fn a_resolved_prediction_updates_the_calibration_report",
     ),
     (
         "memory",
