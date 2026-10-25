@@ -911,8 +911,19 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
     assert_eq!(platform.sizing_confidence("obj-AAA", scoring)?, dec!("0.5"));
     assert_eq!(platform.sizing_cap_multiplier("obj-AAA"), dec!("0.5"));
 
-    // The compounding cycle.
-    let report = platform.run_cycle(scoring.saturating_add(Duration::from_days(1)));
+    // The compounding cycle, on the same kind of fresh move the reference
+    // reasoned on: the reference tape's last-bar drop, off the 110 plateau,
+    // on the first day after it. Since ADR 0170 the verifier society's
+    // refutation vetoes an approved thesis, and on the plateau itself it
+    // rightly did: the equity analyst read the risen price against the claim
+    // at 0.68 conviction and one detector carried over 80% of the support,
+    // so the cycle sized nothing for a reason unrelated to the two
+    // narrowings. Both narrowings are keyed on the instrument and are
+    // asserted active below, so moving the instant past the plateau changes
+    // nothing this test claims.
+    let compounding = start().saturating_add(Duration::from_days(8));
+    platform.observe(vec![bar("AAA", compounding, 110.0, 110.0 * (1.0 + DROP))]);
+    let report = platform.run_cycle(compounding);
     assert!(report.traversed_every_stage(), "{}", report.summarise());
     let compounded = platform
         .proposals()
@@ -1617,4 +1628,71 @@ fn a_position_opened_on_a_thesis_is_that_thesis_classs_exposure_and_the_buckets_
     );
     assert_eq!(exposure.unattributed, Decimal::ZERO, "{exposure:?}");
     assert_eq!(exposure.total(), notional);
+}
+
+/// R12-REASON-3108, ADR 0170 decision 1: an approved hypothesis the verifier
+/// society refutes forms no proposal, and the cycle says the society refused
+/// it.
+///
+/// The failure this prevents: the society's refutation used to hold the
+/// question out of the tournament and nothing else, so a falsified leading
+/// explanation was sized and traded beside the clause saying it had been
+/// falsified. The case is the plateau the compounding test above moved off:
+/// a fresh drop, then a flat 110 for a week, then a cycle that reasons on the
+/// stale move. Review approves it, the equity analyst reads the risen price
+/// against the claim at well over the opposing-conviction bar, and one
+/// detector carries most of the support. Mutation: delete the
+/// `society_refutation` arm in `Platform::reason_about_the_queue` — the
+/// thesis is sized and the empty-proposal assertion fails.
+#[test]
+fn an_approved_hypothesis_the_verifier_society_refutes_forms_no_proposal() -> Result<()> {
+    let universe = {
+        let mut universe = Universe::new();
+        universe.insert(listed("AAA")?)?;
+        universe
+    };
+    let mut platform = platform_over(universe, leverage_only())?;
+    platform.observe(tape("AAA"));
+    platform.run_cycle(start());
+    platform.observe(flat_after("AAA", start(), 7, 110.0));
+
+    let report = platform.run_cycle(start().saturating_add(Duration::from_days(5)));
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let reason = report.stage(Stage::Reason).expect("reason ran");
+    // Premise: review approved it and the society attacked and refuted it,
+    // so an empty proposal below is the veto and not a quiet cycle.
+    assert!(
+        reason.detail.contains("hypothesis approved at confidence "),
+        "premise: review approved a hypothesis: {}",
+        reason.detail
+    );
+    assert!(
+        reason.detail.contains("verifier society: refuted by "),
+        "premise: the society refuted it: {}",
+        reason.detail
+    );
+    assert!(
+        reason
+            .problems
+            .iter()
+            .any(|problem| problem.starts_with("approved but refuted by the verifier society: ")),
+        "the cycle does not say the society refused the thesis: {:?}",
+        reason.problems
+    );
+    assert!(
+        !reason.detail.contains("; sized on conviction"),
+        "a refuted thesis was sized: {}",
+        reason.detail
+    );
+    let proposal = platform
+        .proposals()
+        .last()
+        .cloned()
+        .expect("every cycle records a proposal");
+    assert!(
+        proposal.is_empty(),
+        "a refuted thesis reached a proposal: {}",
+        proposal.rationale
+    );
+    Ok(())
 }
