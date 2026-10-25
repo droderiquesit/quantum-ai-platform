@@ -24,3 +24,4 @@ pub mod demo;
 pub mod event_fabric;
 pub mod registrations;
 pub mod replay;
+pub mod simulate;
