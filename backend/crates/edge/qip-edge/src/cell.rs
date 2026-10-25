@@ -2716,6 +2716,28 @@ impl Cell {
         &self.liquidity
     }
 
+    /// The fingerprint of the book this cell holds for `object` at `venue`
+    /// ([`qip_orderbook::BookSnapshot::digest`]), or `None` when it tracks no
+    /// book there (R12-TICK-1201).
+    ///
+    /// Read-only, and read from the state every gate prices against rather
+    /// than from a copy, so a replay outside the cell — the tick lake read
+    /// back through `qip_orderbook::replay` — can prove it rebuilt the book
+    /// this cell actually decided from. Without it the only comparison
+    /// available was the lake against the venue's own depth, which cannot
+    /// see a decoder that misread the venue's bytes: the venue and the lake
+    /// would agree and the cell would trade off a third book nobody checked.
+    ///
+    /// Not filtered by staleness, unlike [`CellLiquidity`]'s pricing
+    /// accessors: this answers "what does the cell hold", and a stale book is
+    /// still what it holds. [`qip_orderbook::venue::VenueState::is_stale`]
+    /// says whether it may be priced from.
+    pub fn book_digest(&self, venue: &VenueId, object: &ObjectId) -> Option<String> {
+        self.liquidity
+            .get(venue, object)
+            .map(|state| state.snapshot().book.digest())
+    }
+
     pub fn dropcopy_mut(&mut self) -> &mut DropCopyReconciler {
         &mut self.dropcopy
     }
