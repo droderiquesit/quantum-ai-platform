@@ -741,7 +741,7 @@ fn decode_frame(bytes: &[u8]) -> Result<Frame> {
                     principal: cursor.read_string()?,
                 };
                 let partition = origin.partition;
-                (Some(Box::new(origin)), {let _ = partition; None})
+                (Some(Box::new(origin)), Some(partition))
             }
             ORIGIN_TAG_PARTITION => (None, Some(cursor.read_u32()?)),
             other => {
