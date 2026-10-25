@@ -561,6 +561,53 @@ impl KnowledgeGraph {
         keys
     }
 
+    /// Restate, from `at`, every still-believed fact a stale source stated
+    /// at `factor` of its confidence, and return the keys of the
+    /// relationships it touched (R12-RES-7097).
+    ///
+    /// A downweight, not a retraction: a source retired because its data
+    /// went stale said nothing false, so what it said stays believed, held
+    /// less firmly. Each moved version is retracted at `at` and restated as a
+    /// new version recorded at `at`, so a read as of any earlier instant
+    /// still sees the confidence a decision taken then was formed on.
+    ///
+    /// `factor` outside `[0, 1)` is refused: a factor of one moves nothing
+    /// while journaling that it did, and one above it would strengthen
+    /// belief in a source for having gone stale.
+    pub fn downweight_source(
+        &mut self,
+        source: &str,
+        factor: f64,
+        at: Timestamp,
+    ) -> Result<Vec<String>> {
+        if !(0.0..1.0).contains(&factor) {
+            return Err(Error::invalid(format!(
+                "a stale source's facts are downweighted by a factor in [0, 1), not {factor} \
+                 -- a factor of one or more would leave a stale source believed as firmly"
+            )));
+        }
+        let mut keys = Vec::new();
+        for (key, versions) in &mut self.facts {
+            let mut restated = Vec::new();
+            for fact in versions.iter_mut() {
+                if fact.retracted_at.is_none() && fact.relationship.source == source {
+                    fact.retracted_at = Some(at);
+                    restated.push(Fact {
+                        recorded_at: at,
+                        retracted_at: None,
+                        confidence: fact.confidence * factor,
+                        ..fact.clone()
+                    });
+                }
+            }
+            if !restated.is_empty() {
+                versions.extend(restated);
+                keys.push(key.clone());
+            }
+        }
+        Ok(keys)
+    }
+
     /// Every fact believed at the given point in both time dimensions.
     pub fn facts_at(&self, valid_at: Timestamp, known_at: Timestamp) -> Vec<&Fact> {
         self.facts

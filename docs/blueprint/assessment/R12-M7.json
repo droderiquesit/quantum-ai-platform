@@ -2221,9 +2221,13 @@
       "backend/crates/services/qip-world-model/src/world.rs WorldModel::quarantine_source",
       "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources (Quarantined transition)",
       "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs::quarantining_a_source_stops_the_world_model_believing_what_it_said",
-      "backend/crates/services/qip-learning-engine/src/verifier.rs attack_model (quarantined training data)"
+      "backend/crates/services/qip-learning-engine/src/verifier.rs attack_model (quarantined training data)",
+      "backend/crates/services/qip-world-model/src/graph.rs KnowledgeGraph::downweight_source",
+      "backend/crates/services/qip-world-model/src/world.rs WorldModel::mark_source_stale, STALE_SOURCE_CONFIDENCE",
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs::a_belief_citing_a_source_retired_as_stale_is_downweighted_not_retracted",
+      "backend/crates/services/qip-world-model/tests/contradictions.rs::a_stale_downweight_that_would_not_lower_belief_is_refused"
     ],
-    "gap": "2026-10-24 (lane L6): (1) default path: qip-deepbrain assesses sources only when QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH names a candidate catalogue, which no committed environment sets, so the quarantine (and with it the retraction) never runs on a shipped binary's default path (bar part 2); (2) 'stale' half: a source retired for staleness or cost keeps its facts and nothing downweights beliefs citing a stale source; (3) a hypothesis or belief already formed and held (reasoning engine, episodic memory) is not re-scored when its evidence is retracted; only reads after the quarantine see the narrower graph.",
+    "gap": "2026-10-24 (lane L6): (1) default path: qip-deepbrain assesses sources only when QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH names a candidate catalogue, which no committed environment sets, so the quarantine (and with it the retraction) never runs on a shipped binary's default path (bar part 2); (2) closed 2026-10-25: a retired source's facts are restated at STALE_SOURCE_CONFIDENCE (0.5) of their confidence from the retirement, bitemporally, and journaled as BeliefRevised; (3) a hypothesis or belief already formed and held (reasoning engine, episodic memory) is not re-scored when its evidence is retracted; only reads after the quarantine see the narrower graph.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2234,7 +2238,7 @@
     "verification": "cd backend && cargo test -p qip-kernel --test source_lifecycle quarantining_a_source_stops_the_world_model_believing_what_it_said",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L6: implemented the propagation. Mutations, each restored by cp and cmp: replacing the kernel's quarantine_source call with a no-op failed the new test at source_lifecycle.rs:470 ('a quarantined source's facts are still believed'); dropping the source match in retract_source failed it at :475 ('a clean source's facts were retracted with the quarantined one's'). qip-kernel + qip-world-model --no-fail-fast: 90 result lines, 1355 passed, 0 failed. Stays PARTIAL on the default-path and stale clauses."
+    "notes": "2026-10-24 lane L6: implemented the propagation. Mutations, each restored by cp and cmp: replacing the kernel's quarantine_source call with a no-op failed the new test at source_lifecycle.rs:470 ('a quarantined source's facts are still believed'); dropping the source match in retract_source failed it at :475 ('a clean source's facts were retracted with the quarantined one's'). qip-kernel + qip-world-model --no-fail-fast: 90 result lines, 1355 passed, 0 failed. Stays PARTIAL on the default-path and stale clauses. 2026-10-25 lane L6: Platform::assess_sources calls WorldModel::mark_source_stale on a Retired transition. Mutations: the kernel call guarded `&& false` and the restated confidence left undivided each failed a_belief_citing_a_source_retired_as_stale_is_downweighted_not_retracted at 'a stale source's beliefs were not held at the downweighted confidence'; widening the factor range to 0.0..=1.0 failed a_stale_downweight_that_would_not_lower_belief_is_refused at 'a downweight by 1 was admitted'. Each restored, cmp clean, passed. cargo test -p qip-world-model -p qip-kernel --no-fail-fast: passed 1386, failed 0. Still PARTIAL on (1) the env-gated source assessment and (3) re-scoring held hypotheses."
   },
   {
     "id": "R12-RES-7098",
