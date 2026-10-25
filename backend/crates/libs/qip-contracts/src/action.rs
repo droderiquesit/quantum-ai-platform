@@ -805,6 +805,22 @@ impl Justification {
     pub fn grounds(&self) -> &[Ground] {
         &self.0
     }
+
+    /// The grounds as the journal records them beside the order they
+    /// justified (ADR 0200): `expected_profit` and `desired_price_impact`
+    /// by name, and an evidence ground as the reference it names. Text,
+    /// because the chain is hash-linked over its serialised entries and a
+    /// reader re-reads the reference, not the enum.
+    pub fn rendered(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .map(|ground| match ground {
+                Ground::ExpectedProfit => "expected_profit".to_string(),
+                Ground::DesiredPriceImpact => "desired_price_impact".to_string(),
+                Ground::Evidence(reference) => reference.clone(),
+            })
+            .collect()
+    }
 }
 
 impl TryFrom<Vec<Ground>> for Justification {
