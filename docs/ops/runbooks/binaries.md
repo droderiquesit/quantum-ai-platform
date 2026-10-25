@@ -247,6 +247,7 @@ rests on a broker default); two are optional.
 | `QIP_EVENT_FABRIC_LISTEN` | the protocol listener, `/v1/event-fabric/...`, bearer token on every request |
 | `QIP_EVENT_FABRIC_HEALTH_LISTEN` | health and `/metrics`, on a listener of its own, refused if it is the protocol's |
 | `QIP_EVENT_FABRIC_PARTITIONS` | partitions per stream, 1 to 1024. Changing it on an existing data directory changes which partition every key routes to |
+| `QIP_EVENT_FABRIC_REGION` | the region the broker serves: stamped, with the partition and the session's authenticated principal, into every batch a session produces (ADR 0129), and with a managed log the region its leases are keyed under. Required outside `local`; a `local` broker without it stamps no origin, and the ledger then refuses what it serves rather than supply a region of its own |
 | `QIP_EVENT_FABRIC_SEGMENT_BYTES` | optional: the size at which a segment is sealed |
 | `QIP_EVENT_FABRIC_HOUSEKEEPING_MS` | optional, default 1000: how often aged segments are sealed and archived and the catalogue is re-read |
 | `QIP_OPENOBSERVE_URL`, `_ORG`, `_AUTHORIZATION`, `_INTERVAL_SECS` | optional: the telemetry drain, the one shared exporter (`qip-telemetry-drain`, ADR 0156 section 5), which also drains the span each produce leaves (stream, class and outcome only). Unset, metrics stay on the scrape endpoint and the spans stay in the tracer's bounded ring. Never run against a collector: none is vendored or attested |

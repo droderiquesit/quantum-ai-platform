@@ -64,7 +64,6 @@ use qip_data_finder::admission::{
 };
 use qip_data_finder::registration::RegistrationRegistry;
 use qip_kernel::Platform;
-use qip_kernel::evidence_intake::EvidenceIntake;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
 use qip_market_ingestion::connector::FetchDigest;
 use qip_market_ingestion::connector_feed::{ConnectorFeed, shipped_class};
@@ -244,30 +243,13 @@ pub struct Sensed {
 }
 
 impl Sensed {
-    /// Take the records the world fabric did not withhold, in order, and
-    /// return how many it withheld (R12-EVID-1200).
-    ///
-    /// Until 2026-10-24 `POST /cycle` observed every record its connector
-    /// released and never handed the connector's checked evidence to the
-    /// world fabric at all, so a claim the fabric would have refused, held
-    /// inadmissible or judged spoofed reached the world model on the
-    /// strength of one source's private check. A record with a claim goes
-    /// through `EvidenceIntake::release`, the rule the deep brain's arm and
-    /// the fast brain apply; a record with none has no claim to withhold.
-    pub fn release(&mut self, intake: &EvidenceIntake) -> (Vec<SensedRecord>, usize) {
-        let records = std::mem::take(&mut self.records);
-        let claims = std::mem::take(&mut self.claims);
-        let offered = records.len();
-        let released: Vec<SensedRecord> = records
+    /// Take the records with the claim each rests on, for
+    /// `Platform::admit_world_records` (R12-EVID-1200), leaving none.
+    pub fn take_claimed(&mut self) -> Vec<(SensedRecord, Option<String>)> {
+        std::mem::take(&mut self.records)
             .into_iter()
-            .zip(claims)
-            .flat_map(|(record, claim)| match claim {
-                Some(id) => intake.release(vec![(record, id)]),
-                None => vec![record],
-            })
-            .collect();
-        let withheld = offered - released.len();
-        (released, withheld)
+            .zip(std::mem::take(&mut self.claims))
+            .collect()
     }
 }
 

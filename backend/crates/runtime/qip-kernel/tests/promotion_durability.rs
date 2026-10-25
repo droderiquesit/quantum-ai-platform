@@ -281,7 +281,12 @@ fn a_card_is_journaled_when_registered_and_on_a_kept_change_but_not_on_drift_alo
         "premise: an unchanged card is not written twice"
     );
 
-    registry.record_drift(&reference, 0.42)?;
+    // Under the card's threshold, so the reading changes no decision.
+    let threshold = registry
+        .get(&reference)
+        .map(|card| card.drift_threshold)
+        .ok_or_else(|| Error::not_found("the card"))?;
+    registry.record_drift(&reference, threshold * 0.5)?;
     assert_eq!(
         platform.journal_model_registry(&registry, start())?,
         0,
@@ -299,5 +304,36 @@ fn a_card_is_journaled_when_registered_and_on_a_kept_change_but_not_on_drift_alo
         .find(|card| card.reference() == reference)
         .ok_or_else(|| Error::not_found("the journaled card"))?;
     assert_eq!(card.stage, qip_ai::registry::ModelStage::Retired);
+    Ok(())
+}
+
+/// R12-MODEL-9003: a drift reading that crosses the card's threshold is
+/// journaled, because it changes whether the model may inform a decision; a
+/// restart that kept the last journaled reading would otherwise restore a
+/// drifted model as healthy, or a recovered one as drifted. Mutation: compare
+/// drift readings without the threshold side in `same_but_drift` — the
+/// crossing is not written and the count fails.
+#[test]
+fn a_drift_reading_that_crosses_the_threshold_is_journaled() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let reference = registered(&mut registry, &teacher("journal-b", "0.1.0", 1e-6)?)?;
+    assert_eq!(platform.journal_model_registry(&registry, start())?, 1);
+    let threshold = registry
+        .get(&reference)
+        .map(|card| card.drift_threshold)
+        .ok_or_else(|| Error::not_found("the card"))?;
+    registry.record_drift(&reference, threshold * 0.5)?;
+    assert_eq!(
+        platform.journal_model_registry(&registry, start())?,
+        0,
+        "premise: a reading under the threshold is not a record"
+    );
+    registry.record_drift(&reference, threshold * 2.0)?;
+    assert_eq!(
+        platform.journal_model_registry(&registry, start())?,
+        1,
+        "a crossing of the threshold was not journaled"
+    );
     Ok(())
 }

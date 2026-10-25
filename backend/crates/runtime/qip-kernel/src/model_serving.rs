@@ -100,8 +100,15 @@ impl EventBody for ModelRegistered {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-/// Whether two cards differ only in their drift reading.
+/// Whether two cards differ only in a drift reading that stays on the same
+/// side of the card's threshold. A reading that crosses it changes whether
+/// the model may inform a decision, so it is a record; one that does not is
+/// monitoring the next round re-measures.
 fn same_but_drift(a: &qip_ai::registry::ModelCard, b: &qip_ai::registry::ModelCard) -> bool {
+    let drifted = |card: &qip_ai::registry::ModelCard| card.drift_score > card.drift_threshold;
+    if drifted(a) != drifted(b) {
+        return false;
+    }
     let mut b = b.clone();
     b.drift_score = a.drift_score;
     *a == b
@@ -740,6 +747,22 @@ impl Platform {
         promotions_in(self.event_log())
     }
 
+    /// Journal the cards a committed promotion or rollback moved. The record
+    /// is the commit, so a failure here must not report the move as refused:
+    /// the in-memory mirror is advanced only on a successful write, so the
+    /// caller's next `journal_model_registry` writes them again, and a
+    /// restart in between rebuilds their stages and lifecycle from the
+    /// promotion records (R12-MODEL-9003). The failure is counted where the
+    /// alerts look rather than dropped.
+    fn journal_moved_cards(&mut self, registry: &ModelRegistry, now: Timestamp) {
+        if self.journal_model_registry(registry, now).is_err() {
+            self.telemetry.metrics.count(
+                names::MODEL_PACKAGES,
+                labels([("outcome", "cards_unjournaled")]),
+            );
+        }
+    }
+
     /// Every registered card the log holds, the newest record per reference,
     /// in reference order: what a restarted deep brain registers before its
     /// first round (R12-MODEL-9003).
@@ -1076,11 +1099,20 @@ impl Platform {
             signature: None,
             at: now,
         };
+        // Signed first, so every copy of the record on the log carries the
+        // centre's signature (lane L4). Then every card as it stands *before*
+        // the move, journaled before the record (R12-MODEL-9003), so the
+        // candidate's card and its evaluation are on the log whatever happens
+        // next, and nothing on the log claims a promotion the record does not
+        // hold. Then the record, which is the commit; then the moved cards,
+        // whose write may not unmake it.
         record.signature = Some(self.central.sign_record(&record.signed_payload()));
+        self.journal_model_registry(registry, now)?;
         self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
         *registry = scratch;
         self.succeed_model_pack(&record);
         apply_promotion(&mut self.model_promotions, record);
+        self.journal_moved_cards(registry, now);
         Ok(published)
     }
 
@@ -1163,10 +1195,14 @@ impl Platform {
                 at: now,
                 ..original.clone()
             };
+            // As in a promotion: the unmoved cards, the record, then the
+            // moved cards, whose write may not unmake the rollback.
+            self.journal_model_registry(registry, now)?;
             self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
             *registry = scratch;
             self.succeed_model_pack(&record);
             apply_promotion(&mut self.model_promotions, record);
+            self.journal_moved_cards(registry, now);
             return Ok(predecessor.clone());
         }
         Err(Error::not_found(format!(

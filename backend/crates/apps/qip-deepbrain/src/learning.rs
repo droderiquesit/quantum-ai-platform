@@ -143,6 +143,9 @@ use qip_training::job::TrainingSpec;
 use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy, TrainedTeacher};
 use qip_training::serve::InTreeProvider;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use qip_storage::BlobStore;
 
 /// The prefix every dataset this desk fits under carries, ahead of the
 /// subject's own identifier.
@@ -334,6 +337,14 @@ fn card_subject(card: &ModelCard) -> Option<&str> {
         }
     }
     found
+}
+
+/// The instrument a promoted model's name says it is of: this desk names
+/// every model `bar-{family}-{subject}`, and no family name holds a `-`.
+fn promotion_subject(name: &str) -> Option<&str> {
+    name.strip_prefix("bar-")?
+        .split_once('-')
+        .map(|(_, subject)| subject)
 }
 
 /// A standing model's fitted feature sample, and the instrument it is of.
@@ -779,7 +790,8 @@ pub struct LearningDesk {
     promoted_artifacts: BTreeMap<String, ModelArtifact>,
     /// Artifacts of models a promotion displaced, kept so a rollback can put
     /// the incumbent back in the position to be rescored (MODEL-045). Bounded
-    /// by the number of references ever displaced in this process, one entry
+    /// by the number of references ever displaced — in this process, and
+    /// since R12-MODEL-9003 in the log a restart restores from — one entry
     /// each, and an entry leaves when its model is reactivated.
     displaced_artifacts: BTreeMap<String, ModelArtifact>,
     /// Per registered model, the feature columns it was fitted on and the
@@ -847,6 +859,11 @@ pub struct LearningDesk {
     /// bounded by construction and does not grow with uptime. Read by
     /// [`choose_class`] before a round's own fits are scored onto it.
     classes: Scoreboard,
+    /// Where a promoted model's bytes are stored, written before its
+    /// promotion record (R12-MODEL-9003). `None` keeps them only in memory,
+    /// which is what a desk under test does; the deep brain's root installs
+    /// its blob store.
+    artifact_store: Option<Arc<dyn BlobStore>>,
     /// The adversarial perturbation suite every candidate must survive before
     /// promotion (R12-MODEL-4021).
     perturbation: PerturbationPolicy,
@@ -890,6 +907,7 @@ impl LearningDesk {
             require_provenance: false,
             stream_reference: BTreeMap::new(),
             classes: Scoreboard::models(),
+            artifact_store: None,
             perturbation: PerturbationPolicy::default(),
             restored: false,
             fits: 0,
@@ -934,6 +952,17 @@ impl LearningDesk {
             }
         }
         Ok((fetched, missing))
+    }
+
+    /// Store every candidate's artifact in `store`, under the digest-named
+    /// key the store's reader fetches by, before its promotion record is
+    /// written (R12-MODEL-9003). A promoted incumbent whose bytes were never
+    /// stored could not be rescored after a restart, which stopped promotion
+    /// on its subject; written first, a refused write refuses the promotion
+    /// instead.
+    pub fn with_artifact_store(mut self, store: Arc<dyn BlobStore>) -> Self {
+        self.artifact_store = Some(store);
+        self
     }
 
     /// Attack every candidate under `policy` before promotion instead of the
@@ -1005,7 +1034,115 @@ impl LearningDesk {
         }
         self.restored = true;
         let mut restored = 0;
+        // The promotion records are the source of truth for what is in
+        // production; the registration records are a mirror written beside
+        // them, and a process can die between the two writes. So each
+        // restored card's stage is reconciled against the promoted set: a
+        // card the log promoted is Production, one it promoted and has since
+        // displaced is Retired, and a Production card the log never promoted
+        // goes back to Validation. Without this a crash between the writes
+        // restored a displaced model as the incumbent, which no artifact
+        // could rescore, and stopped promotion on its subject for good.
+        let promoted: BTreeSet<String> = platform.model_promotions().keys().cloned().collect();
+        // When each reference last went into production and last came out of
+        // it, by the promotion records' own instants: what a card's lifecycle
+        // fields are reconciled to when its stage is.
+        let history = platform.model_promotion_history().unwrap_or_default();
+        let mut promoted_at: BTreeMap<String, Timestamp> = BTreeMap::new();
+        let mut displaced_at: BTreeMap<String, Timestamp> = BTreeMap::new();
+        for record in &history {
+            promoted_at.insert(record.reference.clone(), record.at);
+            for displaced in &record.displaced {
+                displaced_at.insert(displaced.clone(), record.at);
+            }
+        }
+        let ever_promoted: BTreeSet<String> = promoted_at.keys().cloned().collect();
+        // Versions are also drawn past every promoted one, so a fit after a
+        // crash that lost the promoted version's card does not take its name.
+        for reference in &ever_promoted {
+            if let Some(fit) = reference
+                .rsplit_once('@')
+                .and_then(|(_, version)| version.strip_prefix("0."))
+                .and_then(|rest| rest.strip_suffix(".0"))
+                .and_then(|n| n.parse::<u64>().ok())
+            {
+                self.fits = self.fits.max(fit);
+            }
+        }
         for card in platform.registered_model_cards() {
+            let reference = card.reference();
+            let mut card = card.clone();
+            // The lifecycle instants follow the stage, from the same records,
+            // so a reconciled card does not read as retired while it is in
+            // production (decision_eligibility refuses a retired card) or
+            // as deployed when it never was.
+            if promoted.contains(&reference) {
+                card.stage = ModelStage::Production;
+                card.retired_at = None;
+                card.deployed_at = promoted_at.get(&reference).copied().or(card.deployed_at);
+            } else if ever_promoted.contains(&reference) {
+                if card.stage == ModelStage::Production {
+                    card.stage = ModelStage::Retired;
+                }
+                if card.stage == ModelStage::Retired {
+                    card.retired_at = card.retired_at.or(displaced_at.get(&reference).copied());
+                }
+            } else if card.stage == ModelStage::Production {
+                card.stage = ModelStage::Validation;
+                card.deployed_at = None;
+                card.retired_at = None;
+            }
+            // What every promotion record says about this card, replayed in
+            // log order: the artifact it was promoted with, the alias move it
+            // was promoted or displaced by, and on its first promotion the
+            // version it displaced. A card written before its record lacks
+            // these, and without them a later rollback to it is refused as
+            // "never promoted with an artifact" and its alias history
+            // contradicts the log. A move the card already holds (same
+            // instant, same direction) is not added twice.
+            let mut first_promotion = true;
+            for record in &history {
+                let moved_by = record
+                    .moved_by
+                    .clone()
+                    .unwrap_or_else(|| "the promotion log".to_string());
+                let evidence = record
+                    .evidence
+                    .clone()
+                    .unwrap_or_else(|| format!("promotion record at {}", record.at));
+                let note = |card: &mut ModelCard, assigned: bool| {
+                    let held = card
+                        .alias_moves
+                        .iter()
+                        .any(|m| m.at == record.at && m.assigned == assigned);
+                    if !held {
+                        card.alias_moves.push(qip_ai::registry::AliasMove {
+                            alias: qip_ai::registry::PRODUCTION_ALIAS.to_string(),
+                            assigned,
+                            moved_by: moved_by.clone(),
+                            evidence: evidence.clone(),
+                            at: record.at,
+                        });
+                    }
+                };
+                if record.reference == reference {
+                    card.artifact_digest = Some(record.artifact_digest.clone());
+                    if first_promotion && card.rollback_parent.is_none() {
+                        card.rollback_parent = record.displaced.first().cloned();
+                    }
+                    first_promotion = false;
+                    note(&mut card, true);
+                } else if record.displaced.contains(&reference) {
+                    note(&mut card, false);
+                }
+            }
+            card.alias_moves.sort_by_key(|m| m.at);
+            let excess = card
+                .alias_moves
+                .len()
+                .saturating_sub(qip_ai::registry::ALIAS_MOVES_RETAINED);
+            card.alias_moves.drain(..excess);
+            let card = &card;
             // The fit count is what versions are drawn from, and it restarts
             // at zero with the process; left there, the next fit would reuse
             // a restored card's version and `register` would replace it,
@@ -1189,6 +1326,21 @@ impl LearningDesk {
             .filter(|card| card_subject(card) == Some(candidate.subject.as_str()))
             .map(ModelCard::reference)
             .collect();
+        // An incumbent the promotion log names on this subject with no card
+        // in the registry — a crash between the promotion record and its
+        // cards — is still the incumbent. It is refused by name rather than
+        // ignored: ignoring it would let the candidate in unopposed beside a
+        // model it never displaced.
+        if let Some(orphan) = platform.model_promotions().values().find(|promotion| {
+            promotion_subject(&promotion.name) == Some(candidate.subject.as_str())
+                && self.registry.get(&promotion.reference).is_none()
+        }) {
+            return not_promoted(format!(
+                "incumbent {} is promoted on this subject by the log but its card is not in the \
+                 registry; a candidate cannot be shown better than a model the desk cannot read",
+                orphan.reference
+            ));
+        }
         let mut best_incumbent: Option<f64> = None;
         let mut baseline_name = "the held-out mean predictor (skill bar)".to_string();
         for incumbent in &incumbents {
@@ -1454,6 +1606,29 @@ impl LearningDesk {
                 reference,
                 reason: error.message().to_string(),
             }));
+        }
+        // The bytes first (R12-MODEL-9003): a promotion whose artifact is not
+        // stored could not be rescored after a restart, so a store that
+        // refuses the write refuses the promotion. Rendered as the registry
+        // renders a published artifact, under the key its reader fetches by.
+        if let Some(store) = &self.artifact_store {
+            let stored = serde_json::to_string_pretty(&shadow.artifact)
+                .map_err(|error| Error::schema(format!("the artifact cannot be rendered: {error}")))
+                .and_then(|contents| {
+                    store.put(
+                        &format!("{}.json", shadow.artifact.digest),
+                        contents.into_bytes(),
+                    )
+                });
+            if let Err(error) = stored {
+                return Ok(Some(PromotionOutcome::NotPromoted {
+                    reference,
+                    reason: format!(
+                        "its artifact could not be stored before promotion: {}",
+                        error.message()
+                    ),
+                }));
+            }
         }
         let published = match platform.promote_model_from(
             ModelProducer::SelfFitted,
@@ -2524,6 +2699,393 @@ mod tests {
         Ok(())
     }
 
+    /// R12-MODEL-9003: a process that dies anywhere around a promotion
+    /// restarts able to read every version and still promote on the subject.
+    /// The cards a promotion moves are journaled before its record, and the
+    /// promoted bytes are stored before either; the crash is reproduced by
+    /// truncating the log file, which leaves a valid prefix of the hash
+    /// chain. Cut before v2's promotion record: its cards claim a promotion
+    /// the log does not hold, so v2 comes back in Validation and v1 is the
+    /// incumbent. Cut just after it: v2 is the incumbent. Either way a better
+    /// candidate is promoted against the true incumbent, displacing it, and
+    /// the next fit does not take a version already on the log. Four
+    /// skeptic rounds found a stuck subject, an unopposed promotion and a
+    /// lost card in earlier cuts of this restore; this is their scenario.
+    ///
+    /// Mutations: journal the cards after the record in `promote_model_from`
+    /// — the cut after it loses v2's card and the subject blocks; drop the
+    /// stage reconciliation — the cut before it restores v2 in production
+    /// with v1 also there; store no bytes before promotion — the restarted
+    /// desk cannot rescore its incumbent.
+    #[test]
+    fn a_crash_around_a_promotion_leaves_every_version_readable_and_the_subject_promotable()
+    -> Result<()> {
+        for cut_after_record in [false, true] {
+            let directory = std::env::temp_dir().join(format!(
+                "qip-deepbrain-promotion-crash-{}-{}-{cut_after_record}",
+                std::process::id(),
+                at().as_nanos()
+            ));
+            let _ = std::fs::remove_dir_all(&directory);
+            let path = directory.join("events.jsonl");
+            let file_platform = || -> Result<Platform> {
+                let config = qip_kernel::PlatformConfig::default().with_event_log_file(&path);
+                let (context, _clock) = qip_core::Context::deterministic(at(), config.seed);
+                Platform::new_serving(
+                    config,
+                    context,
+                    qip_observability::Telemetry::silent(),
+                    qip_financial::universe::Universe::new(),
+                    qip_risk::limits::LimitSet::conservative_default(),
+                    Box::new(InTreeProvider),
+                )
+            };
+            let store: Arc<dyn BlobStore> = Arc::new(qip_storage::MemoryBlobStore::new());
+            let (v1, v2) = {
+                let mut platform = file_platform()?;
+                let mut desk = learning_desk().with_artifact_store(store.clone());
+                desk.maybe_learn(
+                    &subject(),
+                    &super::tests_support::learnable(400),
+                    REGIME,
+                    1,
+                    at(),
+                )?;
+                // Each fit is driven through its shadow stage (R12-EXPAND-6070),
+                // the second an hour after the first so its rounds are new ones.
+                let first = through_shadow(
+                    &mut desk,
+                    &mut platform,
+                    &super::tests_support::learnable(400),
+                    1,
+                    at(),
+                )?
+                .ok_or_else(|| Error::not_found("a first candidate"))?;
+                let second_start = at().saturating_add(qip_core::Duration::from_hours(1));
+                desk.maybe_learn(
+                    &subject(),
+                    &super::tests_support::learnable(1_200),
+                    REGIME,
+                    10,
+                    second_start,
+                )?;
+                let second = through_shadow(
+                    &mut desk,
+                    &mut platform,
+                    &super::tests_support::learnable(1_200),
+                    10,
+                    second_start,
+                )?
+                .ok_or_else(|| Error::not_found("a second candidate"))?;
+                match (&first, &second) {
+                    (
+                        PromotionOutcome::Promoted { reference: v1, .. },
+                        PromotionOutcome::Promoted {
+                            reference: v2,
+                            displaced,
+                            ..
+                        },
+                    ) if displaced.contains(v1) => (v1.clone(), v2.clone()),
+                    _ => {
+                        return Err(Error::invalid(format!(
+                            "premise: v2 displaced v1: {} / {}",
+                            first.describe(),
+                            second.describe()
+                        )));
+                    }
+                }
+            };
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| Error::io(format!("read the log: {e}")))?;
+            let lines: Vec<&str> = text.lines().collect();
+            let record = lines
+                .iter()
+                .rposition(|line| line.contains(qip_kernel::model_serving::MODEL_PROMOTION_ORIGIN))
+                .ok_or_else(|| Error::not_found("v2's promotion record"))?;
+            assert!(
+                lines[..record].iter().any(|line| line.contains(&v2)
+                    && line.contains(qip_kernel::model_serving::MODEL_REGISTRATION_ORIGIN)),
+                "premise: v2's card precedes its promotion record"
+            );
+            let keep = if cut_after_record { record + 1 } else { record };
+            std::fs::write(&path, lines[..keep].join("\n") + "\n")
+                .map_err(|e| Error::io(format!("truncate the log: {e}")))?;
+
+            let mut platform = file_platform()?;
+            let incumbent = if cut_after_record { &v2 } else { &v1 };
+            assert!(
+                platform.model_promotions().contains_key(incumbent),
+                "premise: the log promotes {incumbent}"
+            );
+            let mut restarted = learning_desk().with_artifact_store(store.clone());
+            let (_, missing) = restarted.restore_artifacts(&platform, |digest| {
+                crate::artifacts::read_model_artifact(store.as_ref(), digest)
+            })?;
+            assert!(missing.is_empty(), "{missing:?}");
+            restarted.restore_registry(&platform);
+            for version in [&v1, &v2] {
+                let card = restarted.registry().get(version).ok_or_else(|| {
+                    Error::not_found(format!("{version} is not readable after the crash"))
+                })?;
+                assert!(
+                    card.latest_evaluation().is_some(),
+                    "{version} lost its evaluation"
+                );
+            }
+            let production: Vec<String> = restarted
+                .registry()
+                .iter()
+                .filter(|card| card.stage == ModelStage::Production)
+                .map(ModelCard::reference)
+                .collect();
+            assert_eq!(
+                &production,
+                &vec![incumbent.clone()],
+                "cut after record: {cut_after_record}"
+            );
+            // The restored incumbent is not read as retired (the lifecycle
+            // follows the reconciled stage). Its drift is the fixture's real
+            // reading against its own fit, so eligibility is checked for the
+            // retirement alone.
+            let incumbent_card = restarted
+                .registry()
+                .get(incumbent)
+                .ok_or_else(|| Error::not_found("the incumbent"))?;
+            assert_eq!(incumbent_card.retired_at, None);
+            if let Err(why) = incumbent_card.decision_eligibility(at()) {
+                assert!(!why.contains("retired"), "{why}");
+            }
+            // The card carries what its promotion records say: the artifact
+            // it was promoted with and the alias move that put it there, even
+            // when the card on the log was written before the record.
+            let history = platform.model_promotion_history()?;
+            let last = history
+                .iter()
+                .rev()
+                .find(|record| &record.reference == incumbent)
+                .ok_or_else(|| Error::not_found("the incumbent's promotion record"))?;
+            assert_eq!(
+                incumbent_card.artifact_digest.as_deref(),
+                Some(last.artifact_digest.as_str()),
+                "the restored incumbent lost its artifact digest"
+            );
+            assert!(
+                incumbent_card
+                    .alias_moves
+                    .iter()
+                    .any(|m| m.assigned && m.at == last.at),
+                "the restored incumbent's alias history lacks its promotion"
+            );
+            if cut_after_record {
+                let displaced = restarted
+                    .registry()
+                    .get(&v1)
+                    .ok_or_else(|| Error::not_found("v1"))?;
+                assert!(
+                    displaced
+                        .alias_moves
+                        .iter()
+                        .any(|m| !m.assigned && m.at == last.at),
+                    "v1's alias history lacks the displacement the log records"
+                );
+            }
+            // And nothing on the log claims a move the promotion records do
+            // not hold: the card written before the record is the unmoved one.
+            if !cut_after_record {
+                let other = restarted
+                    .registry()
+                    .get(&v2)
+                    .ok_or_else(|| Error::not_found("v2"))?;
+                assert_eq!(other.artifact_digest, None, "v2 reads as promoted");
+                let incumbent_card = restarted
+                    .registry()
+                    .get(incumbent)
+                    .ok_or_else(|| Error::not_found("the incumbent"))?;
+                assert!(
+                    incumbent_card
+                        .alias_moves
+                        .iter()
+                        .all(|alias| !format!("{alias:?}").contains(&v2)),
+                    "the incumbent's alias history names a displacement that never happened"
+                );
+            }
+
+            // Promotable means it can complete the shadow stage after the
+            // restart (R12-EXPAND-6070), at an instant past every round above.
+            let third_start = at().saturating_add(qip_core::Duration::from_hours(3));
+            restarted.maybe_learn(
+                &subject(),
+                &super::tests_support::learnable(2_400),
+                REGIME,
+                20,
+                third_start,
+            )?;
+            let after = through_shadow(
+                &mut restarted,
+                &mut platform,
+                &super::tests_support::learnable(2_400),
+                20,
+                third_start,
+            )?
+            .ok_or_else(|| Error::not_found("a candidate after the crash"))?;
+            let PromotionOutcome::Promoted {
+                reference,
+                displaced,
+                ..
+            } = &after
+            else {
+                return Err(Error::invalid(format!(
+                    "the subject is not promotable after the crash (cut after record: \
+                     {cut_after_record}): {}",
+                    after.describe()
+                )));
+            };
+            assert!(displaced.contains(incumbent), "{}", after.describe());
+            assert!(
+                reference != &v1 && reference != &v2,
+                "the next fit took a version already on the log"
+            );
+            // And the restored incumbent is a known-good version a rollback
+            // can return to. (The fixture's windows drift it against its own
+            // fit; a rollback needs it to read as known-good.)
+            let reference = reference.clone();
+            restarted.registry_mut().record_drift(incumbent, 0.0)?;
+            let later = at().saturating_add(qip_core::Duration::from_mins(1));
+            let back = platform.rollback_model(restarted.registry_mut(), &reference, later)?;
+            assert_eq!(
+                &back, incumbent,
+                "the rollback did not return to the restored incumbent"
+            );
+            let _ = std::fs::remove_dir_all(&directory);
+        }
+        Ok(())
+    }
+
+    /// R12-MODEL-9003: a crash just after a rollback record. The reactivated
+    /// predecessor's card on the log is the one written before the record:
+    /// Retired, with its retirement instant. The restore puts it back in
+    /// production from the promotion log, and with it clears the retirement,
+    /// so the model the log says is in production is not read as retired.
+    /// Mutation: keep `retired_at` when the log forces a card to Production —
+    /// the card reads as retired and the assertion fails.
+    #[test]
+    fn a_crash_just_after_a_rollback_restores_the_reactivated_model_not_as_retired() -> Result<()> {
+        let directory = std::env::temp_dir().join(format!(
+            "qip-deepbrain-rollback-crash-{}-{}",
+            std::process::id(),
+            at().as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let file_platform = || -> Result<Platform> {
+            let config = qip_kernel::PlatformConfig::default().with_event_log_file(&path);
+            let (context, _clock) = qip_core::Context::deterministic(at(), config.seed);
+            Platform::new_serving(
+                config,
+                context,
+                qip_observability::Telemetry::silent(),
+                qip_financial::universe::Universe::new(),
+                qip_risk::limits::LimitSet::conservative_default(),
+                Box::new(InTreeProvider),
+            )
+        };
+        let v1 = {
+            let mut platform = file_platform()?;
+            let mut desk = learning_desk();
+            desk.maybe_learn(
+                &subject(),
+                &super::tests_support::learnable(400),
+                REGIME,
+                1,
+                at(),
+            )?;
+            // Each fit is driven through its shadow stage (R12-EXPAND-6070),
+            // the second an hour after the first so its rounds are new ones.
+            let first = through_shadow(
+                &mut desk,
+                &mut platform,
+                &super::tests_support::learnable(400),
+                1,
+                at(),
+            )?
+            .ok_or_else(|| Error::not_found("a first candidate"))?;
+            let second_start = at().saturating_add(qip_core::Duration::from_hours(1));
+            desk.maybe_learn(
+                &subject(),
+                &super::tests_support::learnable(1_200),
+                REGIME,
+                10,
+                second_start,
+            )?;
+            let second = through_shadow(
+                &mut desk,
+                &mut platform,
+                &super::tests_support::learnable(1_200),
+                10,
+                second_start,
+            )?
+            .ok_or_else(|| Error::not_found("a second candidate"))?;
+            let (
+                PromotionOutcome::Promoted { reference: v1, .. },
+                PromotionOutcome::Promoted { reference: v2, .. },
+            ) = (&first, &second)
+            else {
+                return Err(Error::invalid(format!(
+                    "premise: both fits were promoted: {} / {}",
+                    first.describe(),
+                    second.describe()
+                )));
+            };
+            let later = second_start.saturating_add(qip_core::Duration::from_hours(1));
+            // The fixture's second window drifted v1 against its own fit; a
+            // rollback needs a known-good predecessor, so it reads as one.
+            desk.registry_mut().record_drift(v1, 0.0)?;
+            let reactivated = platform.rollback_model(desk.registry_mut(), v2, later)?;
+            assert_eq!(&reactivated, v1, "premise: the rollback reactivates v1");
+            v1.clone()
+        };
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| Error::io(format!("read the log: {e}")))?;
+        let lines: Vec<&str> = text.lines().collect();
+        let record = lines
+            .iter()
+            .rposition(|line| line.contains(qip_kernel::model_serving::MODEL_PROMOTION_ORIGIN))
+            .ok_or_else(|| Error::not_found("the rollback record"))?;
+        std::fs::write(&path, lines[..=record].join("\n") + "\n")
+            .map_err(|e| Error::io(format!("truncate the log: {e}")))?;
+
+        let platform = file_platform()?;
+        assert!(
+            platform.model_promotions().contains_key(&v1),
+            "premise: the log says v1 is back in production"
+        );
+        assert!(
+            platform
+                .registered_model_cards()
+                .any(|card| card.reference() == v1 && card.retired_at.is_some()),
+            "premise: v1's card on the log is the retired one written before the record"
+        );
+        let mut restarted = learning_desk();
+        restarted.restore_registry(&platform);
+        assert_eq!(
+            restarted.registry().get(&v1).map(|card| card.stage),
+            Some(ModelStage::Production)
+        );
+        // Not read as retired. (Its drift is the value at its last kept
+        // change, a recorded limit, so eligibility is checked for the
+        // retirement alone.)
+        let card = restarted
+            .registry()
+            .get(&v1)
+            .ok_or_else(|| Error::not_found("v1"))?;
+        assert_eq!(card.retired_at, None);
+        if let Err(why) = card.decision_eligibility(at()) {
+            assert!(!why.contains("retired"), "{why}");
+        }
+        let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
+    }
+
     /// R12-MODEL-9003: a restarted desk restores every card the log holds,
     /// production ones included, and holds its restored incumbent to the
     /// same strictly-better gate as a desk that never restarted.
@@ -2564,7 +3126,13 @@ mod tests {
             .published()
             .ok_or_else(|| Error::not_found("the promoted artifact"))?;
         let stored = ModelArtifact::from_json(&published.contents)?;
-        assert!(platform.journal_model_registry(desk.registry(), at())? > 0);
+        // The promotion journaled the cards it moved in the same step.
+        assert!(
+            platform
+                .registered_model_cards()
+                .any(|card| card.reference() == incumbent && card.stage == ModelStage::Production),
+            "premise: the promoted card is on the log"
+        );
         let fetch = |digest: &str| -> Result<ModelArtifact> {
             if digest == stored.digest {
                 Ok(stored.clone())

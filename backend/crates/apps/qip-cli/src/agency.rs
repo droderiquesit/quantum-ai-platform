@@ -370,6 +370,9 @@ pub struct Session {
     memory: ActionOutcomeMemory,
     provenance: Provenance,
     next_pass: u64,
+    /// Post-release findings not yet journaled (R12-GOV-3030), bounded by
+    /// the guard's own voice retention times the rule count.
+    post_release: Vec<qip_agency::guard::PostReleaseFinding>,
 }
 
 impl Session {
@@ -410,6 +413,19 @@ impl Session {
         let resumed = journal::resume(journal)?;
         guard.resume(resumed.decisions)?;
         guard.resume_voices(resumed.voices)?;
+        // R12-GOV-3030: every message released on an earlier pass re-checked
+        // against the conduct rules this policy holds now, and the findings
+        // the journal does not already hold filed with the next pass.
+        let filed: std::collections::BTreeSet<(String, String)> = resumed
+            .findings
+            .iter()
+            .map(|finding| (finding.fingerprint.clone(), finding.rule.clone()))
+            .collect();
+        let post_release: Vec<_> = guard
+            .recheck_released()
+            .into_iter()
+            .filter(|finding| !filed.contains(&(finding.fingerprint.clone(), finding.rule.clone())))
+            .collect();
         for tool in &policy.revoked_tools {
             guard.revoke(tool).map_err(|error| {
                 Error::invalid(format!(
@@ -432,7 +448,13 @@ impl Session {
                 ),
             },
             next_pass: resumed.next_pass,
+            post_release,
         })
+    }
+
+    /// The post-release findings this session will file with its next pass.
+    pub fn pending_post_release(&self) -> &[qip_agency::guard::PostReleaseFinding] {
+        &self.post_release
     }
 
     /// The guard this session holds.
@@ -604,9 +626,13 @@ impl Session {
                 goal_target: &goal_target,
                 acting_identity: &acting,
                 learning: Some(&learning),
+                post_release: &self.post_release,
                 at: now,
             },
         )?;
+        // Filed once: a later pass of this invocation re-files nothing, and
+        // a restart reads these back as already filed.
+        self.post_release.clear();
         self.next_pass += 1;
         // R12-OBS-7131: the pass is read back as one lineage before it is
         // reported. A journal that holds every record and cannot be folded

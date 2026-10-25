@@ -49,7 +49,6 @@ use qip_core::{Clock, Duration, ManualClock, ObjectId, Timestamp};
 use qip_data_finder::admission::{self, CatalogueEntry, StandingAdmission};
 use qip_data_finder::registration::RegistrationRegistry;
 use qip_financial::quality::LicensingClass;
-use qip_kernel::evidence_intake::EvidenceIntake;
 use qip_market::bar::Interval;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
 use qip_market_ingestion::connector::FetchDigest;
@@ -76,31 +75,6 @@ pub struct Batch {
 impl Batch {
     pub fn is_empty(&self) -> bool {
         self.accepted.is_empty() && self.rejections.is_empty()
-    }
-
-    /// The accepted records the world fabric did not withhold, in order,
-    /// and how many it withheld (R12-EVID-1200).
-    ///
-    /// Until 2026-10-24 this node observed every record its connector
-    /// released, so a claim the world fabric refused, held inadmissible or
-    /// judged spoofed still reached the world model through `observe`: the
-    /// connector's private check had passed it and nothing asked the fabric
-    /// every source shares. A record with a claim goes through
-    /// `EvidenceIntake::release`, the one rule the deep brain's arm also
-    /// applies; a record with none has no claim to withhold.
-    pub fn release(self, intake: &EvidenceIntake) -> (Vec<SensedRecord>, usize) {
-        let offered = self.accepted.len();
-        let released: Vec<SensedRecord> = self
-            .accepted
-            .into_iter()
-            .zip(self.claims)
-            .flat_map(|(record, claim)| match claim {
-                Some(id) => intake.release(vec![(record, id)]),
-                None => vec![record],
-            })
-            .collect();
-        let withheld = offered - released.len();
-        (released, withheld)
     }
 }
 
@@ -688,45 +662,6 @@ mod tests {
 
     fn start() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
-    }
-
-    /// R12-EVID-1200: a record whose claim the world fabric withheld is not
-    /// handed to `observe`, and a record with no claim always is. Mutation:
-    /// make `Batch::release` keep every record — the withheld one is
-    /// released and the count fails.
-    #[test]
-    fn a_record_whose_claim_the_world_withheld_is_not_released_and_one_without_a_claim_is() {
-        let mut feed = Feed::synthetic(7, Duration::from_secs(60), start());
-        let mut batch = feed
-            .poll(start().saturating_add(Duration::from_mins(30)), &mut |_| {
-                Ok(())
-            })
-            .expect("the synthetic exchange polls");
-        assert!(
-            batch.accepted.len() >= 3,
-            "premise: three records to label ({})",
-            batch.accepted.len()
-        );
-        assert_eq!(batch.claims.len(), batch.accepted.len());
-        assert!(
-            batch.claims.iter().all(Option::is_none),
-            "premise: a synthetic record is not a claim anybody made"
-        );
-        batch.accepted.truncate(3);
-        batch.claims = vec![Some("c-kept".into()), Some("c-withheld".into()), None];
-        let kept = serde_json::to_string(&batch.accepted[0]).expect("serialises");
-        let unclaimed = serde_json::to_string(&batch.accepted[2]).expect("serialises");
-        let mut intake = EvidenceIntake::default();
-        intake.withheld.insert("c-withheld".into());
-
-        let (released, withheld) = batch.release(&intake);
-
-        assert_eq!(withheld, 1);
-        let released: Vec<String> = released
-            .iter()
-            .map(|record| serde_json::to_string(record).expect("serialises"))
-            .collect();
-        assert_eq!(released, vec![kept, unclaimed]);
     }
 
     #[test]

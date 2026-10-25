@@ -138,7 +138,12 @@ impl Fabric {
         .unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let roll_every_batch = archive.is_some();
-        let mut broker = Broker::open(root.join("broker"), clock.clone()).unwrap();
+        // A broker that knows its region, as a deployed one must (ADR 0129):
+        // the ledger reads the producing region off what it stamps.
+        let mut broker = Broker::open(root.join("broker"), clock.clone())
+            .unwrap()
+            .with_region("europe-west2")
+            .unwrap();
         if let Some(store) = archive {
             broker = broker.with_archive_reader(store);
         }
@@ -194,8 +199,10 @@ impl Fabric {
         )
         .unwrap();
         stamp_drain(&mut batch, PRODUCER, epoch, next);
+        // As the producer's authenticated session would produce it, so the
+        // broker stamps the origin the ledger reads (ADR 0129).
         broker
-            .produce_to(STREAM, partition, batch)
+            .produce_from(STREAM, partition, batch, Some(PRODUCER))
             .unwrap()
             .expect("the broker takes the batch");
         self.sequence.insert(partition, (epoch, next + count));
@@ -284,7 +291,7 @@ impl Journal {
             occurred_at: at,
             recorded_at: at,
             sequence: 0,
-            lineage: Lineage::root(correlation, "qip-edge-node.outbox"),
+            lineage: traced(Lineage::root(correlation, "qip-edge-node.outbox")),
             idempotency_key: Some(id),
             payload_hash: sha256_hex(canonical_json(&payload).as_bytes()),
             payload,
@@ -668,6 +675,13 @@ fn a_record_the_envelope_refuses_stalls_its_partition_and_books_nothing_from_its
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A lineage whose trace is its correlation, as the edge writer stamps it:
+/// a fabric envelope requires a trace id (R12-CONTRACT-7089).
+fn traced(mut lineage: Lineage) -> Lineage {
+    lineage.trace_id = Some(qip_core::TraceId::new(lineage.correlation_id.as_str()));
+    lineage
+}
+
 /// A fill whose lineage names another order's chain (or none of the
 /// derivable ones) is refused at the consumer: the partition stalls, the
 /// reason names the lineage, and nothing from the batch is booked — not the
@@ -682,10 +696,10 @@ fn a_fill_whose_lineage_was_edited_stalls_its_partition_and_a_good_one_names_its
     let mut cell = Journal::new("cell-a");
     let good = cell.fill("o-good", 3, "100", true);
     let forged = rewritten(&cell.fill("o-forged", 1, "100", true), |e| {
-        e.lineage = Lineage::root(
+        e.lineage = traced(Lineage::root(
             CorrelationId::from_string("COR00000000000000000000009"),
             "qip-edge-node.outbox",
-        );
+        ));
     });
     fabric.produce(0, vec![good, forged]);
     let dir = temp_dir("lineage");

@@ -33,6 +33,7 @@ use crate::settlement::{self, GATE_SETTLEMENT, SettlementTerms};
 use crate::telemetry::{AdversaryPostureLabel, CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
+use qip_contracts::action::{Ground, Justification};
 use qip_contracts::capital::{CapitalAdmission, Utilisation};
 use qip_contracts::degradation::{Capability, DegradationState, Freshness, StrategyClass};
 use qip_contracts::intent::{Contributor, CycleLeg, Intent, NetIntent, net, netting_ratio};
@@ -259,6 +260,12 @@ pub enum FeedLossPlaybook {
 /// enumeration.
 pub const GATE_FEED_LOSS_PLAYBOOK: &str = "feed_loss_playbook";
 
+/// The gate a net intent is refused under when it stands on no signal its
+/// contributors raised and no feature revision they reasoned from: an order
+/// whose only reason is the trade itself (R12-GOV-6127). A constant for the
+/// same cardinality reason as every gate here.
+pub const GATE_JUSTIFICATION: &str = "justification";
+
 /// Five per cent. Venues quoting one instrument normally sit within a few
 /// basis points; a gap twenty times the widest arbitrage the scanner acts
 /// on is a broken or manipulated book, not an opportunity.
@@ -281,6 +288,20 @@ pub const GATE_FILL_DISPERSION: &str = "fill_dispersion";
 /// outside the window its cycle was admitted on is exactly the exposure the
 /// offsets were computed against. Withdrawn is the refusal.
 pub const GATE_RELEASE_LATE: &str = "release_late";
+
+/// The gate an order is refused under when the gateway held it for a later
+/// release and then refused it at that release — today, because the
+/// listing permission the gateway re-admits every release against had
+/// lapsed in between (R12-COVERAGE-5107). A `pub const` for the reason
+/// [`GATE_RELEASE_LATE`] is one: recorded from the same seam, which has no
+/// `WorkReport`.
+///
+/// Distinct from [`GATE_RELEASE_LATE`] because the remedy is: a late
+/// release is a schedule the gateway could not keep, a refused one is a
+/// permission somebody withdrew. Until 2026-10-24 the refusal reached the
+/// cell as nothing at all — `advance_to` returned it as error text, the
+/// pass stopped on it, and the cell's record kept the order open as sent.
+pub const GATE_RELEASE_REFUSED: &str = "release_refused";
 
 /// The gate a halted cell journals under when it holds resting orders and
 /// the gateway it was handed cannot withdraw them (§29.2).
@@ -494,6 +515,13 @@ pub const GATE_VENUE_WITHDRAWAL: &str = "venue_withdrawal";
 /// or when there is no visible depth to measure it against
 /// (R12-CAPITAL-4088). A constant so the `gate` label stays bounded by source.
 pub const GATE_ENVELOPE_LIQUIDITY: &str = "envelope_liquidity";
+
+/// The gate an order is refused under once its owner's realised
+/// peak-to-trough fall within the grant has reached the envelope's drawdown
+/// stop (ADR 0126 decision 2, R12-CAPITAL-4088, R12-CONTRACT-7066). Its own
+/// gate rather than `capital`, because "gave back what it made" and "is
+/// under water" send an operator to different places.
+pub const GATE_ENVELOPE_DRAWDOWN: &str = "envelope_drawdown";
 
 /// The gate an order is refused under when it would carry its envelope past
 /// the leverage the grant allows on the equity it has left after realised
@@ -1287,7 +1315,8 @@ pub struct ExecutionReport {
 
 /// An order the gateway withdrew without sending, because the instant it was
 /// told to release it at was already further in the past than it will send
-/// late (ADR 0084 §4).
+/// late (ADR 0084 §4), or because it refused the order at that release
+/// (`refused`, R12-COVERAGE-5107).
 ///
 /// Not an [`ExecutionReport`]: nothing traded. Not a cancel either — the
 /// venue never saw the order, so there is no remaining quantity for it to
@@ -1304,8 +1333,13 @@ pub struct UnreleasedOrder {
     /// How far past `scheduled` the gateway found itself on the first pass
     /// that could have released the order.
     pub lag: Duration,
-    /// The most lag the gateway will release under; what `lag` exceeded.
+    /// The most lag the gateway will release under; what `lag` exceeded,
+    /// when the order was withdrawn for being late.
     pub tolerance: Duration,
+    /// The gateway's refusal, when it withdrew the order because it refused
+    /// it at release rather than because the release came too late. `None`
+    /// is the late case, which `lag` and `tolerance` describe.
+    pub refused: Option<String>,
 }
 
 /// A fill the venue reported, attributed to the strategies whose intent the
@@ -1626,6 +1660,11 @@ pub struct Cell {
     /// Cleared at the start of every pass and bounded by the deployed
     /// strategies, one slot each.
     signal_sequences: BTreeMap<String, u64>,
+    /// The (strategy, instrument) lots the applied dispositions slot told
+    /// this pass to unwind and that became intents, so the order carrying
+    /// one names the signed instruction as its ground (R12-GOV-6127). Kept
+    /// here rather than re-read from the slot, which has one reader.
+    instructed_unwinds: BTreeSet<(String, String)>,
     /// Passes of [`Self::work`] so far, counting the halted ones. What a
     /// [`CrossingInterval::Passes`] window is measured in.
     pass: u64,
@@ -1876,6 +1915,7 @@ impl Cell {
             order_sequence: 0,
             chain_epoch: 0,
             signal_sequences: BTreeMap::new(),
+            instructed_unwinds: BTreeSet::new(),
             pass: 0,
             crossing_history: BTreeMap::new(),
             metrics: CellMetrics::silent(),
@@ -4507,6 +4547,15 @@ impl Cell {
             );
             return;
         };
+        // The hedge answers a fact the cell journaled: the venue fell
+        // silent with a position open there.
+        let Ok(justification) = Justification::of(vec![Ground::Evidence(format!(
+            "journal:feed_silent:{}:{}",
+            blind.as_str(),
+            object_id.as_str()
+        ))]) else {
+            return;
+        };
         match self.send(
             object_id,
             &target,
@@ -4516,6 +4565,7 @@ impl Cell {
             now,
             now,
             qip_execution_engine::modes::ExecutionMode::OrderTaking,
+            &justification,
             gateway,
         ) {
             Ok((order_id, simulated)) => {
@@ -5216,6 +5266,9 @@ impl Cell {
         // evaluation, deliberately: reducing a lot needs no feature vector,
         // and a feature-engine fault that stops every signal should not also
         // stop the one intent that only lowers gross.
+        // Cleared before the disposition path refills it: the lots this
+        // pass was told to unwind are this pass's grounds and no later one's.
+        self.instructed_unwinds.clear();
         let retired = self.disposition_intents(now, &mut report, &mut intents);
 
         let vector = self.features.evaluate(now)?;
@@ -5574,6 +5627,10 @@ impl Cell {
             report
                 .dispositions
                 .push(line(DispositionVerdict::Intent { signed_size, venue }));
+            self.instructed_unwinds.insert((
+                strategy.as_str().to_string(),
+                object_id.as_str().to_string(),
+            ));
             intents.push(intent);
         }
         named
@@ -5866,6 +5923,21 @@ impl Cell {
                 unpriced,
             );
             self.refuse(report, "capital", &reason, now);
+            return Ok(None);
+        }
+
+        // The drawdown stop, before the money limits: a strategy that has
+        // given back its peak by the bound sends nothing more under this
+        // grant, whatever headroom the loss limit still shows.
+        if let Err(reason) = deployed
+            .envelope
+            .check_drawdown(self.realised.realised_drawdown(&key))
+        {
+            let reason = format!(
+                "strategy {key} under grant {}: {reason}",
+                deployed.envelope.signature()
+            );
+            self.refuse(report, GATE_ENVELOPE_DRAWDOWN, &reason, now);
             return Ok(None);
         }
 
@@ -6225,6 +6297,18 @@ impl Cell {
             .fill_times
             .release_schedule(std::slice::from_ref(&venue));
         let release_at = now.saturating_add(schedule.offset(&venue));
+        // R12-GOV-6127: the net stands on the signals its contributors
+        // raised this pass and the feature revisions each reasoned from. A
+        // net with neither has nothing behind it but the trade, and is
+        // refused here rather than sent.
+        let justification = match Justification::of(self.grounds_of(net_intent)) {
+            Ok(justification) => justification,
+            Err(error) => {
+                self.refuse(report, GATE_JUSTIFICATION, error.message(), now);
+                self.release_region_holds(&net_intent.contributors);
+                return Ok(None);
+            }
+        };
         let (order_id, simulated) = match self.send(
             &net_intent.object_id,
             &venue,
@@ -6234,6 +6318,7 @@ impl Cell {
             now,
             release_at,
             qip_execution_engine::modes::ExecutionMode::OrderTaking,
+            &justification,
             gateway,
         ) {
             Ok(placed) => placed,
@@ -6370,6 +6455,16 @@ impl Cell {
     /// order before (ADR 0084); `now` is the pass instant the refusal, if
     /// any, is journaled at. The two differ by the leg's offset on its
     /// cycle's release schedule and by nothing else.
+    ///
+    /// `_justification` is the proof the order stands on more than the
+    /// profit it expects (R12-GOV-6127): a value only
+    /// [`qip_contracts::action::Justification::of`] makes, and only for
+    /// grounds naming independent evidence — the signals and feature
+    /// revisions a net intent was formed from, the cycle a leg belongs to,
+    /// the failure a hedge or an offset answers. This is the one place a
+    /// `Placer` is called, so no order reaches a venue from this cell
+    /// without one; a caller that cannot name evidence refuses before it
+    /// gets here, under [`GATE_JUSTIFICATION`].
     #[allow(clippy::too_many_arguments)]
     fn send(
         &mut self,
@@ -6381,6 +6476,7 @@ impl Cell {
         now: Timestamp,
         release_at: Timestamp,
         mode: qip_execution_engine::modes::ExecutionMode,
+        _justification: &Justification,
         gateway: &mut dyn Placer,
     ) -> Result<(String, bool)> {
         let simulated = gateway.is_simulated();
@@ -6648,6 +6744,41 @@ impl Cell {
         );
         self.metrics.order_placed(&order.venue);
         self.working.insert(order.order_id.clone(), working);
+    }
+
+    /// The grounds a net intent stands on (R12-GOV-6127): its expected
+    /// return, and — the independent part — the journal sequence of each
+    /// contributor's signal this pass, every feature revision a contributor
+    /// reasoned from, and for a disposition unwind (ADR 0080, which raises no
+    /// signal) the signed policy's instruction to unwind that lot. Each is a
+    /// record a reader can re-read.
+    fn grounds_of(&self, net_intent: &NetIntent) -> Vec<Ground> {
+        let mut grounds = vec![Ground::ExpectedProfit];
+        if let Some(sequence) = self.policy_sequence() {
+            for contributor in &net_intent.contributors {
+                let lot = (
+                    contributor.strategy.as_str().to_string(),
+                    net_intent.object_id.as_str().to_string(),
+                );
+                if self.instructed_unwinds.contains(&lot) {
+                    grounds.push(Ground::Evidence(format!(
+                        "policy:{sequence}:disposition:{}:{}",
+                        lot.0, lot.1
+                    )));
+                }
+            }
+        }
+        for contributor in &net_intent.contributors {
+            if let Some(sequence) = self.signal_sequences.get(contributor.strategy.as_str()) {
+                grounds.push(Ground::Evidence(format!(
+                    "journal:signal_raised:{sequence}"
+                )));
+            }
+            for (feature, revision) in &contributor.inputs {
+                grounds.push(Ground::Evidence(format!("feature:{feature}@{revision}")));
+            }
+        }
+        grounds
     }
 
     /// Journal the join between the signals a netted order answered and the
@@ -7283,25 +7414,47 @@ impl Cell {
     /// reconciler does not hold it against the venue, and what the region
     /// committed for it is returned, because nothing was spent.
     fn withdraw_unreleased(&mut self, unreleased: UnreleasedOrder, now: Timestamp) {
-        let reason = format!(
-            "order {} for {} was to be released no earlier than {} and the gateway found that \
-             instant {} ms past on the first pass that could have released it, past the {} ms \
-             it will send late; withdrawn rather than sent late, because a leg arriving outside \
-             the window its cycle was admitted on is the exposure the release schedule exists to \
-             prevent",
-            unreleased.order_id,
-            unreleased.venue.as_str(),
-            unreleased.scheduled.to_rfc3339(),
-            unreleased.lag.as_millis(),
-            unreleased.tolerance.as_millis()
-        );
         // Recorded directly rather than through `Cell::refuse`: there is no
         // `WorkReport` on this path. See [`GATE_RELEASE_LATE`] for the
-        // enumeration this makes a constant necessary for.
-        self.metrics.refusal(GATE_RELEASE_LATE);
+        // enumeration this makes a constant necessary for; each arm passes
+        // its own `pub const`, so the label stays bounded.
+        let (gate, reason) = match &unreleased.refused {
+            None => {
+                self.metrics.refusal(GATE_RELEASE_LATE);
+                (
+                    GATE_RELEASE_LATE,
+                    format!(
+                        "order {} for {} was to be released no earlier than {} and the gateway \
+                         found that instant {} ms past on the first pass that could have \
+                         released it, past the {} ms it will send late; withdrawn rather than \
+                         sent late, because a leg arriving outside the window its cycle was \
+                         admitted on is the exposure the release schedule exists to prevent",
+                        unreleased.order_id,
+                        unreleased.venue.as_str(),
+                        unreleased.scheduled.to_rfc3339(),
+                        unreleased.lag.as_millis(),
+                        unreleased.tolerance.as_millis()
+                    ),
+                )
+            }
+            Some(refusal) => {
+                self.metrics.refusal(GATE_RELEASE_REFUSED);
+                (
+                    GATE_RELEASE_REFUSED,
+                    format!(
+                        "order {} for {} was held for release no earlier than {} and the \
+                         gateway refused it at that release, so it never reached the venue: \
+                         {refusal}",
+                        unreleased.order_id,
+                        unreleased.venue.as_str(),
+                        unreleased.scheduled.to_rfc3339()
+                    ),
+                )
+            }
+        };
         self.journal.record(
             Decision::Refused {
-                gate: GATE_RELEASE_LATE.to_string(),
+                gate: gate.to_string(),
                 reason,
             },
             now,
@@ -8968,6 +9121,24 @@ impl Cell {
             self.refuse(report, "capital", &reason, now);
             return None;
         }
+        // The desk's grant meets the same drawdown stop a strategy's does.
+        let fallen = self.desk.as_ref().and_then(|installed| {
+            let desk = &installed.desk;
+            let owner = desk.strategy().as_str();
+            desk.envelope()
+                .check_drawdown(self.realised.realised_drawdown(owner))
+                .err()
+                .map(|reason| {
+                    format!(
+                        "desk {owner} under grant {}: {reason}",
+                        desk.envelope().signature()
+                    )
+                })
+        });
+        if let Some(reason) = fallen {
+            self.refuse(report, GATE_ENVELOPE_DRAWDOWN, &reason, now);
+            return None;
+        }
 
         let grant = self.desk.as_ref().map(|installed| {
             let desk = &installed.desk;
@@ -9652,6 +9823,9 @@ impl Cell {
         };
         let price = leg.reference_price;
         let release_at = now.saturating_add(schedule.offset(&leg.venue));
+        // A leg stands on the cycle the desk found over the books it holds.
+        let justification =
+            Justification::of(vec![Ground::Evidence(format!("cycle:{}", cycle.cycle_id))])?;
         let sent = self.send(
             &leg.object_id,
             &leg.venue,
@@ -9661,6 +9835,7 @@ impl Cell {
             now,
             release_at,
             qip_execution_engine::modes::ExecutionMode::Routing,
+            &justification,
             gateway,
         );
         let (order_id, simulated) = match sent {
@@ -9968,6 +10143,12 @@ impl Cell {
                 );
                 continue;
             };
+            // The offset answers the broken cycle that left the position.
+            let Ok(justification) =
+                Justification::of(vec![Ground::Evidence(format!("cycle_broken:{cycle_id}"))])
+            else {
+                continue;
+            };
             match self.send(
                 &offset.object_id,
                 &offset.venue,
@@ -9977,6 +10158,7 @@ impl Cell {
                 now,
                 now,
                 qip_execution_engine::modes::ExecutionMode::OrderTaking,
+                &justification,
                 gateway,
             ) {
                 Ok((order_id, simulated)) => {
@@ -12114,6 +12296,9 @@ mod crossing_tests {
                     at(60),
                 )
                 .expect("a fixture size is never zero")
+                // Reasoned from a feature, as every signal's intent is, so
+                // the net carries the evidence `Cell::send` requires.
+                .with_inputs(vec![("mid".to_string(), 1)])
             })
             .collect();
         let mut nets = net(intents);

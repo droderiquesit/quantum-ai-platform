@@ -385,3 +385,41 @@ fn only_a_declared_caller_may_invoke_a_tool() {
     );
     assert!(registry.permits_caller("absent", "desk-agent").is_err());
 }
+
+/// R12-GOV-6127: a `Justification` exists only for grounds naming
+/// independent evidence — built through `of`, decoded through the same
+/// check — so a seam taking one cannot be reached by an action whose only
+/// reasons are the profit it expects and the price it wants to move.
+/// Mutation: in `Justification::of`, skip `check_justification` and both
+/// profit-only cases are admitted.
+#[test]
+fn a_justification_exists_only_for_an_evidence_ground_built_or_decoded() {
+    use qip_contracts::action::{Ground, Justification};
+    for grounds in [
+        vec![],
+        vec![Ground::ExpectedProfit],
+        vec![Ground::ExpectedProfit, Ground::DesiredPriceImpact],
+        vec![Ground::Evidence("   ".to_string())],
+    ] {
+        assert!(
+            Justification::of(grounds.clone()).is_err(),
+            "{grounds:?} justified an action"
+        );
+        let wire = serde_json::to_string(&grounds).unwrap();
+        assert!(
+            serde_json::from_str::<Justification>(&wire).is_err(),
+            "{grounds:?} decoded as a justification"
+        );
+    }
+    let grounds = vec![
+        Ground::ExpectedProfit,
+        Ground::Evidence("filing/E-1".to_string()),
+    ];
+    let justified = Justification::of(grounds.clone()).unwrap();
+    assert_eq!(justified.grounds(), grounds.as_slice());
+    let wire = serde_json::to_string(&justified).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Justification>(&wire).unwrap(),
+        justified
+    );
+}

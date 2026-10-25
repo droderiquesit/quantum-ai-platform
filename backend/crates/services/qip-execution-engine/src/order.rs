@@ -436,7 +436,14 @@ impl Order {
                 self.order_id.as_str()
             )));
         }
-        if self.hypotheses.is_empty() {
+        // A blank entry is no hypothesis: an order naming only blanks traces
+        // to nothing, and is the shape of an order justified by nothing but
+        // the trade (R12-GOV-6127).
+        if self
+            .hypotheses
+            .iter()
+            .all(|hypothesis| hypothesis.trim().is_empty())
+        {
             return Err(Error::invalid(format!(
                 "order {} traces to no hypothesis; an untraceable order is one nobody can explain",
                 self.order_id.as_str()

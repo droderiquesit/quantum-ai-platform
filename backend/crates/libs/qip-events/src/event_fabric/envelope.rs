@@ -106,14 +106,23 @@ pub struct FabricFacts {
     pub provenance: String,
 }
 
-/// What the reader of a batch knows that the batch does not say: which stream
-/// and partition it was read from, under what authenticated identity, and in
-/// whose name the envelope is assembled. Supplied by the caller because the
-/// codec's batch header carries none of it.
+/// What the reader of a batch knows: which stream and partition it read the
+/// batch from, and — for a batch no broker has stamped yet, which only its
+/// own producer opens — the producer's own region, identity and name.
+///
+/// Since ADR 0129 the broker stamps region, partition and the authenticated
+/// principal into the batch ([`super::codec::BrokerOrigin`]) and the writer
+/// stamps its [`super::codec::Provenance`]. Where the batch carries them they
+/// are what the envelope says, and a reader whose own claim disagrees is
+/// refused rather than believed: a consumer that names the region a record
+/// came from is fabricating it. A consumer states `region: None`; a batch
+/// that then carries no broker origin is refused, never given the reader's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FabricContext {
     pub stream: String,
-    pub region: String,
+    /// The producer's own region, for its own preflight of a batch it has not
+    /// sent; `None` for a consumer, which knows only what the broker stamped.
+    pub region: Option<String>,
     pub partition: u32,
     /// The stream's class; a record whose topic is bound to another class is
     /// refused (a P2 journal entry on the P1 outcomes stream is a routing
@@ -121,6 +130,45 @@ pub struct FabricContext {
     pub qos_class: QosClass,
     pub auth_context: String,
     pub provenance: String,
+}
+
+/// The region and authenticated identity an envelope states, from the
+/// broker's stamp when the batch carries one (ADR 0129 decision 3).
+///
+/// Refuses a reader whose region or partition disagrees with the broker's
+/// stamp — the consumer-fabricated region this decision exists to stop — and
+/// a batch with no stamp opened by a reader that states no region of its
+/// own: that is a consumer, and a consumer has no region to give it.
+fn origin_facts(batch: &Batch, context: &FabricContext) -> Result<(String, String)> {
+    match (&batch.origin, &context.region) {
+        (Some(origin), claimed) => {
+            if let Some(claimed) = claimed
+                && *claimed != origin.region
+            {
+                return Err(Error::denied(format!(
+                    "the batch at offset {} was stamped in region {} by the broker that \
+                     accepted it, and its reader claims {claimed}; a reader does not name the \
+                     region a record was produced in",
+                    batch.base_offset, origin.region
+                )));
+            }
+            if origin.partition != context.partition {
+                return Err(Error::denied(format!(
+                    "the batch at offset {} was appended to partition {} and is being read as \
+                     partition {}; the broker's stamp and the read disagree",
+                    batch.base_offset, origin.partition, context.partition
+                )));
+            }
+            Ok((origin.region.clone(), origin.principal.clone()))
+        }
+        (None, Some(own)) => Ok((own.clone(), context.auth_context.clone())),
+        (None, None) => Err(Error::denied(format!(
+            "the batch at offset {} carries no broker-stamped region, partition or principal \
+             (format version 1, or never accepted by a broker), and its reader states none; \
+             the region is not filled in by whoever reads it",
+            batch.base_offset
+        ))),
+    }
 }
 
 /// CONTRACT-036's `FabricEnvelope`. See the module doc for the full field
@@ -269,6 +317,11 @@ impl FabricEnvelope {
                 context.qos_class.as_str()
             )));
         }
+        let (region, auth_context) = origin_facts(batch, context)?;
+        let provenance = batch.provenance.map_or_else(
+            || context.provenance.clone(),
+            |provenance| provenance.as_str().to_string(),
+        );
         let index_u64 = u64::try_from(index)
             .map_err(|_| Error::numeric(format!("record index {index} does not fit a u64")))?;
         let producer_sequence = batch.base_sequence.checked_add(index_u64).ok_or_else(|| {
@@ -285,7 +338,7 @@ impl FabricEnvelope {
             ),
             FabricFacts {
                 stream: context.stream.clone(),
-                region: context.region.clone(),
+                region,
                 partition: context.partition,
                 // The catalogue's partition key is `cell` and a cell is its
                 // own producer id, so the producer id is the ordering key.
@@ -296,8 +349,8 @@ impl FabricEnvelope {
                 leader_epoch: batch.leader_epoch,
                 offset: batch.base_offset,
                 qos_class: binding.qos_class,
-                auth_context: context.auth_context.clone(),
-                provenance: context.provenance.clone(),
+                auth_context,
+                provenance,
             },
             None,
         )
@@ -371,6 +424,34 @@ impl FabricEnvelope {
                 "event {} claims schema hash {claimed} but topic {} version {} over this \
                  payload hashes to {schema_hash}; its version or its shape was edited",
                 event.event_id, event.topic, event.schema_version
+            )));
+        }
+        // R12-CONTRACT-7089: the trace id and the idempotency key are two of
+        // the contract's required fields, so an envelope without either is
+        // refused here — built or decoded — rather than carried with a hole.
+        // A trace nobody stamped joins nothing, and a record with no
+        // idempotency key cannot be told from its own redelivery downstream.
+        if event
+            .lineage
+            .trace_id
+            .as_ref()
+            .is_none_or(|trace| trace.as_str().trim().is_empty())
+        {
+            return Err(Error::invalid(format!(
+                "event {} carries no trace id; a fabric envelope's trace id is required, and the \
+                 writer stamps it",
+                event.event_id
+            )));
+        }
+        if event
+            .idempotency_key
+            .as_deref()
+            .is_none_or(|key| key.trim().is_empty())
+        {
+            return Err(Error::invalid(format!(
+                "event {} carries no idempotency key; a fabric envelope's idempotency key is \
+                 required, and the writer stamps it",
+                event.event_id
             )));
         }
         Ok(Self {

@@ -440,11 +440,15 @@ impl SimulatedExchange {
             || request.venue != self.venue.as_str()
             || request.product != object_id.as_str()
         {
+            let done = match action {
+                CreationAction::Create => "created",
+                CreationAction::List => "listed",
+                CreationAction::Seed => "seeded",
+            };
             return Err(Error::denied(format!(
-                "{} was not {}ed at {}: the admission offered is to {} {} at {}, and this needs \
+                "{} was not {done} at {}: the admission offered is to {} {} at {}, and this needs \
                  an admission to {} exactly this instrument at exactly this venue",
                 object_id.as_str(),
-                action.as_str(),
                 self.venue.as_str(),
                 request.action.as_str(),
                 request.product,
@@ -518,6 +522,17 @@ impl SimulatedExchange {
     /// handed on demand, so an instrument nobody had permitted could be
     /// brought into existence at this venue by placing or seeding against
     /// it. The admission is checked before the listing is built.
+    ///
+    /// **And a `create` admission beside it.** This method does not list an
+    /// instrument that exists elsewhere, as [`Self::list`] does with the
+    /// `FinancialObject` it is handed: it invents the instrument, writing
+    /// the record a risk engine will read as the instrument's definition.
+    /// Until 2026-10-24 it did that under `list` alone, so a register that
+    /// permitted an instrument to be listed had, without anybody recording
+    /// it, permitted it to be brought into existence — the widening
+    /// `qip_execution_engine::creation` names when it says each action is
+    /// its own permission (R12-COVERAGE-5107). Both are checked before
+    /// anything is built.
     #[allow(clippy::too_many_arguments)] // each is a trading fact the listing needs and none has a default
     pub fn list_synthetic(
         &mut self,
@@ -528,8 +543,10 @@ impl SimulatedExchange {
         tick_size: Decimal,
         liquidity: LiquidityProfile,
         at: Timestamp,
+        creation: &CreationAdmission,
         admission: &CreationAdmission,
     ) -> Result<()> {
+        self.admits(CreationAction::Create, &object_id, creation)?;
         self.admits_listing(&object_id, admission)?;
         if price <= Decimal::ZERO || lot_size <= Decimal::ZERO || tick_size <= Decimal::ZERO {
             return Err(Error::invalid(format!(
@@ -608,6 +625,15 @@ impl SimulatedExchange {
     /// flow cannot take at `price` is withdrawn rather than left resting:
     /// it is a taker, and a remainder in the book would be liquidity
     /// nobody seeded.
+    ///
+    /// **Demands an admission to list exactly this instrument at exactly
+    /// this venue** (R12-COVERAGE-5107): flow taken here is a trade in the
+    /// market and can fill a client's resting order, so it is admitted as a
+    /// placement is — against the listing permission, which must still
+    /// stand. It needs no `seed` admission, because it takes liquidity out
+    /// rather than putting any in. Until 2026-10-24 this public method took
+    /// none, and the one check sat in a single caller, the edge node's
+    /// gateway.
     pub fn seed_aggressor(
         &mut self,
         object_id: &ObjectId,
@@ -615,7 +641,9 @@ impl SimulatedExchange {
         price: Decimal,
         quantity: Decimal,
         at: Timestamp,
+        admission: &CreationAdmission,
     ) -> Result<Decimal> {
+        self.admits_listing(object_id, admission)?;
         if !self.is_listed(object_id) {
             return Err(Error::not_found(format!(
                 "{} does not list {}, so there is no book to take from",

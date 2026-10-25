@@ -16,6 +16,9 @@ name = "qip-deepbrain"
 path = "src/main.rs"
 
 [dependencies]
+# The tick desk replays the platform's own orders (R12-TICK-2073); the
+# decline-observation sweep test builds the refused order a gate vetoes.
+qip-execution-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
@@ -107,8 +110,6 @@ qip-optimization-engine.workspace = true
 # The research tests build the evidence records a connector would forward,
 # to prove a poisoned feed in the world fabric reaches the research loop.
 qip-world-model.workspace = true
-# The decline-observation sweep test builds the refused order a gate vetoes.
-qip-execution-engine.workspace = true
 
 [lints]
 workspace = true

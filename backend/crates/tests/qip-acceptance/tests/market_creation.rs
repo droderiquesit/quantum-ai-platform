@@ -34,7 +34,7 @@ use qip_core::ids::ObjectId;
 use qip_core::time::Timestamp;
 use qip_core::{Decimal, dec};
 use qip_execution_engine::creation::{
-    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
+    CreationAction, CreationAdmission, CreationAuthority, CreationPermissions, CreationRequest,
 };
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::costs::LiquidityProfile;
@@ -96,6 +96,92 @@ fn fully_permitted(request: &CreationRequest) -> Result<CreationPermissions> {
     Ok(permissions)
 }
 
+/// A genuine admission to `action` this product at this venue in this
+/// jurisdiction.
+fn admitted(action: CreationAction) -> Result<CreationAdmission> {
+    let request = CreationRequest::new(action, VENUE, PRODUCT, JURISDICTION);
+    fully_permitted(&request)?.admit(&request)
+}
+
+/// R12-COVERAGE-5107: the simulator's synthetic listing invents the
+/// instrument — it writes the record a risk engine reads as its
+/// definition — so it needs a `create` admission as well as a `list` one.
+/// Until 2026-10-24 it took `list` alone, and the edge node's gateway
+/// brought instruments into existence on demand under no permission to
+/// create them. Every admission offered below is genuine; each case offers
+/// something other than an admission to create exactly this instrument
+/// here as the creation one, and the venue lists nothing.
+///
+/// Mutation: drop the `self.admits(CreationAction::Create, ..)` line from
+/// `SimulatedExchange::list_synthetic` and the listing admission offered in
+/// the creation slot invents the instrument.
+#[test]
+fn the_venue_invents_an_instrument_only_under_an_admission_to_create_it() -> Result<()> {
+    let mut exchange =
+        SimulatedExchange::new(VenueId::new(VENUE), ExchangeSettings::orderly(), 7, start());
+    let listing = admitted(CreationAction::List)?;
+    let other = CreationRequest::new(
+        CreationAction::Create,
+        VENUE,
+        "OBJ0000000000000000000NEW2",
+        JURISDICTION,
+    );
+    for (case, creation) in [
+        (
+            "an admission to list in the creation slot",
+            admitted(CreationAction::List)?,
+        ),
+        (
+            "an admission to seed in the creation slot",
+            admitted(CreationAction::Seed)?,
+        ),
+        (
+            "an admission to create another product",
+            fully_permitted(&other)?.admit(&other)?,
+        ),
+    ] {
+        let refusal = exchange
+            .list_synthetic(
+                product(),
+                "NEW1",
+                dec!("100"),
+                Decimal::ONE,
+                dec!("0.01"),
+                LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+                start(),
+                &creation,
+                &listing,
+            )
+            .expect_err(&format!("{case}: {PRODUCT} was invented at {VENUE}"));
+        assert!(
+            refusal
+                .message()
+                .contains("needs an admission to create exactly this instrument"),
+            "{case} was refused for another reason: {}",
+            refusal.message()
+        );
+        assert!(
+            !exchange.is_listed(&product()),
+            "{case}: a listing was left behind"
+        );
+    }
+    // Contrast: the admission to create it, beside the one to list it,
+    // invents and lists it.
+    exchange.list_synthetic(
+        product(),
+        "NEW1",
+        dec!("100"),
+        Decimal::ONE,
+        dec!("0.01"),
+        LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+        start(),
+        &admitted(CreationAction::Create)?,
+        &listing,
+    )?;
+    assert!(exchange.is_listed(&product()));
+    Ok(())
+}
+
 #[test]
 fn the_venue_refuses_an_admission_for_another_action_venue_or_product_and_lists_nothing()
 -> Result<()> {
@@ -147,7 +233,10 @@ fn the_venue_refuses_an_admission_for_another_action_venue_or_product_and_lists_
             "{case} was refused and still left a listing at the venue"
         );
         // The simulator's own listing path, which the edge node's gateway
-        // uses to list on demand, makes the same check.
+        // uses to list on demand, makes the same check — handed a genuine
+        // admission to create this instrument here beside the one under
+        // test, so the refusal is the listing check and not the creation one.
+        let creation = admitted(CreationAction::Create)?;
         let refusal = exchange
             .list_synthetic(
                 product(),
@@ -157,6 +246,7 @@ fn the_venue_refuses_an_admission_for_another_action_venue_or_product_and_lists_
                 dec!("0.01"),
                 LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
                 start(),
+                &creation,
                 &admission,
             )
             .expect_err(&format!("{case} listed {PRODUCT} synthetically at {VENUE}"));

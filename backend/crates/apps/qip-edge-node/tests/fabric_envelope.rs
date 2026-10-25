@@ -114,7 +114,15 @@ impl Fabric {
             IdentityTable::parse(&format!("{IDENTITY} {}\n", sha256_hex(TOKEN.as_bytes())))
                 .unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let broker = Arc::new(Broker::open(root.join("broker"), clock.clone()).unwrap());
+        // A broker that knows its region, as every deployed one must (ADR
+        // 0129): it stamps that region into what it accepts, and the reader
+        // below states none of its own.
+        let broker = Arc::new(
+            Broker::open(root.join("broker"), clock.clone())
+                .unwrap()
+                .with_region("europe-west2")
+                .unwrap(),
+        );
         let segments: SegmentConfigFor = Arc::new(move |policy: &StreamPolicy| {
             SegmentLogConfig::new(clock.clone()).with_archive_required(policy.archive_required())
         });
@@ -231,7 +239,7 @@ fn spooled(records: Vec<Record>) -> Batch {
 fn reader() -> FabricContext {
     FabricContext {
         stream: JOURNAL_STREAM.to_string(),
-        region: "central".to_string(),
+        region: None,
         partition: 0,
         qos_class: QosClass::P2MarketJournal,
         auth_context: "consumer-group:test".to_string(),

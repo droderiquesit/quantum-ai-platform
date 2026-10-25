@@ -189,7 +189,7 @@ use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::factor::FactorRisk;
 use qip_risk::limits::{LimitSet, MarginBasis, RiskState, VenueMargin};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
-use qip_risk_engine::monitor::RiskMonitor;
+use qip_risk_engine::monitor::{MonitorAction, RiskMonitor};
 use qip_risk_engine::pretrade::PreTradeChecker;
 use qip_simulation_engine::agents::CounterpartyAgent;
 use qip_simulation_engine::conditions::{ConditionSchedule, ConditionWindow, MarketCondition};
@@ -563,6 +563,14 @@ pub struct Platform {
     /// error was charted and read by nothing, so a twin that was wrong about
     /// a venue stayed wrong by the same amount for ever.
     fill_calibration: qip_twin::calibration::FillCalibration,
+    /// Strategies whose capital grants are narrowed because the twin's replay
+    /// of fills at their venue diverged from the venue (R12-RES-7104), each
+    /// until a re-promotion recorded after it. Resumed from the log, so a
+    /// restart does not hand a held strategy back its full size.
+    replay_divergence_holds: BTreeMap<StrategyId, crate::replay_divergence::DivergenceHold>,
+    /// Where each released strategy's divergence evidence starts again: the
+    /// instant of the re-promotion that released it. Resumed with the holds.
+    replay_divergence_windows: BTreeMap<StrategyId, Timestamp>,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -766,6 +774,15 @@ pub struct Platform {
     /// order if it cannot. Kept so a test and an operator can see the routing
     /// that guarded the last order rather than trust that one happened.
     pretrade_routing: Option<DeterministicRouting>,
+    /// How the most recent pass of the risk monitor over the book was routed
+    /// (R12-RISK-3022). The monitor's verdict is what engages the kill switch
+    /// and what withholds sign-off and release in ACT, so it is the second
+    /// place a hard limit is evaluated, and until this it was evaluated with
+    /// no routing at all — deterministic by the absence of a model in the
+    /// call, not by anything that could be shown. Always the deterministic
+    /// arm, obtained through [`Router::determine`]; see
+    /// [`Self::observe_book_under_routing`].
+    monitor_routing: Option<DeterministicRouting>,
     /// What the most recent cycle's REASON stage was routed to, and whether
     /// the panel was convened as a result.
     ///
@@ -1165,7 +1182,7 @@ pub struct Platform {
     /// so an approved thesis — however good — could never become a trade. A
     /// thesis is queued once and drained once; re-expressing it every cycle
     /// would pyramid the same idea until the mandate cap alone stopped it.
-    pending_theses: Vec<qip_portfolio_engine::construction::ApprovedThesis>,
+    pending_theses: Vec<JustifiedThesis>,
     /// Beliefs from outside the opportunity, by subject. REASON may only be
     /// narrowed by them (ADR 0151 decision 3); empty unless a producer sets it.
     outside_priors: BTreeMap<String, crate::fusion::OutsidePrior>,
@@ -4592,33 +4609,36 @@ fn capital_grant_of(
     use qip_contracts::capital::{CapitalGrantFields, CollateralClass, GrantMode};
     use qip_contracts::validated::{Contract, MAX_BP};
     let capital = envelope.gross_limit();
-    // The loss limit as a share of the capital, in basis points — exact or
+    // ADR 0126 decision 3: the drawdown stop, the reserve and the ADV share
+    // are read from the envelope's drawdown block when it states them, and
+    // only written — the stop as the loss limit, a zero reserve, the whole
+    // ADV — when it does not. An envelope from before the block existed is
+    // the only one that reaches the written arm.
+    let block = envelope.drawdown();
+    let stop = block.map_or(envelope.loss_limit(), |block| block.max_drawdown);
+    // The stop as a share of the capital, in basis points — exact or
     // refused. `Decimal::ONE.raw()` is one unit at the decimal's scale.
     let one = Decimal::ONE.raw();
-    let scaled = envelope
-        .loss_limit()
+    let scaled = stop
         .checked_mul(Decimal::from_int(i64::from(MAX_BP)))
         .and_then(|scaled| scaled.checked_div(capital))
         .ok_or_else(|| {
             Error::numeric(format!(
-                "the loss limit {} over the capital {capital} of {}'s grant does not compute in \
-                 basis points",
-                envelope.loss_limit(),
+                "the drawdown stop {stop} over the capital {capital} of {}'s grant does not \
+                 compute in basis points",
                 envelope.strategy()
             ))
         })?;
     if scaled.raw() % one != 0 {
         return Err(Error::invalid(format!(
-            "the loss limit {} is not a whole number of basis points of the capital {capital} \
-             of {}'s grant; the funding record cannot state the drawdown stop exactly",
-            envelope.loss_limit(),
+            "the drawdown stop {stop} is not a whole number of basis points of the capital \
+             {capital} of {}'s grant; the funding record cannot state it exactly",
             envelope.strategy()
         )));
     }
     let max_drawdown_bp = u32::try_from(scaled.raw() / one).map_err(|_| {
         Error::invalid(format!(
-            "the loss limit {} of {}'s grant is not within its capital {capital}",
-            envelope.loss_limit(),
+            "the drawdown stop {stop} of {}'s grant is not within its capital {capital}",
             envelope.strategy()
         ))
     })?;
@@ -4645,8 +4665,12 @@ fn capital_grant_of(
         max_leverage,
         risk_budget: envelope.loss_limit(),
         max_drawdown_bp,
-        liquidity_reserve: Decimal::ZERO,
-        max_adv_share_bp: MAX_BP,
+        liquidity_reserve: block
+            .and_then(|block| block.liquidity_reserve)
+            .unwrap_or(Decimal::ZERO),
+        max_adv_share_bp: block
+            .and_then(|block| block.max_adv_share_bp)
+            .unwrap_or(MAX_BP),
         granted_at: envelope.granted_at(),
         expires_at: envelope.expires_at(),
     })
@@ -5601,6 +5625,7 @@ impl Platform {
         // under — while it is still borrowed rather than moved, so a
         // resumed proposal is re-validated against the real rule it names.
         let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
+        let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
         // One activity row per limit, before the set moves into the checker
         // and the monitor: the dormancy finding is about the rules that
         // never fire, and a table that gained rows on the first fire would
@@ -5660,6 +5685,8 @@ impl Platform {
             filled: Vec::new(),
             fill_scores: Vec::new(),
             fill_calibration: qip_twin::calibration::FillCalibration::default(),
+            replay_divergence_holds: replay_divergence_resumed.0,
+            replay_divergence_windows: replay_divergence_resumed.1,
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
@@ -5701,6 +5728,7 @@ impl Platform {
             cost_engine: CostEngine::new(DataCostModel::new()),
             cost_router: Router::default(),
             pretrade_routing: None,
+            monitor_routing: None,
             reason_routing: None,
             universe_not_decision_grade: not_decision_grade,
             commitments,
@@ -9025,7 +9053,12 @@ impl Platform {
                 // than skipped when a measurement it reads is malformed — a
                 // grant signed past a governor that could not decide is a
                 // grant the governor never saw.
-                let narrowing = self.grant_narrowing(now);
+                // And, for this strategy alone, the twin's divergence at its
+                // venue (R12-RES-7104): a hold narrows every grant signed
+                // while it stands, and only a re-promotion releases it.
+                let narrowing = self
+                    .grant_narrowing(now)
+                    .and_then(|decision| self.narrow_for_replay_divergence(strategy, decision));
                 let outcome = narrowing.and_then(|narrowing| {
                     self.central
                         .issue_narrowed(
@@ -13895,6 +13928,50 @@ impl Platform {
         self.pretrade_routing.as_ref()
     }
 
+    /// How the last pass of the risk monitor over the book was routed.
+    pub fn monitor_routing(&self) -> Option<&DeterministicRouting> {
+        self.monitor_routing.as_ref()
+    }
+
+    /// The conditions the book-level limit evaluation is routed under.
+    ///
+    /// The book has no one instrument, so the regime is the book's own — a
+    /// crisis at the crisis drawdown, quiet otherwise — and the horizon is the
+    /// cycle's. The conditions label the routing record; they choose nothing,
+    /// because the `Required` arm consults no ladder.
+    fn book_conditions(&self) -> Conditions {
+        Conditions::new(
+            AssetClass::Equity,
+            CostRegion::new(HOME_REGION),
+            if self.capital.drawdown() >= CRISIS_DRAWDOWN {
+                MarketRegime::Crisis
+            } else {
+                MarketRegime::Quiet
+            },
+            VolatilityRegime::Normal,
+            Horizon::Intraday,
+        )
+    }
+
+    /// Run the risk monitor over the book under a deterministic routing.
+    ///
+    /// **The only caller of `RiskMonitor::observe`** (R12-RISK-3022). The
+    /// routing is taken by value so a caller must have obtained one from
+    /// [`Router::determine`] — a type that cannot name a model rung — before
+    /// the limits are evaluated, and it is kept as the record of how this
+    /// pass was routed. The monitor's verdict engages the kill switch and
+    /// gates sign-off and release, so those paths are covered by this one.
+    fn observe_book_under_routing(
+        &mut self,
+        routing: DeterministicRouting,
+        state: &RiskState,
+        now: Timestamp,
+    ) -> MonitorAction {
+        self.monitor_routing = Some(routing);
+        self.monitor
+            .observe(state, "platform", self.autonomy.level(), now)
+    }
+
     /// Describe the market this decision is being made in.
     ///
     /// Every field is read off something the platform already tracks. Nothing
@@ -14584,9 +14661,9 @@ impl Platform {
                     // justified: a thesis whose only ground is the return it
                     // expects never reaches DECIDE, so no intent is formed on
                     // profit alone (R12-GOV-6127). `thesis_from` takes the
-                    // proof by value and only `justify_thesis` can mint one,
-                    // so this check cannot be dropped without the queue's
-                    // only constructor failing to compile.
+                    // proof by value and the queue holds it beside the
+                    // thesis; nothing but `Justification::of` makes one, and
+                    // it makes none for profit-only grounds.
                     match justify_thesis(&reasoned.hypothesis.evidence) {
                         Err(refusal) => {
                             // Recorded under its own words, because "could not
@@ -14612,13 +14689,13 @@ impl Platform {
                                 // narrowing an operator can see the size of.
                                 outcome.detail.push_str(&format!(
                                     "; sized on conviction {:.3}",
-                                    thesis.conviction.abs()
+                                    thesis.thesis().conviction.abs()
                                 ));
                                 // R12-RISK-4112: how split the panel was on
                                 // the thesis now queued, for DECIDE's
                                 // confidence governor to size against.
                                 self.governor.signals_mut().observe_dissent(
-                                    &thesis.hypothesis_id,
+                                    &thesis.thesis().hypothesis_id,
                                     reasoned.dissenters.len(),
                                     report.runs.len(),
                                 );
@@ -16302,16 +16379,14 @@ impl Platform {
         Ok((outcome, unsizeable, capped))
     }
 
-    /// `_justified` is the proof [`justification::justify_thesis`] mints and
-    /// nothing else can: the queue's only constructor will not build a
-    /// thesis from a hypothesis nobody showed was justified by more than
-    /// the return it expects (R12-GOV-6127).
+    /// `justification` is the proof the thesis stands on more than the
+    /// return it expects (R12-GOV-6127), carried into the queue with it.
     fn thesis_from(
         &self,
         opportunity: &Opportunity,
         reasoned: &qip_reasoning_engine::engine::ReasoningOutcome,
-        _justified: justification::Justified,
-    ) -> Result<qip_portfolio_engine::construction::ApprovedThesis> {
+        justification: qip_contracts::action::Justification,
+    ) -> Result<JustifiedThesis> {
         let object_id = opportunity
             .affected_objects
             .first()
@@ -16337,30 +16412,33 @@ impl Platform {
             .anomalies
             .first()
             .ok_or_else(|| Error::invalid("the opportunity carries no anomaly to measure"))?;
-        Ok(qip_portfolio_engine::construction::ApprovedThesis {
-            hypothesis_id: reasoned.hypothesis.hypothesis_id.to_string(),
-            object_id: object_id.clone(),
-            // The sizing number rather than the admission number. Both are
-            // the hypothesis's own confidence; this one is additionally
-            // narrowed where the evidence contradicts itself, so that a
-            // thesis whose support is answered by an equal dissent commits
-            // less capital than one nothing argued against. Without it a
-            // conflict of evidence and an absence of evidence arrived here as
-            // the same figure and were sized identically, with nothing in the
-            // record to say which had happened.
-            conviction: sign * reasoned.hypothesis.confidence_for_sizing(),
-            // The reversion of what was measured: the anomaly observed a
-            // displacement from expectation, and the thesis is that it closes.
-            // Bounded to the mandate-scale range construction validates, so an
-            // extreme print proposes a large-but-finite return rather than an
-            // absurd one.
-            expected_return: (anomaly.expected - anomaly.observed).clamp(-0.5, 0.5),
-            price: Decimal::from_f64(price).ok_or_else(|| {
-                Error::numeric(format!(
-                    "{object_id}'s last close {price} is not representable as a Decimal"
-                ))
-            })?,
-        })
+        Ok(JustifiedThesis::new(
+            qip_portfolio_engine::construction::ApprovedThesis {
+                hypothesis_id: reasoned.hypothesis.hypothesis_id.to_string(),
+                object_id: object_id.clone(),
+                // The sizing number rather than the admission number. Both are
+                // the hypothesis's own confidence; this one is additionally
+                // narrowed where the evidence contradicts itself, so that a
+                // thesis whose support is answered by an equal dissent commits
+                // less capital than one nothing argued against. Without it a
+                // conflict of evidence and an absence of evidence arrived here as
+                // the same figure and were sized identically, with nothing in the
+                // record to say which had happened.
+                conviction: sign * reasoned.hypothesis.confidence_for_sizing(),
+                // The reversion of what was measured: the anomaly observed a
+                // displacement from expectation, and the thesis is that it closes.
+                // Bounded to the mandate-scale range construction validates, so an
+                // extreme print proposes a large-but-finite return rather than an
+                // absurd one.
+                expected_return: (anomaly.expected - anomaly.observed).clamp(-0.5, 0.5),
+                price: Decimal::from_f64(price).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "{object_id}'s last close {price} is not representable as a Decimal"
+                    ))
+                })?,
+            },
+            justification,
+        ))
     }
 
     /// Turn an opportunity and the organisation's findings into a reviewed
@@ -17308,7 +17386,11 @@ impl Platform {
         // Theses are drained, not read: a thesis expresses once. Re-expressing
         // the queue every cycle would pyramid the same idea until the mandate
         // cap alone stopped it.
-        let theses = std::mem::take(&mut self.pending_theses);
+        let theses: Vec<qip_portfolio_engine::construction::ApprovedThesis> =
+            std::mem::take(&mut self.pending_theses)
+                .into_iter()
+                .map(JustifiedThesis::into_thesis)
+                .collect();
         let approved = theses.len();
         // The refusal, kept so the stage itself carries it. A construction
         // that was attempted and refused is not a quiet cycle, and until this
@@ -17641,9 +17723,26 @@ impl Platform {
         // book that became unacceptable while it sat is exactly what this
         // stage exists to catch.
         let risk_state = self.risk_state();
-        let action = self
-            .monitor
-            .observe(&risk_state, "platform", self.autonomy.level(), now);
+        // Routed before the limits are read (R12-RISK-3022). A routing the
+        // router refuses is not a reason to skip the monitor: the book is
+        // halted, because limits that could not be shown to be evaluated
+        // deterministically are limits nobody may trade against.
+        let action = match self
+            .cost_router
+            .determine("risk monitor limits for the book", self.book_conditions())
+        {
+            Ok(routing) => self.observe_book_under_routing(routing, &risk_state, now),
+            Err(error) => {
+                self.monitor_routing = None;
+                MonitorAction::HaltGlobally {
+                    reason: format!(
+                        "the book's limits could not be routed as a deterministic decision ({}); \
+                         halted rather than evaluated on an unproven path",
+                        error.message()
+                    ),
+                }
+            }
+        };
         self.monitor
             .enforce(&action, self.autonomy.kill_switch_mut(), now);
 
@@ -18496,6 +18595,19 @@ impl Platform {
         // else. The cap DECIDE reads is computed from the scores on every
         // construction — this pass only puts the change on the record.
         let (reviewed, problems) = self.review_sizing(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // R12-RES-7104: what the same fill errors say about the replays the
+        // strategies at each venue were promoted on. After `score_filled`, so
+        // this cycle's errors are read, and beside `review_sizing` rather than
+        // inside it because that narrows an instrument on the desk and this
+        // narrows a strategy's grant at the centre. It withdraws no venue.
+        let (reviewed, problems) = self.review_replay_divergence(now);
         if let Some(reviewed) = reviewed {
             let detail = format!("{}; {reviewed}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };
@@ -22655,6 +22767,174 @@ impl Platform {
         &mut self.fill_calibration
     }
 
+    /// The strategies held to a narrowed grant because the twin diverged at
+    /// their venue, and the measurement behind each (R12-RES-7104).
+    pub fn replay_divergence_holds(
+        &self,
+    ) -> &BTreeMap<StrategyId, crate::replay_divergence::DivergenceHold> {
+        &self.replay_divergence_holds
+    }
+
+    /// The fraction of its allocation a grant to `strategy` is held to by the
+    /// twin's divergence at its venue: one where nothing holds it, and
+    /// [`crate::replay_divergence::REPLAY_DIVERGENCE_MULTIPLIER`] where a hold
+    /// stands. Never above one.
+    pub fn replay_divergence_multiplier(&self, strategy: &StrategyId) -> Decimal {
+        self.replay_divergence_holds
+            .get(strategy)
+            .map_or(Decimal::ONE, |hold| hold.multiplier)
+    }
+
+    /// `decision` further narrowed for `strategy`'s replay-divergence hold,
+    /// named as its own contraction so the grant record says why it is
+    /// smaller. Unchanged where no hold stands.
+    fn narrow_for_replay_divergence(
+        &self,
+        strategy: &StrategyId,
+        mut decision: crate::confidence::ConfidenceDecision,
+    ) -> Result<crate::confidence::ConfidenceDecision> {
+        let Some(hold) = self.replay_divergence_holds.get(strategy) else {
+            return Ok(decision);
+        };
+        decision.multiplier = decision
+            .multiplier
+            .checked_mul(hold.multiplier)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "narrowing {strategy}'s grant by its replay-divergence hold overflows"
+                ))
+            })?;
+        decision.contractions.push(crate::confidence::Contraction {
+            trigger: crate::confidence::Trigger::ReplayDivergence,
+            subject: Some(strategy.as_str().to_string()),
+            multiplier: hold.multiplier,
+            reason: format!(
+                "the twin's replay of fills at {} diverged from the venue by a mean {:.1} bps \
+                 over {} fills, past the {} bps threshold, at {}; {strategy}'s grant is held to \
+                 {} until it is promoted again",
+                hold.venue,
+                hold.mean_abs_error_bps,
+                hold.sample,
+                crate::replay_divergence::REPLAY_DIVERGENCE_THRESHOLD_BPS,
+                hold.raised_at.to_rfc3339(),
+                hold.multiplier
+            ),
+        });
+        Ok(decision)
+    }
+
+    /// The LEARN pass for R12-RES-7104: release every hold a re-promotion
+    /// has answered, then hold every registered strategy whose venue the
+    /// twin now diverges from. Each change is journaled before the state
+    /// moves, so a hold the platform acts on is a hold the log carries.
+    ///
+    /// Releases first: a strategy re-promoted since its hold is measured on
+    /// the fills after its re-promotion in the same pass, so a twin still
+    /// diverging re-holds it on new evidence rather than on the evidence the
+    /// re-promotion answered.
+    fn review_replay_divergence(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        use crate::replay_divergence::{
+            DivergenceHold, REPLAY_DIVERGENCE_ORIGIN, ReplayDivergenceEntry, measure,
+            repromotion_after,
+        };
+        let mut problems = Vec::new();
+        let mut restored = 0usize;
+        let mut reduced = 0usize;
+
+        let held: Vec<DivergenceHold> = self.replay_divergence_holds.values().cloned().collect();
+        for hold in held {
+            let Some(repromotion) = repromotion_after(
+                self.central.factory().ledger().history(&hold.strategy),
+                hold.raised_at,
+            )
+            .cloned() else {
+                continue;
+            };
+            let entry = ReplayDivergenceEntry::restored(&hold, &repromotion, now);
+            if let Err(error) = self.journal_record(entry, REPLAY_DIVERGENCE_ORIGIN, now) {
+                problems.push(format!(
+                    "{}'s replay-divergence hold was answered by a re-promotion and stays in \
+                     force because the release could not be journaled: {}",
+                    hold.strategy,
+                    error.message()
+                ));
+                continue;
+            }
+            self.replay_divergence_holds.remove(&hold.strategy);
+            self.replay_divergence_windows
+                .insert(hold.strategy.clone(), repromotion.promotion.at);
+            restored += 1;
+        }
+
+        let dependents: Vec<(StrategyId, String)> = self
+            .central
+            .factory()
+            .candidates()
+            .filter(|candidate| {
+                !self
+                    .replay_divergence_holds
+                    .contains_key(candidate.strategy())
+                    && self.central.factory().stage_of(candidate.strategy())
+                        != qip_contracts::gate::GateStage::Retired
+            })
+            .map(|candidate| {
+                (
+                    candidate.strategy().clone(),
+                    candidate.venue().as_str().to_string(),
+                )
+            })
+            .collect();
+        for (strategy, venue) in dependents {
+            let since = self.replay_divergence_windows.get(&strategy).copied();
+            let divergence = match measure(&self.fill_scores, &venue, since) {
+                Ok(Some(divergence)) if divergence.exceeds_threshold() => divergence,
+                Ok(_) => continue,
+                Err(error) => {
+                    problems.push(format!("replay divergence: {}", error.message()));
+                    continue;
+                }
+            };
+            let hold = DivergenceHold {
+                strategy: strategy.clone(),
+                venue: venue.clone(),
+                raised_at: now,
+                sample: divergence.sample,
+                mean_abs_error_bps: divergence.mean_abs_error_bps,
+                multiplier: crate::replay_divergence::REPLAY_DIVERGENCE_MULTIPLIER,
+                calibration_observations: self
+                    .fill_calibration
+                    .venue(&venue)
+                    .map_or(0, |calibration| calibration.observations),
+            };
+            if let Err(error) = self.journal_record(
+                ReplayDivergenceEntry::reduced(&hold),
+                REPLAY_DIVERGENCE_ORIGIN,
+                now,
+            ) {
+                problems.push(format!(
+                    "{strategy} could not be held for the twin's divergence at {venue} because \
+                     the hold could not be journaled: {}",
+                    error.message()
+                ));
+                continue;
+            }
+            self.replay_divergence_holds.insert(strategy, hold);
+            reduced += 1;
+        }
+
+        if reduced == 0 && restored == 0 && self.replay_divergence_holds.is_empty() {
+            return (None, problems);
+        }
+        (
+            Some(format!(
+                "replay divergence: {reduced} strategy grant(s) reduced, {restored} restored by \
+                 re-promotion, {} held",
+                self.replay_divergence_holds.len()
+            )),
+            problems,
+        )
+    }
+
     /// The twin's per-venue fill calibration, as the scored fills have moved
     /// it (R12-TICK-2080).
     pub fn fill_calibration(&self) -> &qip_twin::calibration::FillCalibration {
@@ -24635,16 +24915,48 @@ fn listed_test_universe(symbols: &[&str]) -> Universe {
 /// was a branch beside `thesis_from` that deleting compiled and no cycle
 /// test could notice, because `synthesise` always supplies a supporting item.
 mod justification {
+    use qip_contracts::action::Justification;
     use qip_core::error::Result;
+    use qip_portfolio_engine::construction::ApprovedThesis;
 
-    /// Proof that a thesis stands on more than its expected profit.
-    #[derive(Debug)]
-    pub(super) struct Justified(());
+    /// A thesis and the proof it stands on more than its expected profit
+    /// (R12-GOV-6127). The queue DECIDE drains holds only these, and the
+    /// fields are private to this module, so a thesis reaches sizing only
+    /// beside a [`Justification`] — which [`Justification::of`] alone makes,
+    /// and only for grounds naming independent evidence. The proof travels
+    /// with the thesis rather than guarding one push site beside it.
+    #[derive(Clone, Debug)]
+    pub(super) struct JustifiedThesis {
+        thesis: ApprovedThesis,
+        justification: Justification,
+    }
+
+    impl JustifiedThesis {
+        pub(super) fn new(thesis: ApprovedThesis, justification: Justification) -> Self {
+            Self {
+                thesis,
+                justification,
+            }
+        }
+
+        pub(super) fn thesis(&self) -> &ApprovedThesis {
+            &self.thesis
+        }
+
+        #[allow(dead_code)] // read by the tests beside the queue
+        pub(super) fn justification(&self) -> &Justification {
+            &self.justification
+        }
+
+        pub(super) fn into_thesis(self) -> ApprovedThesis {
+            self.thesis
+        }
+    }
 
     pub(super) fn justify_thesis(
         evidence: &qip_reasoning_engine::evidence::EvidenceSet,
-    ) -> Result<Justified> {
-        use qip_contracts::action::{Ground, check_justification};
+    ) -> Result<Justification> {
+        use qip_contracts::action::Ground;
         use qip_reasoning_engine::evidence::Stance;
         let mut grounds = vec![Ground::ExpectedProfit];
         grounds.extend(
@@ -24653,11 +24965,87 @@ mod justification {
                 .into_iter()
                 .map(|item| Ground::Evidence(item.record_id.clone())),
         );
-        check_justification(&grounds)?;
-        Ok(Justified(()))
+        Justification::of(grounds)
     }
 }
-use justification::justify_thesis;
+use justification::{JustifiedThesis, justify_thesis};
+
+/// A test thesis queued as REASON would queue it: beside a justification
+/// naming independent evidence, the only kind [`Justification::of`] makes.
+///
+/// [`Justification::of`]: qip_contracts::action::Justification::of
+#[cfg(test)]
+fn justified(thesis: qip_portfolio_engine::construction::ApprovedThesis) -> JustifiedThesis {
+    use qip_contracts::action::{Ground, Justification};
+    JustifiedThesis::new(
+        thesis,
+        Justification::of(vec![
+            Ground::ExpectedProfit,
+            Ground::Evidence("test-evidence".to_string()),
+        ])
+        .expect("an evidence ground justifies"),
+    )
+}
+
+#[cfg(test)]
+mod capital_grant_tests {
+    //! ADR 0126 decision 3 (R12-CONTRACT-7066): the grant the ledger books
+    //! reads the drawdown stop, reserve and ADV share the envelope states,
+    //! and writes them only for an envelope that states none.
+
+    use super::*;
+    use qip_contracts::DrawdownBounds;
+    use qip_contracts::signal::StrategyId;
+
+    fn envelope() -> qip_contracts::CapitalEnvelope {
+        qip_contracts::CapitalEnvelope::new(
+            StrategyId::new("alpha"),
+            "london-1",
+            Decimal::from_int(1_000_000),
+            Decimal::from_int(100_000),
+            Decimal::from_int(20_000),
+            vec![VenueId::new("XLON")],
+            Timestamp::from_secs(1_760_000_000),
+            Timestamp::from_secs(1_760_003_600),
+            "alice",
+            "",
+        )
+        .expect("a valid envelope")
+    }
+
+    #[test]
+    fn the_funded_grant_reads_the_envelopes_drawdown_block_and_writes_only_what_it_does_not_state()
+    {
+        let venue = VenueId::new("XLON");
+        // Premise: without the block the grant writes the loss limit as the
+        // stop (200 bp of the capital), no reserve and the whole ADV, so the
+        // three readings below differ from what is written.
+        let written = capital_grant_of(&envelope(), &venue, "europe-west2".to_string())
+            .expect("a grant from an unblocked envelope");
+        assert_eq!(written.max_drawdown_bp, 200);
+        assert_eq!(written.liquidity_reserve, Decimal::ZERO);
+        assert_eq!(written.max_adv_share_bp, qip_contracts::validated::MAX_BP);
+
+        let blocked = envelope()
+            .with_drawdown(
+                DrawdownBounds::bounded(
+                    Decimal::from_int(10_000),
+                    Some(Decimal::from_int(5_000)),
+                    Some(2_500),
+                )
+                .expect("valid bounds"),
+            )
+            .expect("a stop under the loss limit");
+        let read = capital_grant_of(&blocked, &venue, "europe-west2".to_string())
+            .expect("a grant from a blocked envelope");
+        assert_eq!(
+            read.max_drawdown_bp, 100,
+            "the stop was not read from the block"
+        );
+        assert_eq!(read.liquidity_reserve, Decimal::from_int(5_000));
+        assert_eq!(read.max_adv_share_bp, 2_500);
+    }
+}
 
 #[cfg(test)]
 mod decide_tests {
@@ -24868,8 +25256,10 @@ mod decide_tests {
             let mut platform = small_book_platform();
             feed_history(&mut platform, "AAPL", 30);
             feed_history(&mut platform, "MSFT", 30);
-            platform.pending_theses.push(thesis("AAPL", 0.6));
-            platform.pending_theses.push(thesis("MSFT", -0.4));
+            platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+            platform
+                .pending_theses
+                .push(justified(thesis("MSFT", -0.4)));
             if let Some((issued, expires)) = slot {
                 platform
                     .lattice
@@ -24932,8 +25322,10 @@ mod decide_tests {
         let mut platform = gridded_small_book_platform(lot);
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -25003,6 +25395,73 @@ mod decide_tests {
                 .contains(&format!("{} sized down to whole lots", off_grid.len())),
             "the stage summary does not say how many legs were expressed at the lot: {}",
             outcome.detail
+        );
+    }
+
+    /// R12-RISK-3022: every hard-limit evaluation the kernel makes is taken
+    /// under a deterministic routing. The pre-trade check was; the monitor's
+    /// pass — which engages the kill switch and gates sign-off and release —
+    /// was evaluated with no routing at all. Now ACT obtains one from
+    /// `Router::determine` and hands it to `observe_book_under_routing`, the only
+    /// production caller of `RiskMonitor::observe`.
+    ///
+    /// Mutation: call the monitor directly in `stage_act_orders`, bypassing
+    /// `determine` — the routing is absent after the cycle and the source
+    /// scan finds a second call.
+    #[test]
+    fn every_limit_evaluation_takes_a_deterministic_routing_witness() {
+        let mut platform = platform();
+        assert!(
+            platform.monitor_routing().is_none(),
+            "premise: nothing has been evaluated yet"
+        );
+        let report = platform.run_cycle(Timestamp::from_secs(1_760_000_100));
+        assert!(
+            report.stage(Stage::Act).is_some(),
+            "premise: ACT ran, so the monitor ran"
+        );
+        let routing = platform
+            .monitor_routing()
+            .expect("the monitor's pass was not routed as a deterministic decision");
+        assert!(
+            routing
+                .rationale()
+                .contains("risk monitor limits for the book"),
+            "{}",
+            routing.rationale()
+        );
+
+        // Structurally, not only on this cycle: the production half of this
+        // file evaluates the monitor at exactly one place, inside the function
+        // that demands the routing. The production half ends at the first
+        // test *module*, not the first `#[cfg(test)]` attribute (production
+        // items carry those too). A call is any `.observe(` whose receiver
+        // ends in `monitor`, whatever the argument names. The needles are
+        // assembled so this test's own text is not a match.
+        let source = include_str!("platform.rs");
+        let boundary = ["\n#[cfg(test)]", "\nmod "].concat();
+        let production = &source[..source.find(&boundary).expect("the file has a test module")];
+        let call = [".", "observe("].concat();
+        let monitor_calls: Vec<usize> = production
+            .match_indices(&call)
+            .map(|(at, _)| at)
+            .filter(|&at| production[..at].trim_end().ends_with("monitor"))
+            .collect();
+        assert_eq!(
+            monitor_calls.len(),
+            1,
+            "the monitor is observed at {} production sites, not one",
+            monitor_calls.len()
+        );
+        let wrapper = production
+            .find("fn observe_book_under_routing(")
+            .expect("premise: the routed wrapper exists");
+        let next_fn = production[wrapper + 1..]
+            .find("\n    fn ")
+            .map_or(production.len(), |offset| wrapper + 1 + offset);
+        assert!(
+            (wrapper..next_fn).contains(&monitor_calls[0]),
+            "the monitor's one evaluation sits outside the routed wrapper"
         );
     }
 
@@ -26138,8 +26597,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -26208,8 +26669,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         // Not `std::env::temp_dir()`, for the reason
         // `dormancy_boot_log_path` gives.
@@ -26282,8 +26745,10 @@ mod decide_tests {
         let mut platform = over_limit_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         let correlation = CorrelationId::from_string("corr-refused");
@@ -26332,8 +26797,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -26356,8 +26823,10 @@ mod decide_tests {
         // proposal id is derived from it and the reservation is keyed by the
         // proposal id.
         platform.cycle += 1;
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
         platform.stage_decide(Timestamp::from_secs(1_760_000_160));
         let second = platform
             .proposals
@@ -26404,8 +26873,8 @@ mod decide_tests {
         let mut placed = small_book_platform();
         feed_history(&mut placed, "AAPL", 30);
         feed_history(&mut placed, "MSFT", 30);
-        placed.pending_theses.push(thesis("AAPL", 0.6));
-        placed.pending_theses.push(thesis("MSFT", -0.4));
+        placed.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        placed.pending_theses.push(justified(thesis("MSFT", -0.4)));
         placed.stage_decide(now);
         let notional = placed
             .proposals
@@ -26429,8 +26898,8 @@ mod decide_tests {
         let mut refused = over_limit_book_platform();
         feed_history(&mut refused, "AAPL", 30);
         feed_history(&mut refused, "MSFT", 30);
-        refused.pending_theses.push(thesis("AAPL", 0.6));
-        refused.pending_theses.push(thesis("MSFT", -0.4));
+        refused.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        refused.pending_theses.push(justified(thesis("MSFT", -0.4)));
         refused.stage_decide(now);
         let sized = refused.proposals.last().expect("a proposal");
         assert!(
@@ -26469,8 +26938,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         let correlation = CorrelationId::from_string("corr-twice");
@@ -26497,8 +26968,10 @@ mod decide_tests {
         let mut platform = platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         // The premise: before this change, stage_decide constructed the empty
         // proposal unconditionally — the audit's first-ranked finding. If this
@@ -26526,7 +26999,7 @@ mod decide_tests {
     fn too_little_shared_history_is_a_named_refusal_and_not_a_guessed_covariance() {
         let mut platform = platform();
         feed_history(&mut platform, "AAPL", 5);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -26579,8 +27052,8 @@ mod decide_tests {
         let mut funded = small_book_platform();
         feed_history(&mut funded, "AAPL", 30);
         feed_history(&mut funded, "MSFT", 30);
-        funded.pending_theses.push(thesis("AAPL", 0.6));
-        funded.pending_theses.push(thesis("MSFT", -0.4));
+        funded.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        funded.pending_theses.push(justified(thesis("MSFT", -0.4)));
         let funded_decide = funded
             .run_cycle(now)
             .stage(Stage::Decide)
@@ -26625,8 +27098,8 @@ mod decide_tests {
         held.reservations
             .reserve("standing-hold", equity, now, Duration::from_hours(24))
             .expect("the whole equity is free to hold");
-        held.pending_theses.push(thesis("AAPL", 0.6));
-        held.pending_theses.push(thesis("MSFT", -0.4));
+        held.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        held.pending_theses.push(justified(thesis("MSFT", -0.4)));
 
         let report = held.run_cycle(now);
         let decide = report.stage(Stage::Decide).expect("DECIDE ran");
@@ -26835,8 +27308,8 @@ mod decide_tests {
         let mut platform = gridded_small_book_platform(Decimal::from_int(1));
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", 0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform.pending_theses.push(justified(thesis("MSFT", 0.4)));
 
         let before = platform.telemetry().metrics.snapshot();
         assert!(
@@ -28069,8 +28542,10 @@ mod central_sizing_tests {
     fn size(platform: &mut Platform, now: Timestamp) -> (Decimal, Decimal) {
         feed_history(platform, "AAPL", 30);
         feed_history(platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
         platform.stage_decide(now);
         let proposal = platform.proposals.last().expect("a proposal is recorded");
         (proposal.equity.amount, proposal.traded_notional())
@@ -30158,8 +30633,10 @@ mod unsizeable_thesis_tests {
     /// Push both theses and run DECIDE, returning the stage's own outcome and
     /// the proposal it recorded.
     fn decide(platform: &mut Platform, now: Timestamp) -> (StageOutcome, Proposal) {
-        platform.pending_theses.push(thesis(LIQUID, 0.6));
-        platform.pending_theses.push(thesis(PRIVATE, 0.5));
+        platform.pending_theses.push(justified(thesis(LIQUID, 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis(PRIVATE, 0.5)));
         assert_eq!(
             platform.pending_theses.len(),
             2,

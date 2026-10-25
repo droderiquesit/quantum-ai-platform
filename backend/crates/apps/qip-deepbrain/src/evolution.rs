@@ -571,6 +571,16 @@ impl EvolutionEngine {
     }
 
     /// What the learning desk has done across the node's lifetime.
+    /// Store every promoted model's bytes in `store` before its promotion
+    /// record (R12-MODEL-9003). See `LearningDesk::with_artifact_store`.
+    pub fn with_model_artifact_store(
+        mut self,
+        store: std::sync::Arc<dyn qip_storage::BlobStore>,
+    ) -> Self {
+        self.learning = self.learning.with_artifact_store(store);
+        self
+    }
+
     /// Fetch every promoted and displaced model's artifact the platform's
     /// log names, so the learning desk can rescore a restored incumbent and
     /// reactivate a restored predecessor (R12-MODEL-9003). See

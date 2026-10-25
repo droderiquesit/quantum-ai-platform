@@ -612,6 +612,15 @@ fn a_connector_whose_licensing_posture_is_not_evaluated_is_refused_before_any_so
         "the cycle did not observe the three currencies the rate table carries: {text}"
     );
     assert!(server.served() > probed, "the cycle polled nothing");
+    // R12-EVID-1200: the three rates were observed through the world fabric,
+    // not beside it — the cycle handed their claims to the fabric first.
+    // Mutation: observe the sensed records directly in the route instead of
+    // through `Platform::admit_world_records` — the fabric holds none.
+    assert_eq!(
+        rig.with_platform(Platform::evidence_held)?,
+        3,
+        "the cycle observed connector records the world fabric never saw"
+    );
     let after_admitted = server.served();
 
     // An evaluated-but-undetermined posture: terms nobody located. Unknown
@@ -819,14 +828,14 @@ fn journal_store() -> Arc<dyn qip_core::kv::KeyValueStore> {
 }
 
 /// R12-EVID-1200 at the API's seam: each record the connector releases
-/// carries the id of the claim the poll's evidence names, the evidence is
-/// drainable for `Platform::absorb_evidence`, and a record whose claim the
-/// world fabric withheld is not handed on to `observe`. Mutations: pair the
-/// records with `poll_referencing` (no claim) in `ApiFeed::sense` — the claim
-/// premise fails; make `Sensed::release` keep every record — the withheld
-/// one is released and the count fails.
+/// carries the id of the claim the poll's evidence names, and the evidence is
+/// drainable for `Platform::admit_world_records`, which is what decides
+/// which records `observe` may take (proven in qip-kernel's
+/// tests/evidence_intake.rs). Mutation: pair the records with
+/// `poll_referencing` (no claim) in `ApiFeed::sense` — the claim premise
+/// fails.
 #[test]
-fn a_connector_record_whose_claim_the_world_withheld_is_not_released() -> Result<()> {
+fn every_connector_record_is_offered_with_the_claim_its_evidence_names() -> Result<()> {
     let server = RateServer::serving(RATE_TABLE);
     let settings = ConnectorSettings {
         source_id: CONNECTOR_SOURCE.to_string(),
@@ -835,7 +844,12 @@ fn a_connector_record_whose_claim_the_world_withheld_is_not_released() -> Result
     let mut feed = ApiFeed::connector(&settings, 7, wall())?;
     let mut sensed = feed.sense(wall(), &mut unreferenced)?;
     assert_eq!(sensed.records.len(), 3, "premise: the table's three rates");
-    let claims: Vec<String> = sensed.claims.iter().flatten().cloned().collect();
+    let offered = sensed.take_claimed();
+    assert!(sensed.records.is_empty() && sensed.claims.is_empty());
+    let claims: Vec<String> = offered
+        .iter()
+        .filter_map(|(_, claim)| claim.clone())
+        .collect();
     assert_eq!(claims.len(), 3, "every connector record names its claim");
     let evidence: std::collections::BTreeSet<String> = feed
         .drain_evidence()
@@ -846,21 +860,6 @@ fn a_connector_record_whose_claim_the_world_withheld_is_not_released() -> Result
         claims.iter().all(|claim| evidence.contains(claim)),
         "each claim is one the drained evidence holds: {claims:?} vs {evidence:?}"
     );
-    let kept = [
-        serde_json::to_string(&sensed.records[0])?,
-        serde_json::to_string(&sensed.records[2])?,
-    ];
-    let mut intake = qip_kernel::evidence_intake::EvidenceIntake::default();
-    intake.withheld.insert(claims[1].clone());
-
-    let (released, withheld) = sensed.release(&intake);
-
-    assert_eq!(withheld, 1);
-    let released: Vec<String> = released
-        .iter()
-        .map(serde_json::to_string)
-        .collect::<std::result::Result<_, _>>()?;
-    assert_eq!(released, kept);
     Ok(())
 }
 
