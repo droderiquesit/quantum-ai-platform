@@ -86,6 +86,23 @@ fn tick_at(
     venue_time: Timestamp,
     receive_time: Timestamp,
 ) -> Result<Record> {
+    tick_stating(
+        venue,
+        sequence,
+        venue_time,
+        receive_time,
+        OWN_UNCERTAINTY_NS,
+    )
+}
+
+/// [`tick_at`], stating `own_uncertainty_ns` of clock error instead.
+fn tick_stating(
+    venue: &str,
+    sequence: u64,
+    venue_time: Timestamp,
+    receive_time: Timestamp,
+    own_uncertainty_ns: i64,
+) -> Result<Record> {
     let message = MarketMessage::new(
         ObjectId::from_string("obj-ACME"),
         Origin::new(VenueId::new(venue), "simulated-depth", 0, sequence),
@@ -104,7 +121,7 @@ fn tick_at(
         venue_time,
         receive_time,
         receive_time,
-        Duration::from_nanos(OWN_UNCERTAINTY_NS),
+        Duration::from_nanos(own_uncertainty_ns),
         hash,
         Licence::Granted {
             dataset: SIMULATED_DATASET.into(),
@@ -402,20 +419,21 @@ fn sink_over(lake: &Arc<MemoryBlobStore>) -> Result<LakeSink> {
 /// more order than that.
 ///
 /// Every tick here states half a millisecond of uncertainty and arrives
-/// before the discipline trusts an estimate. The combined uncertainty of any
-/// two of them is therefore exactly 1 ms. The stamps sit on whole
-/// milliseconds because a `Timestamp` crosses the spool as RFC 3339 at
-/// millisecond resolution. The figures are worked by hand, and they put a
-/// tick on each side of the bound:
+/// before the discipline trusts an estimate. A `Timestamp` crosses the spool
+/// as RFC 3339 at millisecond resolution, so the sink widens each side by
+/// half a millisecond more to cover the floor (`SPOOL_TRUNCATION_HALF_WIDTH`).
+/// The combined uncertainty of any two ticks is therefore exactly 2 ms. The
+/// stamps sit on whole milliseconds so the floor moves none of them. The
+/// figures are worked by hand, and they put a tick on each side of the bound:
 ///
 /// - XLON #1 at `base`: nothing else has been seen, so it is aligned against
 ///   nothing;
-/// - XPAR #1 at `base + 1 ms`: exactly the combined uncertainty from XLON #1.
+/// - XPAR #1 at `base + 2 ms`: exactly the combined uncertainty from XLON #1.
 ///   The two intervals touch, so the result is `unordered`, not an order;
-/// - XPAR #2 at `base + 2 ms`: 2 ms after XLON #1, outside 1 ms, so XLON #1
+/// - XPAR #2 at `base + 3 ms`: 3 ms after XLON #1, outside 2 ms, so XLON #1
 ///   came `before`. XPAR's own earlier tick is not listed: a partition is
 ///   aligned against the others, and its own order is `arrival_order`;
-/// - XLON #2 at `base + 3 ms`: 1 ms after XPAR #2, the partition's latest
+/// - XLON #2 at `base + 5 ms`: 2 ms after XPAR #2, the partition's latest
 ///   tick rather than its first, so `unordered`.
 ///
 /// Without this stamp the only order across partitions is the one a reader
@@ -436,9 +454,9 @@ fn two_venues_ticks_within_combined_uncertainty_are_lake_stamped_unordered_and_o
     let received = |offset_ns: i64| at(offset_ns + ONE_MS);
     let records = vec![
         tick_at("XLON", 1, at(0), received(0))?,
-        tick_at("XPAR", 1, at(ONE_MS), received(ONE_MS))?,
-        tick_at("XPAR", 2, at(2 * ONE_MS), received(2 * ONE_MS))?,
-        tick_at("XLON", 2, at(3 * ONE_MS), received(3 * ONE_MS))?,
+        tick_at("XPAR", 1, at(2 * ONE_MS), received(2 * ONE_MS))?,
+        tick_at("XPAR", 2, at(3 * ONE_MS), received(3 * ONE_MS))?,
+        tick_at("XLON", 2, at(5 * ONE_MS), received(5 * ONE_MS))?,
     ];
     let lines = delivered(&mut sink, &lake, 1, records)?;
     assert_eq!(lines.len(), 4, "premise: all four ticks reached the lake");
@@ -471,11 +489,12 @@ fn two_venues_ticks_within_combined_uncertainty_are_lake_stamped_unordered_and_o
             "partition": xlon,
             "sequence": 1,
             "order_of_other": "unordered",
-            "lag_ns": ONE_MS,
-            "lag_uncertainty_ns": ONE_MS,
+            "lag_ns": 2 * ONE_MS,
+            "lag_uncertainty_ns": 2 * ONE_MS,
             "other_known_at_arrival": true,
         }]),
-        "1 ms apart on clocks each known to 0.5 ms touches the bound and is not an order"
+        "2 ms apart on clocks each known to 1 ms after the floor touches the bound and is \
+         not an order"
     );
     assert_eq!(
         stamp("XPAR", 2),
@@ -483,12 +502,12 @@ fn two_venues_ticks_within_combined_uncertainty_are_lake_stamped_unordered_and_o
             "partition": xlon,
             "sequence": 1,
             "order_of_other": "before",
-            "lag_ns": 2 * ONE_MS,
-            "lag_uncertainty_ns": ONE_MS,
+            "lag_ns": 3 * ONE_MS,
+            "lag_uncertainty_ns": 2 * ONE_MS,
             "other_known_at_arrival": true,
         }]),
-        "2 ms apart on clocks each known to 0.5 ms is an order, and XPAR's own earlier tick \
-         is not another partition"
+        "3 ms apart on clocks each known to 1 ms after the floor is an order, and XPAR's own \
+         earlier tick is not another partition"
     );
     assert_eq!(
         stamp("XLON", 2),
@@ -496,12 +515,63 @@ fn two_venues_ticks_within_combined_uncertainty_are_lake_stamped_unordered_and_o
             "partition": xpar,
             "sequence": 2,
             "order_of_other": "unordered",
-            "lag_ns": ONE_MS,
-            "lag_uncertainty_ns": ONE_MS,
+            "lag_ns": 2 * ONE_MS,
+            "lag_uncertainty_ns": 2 * ONE_MS,
             "other_known_at_arrival": true,
         }]),
         "aligned against the other partition's latest tick, not its first"
     );
+    Ok(())
+}
+
+/// Two ticks a microsecond apart on clocks each known to 50 µs cannot be
+/// ordered, and the lake must not order them because the spool floored their
+/// instants to different milliseconds. XLON is stamped at `base + 0.999 ms`
+/// and XPAR at `base + 1.000 ms`; across the spool they read `base` and
+/// `base + 1 ms`. Aligned on their stated uncertainties alone that is 1 ms of
+/// lag against a 0.1 ms bound, and XLON would be stamped `before` — the
+/// false order an independent review found in the first version of the
+/// cross-partition stamp. Widened by half the spool's millisecond each, the
+/// bound is 1.1 ms and the pair is `unordered`.
+///
+/// Mutation: in `LakeSink::deliver`, build the `Placed` from
+/// `captured.uncertainty` alone (drop `SPOOL_TRUNCATION_HALF_WIDTH`). XPAR's
+/// line fails (left "before", right "unordered").
+#[test]
+fn ticks_the_spool_floored_to_different_milliseconds_are_not_ordered_by_the_floor() -> Result<()> {
+    const FIFTY_MICROS: i64 = 50_000;
+    let lake = Arc::new(MemoryBlobStore::new());
+    let mut sink = sink_over(&lake)?;
+    let base = Timestamp::from_millis(venue_ms(0));
+    let at = |offset_ns: i64| Timestamp::from_nanos(base.as_nanos() + offset_ns);
+    let records = vec![
+        tick_stating("XLON", 1, at(999_000), at(999_000), FIFTY_MICROS)?,
+        tick_stating("XPAR", 1, at(ONE_MS), at(ONE_MS), FIFTY_MICROS)?,
+    ];
+    let lines = delivered(&mut sink, &lake, 1, records)?;
+    assert_eq!(lines.len(), 2, "premise: both ticks reached the lake");
+    // Premise: the spool did floor XLON's instant to the millisecond below,
+    // so the two lines read a whole millisecond apart.
+    let normalized = |venue: &str| {
+        lines[&(venue.to_string(), 1)]["clock"]["normalized_time_ns"]
+            .as_i64()
+            .expect("a placed tick carries its normalized instant")
+    };
+    assert_eq!(
+        normalized("XPAR") - normalized("XLON"),
+        ONE_MS,
+        "premise: the floor put the two instants a millisecond apart"
+    );
+    let entry = &lines[&("XPAR".to_string(), 1)]["cross_partition"][0];
+    assert_eq!(
+        entry["partition"], "XLON/simulated-depth/0/obj-ACME",
+        "{entry}"
+    );
+    assert_eq!(
+        entry["order_of_other"], "unordered",
+        "a microsecond apart on 50 µs clocks is no order, however the spool floored it: {entry}"
+    );
+    assert_eq!(entry["lag_uncertainty_ns"], 1_100_000, "{entry}");
     Ok(())
 }
 

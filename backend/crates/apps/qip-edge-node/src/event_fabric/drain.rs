@@ -693,6 +693,18 @@ pub fn parse_retention(text: Option<&str>) -> Result<BTreeMap<String, RetentionR
 /// stamps. It is not reported with a stale position as if it were current.
 pub const MAX_ALIGNED_PARTITIONS: usize = 256;
 
+/// Half the resolution a `Timestamp` keeps across the spool. A tick reaches
+/// [`LakeSink`] as RFC 3339 at millisecond resolution, so each instant it
+/// aligns is the true one floored by up to a millisecond, and the lag
+/// between two of them is off by less than one millisecond either way.
+/// Each side's uncertainty is widened by half that before aligning, so the
+/// combined bound covers the truncation: without it, instants 0.999 ms and
+/// 1.000 ms on clocks known to 50 µs floor to 0 and 1 ms, read 1 ms apart
+/// against a 0.1 ms bound, and are stamped `before` when the clocks cannot
+/// order them at all — the false order the alignment exists to refuse.
+const SPOOL_TRUNCATION_HALF_WIDTH: qip_core::time::Duration =
+    qip_core::time::Duration::from_micros(500);
+
 /// The last tick [`LakeSink`] wrote for one partition, placed on the
 /// reference timeline.
 #[derive(Clone, Copy, Debug)]
@@ -937,7 +949,7 @@ impl Sink for LakeSink {
             let placed = match &captured {
                 Ok(captured) => Placed::new(
                     captured.normalized_time,
-                    captured.uncertainty,
+                    captured.uncertainty + SPOOL_TRUNCATION_HALF_WIDTH,
                     captured.receive_time,
                 ),
                 Err(error) => Err(Error::invalid(format!(

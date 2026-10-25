@@ -106,6 +106,10 @@ fn grant() -> Result<VerifiedEnvelope> {
         Decimal::ONE,
         capital,
     )?)?;
+    let loss_limit = unsigned.loss_limit();
+    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(
+        loss_limit, None, None,
+    )?)?;
     let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
     VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, CELL, t(1))
 }
