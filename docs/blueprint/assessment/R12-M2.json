@@ -1044,9 +1044,11 @@
       "backend/crates/edge/qip-protocols/src/itch.rs trading-action reason decode",
       "backend/crates/edge/qip-orderbook/tests/venue.rs a_circuit_breaker_halts_the_book_and_withdraws_the_auction_it_replaced",
       "backend/crates/edge/qip-protocols/tests/itch.rs a_breaker_reason_on_a_trading_action_decodes_as_a_circuit_breaker_not_an_ordinary_halt",
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:90 trading_action halt/resume"
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:90 trading_action halt/resume",
+      "backend/crates/apps/qip-edge-node/src/feed.rs status_line / DepthDecoder StatusChange arm",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_circuit_breaker_the_venue_declares_reaches_the_cell_as_a_typed_status_and_is_sealed_in_the_lake"
     ],
-    "gap": "Imbalance and circuit-breaker are now distinct typed records, but the only decoder that emits the breaker from a venue frame (qip_protocols::itch) has no production caller outside tests/acceptance, so no binary receives a breaker from a venue; only simulated sources feed the edge node.",
+    "gap": "2026-10-25 (skeptic-refuted promotion after 35e0077e): the edge node's default feed can now carry a venue status (open, auction, halted, circuit_breaker, closed) as a typed StatusChange line that the cell decodes and the lake seals, but its only input, SimulatedGateway::declare_status, has no caller outside tests, so no default process ever publishes one. Also unmet on a default path: auction and imbalance (MessageBody::AuctionUpdate's only producer is qip-market-ingestion depth.rs, used only by the qip-cli demo, which serves open snapshots); venue rejects (Cell::send records a reject on venue health and propagates the error, journaling no typed record); acknowledgements without a fill (the edge gateway keeps only OrderAck.remaining, and Decision has no ack variant). Cancels the cell starts itself are journaled. Remaining: give the simulated venue a default session schedule (open, opening auction with imbalance, close, an occasional breaker) or wire a real venue decoder, and journal typed venue-reject and ack records, each mutation-verified.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1057,7 +1059,7 @@
     "verification": "cargo test -p qip-contracts --test contracts a_circuit_breaker; cargo test -p qip-protocols --test itch a_breaker_reason; cargo test -p qip-orderbook --test venue a_circuit_breaker",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 L12: mutations that fired: dropping the LUD/MWC guard in itch.rs failed the itch test; letting accepts_orders admit CircuitBreaker failed the contracts and orderbook tests. Kept PARTIAL: closes only with a real ITCH/SBE feed wired into qip-edge-node (deploy-dependent)."
+    "notes": "2026-10-18 L12: mutations that fired: dropping the LUD/MWC guard in itch.rs failed the itch test; letting accepts_orders admit CircuitBreaker failed the contracts and orderbook tests. Kept PARTIAL: closes only with a real ITCH/SBE feed wired into qip-edge-node (deploy-dependent). 2026-10-25 lane L3-DATA (wave580): status capture path landed. Mutations fired: publish skipping wire.status (left [], right [CircuitBreaker, Open]); decoder losing the status arm (pass fails 'published 3 level(s) and the cell decoded 2'). Independent skeptic (code-reviewer) verdict REFUTED; per-type reasons in gap. Kept PARTIAL."
   },
   {
     "id": "R12-TICK-2045",

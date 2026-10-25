@@ -1429,7 +1429,8 @@
     "current": "qip-portfolio holds positions, lots, lifecycle and exposures separately from qip-execution-engine; there is no Asset Brain component that owns the whole lifecycle.",
     "evidence": [
       "backend/crates/libs/qip-portfolio/src/lifecycle.rs:19 PositionLifecycle",
-      "backend/crates/tests/qip-acceptance/tests/arch_006_lib_no_io.rs libs perform no I/O"
+      "backend/crates/tests/qip-acceptance/tests/arch_006_lib_no_io.rs libs perform no I/O",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::position_economics_reach_no_execution_venue_or_edge_crate"
     ],
     "gap": "2026-10-24 (re-read against the tree): The acceptance clause holds by manifest (qip-portfolio and qip-financial Cargo.toml depend only on qip-core, qip-events, qip-contracts, qip-financial for portfolio, and serde), but only the direct edge to qip-execution-engine is pinned (qip-acceptance architecture.rs the_execution_engine_is_reachable_from_almost_nothing); no test stops either crate reaching qip-brokers or qip-edge directly or transitively. The requirement's subject, an Asset Brain owning the economic lifecycle, does not exist: ownership depends on R12-ASSET-4066..4071 being integrated into the kernel book (plain code, large).",
     "implemented": true,
@@ -1442,7 +1443,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25 lane L3-DATA (wave580): added the transitive guard the gap named - qip-portfolio and qip-financial reach none of qip-execution-engine, qip-brokers, qip-edge, qip-edge-node. Cargo already forbids the edge today (each mechanics crate depends on qip-financial, so the reverse would be a cycle); the guard holds the line if that changes. Verified by injecting qip-portfolio -> qip-edge into the graph the test reads: it failed with 'qip-portfolio reaches qip-execution-engine'; restored by cp + cmp. Kept PARTIAL: the Asset Brain itself depends on R12-ASSET-4066..4071."
   },
   {
     "id": "R12-ASSET-4066",
