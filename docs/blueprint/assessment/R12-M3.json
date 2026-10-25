@@ -807,9 +807,12 @@
       "backend/crates/services/qip-learning-engine/src/self_model.rs Drift, CapabilityEstimate::drift, Capability::weight",
       "backend/crates/services/qip-learning-engine/tests/self_model.rs a_component_that_has_started_missing_is_weighted_by_its_recent_record_not_its_window_average",
       "backend/crates/services/qip-learning-engine/tests/self_model.rs a_component_that_improved_or_wobbled_inside_the_tolerance_is_not_called_drifting",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9763 set_origin_factors(self.self_model.origin_factors())"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9763 set_origin_factors(self.self_model.origin_factors())",
+      "backend/crates/services/qip-learning-engine/src/self_model.rs OperationalHealth, SelfModel::observe_health, declare_boundary, boundary_of",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::observe_own_health",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs::a_halted_kernel_and_a_stale_area_appear_in_the_self_models_health_and_an_unregistered_class_lies_outside_its_boundary"
     ],
-    "gap": "Operational health (kill-switch/halt and stale-feed facts the kernel already holds, as a self-model input) and a capability boundary per registered asset class are not in the self-model. Drift is per component and covers forecasts only; a feed whose data drifted without its component's Brier worsening is not seen.",
+    "gap": "2026-10-25 (L4, commit 8df9a4e5, skeptic REFUTED). Closed since 2026-10-18: the self-model holds an OperationalHealth reading (kill switch, every non-fresh §6.2 row) written by Platform::run_cycle after LEARN on every cycle, and a capability boundary declared at assembly from the admitted universe's asset classes (the shipped registry registers all fifteen, so a registry-derived boundary would bound nothing). Still open: (1) nothing reads either: REASON takes only origin_factors, sizing reads the DegradationState directly, the reading is in neither CycleReport nor the journal, no qip-api view shows it, and no order or proposal seam asks boundary_of, so both are write-only; (2) stale feeds are not seen: central_degradation observes only SelfModel, CausalGraph and BeliefState, never Capability::Feed; (3) data drift without Brier worsening is still unmodelled; (4) the boundary is asset classes only and descriptive, not enforced, and a universe holding every class would bound nothing; weaknesses and blind spots beyond component grades are unmodelled; (5) no old-snapshot serde test proves the serde-default fields load.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -820,7 +823,7 @@
     "verification": "cargo test -p qip-learning-engine --test self_model && cargo test -p qip-kernel --test self_model",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: drift third closed, health and boundaries not. Mutations fired - Capability::weight returning the window accuracy ('a drifting component kept its window weight 0.5'); the tolerance check removed (the steady component reported drift). DRIFT_TOLERANCE 0.05 is a chosen constant, said so in its doc."
+    "notes": "2026-10-18 lane L23: drift third closed, health and boundaries not. Mutations fired - Capability::weight returning the window accuracy ('a drifting component kept its window weight 0.5'); the tolerance check removed (the steady component reported drift). DRIFT_TOLERANCE 0.05 is a chosen constant, said so in its doc. 2026-10-25 (L4), commit 8df9a4e5: three mutants killed at their own assertions (skip observe_own_health; halted read as false; boundary from every AssetClass), restored sha256-identical. Independent security-engineer skeptic REFUTED (findings in gap). Stays PARTIAL."
   },
   {
     "id": "R12-WORLD-3037",
