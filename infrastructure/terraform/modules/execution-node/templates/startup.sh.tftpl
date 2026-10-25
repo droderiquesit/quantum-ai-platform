@@ -255,6 +255,19 @@ QIP_STRATEGY_PLAN_PATH=${strategy_plan_path}
 # region it measured no round trip to, so a mirror nobody could satisfy stops
 # the node rather than leaving it composing transport edges across an ocean.
 QIP_CROSS_REGION_MIRROR_PATH=${cross_region_mirror_path}
+%{ if peer_mesh != null ~}
+# ADR 0116: the peer Reflex Mesh. The link listens on every interface of a
+# machine with no external address, speaks mutual TLS on the workload
+# certificate above (ADR 0112), and names each peer by the DNS name its own
+# certificate carries at a stable address the module's firewall admits both
+# ways. Absent, the binary says at start that it coordinates with no other
+# cell directly; present with one half missing, it refuses to start.
+QIP_PEER_MESH_LISTEN=0.0.0.0:${peer_mesh.listen_port}
+QIP_PEER_MESH_PEERS=${join(",", [for name, peer in peer_mesh.peers : "${name}=${peer.address}:${peer.port}"])}
+%{ if peer_mesh.clock_bound_ms != null ~}
+QIP_PEER_MESH_CLOCK_BOUND_MS=${peer_mesh.clock_bound_ms}
+%{ endif ~}
+%{ endif ~}
 %{ if fencing_lease_path != "" ~}
 # The fencing lease (GCP-043), written on the primary and the standby alike,
 # each under its own role and name: a standby with no lease would trade as a

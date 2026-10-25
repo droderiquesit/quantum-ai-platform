@@ -1210,14 +1210,20 @@
   {
     "id": "R12-MESH-5052",
     "status": "PARTIAL",
-    "current": "Epoch TTL ceiling and max_recovery_loss validated in qip-peer; saga drives epochs when peer mesh configured (env-gated). Inventory prepositioning not integrated.",
+    "current": "Epoch TTL ceiling and max_recovery_loss validated in qip-peer; saga drives epochs when peer mesh configured (env-gated). Inventory prepositioning not integrated. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
       "backend/crates/services/qip-mesh/src/peer.rs:208 validate",
       "backend/crates/services/qip-mesh/tests/peer.rs:209",
       "backend/crates/services/qip-mesh/tests/peer.rs:444",
-      "backend/crates/edge/qip-edge/src/reservation.rs:121"
+      "backend/crates/edge/qip-edge/src/reservation.rs:121",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Default-on peer saga; inventory prepositioning.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1225,10 +1231,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer",
+    "verification": "cargo test -p qip-mesh --test peer; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-MESH-5053",
@@ -1467,15 +1473,21 @@
   {
     "id": "R12-MESH-5063",
     "status": "PARTIAL",
-    "current": "declare_fire refuses unless all legs fully reserved and loss bound established; saga.rs coordinator calls it. Env-gated peer mesh.",
+    "current": "declare_fire refuses unless all legs fully reserved and loss bound established; saga.rs coordinator calls it. Env-gated peer mesh. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/peer.rs:1175",
       "backend/crates/libs/qip-contracts/src/peer.rs:1241",
       "services/qip-mesh/tests/peer.rs::fire_is_declared_exactly_when_every_leg_is_reserved_and_no_leg_precedes_it",
       "services/qip-mesh/tests/peer.rs::a_leg_reserved_for_less_than_its_requirement_does_not_meet_the_fire_condition",
-      "services/qip-mesh/tests/peer_guarantees.rs::a_cycle_whose_reservation_condition_is_not_met_within_its_ttl_is_rejected_by_name_and_sends_no_leg"
+      "services/qip-mesh/tests/peer_guarantees.rs::a_cycle_whose_reservation_condition_is_not_met_within_its_ttl_is_rejected_by_name_and_sends_no_leg",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Default-on peer mesh.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1485,10 +1497,10 @@
       "R12-MESH-5062"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh",
+    "verification": "cargo test -p qip-mesh; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The old gap text 'no node constructs PeerEndpoint' is now false: the node constructs one. It just never fires. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). ADR 0116 adds that a reflex decision needing a peer's answer inside the pass is out of bounds for the port, so FIRE handling must arrive as state the cell reads on a later pass. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: The old gap text 'no node constructs PeerEndpoint' is now false: the node constructs one. It just never fires. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). ADR 0116 adds that a reflex decision needing a peer's answer inside the pass is out of bounds for the port, so FIRE handling must arrive as state the cell reads on a later pass. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-MESH-5064",
@@ -1514,15 +1526,21 @@
   {
     "id": "R12-MESH-5065",
     "status": "PARTIAL",
-    "current": "Cell-local resize by fill fraction is real on the node pass; saga.rs streams Fill frames and unwinds excess in paper when peer mesh configured (env-gated). No reroute.",
+    "current": "Cell-local resize by fill fraction is real on the node pass; saga.rs streams Fill frames and unwinds excess in paper when peer mesh configured (env-gated). No reroute. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/decomposition.rs:240",
       "backend/crates/edge/qip-edge/src/cell.rs:8184",
       "edge/qip-edge/tests/decomposition.rs::a_cycle_whose_first_leg_fills_three_quarters_sends_its_later_legs_at_three_quarters",
       "edge/qip-edge/tests/decomposition.rs::a_cycle_whose_first_leg_fills_under_the_minimum_viable_fraction_sends_no_further_leg",
-      "apps/qip-edge-node/tests/peer_mesh.rs::two_nodes_carry_a_cycle_through_token_reserved_fire_fill_and_unwind_over_the_socket"
+      "apps/qip-edge-node/tests/peer_mesh.rs::two_nodes_carry_a_cycle_through_token_reserved_fire_fill_and_unwind_over_the_socket",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Reroute; default-on peer fill streaming.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1530,10 +1548,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test decomposition",
+    "verification": "cargo test -p qip-edge --test decomposition; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The verification's 75%/minimum-viable check is met cell-locally. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: The verification's 75%/minimum-viable check is met cell-locally. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-MESH-5066",
@@ -1607,13 +1625,14 @@
   {
     "id": "R12-MESH-5069",
     "status": "PARTIAL",
-    "current": "Latency deduction (netedge.rs latency_deduction, now public) is priced over the venue round trip plus EdgeAssumptions::coordination_latency; residual exposure budget in LegPlanner (plan.rs); epoch unwind_loss per leg and max_recovery_loss (qip-mesh peer.rs). Since 2026-10-25 the peer saga's origination (qip-peer-link saga.rs clears) prices every crossing through NetEdgeCalculator with coordination_latency set to the round trip the wire measured to that peer (ClockSample::round_trip_nanos), so a crossing clears MIN_EDGE_BPS plus the expected adverse move over the measured trip. The edge-node desk's own-cell cycles still price zero coordination, which is correct for them.",
+    "current": "Latency deduction (netedge.rs latency_deduction, now public) is priced over the venue round trip plus EdgeAssumptions::coordination_latency; residual exposure budget in LegPlanner (plan.rs); epoch unwind_loss per leg and max_recovery_loss (qip-mesh peer.rs). Since 2026-10-25 the peer saga's origination (qip-peer-link saga.rs clears) prices every crossing with the desk's own exposure formula (qip_core::exposure, shared with netedge's latency deduction) over the round trip the wire measured to that peer (ClockSample::round_trip_nanos), so a crossing clears MIN_EDGE_BPS plus the expected adverse move over the measured trip. The edge-node desk's own-cell cycles still price zero coordination, which is correct for them.",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/netedge.rs EdgeAssumptions::coordination_latency, latency_deduction (pub)",
+      "backend/crates/libs/qip-core/src/exposure.rs expected_absolute_move_fraction, called by netedge.rs latency_deduction and saga.rs clears",
       "backend/crates/edge/qip-peer-link/src/saga.rs clears(buy, sell, coordination) called from Saga::originate with clock.round_trip_nanos",
       "backend/crates/edge/qip-peer-link/src/saga.rs::tests::a_peer_crossing_clearing_at_zero_latency_is_declined_once_the_measured_round_trip_is_priced",
       "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs raising_cross_region_coordination_latency_lowers_the_net_edge_until_the_cycle_is_refused",
-      "backend/crates/edge/qip-peer-link/tests/saga.rs two_nodes_publishing_only_through_their_ports_run_a_cross_region_cycle_to_its_unwind (still clears at 100 bps over loopback)"
+      "backend/crates/edge/qip-peer-link/tests/saga.rs two_nodes_publishing_only_through_their_ports_run_a_cross_region_cycle_to_its_unwind (still clears at 100 bps over loopback)",
+      "backend/crates/apps/qip-edge-node/tests/peer_pricing.rs::the_peer_sagas_coordination_volatility_is_the_desks_default_volatility"
     ],
     "gap": "2026-10-25 (lane L5b): the pricing has a production caller, but Saga::originate runs only when qip-edge-node is given QIP_PEER_MESH_LISTEN and QIP_PEER_MESH_PEERS, which no committed deployment sets (rows R12-MESH-1073/10112); a second peered node is new billed infrastructure declined by owner decision 5 of 2026-10-25, so bar part 2 fails until a peer is deployed.",
     "implemented": true,
@@ -1626,19 +1645,25 @@
     "verification": "cargo test -p qip-peer-link --lib saga; cargo test -p qip-arbitrage --test edge_costs",
     "work_item": "",
     "size": "M",
-    "notes": " Lane L24 2026-10-18: coordination latency added to the net-edge calculator (serde default zero for records written before it). Mutation: pricing the latency deduction over the round trip alone fails the test at the first step (50 ms did not lower the net edge). Kept PARTIAL: no running path supplies a non-zero value. Lane L5b 2026-10-25: origination now prices the measured peer round trip. Mutation: clears() hands the calculator Duration::from_nanos(0) in place of the measured trip; a_peer_crossing_clearing_at_zero_latency_is_declined_once_the_measured_round_trip_is_priced fails at the 900 ms assertion; restored byte for byte (sha256 f7c824021bf71679 before and after). Kept PARTIAL: the path is behind the peer-mesh switch (decision 5)."
+    "notes": " Lane L24 2026-10-18: coordination latency added to the net-edge calculator (serde default zero for records written before it). Mutation: pricing the latency deduction over the round trip alone fails the test at the first step (50 ms did not lower the net edge). Kept PARTIAL: no running path supplies a non-zero value. Lane L5b 2026-10-25: origination now prices the measured peer round trip. Mutation: clears() hands the calculator Duration::from_nanos(0) in place of the measured trip; a_peer_crossing_clearing_at_zero_latency_is_declined_once_the_measured_round_trip_is_priced fails at the 900 ms assertion; restored byte for byte (sha256 f7c824021bf71679 before and after). Reworked the same day: qip-peer-link may not depend on qip-arbitrage (architecture.rs: the mesh and the durable fabric share no crate), so the formula moved to qip_core::exposure and both pricers call it; a qip-edge-node test pins the saga's volatility to EdgeAssumptions::default (mutation: desk volatility 0.45 fails it). Kept PARTIAL: the path is behind the peer-mesh switch (decision 5)."
   },
   {
     "id": "R12-MESH-5070",
     "status": "PARTIAL",
-    "current": "declare_fire refuses unestablished/exceeded loss bound by name; saga.rs calls it when env-gated peer mesh is configured.",
+    "current": "declare_fire refuses unestablished/exceeded loss bound by name; saga.rs calls it when env-gated peer mesh is configured. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/peer.rs:1208",
       "backend/crates/libs/qip-contracts/src/peer.rs:656",
       "services/qip-mesh/tests/peer_guarantees.rs::a_cycle_whose_loss_bound_cannot_be_established_is_rejected_by_name_and_sends_no_leg",
-      "services/qip-mesh/tests/peer.rs::fire_is_refused_when_the_worst_recovery_loss_exceeds_the_bound_declared_before_it"
+      "services/qip-mesh/tests/peer.rs::fire_is_refused_when_the_worst_recovery_loss_exceeds_the_bound_declared_before_it",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Default-on peer mesh.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1646,10 +1671,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer_guarantees",
+    "verification": "cargo test -p qip-mesh --test peer_guarantees; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: forget_expired does run in production every turn (apps/qip-edge-node/src/peer.rs:553), but with no epoch ever installed there it rejects nothing. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: forget_expired does run in production every turn (apps/qip-edge-node/src/peer.rs:553), but with no epoch ever installed there it rejects nothing. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-EXEC-5071",

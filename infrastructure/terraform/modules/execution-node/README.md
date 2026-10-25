@@ -197,9 +197,37 @@ execution_nodes = {
     # §31.1: which of this node's venues are abroad and the band this region
     # mirrors each instrument under. Empty is every venue at home.
     cross_region_mirror_path = ""
+    # ADR 0116: the peer Reflex Mesh, or null for a node that coordinates
+    # with no other cell directly. Each peer is the DNS name its workload
+    # certificate carries at a *stable* address — see below.
+    peer_mesh = null
   }
 }
 ```
+
+## The peer mesh is declared here and is null everywhere
+
+`peer_mesh` renders `QIP_PEER_MESH_LISTEN`, `QIP_PEER_MESH_PEERS` and, when
+stated, `QIP_PEER_MESH_CLOCK_BOUND_MS` into `node.env`, and opens the firewall
+both ways for exactly the peer addresses named — the switch that lets
+`qip-edge-node` spawn `qip-peer-link` and run the saga (origination,
+reservation, FIRE, fill, unwind) on a deployed node. `tests/peer-mesh.tftest.hcl`
+proves both halves: null renders no line and opens no port; a declared map
+renders both lines in the `name=ip:port,…` form the binary parses, and every
+value the binary would refuse at start (its own name as a peer, no peer, a
+hostname, a clock bound of zero or past a second, a name no certificate can
+carry) is refused at plan.
+
+It is null in every committed environment, for two reasons that are not the
+same. The root's `execution_nodes` type does not yet carry the field — that is
+a protected edit, written as `docs/blueprint/lanes/l5b-peer-mesh-root.patch`
+for the owner to apply. And a peer needs a **stable** address: a managed
+instance group's machine has none, the update policy surges a replacement
+beside the old one, and whatever fronts a node with a fixed internal address
+is billed infrastructure the owner declined for now (decision 5 of
+2026-10-25). Declaring a second node is the same decision. Until then the
+mesh is a seam with a test and no deployment, and this file says so rather
+than the tfvars implying otherwise.
 
 This example previously carried `instances = 0` and no `region_allocation`,
 and both were wrong in the direction that costs a reviewer a plan: `instances`
