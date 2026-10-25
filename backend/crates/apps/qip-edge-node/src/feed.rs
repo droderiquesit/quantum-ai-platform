@@ -106,7 +106,7 @@ use qip_contracts::{Entitlement, Usage};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::ObjectId;
-use qip_core::time::Timestamp;
+use qip_core::time::{Duration, Timestamp};
 use qip_edge::cell::Cell;
 use qip_edge::settlement::SettlementTerms;
 use qip_orderbook::venue::VenueState;
@@ -314,6 +314,7 @@ impl SimulatedFeed {
         (sequence, id, side, price, size): &(u64, String, BookSide, Decimal, Decimal),
         venue_time: Timestamp,
         now: Timestamp,
+        uncertainty: Duration,
     ) -> Result<MarketEvent> {
         let payload = MarketMessage::new(
             ObjectId::from_string(id.clone()),
@@ -331,15 +332,8 @@ impl SimulatedFeed {
         // The line as the venue's publisher wrote it: the bytes the decoder
         // read, which is what `source_hash`'s canonical re-encoding is not.
         let native = level_line(*sequence, venue_time, id, *side, *price, *size);
-        // The half-width of the clock error this event is stored with. A
-        // message cannot be received before it was sent, so a venue stamp
-        // that leads this cell's receive instant by `lead` proves one of the
-        // two clocks is out by at least `lead`: the lead is a lower bound, not
-        // a guess, and `Cell::observe_clock_lead` is where the same lead
-        // drives the cell's clock row. Recording zero here stored a
-        // precision-sensitive label as exact beside a venue the cell had
-        // already stopped trading against for skew.
-        let uncertainty = venue_time.since(now).max(qip_core::time::Duration::ZERO);
+        // `uncertainty` is the cell's bound for the frame, taken in
+        // `publish` before the frame was decoded: see there for why.
         Ok(MarketEvent::new(
             payload,
             venue_time,
@@ -512,6 +506,37 @@ impl SimulatedFeed {
         let frame = wire.frame;
         self.captured.clear();
         if tick.messages > 0 {
+            // The half-width of the clock error every event of this frame is
+            // stored with (R12-RES-7103), asked of the cell rather than worked
+            // out here.
+            //
+            // The frame's own `lead` is the floor. A message cannot be
+            // received before it was sent, so a venue stamp that leads this
+            // cell's receive instant proves one of the two clocks is out by
+            // at least that much; a stamp that trails proves nothing — it is
+            // latency on every healthy feed — and is floored at zero here,
+            // where the reason is visible, because the cell refuses a
+            // negative lead rather than flooring it.
+            //
+            // `Cell::clock_uncertainty` widens it with what the cell already
+            // knows about its clock: the lead this venue's previous batch
+            // showed, or — for a venue the cell has not measured, while some
+            // other venue has shown a skew past the bound — the widest lead
+            // any venue shows, because from one venue the cell cannot tell
+            // which clock is wrong and its own is then a suspect. Storing the
+            // frame's lead alone, as this feed did until the cell was threaded
+            // in here, wrote a precision-sensitive label down as exact beside
+            // a clock the cell had already stopped trading cross-venue
+            // against, and the deep brain's precision gate admitted it.
+            //
+            // Asked before `on_bytes`, deliberately: decoding measures this
+            // frame, which makes the venue "measured" by its own lead and
+            // leaves nothing to widen it with, so asked after it the call is
+            // the lead under another name. Before it, the answer is the
+            // cell's knowledge at the instant the frame arrived, never
+            // narrower than the frame's own proof.
+            let lead = venue_time.since(now).max(Duration::ZERO);
+            let bound = cell.clock_uncertainty(&self.venue, lead);
             let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
             if decoded != tick.messages {
                 // The decoder is this module's own; a frame it built that its
@@ -527,10 +552,26 @@ impl SimulatedFeed {
             // tick the cell did not take is not a tick this pass applied,
             // and the record of what a pass applied is what replay and the
             // lake read.
-            for line in wire.lines {
-                match self.capture(&line, venue_time, now) {
-                    Ok(event) => self.captured.push(event),
-                    Err(_) => self.capture_failures = self.capture_failures.saturating_add(1),
+            match bound {
+                Ok(uncertainty) => {
+                    for line in wire.lines {
+                        match self.capture(&line, venue_time, now, uncertainty) {
+                            Ok(event) => self.captured.push(event),
+                            Err(_) => {
+                                self.capture_failures = self.capture_failures.saturating_add(1);
+                            }
+                        }
+                    }
+                }
+                // Unreachable with a floored lead, and still not stored as
+                // the lead alone: an event whose clock bound the cell would
+                // not give is an event this feed cannot honestly record, so
+                // every line of the frame is counted as a capture failure
+                // rather than written down narrower than the cell knows.
+                Err(_) => {
+                    self.capture_failures = self
+                        .capture_failures
+                        .saturating_add(wire.lines.len() as u64);
                 }
             }
         }
