@@ -447,6 +447,11 @@ pub fn quantum_optimization(reviewed_at: Timestamp) -> AgentManifest {
         "claims no quantum advantage that has not been measured against the classical baseline".into(),
         "falls back to the classical solver whenever the quantum path is unavailable or worse".into(),
     ])
+    // It chooses the solver a construction runs on and states no view of
+    // any subject, which is the construction role; filed as research, its
+    // report of a missing quantum backend counted as a variable every
+    // explanation left out (ADR 0170).
+    .with_role(AgentRole::Construction)
 }
 
 pub fn risk_control(reviewed_at: Timestamp) -> AgentManifest {

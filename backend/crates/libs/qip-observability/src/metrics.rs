@@ -1461,11 +1461,14 @@ pub mod names {
     /// Ambient attention decisions, by pathway and disposition.
     pub const AMBIENT_ATTENTION: &str = "qip_ambient_attention_total";
     /// R12-OBS-7132: the action guard's verdict on one channel-health
-    /// dimension, by `channel`, `dimension` and `outcome`. Recorded by the
-    /// deep brain's agency door (`qip_deepbrain::ambient_agency`) from the
-    /// verdicts the guard decided on, never from a re-run of the checks.
-    /// `channel` is one constant (`qip_agency::outbox::OUTBOX_CHANNEL`, the
-    /// only channel a draft may use); `dimension` is
+    /// dimension, by `channel`, `dimension` and `outcome`. Recorded from the
+    /// verdicts the guard decided on, never from a re-run of the checks, by
+    /// two writers: the deep brain's agency door
+    /// (`qip_deepbrain::ambient_agency`), where `channel` is one constant
+    /// (`qip_agency::outbox::OUTBOX_CHANNEL`, the only channel a draft may
+    /// use), and `qip agency shadow` (`qip_cli::agency`), where `channel` is
+    /// a channel the policy's tool registrations declare or the literal
+    /// `unconfigured`; `dimension` is
     /// `qip_agency::guard::HealthDimension` — `identity_integrity`, `reach`,
     /// `provenance`, `violations`, `coordination`; `outcome` is `pass` or
     /// `fail`. A dimension the guard never reached for a draft is not
