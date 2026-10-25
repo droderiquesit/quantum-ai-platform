@@ -1439,15 +1439,21 @@ fn a_three_leg_cycle_whose_third_leg_is_refused_sends_one_offsetting_order_per_f
     Ok(())
 }
 
+/// A sent leg's recorded grounds beside the grants it was charged to.
+type LegRecord<'a> = (&'a Vec<String>, &'a Vec<(String, String)>);
+
 #[test]
-fn every_leg_cites_the_books_its_cycle_was_found_over_and_every_offset_cites_the_break()
--> Result<()> {
+fn every_leg_cites_its_desks_mandate_and_its_books_and_every_offset_cites_the_break() -> Result<()>
+{
     // ADR 0200 (R12-GOV-6127). A leg was grounded on `cycle:{id}`, the name
     // of the trade and not a reason for it, and an offset on
     // `cycle_broken:{id}`, which nothing checked. A leg now cites each book
     // of its cycle by the venue message the cell last applied to it, and an
     // offset the journaled refusal that broke the cycle; `Cell::send`
-    // resolves both, and the records carry them.
+    // resolves both, and the records carry them. The books are the price
+    // discrepancy, so they corroborate and cannot carry a leg alone: each
+    // leg also cites the signed grant that mandates the desk, the same
+    // signature its `grants` charge names.
     let (mut cell, _) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
     let mut gateway = FillingGateway {
         refuse_attempt: 3,
@@ -1458,10 +1464,12 @@ fn every_leg_cites_the_books_its_cycle_was_found_over_and_every_offset_cites_the
         "the premise failed: no break"
     );
     let entries = cell.journal().entries();
-    let legs: Vec<&Vec<String>> = entries
+    let legs: Vec<LegRecord<'_>> = entries
         .iter()
         .filter_map(|entry| match &entry.decision {
-            qip_edge::journal::Decision::OrderSent { grounds, .. } => Some(grounds),
+            qip_edge::journal::Decision::OrderSent {
+                grounds, grants, ..
+            } => Some((grounds, grants)),
             _ => None,
         })
         .collect();
@@ -1486,18 +1494,25 @@ fn every_leg_cites_the_books_its_cycle_was_found_over_and_every_offset_cites_the
     assert_eq!(legs.len(), 2, "the premise failed: legs {legs:?}");
     assert_eq!(breaks.len(), 1, "the premise failed: breaks {breaks:?}");
     assert_eq!(offsets.len(), 2, "the premise failed: offsets {offsets:?}");
-    for grounds in &legs {
+    for (grounds, grants) in &legs {
         let books: Vec<&String> = grounds.iter().filter(|g| g.starts_with("book:")).collect();
         assert_eq!(
             books.len(),
             3,
             "a leg does not cite its cycle's three books: {grounds:?}"
         );
+        let mandates: Vec<&String> = grounds.iter().filter(|g| g.starts_with("grant:")).collect();
+        assert_eq!(grants.len(), 1, "the premise failed: grants {grants:?}");
+        assert_eq!(
+            mandates,
+            vec![&format!("grant:{}", grants[0].0)],
+            "a leg does not cite the grant it was charged to: {grounds:?}"
+        );
         assert!(
-            grounds
-                .iter()
-                .all(|g| g == "expected_profit" || g.starts_with("book:")),
-            "a leg cites something other than its books: {grounds:?}"
+            grounds.iter().all(|g| g == "expected_profit"
+                || g.starts_with("book:")
+                || g.starts_with("grant:")),
+            "a leg cites something other than its mandate and its books: {grounds:?}"
         );
     }
     for grounds in &offsets {

@@ -6550,7 +6550,7 @@ impl Cell {
         // before the fence and the risk gate, which say whether this order
         // may be sent now: an order that names nothing the cell can re-read
         // has no reason to be asked about either.
-        if let Some(reason) = self.unresolved_ground(justification) {
+        if let Some(reason) = self.unresolved_ground(justification, now) {
             self.metrics.refusal(GATE_JUSTIFICATION);
             self.journal.record(
                 Decision::Refused {
@@ -6875,10 +6875,12 @@ impl Cell {
         grounds
     }
 
-    /// Why `justification` cannot be sent, or `None` when it can (ADR 0200).
+    /// Why `justification` cannot be sent at `now`, or `None` when it can
+    /// (ADR 0200).
     ///
-    /// Every evidence ground is a reference in one of six forms, and five
-    /// of them name something this cell holds and can be checked against:
+    /// Every evidence ground is a reference in one of seven forms. Five
+    /// **anchor** an order — each names a reason that is not the price, held
+    /// by this cell and checked against it:
     ///
     /// - `journal:signal_raised:{sequence}` — a signal raised this pass;
     /// - `policy:{sequence}:disposition:{strategy}:{object}` — the signed
@@ -6887,59 +6889,66 @@ impl Cell {
     ///   that entry, and still silent;
     /// - `journal:cycle_broken:{sequence}` — a cycle broke at that entry and
     ///   is being unwound now;
-    /// - `book:{venue}:{object}@{sequence}` — the cell holds that book, it is
-    ///   not stale, and it has applied that venue message.
+    /// - `grant:{signature}` — the arbitrage desk this cell holds is funded
+    ///   by the signed grant with that signature, live at `now`: the
+    ///   operator's mandate for the strategy, which is an instruction and
+    ///   not a price.
     ///
-    /// The sixth, `feature:{name}@{revision}`, corroborates and is not
-    /// checked: the revision belongs to a contributor's own feature graph,
-    /// which the send seam does not hold. So it never carries an order
-    /// alone. A reference in any other form, or in a checked form naming
-    /// something the cell does not hold, refuses the order: a citation that
-    /// does not resolve is a false statement about why the order went, and
-    /// one false ground beside a true one is still a false record.
-    fn unresolved_ground(&self, justification: &Justification) -> Option<String> {
+    /// Two **corroborate** and never carry an order alone:
+    ///
+    /// - `book:{venue}:{object}@{sequence}` — the cell holds that book, it is
+    ///   not stale, and it has applied that venue message. Checked, because a
+    ///   false citation is a false record, but not an anchor: the books a
+    ///   cycle was found over are the price discrepancy itself, and a leg on
+    ///   its books alone is a leg on its expected profit;
+    /// - `feature:{name}@{revision}` — not checked, because the revision
+    ///   belongs to a contributor's feature graph, which the send seam does
+    ///   not hold.
+    ///
+    /// A reference in any other form, or a checked reference naming
+    /// something the cell does not hold, refuses the order: one false ground
+    /// beside a true one is still a false record of why the order went.
+    fn unresolved_ground(&self, justification: &Justification, now: Timestamp) -> Option<String> {
         let mut anchored = false;
         for ground in justification.grounds() {
             let Ground::Evidence(reference) = ground else {
                 continue;
             };
-            match self.resolves(reference) {
-                Some(true) => anchored = true,
-                Some(false) => {
+            match self.resolves(reference, now) {
+                Resolution::Anchors => anchored = true,
+                Resolution::Corroborates => {}
+                Resolution::Fails => {
                     return Some(format!(
                         "the ground {reference} names nothing this cell holds; an order is sent \
                          on evidence the cell can re-read, or not at all"
                     ));
                 }
-                None => {}
             }
         }
         (!anchored).then(|| {
-            "no ground names a signal, an instruction, a journaled failure or a held book; \
-             expected profit and corroborating features do not carry an order alone"
+            "no ground names a signal, an instruction, a mandate or a journaled failure; \
+             expected profit, the books it was read from and corroborating features do not \
+             carry an order alone"
                 .to_string()
         })
     }
 
-    /// Whether `reference` resolves against this cell's state: `Some(true)`
-    /// or `Some(false)` for a checked form, `None` for the one corroborating
-    /// form. See [`Self::unresolved_ground`] for the forms.
-    fn resolves(&self, reference: &str) -> Option<bool> {
-        if reference.starts_with("feature:") {
-            return None;
-        }
+    /// What `reference` is worth against this cell's state at `now`. See
+    /// [`Self::unresolved_ground`] for the forms.
+    fn resolves(&self, reference: &str, now: Timestamp) -> Resolution {
         let sequence_of = |rest: &str| rest.parse::<u64>().ok();
-        let resolved = if let Some(rest) = reference.strip_prefix("journal:signal_raised:") {
-            sequence_of(rest)
-                .is_some_and(|entry| self.signal_sequences.values().any(|held| *held == entry))
-        } else if let Some(rest) = reference.strip_prefix("journal:feed_silent:") {
-            sequence_of(rest)
-                .is_some_and(|entry| self.feed_silent.values().any(|(_, held)| *held == entry))
-        } else if let Some(rest) = reference.strip_prefix("journal:cycle_broken:") {
-            sequence_of(rest)
-                .is_some_and(|entry| self.unwinding_breaks.values().any(|held| *held == entry))
+        let anchor = |held: bool| {
+            if held {
+                Resolution::Anchors
+            } else {
+                Resolution::Fails
+            }
+        };
+        if reference.starts_with("feature:") {
+            Resolution::Corroborates
         } else if let Some(rest) = reference.strip_prefix("book:") {
-            rest.rsplit_once('@')
+            let held = rest
+                .rsplit_once('@')
                 .and_then(|(key, applied)| Some((key.split_once(':')?, sequence_of(applied)?)))
                 .is_some_and(|((venue, object), applied)| {
                     self.liquidity
@@ -6948,20 +6957,46 @@ impl Cell {
                             !book.is_stale()
                                 && book.last_sequence().is_some_and(|last| last >= applied)
                         })
-                })
+                });
+            if held {
+                Resolution::Corroborates
+            } else {
+                Resolution::Fails
+            }
+        } else if let Some(rest) = reference.strip_prefix("journal:signal_raised:") {
+            anchor(
+                sequence_of(rest)
+                    .is_some_and(|entry| self.signal_sequences.values().any(|held| *held == entry)),
+            )
+        } else if let Some(rest) = reference.strip_prefix("journal:feed_silent:") {
+            anchor(
+                sequence_of(rest)
+                    .is_some_and(|entry| self.feed_silent.values().any(|(_, held)| *held == entry)),
+            )
+        } else if let Some(rest) = reference.strip_prefix("journal:cycle_broken:") {
+            anchor(
+                sequence_of(rest)
+                    .is_some_and(|entry| self.unwinding_breaks.values().any(|held| *held == entry)),
+            )
+        } else if let Some(signature) = reference.strip_prefix("grant:") {
+            anchor(self.desk.as_ref().is_some_and(|installed| {
+                let envelope = installed.desk.envelope();
+                envelope.signature() == signature && envelope.is_live(now)
+            }))
         } else if let Some(rest) = reference.strip_prefix("policy:") {
-            rest.split_once(":disposition:")
-                .and_then(|(entry, lot)| Some((sequence_of(entry)?, lot.split_once(':')?)))
-                .is_some_and(|(entry, (strategy, object))| {
-                    self.policy_sequence() == Some(entry)
-                        && self
-                            .instructed_unwinds
-                            .contains(&(strategy.to_string(), object.to_string()))
-                })
+            anchor(
+                rest.split_once(":disposition:")
+                    .and_then(|(entry, lot)| Some((sequence_of(entry)?, lot.split_once(':')?)))
+                    .is_some_and(|(entry, (strategy, object))| {
+                        self.policy_sequence() == Some(entry)
+                            && self
+                                .instructed_unwinds
+                                .contains(&(strategy.to_string(), object.to_string()))
+                    }),
+            )
         } else {
-            false
-        };
-        Some(resolved)
+            Resolution::Fails
+        }
     }
 
     /// Journal the join between the signals a netted order answered and the
@@ -10006,11 +10041,18 @@ impl Cell {
         };
         let price = leg.reference_price;
         let release_at = now.saturating_add(schedule.offset(&leg.venue));
-        // A leg stands on the books the cycle was found over: every leg's
-        // book, by the venue sequence of the last message the cell applied
-        // to it, which `Cell::send` resolves against the books it holds
-        // (ADR 0200). The cycle id names the trade, not a reason for it.
+        // A leg stands on the operator's mandate for the desk — the signed
+        // grant it was admitted against, which `Cell::send` checks is the
+        // grant the installed desk holds and is live — corroborated by the
+        // books the cycle was found over, each by the venue sequence of the
+        // last message the cell applied to it (ADR 0200). The books are the
+        // price discrepancy and cannot carry the leg alone; the cycle id
+        // names the trade, not a reason for it.
+        let mandate = self.desk.as_ref().map(|installed| {
+            Ground::Evidence(format!("grant:{}", installed.desk.envelope().signature()))
+        });
         let grounds: Vec<Ground> = std::iter::once(Ground::ExpectedProfit)
+            .chain(mandate)
             .chain(cycle.legs.iter().filter_map(|member| {
                 self.liquidity
                     .get(&member.venue, &member.object_id)
@@ -11925,6 +11967,17 @@ struct CrossingWindow {
 /// The router is built once, where the desk is installed. Rebuilding it per
 /// pass would re-read configuration on the hot path, and configuration read on
 /// the hot path is how a pass comes to depend on when it ran.
+/// What one evidence reference is worth at the send seam (ADR 0200).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resolution {
+    /// A reason that is not the price, held by the cell: it carries an order.
+    Anchors,
+    /// True as far as the cell can tell, and never enough alone.
+    Corroborates,
+    /// Names nothing the cell holds, or is in no known form: refuses.
+    Fails,
+}
+
 #[derive(Debug)]
 struct InstalledDesk {
     desk: ArbitrageDesk,
@@ -12871,7 +12924,12 @@ mod crossing_tests {
             "the premise failed: the true citation was refused"
         );
 
-        let refused: [(&str, Vec<Ground>); 5] = [
+        let held_sequence = cell
+            .liquidity
+            .get(&venue(), &object())
+            .and_then(VenueState::last_sequence)
+            .expect("the premise: the fixture book has applied a message");
+        let refused: [(&str, Vec<Ground>); 7] = [
             (
                 "a signal never raised",
                 vec![Ground::Evidence(format!(
@@ -12892,6 +12950,22 @@ mod crossing_tests {
                     Ground::Evidence(format!("journal:signal_raised:{raised}")),
                     Ground::Evidence(format!("book:{}:NOT-HELD@1", venue().as_str())),
                 ],
+            ),
+            (
+                "the books alone, which are the price itself",
+                vec![
+                    Ground::ExpectedProfit,
+                    Ground::Evidence(format!(
+                        "book:{}:{}@{}",
+                        venue().as_str(),
+                        object().as_str(),
+                        held_sequence
+                    )),
+                ],
+            ),
+            (
+                "a grant the cell holds no desk for",
+                vec![Ground::Evidence("grant:not-a-held-signature".to_string())],
             ),
             (
                 "a held book cited at a message it never applied",
@@ -12930,6 +13004,121 @@ mod crossing_tests {
                 "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
             );
         }
+        Ok(())
+    }
+
+    /// Install an arbitrage desk funded by a grant live until `expires`, and
+    /// return the grant's signature: the desk's mandate a cycle leg cites.
+    fn install_desk(cell: &mut Cell, expires: Timestamp) -> Result<String> {
+        use qip_arbitrage::{
+            ArbitrageGraph, EdgeAssumptions, OpportunityScanner, PlanSettings, SearchSettings,
+            SizePolicy, VenueFacts,
+        };
+        use qip_contracts::capital::CapitalEnvelope;
+        use qip_contracts::venue::VenueClass;
+
+        let key = b"a-unit-test-envelope-key";
+        let build = |signature: &str| {
+            CapitalEnvelope::new(
+                StrategyId::new("arb"),
+                CELL,
+                Decimal::from_int(1_000_000),
+                Decimal::from_int(100_000),
+                Decimal::from_int(50_000),
+                vec![venue()],
+                at(0),
+                expires,
+                "alice@example.com",
+                signature,
+            )
+        };
+        let unsigned = build("unsigned")?;
+        let signature = crate::envelope::sign_payload(key, &unsigned.signing_payload());
+        let envelope = VerifiedEnvelope::verify(build(&signature)?, key, CELL, at(1))?;
+        let mut graph = ArbitrageGraph::new();
+        graph.register_venue(
+            venue(),
+            VenueFacts::new(VenueClass::CryptoExchange, VenueStatus::Open),
+        );
+        // One trade edge, on the fixture book: a desk with none is refused.
+        graph.add_trade(
+            qip_arbitrage::Node::new(ObjectId::from_string("USD"), venue()),
+            qip_arbitrage::Node::new(object(), venue()),
+            Decimal::ONE,
+            Decimal::parse("0.0004").expect("a decimal literal"),
+            object(),
+            BookSide::Ask,
+            at(0),
+            0,
+        )?;
+        let desk = ArbitrageDesk::new(
+            StrategyId::new("arb"),
+            OpportunityScanner::new(
+                SearchSettings::default(),
+                EdgeAssumptions::default(),
+                PlanSettings::with_budget(Decimal::from_int(50_000)),
+            ),
+            graph,
+            SizePolicy::uniform(Decimal::from_int(10_000)),
+            envelope,
+            4,
+            qip_core::Duration::from_secs(30),
+        )?;
+        cell.install_arbitrage(desk)?;
+        Ok(signature)
+    }
+
+    #[test]
+    fn a_leg_on_its_desks_mandate_is_sent_only_while_that_grant_is_the_desks_and_live() -> Result<()>
+    {
+        // ADR 0200. A cycle leg's books are the price discrepancy, so they
+        // corroborate and cannot carry it; the anchor is the signed grant
+        // that mandates the desk. That anchor is worth only as much as the
+        // check behind it: a grant the desk does not hold, or one that has
+        // lapsed, is no mandate.
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+
+        // Premise: the desk's own live grant carries an order.
+        let mut cell = cell_with_book()?;
+        let mandate = install_desk(&mut cell, at(3600))?;
+        send_on(
+            &mut cell,
+            vec![Ground::Evidence(format!("grant:{mandate}"))],
+            &mut gateway,
+        )?;
+        assert_eq!(
+            gateway.placed.len(),
+            1,
+            "the premise failed: the mandate was refused"
+        );
+
+        let before = cell.journal().entries().len();
+        let forged = send_on(
+            &mut cell,
+            vec![Ground::Evidence(format!("grant:{mandate}x"))],
+            &mut gateway,
+        );
+        assert!(
+            forged.is_err(),
+            "a grant the desk does not hold carried an order"
+        );
+        assert_eq!(justification_refusals(&cell, before), 1);
+
+        // A grant lapsed by the send instant is no mandate.
+        let mut lapsed = cell_with_book()?;
+        let mandate = install_desk(&mut lapsed, at(5))?;
+        let before = lapsed.journal().entries().len();
+        let late = send_on(
+            &mut lapsed,
+            vec![Ground::Evidence(format!("grant:{mandate}"))],
+            &mut gateway,
+        );
+        assert!(late.is_err(), "a lapsed grant carried an order");
+        assert_eq!(justification_refusals(&lapsed, before), 1);
+        assert_eq!(gateway.placed.len(), 1, "a refused order reached the venue");
         Ok(())
     }
 

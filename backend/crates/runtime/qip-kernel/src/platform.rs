@@ -1183,6 +1183,13 @@ pub struct Platform {
     /// thesis is queued once and drained once; re-expressing it every cycle
     /// would pyramid the same idea until the mandate cap alone stopped it.
     pending_theses: Vec<JustifiedThesis>,
+    /// The justification each thesis DECIDE expressed stood on, by hypothesis
+    /// id (ADR 0200). ACT resolves a proposal leg's hypotheses here before an
+    /// order exists for it, so a desk order traces to a thesis REASON
+    /// justified and not merely to non-blank text. Bounded at
+    /// [`PROPOSAL_HISTORY`] per hypothesis, oldest out first, because a
+    /// proposal can wait for sign-off past the cycle that sized it.
+    justified_hypotheses: justification::JustifiedHypotheses,
     /// Beliefs from outside the opportunity, by subject. REASON may only be
     /// narrowed by them (ADR 0151 decision 3); empty unless a producer sets it.
     outside_priors: BTreeMap<String, crate::fusion::OutsidePrior>,
@@ -5765,6 +5772,7 @@ impl Platform {
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             pending_theses: Vec::new(),
+            justified_hypotheses: justification::JustifiedHypotheses::default(),
             outside_priors: BTreeMap::new(),
             leg_quantities: BTreeMap::new(),
             governor: crate::survival::SurvivalGovernor::default(),
@@ -17389,7 +17397,11 @@ impl Platform {
         let theses: Vec<qip_portfolio_engine::construction::ApprovedThesis> =
             std::mem::take(&mut self.pending_theses)
                 .into_iter()
-                .map(JustifiedThesis::into_thesis)
+                .map(|justified| {
+                    self.justified_hypotheses
+                        .register(&justified, PROPOSAL_HISTORY);
+                    justified.into_thesis()
+                })
                 .collect();
         let approved = theses.len();
         // The refusal, kept so the stage itself carries it. A construction
@@ -18082,6 +18094,22 @@ impl Platform {
                         "{} leg {index} was refused before an order existed: {}",
                         proposal.proposal_id.as_str(),
                         error.message()
+                    ));
+                    continue;
+                }
+                // ADR 0200: the leg's hypothesis must be one DECIDE expressed
+                // a justified thesis on. An order's own hypotheses are text,
+                // and validation can only see that they are non-blank; this
+                // is where they are resolved against what REASON actually
+                // justified, before an order exists to refuse.
+                if self.justified_hypotheses.resolve(&leg.hypotheses).is_none() {
+                    refused += 1;
+                    problems.push(format!(
+                        "{} leg {index} was refused before an order existed: its hypotheses {:?} \
+                         name no thesis DECIDE expressed on a justification, so the order would \
+                         stand on the trade alone",
+                        proposal.proposal_id.as_str(),
+                        leg.hypotheses
                     ));
                     continue;
                 }
@@ -24953,6 +24981,40 @@ mod justification {
         }
     }
 
+    /// The justifications DECIDE expressed theses on, by hypothesis id, and
+    /// the order they arrived in so the oldest leaves first at the bound.
+    #[derive(Clone, Debug, Default)]
+    pub(super) struct JustifiedHypotheses {
+        by_hypothesis: std::collections::BTreeMap<String, Justification>,
+        arrival: std::collections::VecDeque<String>,
+    }
+
+    impl JustifiedHypotheses {
+        pub(super) fn register(&mut self, justified: &JustifiedThesis, bound: usize) {
+            let id = justified.thesis.hypothesis_id.clone();
+            if self
+                .by_hypothesis
+                .insert(id.clone(), justified.justification.clone())
+                .is_none()
+            {
+                self.arrival.push_back(id);
+            }
+            while self.arrival.len() > bound {
+                if let Some(oldest) = self.arrival.pop_front() {
+                    self.by_hypothesis.remove(&oldest);
+                }
+            }
+        }
+
+        /// The justification of the first of `hypotheses` DECIDE expressed a
+        /// thesis on, or `None` when none of them was.
+        pub(super) fn resolve(&self, hypotheses: &[String]) -> Option<&Justification> {
+            hypotheses
+                .iter()
+                .find_map(|hypothesis| self.by_hypothesis.get(hypothesis))
+        }
+    }
+
     pub(super) fn justify_thesis(
         evidence: &qip_reasoning_engine::evidence::EvidenceSet,
     ) -> Result<Justification> {
@@ -26925,6 +26987,55 @@ mod decide_tests {
             refused.reservations.committed_total(),
             Decimal::ZERO,
             "a refused proposal committed capital nothing spent"
+        );
+    }
+
+    #[test]
+    fn a_leg_whose_hypothesis_no_justified_thesis_stood_on_is_refused_before_an_order_exists() {
+        // ADR 0200 (R12-GOV-6127). A desk order's grounds are its
+        // hypotheses, and `Order::validate` can see only that they are
+        // non-blank: an order naming any text was admitted as justified.
+        // ACT now resolves each leg's hypotheses against the theses DECIDE
+        // expressed on a justification, so a proposal whose hypothesis no
+        // justified thesis stood on places nothing.
+        let now = Timestamp::from_secs(1_760_000_100);
+        let correlation = CorrelationId::from_string("corr-justified");
+        let decided = |forget: bool| {
+            let mut platform = small_book_platform();
+            feed_history(&mut platform, "AAPL", 30);
+            feed_history(&mut platform, "MSFT", 30);
+            platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+            platform
+                .pending_theses
+                .push(justified(thesis("MSFT", -0.4)));
+            platform.stage_decide(now);
+            if forget {
+                platform.justified_hypotheses = justification::JustifiedHypotheses::default();
+            }
+            let outcome = platform.stage_act(now, &correlation);
+            (platform, outcome)
+        };
+
+        // Premise: the same proposal, its theses justified, places orders.
+        let (_, released) = decided(false);
+        assert!(
+            released.produced > 0,
+            "the premise failed: nothing was released"
+        );
+
+        let (_, refused) = decided(true);
+        assert_eq!(
+            refused.produced, 0,
+            "a leg whose hypothesis no justified thesis stood on became an order"
+        );
+        assert!(
+            refused
+                .problems
+                .iter()
+                .any(|problem| problem
+                    .contains("name no thesis DECIDE expressed on a justification")),
+            "the refusal is not on the stage's record: {:?}",
+            refused.problems
         );
     }
 
