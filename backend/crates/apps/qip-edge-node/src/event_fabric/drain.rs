@@ -665,6 +665,20 @@ pub fn parse_retention(text: Option<&str>) -> Result<BTreeMap<String, RetentionR
                  record; the lake keeps raw bytes only beside the record they decode to"
             )));
         }
+        if right.raw && dataset != crate::feed::SIMULATED_DATASET {
+            // The lake keeps a venue's bytes by re-encoding each line with the
+            // venue's own encoder and checking it against the hash taken at
+            // publication (ADR 0181); only the simulated feed's encoder is in
+            // this tree. A raw grant for any other dataset is one the sink
+            // could not honour, and a sink that silently sealed it raw-less
+            // would read as a retained raw history nobody can re-materialise.
+            return Err(Error::invalid(format!(
+                "{RETENTION_VARIABLE} grants {dataset} raw retention, and the lake can keep raw \
+                 bytes only for a feed whose encoder is in this tree ({}); grant it canonical \
+                 alone until its raw frames have their own record on the spool (ADR 0181)",
+                crate::feed::SIMULATED_DATASET
+            )));
+        }
         policy.insert(dataset.to_string(), right);
     }
     Ok(policy)
