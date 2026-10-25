@@ -2363,9 +2363,10 @@
     "current": "DiscoveryDesk wired into deepbrain evolution.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/main.rs:502",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:518"
+      "backend/crates/apps/qip-deepbrain/src/main.rs:518",
+      "docs/adr/0180-connector-health-is-scored-world-documents-are-re-fetched-never-copied-and-the-scout-records-every-first-pass-verdict.md"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Continuous search is not built and is ruled out: ADR 0157 §5 decides no crawl or search stage is built and candidates are written by an operator (discovery.rs module doc agrees). The desk's cadence is 0 in every environment (deepbrain_discover_every null), so the research loop's ScoutRequests queue in DiscoveryDesk::scout (bounded at 64) unread; a pass would journal only lifecycle transitions of registered sources, its targets/queries/decisions going to stdout only. Needs a new ADR superseding ADR 0157 §5, an owner decision and tfvar flip for the cadence, and code to journal the pass.",
+    "gap": "Decided 2026-10-25 by ADR 0180 d3 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): Continuous search is not built and is ruled out: ADR 0157 §5 decides no crawl or search stage is built and candidates are written by an operator (discovery.rs module doc agrees). The desk's cadence is 0 in every environment (deepbrain_discover_every null), so the research loop's ScoutRequests queue in DiscoveryDesk::scout (bounded at 64) unread; a pass would journal only lifecycle transitions of registered sources, its targets/queries/decisions going to stdout only. Needs a new ADR superseding ADR 0157 §5, an owner decision and tfvar flip for the cadence, and code to journal the pass.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2376,7 +2377,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Earlier main.rs:502/518 citations now point at replay-admission code; the desk is attached via with_discovery with default every_cycles = 0, so it never runs on a default path."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Earlier main.rs:502/518 citations now point at replay-admission code; the desk is attached via with_discovery with default every_cycles = 0, so it never runs on a default path. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0180 decision 3: no continuous search stage; ADR 0157 §5 stands. The row stays PARTIAL by decision; the owner may restate the requirement. Status unchanged."
   },
   {
     "id": "R12-DATA-1102",
@@ -2405,9 +2406,10 @@
     "evidence": [
       "backend/crates/services/qip-data-finder/src/legal.rs:28",
       "backend/crates/services/qip-data-finder/src/robots.rs:26",
-      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:784"
+      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:784",
+      "docs/adr/0180-connector-health-is-scored-world-documents-are-re-fetched-never-copied-and-the-scout-records-every-first-pass-verdict.md"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No scout run on a default path records anything in the event log: the only scout run is DiscoveryDesk::maybe_run (qip-deepbrain src/discovery.rs) and DiscoveryConfig::default sets every_cycles = 0; all four tfvars leave deepbrain_discover_every and source_candidates_file null; ADR 0144's scout entry point and Cloud Run job do not exist. Even with the desk on, Platform::assess_sources journals only SourceLifecycleChanged for already-registered sources (source_lifecycle.rs journal_source_transitions), so a first-pass legal or robots refusal never reaches the log; the quarantine path is proven only in a lib test. Needs an owner decision plus tfvar flip (ADR 0157 leaves the discovery cadence to the owner; the cognition zone has no external egress) or the ADR 0144 scout job deployed, plus code to journal first-pass access-rights verdicts.",
+    "gap": "Decided 2026-10-25 by ADR 0180 d2 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): No scout run on a default path records anything in the event log: the only scout run is DiscoveryDesk::maybe_run (qip-deepbrain src/discovery.rs) and DiscoveryConfig::default sets every_cycles = 0; all four tfvars leave deepbrain_discover_every and source_candidates_file null; ADR 0144's scout entry point and Cloud Run job do not exist. Even with the desk on, Platform::assess_sources journals only SourceLifecycleChanged for already-registered sources (source_lifecycle.rs journal_source_transitions), so a first-pass legal or robots refusal never reaches the log; the quarantine path is proven only in a lib test. Needs an owner decision plus tfvar flip (ADR 0157 leaves the discovery cadence to the owner; the cognition zone has no external egress) or the ADR 0144 scout job deployed, plus code to journal first-pass access-rights verdicts.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2418,14 +2420,16 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0180 decision 2: every first-pass access-rights verdict is journaled on the source topic; the discovery cadence stays off in committed environments (scout egress is unbuilt and billed). Code left: the journal write in Platform::assess_sources and a test that a first-pass robots refusal is in the event log. Status unchanged."
   },
   {
     "id": "R12-DATA-1104",
     "status": "MISSING",
     "current": "No code generates or synthesizes source adapters; connectors are hand-written per source.",
-    "evidence": [],
-    "gap": "2026-10-24 (re-read against the tree): No code creates adapters, and ADR 0157 §4 ('A descriptor never polls') forbids building a connector or DataAdapter from a RegisteredSource or IngestionPlan; the acceptance suite pins that absence; every connector is a hand-written reviewed change (connector_feed.rs shipped_manifest, KNOWN_SOURCES). Needs a new ADR superseding ADR 0157 §4, substantial new code, per-source licence records and egress routes, and a scout run on a default path (desk off; no scout job).",
+    "evidence": [
+      "docs/adr/0180-connector-health-is-scored-world-documents-are-re-fetched-never-copied-and-the-scout-records-every-first-pass-verdict.md"
+    ],
+    "gap": "Decided 2026-10-25 by ADR 0180 d3 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): No code creates adapters, and ADR 0157 §4 ('A descriptor never polls') forbids building a connector or DataAdapter from a RegisteredSource or IngestionPlan; the acceptance suite pins that absence; every connector is a hand-written reviewed change (connector_feed.rs shipped_manifest, KNOWN_SOURCES). Needs a new ADR superseding ADR 0157 §4, substantial new code, per-source licence records and egress routes, and a scout run on a default path (desk off; no scout job).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2436,7 +2440,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0180 decision 3: no generated adapters; ADR 0157 §4 stands. The row stays PARTIAL by decision; the owner may restate the requirement. Status unchanged."
   },
   {
     "id": "R12-DATA-1105",

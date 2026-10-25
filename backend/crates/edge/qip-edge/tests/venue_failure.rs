@@ -1496,6 +1496,42 @@ fn a_position_at_a_venue_whose_feed_goes_silent_is_offset_once_at_a_venue_still_
 }
 
 #[test]
+fn a_hedge_on_a_silent_feed_cites_the_silence_entry_it_answers_on_its_own_record() -> Result<()> {
+    // ADR 0200 (R12-GOV-6127). A hedge is sent for a reason that is not the
+    // profit it expects: the venue fell silent with a position open there.
+    // Until the reason was a sequence the send seam resolves, the hedge
+    // named the venue in free text that nothing checked, and its `Hedged`
+    // record named no reason at all.
+    let (mut cell, mut gateway, _) = blind_position(FeedLossPlaybook::Hedge)?;
+    cell.work(t(16), &mut gateway)?;
+    let silences: Vec<u64> = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            Decision::FeedSilent { venue, .. } if venue == XLON => Some(entry.sequence),
+            _ => None,
+        })
+        .collect();
+    let grounds: Vec<Vec<String>> = journaled(&cell, |decision, _| match decision {
+        Decision::Hedged { grounds, .. } => Some(grounds.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        silences.len(),
+        1,
+        "the premise failed: silences {silences:?}"
+    );
+    assert_eq!(grounds.len(), 1, "the premise failed: hedges {grounds:?}");
+    assert_eq!(
+        grounds[0],
+        vec![format!("journal:feed_silent:{}", silences[0])],
+        "the hedge does not cite the silence it answers"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_cell_whose_playbook_says_withdraw_holds_the_blind_position_and_sends_no_offset() -> Result<()>
 {
     // The other arm: the playbook is read, not hard-coded.

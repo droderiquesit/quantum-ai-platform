@@ -1510,41 +1510,56 @@ fn run_passes(
     let mut totals = PassTotals::default();
     let mut now = start().saturating_add(Duration::from_secs(2));
     for pass in 0..passes {
-        let began = Instant::now();
-        let report = cell.work(now, gateway)?;
-        totals.work += began.elapsed();
-
-        let began = Instant::now();
-        for fill in &report.fills {
-            cell.observe_drop_copy(DropCopyFill {
-                order_id: fill.order_id.clone(),
-                venue: fill.venue.clone(),
-                quantity: fill.quantity,
-                price: fill.price,
-                at: now,
-            });
-        }
-        let breaks = cell.reconcile(now);
-        totals.reconcile += began.elapsed();
-
-        assert!(
-            breaks.is_empty(),
-            "pass {pass}: the drop copy disagreed with the order-entry channel: {breaks:?}"
-        );
-        assert!(!cell.is_halted(), "pass {pass}: the cell halted");
-        totals.orders += report.orders.len();
-        totals.contributors += report
-            .orders
-            .iter()
-            .map(|order| order.contributors.len())
-            .sum::<usize>();
-        totals.fills += report.fills.len();
-        totals.crosses += report.crosses.len();
-        totals.cancelled += report.cancelled.len();
-        totals.refusals += report.refusals.len();
+        run_pass(cell, gateway, pass, now, &mut totals)?;
         now = now.saturating_add(step);
     }
     Ok(totals)
+}
+
+/// One pass of [`run_passes`] at `now`, added into `totals`; returns what the
+/// drop-copy reconcile of this pass alone cost, for a caller that has to
+/// compare two cells pass by pass rather than total against total.
+fn run_pass(
+    cell: &mut Cell,
+    gateway: &mut PaperVenue,
+    pass: usize,
+    now: Timestamp,
+    totals: &mut PassTotals,
+) -> Result<WallDuration> {
+    let began = Instant::now();
+    let report = cell.work(now, gateway)?;
+    totals.work += began.elapsed();
+
+    let began = Instant::now();
+    for fill in &report.fills {
+        cell.observe_drop_copy(DropCopyFill {
+            order_id: fill.order_id.clone(),
+            venue: fill.venue.clone(),
+            quantity: fill.quantity,
+            price: fill.price,
+            at: now,
+        });
+    }
+    let breaks = cell.reconcile(now);
+    let reconcile = began.elapsed();
+    totals.reconcile += reconcile;
+
+    assert!(
+        breaks.is_empty(),
+        "pass {pass}: the drop copy disagreed with the order-entry channel: {breaks:?}"
+    );
+    assert!(!cell.is_halted(), "pass {pass}: the cell halted");
+    totals.orders += report.orders.len();
+    totals.contributors += report
+        .orders
+        .iter()
+        .map(|order| order.contributors.len())
+        .sum::<usize>();
+    totals.fills += report.fills.len();
+    totals.crosses += report.crosses.len();
+    totals.cancelled += report.cancelled.len();
+    totals.refusals += report.refusals.len();
+    Ok(reconcile)
 }
 
 /// The risk state every central submission is judged against: ten million of
@@ -2001,16 +2016,19 @@ fn an_edge_work_pass_costs_the_same_per_pass_however_many_passes_the_cell_has_al
     const SMALL: usize = 500;
     const LARGE: usize = 2_500;
 
-    let passes = |count: usize| -> Result<PassTotals> {
+    let fresh = || -> Result<(Cell, PaperVenue)> {
         let opening = dec!("1000000000");
         let table = RegionTable::new(opening)?;
-        let mut cell =
-            edge_cell(&[("alpha", SignalKind::Enter, "100", PricingPolicy::Marketable)])?
-                .with_region_table(table);
-        let mut gateway = PaperVenue {
+        let cell = edge_cell(&[("alpha", SignalKind::Enter, "100", PricingPolicy::Marketable)])?
+            .with_region_table(table);
+        let gateway = PaperVenue {
             fills: true,
             ..PaperVenue::default()
         };
+        Ok((cell, gateway))
+    };
+    let passes = |count: usize| -> Result<PassTotals> {
+        let (mut cell, mut gateway) = fresh()?;
         run_passes(&mut cell, &mut gateway, count, Duration::from_millis(1))
     };
 
@@ -2037,12 +2055,83 @@ fn an_edge_work_pass_costs_the_same_per_pass_however_many_passes_the_cell_has_al
         (LARGE, large.work),
         2.0,
     );
-    report_scaling(
-        "edge drop-copy reconcile + settle scaling",
-        (SMALL, small.reconcile),
-        (LARGE, large.reconcile),
-        2.0,
+
+    // The reconcile is timed differently from the pass, and the reason is
+    // its size. It costs about a microsecond, so a run's whole reconcile is a
+    // few milliseconds of wall clock spread across the pass loop, and two such
+    // totals taken one after the other are two samples of whatever else the
+    // machine was doing in two different windows. CI has read 2.08x and 2.27x
+    // off code whose every sub-step was measured flat — the same run that read
+    // 2.08x here read 0.67x for the pass beside it, the load having moved the
+    // other way — so "both halves ran on the same machine" was not enough to
+    // divide the load out at this size.
+    //
+    // So the two histories are driven in the same window instead: one cell is
+    // first run to `LARGE - SMALL` settled orders untimed, a fresh one is
+    // built beside it, and then each takes one pass in turn for `SMALL`
+    // passes. Whatever the machine does lands on both alike. Each cell's
+    // per-pass reconciles are summed into chunks and the cheapest chunk of
+    // each is compared, as the sequencing scaling test does, so one
+    // preemption inside one chunk cannot decide the result. What is compared
+    // is a cell holding up to `SMALL` settled orders against one holding
+    // `LARGE - SMALL` to `LARGE`, and a scan of that history still shows as
+    // the ratio of the two.
+    const CHUNK: usize = 50;
+    let (mut short, mut short_gateway) = fresh()?;
+    let (mut long, mut long_gateway) = fresh()?;
+    let mut short_totals = PassTotals::default();
+    let mut long_totals = PassTotals::default();
+    let step = Duration::from_millis(1);
+    let mut long_now = start().saturating_add(Duration::from_secs(2));
+    for pass in 0..LARGE - SMALL {
+        run_pass(
+            &mut long,
+            &mut long_gateway,
+            pass,
+            long_now,
+            &mut long_totals,
+        )?;
+        long_now = long_now.saturating_add(step);
+    }
+    let mut short_now = start().saturating_add(Duration::from_secs(2));
+    let mut short_chunks = vec![WallDuration::ZERO; SMALL / CHUNK];
+    let mut long_chunks = vec![WallDuration::ZERO; SMALL / CHUNK];
+    for pass in 0..SMALL {
+        short_chunks[pass / CHUNK] += run_pass(
+            &mut short,
+            &mut short_gateway,
+            pass,
+            short_now,
+            &mut short_totals,
+        )?;
+        long_chunks[pass / CHUNK] += run_pass(
+            &mut long,
+            &mut long_gateway,
+            LARGE - SMALL + pass,
+            long_now,
+            &mut long_totals,
+        )?;
+        short_now = short_now.saturating_add(step);
+        long_now = long_now.saturating_add(step);
+    }
+    // Premise, as above: both cells traded on every pass, so neither
+    // reconcile was a cheap one over nothing.
+    assert_eq!(short_totals.fills, SMALL, "the short cell missed a fill");
+    assert_eq!(long_totals.fills, LARGE, "the long cell missed a fill");
+    let cheapest = |chunks: &[WallDuration]| {
+        chunks
+            .iter()
+            .copied()
+            .min()
+            .ok_or_else(|| Error::invalid("no chunk was timed, so nothing was compared"))
+    };
+    let short_cheapest = cheapest(&short_chunks)?;
+    let long_cheapest = cheapest(&long_chunks)?;
+    let label = format!(
+        "edge drop-copy reconcile + settle scaling (0-{SMALL} vs {}-{LARGE} settled, interleaved)",
+        LARGE - SMALL
     );
+    report_head_and_tail(&label, CHUNK, short_cheapest, long_cheapest, 2.0);
     Ok(())
 }
 

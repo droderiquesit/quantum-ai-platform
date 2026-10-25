@@ -520,6 +520,7 @@ fn the_journal_chain_catches_an_edited_decision() -> Result<()> {
             release_at: Some(t(2)),
             equalised: true,
             grants: Vec::new(),
+            grounds: Vec::new(),
         },
         t(2),
     );

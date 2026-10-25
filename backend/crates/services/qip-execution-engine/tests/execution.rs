@@ -887,6 +887,48 @@ fn an_order_that_traces_to_no_hypothesis_is_refused() {
 }
 
 #[test]
+fn an_order_justified_only_by_profit_is_refused_and_one_naming_a_hypothesis_is_admitted() {
+    // R12-GOV-6127's unit, on the desk's order (ADR 0200): "a justification
+    // of only profit and/or price impact is refused; one with an evidence
+    // ground is admitted". An order's evidence is the hypothesis it
+    // implements. A blank one names nothing, so it may not count as one —
+    // `Justification::of` would admit the text `hypothesis:  ` as evidence
+    // if blanks were not dropped first.
+    let mut manager = manager();
+    let mut broker = simulator();
+    let controller = AutonomyController::new();
+
+    let grounded = order("AAA", Side::Buy, "1000");
+    let hypothesis = grounded.hypotheses[0].clone();
+    let justification = grounded
+        .justification()
+        .expect("an order naming a hypothesis is justified");
+    assert!(
+        justification
+            .rendered()
+            .contains(&format!("hypothesis:{hypothesis}")),
+        "the justification does not name the hypothesis: {:?}",
+        justification.rendered()
+    );
+    assert!(submit(&mut manager, grounded, &mut broker, &controller).accepted);
+
+    for (case, hypotheses) in [("none", vec![]), ("only blanks", vec!["  ".to_string()])] {
+        let mut ungrounded = order("AAA", Side::Buy, "1000");
+        ungrounded.hypotheses = hypotheses;
+        assert!(
+            ungrounded.justification().is_err(),
+            "{case}: an order with no hypothesis was justified"
+        );
+        assert!(
+            ungrounded.validate().is_err(),
+            "{case}: validation, which the broker seam runs too, admitted it"
+        );
+        let result = submit(&mut manager, ungrounded, &mut broker, &controller);
+        assert!(!result.accepted, "{case}: the order manager admitted it");
+    }
+}
+
+#[test]
 fn an_order_with_no_scope_cannot_be_stopped_and_is_refused() {
     let mut manager = manager();
     let mut broker = simulator();
