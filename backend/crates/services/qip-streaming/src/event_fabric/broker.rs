@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 
 use qip_events::event_fabric::codec::{
     Batch, BrokerOrigin, ContentHash, DecodeOutcome, LogicalTimestamp, stamp_broker,
-    stamp_broker_origin,
+    stamp_broker_origin, stamp_broker_partition,
 };
 use qip_events::event_fabric::hlc::{HlcTimestamp, PartitionClock};
 use qip_events::event_fabric::policy::{QosClass, StreamPolicy};
@@ -569,8 +569,10 @@ impl Broker {
 
     /// The origin stamp for a batch produced by `principal` to `partition`,
     /// when this broker knows its region and the session authenticated
-    /// someone.
+    /// someone; the partition alone otherwise, because every append names
+    /// the partition it landed in (R12-FABRIC-8084).
     fn stamp_origin(&self, batch: &mut Batch, partition: u32, principal: Option<&str>) {
+        stamp_broker_partition(batch, partition);
         if let (Some(region), Some(principal)) = (&self.region, principal) {
             stamp_broker_origin(
                 batch,

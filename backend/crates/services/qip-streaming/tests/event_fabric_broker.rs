@@ -953,3 +953,40 @@ fn a_broker_stamps_its_region_partition_and_the_sessions_principal_and_refuses_a
     );
     Ok(())
 }
+
+/// R12-FABRIC-8084: every append names the partition it landed in, through
+/// `produce` and `produce_to` alike, with no session and on a broker that
+/// knows no region, so a batch read back from any partition's log says which
+/// log it belongs to.
+///
+/// Mutation: drop `stamp_broker_partition` from `Broker::stamp_origin` and
+/// both batches read back with no partition.
+#[test]
+fn every_append_names_its_partition_even_without_a_session_or_a_region() -> Result<()> {
+    let dir = temp_dir("partition-stamp");
+    let stream = "outcomes";
+    let broker = Broker::open(&dir, clock())?;
+    broker.declare_stream(stream, 3, policy(), config(10_000_000))?;
+    broker.register_schema(stream, 1, 1, sample_shape())?;
+
+    let named = broker
+        .produce_to(stream, 2, drain_batch("cell-a", 1, 0, 0, b"named"))?
+        .map_err(|refused| refused.error)?;
+    let routed = broker.produce(stream, "acme", drain_batch("cell-b", 1, 0, 1, b"routed"))?;
+    let routed_partition = partition::partition_for("acme", 3)?;
+
+    let first = first_batch(
+        broker
+            .fetch(stream, 2, named.base_offset(), 65_536)?
+            .batches(),
+    );
+    assert_eq!(first.partition, Some(2));
+    assert_eq!(first.origin, None, "premise: no session, so no origin");
+    let second = first_batch(
+        broker
+            .fetch(stream, routed_partition, routed.base_offset(), 65_536)?
+            .batches(),
+    );
+    assert_eq!(second.partition, Some(routed_partition));
+    Ok(())
+}

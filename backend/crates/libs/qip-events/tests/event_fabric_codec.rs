@@ -647,3 +647,72 @@ fn a_broker_stamped_partition_round_trips_and_a_flipped_partition_bit_is_corrupt
         "the flip was refused for the wrong reason: {refused}"
     );
 }
+
+/// R12-FABRIC-8084: a batch the broker appended for a producer with no
+/// authenticated session still carries the partition it landed in, as the
+/// partition-only origin tag, inside the batch CRC. It round-trips with no
+/// broker origin (no region or principal is invented for it), a flipped bit
+/// in it is corruption, and a batch whose partition disagrees with its own
+/// broker origin is refused at encode rather than written as two claims.
+///
+/// Mutation: write `ORIGIN_TAG_NONE` for a batch carrying only a partition.
+/// The round trip then reads `None`, not `Some(5)`, and fails.
+#[test]
+fn a_partition_stamped_without_a_session_round_trips_and_a_flipped_bit_in_it_is_corruption() {
+    use qip_events::event_fabric::codec::{
+        BrokerOrigin, stamp_broker_origin, stamp_broker_partition,
+    };
+
+    let stamp = |partition: u32| {
+        let mut batch = tagged_batch(5, "evt-partition-only");
+        stamp_broker(&mut batch, 12, 2, LogicalTimestamp::default(), None);
+        stamp_broker_partition(&mut batch, partition);
+        batch.encode().expect("a partition-stamped batch encodes")
+    };
+    let five = stamp(5);
+    match Batch::decode(&five).expect("a partition-stamped batch decodes") {
+        DecodeOutcome::Complete(batch) => {
+            assert_eq!(batch.partition, Some(5));
+            assert_eq!(batch.origin, None, "no region or principal was stamped");
+        }
+        DecodeOutcome::Torn => panic!("a whole batch read as torn"),
+    }
+
+    let other = stamp(5 ^ 0x0100);
+    assert_eq!(five.len(), other.len(), "premise: same layout");
+    let field = (0..five.len())
+        .find(|&at| five[at] != other[at])
+        .expect("premise: the partition reaches the encoded bytes");
+    let mut flipped = five.clone();
+    flipped[field] ^= 0x01;
+    let refused = Batch::decode(&flipped)
+        .expect_err("a batch with a flipped partition bit decoded as another partition");
+    assert!(
+        refused.to_string().contains("batch CRC mismatch"),
+        "the flip was refused for the wrong reason: {refused}"
+    );
+
+    let mut disagreeing = tagged_batch(5, "evt-partition-only");
+    stamp_broker_origin(
+        &mut disagreeing,
+        BrokerOrigin {
+            region: "europe-west2".to_string(),
+            partition: 3,
+            principal: "qip-edge-node-london-1".to_string(),
+        },
+    );
+    assert!(
+        disagreeing.encode().is_ok(),
+        "premise: an agreeing stamp encodes"
+    );
+    disagreeing.partition = Some(4);
+    let refused = disagreeing
+        .encode()
+        .expect_err("a batch naming two partitions was encoded");
+    assert!(
+        refused
+            .to_string()
+            .contains("one append lands in one partition"),
+        "{refused}"
+    );
+}
