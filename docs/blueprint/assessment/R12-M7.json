@@ -1448,9 +1448,11 @@
     "status": "PARTIAL",
     "current": "backend/crates/libs/qip-contracts/src/policy.rs:295 ModelPack; a second ModelPack in backend/crates/runtime/qip-kernel/src/model_serving.rs:242",
     "evidence": [
-      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:288 a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode"
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:288 a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode",
+      "backend/crates/apps/qip-cli/src/model_pack.rs (signing_message_hex, attach_signature, verify, run); main.rs dispatches `model-pack`",
+      "backend/crates/apps/qip-cli/tests/model_pack.rs::a_model_pack_whose_signature_changes_by_one_byte_is_refused_by_qip_model_pack_verify"
     ],
-    "gap": "Decided (ADR 0149): keep one signed contract ModelPack, no body/envelope split; Platform::admit_model_packs already feeds the kernel from QIP_MODEL_PACKS_PATH, failing closed. Not built: the kernel's lineage struct is still named ModelPack (model_serving.rs:307, Platform::model_pack_lineage) rather than ModelSetVersion; LearningDesk::promote_candidate writes no unsigned draft pack; and qip-cli has no model-pack verbs (signing-message, attach-signature, verify) for the publish workflow to call (grep -n 'model-pack' backend/crates/apps/qip-cli/src/main.rs finds nothing). The workflow edit that calls them is a person's. Corrected 2026-10-24.",
+    "gap": "2026-10-25 (lane L5-EDGE): qip-cli now carries the publish workflow's three verbs (model-pack signing-message, attach-signature, verify). Remaining: (1) LearningDesk::promote_candidate in qip-deepbrain writes no unsigned draft pack for those verbs to sign; (2) the kernel's lineage struct is still model_serving::ModelPack, not ModelSetVersion; (3) packs reach a brain only through QIP_MODEL_PACKS_PATH, which no committed environment sets, so no pack travels between brains on a default path (bar part 2).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1458,10 +1460,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts; cargo +1.94.1 test -p qip-cli --test model_pack",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L06 and 2026-10-24 lane T6-MODEL-AGENTS: not implemented. The rename touches the kernel's lineage API and every caller; the CLI verbs need the per-person signing credentials ADR 0110 and 0121 reserve for the release. Test the closure names: an_unsigned_draft_pack_written_at_promotion_is_refused_by_admit_model_packs_and_a_cli_signed_pack_over_the_same_bytes_is_admitted (qip-kernel/tests/release_packs.rs). Kept PARTIAL. 2026-10-24 lane L5-EDGE: read against the requirement text (bar part 4) rather than the row's ADR 0149 restatement: the typed fields and the missing-field decode refusal exist (section27_partial_contracts.rs), but bar part 2 fails on its own: ModelManifest.packs is skipped from the wire while empty and packs load only from QIP_MODEL_PACKS_PATH (qip-api signing.rs MODEL_PACKS_VARIABLE), which no committed environment sets (grep of infrastructure finds nothing), so no pack travels between brains on a default path. Kept PARTIAL."
+    "notes": "2026-10-18 lane L06 and 2026-10-24 lane T6-MODEL-AGENTS: not implemented. The rename touches the kernel's lineage API and every caller; the CLI verbs need the per-person signing credentials ADR 0110 and 0121 reserve for the release. Test the closure names: an_unsigned_draft_pack_written_at_promotion_is_refused_by_admit_model_packs_and_a_cli_signed_pack_over_the_same_bytes_is_admitted (qip-kernel/tests/release_packs.rs). Kept PARTIAL. 2026-10-24 lane L5-EDGE: read against the requirement text (bar part 4) rather than the row's ADR 0149 restatement: the typed fields and the missing-field decode refusal exist (section27_partial_contracts.rs), but bar part 2 fails on its own: ModelManifest.packs is skipped from the wire while empty and packs load only from QIP_MODEL_PACKS_PATH (qip-api signing.rs MODEL_PACKS_VARIABLE), which no committed environment sets (grep of infrastructure finds nothing), so no pack travels between brains on a default path. Kept PARTIAL. 2026-10-25 lane L5-EDGE: qip-cli model-pack verbs built. Mutations fired: verify skips the signature (validate only); attach keeps the old signature; message built under the policy class instead of model-pack. Kept PARTIAL on the three remaining steps in the gap."
   },
   {
     "id": "R12-CONTRACT-7065",
