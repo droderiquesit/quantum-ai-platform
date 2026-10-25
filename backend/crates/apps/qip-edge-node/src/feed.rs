@@ -250,6 +250,10 @@ pub struct SimulatedFeed {
     /// rather than appended to on every publication, so a caller that never
     /// takes them holds one frame's worth and no more.
     captured: Vec<MarketEvent>,
+    /// The bytes the last publication put on the wire, kept until the
+    /// next: one frame, so bounded. What a replay or a test compares the
+    /// lake's raw slots against (ADR 0181).
+    last_frame: String,
     /// Lines the cell took that could not be built into a market event.
     /// Counted rather than fatal: the pass has already applied the frame,
     /// and failing it now would make recording a reason to stop trading.
@@ -266,6 +270,7 @@ impl SimulatedFeed {
             omitted_total: 0,
             sequence: 0,
             captured: Vec::new(),
+            last_frame: String::new(),
             capture_failures: 0,
         }
     }
@@ -305,6 +310,12 @@ impl SimulatedFeed {
     /// show a sequence the venue never published.
     pub fn take_captured(&mut self) -> Vec<MarketEvent> {
         std::mem::take(&mut self.captured)
+    }
+
+    /// The exact bytes the last publication put on the wire; empty when it
+    /// published nothing.
+    pub fn last_frame(&self) -> &str {
+        &self.last_frame
     }
 
     /// Lines the cell took that could not be captured as market events.
@@ -548,6 +559,7 @@ impl SimulatedFeed {
         let venue_time = wire.venue_time;
         let frame = wire.frame;
         self.captured.clear();
+        self.last_frame.clear();
         if tick.messages > 0 {
             let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
             if decoded != tick.messages {
@@ -570,6 +582,7 @@ impl SimulatedFeed {
                     Err(_) => self.capture_failures = self.capture_failures.saturating_add(1),
                 }
             }
+            self.last_frame = frame;
         }
         Ok(tick)
     }
@@ -598,6 +611,45 @@ pub fn level_line(
         "{sequence}\t{}\t{object_id}\t{side}\t{price}\t{size}\n",
         venue_time.as_nanos()
     )
+}
+
+/// The exact line the simulated venue published for `event`, re-encoded
+/// with the encoder that wrote it, or `None` for an event this feed does not
+/// publish (R12-TICK-2042, ADR 0181).
+///
+/// The feed stamps every captured event with the SHA-256 of the line it put
+/// on the wire (`MarketEvent::native_hash`). Re-encoding here and comparing
+/// against that hash is how the lake keeps the venue's bytes without a
+/// second copy travelling the spool: a line whose re-encoding does not hash
+/// to what was published is not the published line, and the caller keeps
+/// nothing for it rather than something close.
+pub fn native_line(event: &MarketEvent) -> Option<String> {
+    let origin = event.origin();
+    if origin.feed != FEED_NAME {
+        return None;
+    }
+    let id = event.payload().object_id.as_str();
+    let line = match &event.payload().body {
+        MessageBody::LevelSet {
+            side,
+            price,
+            quantity,
+            ..
+        } => level_line(
+            origin.sequence,
+            event.event_time(),
+            id,
+            *side,
+            *price,
+            *quantity,
+        ),
+        MessageBody::StatusChange { status } => {
+            status_line(origin.sequence, event.event_time(), id, *status)
+        }
+        _ => return None,
+    };
+    let published = event.native_hash()?;
+    (qip_core::hash::sha256_hex(line.as_bytes()) == published).then_some(line)
 }
 
 /// One status line, as the venue's publisher writes it and the feed's

@@ -575,7 +575,7 @@ fn market_events_the_feed_applied_reach_the_tick_lake_with_exchange_time_capture
     let waited = std::time::Instant::now();
     let keys = loop {
         drain.step()?;
-        let keys = lake.list("lake/class=market/")?;
+        let keys = segment_keys(lake.as_ref())?;
         if !keys.is_empty() {
             break keys;
         }
@@ -1868,7 +1868,7 @@ fn a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_
     while lines.len() < captured {
         drain.step()?;
         lines.clear();
-        for key in lake.list("lake/class=market/")? {
+        for key in segment_keys(lake.as_ref())? {
             let body = lake.get(&key)?.expect("a listed segment is readable");
             for line in String::from_utf8(body).expect("canonical JSON").lines() {
                 lines.push(serde_json::from_str(line)?);
@@ -2015,8 +2015,7 @@ fn the_lake_alone_rebuilds_the_book_the_venue_published() -> Result<()> {
     let waited = std::time::Instant::now();
     loop {
         drain.step()?;
-        let lines: usize = lake
-            .list("lake/class=market/")?
+        let lines: usize = segment_keys(lake.as_ref())?
             .iter()
             .map(|key| {
                 lake.get(key).ok().flatten().map_or(0, |body| {
@@ -2172,7 +2171,7 @@ fn a_circuit_breaker_the_venue_declares_reaches_the_cell_as_a_typed_status_and_i
 
     let statuses = |lake: &MemoryBlobStore| -> Result<Vec<VenueStatus>> {
         let mut found: Vec<(u64, VenueStatus)> = Vec::new();
-        for key in lake.list("lake/class=market/")? {
+        for key in segment_keys(lake)? {
             let body = lake.get(&key)?.expect("a listed segment is readable");
             for line in String::from_utf8(body).expect("canonical JSON").lines() {
                 let value: serde_json::Value = serde_json::from_str(line)?;
@@ -2190,8 +2189,7 @@ fn a_circuit_breaker_the_venue_declares_reaches_the_cell_as_a_typed_status_and_i
     let mut lines = 0usize;
     while lines < captured {
         drain.step()?;
-        lines = lake
-            .list("lake/class=market/")?
+        lines = segment_keys(lake.as_ref())?
             .iter()
             .filter_map(|key| lake.get(key).ok().flatten())
             .map(|body| {
@@ -2210,6 +2208,120 @@ fn a_circuit_breaker_the_venue_declares_reaches_the_cell_as_a_typed_status_and_i
         statuses(&lake)?,
         vec![VenueStatus::CircuitBreaker, VenueStatus::Open],
         "the venue's breaker and its reopening are not sealed as typed statuses"
+    );
+    Ok(())
+}
+
+/// The lake's sealed market segments, without the raw slots beside them
+/// (`.raw`, ADR 0181): a segment holds canonical lines, a raw slot holds the
+/// venue's bytes, and a reader of lines must not parse bytes as JSON.
+fn segment_keys(lake: &MemoryBlobStore) -> Result<Vec<String>> {
+    Ok(lake
+        .list("lake/class=market/")?
+        .into_iter()
+        .filter(|key| !key.ends_with(".raw"))
+        .collect())
+}
+
+/// R12-TICK-2042 on the node's own path: the passes' ticks go through the
+/// spool and the drain thread's `LakeSink`, as on the default path, and
+/// every sealed segment carries a raw slot whose lines are, one for one and
+/// in order, the bytes the venue published for the segment's canonical
+/// lines — each hashing to the native hash the feed recorded at publication.
+///
+/// Mutation: in `LakeSink::deliver`, stop collecting raw bytes for the
+/// partition (`raw_by_partition` never filled) — no raw slot is sealed and
+/// the first assertion fails.
+#[test]
+fn every_drained_lake_segment_carries_the_venues_published_bytes_line_for_line() -> Result<()> {
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 1_024)?;
+    let lake: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::new());
+    let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        CELL,
+        qip_edge_node::event_fabric::drain::default_retention(),
+        qip_storage::lake_codec::SegmentCodec::Identity,
+    )?)];
+    let mut drain = Drain::open(
+        Arc::clone(&rig.spool),
+        sinks,
+        rig.drain_publisher
+            .take()
+            .expect("the publisher is handed once"),
+        Arc::clone(&rig.telemetry),
+        DrainConfig::new(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+            64,
+        )?,
+    )?;
+    let mut captured = 0usize;
+    for second in 10..30 {
+        let simulated = rig
+            .decisions
+            .gateway_mut()
+            .simulated_mut()
+            .expect("the rig's gateway is simulated");
+        let bid = dec!("99") - Decimal::from(second % 3);
+        simulated.seed_touch(&object(), Side::Buy, bid, dec!("500"), t(second))?;
+        captured += rig.decisions.turn(t(second))?.captured;
+    }
+    assert!(
+        captured > 10,
+        "premise: the passes applied ticks ({captured})"
+    );
+    let waited = std::time::Instant::now();
+    loop {
+        drain.step()?;
+        let lines: usize = segment_keys(lake.as_ref())?
+            .iter()
+            .filter_map(|key| lake.get(key).ok().flatten())
+            .map(|body| {
+                body.split(|byte| *byte == b'\n')
+                    .filter(|l| !l.is_empty())
+                    .count()
+            })
+            .sum();
+        if lines >= captured {
+            break;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "only {lines} of {captured} ticks reached the lake"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    let mut checked = 0usize;
+    for key in segment_keys(lake.as_ref())? {
+        let raw_key = key.replace(".canonical", ".raw");
+        let raw = lake
+            .get(&raw_key)?
+            .unwrap_or_else(|| panic!("segment {key} was sealed without the venue's bytes"));
+        let raw = String::from_utf8(raw).expect("the simulated wire is text");
+        let body = String::from_utf8(lake.get(&key)?.expect("listed")).expect("canonical JSON");
+        let canonical: Vec<&str> = body.lines().collect();
+        let raw_lines: Vec<&str> = raw.split_inclusive('\n').collect();
+        assert_eq!(
+            raw_lines.len(),
+            canonical.len(),
+            "{key}: the raw slot does not hold one published line per sealed tick"
+        );
+        for (line, published) in canonical.iter().zip(&raw_lines) {
+            let value: serde_json::Value = serde_json::from_str(line)?;
+            let event: qip_contracts::market_event::MarketEvent =
+                serde_json::from_value(value["event"].clone())?;
+            assert_eq!(
+                Some(qip_core::hash::sha256_hex(published.as_bytes()).as_str()),
+                event.native_hash(),
+                "{key}: a raw line is not the bytes published for its tick"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(
+        checked, captured,
+        "every applied tick's published bytes are in the lake"
     );
     Ok(())
 }
