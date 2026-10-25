@@ -302,6 +302,116 @@ run "a_workload_certificate_lifetime_of_hours_is_admitted" {
   }
 }
 
+# --- R12-SEC-10056: the logs are a store discovery reads ----------------------
+#
+# Two links are unknown at plan and so are not compared here: the key id the
+# dataset is encrypted under, and the writer identity Google mints for the
+# sink. Terraform refuses a plan run whose condition is unknown, and a
+# refused run skips every run after it (see `qip-acceptance`'s
+# `terraform_plan`). The key is held on the configuration by
+# `security_controls::no_data_store_beyond_those_the_register_records_is_left_without_a_customer_managed_key`;
+# what is asserted below is everything the plan does know.
+
+run "discovery_covers_the_platforms_logs_once_sensitive_data_protection_is_on" {
+  command = plan
+
+  variables {
+    sensitive_data_protection = {}
+  }
+
+  assert {
+    condition = (
+      length(google_bigquery_dataset.sdp_logs) == 1
+      && length(google_logging_project_sink.sdp_logs) == 1
+      && length(google_bigquery_dataset_iam_member.sdp_logs_writer) == 1
+      && length(google_data_loss_prevention_discovery_config.lake) == 1
+    )
+    error_message = "Discovery is on but the log dataset, its sink or the writer's grant was not planned."
+  }
+
+  assert {
+    condition = (
+      length(google_kms_crypto_key.sdp_logs) == 1
+      && length(google_bigquery_dataset.sdp_logs[0].default_encryption_configuration) == 1
+      && google_kms_crypto_key_iam_member.sdp_logs_bigquery_agent[0].role == "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+    )
+    error_message = "The log dataset has no customer-managed key, or BigQuery's encryption account cannot use it (SEC-046)."
+  }
+
+  assert {
+    condition     = google_logging_project_sink.sdp_logs[0].destination == "bigquery.googleapis.com/projects/security-plan-harness/datasets/${google_bigquery_dataset.sdp_logs[0].dataset_id}"
+    error_message = "The sink does not deliver into the log dataset discovery reads."
+  }
+
+  assert {
+    condition     = google_logging_project_sink.sdp_logs[0].filter == "(resource.type=\"cloud_run_revision\" AND resource.labels.service_name:\"qip-dev-\") OR (resource.type=\"gce_instance\" AND labels.\"compute.googleapis.com/resource_name\":\"qip-dev-\")"
+    error_message = "The sink copies something other than the platform's own workloads."
+  }
+
+  assert {
+    condition = (
+      google_bigquery_dataset_iam_member.sdp_logs_writer[0].dataset_id == google_bigquery_dataset.sdp_logs[0].dataset_id
+      && google_logging_project_sink.sdp_logs[0].unique_writer_identity
+    )
+    error_message = "The sink's own writer is not granted on the log dataset alone."
+  }
+
+  # The writer's role is exactly what a sink does, and nothing that deletes a
+  # table (FINOPS-019).
+  assert {
+    condition = (
+      length(google_project_iam_custom_role.sdp_log_writer) == 1
+      && google_project_iam_custom_role.sdp_log_writer[0].permissions == toset([
+        "bigquery.datasets.get",
+        "bigquery.tables.create",
+        "bigquery.tables.get",
+        "bigquery.tables.update",
+        "bigquery.tables.updateData",
+      ])
+    )
+    error_message = "The log sink's writer role is not the five permissions a sink uses."
+  }
+
+  assert {
+    condition = anytrue([
+      for target in google_data_loss_prevention_discovery_config.lake[0].targets :
+      length(target.big_query_target) == 1 && anytrue([
+        for pattern in try(target.big_query_target[0].filter[0].tables[0].include_regexes[0].patterns, []) :
+        pattern.dataset_id_regex == "^${google_bigquery_dataset.sdp_logs[0].dataset_id}$"
+        && pattern.project_id_regex == "^security-plan-harness$"
+      ])
+    ])
+    error_message = "The discovery config names no target covering the log dataset."
+  }
+
+  # Discovery takes the first target a table matches, so the named one must
+  # come before the catch-all or it is never reached.
+  assert {
+    condition = (
+      length(try(google_data_loss_prevention_discovery_config.lake[0].targets[0].big_query_target[0].filter[0].tables, [])) == 1
+      && length(try(google_data_loss_prevention_discovery_config.lake[0].targets[1].big_query_target[0].filter[0].other_tables, [])) == 1
+    )
+    error_message = "The log dataset's target does not precede the catch-all, so the catch-all shadows it."
+  }
+}
+
+run "no_log_copy_exists_while_sensitive_data_protection_is_off" {
+  command = plan
+
+  assert {
+    condition = (
+      length(google_bigquery_dataset.sdp_logs) == 0
+      && length(google_logging_project_sink.sdp_logs) == 0
+      && length(google_bigquery_dataset_iam_member.sdp_logs_writer) == 0
+      && length(google_project_iam_custom_role.sdp_log_writer) == 0
+      && length(google_kms_crypto_key.sdp_logs) == 0
+      && length(google_kms_crypto_key_iam_member.sdp_logs_bigquery_agent) == 0
+      && length(google_data_loss_prevention_discovery_config.lake) == 0
+    )
+    error_message = "A log copy, its key, its sink or its grant was planned with discovery off."
+  }
+}
+
 run "a_discovery_scan_for_nothing_is_refused" {
   command = plan
 

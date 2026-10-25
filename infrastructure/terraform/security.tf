@@ -469,6 +469,28 @@ resource "google_data_loss_prevention_discovery_config" "lake" {
 
   inspect_templates = [google_data_loss_prevention_inspect_template.pii[0].id]
 
+  # The platform's own logs, named first. Discovery applies the first target
+  # a table matches, so a named target after the catch-all below would never
+  # be reached; and a catch-all alone covers the log dataset only by
+  # accident, which no reviewer can tell apart from not covering it. The
+  # dataset is read from the resource rather than spelled again, so renaming
+  # it moves the scan with it (R12-SEC-10056).
+  targets {
+    big_query_target {
+      filter {
+        tables {
+          include_regexes {
+            patterns {
+              project_id_regex = "^${var.project_id}$"
+              dataset_id_regex = "^${google_bigquery_dataset.sdp_logs[0].dataset_id}$"
+              table_id_regex   = ".*"
+            }
+          }
+        }
+      }
+    }
+  }
+
   targets {
     big_query_target {
       filter {
@@ -486,4 +508,136 @@ resource "google_data_loss_prevention_discovery_config" "lake" {
   }
 
   depends_on = [google_project_service.security]
+}
+
+# --- Logs under discovery (R12-SEC-10056) -------------------------------------
+#
+# Discovery reads BigQuery and Cloud Storage; it does not read Cloud Logging.
+# The workload logs live in the bounded bucket `modules/observability` routes
+# them to, so until this block "discovers sensitive data in stores and logs"
+# was true of the stores and of no log line: a venue response or an
+# operator's address written to stdout was invisible to the scan that exists
+# to find it. A second sink copies the same workloads, under the same filter,
+# into a dataset the discovery config above names explicitly.
+#
+# Everything here is behind `sdp_on`, as the rest of the section is. A copy
+# of the logs with no scan over it is one more place for a leaked value to
+# sit with nothing looking, so the dataset never exists without the scan.
+
+resource "google_kms_crypto_key" "sdp_logs" {
+  count = local.sdp_on ? 1 : 0
+
+  name            = "qip-${var.environment}-sdp-logs"
+  key_ring        = module.secrets.key_ring_id
+  rotation_period = "7776000s"
+  labels          = local.labels
+
+  version_template {
+    algorithm        = "GOOGLE_SYMMETRIC_ENCRYPTION"
+    protection_level = var.kms_protection_level
+  }
+}
+
+# BigQuery encrypts a CMEK dataset as its per-project encryption account, not
+# as the caller, so the key goes to that account and to no other: the same
+# arrangement `modules/data` makes for the warehouse. Without the grant ahead
+# of the dataset, the first apply with discovery on is refused for a key
+# permission that same apply was about to give.
+data "google_bigquery_default_service_account" "sdp_logs" {
+  count = local.sdp_on ? 1 : 0
+
+  project = var.project_id
+}
+
+resource "google_kms_crypto_key_iam_member" "sdp_logs_bigquery_agent" {
+  count = local.sdp_on ? 1 : 0
+
+  crypto_key_id = google_kms_crypto_key.sdp_logs[0].id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:${data.google_bigquery_default_service_account.sdp_logs[0].email}"
+}
+
+resource "google_bigquery_dataset" "sdp_logs" {
+  count = local.sdp_on ? 1 : 0
+
+  project    = var.project_id
+  dataset_id = "qip_${var.environment}_workload_logs"
+  location   = var.region
+  labels     = local.labels
+
+  description = "A copy of the platform's workload logs, kept so Sensitive Data Protection discovery can read them (R12-SEC-10056)."
+
+  # Bounded like its source: ninety days, `modules/observability`'s default
+  # `log_retention_days`, which the root does not override. A copy kept
+  # forever would be the longest-lived place a leaked value could sit, longer
+  # than the bucket whose retention is the platform's stated answer to how
+  # long a log line matters.
+  default_table_expiration_ms = 90 * 86400000
+
+  default_encryption_configuration {
+    kms_key_name = google_kms_crypto_key.sdp_logs[0].id
+  }
+
+  delete_contents_on_destroy = false
+
+  depends_on = [google_kms_crypto_key_iam_member.sdp_logs_bigquery_agent]
+}
+
+resource "google_logging_project_sink" "sdp_logs" {
+  count = local.sdp_on ? 1 : 0
+
+  project     = var.project_id
+  name        = "qip-${var.environment}-sdp-logs"
+  destination = "bigquery.googleapis.com/projects/${var.project_id}/datasets/${google_bigquery_dataset.sdp_logs[0].dataset_id}"
+  description = "Copies the platform's workload logs into the dataset Sensitive Data Protection discovery reads."
+
+  # The workload sink's filter, so the scan reads exactly the lines the
+  # bounded bucket holds and no other team's.
+  filter = "(resource.type=\"cloud_run_revision\" AND resource.labels.service_name:\"qip-${var.environment}-\") OR (resource.type=\"gce_instance\" AND labels.\"compute.googleapis.com/resource_name\":\"qip-${var.environment}-\")"
+
+  # Its own writer, so the grant below names an identity that writes here
+  # and nowhere else.
+  unique_writer_identity = true
+
+  bigquery_options {
+    use_partitioned_tables = true
+  }
+}
+
+# What a log sink does to its dataset: read the dataset, create a table per
+# log and day, evolve its schema as new fields appear, and stream rows in.
+# Five permissions, not the `roles/bigquery.dataEditor` Google's sink guide
+# names: that role also carries `bigquery.tables.delete`, and FINOPS-019
+# (`qip-acceptance`'s `no_terraform_grant_can_delete_or_drop_warehouse_tables_
+# beyond_the_one_named_writer_role`) holds it to `modules/data`'s writers
+# alone. A log router that could drop the tables discovery reads could erase
+# the evidence of a leak along with the leak. Defined on the project because
+# that is where custom roles live; granted only on the dataset below.
+resource "google_project_iam_custom_role" "sdp_log_writer" {
+  count = local.sdp_on ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "qip_${var.environment}_sdp_log_writer"
+  title       = "qip ${var.environment} log sink writer"
+  description = "Create, evolve and append to log tables in the discovery dataset. Cannot delete a table or read one."
+
+  permissions = [
+    "bigquery.datasets.get",
+    "bigquery.tables.create",
+    "bigquery.tables.get",
+    "bigquery.tables.update",
+    "bigquery.tables.updateData",
+  ]
+}
+
+# The writer may write in this one dataset. Not on the project: a sink
+# identity holding a table-writing role project-wide could rewrite the
+# research warehouse, and a log router has no reason to see it.
+resource "google_bigquery_dataset_iam_member" "sdp_logs_writer" {
+  count = local.sdp_on ? 1 : 0
+
+  project    = var.project_id
+  dataset_id = google_bigquery_dataset.sdp_logs[0].dataset_id
+  role       = google_project_iam_custom_role.sdp_log_writer[0].id
+  member     = google_logging_project_sink.sdp_logs[0].writer_identity
 }
