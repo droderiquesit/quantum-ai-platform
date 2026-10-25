@@ -406,7 +406,16 @@ impl NetEdgeCalculator {
         })
     }
 
-    fn latency_deduction(&self, size: Decimal) -> Result<Decimal> {
+    /// The expected adverse move over the venue round trip plus the
+    /// cross-region coordination latency, on `size`.
+    ///
+    /// Public for one caller: the peer saga's origination (`qip-peer-link`),
+    /// which prices a two-leg crossing against a peer's touch without a path
+    /// to hand [`Self::calculate`], and which until it called this charged a
+    /// crossing nothing for the measured round trip to the peer region. One
+    /// formula, in one place: a second copy in the saga would be the model
+    /// drifting from itself.
+    pub fn latency_deduction(&self, size: Decimal) -> Result<Decimal> {
         let exposed = self.assumptions.round_trip + self.assumptions.coordination_latency;
         let years_f64 = exposed.as_years_f64().max(0.0);
         let move_f64 = self.assumptions.volatility_annual_f64.max(0.0)

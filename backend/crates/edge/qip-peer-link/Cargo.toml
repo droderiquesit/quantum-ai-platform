@@ -12,6 +12,12 @@ repository.workspace = true
 # could be handed it and run coordination on the decision thread again, which
 # is what this crate was cut out of `qip-edge-node` to stop.
 [dependencies]
+# The net-edge model (R12-MESH-5069): origination charges a crossing the
+# expected move over the measured peer round trip through the same
+# calculator the cell's desk prices its own cycles with. Lane 1 depending on
+# the reflex vocabulary is the permitted direction; MESH-013 forbids the
+# reverse.
+qip-arbitrage.workspace = true
 qip-core.workspace = true
 qip-peer.workspace = true
 # ADR 0112: the peer mesh is mutual TLS. `qip_tls` loads the workload

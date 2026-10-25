@@ -865,6 +865,7 @@ dependencies = [
 name = "qip-peer-link"
 version = "0.1.0"
 dependencies = [
+ "qip-arbitrage",
  "qip-core",
  "qip-peer",
  "qip-tls",
