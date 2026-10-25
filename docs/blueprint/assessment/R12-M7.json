@@ -387,9 +387,14 @@
       "backend/crates/apps/qip-fastbrain/src/node.rs::SensePath",
       "backend/crates/runtime/qip-kernel/src/bus_bridge.rs::PlatformBridge",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_lineage.rs::the_fast_brain_path_carries_a_correlation_id_per_record_into_the_log_and_the_journal",
-      "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::one_correlation_id_joins_every_hop_from_the_signal_to_the_ledger_event"
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::one_correlation_id_joins_every_hop_from_the_signal_to_the_ledger_event",
+      "backend/crates/libs/qip-contracts/src/policy.rs DecisionOrigin, PolicyPayload.decision (signed when present, absent from the signing string when not)",
+      "backend/crates/edge/qip-edge/src/cell.rs open_chain copies policy_sequence and decision into ChainOpened",
+      "backend/crates/apps/qip-api/src/mesh.rs pending_policy stamps Platform::decision_origin",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::a_correlation_id_set_at_the_api_is_reachable_from_the_cells_chain_opened_record",
+      "backend/crates/libs/qip-contracts/tests/policy_decision.rs"
     ],
-    "gap": "Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: PolicyPayload cycle and correlation fields and ChainOpened.policy_sequence, with an acceptance walk API to cell to ledger in vertical_slice_correlation.rs.",
+    "gap": "2026-10-25 (lane L6): the join is built and tested end to end in process. Still PARTIAL: (1) the policy reaches a cell only over the mesh, which qip-api serves only when QIP_MESH_CELLS/QIP_MESH_REGIONS are set (the Cloud Run API serves no mesh, R12-RES-10127), and no execution node is deployed, so the join does not run on a shipped binary's default path (bar part 2); (2) the event-fabric PolicyFrame schema-lock sample does not state the decision field, so a retype of DecisionOrigin is caught only by policy_decision.rs's wire assertion; a schema-version bump is the honest fix. Earlier: Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: PolicyPayload cycle and correlation fields and ChainOpened.policy_sequence, with an acceptance walk API to cell to ledger in vertical_slice_correlation.rs.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -400,7 +405,7 @@
     "verification": "acceptance test following one opportunity id through every stage",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement is one trace across brain, model, risk, node, venue, ledger and learning; the cell chain id is derived from cell/session/order and is never linked to the brain's record ids. Desk records now reach the ledger carrying chain_correlation, but the cycle id is not on the wire and the cycle id is still not joined to the cell's. Still not one trace (checked against 84e4e33d). 2026-10-17: FillBooked is journalled under the decision cycle's correlation id, so a restarted or healed desk record keeps it (vertical_slice_ship::a_restart_requeues_each_record_under_the_cycle_that_placed_the_order); the cycle id still is not on the ledger wire. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: One trace id from the brain's decision to the cell order and ledger; learning records not joined."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement is one trace across brain, model, risk, node, venue, ledger and learning; the cell chain id is derived from cell/session/order and is never linked to the brain's record ids. Desk records now reach the ledger carrying chain_correlation, but the cycle id is not on the wire and the cycle id is still not joined to the cell's. Still not one trace (checked against 84e4e33d). 2026-10-17: FillBooked is journalled under the decision cycle's correlation id, so a restarted or healed desk record keeps it (vertical_slice_ship::a_restart_requeues_each_record_under_the_cycle_that_placed_the_order); the cycle id still is not on the ledger wire. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: One trace id from the brain's decision to the cell order and ledger; learning records not joined. 2026-10-25 lane L6 (delegated agent, cherry-picked as 4f50f72a): the cycle's correlation id rides the signed PolicyPayload as an optional DecisionOrigin and the cell copies it, with policy_sequence, into ChainOpened; the acceptance walk goes run_cycle, pending_policy, signed payload, apply_policy, pass, spool ChainOpened, chain correlation, LedgerEvent. Eight mutations each failed a named test (decision or policy_sequence dropped in cell.rs; absent origin moving the signing string; present origin unsigned; skip_serializing_if dropped; mesh.rs stamp removed; cycle-zero refusal disabled; cell inventing an origin). Agent's gates: five crates passed 2542, failed 0; qip-acceptance in batches passed 1606, failed 0; clippy -D warnings clean. Lane gate after integration: qip-kernel/contracts/edge/api/edge-node passed 2546, failed 0. Deploy order: cells before the centre, because an older cell refuses a stamped payload under deny_unknown_fields."
   },
   {
     "id": "R12-TICK-7019",
@@ -1448,9 +1453,11 @@
     "status": "PARTIAL",
     "current": "backend/crates/libs/qip-contracts/src/policy.rs:295 ModelPack; a second ModelPack in backend/crates/runtime/qip-kernel/src/model_serving.rs:242",
     "evidence": [
-      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:288 a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode"
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:288 a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode",
+      "backend/crates/apps/qip-cli/src/model_pack.rs (signing_message_hex, attach_signature, verify, run); main.rs dispatches `model-pack`",
+      "backend/crates/apps/qip-cli/tests/model_pack.rs::a_model_pack_whose_signature_changes_by_one_byte_is_refused_by_qip_model_pack_verify"
     ],
-    "gap": "Decided (ADR 0149): keep one signed contract ModelPack, no body/envelope split; Platform::admit_model_packs already feeds the kernel from QIP_MODEL_PACKS_PATH, failing closed. Not built: the kernel's lineage struct is still named ModelPack (model_serving.rs:307, Platform::model_pack_lineage) rather than ModelSetVersion; LearningDesk::promote_candidate writes no unsigned draft pack; and qip-cli has no model-pack verbs (signing-message, attach-signature, verify) for the publish workflow to call (grep -n 'model-pack' backend/crates/apps/qip-cli/src/main.rs finds nothing). The workflow edit that calls them is a person's. Corrected 2026-10-24.",
+    "gap": "2026-10-25 (lane L5-EDGE): qip-cli now carries the publish workflow's three verbs (model-pack signing-message, attach-signature, verify). Remaining: (1) LearningDesk::promote_candidate in qip-deepbrain writes no unsigned draft pack for those verbs to sign; (2) the kernel's lineage struct is still model_serving::ModelPack, not ModelSetVersion; (3) packs reach a brain only through QIP_MODEL_PACKS_PATH, which no committed environment sets, so no pack travels between brains on a default path (bar part 2).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1458,10 +1465,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts; cargo +1.94.1 test -p qip-cli --test model_pack",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L06 and 2026-10-24 lane T6-MODEL-AGENTS: not implemented. The rename touches the kernel's lineage API and every caller; the CLI verbs need the per-person signing credentials ADR 0110 and 0121 reserve for the release. Test the closure names: an_unsigned_draft_pack_written_at_promotion_is_refused_by_admit_model_packs_and_a_cli_signed_pack_over_the_same_bytes_is_admitted (qip-kernel/tests/release_packs.rs). Kept PARTIAL. 2026-10-24 lane L5-EDGE: read against the requirement text (bar part 4) rather than the row's ADR 0149 restatement: the typed fields and the missing-field decode refusal exist (section27_partial_contracts.rs), but bar part 2 fails on its own: ModelManifest.packs is skipped from the wire while empty and packs load only from QIP_MODEL_PACKS_PATH (qip-api signing.rs MODEL_PACKS_VARIABLE), which no committed environment sets (grep of infrastructure finds nothing), so no pack travels between brains on a default path. Kept PARTIAL."
+    "notes": "2026-10-18 lane L06 and 2026-10-24 lane T6-MODEL-AGENTS: not implemented. The rename touches the kernel's lineage API and every caller; the CLI verbs need the per-person signing credentials ADR 0110 and 0121 reserve for the release. Test the closure names: an_unsigned_draft_pack_written_at_promotion_is_refused_by_admit_model_packs_and_a_cli_signed_pack_over_the_same_bytes_is_admitted (qip-kernel/tests/release_packs.rs). Kept PARTIAL. 2026-10-24 lane L5-EDGE: read against the requirement text (bar part 4) rather than the row's ADR 0149 restatement: the typed fields and the missing-field decode refusal exist (section27_partial_contracts.rs), but bar part 2 fails on its own: ModelManifest.packs is skipped from the wire while empty and packs load only from QIP_MODEL_PACKS_PATH (qip-api signing.rs MODEL_PACKS_VARIABLE), which no committed environment sets (grep of infrastructure finds nothing), so no pack travels between brains on a default path. Kept PARTIAL. 2026-10-25 lane L5-EDGE: qip-cli model-pack verbs built. Mutations fired: verify skips the signature (validate only); attach keeps the old signature; message built under the policy class instead of model-pack. Kept PARTIAL on the three remaining steps in the gap."
   },
   {
     "id": "R12-CONTRACT-7065",
@@ -2397,9 +2404,11 @@
       "backend/crates/runtime/qip-kernel/src/replay_divergence.rs",
       "backend/crates/runtime/qip-kernel/src/platform.rs replay_divergence_holds, issue_capital",
       "backend/crates/runtime/qip-kernel/tests/central.rs::a_twin_that_diverges_from_a_venue_halves_the_grant_of_the_strategy_trading_there_until_it_is_promoted_again",
-      "backend/crates/runtime/qip-kernel/tests/central.rs::a_twin_that_agrees_with_the_venue_holds_no_strategy_trading_there"
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_twin_that_agrees_with_the_venue_holds_no_strategy_trading_there",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_strategy_trading_at_a_cell_venue_whose_twin_misprices_its_fills_is_held",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_twin_that_agrees_with_a_cell_venue_holds_no_strategy_trading_there"
     ],
-    "gap": "2026-10-24 (lane L6): two steps remain. (1) Platform::issue_capital is not reached on a shipped binary's default path past Principal::presence, so the narrowed grant is proven in the kernel test, not in a running binary (AUDIT-5 part 2). (2) The twin scores only the desk's fills, so a strategy trading at a cell's venue is never held; scoring cell fills is the remaining wire. The 100 bps threshold, 10-fill minimum and 0.5 multiplier were approved as written by the owner (docs/blueprint/owner-decisions-2026-10-25.md decision 2).",
+    "gap": "2026-10-24 (lane L6): two steps remain. (1) Platform::issue_capital is not reached on a shipped binary's default path past Principal::presence, so the narrowed grant is proven in the kernel test, not in a running binary (AUDIT-5 part 2). (2) closed 2026-10-25: Platform::ingest_cell_report queues each settled cell fill at a registered venue into the same scoring path (queue_cell_fills, evaluate_cell_fill), deduplicated by CellFillsQueued; a replayed cell report is also refused settlement by CentralPlane (SettledReports). The 100 bps threshold, 10-fill minimum and 0.5 multiplier were approved as written by the owner (docs/blueprint/owner-decisions-2026-10-25.md decision 2).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2410,7 +2419,7 @@
     "verification": "cd backend && cargo test -p qip-kernel --test central a_twin && cargo test -p qip-kernel replay_divergence",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L6 (implemented by a delegated agent, integrated here): cargo test -p qip-kernel --no-fail-fast passed 1062, failed 0. Mutation reproduced here: replacing replay_divergence_holds.insert(strategy, hold) with a no-op failed the divergence test at 'a twin past the threshold at the strategy's venue did not hold its grant' (left 1, right 0.5); restored, cmp clean, 2 passed. The agent also reported seven further mutations each failing its named test (unnarrowed governor decision, escalation check dropped, release never removing the hold, threshold always true, signed error, window bound, multiplier of one). It withdraws no venue (learning.rs's never-withdraws test untouched and passing) and touches no paper-trading layer. Kept PARTIAL on the gap above."
+    "notes": "2026-10-24 lane L6 (implemented by a delegated agent, integrated here): cargo test -p qip-kernel --no-fail-fast passed 1062, failed 0. Mutation reproduced here: replacing replay_divergence_holds.insert(strategy, hold) with a no-op failed the divergence test at 'a twin past the threshold at the strategy's venue did not hold its grant' (left 1, right 0.5); restored, cmp clean, 2 passed. The agent also reported seven further mutations each failing its named test (unnarrowed governor decision, escalation check dropped, release never removing the hold, threshold always true, signed error, window bound, multiplier of one). It withdraws no venue (learning.rs's never-withdraws test untouched and passing) and touches no paper-trading layer. Kept PARTIAL on the gap above. 2026-10-25 lane L6: cell fills scored (delegated agent, cherry-picked as 2e0a8b20). Agent's mutations: deleting the queue_cell_fills call failed at 'LEARN priced 0 of the cell's 12 fills'; scoring twice at 'priced 16 of the cell's 12 fills'; exceeds_threshold always true failed the agreeing-twin premise. The agent found the centre settled a replayed cell report twice; fixed here (see the replay leg)."
   },
   {
     "id": "R12-RES-7105",
