@@ -434,3 +434,113 @@ fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none
     assert!(!announced.trim().is_empty());
     Ok(())
 }
+/// R12-ASSET-4067: a held position's record carries its valuation confidence,
+/// its investment horizon and its expected liquidity, each read from the
+/// figure the platform decides with — and the record refuses where one of
+/// them cannot be stated.
+///
+/// The private fund is the case that carries meaning: its confidence is the
+/// decayed mark's, below one, and its expected exit is the lockup's dated
+/// return of capital, years rather than the catalogue's ninety days. The
+/// horizon is the approved hypothesis's own, the one the thesis's prediction
+/// is dated from. A second process resumed from the same log holds the same
+/// position with no hypothesis on record, and its record refuses naming the
+/// horizon rather than stating one nobody approved.
+///
+/// The failure prevented: the three facts existed in three places — the
+/// valuation plane, the reasoning engine's hypothesis, the liquidity
+/// ladder — and nothing joined them to a holding, so a position held past
+/// its horizon, or on a mark nobody could defend, read like any other.
+///
+/// Mutation: drop the horizon lookup in `Platform::construct_from` (record
+/// no horizon for the sized leg) — the record refuses for want of a horizon
+/// and the first assertion on it fails.
+#[test]
+fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liquidity() -> Result<()>
+{
+    let path = log_path("holding");
+    let fund = "obj-PRIV";
+    let fund_universe = || -> Result<Universe> {
+        let mut universe = Universe::new();
+        universe.insert(private_fund("PRIV")?)?;
+        Ok(universe)
+    };
+    let over = |at: Timestamp| -> Result<Platform> {
+        let config = config().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(at, config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            fund_universe()?,
+            leverage_only(),
+        )
+    };
+    {
+        let mut first = over(start())?;
+        first.observe(tape("PRIV"));
+        let report = first.run_cycle(start());
+        assert!(report.traversed_every_stage(), "{}", report.summarise());
+        assert!(
+            first.positions_at_cost().contains_key(fund),
+            "premise: the cycle opened a position in obj-PRIV: {}",
+            report.summarise()
+        );
+        // Premise: the hypothesis the fund was sized on, and its horizon,
+        // read from the platform's own prediction rather than restated.
+        let prediction = first
+            .predictions()
+            .iter()
+            .find(|p| p.claim.as_ref().is_some_and(|c| c.subject == fund))
+            .cloned()
+            .expect("premise: the approved thesis recorded a prediction on obj-PRIV");
+        let claim = prediction.claim.expect("the prediction carries its claim");
+        let approved_horizon = claim.resolves_at.since(claim.formed_at);
+        assert!(approved_horizon.as_nanos() > 0);
+
+        let record = first.position_holding(fund, start())?;
+        assert_eq!(record.hypothesis(), prediction.hypothesis);
+        assert_eq!(record.horizon(), approved_horizon);
+        let sizing = first.sizing_confidence(fund, start())?;
+        assert_eq!(record.valuation_confidence(), sizing);
+        assert!(
+            record.valuation_confidence() < Decimal::ONE,
+            "premise: the fund's mark is decayed, so the confidence is not trivially one"
+        );
+        // The lockup's dated return: years, not the catalogue's ninety days.
+        assert!(
+            record.expected_exit_days() > 365.0,
+            "the expected exit {} days is the catalogue's estimate, not the lockup's return",
+            record.expected_exit_days()
+        );
+        assert!(
+            report
+                .stage(Stage::Learn)
+                .is_some_and(|learn| learn.detail.contains(
+                    "1 of 1 held position(s) carry valuation confidence, horizon and expected \
+                     liquidity"
+                )),
+            "the LEARN stage did not count the record: {}",
+            report.summarise()
+        );
+    }
+
+    let later = start().saturating_add(Duration::from_hours(1));
+    let second = over(later)?;
+    assert!(
+        second.positions_at_cost().contains_key(fund),
+        "premise: the resumed book holds obj-PRIV"
+    );
+    let refusal = second
+        .position_holding(fund, later)
+        .err()
+        .map(|error| error.message().to_string())
+        .unwrap_or_default();
+    assert!(
+        refusal.starts_with("obj-PRIV is held with no hypothesis horizon on record"),
+        "a resumed position with no approved hypothesis stated a horizon: {refusal:?}"
+    );
+    // And a holding nobody has is refused, not recorded.
+    assert!(second.position_holding("obj-NONE", later).is_err());
+    Ok(())
+}

@@ -1258,6 +1258,14 @@ pub struct Platform {
     /// A record invented at resume would be the platform asserting a purpose
     /// it has no evidence of.
     position_mandates: BTreeMap<String, crate::position_register::PositionMandate>,
+    /// The hypothesis each object was last sized on and that hypothesis's
+    /// horizon, by object id, written by `construct_from` beside
+    /// [`Self::position_mandates`] on the same terms (R12-ASSET-4067). The
+    /// horizon is looked up through the leg's hypothesis ids in the
+    /// justifications DECIDE registered, never defaulted: a leg whose
+    /// hypotheses carry none records nothing here, and the position's record
+    /// then refuses rather than stating a horizon nobody approved.
+    position_horizons: BTreeMap<String, (String, Duration)>,
 }
 
 /// How many announced-but-not-yet-due corporate actions the platform holds.
@@ -5897,6 +5905,7 @@ impl Platform {
             corporate_actions_applied: BTreeSet::new(),
             asset_book: asset_book_opened(initial_equity, now),
             position_mandates: BTreeMap::new(),
+            position_horizons: BTreeMap::new(),
         };
         platform.describe_metrics();
         // Every rule reads as not dormant from assembly, so the series exists
@@ -16516,6 +16525,18 @@ impl Platform {
         // capital to is not the target of anything it holds.
         let mandate = self.user_ledger.desk().as_str().to_string();
         for leg in &outcome.proposal.legs {
+            // Removed rather than left standing where this leg's hypotheses
+            // carry no horizon: a horizon from an earlier construction is not
+            // the horizon of what was sized now.
+            match self.justified_hypotheses.horizon(&leg.hypotheses) {
+                Some(horizon) => {
+                    self.position_horizons
+                        .insert(leg.object_id.as_str().to_string(), horizon);
+                }
+                None => {
+                    self.position_horizons.remove(leg.object_id.as_str());
+                }
+            }
             self.position_mandates.insert(
                 leg.object_id.as_str().to_string(),
                 crate::position_register::PositionMandate::new(
@@ -16599,6 +16620,73 @@ impl Platform {
             );
         }
         Ok(obligations)
+    }
+
+    /// The record of a held position's valuation confidence, investment
+    /// horizon and expected liquidity (R12-ASSET-4067), or a refusal naming
+    /// which of the three cannot be stated.
+    ///
+    /// Each is read from the one place the platform already keeps it, so
+    /// the record cannot disagree with the decision it describes:
+    ///
+    /// * **valuation confidence** is [`Self::sizing_confidence`] — the
+    ///   figure every construction narrows by. A mark past its review date
+    ///   refuses here exactly as it refuses sizing, rather than being
+    ///   reported at some decayed confidence nobody may size against;
+    /// * **horizon** is the horizon of the hypothesis the position was last
+    ///   sized on, looked up through the leg's hypothesis id when it was
+    ///   sized. A position no construction in this process sized — one
+    ///   resumed from the log — has none, and is refused rather than given
+    ///   a default;
+    /// * **expected liquidity** is the catalogue's days to exit raised to
+    ///   the holding's own dated return of capital by
+    ///   [`exit_days_with_forecast`], the same bound the liquidity limits
+    ///   read, so a seven-year lockup is not reported as thirty days.
+    ///
+    /// A position the book does not hold is refused: a record of a holding
+    /// nobody has is a statement about the caller's bookkeeping.
+    pub fn position_holding(
+        &self,
+        object_id: &str,
+        now: Timestamp,
+    ) -> Result<crate::position_register::PositionHolding> {
+        if !self.capital.positions.contains_key(object_id) {
+            return Err(Error::not_found(format!(
+                "the desk holds no position in {object_id}, so there is no holding to record"
+            )));
+        }
+        let confidence = self.sizing_confidence(object_id, now)?;
+        let (hypothesis, horizon) = self.position_horizons.get(object_id).cloned().ok_or_else(
+            || {
+                Error::invalid(format!(
+                    "{object_id} is held with no hypothesis horizon on record — no construction \
+                     in this process sized it — so its investment horizon cannot be stated; \
+                     size it through a construction or unwind it"
+                ))
+            },
+        )?;
+        let reference = self.liquidity_reference.get(object_id).ok_or_else(|| {
+            Error::invalid(format!(
+                "{object_id} is held and the platform holds no liquidity record for it, so its \
+                 expected liquidity cannot be stated; assemble the platform over a universe \
+                 containing it"
+            ))
+        })?;
+        let expected_exit_days = match self.private_forecasts.get(object_id) {
+            Some(forecast) => match forecast.first_return_at(now)? {
+                Some(returns_at) => {
+                    exit_days_with_forecast(reference.days_to_liquidate, returns_at, now)
+                }
+                None => reference.days_to_liquidate,
+            },
+            None => reference.days_to_liquidate,
+        };
+        crate::position_register::PositionHolding::new(
+            confidence,
+            hypothesis,
+            horizon,
+            expected_exit_days,
+        )
     }
 
     /// The mandate and target weight `object_id` was last sized under, or
@@ -16740,6 +16828,10 @@ impl Platform {
                 })?,
             },
             justification,
+            // The hypothesis's own horizon, carried beside the thesis so the
+            // horizon a held position is recorded under is the one review
+            // approved and not a second estimate of it (R12-ASSET-4067).
+            reasoned.hypothesis.horizon,
         ))
     }
 
@@ -19148,6 +19240,31 @@ impl Platform {
                     ));
                 }
             }
+            // And each one's valuation confidence, horizon and expected
+            // liquidity (R12-ASSET-4067): counted on the stage line, and
+            // every position whose record refuses is named as a problem,
+            // because a holding whose horizon or mark nobody can state is
+            // the platform not knowing why it holds it.
+            let held: Vec<String> = self.capital.positions.keys().cloned().collect();
+            let mut recorded = 0usize;
+            for object in &held {
+                match self.position_holding(object, now) {
+                    Ok(_) => recorded += 1,
+                    Err(error) => {
+                        outcome = outcome.with_problem(format!(
+                            "{object}'s holding record cannot be stated: {}",
+                            error.message()
+                        ));
+                    }
+                }
+            }
+            let detail = format!(
+                "{}; {recorded} of {} held position(s) carry valuation confidence, horizon and \
+                 expected liquidity",
+                outcome.detail,
+                held.len()
+            );
+            outcome = StageOutcome { detail, ..outcome };
         }
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);
@@ -25294,6 +25411,7 @@ fn listed_test_universe(symbols: &[&str]) -> Universe {
 /// test could notice, because `synthesise` always supplies a supporting item.
 mod justification {
     use qip_contracts::action::Justification;
+    use qip_core::Duration;
     use qip_core::error::Result;
     use qip_portfolio_engine::construction::ApprovedThesis;
 
@@ -25303,17 +25421,27 @@ mod justification {
     /// beside a [`Justification`] — which [`Justification::of`] alone makes,
     /// and only for grounds naming independent evidence. The proof travels
     /// with the thesis rather than guarding one push site beside it.
+    ///
+    /// The hypothesis's horizon travels the same way (R12-ASSET-4067):
+    /// `ApprovedThesis` carries no horizon, and REASON is the last place the
+    /// hypothesis that states one is in hand.
     #[derive(Clone, Debug)]
     pub(super) struct JustifiedThesis {
         thesis: ApprovedThesis,
         justification: Justification,
+        horizon: Duration,
     }
 
     impl JustifiedThesis {
-        pub(super) fn new(thesis: ApprovedThesis, justification: Justification) -> Self {
+        pub(super) fn new(
+            thesis: ApprovedThesis,
+            justification: Justification,
+            horizon: Duration,
+        ) -> Self {
             Self {
                 thesis,
                 justification,
+                horizon,
             }
         }
 
@@ -25332,10 +25460,12 @@ mod justification {
     }
 
     /// The justifications DECIDE expressed theses on, by hypothesis id, and
-    /// the order they arrived in so the oldest leaves first at the bound.
+    /// the order they arrived in so the oldest leaves first at the bound —
+    /// each beside the hypothesis's horizon, which `construct_from` records a
+    /// held position's horizon from (R12-ASSET-4067).
     #[derive(Clone, Debug, Default)]
     pub(super) struct JustifiedHypotheses {
-        by_hypothesis: std::collections::BTreeMap<String, Justification>,
+        by_hypothesis: std::collections::BTreeMap<String, (Justification, Duration)>,
         arrival: std::collections::VecDeque<String>,
     }
 
@@ -25344,7 +25474,10 @@ mod justification {
             let id = justified.thesis.hypothesis_id.clone();
             if self
                 .by_hypothesis
-                .insert(id.clone(), justified.justification.clone())
+                .insert(
+                    id.clone(),
+                    (justified.justification.clone(), justified.horizon),
+                )
                 .is_none()
             {
                 self.arrival.push_back(id);
@@ -25359,9 +25492,23 @@ mod justification {
         /// The justification of the first of `hypotheses` DECIDE expressed a
         /// thesis on, or `None` when none of them was.
         pub(super) fn resolve(&self, hypotheses: &[String]) -> Option<&Justification> {
-            hypotheses
-                .iter()
-                .find_map(|hypothesis| self.by_hypothesis.get(hypothesis))
+            hypotheses.iter().find_map(|hypothesis| {
+                self.by_hypothesis
+                    .get(hypothesis)
+                    .map(|(justification, _)| justification)
+            })
+        }
+
+        /// The id and horizon of the first of `hypotheses` DECIDE expressed a
+        /// thesis on, or `None` when none of them was — the same lookup as
+        /// [`Self::resolve`], so a leg's horizon and its justification are
+        /// read off one hypothesis.
+        pub(super) fn horizon(&self, hypotheses: &[String]) -> Option<(String, Duration)> {
+            hypotheses.iter().find_map(|hypothesis| {
+                self.by_hypothesis
+                    .get(hypothesis)
+                    .map(|(_, horizon)| (hypothesis.clone(), *horizon))
+            })
         }
     }
 
@@ -25396,6 +25543,9 @@ fn justified(thesis: qip_portfolio_engine::construction::ApprovedThesis) -> Just
             Ground::Evidence("test-evidence".to_string()),
         ])
         .expect("an evidence ground justifies"),
+        // A test thesis's horizon, stated once here so no fixture records a
+        // held position under a horizon nobody wrote down.
+        Duration::from_days(30),
     )
 }
 

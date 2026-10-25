@@ -14,7 +14,7 @@
 //! The types here are what the kernel records; the composition lives on
 //! [`crate::platform::Platform`], because the inputs live there.
 
-use qip_core::Timestamp;
+use qip_core::{Decimal, Duration, Error, Result, Timestamp};
 use qip_financial::cashflow::Commitment;
 use qip_financial::position_record::Declared;
 use serde::{Deserialize, Serialize};
@@ -120,5 +120,79 @@ impl PositionObligations {
     /// The capital commitment the book holds on the instrument.
     pub fn commitments(&self) -> &Declared<Commitment> {
         &self.commitments
+    }
+}
+
+/// A held position's valuation confidence, investment horizon and expected
+/// liquidity, in one record that refuses to exist without all three
+/// (R12-ASSET-4067).
+///
+/// Built only by `Platform::position_holding`, which reads each from the
+/// figure the platform already decides with; see that method for where each
+/// comes from and what refuses.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PositionHolding {
+    valuation_confidence: Decimal,
+    hypothesis: String,
+    horizon: Duration,
+    expected_exit_days: f64,
+}
+
+impl PositionHolding {
+    /// Refuses a confidence outside `(0, 1]`, a horizon that is not
+    /// positive, and an expected exit that is not a finite, non-negative
+    /// number of days — each a figure no reader could act on, which a record
+    /// carrying it would present as though one could.
+    pub(crate) fn new(
+        valuation_confidence: Decimal,
+        hypothesis: impl Into<String>,
+        horizon: Duration,
+        expected_exit_days: f64,
+    ) -> Result<Self> {
+        let hypothesis = hypothesis.into();
+        if !valuation_confidence.is_positive() || valuation_confidence > Decimal::ONE {
+            return Err(Error::invalid(format!(
+                "a valuation confidence of {valuation_confidence} is outside (0, 1]; the record \
+                 carries the sizing confidence as computed, so correct its source"
+            )));
+        }
+        if horizon.as_nanos() <= 0 {
+            return Err(Error::invalid(format!(
+                "hypothesis {hypothesis} states a horizon that is not positive; a position held \
+                 on it has no investment horizon to record"
+            )));
+        }
+        if !expected_exit_days.is_finite() || expected_exit_days < 0.0 {
+            return Err(Error::invalid(format!(
+                "an expected exit of {expected_exit_days} days is not a number of days; correct \
+                 the liquidity record"
+            )));
+        }
+        Ok(Self {
+            valuation_confidence,
+            hypothesis,
+            horizon,
+            expected_exit_days,
+        })
+    }
+
+    /// The fraction in `(0, 1]` sizing narrows this position by.
+    pub fn valuation_confidence(&self) -> Decimal {
+        self.valuation_confidence
+    }
+
+    /// The hypothesis the position was last sized on.
+    pub fn hypothesis(&self) -> &str {
+        &self.hypothesis
+    }
+
+    /// That hypothesis's own horizon.
+    pub fn horizon(&self) -> Duration {
+        self.horizon
+    }
+
+    /// Statistic: days to exit, never money.
+    pub fn expected_exit_days(&self) -> f64 {
+        self.expected_exit_days
     }
 }
