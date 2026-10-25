@@ -7039,12 +7039,19 @@ impl Cell {
                     .map(|sequence| (strategy.to_string(), *sequence))
             })
             .collect();
+        // The payload applied at this instant, not the newest one seen: a
+        // refused payload never replaced `self.policy`, so a chain is
+        // attributed to the decision state the cell was actually sizing
+        // under (ADR 0129 decision 5).
+        let applied = self.policy.as_ref().map(VerifiedPolicy::payload);
         self.journal.record(
             Decision::ChainOpened {
                 correlation: correlation.as_str().to_string(),
                 order_id: order_id.to_string(),
                 pass: self.pass,
                 signals,
+                policy_sequence: applied.map(|payload| payload.sequence),
+                decision: applied.and_then(|payload| payload.decision.clone()),
             },
             now,
         );

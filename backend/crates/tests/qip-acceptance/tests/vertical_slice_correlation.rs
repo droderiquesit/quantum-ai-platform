@@ -664,6 +664,178 @@ fn a_cell_with_no_session_opens_no_chain_link_and_the_epoch_is_set_once_and_earl
     Ok(())
 }
 
+// --- the centre: the API's correlation id, into the cell's chain ---------------
+
+/// A centre with nothing configured but one leverage limit, as
+/// `region_share.rs` builds one: enough for `run_cycle` to run every stage
+/// and for `pending_policy` to build a payload, which is all the join needs.
+fn centre() -> Result<qip_kernel::Platform> {
+    let config = qip_kernel::PlatformConfig::default();
+    let (context, _clock) = qip_core::Context::deterministic(t(0), config.seed);
+    let limits = qip_risk::limits::LimitSet::new("correlation-test").with(
+        qip_risk::limits::Limit::new(
+            "max-leverage",
+            qip_risk::limits::LimitKind::MaxLeverage { limit: 2.0 },
+        )
+        .with_rationale("gross exposure is capped at 2x equity"),
+    );
+    qip_kernel::Platform::new(
+        config,
+        context,
+        qip_observability::Telemetry::silent(),
+        qip_financial::universe::Universe::new(),
+        limits,
+    )
+}
+
+#[test]
+fn a_correlation_id_set_at_the_api_is_reachable_from_the_cells_chain_opened_record() -> Result<()> {
+    // R12-OBS-9154 and R12-OBS-7018 (ADR 0129 decision 5). Until the policy
+    // payload carried the cycle it was issued from, the correlation id
+    // `POST /cycle` returns named every central record of that cycle and no
+    // cell record at all: the centre's lineage ids and the cell's chain ids
+    // were two id spaces with nothing joining them, so "which central
+    // decision state was this order sent under" had no answer but a
+    // timestamp guess.
+    //
+    // HOP: the API. `POST /cycle` runs `Platform::run_cycle` and returns the
+    // report's `correlation_id`; the route then builds policy with
+    // `pending_policy` under the same lock (`qip-api/src/routes.rs`). This
+    // is that sequence, minus the socket.
+    let mut platform = centre()?;
+    let report = platform.run_cycle(t(4));
+    assert_eq!(report.cycle, 1, "premise: the first cycle ran");
+    let api_correlation = report.correlation_id.clone();
+    assert!(!api_correlation.as_str().is_empty());
+
+    // HOP: the cycle into the payload, by the publisher the API runs.
+    let pending =
+        qip_api::mesh::pending_policy(&mut platform, [CELL.to_string()].into_iter(), None, t(5));
+    assert_eq!(pending.payloads.len(), 1, "one cell, one payload");
+    let (cell, published) = pending.payloads.into_iter().next().expect("a payload");
+    assert_eq!(cell, CELL);
+    let origin = published
+        .decision
+        .clone()
+        .expect("the publisher stamped no decision origin on a payload issued after a cycle");
+    assert_eq!(origin.cycle, report.cycle);
+    assert_eq!(origin.correlation, api_correlation);
+
+    // HOP: the payload into the cell. The grant this fixture's strategy
+    // trades under was issued by the test, not by the platform's plane, so
+    // the payload carries it in slot 7 the way `share_policy` does; the
+    // publisher's own origin is left exactly as it was stamped, and the
+    // payload is signed after both, so the cell verifies what it applies.
+    let grant = grant_with(dec!("1000000"), dec!("100000"), dec!("50000"))?;
+    let named = grant.signature().to_string();
+    let (mut node, mut gateway, mut feed) = node(grant, false)?;
+    let mut payload = published;
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec![named],
+        },
+        t(5),
+    );
+    let sequence = payload.sequence;
+    node.cell.apply_policy(
+        VerifiedPolicy::verify(payload.signed(ENVELOPE_KEY)?, ENVELOPE_KEY, CELL, t(5))?,
+        t(5),
+    )?;
+    assert_eq!(node.cell.policy_sequence(), Some(sequence));
+    let mut fabric = fabric("api-origin");
+    let session = fabric.writer.session();
+    node.cell.set_chain_epoch(session)?;
+
+    // HOP: the cell's chain, read back off the spool the fabric ships.
+    let report_pass = one_pass(&mut node, &mut gateway, &mut feed, t(10))?;
+    assert_eq!(report_pass.orders.len(), 1, "{:?}", report_pass.refusals);
+    let order_id = report_pass.orders[0].order_id.clone();
+    ship_and_drain(&mut node, &mut fabric, 11)?;
+    let journal = journal_records(&fabric);
+    let opened: Vec<(
+        Option<u64>,
+        Option<qip_contracts::policy::DecisionOrigin>,
+        String,
+    )> = journal
+        .iter()
+        .filter_map(|(_, entry)| match &entry.decision {
+            Recorded::ChainOpened {
+                correlation,
+                order_id: opened_for,
+                policy_sequence,
+                decision,
+                ..
+            } if *opened_for == order_id => {
+                Some((*policy_sequence, decision.clone(), correlation.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opened.len(), 1, "premise: one ChainOpened for the order");
+    let (policy_sequence, decision, chain) = opened.into_iter().next().expect("one");
+    assert_eq!(
+        policy_sequence,
+        Some(sequence),
+        "ChainOpened does not name the payload the cell had applied"
+    );
+    let decision = decision.expect("ChainOpened carries no decision origin");
+    assert_eq!(
+        decision.correlation, api_correlation,
+        "the cell's ChainOpened does not reach the correlation id the API returned"
+    );
+    assert_eq!(decision.cycle, report.cycle);
+
+    // HOP: the chain into the ledger, so the one walk is API -> cycle ->
+    // cell -> ledger event, each step a field and none a timestamp.
+    assert_eq!(chain, chain_correlation(CELL, session, &order_id).as_str());
+    let (_, outcome) = filled_order(&outcome_records(&fabric));
+    let event = post(&PaperFill::try_from(&outcome)?)?;
+    let source = event.source();
+    assert_eq!(
+        chain_correlation(&source.cell, source.session, &source.order_id).as_str(),
+        chain,
+        "ledger event -> chain does not land on the ChainOpened that names the API's id"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_payload_naming_no_cycle_leaves_chain_opened_without_an_origin_rather_than_an_invented_one()
+-> Result<()> {
+    // The other half of the same join. A payload from a centre that has run
+    // no cycle, or was built before the field existed, names no origin, and
+    // the cell must say so rather than fill one in: a guessed origin is a
+    // join that lands on the wrong cycle while looking exact. The sequence
+    // is still named, because the cell did apply that payload. An absent
+    // origin is off the wire, so the entry digests as one sealed before the
+    // field existed would.
+    let (mut node, mut gateway, mut feed, mut fabric, _) = wired("no-origin")?;
+    let applied = node.cell.policy_sequence();
+    assert_eq!(applied, Some(1), "premise: the share policy is applied");
+    let report = one_pass(&mut node, &mut gateway, &mut feed, t(10))?;
+    assert_eq!(report.orders.len(), 1, "{:?}", report.refusals);
+    ship_and_drain(&mut node, &mut fabric, 11)?;
+    let opened: Vec<JournalEntry> = journal_records(&fabric)
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .filter(|entry| matches!(entry.decision, Recorded::ChainOpened { .. }))
+        .collect();
+    assert_eq!(opened.len(), 1, "premise: the order opened a chain");
+    let Recorded::ChainOpened {
+        policy_sequence,
+        decision,
+        ..
+    } = &opened[0].decision
+    else {
+        unreachable!("filtered to ChainOpened above")
+    };
+    assert_eq!(*policy_sequence, applied);
+    assert!(decision.is_none(), "an origin was invented: {decision:?}");
+    let wire = serde_json::to_string(&opened[0].decision).expect("serialisable");
+    assert!(!wire.contains("\"decision\""), "{wire}");
+    Ok(())
+}
+
 /// `gateway`, permitted to list each of `objects` on demand and to seed
 /// liquidity into it: a recorded venue, product and jurisdiction permission
 /// for each action on each instrument (R12-COVERAGE-5107). `Seed` as well as
