@@ -59,7 +59,10 @@ use crate::conduct_brain::{
     CommunicationDraft, ConductPolicy, Disclosure, EvidenceCitation, MANDATORY_RULES,
 };
 use crate::goal::{GoalClass, GoalSpec, GoalSpecDraft};
-use crate::guard::{ActionGuard, ApprovalDecl, GuardPolicy, PassDecl, Voice, voice_fingerprint};
+use crate::guard::{
+    ActionGuard, ApprovalDecl, ChannelHealth, GuardPolicy, HealthDimension, HealthOutcome,
+    PassDecl, Voice, voice_fingerprint,
+};
 use crate::outbox::{
     DRAFT_TOOL, DraftContext, DraftingAdapter, OUTBOX_CHANNEL, OutboxDraft, drafts,
 };
@@ -297,6 +300,9 @@ pub struct AmbientIntake {
     config: IntakeConfig,
     drafted: BTreeSet<String>,
     retry: VecDeque<Pending>,
+    /// Channel-health verdicts not yet taken; see
+    /// [`Self::take_channel_health`].
+    health: BTreeMap<(HealthDimension, HealthOutcome), u64>,
 }
 
 impl AmbientIntake {
@@ -411,11 +417,26 @@ impl AmbientIntake {
             config,
             drafted,
             retry: VecDeque::new(),
+            health: BTreeMap::new(),
         })
     }
 
     pub fn guard(&self) -> &ActionGuard {
         &self.guard
+    }
+
+    /// The channel-health verdicts since the last call, counted by dimension
+    /// and outcome, and cleared (R12-OBS-7132). The channel is
+    /// [`OUTBOX_CHANNEL`], the only one this door drafts on. Every
+    /// preflight the guard ran contributes the dimensions it reached; every
+    /// adapter call contributes [`HealthDimension::Reach`]. At most ten
+    /// keys, so a caller that never drains it holds a bounded map.
+    pub fn take_channel_health(&mut self) -> BTreeMap<(HealthDimension, HealthOutcome), u64> {
+        std::mem::take(&mut self.health)
+    }
+
+    fn note_health(&mut self, dimension: HealthDimension, outcome: HealthOutcome) {
+        *self.health.entry((dimension, outcome)).or_default() += 1;
     }
 
     pub fn outbox(&self) -> &EventLog {
@@ -703,7 +724,22 @@ impl AmbientIntake {
         // The drafting tool informs a person; it is a communication, and the
         // conduct gate's step check judges it as one.
         let priced = [(step.clone(), DRAFT_COST, Method::Communication)];
-        let (mut chain, cleared) = match self.guard.preflight(sub_goal, &priced) {
+        let mut health = ChannelHealth::default();
+        let guard = &self.guard;
+        let preflight = guard.preflight_observed(sub_goal, &priced, &mut health);
+        // Recorded at the seam where the guard decided, before its verdict
+        // is acted on, so a refused draft's failing dimension is counted as
+        // surely as a cleared one's passes.
+        for (channel, dimension, outcome) in health.verdicts() {
+            if channel != OUTBOX_CHANNEL {
+                return Err(Error::guard(format!(
+                    "the door drafts only on `{OUTBOX_CHANNEL}` and the guard judged a draft on \
+                     `{channel}`; nothing was written"
+                )));
+            }
+            self.note_health(dimension, outcome);
+        }
+        let (mut chain, cleared) = match preflight {
             Ok(passed) => passed,
             Err(refusal) => return Ok(Admission::Withheld(refusal.message().to_string())),
         };
@@ -751,10 +787,16 @@ impl AmbientIntake {
         // The single adapter call in this module, made only after preflight
         // and authorise cleared: the same order `engine::execute` keeps.
         match crate::engine::Adapter::call(&mut self.adapter, step) {
-            Ok(()) => Ok(Admission::Written(EventId::from_string(format!(
-                "evt-outbox-{draft_id}"
-            )))),
-            Err(error) => Ok(Admission::WriteFailed(error.message().to_string())),
+            Ok(()) => {
+                self.note_health(HealthDimension::Reach, HealthOutcome::Pass);
+                Ok(Admission::Written(EventId::from_string(format!(
+                    "evt-outbox-{draft_id}"
+                ))))
+            }
+            Err(error) => {
+                self.note_health(HealthDimension::Reach, HealthOutcome::Fail);
+                Ok(Admission::WriteFailed(error.message().to_string()))
+            }
         }
     }
 }
