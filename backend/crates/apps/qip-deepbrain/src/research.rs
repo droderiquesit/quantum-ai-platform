@@ -69,9 +69,10 @@ use qip_expansion::desk::{
     Admission, DeskConfig, ExpansionDesk, SweepReport, declared_cost, task_kind,
 };
 use qip_expansion::detectors::{
-    Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters, contradictions,
-    coverage, incompetent_specialists, low_confidence, model_drift, model_error_rate,
-    refusal_clusters, repeated_vetoes_priced, split_by_wanting, unexplained_residuals_priced,
+    ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
+    contested_evidence, contradictions, coverage, incompetent_specialists, low_confidence,
+    missing_causal_links, model_drift, model_error_rate, refusal_clusters, repeated_vetoes_priced,
+    split_by_wanting, unexplained_residuals_priced,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -629,6 +630,19 @@ pub struct ResearchRound {
     pub evidence_held: usize,
     /// Poisoning findings over the world fabric, by class.
     pub poisoning: BTreeMap<&'static str, usize>,
+    /// Knowledge deltas the kernel journaled on `world_model.updated` that
+    /// this sweep decoded (R12-EXPAND-6039), and how many of them named a
+    /// conflict: the cross-brain record read, not merely written.
+    pub knowledge_deltas: usize,
+    pub knowledge_conflicts: usize,
+    /// Why the deltas could not be read, where they could not: the sweep
+    /// then ran over none of them, and says so rather than failing.
+    pub knowledge_deltas_refused: Option<String>,
+    /// Claim keys the world fabric held an unresolved contest on when the
+    /// sweep read it (R12-EXPAND-6011), and of their subjects, how many the
+    /// causal graph holds no live claim into.
+    pub contested_claims: usize,
+    pub unexplained_subjects: usize,
     /// Information requests a better-ranked request left no budget for.
     pub info_outranked: usize,
     /// DECIDE's uncertain decisions priced into an information request this
@@ -1630,6 +1644,47 @@ impl ResearchLoop {
             *round.poisoning.entry(finding.class.as_str()).or_default() += 1;
             observations.push(poisoning_observation(&finding));
         }
+        // --- contested evidence, and the links that would settle it -------
+        // The kernel's knowledge deltas are decoded from the log rather than
+        // handed over in memory (R12-EXPAND-6039): the deep brain reads the
+        // same record a second brain would, so the hop is the one it tests.
+        // A contest the fabric still holds is a data gap — a source that
+        // would settle it is wanting — and a contested subject the causal
+        // graph holds no live claim into is a causal gap beside it
+        // (R12-EXPAND-6011): two detectors, because until 2026-10-25 both
+        // were read off one direction-of-price split and a disagreement
+        // between sources about a fact raised nothing at all.
+        // A delta that does not decode is counted on the round and the
+        // sweep goes on without the deltas: the kernel refuses to rebuild a
+        // fabric over such a frame, but a sweep that stopped on it would
+        // disable every other detector for as long as the log retained one
+        // bad frame, which is a louder failure than the one it reports.
+        let deltas = match platform.knowledge_deltas() {
+            Ok(deltas) => deltas,
+            Err(error) => {
+                round.knowledge_deltas_refused = Some(error.message().to_string());
+                Vec::new()
+            }
+        };
+        round.knowledge_deltas = deltas.len();
+        round.knowledge_conflicts = deltas.iter().filter(|d| !d.conflicts.is_empty()).count();
+        let contested: Vec<ContestedKey> = platform
+            .contested_claims(&deltas)
+            .into_iter()
+            .map(|claim| ContestedKey {
+                subject: claim.key.subject,
+                attribute: claim.key.attribute,
+                hypotheses: claim.hypotheses,
+                deltas: claim.deltas,
+            })
+            .collect();
+        round.contested_claims = contested.len();
+        observations.extend(contested_evidence(&contested));
+        let explained =
+            platform.causally_explained(contested.iter().map(|c| c.subject.as_str()), now);
+        let missing = missing_causal_links(&contested, &explained);
+        round.unexplained_subjects = missing.len();
+        observations.extend(missing);
 
         // --- the market's specialist proposals -----------------------------
         if let Some(calibration) = platform.calibration()
