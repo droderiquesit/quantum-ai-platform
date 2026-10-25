@@ -1,6 +1,10 @@
 //! What the ledger of record says is withheld from deployable capital:
 //! margin booked, collateral pledged, and cash owed and not yet settled
-//! (R12-CAPITAL-4087).
+//! (R12-CAPITAL-4087). It lives in `qip-contracts` rather than `qip-capital`
+//! (R12-CAPITAL-1099) because the ledger brain, `qip-ledgerd`, produces it:
+//! ADR 0127 lets one brain meet another only through contracts, and the
+//! ledger depending on the capital brain for its own read model was the one
+//! edge that broke that.
 //!
 //! The survival waterfall in `qip-kernel` withholds margin, collateral and
 //! settlement before it releases anything to opportunity. Until this module
@@ -48,7 +52,7 @@
 //! skipping it reads it as zero, and this view holds no conversion to say
 //! what it is worth.
 
-use qip_contracts::ledger::Account;
+use super::Account;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
