@@ -74,9 +74,21 @@ fn delay_ns(index: u64) -> i64 {
 fn tick(index: u64) -> Result<Record> {
     let venue_time = Timestamp::from_millis(venue_ms(index));
     let receive_time = Timestamp::from_nanos(venue_time.as_nanos() + delay_ns(index));
+    tick_at("XLON", index + 1, venue_time, receive_time)
+}
+
+/// One tick of `venue`'s feed, numbered `sequence`, stamped by the venue at
+/// `venue_time` and received at `receive_time`, stating
+/// [`OWN_UNCERTAINTY_NS`] of clock error of its own.
+fn tick_at(
+    venue: &str,
+    sequence: u64,
+    venue_time: Timestamp,
+    receive_time: Timestamp,
+) -> Result<Record> {
     let message = MarketMessage::new(
         ObjectId::from_string("obj-ACME"),
-        Origin::new(VenueId::new("XLON"), "simulated-depth", 0, index + 1),
+        Origin::new(VenueId::new(venue), "simulated-depth", 0, sequence),
         MessageBody::LevelSet {
             side: BookSide::Bid,
             price: Decimal::from_int(100),
@@ -102,7 +114,7 @@ fn tick(index: u64) -> Result<Record> {
     )?;
     let payload = serde_json::to_value(&event)?;
     let payload_hash = sha256_hex(qip_core::canonical::canonical_json(&payload).as_bytes());
-    let id = format!("edge-1/clock/{index}");
+    let id = format!("edge-1/clock/{venue}/{sequence}");
     let any = AnyEvent {
         event_id: EventId::from_string(id.clone()),
         topic: MARKET_EVENT_APPLIED.topic,
@@ -129,6 +141,7 @@ fn drained_into(lake: &Arc<MemoryBlobStore>) -> Result<Vec<serde_json::Value>> {
     let mut sink = LakeSink::new(
         Arc::clone(lake) as Arc<dyn BlobStore>,
         "edge-1",
+        "europe-west2",
         default_retention(),
         SegmentCodec::Identity,
     )?;
@@ -328,5 +341,258 @@ fn reading_the_lake_back_returns_each_ticks_disciplined_clock() -> Result<()> {
             "line {index}: the replayed clock is not the one the lake was written with"
         );
     }
+    Ok(())
+}
+
+/// The region the sink is built for in this suite.
+const REGION: &str = "europe-west2";
+
+/// `records` through `sink` as one P2 batch at spool `offset`, and every
+/// lake line `lake` then holds, keyed by venue and the feed's sequence.
+/// Raw slots (`.raw`, ADR 0181) are skipped: they hold the venue's bytes,
+/// not lines.
+fn delivered(
+    sink: &mut LakeSink,
+    lake: &MemoryBlobStore,
+    offset: u64,
+    records: Vec<Record>,
+) -> Result<std::collections::BTreeMap<(String, u64), serde_json::Value>> {
+    let batch = Batch::new(
+        MessageType::Data,
+        QosClass::P2MarketJournal.batch_schema_id(),
+        1,
+        PayloadCodec::CanonicalJson,
+        records,
+    )?;
+    sink.deliver(offset, QosClass::P2MarketJournal, &batch)?;
+    let mut lines = std::collections::BTreeMap::new();
+    for key in lake.list("lake/class=market/")? {
+        if key.ends_with(".raw") {
+            continue;
+        }
+        let body = lake.get(&key)?.expect("a listed segment is readable");
+        for line in String::from_utf8(body).expect("canonical JSON").lines() {
+            let line: serde_json::Value = serde_json::from_str(line)?;
+            let event: MarketEvent = serde_json::from_value(line["event"].clone())?;
+            lines.insert(
+                (
+                    event.origin().venue.as_str().to_string(),
+                    event.origin().sequence,
+                ),
+                line,
+            );
+        }
+    }
+    Ok(lines)
+}
+
+/// A sink for cell `edge-1` in [`REGION`] over `lake`.
+fn sink_over(lake: &Arc<MemoryBlobStore>) -> Result<LakeSink> {
+    LakeSink::new(
+        Arc::clone(lake) as Arc<dyn BlobStore>,
+        "edge-1",
+        REGION,
+        default_retention(),
+        SegmentCodec::Identity,
+    )
+}
+
+/// R12-TICK-2048: two venues' ticks are stamped in the lake with the order
+/// `qip_sequencing::align` supports across the two partitions, and with no
+/// more order than that.
+///
+/// Every tick here states half a millisecond of uncertainty and arrives
+/// before the discipline trusts an estimate. The combined uncertainty of any
+/// two of them is therefore exactly 1 ms. The stamps sit on whole
+/// milliseconds because a `Timestamp` crosses the spool as RFC 3339 at
+/// millisecond resolution. The figures are worked by hand, and they put a
+/// tick on each side of the bound:
+///
+/// - XLON #1 at `base`: nothing else has been seen, so it is aligned against
+///   nothing;
+/// - XPAR #1 at `base + 1 ms`: exactly the combined uncertainty from XLON #1.
+///   The two intervals touch, so the result is `unordered`, not an order;
+/// - XPAR #2 at `base + 2 ms`: 2 ms after XLON #1, outside 1 ms, so XLON #1
+///   came `before`. XPAR's own earlier tick is not listed: a partition is
+///   aligned against the others, and its own order is `arrival_order`;
+/// - XLON #2 at `base + 3 ms`: 1 ms after XPAR #2, the partition's latest
+///   tick rather than its first, so `unordered`.
+///
+/// Without this stamp the only order across partitions is the one a reader
+/// gets by sorting on a timestamp column, and that sort ranks XPAR #1 after
+/// XLON #1 when the two clocks cannot support it. A lead/lag model trained
+/// on that order learns clock error as a reaction.
+///
+/// Mutation: in `LakeSink::align_across`, return an empty array instead of
+/// the alignments (drop the cross-partition stamp). XPAR #1's line fails:
+/// it carries no entry for XLON.
+#[test]
+fn two_venues_ticks_within_combined_uncertainty_are_lake_stamped_unordered_and_outside_it_ordered()
+-> Result<()> {
+    let lake = Arc::new(MemoryBlobStore::new());
+    let mut sink = sink_over(&lake)?;
+    let base = Timestamp::from_millis(venue_ms(0));
+    let at = |offset_ns: i64| Timestamp::from_nanos(base.as_nanos() + offset_ns);
+    let received = |offset_ns: i64| at(offset_ns + ONE_MS);
+    let records = vec![
+        tick_at("XLON", 1, at(0), received(0))?,
+        tick_at("XPAR", 1, at(ONE_MS), received(ONE_MS))?,
+        tick_at("XPAR", 2, at(2 * ONE_MS), received(2 * ONE_MS))?,
+        tick_at("XLON", 2, at(3 * ONE_MS), received(3 * ONE_MS))?,
+    ];
+    let lines = delivered(&mut sink, &lake, 1, records)?;
+    assert_eq!(lines.len(), 4, "premise: all four ticks reached the lake");
+    for (key, line) in &lines {
+        // Premise: the hand-worked figures assume every tick was placed by
+        // its own stated uncertainty, before any estimate was trusted.
+        assert_eq!(
+            line["clock"]["uncertainty_ns"].as_i64(),
+            Some(OWN_UNCERTAINTY_NS),
+            "{key:?}: premise: placed by its own uncertainty: {line}"
+        );
+        assert_eq!(line["clock_source"], "venue_stated", "{key:?}: {line}");
+        assert_eq!(line["region"], REGION, "{key:?}: {line}");
+        assert_eq!(line["cell"], "edge-1", "{key:?}: {line}");
+    }
+    let xlon = "XLON/simulated-depth/0/obj-ACME";
+    let xpar = "XPAR/simulated-depth/0/obj-ACME";
+    let stamp = |venue: &str, sequence: u64| {
+        lines[&(venue.to_string(), sequence)]["cross_partition"].clone()
+    };
+
+    assert_eq!(
+        stamp("XLON", 1),
+        serde_json::json!([]),
+        "the first tick of the session has no other partition to be aligned against"
+    );
+    assert_eq!(
+        stamp("XPAR", 1),
+        serde_json::json!([{
+            "partition": xlon,
+            "sequence": 1,
+            "order_of_other": "unordered",
+            "lag_ns": ONE_MS,
+            "lag_uncertainty_ns": ONE_MS,
+            "other_known_at_arrival": true,
+        }]),
+        "1 ms apart on clocks each known to 0.5 ms touches the bound and is not an order"
+    );
+    assert_eq!(
+        stamp("XPAR", 2),
+        serde_json::json!([{
+            "partition": xlon,
+            "sequence": 1,
+            "order_of_other": "before",
+            "lag_ns": 2 * ONE_MS,
+            "lag_uncertainty_ns": ONE_MS,
+            "other_known_at_arrival": true,
+        }]),
+        "2 ms apart on clocks each known to 0.5 ms is an order, and XPAR's own earlier tick \
+         is not another partition"
+    );
+    assert_eq!(
+        stamp("XLON", 2),
+        serde_json::json!([{
+            "partition": xpar,
+            "sequence": 2,
+            "order_of_other": "unordered",
+            "lag_ns": ONE_MS,
+            "lag_uncertainty_ns": ONE_MS,
+            "other_known_at_arrival": true,
+        }]),
+        "aligned against the other partition's latest tick, not its first"
+    );
+    Ok(())
+}
+
+/// R12-TICK-2048: every lake line names the region and cell that captured
+/// it and the clock its normalized instant came from. The recorded session
+/// above crosses the discipline's threshold at line 15, so the same feed's
+/// lines name two different clocks, and that difference is what this test
+/// checks.
+///
+/// Mutation: in `clock_source`, return `venue_stated` for every placed tick.
+/// Line 15 fails (left "venue_stated", right "offset_estimate").
+#[test]
+fn every_lake_line_names_its_region_its_cell_and_the_clock_its_instant_came_from() -> Result<()> {
+    let lines = drained()?;
+    assert_eq!(
+        lines.len() as u64,
+        TICKS,
+        "premise: every tick reached the lake"
+    );
+    for (index, line) in (0u64..).zip(&lines) {
+        assert_eq!(line["region"], REGION, "line {index}: {line}");
+        assert_eq!(line["cell"], "edge-1", "line {index}: {line}");
+        let expected = if index + 1 < MIN_SAMPLES {
+            "venue_stated"
+        } else {
+            "offset_estimate"
+        };
+        assert_eq!(line["clock_source"], expected, "line {index}: {line}");
+    }
+    Ok(())
+}
+
+/// The cross-partition working set is bounded (R12-TICK-2048). One more
+/// partition than [`MAX_ALIGNED_PARTITIONS`] (one more again, so eviction
+/// runs twice) leaves the sink holding exactly the bound. No line is aligned
+/// against more partitions than the bound, and the partition silent longest
+/// is the one dropped. An unbounded map keyed by venue and instrument would
+/// grow with every instrument a session ever touched, on a thread whose
+/// stall halts the cell.
+///
+/// Mutation: skip the eviction in `LakeSink::align_across`. The sink holds
+/// the bound plus two and the first assertion fails.
+#[test]
+fn the_cross_partition_alignment_holds_at_most_its_bound_of_partitions() -> Result<()> {
+    use qip_edge_node::event_fabric::drain::MAX_ALIGNED_PARTITIONS;
+
+    let lake = Arc::new(MemoryBlobStore::new());
+    let mut sink = sink_over(&lake)?;
+    let venues = MAX_ALIGNED_PARTITIONS + 2;
+    let records = (0..venues)
+        .map(|index| {
+            let venue_time = Timestamp::from_millis(venue_ms(index as u64));
+            let receive_time = Timestamp::from_nanos(venue_time.as_nanos() + ONE_MS);
+            tick_at(&format!("XV{index:04}"), 1, venue_time, receive_time)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let lines = delivered(&mut sink, &lake, 1, records)?;
+    assert_eq!(
+        lines.len(),
+        venues,
+        "premise: every venue's tick reached the lake"
+    );
+    assert_eq!(
+        sink.aligned_partitions(),
+        MAX_ALIGNED_PARTITIONS,
+        "the sink holds more partitions than its bound"
+    );
+    for (key, line) in &lines {
+        let entries = line["cross_partition"]
+            .as_array()
+            .expect("a placed tick's stamp is an array");
+        assert!(
+            entries.len() <= MAX_ALIGNED_PARTITIONS,
+            "{key:?} was aligned against {} partitions",
+            entries.len()
+        );
+    }
+    let last = lines[&(format!("XV{:04}", venues - 1), 1)]["cross_partition"]
+        .as_array()
+        .expect("a placed tick's stamp is an array")
+        .iter()
+        .map(|entry| entry["partition"].as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(last.len(), MAX_ALIGNED_PARTITIONS);
+    assert!(
+        !last.iter().any(|name| name.starts_with("XV0000/")),
+        "the partition silent longest was kept and a later one dropped"
+    );
+    assert!(
+        last.iter().any(|name| name.starts_with("XV0001/")),
+        "premise: only the one oldest partition had left when the last tick was aligned"
+    );
     Ok(())
 }
