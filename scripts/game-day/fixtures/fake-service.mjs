@@ -7,11 +7,26 @@
  * before it syncs would. On start it resumes from the persisted count.
  * `FAKE_UNHEALTHY_FILE`, when it exists, turns `/health` into 503.
  *
+ * With `FAKE_EXIT_AFTER_MS` set it is instead a one-shot load process, the
+ * shape `qip event-fabric produce` has to the harness: it serves nothing,
+ * prints a `RESULT {json}` line after that many milliseconds and exits with
+ * `FAKE_EXIT_CODE` (default 0).
+ *
  * Test fixture only. Not a model of any platform binary.
  */
 import { createServer } from "node:http";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
+if (process.env.FAKE_EXIT_AFTER_MS !== undefined) {
+  setTimeout(() => {
+    console.log(`RESULT ${JSON.stringify({ attempted: 3, admitted: 3, refused: {} })}`);
+    process.exit(Number(process.env.FAKE_EXIT_CODE ?? "0"));
+  }, Number(process.env.FAKE_EXIT_AFTER_MS));
+} else {
+  serve();
+}
+
+function serve() {
 const port = Number(process.env.FAKE_PORT);
 const state = process.env.FAKE_STATE;
 const every = Number(process.env.FAKE_PERSIST_EVERY ?? "1");
@@ -41,3 +56,4 @@ createServer((request, response) => {
   response.writeHead(unhealthy ? 503 : 200, { "content-type": "application/json" });
   response.end(JSON.stringify({ status: unhealthy ? "not_ready" : "ready" }));
 }).listen(port, "127.0.0.1");
+}

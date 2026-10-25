@@ -41,6 +41,7 @@ order-entry acknowledgement.
 | `ledgerd-loss` | SIGKILL `qip-ledgerd` | the cell keeps running passes; the broker keeps serving without its consumer; the ledger restarts | RTO 10 s, RPO 0 on the outcomes stream |
 | `region-isolation` | SIGSTOP `qip-fabricd` — the link to the centre hangs rather than refuses | the cell keeps deciding locally and does not halt; the broker answers again on SIGCONT with what it had | RTO 10 s, RPO 0 |
 | `stale-policy` | the cell's polled control wire (the halt flag's directory) vanishes, as a lost mount would | the cell treats the stale wire as engaged and halts (§46.2), and runs again once the wire reads | RTO 10 s |
+| `frozen-sink` | SIGSTOP `qip-ledgerd`, the P1 outcomes stream's consumer, while `qip event-fabric produce` loads P0, P1 and P2 at stated rates (R12-RES-10153) | P0 and P1 keep being admitted with zero refusals of either over the whole drill; only the P2 producer driven past its own byte quota is throttled (`quota`); `qip-fabricd`'s peak resident set stays under 64 MiB; the resumed ledger commits again and is back within 4 batches of the P1 high watermark | RTO 10 s, RPO 0 on the P1 stream, memory ceiling 65536 KiB |
 
 ## Running one
 
@@ -50,6 +51,9 @@ node scripts/game-day/harness.mjs run \
   --scenario scripts/game-day/scenarios/broker-loss.json \
   --bin backend/target/debug --out docs/ops/game-days/results
 ```
+
+`frozen-sink` also needs the operator CLI, whose `event-fabric produce` is
+its load: `cargo build -p qip-fabricd -p qip-ledgerd -p qip-cli`.
 
 Pass `--commit <sha>` when the binaries were built from a commit other than
 the checkout's HEAD. The process logs are kept in the scratch directory the
@@ -71,6 +75,49 @@ The files are `results/2026-10-11-*.json`. These are a **local** baseline:
 single host, loopback, debug builds, one partition. They say the recovery
 logic works and how long it takes on a laptop; they say nothing about a
 deployed node, and no runbook may quote them as a production RTO.
+
+**Ran** 2026-10-25, `frozen-sink`, against debug builds of `qip-fabricd`,
+`qip-ledgerd` and `qip` from `b4d00759` plus the change that records it
+(the binaries' digests are in the result), on one Linux host, every probe on
+loopback, the committed `streams.local.json` unchanged. Verdict **met**:
+
+| Measure | Value |
+|---|---|
+| ledger pause detected | 2004 ms (the probe's own 2 s timeout) |
+| `rto_ms` — resume to ledger ready, committing, and within 4 batches of the P1 high watermark | 224 |
+| P1 high watermark at the pause / when recovery was first read | 16 / 80 batches — 64 batches backed up behind the frozen ledger and were drained |
+| `rpo_records` on the P1 stream | 0 |
+| `qip-fabricd` peak resident set (`VmHWM`) | 22872 KiB, ceiling 65536 |
+| P0, 4 producers × 2/s, archived ack | 44 admitted, 0 refused |
+| P1, 16 producers × 1/s, archived ack | 128 admitted, 0 refused |
+| P2, 1 producer × 100/s × 64 records | 374 admitted (23936 records), 16 `quota` refusals, honoured |
+
+The ceiling is a comparison that can lose: the same run judged against
+16384 KiB was **missed** (peak 24788 KiB on that run), and
+`harness.test.mjs` asserts the committed result fails under a ceiling one KiB
+below its own peak.
+
+What this drill does **not** show, so nobody reads it as more:
+
+- **No class is shed, because this broker sheds nothing but telemetry.**
+  `qip_event_fabric_shed_total{class}` exists in `qip-fabricd`'s telemetry
+  and has no production caller; `admission::over_quota` answers `Shed` only
+  for P4. Under pressure P2 is *throttled* (a `quota` refusal, a wait, the
+  batch resent by its producer), P0 and P1 are *refused visibly* when their
+  own limits are reached, and none of them is dropped. "P2 before P1" is
+  therefore shown as: the P2 producer was throttled while P0 and P1 were
+  never refused — not as an ordering of sheds, which do not exist.
+- **The classes do not compete for one queue.** Quotas are per producer per
+  stream and the lag limit per stream; there is no shared ring a P2 burst
+  could take from P1. The drill shows each class's policy holding under load,
+  not a priority scheduler, because there is none.
+- **The P1 lag-limit refusal was not reached.** The backlog peaked at 64
+  batches against `reflex-outcomes.local`'s `lag_limit` of 4096; at the rate
+  an archived-ack producer achieves locally (about 7 batches/s across 16
+  producers) reaching it would take roughly ten minutes of freeze. The arm
+  that refuses a P1 producer while its consumer trails is proven in-process
+  (`qip-streaming/tests/event_fabric_quota.rs`), not here.
+- Single host, debug builds, one partition, loopback; nothing deployed.
 
 ## Schedule
 
