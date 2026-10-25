@@ -451,6 +451,8 @@ fn the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces() -> Result
         qip_kernel::tail::MULTI_MARKET_SHOCK,
     ];
     expected.extend(qip_kernel::tail::SYNTHETIC_WORLDS);
+    // R12-RISK-4116: the generated joint world is applied every cycle too.
+    expected.push(qip_kernel::tail::SYNTHETIC_JOINT);
     for name in expected {
         let world = stress
             .tail_worlds
