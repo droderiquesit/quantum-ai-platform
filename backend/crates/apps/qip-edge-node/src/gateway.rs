@@ -471,7 +471,7 @@ impl SimulatedGateway {
                 let order_id = order.order_id.clone();
                 let venue = order.venue.clone();
                 if let Err(refusal) = self.submit_now(order, now) {
-                    self.unreleased.push(UnreleasedOrder {
+                    self.notices.unreleased.push(UnreleasedOrder {
                         order_id,
                         venue,
                         scheduled,
