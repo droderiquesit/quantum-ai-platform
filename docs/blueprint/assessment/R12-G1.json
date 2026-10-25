@@ -746,7 +746,7 @@
     "verification": "scheduled terraform plan showing no diff",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: the drift half is written as docs/blueprint/lanes/l9-CICD-8032.patch, not yet applied. It adds .github/workflows/drift.yml, a daily plan of dev with -lock=false -detailed-exitcode that fails the run on exit 2 and on a plan error, plus drift.yml in dispatch_refused_for_agents and qip-acceptance drift_plan.rs (5 tests, 7 mutations each fired). The signed model activation half still waits on R12-SEC-9137. PARTIAL until the patch is applied."
   },
   {
     "id": "R12-CICD-8033",

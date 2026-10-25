@@ -2666,7 +2666,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: no code change; gap corrected from 'proof missing' to what run 284 proves and what it does not. Stays PARTIAL."
+    "notes": "2026-10-24 lane L6: no code change; gap corrected from 'proof missing' to what run 284 proves and what it does not. Stays PARTIAL. 2026-10-25 lane L9: the protected half was not written. Running deploy.yml's second-build check for qip-portal before frontend/portal/next.config.ts pins generateBuildId, and before a double build is measured identical, would fail every portal build and leave the console undeployable. The code half comes first (lane L6), then the deploy.yml condition and a named replay job in ci.yml."
   },
   {
     "id": "R12-CICD-10118",

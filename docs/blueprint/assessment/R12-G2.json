@@ -1983,7 +1983,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (run only on dispatch, none committed) was stale. Nothing implemented; no protected path touched."
+    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (run only on dispatch, none committed) was stale. Nothing implemented; no protected path touched. 2026-10-25 lane L9: written as docs/blueprint/lanes/l9-CICD-9083.patch, not yet applied. agent-guard.mjs step 1c refuses an agent commit committed at or after lane_manifest.trailer_required_after with no Agent-Lane trailer, judges an unreadable date as after the instant, refuses an unparseable instant and exempts merge commits. One node test; 4 mutations each fired. The switch is committed as null because round-3.json names no lane of the running round. Turning it on is the owner's change, made together with that round's manifest. PARTIAL until then."
   },
   {
     "id": "R12-SEC-9084",
@@ -2031,7 +2031,7 @@
     "verification": "inspection of ci.yml",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: the protected half is already on the branch: ci.yml's test job, acceptance partition, uploads the replay-bench artifact, and pipeline_scripts.rs pins it. What remains is code, not a protected path: a committed baseline and a test that diffs against it. That half stays with lane L6."
   },
   {
     "id": "R12-GCP-9086",
@@ -2053,7 +2053,7 @@
     "verification": "cargo test -p qip-acceptance --test cicd_governance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: taken by the drift route, docs/blueprint/lanes/l9-CICD-8032.patch (shared with R12-CICD-8032), a scheduled plan of dev that fails on drift. The SCC Premium route is paid and was not taken (owner decision 5 of 2026-10-25). PARTIAL until the patch is applied and a scheduled run is seen."
   },
   {
     "id": "R12-RES-9087",
@@ -2239,7 +2239,7 @@
     "verification": "gh api repos/{owner}/{repo}/branches/main/protection",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: written as docs/blueprint/lanes/l9-CICD-9095.patch, not yet applied. It holds .github/rulesets/main-integrity.json (no deletion, no force-push, seven required checks, no bypass actor), .github/rulesets/main-review.json (code-owner review; the admin role may bypass only through a pull request, because the one code owner also authors the pull requests and GitHub refuses self-approval; dropping that bypass is the owner's call), .github/workflows/rules.yml (a daily read of GET /repos/{o}/{r}/rules/branches/main that fails when a rule is missing) and qip-acceptance branch_rules.rs (4 tests, 5 mutations each fired). A repository admin must also POST the two rulesets. PARTIAL until both are done."
   },
   {
     "id": "R12-SEC-9096",
@@ -2417,7 +2417,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: no patch. The GitHub provider's attribute_condition in modules/cicd admits only refs/heads/* (`attribute.ref.startsWith('refs/heads/')`), and a pull_request run presents refs/pull/<n>/merge, so a ci.yml plan job on pull requests cannot authenticate unless that condition is widened. Widening it weakens a gate, which decision 3 does not cover. This is an owner decision: widen it for a plan-only identity, or plan on push to work branches instead."
   },
   {
     "id": "R12-CICD-9104",
@@ -2538,7 +2538,7 @@
     "verification": "gcloud artifacts docker images describe --show-sbom-references",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: no patch, for the reason docs/blueprint/lanes/L02-protected-patches.md gives. Whether `gcloud artifacts sbom load` accepts this repository's CycloneDX output is unconfirmed, and an unverified step in deploy.yml could fail every deployment. It needs a confirmed format, then a re-spec, and that waits on a reachable registry."
   },
   {
     "id": "R12-SEC-9109",
