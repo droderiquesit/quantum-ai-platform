@@ -911,9 +911,10 @@
       "backend/crates/services/qip-simulation-engine/src/montecarlo.rs",
       "backend/crates/services/qip-simulation-engine/src/scenario.rs",
       "backend/crates/services/qip-simulation-engine/tests/scenario_construction.rs",
-      "backend/crates/services/qip-twin/src/futures.rs::Branch"
+      "backend/crates/services/qip-twin/src/futures.rs::Branch",
+      "docs/adr/0182-a-simulation-lesson-is-a-promoted-claim-an-embedding-is-a-fifth-model-form-and-event-arrival-and-the-warehouse-write-path-stay-as-decided.md"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Moves outside history exist (FutureTree Branch.beyond_history via tick_desk, off, and qip-cli agency; Monte Carlo/hypothetical scenarios), but the kernel's default-path adversarial search, StressTester::adversarial_sequence, is bounded inside the scenario library's plausibility envelope, so it generates no move beyond history. No lesson-promotion step exists for simulation outputs and no test asserts outputs are ephemeral with only promoted lessons persisted. Needs an owner/ADR decision on what a promoted lesson is and where it persists, then code.",
+    "gap": "Decided 2026-10-25 by ADR 0182 d1 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): Moves outside history exist (FutureTree Branch.beyond_history via tick_desk, off, and qip-cli agency; Monte Carlo/hypothetical scenarios), but the kernel's default-path adversarial search, StressTester::adversarial_sequence, is bounded inside the scenario library's plausibility envelope, so it generates no move beyond history. No lesson-promotion step exists for simulation outputs and no test asserts outputs are ephemeral with only promoted lessons persisted. Needs an owner/ADR decision on what a promoted lesson is and where it persists, then code.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -924,7 +925,7 @@
     "verification": "cargo test -p qip-simulation-engine",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0182 decision 1: a simulation scenario is ephemeral; only a LessonCandidate admitted by lesson promotion is journaled; the default-path generator is the kernel's stress stage, with beyond-history moves as recorded scalings. Code left: generator, promotion and the restart test. Status unchanged."
   },
   {
     "id": "R12-CAPITAL-9039",
@@ -4280,9 +4281,10 @@
       "backend/crates/libs/qip-storage/src/compaction.rs Compactor::compact",
       "backend/crates/libs/qip-storage/src/segment/archive.rs is_archive_key, ARCHIVE_SEGMENT_PREFIX, ARCHIVE_MANIFEST_PREFIX",
       "backend/crates/libs/qip-storage/tests/compaction.rs compacting_the_archive_prefix_is_refused_and_leaves_every_object_and_manifest_untouched",
-      "backend/crates/libs/qip-storage/tests/compaction.rs objects_below_the_minimum_are_left_alone_and_only_merged_objects_are_reported"
+      "backend/crates/libs/qip-storage/tests/compaction.rs objects_below_the_minimum_are_left_alone_and_only_merged_objects_are_reported",
+      "docs/adr/0181-the-simulated-depth-dataset-permits-raw-retention-raw-frames-reach-the-lake-off-the-decision-path-and-lake-segments-are-sized-at-the-seal.md"
     ],
-    "gap": "Compactor has no production caller: nothing compacts the lake's small objects asynchronously yet, so the requirement's 'tiny objects are compacted asynchronously' half is a guarded tool and not a running job; it is wired when the lake produces tiny objects worth a pass. No test runs compaction against Cloud Storage. Note for whoever wires it: min_object_size is honoured as documented (objects smaller than it are left alone), which makes its 64 KiB default skip genuinely tiny objects; set it for the lake's actual object sizes. (Corrected 2026-10-19.)",
+    "gap": "Decided 2026-10-25 by ADR 0181 d3 (see notes for the decision and the code it leaves). Compactor has no production caller: nothing compacts the lake's small objects asynchronously yet, so the requirement's 'tiny objects are compacted asynchronously' half is a guarded tool and not a running job; it is wired when the lake produces tiny objects worth a pass. No test runs compaction against Cloud Storage. Note for whoever wires it: min_object_size is honoured as documented (objects smaller than it are left alone), which makes its 64 KiB default skip genuinely tiny objects; set it for the lake's actual object sizes. (Corrected 2026-10-19.)",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4293,7 +4295,7 @@
     "verification": "cargo test -p qip-storage",
     "work_item": "",
     "size": "S",
-    "notes": "Re-read 2026-10-24: compacting_the_archive_prefix_is_refused_and_leaves_every_object_and_manifest_untouched exists (qip-storage/tests/compaction.rs:38). The remaining clause is a production caller for Compactor, which waits on a lake that produces tiny objects; no code change in this lane."
+    "notes": "Re-read 2026-10-24: compacting_the_archive_prefix_is_refused_and_leaves_every_object_and_manifest_untouched exists (qip-storage/tests/compaction.rs:38). The remaining clause is a production caller for Compactor, which waits on a lake that produces tiny objects; no code change in this lane. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0181 decision 3 (amends ADR 0156 §2.3): lake segments are sized at the seal by batching across drained offsets with a size and age bound, never merged; Compactor gets no lake caller and its min_object_size is corrected. Code left: seal-time batching in LakeSink, the min_object_size fix, and a test that many small batches seal as few segments reading back the same ticks. Status unchanged."
   },
   {
     "id": "R12-FINOPS-9188",
