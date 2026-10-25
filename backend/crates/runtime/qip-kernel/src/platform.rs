@@ -213,7 +213,7 @@ use qip_twin::asof::TwinMarket;
 use qip_twin::capture::{Action, Decision, OutcomeCapture, RealisedOutcome};
 use qip_twin::counterfactual::{
     ActualTrade, AlternativeMenu, Counterfactual, CounterfactualEngine, CounterfactualSet,
-    EstimationMethod, VenueOption,
+    EstimationMethod, SimulatedFill, VenueOption,
 };
 use qip_twin::value::Simulated;
 use qip_world_model::WorldModel;
@@ -3622,11 +3622,20 @@ pub struct FillScore {
     /// actual slippage the replay exists to make.
     #[serde(default)]
     pub predicted_slippage_bps: Option<f64>,
-    /// The twin's return on the trade at the counterfactual horizon less the
-    /// realised return, both from their own entry to the horizon's close, in
-    /// basis points on the side taken — positive meaning the twin's outcome
-    /// flattered the trade. `None` without a twin entry or a close at the
-    /// horizon. A model residual, read by nothing that sizes.
+    /// The outcome the twin predicted for the trade: per unit, the price
+    /// printed at the twin's exit instant less the twin's entry, on the side
+    /// taken, net of its cost model's entry charge, in basis points of the
+    /// venue's fill price. `None` where the twin did not trade it or the
+    /// order manager holds no fills for it.
+    #[serde(default)]
+    pub predicted_outcome_bps: Option<f64>,
+    /// The same measure for what happened: the venue's fill marked at the
+    /// same printed exit price, net of the costs the venue charged.
+    #[serde(default)]
+    pub realised_outcome_bps: Option<f64>,
+    /// `predicted_outcome_bps - realised_outcome_bps` — positive meaning the
+    /// twin's outcome flattered the trade. A model residual, read by nothing
+    /// that sizes.
     #[serde(default)]
     pub outcome_error_bps: Option<f64>,
 }
@@ -23446,49 +23455,78 @@ impl Platform {
                     let larger_favoured = beats_trade("larger_size");
                     // Predicted against actual, as the replay's residuals
                     // (R12-TICK-10103): slippage from the arrival price the
-                    // order manager recorded, and the outcome at the
-                    // horizon's first close, for the twin's entry and the
-                    // venue's. Statistics: every money figure crosses to f64
-                    // inside `signed_bps`, nowhere else.
+                    // order manager recorded, and the outcome of the trade
+                    // held to the twin's horizon. Statistics: every money
+                    // figure crosses to f64 here, at the residuals, and is
+                    // never booked.
                     let simulated_entry = trade
                         .and_then(|entry| entry.counterfactual_outcome.simulated_entry_price())
                         .map(|price| price.as_f64_for_statistics());
-                    let arrival = self
-                        .orders
-                        .order(&order_id)
+                    let order = self.orders.order(&order_id);
+                    let arrival = order
                         .map(|order| order.arrival_price)
                         .filter(|price| price.is_positive())
                         .map(|price| price.to_f64());
-                    let marks_at = path.decided_at.saturating_add(horizon);
-                    let horizon_close = self
-                        .bar_history
-                        .get(path.object_id.as_str())
-                        .and_then(|bars| {
-                            bars.iter()
-                                .filter(|bar| bar.close_time() >= marks_at)
-                                .min_by_key(|bar| bar.close_time())
-                        })
-                        .map(|bar| bar.close.to_f64());
                     let fill = path.fill_price.to_f64();
                     let realised_slippage_bps =
                         arrival.and_then(|arrival| signed_bps(fill, arrival, path.side));
                     let predicted_slippage_bps = arrival
                         .zip(simulated_entry)
                         .and_then(|(arrival, entry)| signed_bps(entry, arrival, path.side));
+                    // The outcome each side expects per unit, marked at the
+                    // price that printed at the twin's exit instant and net
+                    // of what each paid to get in: the twin's entry and its
+                    // cost model's entry charge, against the venue's fills
+                    // and the costs the venue actually charged. The exit leg
+                    // is left out of both because the position has not been
+                    // exited and the venue has charged nothing for it. Both
+                    // ride the same printed tape, so the residual is what the
+                    // twin's fill and cost models got wrong about the money
+                    // the trade made, and is zero only when both were right.
+                    // An earlier version marked both returns at one close
+                    // from two entries, which is the entry error rescaled and
+                    // reads zero whatever the costs did.
+                    let outcomes = trade
+                        .filter(|entry| entry.counterfactual_outcome.fill().traded())
+                        .zip(order)
+                        .and_then(|(entry, order)| {
+                            let outcome = &entry.counterfactual_outcome;
+                            let (twin_quantity, twin_entry, exit) = match outcome.fill() {
+                                SimulatedFill::Filled {
+                                    quantity,
+                                    entry_price,
+                                    exit_price,
+                                } => (
+                                    quantity.as_f64_for_statistics(),
+                                    entry_price.to_f64(),
+                                    exit_price.to_f64(),
+                                ),
+                                _ => return None,
+                            };
+                            let filled: f64 =
+                                order.fills.iter().map(|fill| fill.quantity.to_f64()).sum();
+                            let paid: f64 =
+                                order.fills.iter().map(|fill| fill.costs.to_f64()).sum();
+                            if twin_quantity <= 0.0 || filled <= 0.0 || fill <= 0.0 {
+                                return None;
+                            }
+                            let direction = match path.side {
+                                BookSide::Ask => 1.0,
+                                BookSide::Bid => -1.0,
+                            };
+                            let twin_per_unit = (exit - twin_entry) * direction
+                                - outcome.simulated_entry_costs().as_f64_for_statistics()
+                                    / twin_quantity;
+                            let realised_per_unit = (exit - fill) * direction - paid / filled;
+                            let predicted = twin_per_unit / fill * 10_000.0;
+                            let realised = realised_per_unit / fill * 10_000.0;
+                            (predicted.is_finite() && realised.is_finite())
+                                .then_some((predicted, realised))
+                        });
+                    let predicted_outcome_bps = outcomes.map(|(predicted, _)| predicted);
+                    let realised_outcome_bps = outcomes.map(|(_, realised)| realised);
                     let outcome_error_bps =
-                        horizon_close
-                            .zip(simulated_entry)
-                            .and_then(|(close, entry)| {
-                                // A return is the exit against the entry on the
-                                // side taken: the horizon's close above the entry
-                                // is a buy's gain and a sell's loss, which is the
-                                // orientation `signed_bps` gives the exit priced
-                                // against the entry.
-                                let twin = signed_bps(close, entry, path.side)?;
-                                let realised = signed_bps(close, fill, path.side)?;
-                                let error = twin - realised;
-                                error.is_finite().then_some(error)
-                            });
+                        outcomes.map(|(predicted, realised)| predicted - realised);
                     let trade_error_bps = trade
                         .and_then(|entry| entry.counterfactual_outcome.simulated_entry_price())
                         .and_then(|simulated| {
@@ -23521,6 +23559,8 @@ impl Platform {
                         unfilled: path.unfilled,
                         realised_slippage_bps,
                         predicted_slippage_bps,
+                        predicted_outcome_bps,
+                        realised_outcome_bps,
                         outcome_error_bps,
                     });
                     if self.fill_scores.len() > DECLINED_HISTORY {
@@ -33108,6 +33148,8 @@ mod counterfactual_trial_seam_tests {
             unfilled: Decimal::ZERO,
             realised_slippage_bps: None,
             predicted_slippage_bps: None,
+            predicted_outcome_bps: None,
+            realised_outcome_bps: None,
             outcome_error_bps: None,
         }
     }

@@ -631,6 +631,8 @@ fn fill(venue: &str, ms: i64, error: Option<f64>) -> FillScore {
         unfilled: Decimal::ZERO,
         realised_slippage_bps: None,
         predicted_slippage_bps: None,
+        predicted_outcome_bps: None,
+        realised_outcome_bps: None,
         outcome_error_bps: None,
     }
 }
