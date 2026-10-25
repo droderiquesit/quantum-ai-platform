@@ -2377,9 +2377,11 @@
       "backend/crates/libs/qip-storage/tests/lake_history.rs::a_tick_captured_under_a_degraded_clock_reads_back_with_its_widened_uncertainty",
       "backend/crates/services/qip-training/src/clock_precision.rs ClockPrecision::admit",
       "backend/crates/services/qip-training/tests/clock_precision.rs",
-      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_window_captured_under_a_degraded_clock_is_not_labelled_or_trained_on"
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_window_captured_under_a_degraded_clock_is_not_labelled_or_trained_on",
+      "backend/crates/apps/qip-edge-node/src/feed.rs SimulatedFeed::publish",
+      "backend/crates/apps/qip-edge-node/tests/capture_uncertainty.rs::a_captured_event_from_a_venue_the_cell_has_not_measured_carries_the_widened_clock_uncertainty"
     ],
-    "gap": "2026-10-24 (lane L6): (a) the cell's Clock row now widens a captured event's clock uncertainty for venues it has not measured (Cell::clock_uncertainty, never narrower than the venue's own lead), and the Tick Lake reader keeps the field (lake_history.rs RecordedTick.clock_uncertainty, which it used to drop); (b) precision-sensitive labels are blocked from promotion: qip-training ClockPrecision (derived from the label plan's shortest horizon, /10, a house default) refuses a whole window whose events are less precise, and the deep brain's tick desk applies it before labelling, so an imprecise window yields no labels and no model, with the refusal naming the window. Open: (1) Cell::clock_uncertainty has no production caller: qip-edge-node's SimulatedFeed::capture still stores the venue lead alone (wiring needs the cell threaded into capture), and qip-sequencing's CaptureStream is untouched; (2) the tick desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no environment does (bar part 2); (3) 'strategies needing precise cross-venue ordering disabled' was already the cell-side clock sizing; replay promotion outside the tick desk is not gated.",
+    "gap": "2026-10-24 (lane L6): (a) the cell's Clock row now widens a captured event's clock uncertainty for venues it has not measured (Cell::clock_uncertainty, never narrower than the venue's own lead), and the Tick Lake reader keeps the field (lake_history.rs RecordedTick.clock_uncertainty, which it used to drop); (b) precision-sensitive labels are blocked from promotion: qip-training ClockPrecision (derived from the label plan's shortest horizon, /10, a house default) refuses a whole window whose events are less precise, and the deep brain's tick desk applies it before labelling, so an imprecise window yields no labels and no model, with the refusal naming the window. Open: (1) closed for SimulatedFeed 2026-10-25: SimulatedFeed::publish asks Cell::clock_uncertainty once per frame, before the frame is decoded (after decoding the feed's own venue reads as measured by that same lead, so the answer would always equal the lead), and every captured event stores it; qip-sequencing's CaptureStream is still untouched; (2) the tick desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no environment does (bar part 2); (3) 'strategies needing precise cross-venue ordering disabled' was already the cell-side clock sizing; replay promotion outside the tick desk is not gated.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2390,7 +2392,7 @@
     "verification": "cd backend && cargo test -p qip-deepbrain --test tick_desk a_window_captured_under_a_degraded_clock_is_not_labelled_or_trained_on; cargo test -p qip-training --test clock_precision; cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: the cell-side disable closed on the default path, PARTIAL kept for uncertainty widening and label promotion. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests. Lane M1-KERNEL-EDGE, 2026-10-24: uncertainty widening closed for the simulated feed; PARTIAL kept for label/replay promotion. Mutations (each fired, restored): storing ZERO fails the ahead test; reversing the subtraction (now.since(venue_time)) fails both tests. 2026-10-24 lane L6: library half by a delegated agent (8 mutations reported, each failing its named assertion); re-verified here: dropping the precision bound in admit failed clock_precision.rs:63. Tick desk wiring added in this lane: admitting every window failed tick_desk.rs:724 ('a window with two seconds of clock doubt was labelled'); restored by cp and cmp, 8 passed. clippy --workspace -D warnings exit 0; qip-edge + qip-storage + qip-training + qip-deepbrain --no-fail-fast 1115 passed, 0 failed (before the wiring); qip-deepbrain --no-fail-fast after it: 15 result lines, 318 passed, 0 failed. Stays PARTIAL."
+    "notes": "Lane L11, 2026-10-18: the cell-side disable closed on the default path, PARTIAL kept for uncertainty widening and label promotion. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests. Lane M1-KERNEL-EDGE, 2026-10-24: uncertainty widening closed for the simulated feed; PARTIAL kept for label/replay promotion. Mutations (each fired, restored): storing ZERO fails the ahead test; reversing the subtraction (now.since(venue_time)) fails both tests. 2026-10-24 lane L6: library half by a delegated agent (8 mutations reported, each failing its named assertion); re-verified here: dropping the precision bound in admit failed clock_precision.rs:63. Tick desk wiring added in this lane: admitting every window failed tick_desk.rs:724 ('a window with two seconds of clock doubt was labelled'); restored by cp and cmp, 8 passed. clippy --workspace -D warnings exit 0; qip-edge + qip-storage + qip-training + qip-deepbrain --no-fail-fast 1115 passed, 0 failed (before the wiring); qip-deepbrain --no-fail-fast after it: 15 result lines, 318 passed, 0 failed. Stays PARTIAL. 2026-10-25 lane L6 (delegated agent, cherry-picked as 2b7e6ce3): mutations: storing the lead alone, and asking the cell after on_bytes, each failed both new tests at 'stored with [0ns]'; skipping Cell::clock_uncertainty's measured branch failed the measured-venue test at 'stored with [3.000s]'. Agent's gate: qip-edge-node/edge/storage/deepbrain passed 1312, failed 0. Design cost, stated in the code: a venue whose previous frame led by 1s carries 1s on its next level frame (errs wider)."
   },
   {
     "id": "R12-RES-7104",
@@ -3059,23 +3061,27 @@
   },
   {
     "id": "R12-OBS-7132",
-    "status": "MISSING",
-    "current": "No channel health metrics (no external channels exist).",
+    "status": "PARTIAL",
+    "current": "The agency guard records qip_agency_channel_health_total {channel, dimension, outcome} for identity_integrity, reach, provenance, violations and coordination at the seam where it decides (ActionGuard::preflight_observed, folded by the ambient intake door), plus qip_agency_drafts_appended_total {channel}; the deep brain's ambient agency route writes them into the platform Telemetry served at /metrics, on its default path (research every cycle unless QIP_DEEPBRAIN_RESEARCH_EVERY=0).",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/metrics.rs"
+      "backend/crates/services/qip-agency/src/guard.rs HealthDimension, ActionGuard::preflight_observed",
+      "backend/crates/services/qip-agency/src/ambient_intake.rs take_channel_health",
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs record_channel_health",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::each_channel_health_dimension_is_recorded_for_the_internal_outbox_channel",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::every_check_the_guard_runs_is_placed_in_a_channel_health_dimension"
     ],
-    "gap": "Define metrics with channels.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-25 (lane L6): recorded on the deep brain's default path for the one channel that exists (internal-outbox). Awaiting an independent skeptic before promotion. Known limits: engine::execute still calls the plain preflight and records nothing; a conduct-dimension fail is not driven end to end (the mapping is covered by mutation); no collector scrapes the deep brain (emission only).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "no external channel exists under paper-only posture",
-    "verification": "metrics test",
+    "verification": "cd backend && cargo test -p qip-deepbrain --test ambient_agency each_channel_health && cargo test -p qip-agency --lib every_check_the_guard_runs",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L6 (delegated agent, cherry-picked as ecb5dbab): mutations: deleting the provenance arm of HealthDimension::of_check failed the deep-brain test at 'provenance is recorded `pass` once per draft the guard cleared left: 0 right: 2'; noting reach pass on a failed write failed it at the full-outbox reach assertion (left 2, right 1); dropping 'disclosures' failed the unit test at '`disclosures` is in no channel-health dimension'. Agent's gate: qip-deepbrain/observability/agency passed 545, failed 0; clippy -D warnings clean."
   },
   {
     "id": "R12-AGENCY-7133",
