@@ -1,5 +1,8 @@
-//! The cell's own order conduct: a place-and-cancel pattern refused before it
-//! leaves the cell.
+//! Order conduct: a place-and-cancel pattern refused before it leaves the
+//! platform — at the cell's send seam, and since R12-GOV-6126 at the desk's
+//! order manager, the one seam a desk order reaches a broker through. The
+//! module moved here from `qip-edge` so the two seams run one piece of
+//! arithmetic; `qip_edge::conduct` re-exports it.
 //!
 //! Spoofing and layering are an order pattern, not an order: each resting
 //! order a spoofer places is individually unremarkable, and what marks the

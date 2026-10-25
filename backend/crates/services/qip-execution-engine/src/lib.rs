@@ -32,6 +32,9 @@
 //! `qip-acceptance`'s `quote_loop` suite asserts that over their source text.
 
 pub mod broker;
+/// A place-and-cancel pattern refused before the next order of its shape
+/// exists, on the cell and on the desk alike (R12-GOV-6126).
+pub mod conduct;
 /// Whether a market may be created, listed or seeded at all: three recorded
 /// permissions, and a refusal before any venue call without them (EXEC-007).
 pub mod creation;
