@@ -44,7 +44,7 @@ use qip_ai::language::{DeterministicModel, FallbackChain, LanguageModel};
 /// adapter adds no implementation of `LanguageModel` outside ADR 0117's list.
 pub use qip_ai::language::{ReplyCounts, ReplyTally};
 use qip_core::error::{Error, Result};
-use qip_reasoning_engine::providers::huggingface::{
+use qip_language_providers::huggingface::{
     DEFAULT_DEADLINE, DEFAULT_MAX_BODY_BYTES, HF_TOKEN_VARIABLE, HuggingFaceConfig,
     HuggingFaceModel,
 };

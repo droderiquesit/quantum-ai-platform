@@ -13,12 +13,6 @@ serde_json.workspace = true
 qip-core.workspace = true
 qip-agents.workspace = true
 qip-world-model.workspace = true
-# The hosted language-model adapter (ADR 0037). `qip-ai` holds the port; the
-# adapter lives here because a library performs no I/O, and `qip-transport`
-# is the plaintext HTTP client every outbound adapter speaks through. Both
-# are in-tree crates under libs/: inward edges, not third-party dependencies.
-qip-ai.workspace = true
-qip-transport.workspace = true
 # The `Qubo` type, and nothing else: `constraint::Problem::to_qubo` emits the
 # type the quantum path's solver port takes (REASON-017), and a second QUBO
 # type here would be one a caller has to convert, wrongly, at the seam. In-tree

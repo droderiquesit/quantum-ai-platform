@@ -2,14 +2,17 @@
 //! the slow-lane composition root, and no reflex crate links the crate that
 //! holds it.
 //!
-//! The failure this prevents: `qip-fastbrain` links `qip-kernel`, which links
-//! `qip-reasoning-engine`, which holds `HuggingFaceModel`. So the fast brain
-//! *can* build the hosted adapter — the type is in its link graph — and until
-//! this suite the only thing stopping it was a sentence in
-//! `qip-deepbrain/src/language.rs` saying it was the only root that did. A
-//! one-line `HuggingFaceModel::new(…)` in the fast brain's `main.rs` would
-//! have put a remote model's latency and availability on the path the fast
-//! brain serves, and nothing would have failed.
+//! The failure this prevents: until ADR 0138 `qip-fastbrain` linked
+//! `qip-kernel`, which linked `qip-reasoning-engine`, which held
+//! `HuggingFaceModel`. So the fast brain *could* build the hosted adapter —
+//! the type was in its link graph — and before this suite the only thing
+//! stopping it was a sentence in `qip-deepbrain/src/language.rs` saying it was
+//! the only root that did. A one-line `HuggingFaceModel::new(…)` in the fast
+//! brain's `main.rs` would have put a remote model's latency and availability
+//! on the path the fast brain serves, and nothing would have failed. The
+//! adapter now lives in `qip-language-providers`, linked by the deep brain
+//! alone, and `lane_placement.rs` pins that closure; this suite still pins the
+//! construction site.
 
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
@@ -20,7 +23,7 @@ use std::collections::BTreeSet;
 const SLOW_LANE_ROOT: &str = "backend/crates/apps/qip-deepbrain/src/";
 
 /// Where hosted adapters are defined; their own constructors live here.
-const PROVIDERS: &str = "backend/crates/services/qip-reasoning-engine/src/providers/";
+const PROVIDERS: &str = "backend/crates/services/qip-language-providers/src/";
 
 /// The text of a source file with comment lines dropped — and, deliberately,
 /// `#[cfg(test)]` items kept. `qip_acceptance::production_text` skips those by
@@ -151,8 +154,8 @@ fn no_reflex_or_fast_lane_root_names_the_hosted_provider_module() {
 #[test]
 fn the_reflex_node_does_not_link_the_crate_holding_the_hosted_adapter() {
     // `cargo tree` is not available to a test; read the manifests. The edge
-    // node and every edge crate must not declare qip-reasoning-engine or
-    // qip-kernel (which carries it) as a normal dependency.
+    // node and every edge crate must not declare qip-language-providers, nor
+    // qip-reasoning-engine or qip-kernel, which carried it until ADR 0138.
     let manifests = qip_acceptance::files_with_extension("backend/crates/edge", "toml")
         .into_iter()
         .chain([
@@ -170,7 +173,9 @@ fn the_reflex_node_does_not_link_the_crate_holding_the_hosted_adapter() {
         for line in normal.lines() {
             let name = line.split(['=', '.']).next().unwrap_or("").trim();
             assert!(
-                name != "qip-reasoning-engine" && name != "qip-kernel",
+                name != "qip-language-providers"
+                    && name != "qip-reasoning-engine"
+                    && name != "qip-kernel",
                 "{} declares `{name}`, which links the hosted language adapter into the reflex \
                  lane (R12-MODEL-4002)",
                 manifest.display()

@@ -26,8 +26,8 @@
 //!   convincing will usually say yes.
 //!
 //! A hosted language model, when one is configured, is reached through
-//! [`providers`] — for narrative only, behind `NumericGuard`, and only from
-//! the deep brain (ADR 0037).
+//! `qip-language-providers` — for narrative only, behind `NumericGuard`, and
+//! only from the deep brain, the one crate that links it (ADR 0037, ADR 0138).
 
 pub mod bayes;
 pub mod belief;
@@ -39,7 +39,6 @@ pub mod evidence;
 pub mod hypothesis;
 pub mod lifecycle;
 pub mod network;
-pub mod providers;
 pub mod redteam;
 pub mod rules;
 pub mod temporal;
@@ -53,6 +52,5 @@ pub use evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
 pub use hypothesis::{
     CausalChain, CausalStep, Claim, Hypothesis, HypothesisDraft, HypothesisStatus, UncertaintyType,
 };
-pub use providers::{HuggingFaceConfig, HuggingFaceModel, HuggingFaceToken};
 pub use redteam::{Challenge, ChallengeKind, RedTeam, ReviewOutcome, ReviewPolicy, Severity};
 pub use trust_score::{SourceTrust, TrustOutcome, TrustRegistry, TrustUpdate};
