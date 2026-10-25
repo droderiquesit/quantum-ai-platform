@@ -132,7 +132,7 @@ const FINANCIAL_AGI_CORE: [(&str, &str, &str, &str, &str); 10] = [
         "crates/agents/qip-investment-agents/src/chief.rs",
         "pub fn dispatch",
         "crates/agents/qip-investment-agents/tests/organisation.rs",
-        "fn the_declared_organisation_passes_its_own_governance",
+        "fn the_organisation_assembles_and_dispatches",
     ),
 ];
 
