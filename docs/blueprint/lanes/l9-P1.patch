@@ -1,0 +1,25 @@
+diff --git a/.github/workflows/infra.yml b/.github/workflows/infra.yml
+--- a/.github/workflows/infra.yml
++++ b/.github/workflows/infra.yml
+@@ -492,6 +492,21 @@
+           # assertion, which is the thing this repository refuses most often.
+           # It is gone rather than reworded, because a redundant grant that
+           # exists to make a comment true is worse than no grant at all.
++          #
++          # No BigQuery or Cloud Asset role is self-granted here either, and
++          # that is a decision, not an omission. The research dataset and the
++          # asset-change feeds need `bigquery.datasets.*` and
++          # `cloudasset.feeds.*`, which modules/cicd now grants through the
++          # custom role `qipInfraWarehouseFeeds_<env>`, holding exactly those
++          # verbs. The predefined roles that carry them here would be far
++          # wider: `roles/bigquery.dataOwner` reads and writes every row, and
++          # `roles/cloudasset.owner` runs exports and searches over the whole
++          # inventory. The cost is a race on the first `up` after the role
++          # lands: the same apply creates the role, its binding, the dataset
++          # and the feeds, so a 403 naming one of those permissions can stop
++          # it once while IAM propagates. Re-dispatch `up`. To avoid the race
++          # instead, apply once with `scripts/bootstrap-deploy.sh <env>`,
++          # whose identity holds owner.
+           for role in roles/cloudkms.publicKeyViewer roles/binaryauthorization.attestorsAdmin roles/run.admin roles/dns.admin roles/iap.admin roles/identityplatform.admin roles/container.clusterAdmin; do
+             held="$(gcloud projects get-iam-policy "$project" \
+               --flatten="bindings[].members" \
