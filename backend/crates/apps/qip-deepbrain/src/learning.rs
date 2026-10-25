@@ -2471,19 +2471,43 @@ mod tests {
         from_cycle: u64,
         start: Timestamp,
     ) -> Result<Option<PromotionOutcome>> {
+        let len = bars.len();
+        through_shadow_on(
+            desk,
+            platform,
+            |step| super::tests_support::learnable(len + step)[step..].to_vec(),
+            from_cycle,
+            start,
+        )
+    }
+
+    /// Bars per shadow round: each round's window has moved on by this many.
+    const SHADOW_STEP: usize = 150;
+
+    /// [`through_shadow`] over any window: round `n` fits `window(SHADOW_STEP
+    /// * n)`, which must be the same window moved on by that many bars. For a
+    /// test whose premise needs a later fit to beat an earlier one, the
+    /// window must make that true by construction (`learnable_regimes`, with
+    /// each fit's window inside one regime), because on a stationary series
+    /// the rounds are a coin flip between two fits of the same model.
+    fn through_shadow_on(
+        desk: &mut LearningDesk,
+        platform: &mut Platform,
+        window: impl Fn(usize) -> Vec<Bar>,
+        from_cycle: u64,
+        start: Timestamp,
+    ) -> Result<Option<PromotionOutcome>> {
         let Some(entered) = desk.promote_candidate(platform, start)? else {
             return Ok(None);
         };
         if !matches!(entered, PromotionOutcome::Shadowed { .. }) {
             return Ok(Some(entered));
         }
-        const SHADOW_STEP: usize = 150;
         let mut last = entered;
         for round in 1..=u64::from(MIN_SHADOW_ROUNDS) {
             let at = start.saturating_add(qip_core::Duration::from_mins(round as i64));
-            let step = SHADOW_STEP * round as usize;
-            let longer = super::tests_support::learnable(bars.len() + step);
-            desk.maybe_learn(&subject(), &longer[step..], REGIME, from_cycle + round, at)?;
+            let moved = window(SHADOW_STEP * round as usize);
+            desk.maybe_learn(&subject(), &moved, REGIME, from_cycle + round, at)?;
             last = desk
                 .promote_candidate(platform, at)?
                 .ok_or_else(|| Error::not_found("a shadow round's candidate"))?;
@@ -2760,35 +2784,33 @@ mod tests {
             let (v1, v2) = {
                 let mut platform = file_platform()?;
                 let mut desk = learning_desk().with_artifact_store(store.clone());
-                desk.maybe_learn(
-                    &subject(),
-                    &super::tests_support::learnable(400),
-                    REGIME,
-                    1,
-                    at(),
-                )?;
+                // One window per regime of `learnable_regimes`, so each fit
+                // displaces the one before it by construction: the model from
+                // the regime before predicts the wrong sign on the rows after.
+                let window = |offset: usize, len: usize| {
+                    move |step: usize| {
+                        super::tests_support::learnable_regimes(offset + len + step)
+                            [offset + step..]
+                            .to_vec()
+                    }
+                };
+                desk.maybe_learn(&subject(), &window(0, 400)(0), REGIME, 1, at())?;
                 // Each fit is driven through its shadow stage (R12-EXPAND-6070),
                 // the second an hour after the first so its rounds are new ones.
-                let first = through_shadow(
-                    &mut desk,
-                    &mut platform,
-                    &super::tests_support::learnable(400),
-                    1,
-                    at(),
-                )?
-                .ok_or_else(|| Error::not_found("a first candidate"))?;
+                let first = through_shadow_on(&mut desk, &mut platform, window(0, 400), 1, at())?
+                    .ok_or_else(|| Error::not_found("a first candidate"))?;
                 let second_start = at().saturating_add(qip_core::Duration::from_hours(1));
                 desk.maybe_learn(
                     &subject(),
-                    &super::tests_support::learnable(1_200),
+                    &window(1_000, 1_200)(0),
                     REGIME,
                     10,
                     second_start,
                 )?;
-                let second = through_shadow(
+                let second = through_shadow_on(
                     &mut desk,
                     &mut platform,
-                    &super::tests_support::learnable(1_200),
+                    window(1_000, 1_200),
                     10,
                     second_start,
                 )?
@@ -2939,21 +2961,13 @@ mod tests {
             // Promotable means it can complete the shadow stage after the
             // restart (R12-EXPAND-6070), at an instant past every round above.
             let third_start = at().saturating_add(qip_core::Duration::from_hours(3));
-            restarted.maybe_learn(
-                &subject(),
-                &super::tests_support::learnable(2_400),
-                REGIME,
-                20,
-                third_start,
-            )?;
-            let after = through_shadow(
-                &mut restarted,
-                &mut platform,
-                &super::tests_support::learnable(2_400),
-                20,
-                third_start,
-            )?
-            .ok_or_else(|| Error::not_found("a candidate after the crash"))?;
+            let window = |step: usize| {
+                super::tests_support::learnable_regimes(2_700 + 2_400 + step)[2_700 + step..]
+                    .to_vec()
+            };
+            restarted.maybe_learn(&subject(), &window(0), REGIME, 20, third_start)?;
+            let after = through_shadow_on(&mut restarted, &mut platform, window, 20, third_start)?
+                .ok_or_else(|| Error::not_found("a candidate after the crash"))?;
             let PromotionOutcome::Promoted {
                 reference,
                 displaced,
@@ -5293,13 +5307,47 @@ mod tests_support {
     /// variance, so there is nothing for a holdout R-squared to be a share of,
     /// and a model that "passed" on it would have passed on nothing.
     pub(super) fn learnable(count: usize) -> Vec<Bar> {
+        autoregressive(count, |_| 0.6)
+    }
+
+    /// [`learnable`] in three regimes: `r(t+1) = 0.6 * r(t) + noise` to bar
+    /// 1000, `-0.6 * r(t) + noise` to bar 2700, and `0.9 * r(t) + noise`
+    /// after. The shocks are the same draws, so the first 1000 bars are
+    /// byte-identical to `learnable`'s.
+    ///
+    /// For a test whose premise is that a later fit displaces an earlier one.
+    /// On the stationary series two fits are the same model to within
+    /// sampling error, and under fresh-row shadow scoring (R12-EXPAND-6070)
+    /// which of them wins a round is decided by the draw: the crash tests'
+    /// "promotable after the restart" once lost by an rmse of 0.002230
+    /// against 0.002220 on 150 rows, a coin flip reading as a recovery
+    /// verdict. A fit that straddles a change is no better: it lost 0.003383
+    /// to 0.003365. So each fit's window here lies wholly inside one regime
+    /// (`through_shadow_on` takes the window's offset), and a model from the
+    /// regime before is actively wrong on the rows after, not merely less
+    /// precise: the sign of what it predicts is wrong. The regime borders
+    /// leave each fit's three rounds (`SHADOW_STEP` bars each) inside its own
+    /// regime: a 400-bar fit at offset 0 scores on bars 400 to 850, a
+    /// 1200-bar fit at offset 1000 on bars 2200 to 2650.
+    pub(super) fn learnable_regimes(count: usize) -> Vec<Bar> {
+        autoregressive(count, |i| match i {
+            0..1000 => 0.6,
+            1000..2700 => -0.6,
+            _ => 0.9,
+        })
+    }
+
+    /// `rising(count)` re-priced as an AR(1) return series with the given
+    /// per-bar coefficient and a fixed seed, so every caller reads the same
+    /// shocks in the same order.
+    fn autoregressive(count: usize, coefficient: impl Fn(usize) -> f64) -> Vec<Bar> {
         let mut rng = Xoshiro256::seeded(0x1EA2);
         let mut bars = rising(count);
         let mut level = 100.0_f64;
         let mut previous = 0.0_f64;
-        for bar in bars.iter_mut() {
+        for (i, bar) in bars.iter_mut().enumerate() {
             let shock = rng.uniform(-0.004, 0.004);
-            let ret = 0.6 * previous + shock;
+            let ret = coefficient(i) * previous + shock;
             previous = ret;
             level *= 1.0 + ret;
             bar.close = Decimal::from_f64(level).unwrap_or(Decimal::ONE);
