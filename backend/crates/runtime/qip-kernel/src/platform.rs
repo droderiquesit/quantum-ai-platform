@@ -552,6 +552,12 @@ pub struct Platform {
     /// taken for, oldest first, bounded by [`DECLINED_HISTORY`] under the
     /// same counted-not-evicted discipline as `declined`.
     filled: Vec<FilledPath>,
+    /// Every cell fill already queued for the twin, keyed by where it sat on
+    /// the report that carried it, so a fill is scored once however often
+    /// its report arrives. Bounded by [`CELL_FILLS_REMEMBERED`], oldest
+    /// forgotten first; see [`Platform::queue_cell_fills`] for why the key
+    /// is this and why the set exists at all.
+    cell_fills_queued: CellFillsQueued,
     /// What the twin found about each priced fill — whether a smaller or a
     /// larger size would have done better, and how far its own entry price
     /// was from the venue's — most recent last, bounded by
@@ -1401,6 +1407,46 @@ const COUNTERFACTUALS_PER_CYCLE: usize = 8;
 /// reported on the cycle, because evicting the oldest waiting path would
 /// silently choose which veto goes unexamined.
 const DECLINED_HISTORY: usize = 256;
+
+/// How many cell fills the twin remembers having queued, across cells, so a
+/// replayed report is not scored twice (R12-RES-7104).
+///
+/// The centre's own sent-order register keeps 4,096 orders per cell; this
+/// is the same figure across all cells, and a replay older than it is scored
+/// again — a duplicate sample in the divergence mean, which moves a mean of
+/// many by little, against a set that would otherwise grow with every fill
+/// any cell ever reported.
+const CELL_FILLS_REMEMBERED: usize = 4_096;
+
+/// One cell fill's place on the report that carried it: the cell, the
+/// report's instant, the order it filled, and which fill on that order it
+/// was within the report. The wire carries no fill id, so this is the
+/// narrowest key a replay reproduces and two genuine fills do not share.
+type CellFillKey = (String, Timestamp, String, usize);
+
+/// The queued keys and their arrival order, the second only for eviction.
+#[derive(Debug, Default)]
+struct CellFillsQueued {
+    keys: BTreeSet<CellFillKey>,
+    arrival: std::collections::VecDeque<CellFillKey>,
+}
+
+impl CellFillsQueued {
+    /// Remember `key`; `false` where it was already remembered.
+    fn admit(&mut self, key: CellFillKey) -> bool {
+        if !self.keys.insert(key.clone()) {
+            return false;
+        }
+        self.arrival.push_back(key);
+        while self.keys.len() > CELL_FILLS_REMEMBERED {
+            let Some(oldest) = self.arrival.pop_front() else {
+                break;
+            };
+            self.keys.remove(&oldest);
+        }
+        true
+    }
+}
 
 /// The `control` an order refused for a wallet reconciliation halt is counted
 /// under, and the `gate` its rejection record carries (R12-ASSET-4074). A
@@ -3463,6 +3509,24 @@ struct FilledPath {
     /// What the venue left unfilled of the order when it reported, from the
     /// order manager's own book (R12-MODEL-6004). Zero for a whole fill.
     unfilled: Decimal,
+    /// The cell that reported the fill, or `None` for the desk's own.
+    ///
+    /// A desk fill is priced through the placement the outcome capture
+    /// holds; a cell's has no placement here — the cell decided alone (ADR
+    /// 0008) — so the twin prices it from this path itself. Without this arm
+    /// the twin scored only the desk, and a strategy trading at a venue only
+    /// cells reach was never held however wrong the twin was there
+    /// (R12-RES-7104).
+    cell: Option<CellFillOrigin>,
+}
+
+/// What a cell's fill carries that a desk fill reads from the outcome
+/// capture instead: who reported it, and how much traded.
+#[derive(Clone, Debug, PartialEq)]
+struct CellFillOrigin {
+    cell: String,
+    /// The venue's quantity on this fill. Money-adjacent, and exact.
+    quantity: Decimal,
 }
 
 /// What the twin found about one fill, once it has priced the sizes not
@@ -5683,6 +5747,7 @@ impl Platform {
             declined: Vec::new(),
             declined_scores: Vec::new(),
             filled: Vec::new(),
+            cell_fills_queued: CellFillsQueued::default(),
             fill_scores: Vec::new(),
             fill_calibration: qip_twin::calibration::FillCalibration::default(),
             replay_divergence_holds: replay_divergence_resumed.0,
@@ -7005,6 +7070,7 @@ impl Platform {
             }
         }
         self.charge_cell_fills(&ingestion.cell, &ingestion.settlement.absorbed);
+        self.queue_cell_fills(&ingestion.cell, reported_at, &ingestion.settlement.absorbed);
         self.book_settlement(&ingestion.settlement, now);
         // The cell's feasibility refusals, into the same window the desk's
         // land in, through the same recording site. What the plane could
@@ -10139,6 +10205,166 @@ impl Platform {
             }
         }
         self.aggregates.mark_cash(self.capital.cash);
+    }
+
+    /// Queue every fill the centre absorbed from a cell for the twin's fill
+    /// scoring — the same queue, the same pass and the same
+    /// `qip_venue_fill_error_bps` and calibration a desk fill reaches
+    /// (R12-RES-7104).
+    ///
+    /// Until this, `score_filled` saw only the desk's fills, so
+    /// `replay_divergence::measure` had nothing at a venue only cells trade
+    /// at, and a strategy whose replays were priced by a twin a thousand
+    /// basis points wrong about that venue kept its full grant.
+    ///
+    /// **Read off the settlement, not the report**, so a fill the centre
+    /// refused or found unsent is never scored.
+    ///
+    /// **Exactly once, and not because the settlement guarantees it.** This
+    /// was first written trusting the centre's sent register to make a
+    /// replay inert, and a test replaying the report proved otherwise: an
+    /// order whose fills complete it *leaves* the register, so the same
+    /// report arriving again re-registers its orders as new sends and
+    /// settles its fills a second time. So each fill is remembered here by
+    /// its place on the report — cell, report instant, order, and its
+    /// ordinal among that order's fills in the report — and a fill already
+    /// remembered is not queued again, within [`CELL_FILLS_REMEMBERED`].
+    ///
+    /// **Only at a venue a registered strategy trades at.** The venue
+    /// arrives on a wire that authenticates nobody, and it becomes a metric
+    /// label and a calibration key; a venue no strategy trades at holds
+    /// nobody, so admitting it would buy an unbounded label and nothing else.
+    /// A fill at such a venue is counted under
+    /// `qip_counterfactuals_unscored{reason="unregistered_venue"}` rather
+    /// than dropped silently.
+    ///
+    /// **A fill score never withdraws a venue** (ADR 0062): this queues
+    /// into the fill-scoring pass, which writes the error histogram and the
+    /// calibration and nothing a withdrawal reads.
+    ///
+    /// A full queue is a refusal to queue, counted under
+    /// `reason="fill_capacity"` as the desk's is, never an eviction.
+    fn queue_cell_fills(&mut self, cell: &str, reported_at: Timestamp, fills: &[AbsorbedFill]) {
+        if fills.is_empty() {
+            return;
+        }
+        let mut ordinals: BTreeMap<&str, usize> = BTreeMap::new();
+        let traded: BTreeSet<String> = self
+            .central
+            .factory()
+            .candidates()
+            .map(|candidate| candidate.venue().as_str().to_string())
+            .collect();
+        for fill in fills {
+            let ordinal = ordinals.entry(fill.order_id.as_str()).or_default();
+            let key = (
+                cell.to_string(),
+                reported_at,
+                fill.order_id.clone(),
+                *ordinal,
+            );
+            *ordinal += 1;
+            if !self.cell_fills_queued.admit(key) {
+                continue;
+            }
+            if !traded.contains(&fill.venue) {
+                self.telemetry.metrics.count(
+                    names::COUNTERFACTUALS_UNSCORED,
+                    labels([("reason", "unregistered_venue")]),
+                );
+                continue;
+            }
+            if self.filled.len() >= DECLINED_HISTORY {
+                self.telemetry.metrics.count(
+                    names::COUNTERFACTUALS_UNSCORED,
+                    labels([("reason", "fill_capacity")]),
+                );
+                self.capture_problems.push(format!(
+                    "{cell}'s fill on order {} will not be priced by the twin: \
+                     {DECLINED_HISTORY} filled paths are already waiting to be",
+                    fill.order_id
+                ));
+                continue;
+            }
+            self.filled.push(FilledPath {
+                // Qualified by the cell: a cell's order ids are its own, and
+                // two cells naming the same id would otherwise score one
+                // cell's fill against the other's path.
+                order_id: OrderId::from_string(format!("{cell}/{}", fill.order_id)),
+                object_id: ObjectId::from_string(fill.object_id.clone()),
+                venue: VenueId::new(fill.venue.clone()),
+                fill_price: fill.price,
+                side: fill.side,
+                // The venue's report instant: the twin is asked where it
+                // would have entered as of the moment the venue says it
+                // filled, which is the only instant the wire carries for it.
+                decided_at: fill.at,
+                // A cell reports fills, not what remains resting; the
+                // remainder is the cell's book, not a fact the centre holds.
+                unfilled: Decimal::ZERO,
+                cell: Some(CellFillOrigin {
+                    cell: cell.to_string(),
+                    quantity: fill.quantity,
+                }),
+            });
+        }
+    }
+
+    /// The twin's alternatives to one fill a cell reported, priced from the
+    /// queued path itself — a cell's order has no placement in this
+    /// platform's outcome capture, so [`Self::evaluate_alternatives`] has
+    /// nothing to find it by.
+    ///
+    /// The decision is dated at the fill and named deterministically from
+    /// the cell and its order, so the twin's per-alternative streams — and so
+    /// the score — are the same on every replay of the same log. What was
+    /// realised is "nothing happened", as an opening desk fill's is
+    /// (`capture_submission` books it at zero P&L); the fill error read off
+    /// the result compares entry prices and never a P&L.
+    fn evaluate_cell_fill(
+        &self,
+        path: &FilledPath,
+        origin: &CellFillOrigin,
+        market: &mut TwinMarket,
+    ) -> Result<CounterfactualSet> {
+        let decision = Decision::new(
+            qip_core::ids::DecisionId::from_string(format!(
+                "cell-fill:{}:{}",
+                path.order_id,
+                path.decided_at.to_rfc3339()
+            )),
+            TraceId::new(format!("trace-cell-fill-{}", path.order_id)),
+            CorrelationId::from_string(format!("cell-fill-{}", path.order_id)),
+            path.decided_at,
+            path.object_id.clone(),
+            Action::Filled {
+                order_id: path.order_id.clone(),
+                venue: path.venue.clone(),
+                quantity: origin.quantity,
+                price: path.fill_price,
+            },
+        )
+        .because(format!(
+            "{} reported this fill at {}; the twin re-prices it to measure its divergence there",
+            origin.cell, path.venue
+        ));
+        let actual = ActualTrade::new(
+            path.object_id.clone(),
+            path.side,
+            origin.quantity,
+            path.venue.clone(),
+            // The region on an actual trade labels it and selects nothing
+            // the fill error reads: the error comes off the `trade`
+            // alternative, the order re-priced as taken.
+            HOME_REGION,
+            path.decided_at,
+        )?;
+        self.counterfactuals.evaluate(
+            market,
+            &decision,
+            &actual,
+            &RealisedOutcome::nothing_happened(path.decided_at),
+        )
     }
 
     /// Feed realised cell outcomes back into the ladder and the allocator.
@@ -20890,6 +21116,7 @@ impl Platform {
                         side: book_side(side),
                         decided_at: now,
                         unfilled: shortfall.map_or(Decimal::ZERO, |(_, remaining)| remaining),
+                        cell: None,
                     }),
                     None => self.capture_problems.push(format!(
                         "filled order {} will not be priced for its size: its fills do not \
@@ -22616,7 +22843,12 @@ impl Platform {
             let priced = self
                 .counterfactual_bars(&path.object_id)
                 .and_then(|bars| TwinMarket::new(bars, cost_model, COUNTERFACTUAL_IMPACT_WINDOW))
-                .and_then(|mut market| self.evaluate_alternatives(&order_id, &mut market));
+                .and_then(|mut market| match &path.cell {
+                    // A cell's fill has no placement in the capture; it is
+                    // priced from the path (R12-RES-7104).
+                    Some(origin) => self.evaluate_cell_fill(&path, origin, &mut market),
+                    None => self.evaluate_alternatives(&order_id, &mut market),
+                });
             // Priced or refused, the path leaves the queue, as a declined
             // path does.
             self.filled.remove(index);

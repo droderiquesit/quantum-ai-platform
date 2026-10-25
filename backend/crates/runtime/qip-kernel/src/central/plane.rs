@@ -573,6 +573,29 @@ pub struct AbsorbedFill {
     /// would file a real fill under a counterparty named by nobody — which
     /// is the same failure wearing a name.
     pub venue: String,
+    /// The order the fill was reported against, as the cell named it —
+    /// unique within the cell, not across cells.
+    ///
+    /// This and the four fields below are what the twin scores a cell's fill
+    /// on (R12-RES-7104): `Platform::ingest_cell_report` queues every absorbed
+    /// fill for the same pricing `score_filled` gives a desk fill. Before
+    /// they were carried only the desk's fills reached the twin, so a twin a
+    /// thousand basis points wrong about a venue only cells traded at held
+    /// no strategy there. Read off this list, and not off the report, so a
+    /// fill the settlement refused or found unsent is never scored. This list
+    /// does **not** make a replay inert: an order whose fills complete it
+    /// leaves the sent register, so the same report arriving again
+    /// re-registers its orders and settles its fills a second time. The
+    /// twin's once-only scoring is `Platform::queue_cell_fills`'s own memory,
+    /// not this list's.
+    pub order_id: String,
+    /// The side of the book the order took: `Ask` bought, `Bid` sold.
+    pub side: BookSide,
+    pub quantity: Decimal,
+    /// The venue's price. Money, and exact.
+    pub price: Decimal,
+    /// When the venue reported it, as the cell recorded it.
+    pub at: Timestamp,
 }
 
 /// One strategy's execution cost over a settlement's fills, accumulated so a
@@ -2666,6 +2689,11 @@ impl CentralPlane {
                 // the report later: what the aggregate is charged and what the
                 // settlement says it absorbed stay one list.
                 venue: fill.venue.as_str().to_string(),
+                order_id: fill.order_id.clone(),
+                side: fill.side,
+                quantity: fill.quantity,
+                price: fill.price,
+                at: fill.at,
             });
         }
 

@@ -9041,3 +9041,251 @@ fn a_twin_that_agrees_with_the_venue_holds_no_strategy_trading_there() -> Result
     );
     Ok(())
 }
+// --- R12-RES-7104: the twin scores the fills a cell reports ------------------
+
+/// Twelve buys of `obj-AAA` that `CELL` sent and `at` filled at 100 at
+/// `start()`, each attributed wholly to `id` — one cell report, as a cell's
+/// delta carries them.
+///
+/// `id` is a strategy apart from the one whose grant is read: a strategy's
+/// own fills feed its live record and so the allocator's view of its edge,
+/// and a grant moved by that could not be told apart from one moved by the
+/// hold. The hold is on every strategy registered at the venue, which is the
+/// requirement's "dependent strategies", not only the one that traded.
+fn twelve_cell_fills(id: &StrategyId, at: &VenueId) -> CellReport {
+    use qip_contracts::message::BookSide;
+    let (orders, fills): (Vec<_>, Vec<_>) = (0..12)
+        .map(|n| {
+            let order_id = format!("cell-replay-{n}");
+            let order = qip_mesh::delta::DeltaOrder {
+                order_id: order_id.clone(),
+                strategy: id.clone(),
+                object_id: ObjectId::from_string("obj-AAA"),
+                venue: at.clone(),
+                side: BookSide::Ask,
+                quantity: dec!("700"),
+                price: dec!("100"),
+                simulated: true,
+                contributors: vec![qip_contracts::intent::Contributor {
+                    strategy: id.clone(),
+                    signed_size: dec!("700"),
+                    inputs: vec![("book_pressure".to_string(), 1)],
+                }],
+            };
+            let fill = qip_contracts::wire::FillRecord {
+                order_id,
+                object_id: ObjectId::from_string("obj-AAA"),
+                venue: at.clone(),
+                side: BookSide::Ask,
+                quantity: dec!("700"),
+                price: dec!("100"),
+                simulated: true,
+                at: start(),
+                shares: vec![qip_contracts::wire::FillShare {
+                    strategy: id.clone(),
+                    quantity: dec!("700"),
+                }],
+            };
+            (order, fill)
+        })
+        .unzip();
+    CellReport::new(CELL, start())
+        .with_orders(orders)
+        .with_fills(fills)
+}
+
+/// Ingest `report`, assert every fill settled and nothing was scored before
+/// LEARN, then run two cycles three days on so LEARN has priced every fill.
+fn settle_and_score_cell_fills(platform: &mut Platform, report: CellReport) -> Result<Timestamp> {
+    let ingestion = platform.ingest_cell_report(report, start())?;
+    assert_eq!(
+        ingestion.settlement.fills_settled, 12,
+        "premise: the centre did not settle every cell fill: refused {:?}, breaks {:?}",
+        ingestion.settlement.refused, ingestion.settlement.breaks
+    );
+    assert!(
+        platform.fill_scores().is_empty(),
+        "premise: something was scored before LEARN ran"
+    );
+    platform.observe(tape_after_the_fills());
+    let scoring = start().saturating_add(Duration::from_days(3));
+    platform.run_cycle(scoring);
+    platform.run_cycle(scoring);
+    Ok(scoring)
+}
+
+/// Mutations: in `Platform::ingest_cell_report`, deleting the
+/// `queue_cell_fills` call — the state before cell fills reached the twin —
+/// fails at "LEARN priced 0 of the cell's 12 fills"; in
+/// `Platform::queue_cell_fills`, pushing each path twice — fails at "LEARN
+/// priced 16 of the cell's 12 fills" (two cycles at the per-cycle cap of
+/// eight); in `Platform::queue_cell_fills`,
+/// ignoring `CellFillsQueued::admit`'s answer — fails at "a replayed cell
+/// report's fills were scored again".
+#[test]
+fn a_strategy_trading_at_a_cell_venue_whose_twin_misprices_its_fills_is_held() -> Result<()> {
+    // R12-RES-7104's gap at the edge. The twin used to score only the desk's
+    // fills, so a strategy trading at a venue only a cell reaches was never
+    // held however wrong the twin was there: `replay_divergence::measure`
+    // had no fill at that venue to read. `dependent` trades at the cell's
+    // venue; `control` at the desk's, where nothing fills in this test, so
+    // the only thing that can separate their grants is a hold raised on the
+    // cell's fills.
+    let mut platform = platform()?;
+    let desk = VenueId::new(platform.desk_venue());
+    let dependent = StrategyId::new("cell-replay-dependent");
+    let control = StrategyId::new("cell-replay-control");
+    register_at_venue(platform.central_mut(), &dependent, CELL, venue())?;
+    walk_to(platform.central_mut(), &dependent, GateStage::Pilot)?;
+    register_at_venue(platform.central_mut(), &control, CELL, desk.clone())?;
+    walk_to(platform.central_mut(), &control, GateStage::Pilot)?;
+    assert_ne!(desk, venue(), "premise: the two strategies trade apart");
+
+    platform.observe(tape_before_the_fills(90.0));
+    assert!(platform.replay_divergence_holds().is_empty());
+    let report = twelve_cell_fills(&StrategyId::new("cell-replay-trader"), &venue());
+    let scoring = settle_and_score_cell_fills(&mut platform, report.clone())?;
+
+    let scored = platform.fill_scores().len();
+    assert_eq!(scored, 12, "LEARN priced {scored} of the cell's 12 fills");
+    assert!(
+        platform
+            .fill_scores()
+            .iter()
+            .all(|score| score.venue == VENUE
+                && score.order_id.as_str().starts_with(&format!("{CELL}/"))),
+        "a cell fill was scored under another venue or another origin: {:?}",
+        platform.fill_scores()
+    );
+    let errors: Vec<f64> = platform
+        .fill_scores()
+        .iter()
+        .filter_map(|score| score.trade_error_bps)
+        .collect();
+    assert!(
+        errors.len() >= qip_kernel::replay_divergence::REPLAY_DIVERGENCE_MIN_SAMPLE
+            && errors.iter().all(|error| {
+                error.abs() > qip_kernel::replay_divergence::REPLAY_DIVERGENCE_THRESHOLD_BPS
+            }),
+        "premise: the twin was not past the threshold on a full sample: {errors:?}"
+    );
+
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "a twin past the threshold at the cell's venue did not hold its strategy's grant"
+    );
+    assert_eq!(
+        platform.replay_divergence_multiplier(&control),
+        Decimal::ONE,
+        "a strategy at a venue the twin never measured was held"
+    );
+    let records = replay_divergence_records(&platform)?;
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].strategy, dependent.as_str());
+    assert_eq!(records[0].venue, VENUE);
+    assert_eq!(records[0].outcome, "reduced");
+    assert!(
+        records[0].calibration_observations >= 12,
+        "the hold does not show the twin being recalibrated on the cell's live fills: {:?}",
+        records[0]
+    );
+    assert!(
+        platform.withdrawn_venues().is_empty(),
+        "a fill score withdrew a venue, which ADR 0062 reserves for feasibility evidence"
+    );
+
+    let granted_at = scoring.saturating_add(Duration::from_hours(1));
+    let held = grant_pair(&mut platform, &dependent, granted_at)?;
+    let full = grant_pair(&mut platform, &control, granted_at)?;
+    let held_gross = held.gross_limit.expect("an issued grant carries its size");
+    let full_gross = full.gross_limit.expect("an issued grant carries its size");
+    assert_eq!(
+        held_gross * dec!("2"),
+        full_gross,
+        "the held strategy was granted {held_gross} against the control's {full_gross}"
+    );
+    assert!(
+        held.detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("diverged from the venue")),
+        "the grant does not say why it is smaller: {:?}",
+        held.detail
+    );
+
+    // The same report again — a retry, a replayed spool. The premise is
+    // asserted because it is the reason the twin keeps its own memory of
+    // what it queued: the centre settles the replay's fills again (an order
+    // whose fills complete it leaves the sent register, so its re-send is
+    // admitted as new). If the centre ever refuses a replayed report, this
+    // premise fails and the leg must be rewritten rather than deleted —
+    // it would then be testing nothing.
+    let replayed_at = granted_at.saturating_add(Duration::from_hours(1));
+    let replay = platform.ingest_cell_report(report, replayed_at)?;
+    assert_eq!(
+        replay.settlement.fills_settled, 12,
+        "premise: the replayed report's fills reached the settlement's absorbed list"
+    );
+    let later = replayed_at.saturating_add(Duration::from_days(4));
+    platform.run_cycle(later);
+    platform.run_cycle(later);
+    assert_eq!(
+        platform.fill_scores().len(),
+        12,
+        "a replayed cell report's fills were scored again"
+    );
+    Ok(())
+}
+
+/// Mutation: `Divergence::exceeds_threshold` returning `true` — fails at
+/// "an agreeing twin held the cell's strategy".
+#[test]
+fn a_twin_that_agrees_with_a_cell_venue_holds_no_strategy_trading_there() -> Result<()> {
+    // The premise of the test above: the same twelve cell fills, scored on a
+    // tape that agrees with the venue, hold nothing. Without it a hold raised
+    // on any scored sample at a cell venue would pass the test above.
+    let mut platform = platform()?;
+    let dependent = StrategyId::new("cell-replay-dependent");
+    register_at_venue(platform.central_mut(), &dependent, CELL, venue())?;
+    walk_to(platform.central_mut(), &dependent, GateStage::Pilot)?;
+
+    platform.observe(tape_before_the_fills(100.0));
+    let scoring = settle_and_score_cell_fills(
+        &mut platform,
+        twelve_cell_fills(&StrategyId::new("cell-replay-trader"), &venue()),
+    )?;
+    let errors: Vec<f64> = platform
+        .fill_scores()
+        .iter()
+        .filter_map(|score| score.trade_error_bps)
+        .collect();
+    assert!(
+        errors.len() >= qip_kernel::replay_divergence::REPLAY_DIVERGENCE_MIN_SAMPLE,
+        "premise: fewer than a sample of cell fills carried an error: {errors:?}"
+    );
+    let mean = errors.iter().map(|error| error.abs()).sum::<f64>() / errors.len() as f64;
+    assert!(
+        mean < qip_kernel::replay_divergence::REPLAY_DIVERGENCE_THRESHOLD_BPS,
+        "premise: the agreeing twin is past the threshold, mean {mean} bps"
+    );
+    assert!(
+        platform.replay_divergence_holds().is_empty(),
+        "an agreeing twin held the cell's strategy: {:?}",
+        platform.replay_divergence_holds()
+    );
+    assert!(replay_divergence_records(&platform)?.is_empty());
+    let granted = grant_pair(
+        &mut platform,
+        &dependent,
+        scoring.saturating_add(Duration::from_hours(1)),
+    )?;
+    assert!(
+        !granted
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("diverged from the venue")),
+        "an agreeing twin narrowed the grant: {:?}",
+        granted.detail
+    );
+    Ok(())
+}
