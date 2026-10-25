@@ -255,6 +255,8 @@ Run these in this order. All dispatches go from `main`. `infra.yml`, `deploy.yml
 7. **`vendor.yml` with `environment=dev`.** Run only if step 2 or 6 showed `vendor/*` missing.
    - Success: `mirrored and attested 10 image(s).` and `::notice title=derived image ready::vendor/argocd-patched = sha256:…`.
    - Failure signatures:
+     - **Expected today:** the derived Argo CD fails on CVE-2026-77459 (run 32, §6), so a rebuilt registry gets no attested `argocd-patched` until the base is bumped past 3.5.4. Fix that before this step if step 2 shows `vendor/argocd-patched` missing.
+     - `TOOMANYREQUESTS: Data limit exceeded` from public.ecr.aws stops the loop at redis (run 32). A re-run later is the fix, not a code change.
      - A Trivy CRITICAL leaves the image unattested. Trivy is installed unpinned from apt (`vendor.yml:209-216`). §6 lists images that may now be refused (UNVERIFIED); the fallback is §2.8.
      - `the copy of … arrived as …; refusing to scan or sign it.`
    - A rebuilt `argocd-patched` gets a new digest, which needs the §2.5 re-pin PR and your merge.
@@ -338,6 +340,7 @@ Method: build stamps read with `go version -m` (no execution), advisory ranges f
   - Evidence: https://raw.githubusercontent.com/argoproj/argo-cd/v3.6.0-rc4/hack/tool-versions.sh
 - **`vendor/argocd-patched`** (what dev runs), `sha256:d0c2521327609c71da266792ccf3118f39df71e74205695d518bcedebce63f49`.
   - CVE-2025-68121: **cleared by a gate result.** vendor.yml run 31 (2026-10-12) scanned it at 0 CRITICAL (`e3f81695`). Its builder is `golang@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1` (`GOLANG_VERSION=1.25.7`).
+  - **Refused since 2026-10-18 (added by lane L9 from the run log, 2026-10-24).** vendor.yml run 32 (`39087301496`, push, conclusion `failure`) re-scanned the same `d0c25213…` and the blocking gate printed `github.com/argoproj/argo-cd/v3 │ CVE-2026-77459 │ CRITICAL │ fixed │ v3.5.2+dirty │ 3.3.15, 3.4.10, 3.5.4, 3.6.0-rc2`. The finding is in Argo CD's own binary, so the remedy is a base bump to 3.5.4 or later, with the same Dockerfile and a re-pin. Run 31's attestation still exists, so the verdict step printed `every vendored image is attested, or superseded by an attested derived image.` in a failed run. The same run's mirror loop also died at redis on `TOOMANYREQUESTS: Data limit exceeded` from public.ecr.aws. ADR 0225 records both.
   - Its presence in the registry is UNVERIFIED.
   - The test, stage and prod overlays still carry the stand-in `04fbf149…`.
 - **kustomize standalone.** A fix exists upstream: v5.8.2 (2026-09-30, go1.26.5) and v5.8.3 (2026-10-08, go1.27.1).
