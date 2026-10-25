@@ -1449,14 +1449,17 @@
   },
   {
     "id": "R12-ASSET-4066",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Portfolio construction runs under a Mandate; the capital ledger keeps mandates; PositionRecord refuses to exist without a mandate but is never constructed outside tests.",
     "evidence": [
       "backend/crates/services/qip-portfolio-engine/src/construction.rs:68 Mandate",
       "backend/crates/services/qip-capital/src/ledger/mandate.rs:69 Mandate",
-      "backend/crates/libs/qip-financial/src/position_record.rs:104-232 PositionRecord (no production caller)"
+      "backend/crates/libs/qip-financial/src/position_record.rs:104-232 PositionRecord (no production caller)",
+      "backend/crates/runtime/qip-kernel/src/position_register.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::review_position_mandates, called from stage_learn)",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs every_held_position_resolves_to_a_mandate_and_target_or_is_flagged"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Kernel positions are qip_portfolio::position::Position, with no mandate or target-exposure field; PositionRecordBuilder::build (qip-financial position_record.rs) is never called in production; Platform::construct_from writes ProposalLeg.target_weight but does not keep it per held position; nothing flags a held position without a mandate or target (Portfolio::flag_position has no kernel caller, only qip-simulation-engine backtest.rs). Missing caller: the kernel's MONITOR/DECIDE stage resolving each held object to (desk mandate, last target_weight) and flagging the rest, with an integration test that fails if the flag call is removed. Plain code.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1464,10 +1467,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: ac0a13f5 records each sized position's mandate and target exposure (position_register.rs) and LEARN's review_position_mandates flags, every cycle on the fastbrain/api default path, any held position in capital.positions with no recorded mandate or one the ledger no longer holds (asset_book.flag_position plus a stage problem), including positions resumed from the log. Mutation: delete the flag_position call; the resumed-process assertion fails. In-lane skeptic (security-engineer): HOLDS, borderline: the mandate map is in memory and a resumed position is flagged rather than resolved, which the requirement's 'refused or flagged' admits; the Asset Brain is kernel state, not a separate domain (R12-CAPITAL-1095, R12-ASSET-3019 carry that)."
   },
   {
     "id": "R12-ASSET-4067",
@@ -1476,9 +1479,11 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12557-12588 sizing_confidence",
       "backend/crates/runtime/qip-kernel/src/platform.rs:12626 arm_horizon_gate",
-      "backend/crates/runtime/qip-kernel/tests/valuation_plane.rs:296 an_uncertain_mark_narrows_sizing_and_a_confident_one_does_not"
+      "backend/crates/runtime/qip-kernel/tests/valuation_plane.rs:296 an_uncertain_mark_narrows_sizing_and_a_confident_one_does_not",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::position_holding)",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): The refusal half is on the production path (Platform::sizing_confidence refuses a stale or unmarkable illiquid mark; sizeable_theses reads it every construction). No per-position record carries valuation confidence, investment horizon and expected liquidity together: PositionRecord holds horizon and expected_exit but is never built and has no getters; ApprovedThesis (qip-portfolio-engine construction.rs) carries no horizon; exit days exist only in the liquidity ladder (exit_days_with_forecast). Closing needs a horizon source chosen (thesis or proposition horizon) - a design/owner decision - then kernel code.",
+    "gap": "2026-10-25: skeptic REFUTED: Platform::position_holding joins confidence, horizon and liquidity on demand, but the horizon lives only in the in-memory position_horizons written by construct_from, so after any restart every resumed position is refused 'no hypothesis horizon on record' and the record is never journaled or served; remaining step is to persist the horizon (and the record) through the event log and expose it on a default-path surface.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1489,7 +1494,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted: sizing_confidence near platform.rs:15610, arm_horizon_gate near :15679."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted: sizing_confidence near platform.rs:15610, arm_horizon_gate near :15679. 2026-10-25: 0066923c adds position_holding and carries the thesis horizon; LEARN computes it per held object and counts it. Mutation: drop the horizon lookup in construct_from; the record test fails. Skeptic (security-engineer) REFUTED on persistence and exposure; the stale-confidence refusal half predates this commit (sizing_confidence)."
   },
   {
     "id": "R12-ASSET-4068",
@@ -1499,9 +1504,11 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:995 corporate_actions_pending",
       "backend/crates/runtime/qip-kernel/src/platform.rs:693 commitments",
       "backend/crates/runtime/qip-kernel/src/platform.rs:15662 hedge_review::review",
-      "backend/crates/libs/qip-financial/src/position_record.rs:25 Declared"
+      "backend/crates/libs/qip-financial/src/position_record.rs:25 Declared",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::position_obligations)",
+      "backend/crates/runtime/qip-kernel/src/hedge_review.rs (policies_relating_to)"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Pending corporate actions (corporate_actions_pending), the CommitmentBook and the per-cycle hedge survey (hedge_review::review in DECIDE) exist, but nothing resolves them per position and Declared::NoneApplicable (position_record.rs) is never constructed outside tests. The hedge survey is axis-level (factor exposures from RiskState::position_notionals), not per-instrument relationships, so mapping a position to its hedge or a stated 'none' needs a modelling decision (owner/ADR on hedge-to-position attribution) before the kernel accessor can be written.",
+    "gap": "2026-10-25: skeptic REFUTED: position_obligations resolves the hedge relationship from declared policies whose axis bucket covers the instrument (hedge_review::policies_relating_to), not from a hedge actually held, and LEARN discards the per-position record each cycle; remaining step is to resolve the hedge against an actual hedge holding and journal or serve the record.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1512,7 +1519,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted (corporate_actions_pending near platform.rs:1180, commitments near :777, hedge_review::review call near :19064)."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted (corporate_actions_pending near platform.rs:1180, commitments near :777, hedge_review::review call near :19064). 2026-10-25: b04dfb4f adds position_obligations (hedges, pending corporate actions, commitments, each Declared::Present or NoneApplicable with a reason). Mutation: NoneApplicable replaced by Present(vec![]); test fails. Skeptic (security-engineer) REFUTED as above."
   },
   {
     "id": "R12-ASSET-4069",
@@ -1523,7 +1530,7 @@
       "backend/crates/services/qip-learning-engine/src/attribution.rs:142-155 residual/reconciles",
       "backend/crates/libs/qip-financial/src/position_record.rs:65 ExitPlan"
     ],
-    "gap": "2026-10-24 (re-read against the tree): The attribution half holds on LEARN (qip-learning-engine attribution.rs residual/reconciles; kernel Platform::last_attribution). Nothing refuses opening a position without an exit plan: ExitPlan (position_record.rs) is required only by the never-called PositionRecordBuilder::build, the kernel open path (construct_from, proposal legs, orders) carries no exit date or route, and ApprovedThesis has no horizon to derive one from. Needs an owner decision on the exit-plan policy for liquid theses before the open seam can require ExitPlan.",
+    "gap": "2026-10-25: owner decision needed: refusing to open a position without an exit plan breaks four private-fund lockup tests, because a short-horizon thesis on a locked-up asset has no admissible exit unless a secondary sale escapes the lockup; the owner must say whether such a thesis is refused or the secondary exit counts as its plan (attempted diff kept outside the tree).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1534,7 +1541,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution. 2026-10-25: attempted in the asset lane and not committed: the exit-plan refusal fails four lockup tests in qip-kernel; the conflict is a product decision, not a code defect."
   },
   {
     "id": "R12-ASSET-4070",
