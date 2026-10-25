@@ -52,12 +52,15 @@
   {
     "id": "R12-REASON-3003",
     "status": "PARTIAL",
-    "current": "qip-deepbrain campaign.rs runs a TTL-scoped learning campaign from the deep brain binary.",
+    "current": "Every learning round of the deep brain runs a bounded research campaign on the shipped default path: EvolutionEngine::maybe_learn (built by main.rs through EvolutionEngine::over_synthetic for the synthetic arm and EvolutionEngine::new for a replay or feed; learning cadence every_cycles 8 by default, no env var) calls campaign::assemble, which resolves the licensing door, fetches the window into a TTL-bounded FetchCampaign cache (CacheBound: CAMPAIGN_TTL, CAMPAIGN_CACHE_ENTRIES), verifies the extent against the ledger and the cache, sketches the result with its declared bound, reads the window back out of the cache, closes the campaign (FetchCampaign::close consumes the cache and returns only the manifest) and journals ResearchCampaignClosed under its own topic. LearningDesk::learn_window then fits on that window and scores the fit out of sample on its held-out tail against the classical baseline (holdout_fraction 0.25; the holdout rmse, r2 and row count ride the registered card, journaled by journal_model_registry). The backtest the campaign runs is that out-of-sample evaluation of a forecaster, not a trade-level P&L backtest; purged cross-validation runs on the strategy turn (maybe_turn, PurgedSplit), which does not go through a campaign. The requirement text asks for bounded campaigns (fetch, verify, backtest, emit results/manifest); a goal-scoped research plan is REASON-3061 (SweepPlanRecord).",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/campaign.rs:1-12 bounded TTL fetch campaign",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:379-416 campaign gating at the learning round"
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs assemble: door -> FetchCampaign::open/fetch -> ledger record -> sketch -> cache read-back -> close -> Platform::journal_campaign",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs maybe_learn calls campaign::assemble on the learning cadence; main.rs builds the engine on every arm",
+      "backend/crates/services/qip-data-finder/src/campaign.rs FetchCampaign::close(self) -> CampaignManifest: the cache is dropped, the manifest persists",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs a_learning_round_emits_a_campaign_manifest_and_deletes_its_ttl_cache",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs a_window_is_assembled_through_a_campaign_whose_manifest_is_journaled"
     ],
-    "gap": "Campaigns are learning-assembly fetch/backtest only; no goal-driven research-campaign planner launching campaigns from open questions.",
+    "gap": "2026-10-25 (lane L2b, two independent read-only skeptics, both REFUTED): the requirement word \"backtest\" means a strategy-level backtest in the blueprint source that defines this arrow (docs/architecture/algorik-blueprint-v10.1-source.md:1956-1958, \"backtest and purged CV over the cache\"; every other use of the word in that source and in qip-simulation-engine/src/backtest.rs is trade P&L), and the campaign path (campaign::assemble, called only from maybe_learn) feeds a forecaster fit scored on a holdout tail; the strategy turn (maybe_turn, PurgedSplit, holdout gate) backtests but does not fetch its window through a campaign. Closing it: route maybe_turn's window through campaign::assemble (or run qip_simulation_engine's Backtester over the assembled window in maybe_learn) and assert the backtest result beside the manifest. Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -65,10 +68,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-deepbrain campaign",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_learning_round_emits_a_campaign_manifest_and_deletes_its_ttl_cache",
     "work_item": "",
-    "size": "L",
-    "notes": "Tested flag based on campaign tests inside the deepbrain crate; not re-run here."
+    "size": "S",
+    "notes": "Tested flag based on campaign tests inside the deepbrain crate; not re-run here. 2026-10-25 lane L2b (wave580): the row restated the requirement as a goal-driven planner, which its text does not ask for (bar part 4); re-graded against the text. New test a_learning_round_emits_a_campaign_manifest_and_deletes_its_ttl_cache drives the production engine through a learning round and asserts the manifest is on the log with its fetch entry and sketched result, and that the persisted record carries no cache and is a fraction of the window it describes. Mutation fired: replacing platform.journal_campaign(closed, now)? in campaign::assemble with true -> \"assertion left == right failed: one campaign closed, one manifest journaled, left: 0, right: 1\"; restored byte for byte, test result: ok. 1 passed. Skeptic round 1 (code-reviewer, read-only, default REFUTED): REFUTED on the backtest clause: learn_window scores a holdout tail, no trades, no purged CV, and the test did not assert the result. Answered: the test now asserts the registered card names this campaign and carries the holdout evaluation (holdout_observations >= 1, holdout_rmse present, passed matches the registration), and the row text no longer claims purged CV. Whether an out-of-sample holdout evaluation satisfies \"backtest\" is the open reading; the row records it as the forecaster sense. Skeptic round 2 (code-reviewer, read-only): REFUTED on the reading of \"backtest\" (bar part 4; citations in the gap). Row stays PARTIAL; the new test and the corrected current text are kept because they prove the fetch/verify/manifest/cache half on the default path."
   },
   {
     "id": "R12-AGENCY-3004",
