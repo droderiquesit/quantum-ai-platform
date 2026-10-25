@@ -4872,6 +4872,15 @@ impl Cell {
         self.unreliable_since
             .entry((venue.as_str().to_string(), object_id.as_str().to_string()))
             .or_insert(now);
+        // R12-RES-7102: every feature of the instrument, and every feature
+        // computed from one, is held out of the pass's vector from this
+        // instant until `apply_snapshot` rebuilds the book. Without it the
+        // increments that keep arriving after the discard rebuilt the
+        // engine's copy of the book piecemeal, and a crossed book was never
+        // discarded from the engine at all — either way a strategy read a
+        // price from a book the cell had just refused to price from, and the
+        // signal it raised was a label for training.
+        self.features.quarantine(object_id, now);
         self.journal.record(
             Decision::BookReset {
                 venue: venue.as_str().to_string(),
@@ -4980,10 +4989,23 @@ impl Cell {
             )));
         }
         state.resynchronised(now);
-        // The features were cleared with the book; they are rebuilt from the
-        // same edits, or they would describe the handful of increments that
-        // happened to arrive since rather than the book.
+        // The features are cleared and rebuilt from the same edits, or they
+        // would describe the handful of increments that arrived since the
+        // discard — or, for a crossed book, the cross itself, which the
+        // discard never cleared from the engine. Cleared here rather than
+        // trusted to have been cleared at the discard, so every series that
+        // resumes starts at the snapshot and no window reaches back across
+        // the unreliable span.
         let origin = Origin::new(venue.clone(), "snapshot", 0, 0);
+        self.features.ingest(&MarketMessage::new(
+            object_id.clone(),
+            origin.clone(),
+            MessageBody::Reset {
+                reason: "rebuilt from the venue's snapshot".to_string(),
+            },
+            now,
+            now,
+        ))?;
         for body in edits {
             self.features.ingest(&MarketMessage::new(
                 object_id.clone(),
@@ -4996,6 +5018,17 @@ impl Cell {
         let unreliable_from = self
             .unreliable_since
             .remove(&(venue.as_str().to_string(), object_id.as_str().to_string()));
+        // Lifted only once no other venue's book of the same instrument is
+        // still awaiting its own snapshot: the engine keys features by
+        // instrument, not by venue, so a feature of an instrument listed on
+        // two venues is as unreliable as the worse of its two books.
+        let still_unreliable = self
+            .unreliable_since
+            .keys()
+            .any(|(_, object)| object == object_id.as_str());
+        if !still_unreliable {
+            self.features.lift_quarantine(object_id);
+        }
         self.journal.record(
             Decision::BookResynchronised {
                 venue: venue.as_str().to_string(),
