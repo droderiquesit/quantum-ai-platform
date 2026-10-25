@@ -3550,9 +3550,14 @@
     "evidence": [
       "backend/crates/apps/qip-api/src/routes.rs observe_fresh",
       "backend/crates/libs/qip-core/src/lineage.rs",
-      "backend/crates/libs/qip-contracts/src/reflex.rs::chain_correlation"
+      "backend/crates/libs/qip-contracts/src/reflex.rs::chain_correlation",
+      "backend/crates/libs/qip-contracts/src/policy.rs DecisionOrigin, PolicyPayload.decision (signed when present, absent from the signing string when not)",
+      "backend/crates/edge/qip-edge/src/cell.rs open_chain copies policy_sequence and decision into ChainOpened",
+      "backend/crates/apps/qip-api/src/mesh.rs pending_policy stamps Platform::decision_origin",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::a_correlation_id_set_at_the_api_is_reachable_from_the_cells_chain_opened_record",
+      "backend/crates/libs/qip-contracts/tests/policy_decision.rs"
     ],
-    "gap": "Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: the same payload fields as OBS-7018, asserting the API-set correlation id is reachable from the cell's ChainOpened.",
+    "gap": "2026-10-25 (lane L6): the join is built and tested end to end in process. Still PARTIAL: (1) the policy reaches a cell only over the mesh, which qip-api serves only when QIP_MESH_CELLS/QIP_MESH_REGIONS are set (the Cloud Run API serves no mesh, R12-RES-10127), and no execution node is deployed, so the join does not run on a shipped binary's default path (bar part 2); (2) the event-fabric PolicyFrame schema-lock sample does not state the decision field, so a retype of DecisionOrigin is caught only by policy_decision.rs's wire assertion; a schema-version bump is the honest fix. Earlier: Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: the same payload fields as OBS-7018, asserting the API-set correlation id is reachable from the cell's ChainOpened.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3563,7 +3568,7 @@
     "verification": "new acceptance test",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): The named verification (id set at the API appears in the cell) is not met and the two id schemes are independent. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Test that a correlation id set at the API appears in the cell's event metadata; Cloud Trace."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): The named verification (id set at the API appears in the cell) is not met and the two id schemes are independent. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Test that a correlation id set at the API appears in the cell's event metadata; Cloud Trace. 2026-10-25 lane L6 (delegated agent, cherry-picked as 4f50f72a): the cycle's correlation id rides the signed PolicyPayload as an optional DecisionOrigin and the cell copies it, with policy_sequence, into ChainOpened; the acceptance walk goes run_cycle, pending_policy, signed payload, apply_policy, pass, spool ChainOpened, chain correlation, LedgerEvent. Eight mutations each failed a named test (decision or policy_sequence dropped in cell.rs; absent origin moving the signing string; present origin unsigned; skip_serializing_if dropped; mesh.rs stamp removed; cycle-zero refusal disabled; cell inventing an origin). Agent's gates: five crates passed 2542, failed 0; qip-acceptance in batches passed 1606, failed 0; clippy -D warnings clean. Lane gate after integration: qip-kernel/contracts/edge/api/edge-node passed 2546, failed 0. Deploy order: cells before the centre, because an older cell refuses a stamped payload under deny_unknown_fields."
   },
   {
     "id": "R12-OBS-9155",

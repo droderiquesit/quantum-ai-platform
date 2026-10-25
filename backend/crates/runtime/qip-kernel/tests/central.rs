@@ -9213,18 +9213,18 @@ fn a_strategy_trading_at_a_cell_venue_whose_twin_misprices_its_fills_is_held() -
         held.detail
     );
 
-    // The same report again — a retry, a replayed spool. The premise is
-    // asserted because it is the reason the twin keeps its own memory of
-    // what it queued: the centre settles the replay's fills again (an order
-    // whose fills complete it leaves the sent register, so its re-send is
-    // admitted as new). If the centre ever refuses a replayed report, this
-    // premise fails and the leg must be rewritten rather than deleted —
-    // it would then be testing nothing.
+    // The same report again — a retry, a replayed spool. The centre
+    // recognises it and settles nothing (until 2026-10-25 a completed order
+    // left the sent register, its re-send was admitted as new, and every
+    // fill settled twice). The twin's own memory of what it queued stays as
+    // a second guard; this leg proves the first one.
     let replayed_at = granted_at.saturating_add(Duration::from_hours(1));
     let replay = platform.ingest_cell_report(report, replayed_at)?;
-    assert_eq!(
-        replay.settlement.fills_settled, 12,
-        "premise: the replayed report's fills reached the settlement's absorbed list"
+    assert!(
+        replay.replayed && replay.settlement.fills_settled == 0,
+        "a replayed cell report was settled again: replayed {}, {} fills settled",
+        replay.replayed,
+        replay.settlement.fills_settled
     );
     let later = replayed_at.saturating_add(Duration::from_days(4));
     platform.run_cycle(later);
