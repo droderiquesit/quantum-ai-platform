@@ -962,6 +962,18 @@ impl Broker {
                 )),
             )));
         }
+        // The partition alone (R12-FABRIC-8084) under the same rule: the
+        // broker stamps the partition it appends to, and a producer that
+        // states one is refused rather than overwritten.
+        if let Some(stated) = batch.partition {
+            return Ok(Err(ProduceRefusal::new(
+                Refusal::SchemaRefused,
+                Error::denied(format!(
+                    "the batch arrived already stamped with partition {stated}; the partition \
+                     is stamped by the broker that accepts it, never by its producer"
+                )),
+            )));
+        }
         self.refuse_when_a_group_lags(stream, partition)?;
         if let Err(refused) = self.charge_quota(stream, &batch)? {
             return Ok(Err(refused));

@@ -716,3 +716,94 @@ fn a_partition_stamped_without_a_session_round_trips_and_a_flipped_bit_in_it_is_
         "{refused}"
     );
 }
+
+/// R12-FABRIC-8084, the requirement's own proof over the layouts the broker
+/// writes: a batch stamped with every header field, by the drain, the
+/// broker and the writer, with the partition alone (tag 2) and with a full
+/// origin (tag 1), round-trips equal and re-encodes to the same bytes —
+/// which a broker restart's chain recovery relies on — and every single-bit
+/// flip anywhere in either encoding is refused as corruption.
+///
+/// Mutations: decode tag 1 without setting the batch's partition (the
+/// equality fails for the full origin); write tag 0 for a partition-only
+/// batch (the equality fails for tag 2).
+#[test]
+fn every_broker_stamped_layout_round_trips_equal_and_refuses_every_single_bit_flip() {
+    use qip_events::event_fabric::codec::{
+        BrokerOrigin, FORMAT_VERSION, Provenance, stamp_broker_origin, stamp_broker_partition,
+    };
+
+    let stamped = |full: bool| {
+        let (_, batch) = one_record_batch();
+        let mut batch_ = batch.with_provenance(Provenance::EdgeNode);
+        stamp_drain(&mut batch_, "producer-9", 3, 77);
+        stamp_broker(
+            &mut batch_,
+            901,
+            4,
+            LogicalTimestamp {
+                physical_ns: 1_700_000_000_123,
+                logical: 2,
+            },
+            None,
+        );
+        if full {
+            stamp_broker_origin(
+                &mut batch_,
+                BrokerOrigin {
+                    region: "europe-west2".to_string(),
+                    partition: 6,
+                    principal: "qip-edge-node-london-1".to_string(),
+                },
+            );
+        } else {
+            stamp_broker_partition(&mut batch_, 6);
+        }
+        batch_
+    };
+    for full in [false, true] {
+        let batch = stamped(full);
+        let mut bytes = batch.encode().expect("a stamped batch encodes");
+        assert_eq!(
+            u16::from_le_bytes([bytes[4], bytes[5]]),
+            FORMAT_VERSION,
+            "premise: a broker-stamped batch encodes in format version 2"
+        );
+        match Batch::decode(&bytes).expect("a stamped batch decodes") {
+            DecodeOutcome::Complete(decoded) => {
+                assert_eq!(decoded, batch, "full origin: {full}");
+                assert_eq!(decoded.partition, Some(6));
+                assert_eq!(
+                    decoded.encode().expect("re-encodes"),
+                    bytes,
+                    "a decoded batch re-encodes to the bytes it was read from (full origin: {full})"
+                );
+            }
+            DecodeOutcome::Torn => panic!("a whole batch read as torn"),
+        }
+        for byte_index in 0..bytes.len() {
+            let original = bytes[byte_index];
+            for bit in 0..8u8 {
+                bytes[byte_index] = original ^ (1 << bit);
+                match Batch::decode(&bytes) {
+                    Err(e) => assert!(
+                        e.message().contains("byte offset"),
+                        "full origin {full}: flipping byte {byte_index} bit {bit} must name an \
+                         offset: {}",
+                        e.message()
+                    ),
+                    Ok(outcome) => panic!(
+                        "full origin {full}: flipping byte {byte_index} bit {bit} was decoded as \
+                         {outcome:?}"
+                    ),
+                }
+            }
+            bytes[byte_index] = original;
+        }
+        assert_eq!(
+            bytes,
+            batch.encode().expect("re-encodes"),
+            "fixture restored"
+        );
+    }
+}
