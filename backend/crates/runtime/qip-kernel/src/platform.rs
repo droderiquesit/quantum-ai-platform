@@ -14922,11 +14922,15 @@ impl Platform {
                     outcome = outcome.with_problem(problem);
                 }
                 // §22's attribution keys and §9.8's tournament, both read
-                // here because this is the instant the facts were true.
-                // Advisory: neither reaches DECIDE. See `crate::attribution`
-                // and `crate::model_tournament`.
-                if let Some(clause) = self.observe_hypothesis(&reasoned, &report, approved, now) {
-                    outcome.detail.push_str(&clause);
+                // here because this is the instant the facts were true. The
+                // one power that reaches DECIDE is the verifier society's
+                // veto (ADR 0125 decision 2, ADR 0170, R12-REASON-3108): a
+                // refuted important prediction forms no proposal. See
+                // `crate::attribution` and `crate::model_tournament`.
+                let mut society_refutation = None;
+                if let Some(verdict) = self.observe_hypothesis(&reasoned, &report, approved, now) {
+                    outcome.detail.push_str(&verdict.clause);
+                    society_refutation = verdict.refuted;
                 }
                 let decision = if let Some(veto) = symbolic_veto {
                     // ADR 0125 decision 2: the rule pack refused what review
@@ -14943,6 +14947,15 @@ impl Platform {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
                     DecisionTaken::RejectedOnReview
+                } else if let Some(refutation) = society_refutation {
+                    // ADR 0170: the verifier society falsified the leading
+                    // explanation review approved. Recorded under its own
+                    // words; the verification is journaled with the
+                    // tournament's review in LEARN.
+                    outcome = outcome.with_problem(format!(
+                        "approved but refuted by the verifier society: {refutation}"
+                    ));
+                    DecisionTaken::NotSizeable
                 } else {
                     // Approved on review and still not queued unless
                     // justified: a thesis whose only ground is the return it
@@ -15085,11 +15098,26 @@ impl Platform {
         report: &qip_investment_agents::OrganisationReport,
         approved: bool,
         now: Timestamp,
-    ) -> Option<String> {
+    ) -> Option<crate::model_tournament::ReasonVerdict> {
         let roster: Vec<String> = self
             .organisation
             .roster()
             .iter()
+            .map(|manifest| manifest.id.clone())
+            .collect();
+        // ADR 0170 decision 2: the society reads only the agents that
+        // explain. See `ReasonObservation::explaining`.
+        let explaining: BTreeSet<String> = self
+            .organisation
+            .roster()
+            .iter()
+            .filter(|manifest| {
+                matches!(
+                    manifest.role,
+                    qip_agents::manifest::AgentRole::Research
+                        | qip_agents::manifest::AgentRole::Adversarial
+                )
+            })
             .map(|manifest| manifest.id.clone())
             .collect();
         self.attribution_lineage
@@ -15129,6 +15157,7 @@ impl Platform {
                 crossed_recently,
                 expected_move_bps,
                 approved,
+                explaining,
             },
             now,
         )
