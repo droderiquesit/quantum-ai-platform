@@ -3579,6 +3579,24 @@ pub struct FillScore {
     /// the field existed, which is the reading those records were made under.
     #[serde(default)]
     pub unfilled: Decimal,
+    /// What the fill cost against the order's arrival price, in signed basis
+    /// points on the side taken — positive meaning the venue filled worse
+    /// than the price the decision saw (R12-TICK-10103). `None` where the
+    /// order manager holds no positive arrival price (a cell's fill).
+    #[serde(default)]
+    pub realised_slippage_bps: Option<f64>,
+    /// The same measure for the twin's own entry: the slippage it predicted.
+    /// Beside the realised figure it is the comparison of predicted and
+    /// actual slippage the replay exists to make.
+    #[serde(default)]
+    pub predicted_slippage_bps: Option<f64>,
+    /// The twin's return on the trade at the counterfactual horizon less the
+    /// realised return, both from their own entry to the horizon's close, in
+    /// basis points on the side taken — positive meaning the twin's outcome
+    /// flattered the trade. `None` without a twin entry or a close at the
+    /// horizon. A model residual, read by nothing that sizes.
+    #[serde(default)]
+    pub outcome_error_bps: Option<f64>,
 }
 
 impl FillScore {
@@ -22966,6 +22984,51 @@ impl Platform {
                     // `larger_size_finding`'s type, which carries no
                     // multiplier.
                     let larger_favoured = beats_trade("larger_size");
+                    // Predicted against actual, as the replay's residuals
+                    // (R12-TICK-10103): slippage from the arrival price the
+                    // order manager recorded, and the outcome at the
+                    // horizon's first close, for the twin's entry and the
+                    // venue's. Statistics: every money figure crosses to f64
+                    // inside `signed_bps`, nowhere else.
+                    let simulated_entry = trade
+                        .and_then(|entry| entry.counterfactual_outcome.simulated_entry_price())
+                        .map(|price| price.as_f64_for_statistics());
+                    let arrival = self
+                        .orders
+                        .order(&order_id)
+                        .map(|order| order.arrival_price)
+                        .filter(|price| price.is_positive())
+                        .map(|price| price.to_f64());
+                    let marks_at = path.decided_at.saturating_add(horizon);
+                    let horizon_close = self
+                        .bar_history
+                        .get(path.object_id.as_str())
+                        .and_then(|bars| {
+                            bars.iter()
+                                .filter(|bar| bar.close_time() >= marks_at)
+                                .min_by_key(|bar| bar.close_time())
+                        })
+                        .map(|bar| bar.close.to_f64());
+                    let fill = path.fill_price.to_f64();
+                    let realised_slippage_bps =
+                        arrival.and_then(|arrival| signed_bps(fill, arrival, path.side));
+                    let predicted_slippage_bps = arrival
+                        .zip(simulated_entry)
+                        .and_then(|(arrival, entry)| signed_bps(entry, arrival, path.side));
+                    let outcome_error_bps =
+                        horizon_close
+                            .zip(simulated_entry)
+                            .and_then(|(close, entry)| {
+                                // A return is the exit against the entry on the
+                                // side taken: the horizon's close above the entry
+                                // is a buy's gain and a sell's loss, which is the
+                                // orientation `signed_bps` gives the exit priced
+                                // against the entry.
+                                let twin = signed_bps(close, entry, path.side)?;
+                                let realised = signed_bps(close, fill, path.side)?;
+                                let error = twin - realised;
+                                error.is_finite().then_some(error)
+                            });
                     let trade_error_bps = trade
                         .and_then(|entry| entry.counterfactual_outcome.simulated_entry_price())
                         .and_then(|simulated| {
@@ -22996,6 +23059,9 @@ impl Platform {
                         larger_favoured,
                         trade_error_bps,
                         unfilled: path.unfilled,
+                        realised_slippage_bps,
+                        predicted_slippage_bps,
+                        outcome_error_bps,
                     });
                     if self.fill_scores.len() > DECLINED_HISTORY {
                         let excess = self.fill_scores.len() - DECLINED_HISTORY;
@@ -24930,6 +24996,22 @@ fn fill_error_bps(simulated: Simulated<Decimal>, actual: Decimal, side: BookSide
         BookSide::Ask => raw,
         // A sell against the bid: a *dearer* simulated sell flatters, so the
         // sign is flipped to keep "negative means flattering".
+        BookSide::Bid => -raw,
+    };
+    signed.is_finite().then_some(signed)
+}
+
+/// `price` against `reference` in basis points on the side taken, positive
+/// meaning worse for the trader: a buy (recorded against the ask) paying
+/// more, a sell (against the bid) receiving less. `None` for a reference
+/// that is not positive or a result that is not finite.
+fn signed_bps(price: f64, reference: f64, side: BookSide) -> Option<f64> {
+    if reference.is_nan() || reference <= 0.0 {
+        return None;
+    }
+    let raw = (price - reference) / reference * 10_000.0;
+    let signed = match side {
+        BookSide::Ask => raw,
         BookSide::Bid => -raw,
     };
     signed.is_finite().then_some(signed)
@@ -32531,6 +32613,9 @@ mod counterfactual_trial_seam_tests {
             larger_favoured,
             trade_error_bps: None,
             unfilled: Decimal::ZERO,
+            realised_slippage_bps: None,
+            predicted_slippage_bps: None,
+            outcome_error_bps: None,
         }
     }
 

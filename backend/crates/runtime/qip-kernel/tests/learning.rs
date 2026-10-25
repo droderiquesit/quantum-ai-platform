@@ -989,6 +989,59 @@ fn the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue() -
     Ok(())
 }
 
+/// R12-TICK-10103: the LEARN score compares the twin's predicted fill,
+/// slippage and outcome with what happened. The tape opens its last bar
+/// before the fill at 90 against an arrival of 100, so the twin predicts an
+/// entry ten percent below the arrival while the venue fills a buy at the
+/// arrival plus its cost; the horizon closes at 100. The twin's predicted
+/// slippage is about -1000 bps, the realised one is a cost at or above
+/// zero, and the twin's return to the horizon (from 90 to 100) beats the
+/// realised one (from the fill to 100) by about 1100 bps: the residual that
+/// says the twin flatters this trade. Mutation: record `outcome_error_bps`
+/// as `None` in `score_filled` — the residual assertion fails.
+#[test]
+fn a_filled_orders_learn_score_records_predicted_and_realised_slippage_and_the_outcome_residual()
+-> Result<()> {
+    let mut platform = platform()?;
+    let mut tape = quiet_bars("AAA", 90);
+    let last = tape.pop().expect("ninety bars");
+    let last_at = match &last {
+        SensedRecord::Bar(bar) => bar.open_time,
+        _ => unreachable!("quiet_bars produces bars"),
+    };
+    tape.push(bar("AAA", last_at, 90.0, 90.0));
+    platform.observe(tape);
+    fill_one(&mut platform, "prop-residuals", start())?;
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+    let scores = platform.fill_scores();
+    assert_eq!(scores.len(), 1, "premise: the fill was priced");
+    let score = &scores[0];
+    let realised = score
+        .realised_slippage_bps
+        .expect("the desk's fill has an arrival price to slip against");
+    assert!(
+        realised >= 0.0,
+        "a buy filled at the arrival plus cost slipped {realised} bps"
+    );
+    let predicted = score
+        .predicted_slippage_bps
+        .expect("the twin's entry has a slippage too");
+    assert!(
+        predicted < -500.0,
+        "the twin predicted an entry ten percent under the arrival: {predicted} bps"
+    );
+    let residual = score
+        .outcome_error_bps
+        .expect("the horizon closed, so the outcome residual exists");
+    assert!(
+        residual > 500.0,
+        "the twin's return from 90 beats the realised return from the fill: {residual} bps"
+    );
+    Ok(())
+}
+
 /// R12-TICK-2080: the twin is recalibrated from the fills it mispriced, and
 /// the calibration is what its next pricing on that venue uses.
 ///
