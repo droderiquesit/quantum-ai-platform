@@ -210,7 +210,7 @@ fn probe() -> InMemoryProbe {
         latency: Duration::from_millis(40),
     };
     let sample = |body: &str| PayloadSample {
-        body: body.to_string(),
+        body: qip_core::untrusted::Untrusted::new("a scripted sample", body.to_string()),
         media_type: "application/json".to_string(),
         payload_at: Some(start()),
         latency: Duration::from_millis(55),

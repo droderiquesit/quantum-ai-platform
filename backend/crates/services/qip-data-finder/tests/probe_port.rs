@@ -188,7 +188,9 @@ fn the_probe_reads_a_real_robots_a_real_head_and_a_real_payload_over_a_socket() 
     let endpoint = endpoint("https://example.com/data/prices.json")?;
     let payload = probe.sample(&endpoint, now())?;
     assert_eq!(payload.media_type, "application/json");
-    assert_eq!(payload.body, r#"{"a":1.0}"#);
+    assert_eq!(payload.body.inspect(), r#"{"a":1.0}"#);
+    // The body comes back untrusted, naming the route it was read through.
+    assert_eq!(payload.body.origin(), format!("{base}/data/prices.json"));
     let _ = handle.join();
 
     // A non-2xx body is refused rather than fingerprinted. Admitting a source
@@ -231,10 +233,13 @@ fn scripted_responses_are_consumed_in_order_and_the_last_one_repeats() -> Result
         .with_sample(url, sample(r#"{"a":"1"}"#))
         .with_head(url, ok_head());
 
-    assert_eq!(probe.sample(&endpoint, now())?.body, r#"{"a":1}"#);
-    assert_eq!(probe.sample(&endpoint, now())?.body, r#"{"a":"1"}"#);
+    assert_eq!(probe.sample(&endpoint, now())?.body.inspect(), r#"{"a":1}"#);
     assert_eq!(
-        probe.sample(&endpoint, now())?.body,
+        probe.sample(&endpoint, now())?.body.inspect(),
+        r#"{"a":"1"}"#
+    );
+    assert_eq!(
+        probe.sample(&endpoint, now())?.body.inspect(),
         r#"{"a":"1"}"#,
         "the final scripted response repeats rather than running out"
     );

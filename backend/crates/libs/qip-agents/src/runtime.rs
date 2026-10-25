@@ -16,7 +16,9 @@ use crate::budget::{Budget, BudgetLedger, Spend};
 use crate::capability::Capability;
 use crate::finding::{AgentBrief, AgentFinding};
 use crate::manifest::{AgentManifest, EscalationPolicy};
-use qip_ai::language::{Completion, LanguageModel, ModelRequest};
+use qip_ai::language::{
+    Completion, LanguageModel, ModelRequest, UntrustedCompletion, UntrustedModelRequest,
+};
 use qip_core::error::{Error, Result};
 use qip_core::ids::AgentRunId;
 use qip_core::lineage::Lineage;
@@ -367,6 +369,34 @@ impl AgentContext {
         // used. The output tokens were not knowable in advance.
         let actual = completion.total_tokens();
         let extra = actual.saturating_sub(estimate);
+        if extra > 0 {
+            self.ledger.charge_tokens_only(extra)?;
+        }
+        Ok(completion)
+    }
+
+    /// Complete a request carrying fetched content, under the run's budget,
+    /// and hand the answer back untrusted (ADR 0158 decision 18).
+    ///
+    /// The same capability, the same charge-before-call and the same
+    /// settlement as [`Self::complete`]. What differs is the return type: an
+    /// agent that asked a model about a stranger's page gets nothing it can
+    /// put in a tool name, a finding or a brief until it has validated it.
+    pub fn complete_over_untrusted(
+        &mut self,
+        request: &UntrustedModelRequest,
+    ) -> Result<UntrustedCompletion> {
+        self.authorise(Capability::CallLanguageModel, "language-model")?;
+        let Some(model) = self.language_model.clone() else {
+            return Err(Error::unavailable(format!(
+                "agent {} has no language model configured",
+                self.manifest.id
+            )));
+        };
+        let estimate = request.estimated_input_tokens();
+        self.ledger.charge_language_model(estimate, 0)?;
+        let completion = model.complete_over_untrusted(request, self.now)?;
+        let extra = completion.total_tokens().saturating_sub(estimate);
         if extra > 0 {
             self.ledger.charge_tokens_only(extra)?;
         }

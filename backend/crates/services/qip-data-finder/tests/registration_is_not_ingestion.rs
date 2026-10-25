@@ -54,7 +54,7 @@ fn probe() -> InMemoryProbe {
         .with_sample(
             URL,
             PayloadSample {
-                body: sampled_payload(),
+                body: qip_core::untrusted::Untrusted::new("a scripted sample", sampled_payload()),
                 media_type: "application/json".to_string(),
                 payload_at: Some(now()),
                 latency: Duration::from_millis(55),

@@ -1175,7 +1175,9 @@ impl ResearchLoop {
                     specialist.as_str()
                 ))
             })?;
-            if let Some(missing) = spec.tools.iter().find(|t| tools.get(t).is_none()) {
+            if let Some(missing) = spec.tools.iter().find(|t| {
+                !qip_agents::tools::ToolName::parse(t).is_ok_and(|name| tools.get(&name).is_some())
+            }) {
                 return Err(Error::invalid(format!(
                     "BrainSpec {} names tool `{missing}`, which this node does not register; \
                      register the tool or correct the spec",

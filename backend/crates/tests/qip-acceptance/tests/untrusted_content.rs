@@ -394,7 +394,13 @@ fn no_fetching_crate_opens_a_socket_of_its_own() {
 
 /// The files that may read untrusted content directly, and why each one
 /// needs to. Everything else goes through `validate`.
-const INSPECT_ALLOWED: [(&str, &str); 3] = [
+const INSPECT_ALLOWED: [(&str, &str); 4] = [
+    (
+        "backend/crates/libs/qip-ai/src/language.rs",
+        "UntrustedModelRequest::render: the one place a fetched block is shown to a model, under \
+         the `untrusted/` prefix, inside `complete_over_untrusted`, whose answer is wrapped as \
+         UntrustedCompletion before it is returned (ADR 0158 decision 18)",
+    ),
     (
         "backend/crates/services/qip-market-ingestion/src/connector/transport.rs",
         "SourceResponse::body_excerpt: a bounded excerpt for an operator's health detail and \
