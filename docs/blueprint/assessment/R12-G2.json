@@ -2024,7 +2024,7 @@
     "verification": "inspection of ci.yml",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: the protected half is already on the branch: ci.yml's test job, acceptance partition, uploads the replay-bench artifact, and pipeline_scripts.rs pins it. What remains is code, not a protected path: a committed baseline and a test that diffs against it. That half stays with lane L6."
   },
   {
     "id": "R12-GCP-9086",
@@ -2410,7 +2410,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: no patch. The GitHub provider's attribute_condition in modules/cicd admits only refs/heads/* (`attribute.ref.startsWith('refs/heads/')`), and a pull_request run presents refs/pull/<n>/merge, so a ci.yml plan job on pull requests cannot authenticate unless that condition is widened. Widening it weakens a gate, which decision 3 does not cover. This is an owner decision: widen it for a plan-only identity, or plan on push to work branches instead."
   },
   {
     "id": "R12-CICD-9104",
@@ -2531,7 +2531,7 @@
     "verification": "gcloud artifacts docker images describe --show-sbom-references",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: no patch, for the reason docs/blueprint/lanes/L02-protected-patches.md gives. Whether `gcloud artifacts sbom load` accepts this repository's CycloneDX output is unconfirmed, and an unverified step in deploy.yml could fail every deployment. It needs a confirmed format, then a re-spec, and that waits on a reachable registry."
   },
   {
     "id": "R12-SEC-9109",
