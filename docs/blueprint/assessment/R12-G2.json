@@ -146,9 +146,12 @@
       "backend/crates/services/qip-simulation-engine/src/backtest.rs",
       "backend/crates/services/qip-simulation-engine/tests/simulation.rs",
       "backend/crates/tests/qip-acceptance/tests/tick_replay.rs",
-      "backend/crates/apps/qip-cli/src/replay.rs"
+      "backend/crates/apps/qip-cli/src/replay.rs",
+      "backend/crates/apps/qip-edge-node/src/feed.rs (ReplayFeed)",
+      "backend/crates/apps/qip-edge-node/src/pass.rs (run_replay_pass)",
+      "backend/crates/apps/qip-edge-node/tests/lake_replay.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Partly met: the no-action baseline refusal is in qip-agency plan.rs (tested in qip-agency tests/agency.rs) and intervention simulation is wired to agency plans through qip-cli agency.rs TwinScenarios (qip-cli tests/agency.rs). Missing: retained history (edge lake in memory by default, enable_cloud_storage=false everywhere, execution_nodes_enabled=false) and any test that replaying retained history yields the same decisions (tick_replay.rs reproduces events, books and fills, not decisions). Sharding comes from the row's KUBERNETES tag, not the requirement text. Needs tfvar flips plus a decision-replay test.",
+    "gap": "2026-10-25: skeptic REFUTED: ReplayFeed and run_replay_pass (4768c327) reproduce a fresh cell's decisions over lake history, but no shipped binary calls them and the lake defaults to a memory store, so no retained history exists to replay; remaining step is a qip-cli path that replays a durable lake through run_replay_pass.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -156,10 +159,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test tick_replay && cargo test -p qip-simulation-engine",
+    "verification": "cargo test -p qip-edge-node --test lake_replay",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'tick replay (qip-cli replay, qip-edge-node replay)' is stale: qip-cli replay verifies the event-log hash chain and registries, and qip-edge-node src/replay.rs is a doc stub; the tick replay engine is qip_simulation_engine::tick_replay::ReplaySession, reached only from qip-deepbrain tick_desk."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'tick replay (qip-cli replay, qip-edge-node replay)' is stale: qip-cli replay verifies the event-log hash chain and registries, and qip-edge-node src/replay.rs is a doc stub; the tick replay engine is qip_simulation_engine::tick_replay::ReplaySession, reached only from qip-deepbrain tick_desk. 2026-10-25: 4768c327 adds ReplayFeed and run_replay_pass sharing decide_act_reconcile; replaying_retained_lake_history_through_a_fresh_cell_yields_the_same_decisions compares every WorkReport, journal entry and chain tail. Skeptic (code-reviewer) REFUTED on default path."
   },
   {
     "id": "R12-QUANT-9007",
@@ -867,9 +870,11 @@
       "backend/crates/services/qip-simulation-engine/src/venue.rs",
       "backend/crates/services/qip-simulation-engine/src/agents.rs",
       "backend/crates/services/qip-simulation-engine/tests/agents.rs",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled",
+      "backend/crates/apps/qip-cli/src/simulate.rs",
+      "backend/crates/apps/qip-cli/tests/simulate.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Queue modelling is evidenced (qip-simulation-engine tests/tick_replay.rs a_resting_limit_order_waits_behind_the_size_already_queued_at_its_price documents the mutation dropping queue_ahead). What remains is running the twin as sharded replay/simulation jobs: infrastructure/gitops holds no Job, CronJob or indexed-job manifest for simulation (the replay gate is a Kargo promotion gate), and ReplaySession is reached only from the off-by-default tick_desk. Needs a job entrypoint, manifests and a deployment, likely an ADR or workload-register entry.",
+    "gap": "2026-10-25: requirement clause unmet: qip simulate --set <path> --shard k/n (f2f3d6c4) runs sharded queue-position replay from a shipped CLI, but participant behaviour is replayed prints, not simulated participants, and no committed sharded job exists; remaining step is a participant model on the replay path (or an owner restatement) — the in-lane skeptic graded it HOLDS weakly and the lane kept it PARTIAL on that clause under bar part 4.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -877,10 +882,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-simulation-engine",
+    "verification": "cargo test -p qip-simulation-engine --test tick_replay; cargo test -p qip-cli --test simulate",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: f2f3d6c4 adds qip simulate with SHA-256 instrument-bucket sharding; union of shards equals the unsharded run, coupled sets and malformed k/n are refused (mutations in the commit). Skeptic (security-engineer): HOLDS weakly; lane held back on the participant clause."
   },
   {
     "id": "R12-WORLD-9037",

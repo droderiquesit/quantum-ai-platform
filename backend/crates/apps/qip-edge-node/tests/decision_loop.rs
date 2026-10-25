@@ -534,6 +534,7 @@ fn market_events_the_feed_applied_reach_the_tick_lake_with_exchange_time_capture
     let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         CELL,
+        REGION,
         qip_edge_node::event_fabric::drain::default_retention(),
         qip_storage::lake_codec::SegmentCodec::Identity,
     )?)];
@@ -1855,6 +1856,7 @@ fn a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_
     let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         CELL,
+        REGION,
         qip_edge_node::event_fabric::drain::default_retention(),
         qip_storage::lake_codec::SegmentCodec::Identity,
     )?)];
@@ -1976,31 +1978,19 @@ fn permitting_to_seed(
     gateway.with_listing_permissions(permissions, "paper")
 }
 
-/// R12-TICK-1201: what the node's passes applied goes through the drain's
-/// lake sink as sealed segments, and the lake alone is enough to rebuild the
-/// book the venue published. The segments are pinned and read back through
-/// `qip_storage::lake_history` (the reader every replay job uses, checksums
-/// verified), replayed with `qip_orderbook::replay`, and the rebuilt ladder
-/// must equal the simulated venue's own depth after the last pass: an
-/// independent truth, not a second copy of the feed.
-///
-/// Mutations: `LakeSink::deliver` skips every even-sequenced tick — the
-/// drain wait fails ("only 37 of 73 ticks reached the lake"), bounded by
-/// `PATIENCE`; the feed captures each level a tick above the price it
-/// published — the bids rebuilt from the lake differ from the venue's.
-#[test]
-fn the_lake_alone_rebuilds_the_book_the_venue_published() -> Result<()> {
-    use qip_contracts::venue::VenueStatus;
-    use qip_orderbook::venue::VenueState;
-    use qip_storage::lake::Lake;
-    use qip_storage::lake_history::HistoryQuery;
-    use std::collections::BTreeSet;
-
+/// The node's default path for thirty turns, every applied tick drained
+/// through the production `LakeSink` into an in-memory lake: the touch moves
+/// every turn and a second level comes and goes, so the book a reader of the
+/// lake must rebuild is not the first one. Returns the rig, the lake and how
+/// many ticks the passes applied; returns only once every one of them is in
+/// a sealed segment, bounded by `PATIENCE`.
+fn session_drained_to_lake() -> Result<(Rig, Arc<MemoryBlobStore>, usize)> {
     let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 1_024)?;
     let lake: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::new());
     let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         CELL,
+        REGION,
         qip_edge_node::event_fabric::drain::default_retention(),
         qip_storage::lake_codec::SegmentCodec::Identity,
     )?)];
@@ -2018,8 +2008,6 @@ fn the_lake_alone_rebuilds_the_book_the_venue_published() -> Result<()> {
         )?,
     )?;
 
-    // Thirty turns, the touch moving every turn and a second level coming
-    // and going, so the book the lake must rebuild is not the first one.
     let mut captured = 0usize;
     for second in 10..40 {
         let simulated = rig
@@ -2061,10 +2049,28 @@ fn the_lake_alone_rebuilds_the_book_the_venue_published() -> Result<()> {
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+    Ok((rig, lake, captured))
+}
+
+/// The instrument's book rebuilt from `lake` alone: its segments pinned and
+/// read back through `qip_storage::lake_history` (the reader every replay
+/// job uses, checksums verified) and replayed with `qip_orderbook::replay`
+/// into a fresh aggregated book. Asserts the lake holds all `captured` ticks
+/// and that their sequence has no hole, so a rebuilt book is never compared
+/// on a partial history.
+fn book_rebuilt_from_lake(
+    lake: &MemoryBlobStore,
+    captured: usize,
+) -> Result<qip_orderbook::venue::VenueState> {
+    use qip_contracts::venue::VenueStatus;
+    use qip_orderbook::venue::VenueState;
+    use qip_storage::lake::Lake;
+    use qip_storage::lake_history::HistoryQuery;
+    use std::collections::BTreeSet;
 
     let granted: BTreeSet<String> =
         BTreeSet::from([qip_edge_node::feed::SIMULATED_DATASET.to_string()]);
-    let reader = Lake::new(lake.as_ref());
+    let reader = Lake::new(lake);
     let listing = reader.pin_market_history(
         "tick-1201",
         &HistoryQuery {
@@ -2103,6 +2109,25 @@ fn the_lake_alone_rebuilds_the_book_the_venue_published() -> Result<()> {
         "the lake's sequence has a hole: {:?}",
         output.periods
     );
+    Ok(rebuilt)
+}
+
+/// R12-TICK-1201: what the node's passes applied goes through the drain's
+/// lake sink as sealed segments, and the lake alone is enough to rebuild the
+/// book the venue published. The segments are pinned and read back through
+/// `qip_storage::lake_history` (the reader every replay job uses, checksums
+/// verified), replayed with `qip_orderbook::replay`, and the rebuilt ladder
+/// must equal the simulated venue's own depth after the last pass: an
+/// independent truth, not a second copy of the feed.
+///
+/// Mutations: `LakeSink::deliver` skips every even-sequenced tick — the
+/// drain wait fails ("only 37 of 73 ticks reached the lake"), bounded by
+/// `PATIENCE`; the feed captures each level a tick above the price it
+/// published — the bids rebuilt from the lake differ from the venue's.
+#[test]
+fn the_lake_alone_rebuilds_the_book_the_venue_published() -> Result<()> {
+    let (mut rig, lake, captured) = session_drained_to_lake()?;
+    let rebuilt = book_rebuilt_from_lake(lake.as_ref(), captured)?;
 
     let venue = rig
         .decisions
@@ -2142,6 +2167,53 @@ fn the_lake_alone_rebuilds_the_book_the_venue_published() -> Result<()> {
     Ok(())
 }
 
+/// R12-TICK-1201's other half: the book rebuilt from the lake equals the
+/// book the cell reconstructed from the bytes, compared by the cell's own
+/// `Cell::book_digest` — the state every gate of the pass priced against.
+///
+/// The test above compares the lake with the venue, and that comparison is
+/// blind to the decoder. The lake records what the venue's publisher wrote,
+/// so a `DepthDecoder` that misread one level would leave the venue and the
+/// lake in agreement while the cell traded off a third book that neither
+/// matched. Comparing the lake against the cell closes that: capture,
+/// decode, reconstruct and seal must all agree on one book.
+///
+/// Mutation: in `DepthDecoder::decode` (src/feed.rs) add one to the price
+/// of the first level of each frame the cell decodes — the cell's digest
+/// differs from the lake's and the digest assertion fails.
+#[test]
+fn the_book_rebuilt_from_the_lake_equals_the_book_the_cell_reconstructed_from_the_bytes()
+-> Result<()> {
+    let (rig, lake, captured) = session_drained_to_lake()?;
+    let rebuilt = book_rebuilt_from_lake(lake.as_ref(), captured)?
+        .snapshot()
+        .book;
+    assert!(
+        !rebuilt.bids.is_empty() && !rebuilt.asks.is_empty(),
+        "premise: the lake rebuilds a two-sided book, so equal digests are not two empty books"
+    );
+    let held = rig
+        .decisions
+        .cell()
+        .book_digest(&venue(), &object())
+        .expect("premise: the cell tracks the instrument the feed published");
+    assert_eq!(
+        held,
+        rebuilt.digest(),
+        "the cell holds a book the lake does not rebuild: the lake's is {rebuilt:?}"
+    );
+    // The accessor answers for a book the cell holds and for nothing else:
+    // an instrument nobody published has no digest rather than an empty
+    // book's.
+    assert_eq!(
+        rig.decisions
+            .cell()
+            .book_digest(&venue(), &ObjectId::from_string("obj-NOT-PUBLISHED")),
+        None
+    );
+    Ok(())
+}
+
 /// R12-TICK-2044: a circuit breaker the simulated venue declares reaches the
 /// cell as a typed status message on the feed's own wire, and the tick lake
 /// seals it as that typed record. The feed refuses a pass whose frame the
@@ -2163,6 +2235,7 @@ fn a_circuit_breaker_the_venue_declares_reaches_the_cell_as_a_typed_status_and_i
     let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         CELL,
+        REGION,
         qip_edge_node::event_fabric::drain::default_retention(),
         qip_storage::lake_codec::SegmentCodec::Identity,
     )?)];
@@ -2266,6 +2339,7 @@ fn every_drained_lake_segment_carries_the_venues_published_bytes_line_for_line()
     let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         CELL,
+        REGION,
         qip_edge_node::event_fabric::drain::default_retention(),
         qip_storage::lake_codec::SegmentCodec::Identity,
     )?)];

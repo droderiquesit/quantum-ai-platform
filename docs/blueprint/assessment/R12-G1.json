@@ -291,9 +291,10 @@
       "backend/crates/libs/qip-financial/src/manifest.rs::ManifestV2::new",
       "backend/crates/libs/qip-financial/src/manifest.rs::tests::a_version_two_manifest_round_trips_with_every_one_of_its_six_fields",
       "backend/crates/libs/qip-financial/src/manifest.rs::tests::a_sealed_version_one_manifest_still_decodes_reads_the_six_as_not_recorded_and_re_encodes_identically",
-      "backend/crates/libs/qip-financial/src/manifest.rs::tests::a_version_two_field_that_would_read_as_recorded_and_say_nothing_is_refused"
+      "backend/crates/libs/qip-financial/src/manifest.rs::tests::a_version_two_field_that_would_read_as_recorded_and_say_nothing_is_refused",
+      "backend/crates/services/qip-market-ingestion/src/narrative.rs (NarrativeAdapter::manifest_for)"
     ],
-    "gap": "2026-10-24: ADR 0132 decision 3's code slice is built and mutation-verified, but no production caller attaches version 2: qip-market-ingestion's narrative adapter and the deep brain still build v1 via SourceManifest::of, and the connector plane keeps its own connector::manifest::SourceManifest. Left: have one real producer (the narrative adapter) call with_v2 with its entitlement, parser and freshness, which changes the bytes of the sealed NewsItem manifest and needs its absorption and no_copied_documents tests re-baselined. The shared admission header (TICK-2053) that ADR 0132 says supplies the Entitlement type does not exist yet; ManifestV2 uses qip_contracts::governance::Entitlement, which Entitlement now derives Eq for.",
+    "gap": "2026-10-25: skeptic REFUTED: only NarrativeAdapter::manifest_for attaches ManifestV2 and its one non-test caller is qip-cli demo --live, while SourceManifest::generated (synthetic narrative) still writes v1 and the connector plane's own manifest carries no content hash, cursor, lineage or refetch descriptor; remaining step is v2 on every ingested-source path (or one manifest type) wired into a shipped composition root.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -304,7 +305,7 @@
     "verification": "cargo test -p qip-financial --lib manifest",
     "work_item": "",
     "size": "S",
-    "notes": "Lane T4-LEDGER 2026-10-24: v2 built; mutations that fired: #[serde(skip)] on cursor (round-trip test failed 'cursor dropped'), FromCursor refusal disabled (refusal test failed). Kept PARTIAL: no production producer."
+    "notes": "Lane T4-LEDGER 2026-10-24: v2 built; mutations that fired: #[serde(skip)] on cursor (round-trip test failed 'cursor dropped'), FromCursor refusal disabled (refusal test failed). Kept PARTIAL: no production producer. 2026-10-25: 0d01d59e makes manifest_for always call with_v2, adds entitlement and freshness to NarrativeFeedConfig, and fixes parser name/version as constants. Skeptic (security-engineer) REFUTED as above."
   },
   {
     "id": "R12-DATA-8014",

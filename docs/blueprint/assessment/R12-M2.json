@@ -1144,9 +1144,11 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/market_event.rs:37-56",
       "backend/crates/edge/qip-sequencing/src/align.rs:51-120",
-      "backend/crates/edge/qip-sequencing/tests/align.rs:90"
+      "backend/crates/edge/qip-sequencing/tests/align.rs:90",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs (LakeSink::align_across)",
+      "backend/crates/apps/qip-edge-node/tests/lake_clock.rs"
     ],
-    "gap": "Alignment is computed only within one venue feed partition: nothing places ticks of two venues or two regions against each other, and no tick is stamped with its region or clock source. Cross-venue alignment before the feature engine would run on the decision thread inside qip-edge's cell (feed application), not in qip-edge-node.",
+    "gap": "2026-10-25: skeptic REFUTED: the cross-partition stamp is untyped JSON on lake lines, relates partitions within one cell only (no cross-region record), and runs only behind QIP_VENUE_FEED=simulated, which no committed environment renders; remaining step is a typed sync record on the captured event with real cross-region alignment on a default or committed-enabled capture path.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1154,10 +1156,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-twin --test twin",
+    "verification": "cargo test -p qip-edge-node --test lake_clock",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: within-stream alignment now on the drain (tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock checks arrival_order through the corrections equality); cross-venue and region metadata not reached."
+    "notes": "Corrected 2026-10-18 by lane L09: within-stream alignment now on the drain (tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock checks arrival_order through the corrections equality); cross-venue and region metadata not reached. 2026-10-25: 367f8451 stamps region, cell, clock_source and cross_partition (bounded at MAX_ALIGNED_PARTITIONS) on every lake line; three mutations in the commit. Skeptic (code-reviewer) REFUTED, and found a live defect: the spool floors instants to the millisecond, so two ticks a microsecond apart on 50 us clocks were stamped 'before'; fixed in the following commit by widening each side by half the spool quantum."
   },
   {
     "id": "R12-TICK-2049",
