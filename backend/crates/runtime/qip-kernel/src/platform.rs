@@ -883,6 +883,11 @@ pub struct Platform {
     /// `asset_classes`. What the symbolic rule pack prices one lot with
     /// (R12-REASON-3057).
     lot_units: BTreeMap<String, Decimal>,
+    /// The expiry of every dated contract in the universe — a future's or an
+    /// option's, from its extension — taken at assembly like `lot_units`.
+    /// What the symbolic rule pack measures a claim's horizon against
+    /// (R12-REASON-3057, contracts); an undated instrument is absent.
+    contract_expiries: BTreeMap<String, Timestamp>,
     /// COVERAGE-013: who may trade which derivative type. Empty at assembly,
     /// so every derivative order is refused until a composition root grants.
     derivative_permissions: DerivativePermissions,
@@ -5271,6 +5276,17 @@ impl Platform {
                 )
             })
             .collect();
+        let contract_expiries: BTreeMap<String, Timestamp> = universe
+            .iter()
+            .filter_map(|object| {
+                let expiry = match &object.extension {
+                    qip_financial::extensions::Extension::Future(future) => future.expiry,
+                    qip_financial::extensions::Extension::Option(option) => option.expiry,
+                    _ => return None,
+                };
+                Some((object.object_id.as_str().to_string(), expiry))
+            })
+            .collect();
         let derivative_types: BTreeMap<String, InstrumentType> = universe
             .iter()
             .filter(|object| object.instrument_type.is_derivative())
@@ -5813,6 +5829,7 @@ impl Platform {
             asset_classes,
             derivative_types,
             lot_units,
+            contract_expiries,
             derivative_permissions: DerivativePermissions::none(),
             derivative_desk: None,
             licensed_jurisdictions: None,
@@ -15242,6 +15259,17 @@ impl Platform {
                 .map(|class| class.as_str().to_string()),
             lot_headroom,
             cash_headroom,
+            // Whole days from the claim's deadline to the contract's expiry,
+            // floored: an expiry an hour short of the deadline is minus one.
+            contract_expiry_margin_days: self.contract_expiries.get(subject.as_str()).map(
+                |expiry| {
+                    let deadline = hypothesis.formed_at.saturating_add(hypothesis.horizon);
+                    expiry
+                        .since(deadline)
+                        .as_nanos()
+                        .div_euclid(Duration::from_days(1).as_nanos())
+                },
+            ),
         };
         let derivation = {
             let world = self.world.read();
