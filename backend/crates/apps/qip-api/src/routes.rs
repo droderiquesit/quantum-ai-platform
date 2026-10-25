@@ -2261,14 +2261,19 @@ impl Api {
                         // (R12-EVID-1200). Until 2026-10-24 this route never
                         // drained the evidence, so the fabric held nothing
                         // this process's connector claimed.
-                        let intake = platform.absorb_evidence(feed.drain_evidence(), now);
-                        let (believed, withheld) = sensed.release(&intake);
+                        let admitted = platform.admit_world_records(
+                            feed.drain_evidence(),
+                            sensed.take_claimed(),
+                            now,
+                        );
+                        let withheld = admitted.withheld;
                         // `qip-api` owns no bus, so each record's lineage is
                         // minted here at the seam where the platform learns
                         // it. The event log and the cycle's journal entry
                         // then carry a correlation id per record, where
                         // `observe` left the cycle unable to name its inputs.
-                        let observed = platform.observe_fresh(believed, "qip-api/sense", now);
+                        let observed =
+                            platform.observe_fresh(admitted.records, "qip-api/sense", now);
                         (
                             sensed.at,
                             Some(SenseSummary {

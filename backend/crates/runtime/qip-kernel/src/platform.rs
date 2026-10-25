@@ -189,7 +189,7 @@ use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::factor::FactorRisk;
 use qip_risk::limits::{LimitSet, MarginBasis, RiskState, VenueMargin};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
-use qip_risk_engine::monitor::RiskMonitor;
+use qip_risk_engine::monitor::{MonitorAction, RiskMonitor};
 use qip_risk_engine::pretrade::PreTradeChecker;
 use qip_simulation_engine::agents::CounterpartyAgent;
 use qip_simulation_engine::conditions::{ConditionSchedule, ConditionWindow, MarketCondition};
@@ -376,8 +376,9 @@ pub struct Platform {
     /// still exactly one place that knows how the pieces fit together, and
     /// touched by nothing in [`Platform::run_cycle`] — the loop above runs one
     /// process against the market in front of it, and the centre reasons about
-    /// every cell on its own schedule.
-    central: CentralPlane,
+    /// every cell on its own schedule. `pub(crate)` for
+    /// `crate::model_serving`, which signs promotion records with its key.
+    pub(crate) central: CentralPlane,
     /// The confidential gate between the plane's per-cell state and any
     /// aggregate that leaves it as insight. Held here rather than constructed
     /// per query, because its privacy budget and its release record are the
@@ -562,6 +563,14 @@ pub struct Platform {
     /// error was charted and read by nothing, so a twin that was wrong about
     /// a venue stayed wrong by the same amount for ever.
     fill_calibration: qip_twin::calibration::FillCalibration,
+    /// Strategies whose capital grants are narrowed because the twin's replay
+    /// of fills at their venue diverged from the venue (R12-RES-7104), each
+    /// until a re-promotion recorded after it. Resumed from the log, so a
+    /// restart does not hand a held strategy back its full size.
+    replay_divergence_holds: BTreeMap<StrategyId, crate::replay_divergence::DivergenceHold>,
+    /// Where each released strategy's divergence evidence starts again: the
+    /// instant of the re-promotion that released it. Resumed with the holds.
+    replay_divergence_windows: BTreeMap<StrategyId, Timestamp>,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -765,6 +774,15 @@ pub struct Platform {
     /// order if it cannot. Kept so a test and an operator can see the routing
     /// that guarded the last order rather than trust that one happened.
     pretrade_routing: Option<DeterministicRouting>,
+    /// How the most recent pass of the risk monitor over the book was routed
+    /// (R12-RISK-3022). The monitor's verdict is what engages the kill switch
+    /// and what withholds sign-off and release in ACT, so it is the second
+    /// place a hard limit is evaluated, and until this it was evaluated with
+    /// no routing at all — deterministic by the absence of a model in the
+    /// call, not by anything that could be shown. Always the deterministic
+    /// arm, obtained through [`Router::determine`]; see
+    /// [`Self::observe_book_under_routing`].
+    monitor_routing: Option<DeterministicRouting>,
     /// What the most recent cycle's REASON stage was routed to, and whether
     /// the panel was convened as a result.
     ///
@@ -5607,6 +5625,7 @@ impl Platform {
         // under — while it is still borrowed rather than moved, so a
         // resumed proposal is re-validated against the real rule it names.
         let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
+        let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
         // One activity row per limit, before the set moves into the checker
         // and the monitor: the dormancy finding is about the rules that
         // never fire, and a table that gained rows on the first fire would
@@ -5666,6 +5685,8 @@ impl Platform {
             filled: Vec::new(),
             fill_scores: Vec::new(),
             fill_calibration: qip_twin::calibration::FillCalibration::default(),
+            replay_divergence_holds: replay_divergence_resumed.0,
+            replay_divergence_windows: replay_divergence_resumed.1,
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
@@ -5707,6 +5728,7 @@ impl Platform {
             cost_engine: CostEngine::new(DataCostModel::new()),
             cost_router: Router::default(),
             pretrade_routing: None,
+            monitor_routing: None,
             reason_routing: None,
             universe_not_decision_grade: not_decision_grade,
             commitments,
@@ -9031,7 +9053,12 @@ impl Platform {
                 // than skipped when a measurement it reads is malformed — a
                 // grant signed past a governor that could not decide is a
                 // grant the governor never saw.
-                let narrowing = self.grant_narrowing(now);
+                // And, for this strategy alone, the twin's divergence at its
+                // venue (R12-RES-7104): a hold narrows every grant signed
+                // while it stands, and only a re-promotion releases it.
+                let narrowing = self
+                    .grant_narrowing(now)
+                    .and_then(|decision| self.narrow_for_replay_divergence(strategy, decision));
                 let outcome = narrowing.and_then(|narrowing| {
                     self.central
                         .issue_narrowed(
@@ -13901,6 +13928,50 @@ impl Platform {
         self.pretrade_routing.as_ref()
     }
 
+    /// How the last pass of the risk monitor over the book was routed.
+    pub fn monitor_routing(&self) -> Option<&DeterministicRouting> {
+        self.monitor_routing.as_ref()
+    }
+
+    /// The conditions the book-level limit evaluation is routed under.
+    ///
+    /// The book has no one instrument, so the regime is the book's own — a
+    /// crisis at the crisis drawdown, quiet otherwise — and the horizon is the
+    /// cycle's. The conditions label the routing record; they choose nothing,
+    /// because the `Required` arm consults no ladder.
+    fn book_conditions(&self) -> Conditions {
+        Conditions::new(
+            AssetClass::Equity,
+            CostRegion::new(HOME_REGION),
+            if self.capital.drawdown() >= CRISIS_DRAWDOWN {
+                MarketRegime::Crisis
+            } else {
+                MarketRegime::Quiet
+            },
+            VolatilityRegime::Normal,
+            Horizon::Intraday,
+        )
+    }
+
+    /// Run the risk monitor over the book under a deterministic routing.
+    ///
+    /// **The only caller of `RiskMonitor::observe`** (R12-RISK-3022). The
+    /// routing is taken by value so a caller must have obtained one from
+    /// [`Router::determine`] — a type that cannot name a model rung — before
+    /// the limits are evaluated, and it is kept as the record of how this
+    /// pass was routed. The monitor's verdict engages the kill switch and
+    /// gates sign-off and release, so those paths are covered by this one.
+    fn observe_book_under_routing(
+        &mut self,
+        routing: DeterministicRouting,
+        state: &RiskState,
+        now: Timestamp,
+    ) -> MonitorAction {
+        self.monitor_routing = Some(routing);
+        self.monitor
+            .observe(state, "platform", self.autonomy.level(), now)
+    }
+
     /// Describe the market this decision is being made in.
     ///
     /// Every field is read off something the platform already tracks. Nothing
@@ -17652,9 +17723,26 @@ impl Platform {
         // book that became unacceptable while it sat is exactly what this
         // stage exists to catch.
         let risk_state = self.risk_state();
-        let action = self
-            .monitor
-            .observe(&risk_state, "platform", self.autonomy.level(), now);
+        // Routed before the limits are read (R12-RISK-3022). A routing the
+        // router refuses is not a reason to skip the monitor: the book is
+        // halted, because limits that could not be shown to be evaluated
+        // deterministically are limits nobody may trade against.
+        let action = match self
+            .cost_router
+            .determine("risk monitor limits for the book", self.book_conditions())
+        {
+            Ok(routing) => self.observe_book_under_routing(routing, &risk_state, now),
+            Err(error) => {
+                self.monitor_routing = None;
+                MonitorAction::HaltGlobally {
+                    reason: format!(
+                        "the book's limits could not be routed as a deterministic decision ({}); \
+                         halted rather than evaluated on an unproven path",
+                        error.message()
+                    ),
+                }
+            }
+        };
         self.monitor
             .enforce(&action, self.autonomy.kill_switch_mut(), now);
 
@@ -18507,6 +18595,19 @@ impl Platform {
         // else. The cap DECIDE reads is computed from the scores on every
         // construction — this pass only puts the change on the record.
         let (reviewed, problems) = self.review_sizing(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // R12-RES-7104: what the same fill errors say about the replays the
+        // strategies at each venue were promoted on. After `score_filled`, so
+        // this cycle's errors are read, and beside `review_sizing` rather than
+        // inside it because that narrows an instrument on the desk and this
+        // narrows a strategy's grant at the centre. It withdraws no venue.
+        let (reviewed, problems) = self.review_replay_divergence(now);
         if let Some(reviewed) = reviewed {
             let detail = format!("{}; {reviewed}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };
@@ -22666,6 +22767,174 @@ impl Platform {
         &mut self.fill_calibration
     }
 
+    /// The strategies held to a narrowed grant because the twin diverged at
+    /// their venue, and the measurement behind each (R12-RES-7104).
+    pub fn replay_divergence_holds(
+        &self,
+    ) -> &BTreeMap<StrategyId, crate::replay_divergence::DivergenceHold> {
+        &self.replay_divergence_holds
+    }
+
+    /// The fraction of its allocation a grant to `strategy` is held to by the
+    /// twin's divergence at its venue: one where nothing holds it, and
+    /// [`crate::replay_divergence::REPLAY_DIVERGENCE_MULTIPLIER`] where a hold
+    /// stands. Never above one.
+    pub fn replay_divergence_multiplier(&self, strategy: &StrategyId) -> Decimal {
+        self.replay_divergence_holds
+            .get(strategy)
+            .map_or(Decimal::ONE, |hold| hold.multiplier)
+    }
+
+    /// `decision` further narrowed for `strategy`'s replay-divergence hold,
+    /// named as its own contraction so the grant record says why it is
+    /// smaller. Unchanged where no hold stands.
+    fn narrow_for_replay_divergence(
+        &self,
+        strategy: &StrategyId,
+        mut decision: crate::confidence::ConfidenceDecision,
+    ) -> Result<crate::confidence::ConfidenceDecision> {
+        let Some(hold) = self.replay_divergence_holds.get(strategy) else {
+            return Ok(decision);
+        };
+        decision.multiplier = decision
+            .multiplier
+            .checked_mul(hold.multiplier)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "narrowing {strategy}'s grant by its replay-divergence hold overflows"
+                ))
+            })?;
+        decision.contractions.push(crate::confidence::Contraction {
+            trigger: crate::confidence::Trigger::ReplayDivergence,
+            subject: Some(strategy.as_str().to_string()),
+            multiplier: hold.multiplier,
+            reason: format!(
+                "the twin's replay of fills at {} diverged from the venue by a mean {:.1} bps \
+                 over {} fills, past the {} bps threshold, at {}; {strategy}'s grant is held to \
+                 {} until it is promoted again",
+                hold.venue,
+                hold.mean_abs_error_bps,
+                hold.sample,
+                crate::replay_divergence::REPLAY_DIVERGENCE_THRESHOLD_BPS,
+                hold.raised_at.to_rfc3339(),
+                hold.multiplier
+            ),
+        });
+        Ok(decision)
+    }
+
+    /// The LEARN pass for R12-RES-7104: release every hold a re-promotion
+    /// has answered, then hold every registered strategy whose venue the
+    /// twin now diverges from. Each change is journaled before the state
+    /// moves, so a hold the platform acts on is a hold the log carries.
+    ///
+    /// Releases first: a strategy re-promoted since its hold is measured on
+    /// the fills after its re-promotion in the same pass, so a twin still
+    /// diverging re-holds it on new evidence rather than on the evidence the
+    /// re-promotion answered.
+    fn review_replay_divergence(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        use crate::replay_divergence::{
+            DivergenceHold, REPLAY_DIVERGENCE_ORIGIN, ReplayDivergenceEntry, measure,
+            repromotion_after,
+        };
+        let mut problems = Vec::new();
+        let mut restored = 0usize;
+        let mut reduced = 0usize;
+
+        let held: Vec<DivergenceHold> = self.replay_divergence_holds.values().cloned().collect();
+        for hold in held {
+            let Some(repromotion) = repromotion_after(
+                self.central.factory().ledger().history(&hold.strategy),
+                hold.raised_at,
+            )
+            .cloned() else {
+                continue;
+            };
+            let entry = ReplayDivergenceEntry::restored(&hold, &repromotion, now);
+            if let Err(error) = self.journal_record(entry, REPLAY_DIVERGENCE_ORIGIN, now) {
+                problems.push(format!(
+                    "{}'s replay-divergence hold was answered by a re-promotion and stays in \
+                     force because the release could not be journaled: {}",
+                    hold.strategy,
+                    error.message()
+                ));
+                continue;
+            }
+            self.replay_divergence_holds.remove(&hold.strategy);
+            self.replay_divergence_windows
+                .insert(hold.strategy.clone(), repromotion.promotion.at);
+            restored += 1;
+        }
+
+        let dependents: Vec<(StrategyId, String)> = self
+            .central
+            .factory()
+            .candidates()
+            .filter(|candidate| {
+                !self
+                    .replay_divergence_holds
+                    .contains_key(candidate.strategy())
+                    && self.central.factory().stage_of(candidate.strategy())
+                        != qip_contracts::gate::GateStage::Retired
+            })
+            .map(|candidate| {
+                (
+                    candidate.strategy().clone(),
+                    candidate.venue().as_str().to_string(),
+                )
+            })
+            .collect();
+        for (strategy, venue) in dependents {
+            let since = self.replay_divergence_windows.get(&strategy).copied();
+            let divergence = match measure(&self.fill_scores, &venue, since) {
+                Ok(Some(divergence)) if divergence.exceeds_threshold() => divergence,
+                Ok(_) => continue,
+                Err(error) => {
+                    problems.push(format!("replay divergence: {}", error.message()));
+                    continue;
+                }
+            };
+            let hold = DivergenceHold {
+                strategy: strategy.clone(),
+                venue: venue.clone(),
+                raised_at: now,
+                sample: divergence.sample,
+                mean_abs_error_bps: divergence.mean_abs_error_bps,
+                multiplier: crate::replay_divergence::REPLAY_DIVERGENCE_MULTIPLIER,
+                calibration_observations: self
+                    .fill_calibration
+                    .venue(&venue)
+                    .map_or(0, |calibration| calibration.observations),
+            };
+            if let Err(error) = self.journal_record(
+                ReplayDivergenceEntry::reduced(&hold),
+                REPLAY_DIVERGENCE_ORIGIN,
+                now,
+            ) {
+                problems.push(format!(
+                    "{strategy} could not be held for the twin's divergence at {venue} because \
+                     the hold could not be journaled: {}",
+                    error.message()
+                ));
+                continue;
+            }
+            self.replay_divergence_holds.insert(strategy, hold);
+            reduced += 1;
+        }
+
+        if reduced == 0 && restored == 0 && self.replay_divergence_holds.is_empty() {
+            return (None, problems);
+        }
+        (
+            Some(format!(
+                "replay divergence: {reduced} strategy grant(s) reduced, {restored} restored by \
+                 re-promotion, {} held",
+                self.replay_divergence_holds.len()
+            )),
+            problems,
+        )
+    }
+
     /// The twin's per-venue fill calibration, as the scored fills have moved
     /// it (R12-TICK-2080).
     pub fn fill_calibration(&self) -> &qip_twin::calibration::FillCalibration {
@@ -25126,6 +25395,73 @@ mod decide_tests {
                 .contains(&format!("{} sized down to whole lots", off_grid.len())),
             "the stage summary does not say how many legs were expressed at the lot: {}",
             outcome.detail
+        );
+    }
+
+    /// R12-RISK-3022: every hard-limit evaluation the kernel makes is taken
+    /// under a deterministic routing. The pre-trade check was; the monitor's
+    /// pass — which engages the kill switch and gates sign-off and release —
+    /// was evaluated with no routing at all. Now ACT obtains one from
+    /// `Router::determine` and hands it to `observe_book_under_routing`, the only
+    /// production caller of `RiskMonitor::observe`.
+    ///
+    /// Mutation: call the monitor directly in `stage_act_orders`, bypassing
+    /// `determine` — the routing is absent after the cycle and the source
+    /// scan finds a second call.
+    #[test]
+    fn every_limit_evaluation_takes_a_deterministic_routing_witness() {
+        let mut platform = platform();
+        assert!(
+            platform.monitor_routing().is_none(),
+            "premise: nothing has been evaluated yet"
+        );
+        let report = platform.run_cycle(Timestamp::from_secs(1_760_000_100));
+        assert!(
+            report.stage(Stage::Act).is_some(),
+            "premise: ACT ran, so the monitor ran"
+        );
+        let routing = platform
+            .monitor_routing()
+            .expect("the monitor's pass was not routed as a deterministic decision");
+        assert!(
+            routing
+                .rationale()
+                .contains("risk monitor limits for the book"),
+            "{}",
+            routing.rationale()
+        );
+
+        // Structurally, not only on this cycle: the production half of this
+        // file evaluates the monitor at exactly one place, inside the function
+        // that demands the routing. The production half ends at the first
+        // test *module*, not the first `#[cfg(test)]` attribute (production
+        // items carry those too). A call is any `.observe(` whose receiver
+        // ends in `monitor`, whatever the argument names. The needles are
+        // assembled so this test's own text is not a match.
+        let source = include_str!("platform.rs");
+        let boundary = ["\n#[cfg(test)]", "\nmod "].concat();
+        let production = &source[..source.find(&boundary).expect("the file has a test module")];
+        let call = [".", "observe("].concat();
+        let monitor_calls: Vec<usize> = production
+            .match_indices(&call)
+            .map(|(at, _)| at)
+            .filter(|&at| production[..at].trim_end().ends_with("monitor"))
+            .collect();
+        assert_eq!(
+            monitor_calls.len(),
+            1,
+            "the monitor is observed at {} production sites, not one",
+            monitor_calls.len()
+        );
+        let wrapper = production
+            .find("fn observe_book_under_routing(")
+            .expect("premise: the routed wrapper exists");
+        let next_fn = production[wrapper + 1..]
+            .find("\n    fn ")
+            .map_or(production.len(), |offset| wrapper + 1 + offset);
+        assert!(
+            (wrapper..next_fn).contains(&monitor_calls[0]),
+            "the monitor's one evaluation sits outside the routed wrapper"
         );
     }
 

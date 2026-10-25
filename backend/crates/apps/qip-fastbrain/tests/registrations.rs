@@ -567,3 +567,48 @@ fn a_licence_that_expires_mid_run_stops_the_next_poll_rather_than_the_next_resta
     );
     Ok(())
 }
+
+/// R12-EVID-1200 on the fast brain's own step: the connector's evidence
+/// goes into the world fabric through `Platform::admit_world_records`, and
+/// what the step observes is exactly what that seam released. Mutation:
+/// in `node::step_with`, observe `batch.accepted` directly instead of the
+/// seam's records — the fabric holds no claim and the first assertion fails.
+#[test]
+fn a_fast_brain_step_observes_only_what_the_world_fabric_released() -> Result<()> {
+    let server = RateServer::serving(RATE_TABLE);
+    let mut feed = open_keyless(&server.url)?;
+    let config = PlatformConfig::default();
+    let clock: Arc<dyn qip_core::Clock> = Arc::new(qip_core::ManualClock::new(streaming_instant()));
+    let context = qip_core::Context::new(clock, config.seed);
+    let mut platform = qip_kernel::Platform::new(
+        config,
+        context,
+        qip_observability::Telemetry::silent(),
+        qip_financial::universe::Universe::new(),
+        qip_risk::limits::LimitSet::conservative_default(),
+    )?;
+    assert_eq!(platform.evidence_held(), 0, "premise: an empty fabric");
+
+    let outcome = qip_fastbrain::node::step(
+        &mut platform,
+        &mut feed,
+        streaming_instant(),
+        Duration::from_secs(5),
+    )?;
+
+    assert_eq!(
+        platform.evidence_held(),
+        3,
+        "the step did not hand the connector's three claims to the world fabric"
+    );
+    assert_eq!(
+        outcome.withheld, 0,
+        "the fabric stood behind every honest rate"
+    );
+    assert_eq!(
+        outcome.observed + outcome.rejections.len(),
+        3,
+        "what the step observed is not what the seam released: {outcome:?}"
+    );
+    Ok(())
+}

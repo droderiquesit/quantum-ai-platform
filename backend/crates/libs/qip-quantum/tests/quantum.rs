@@ -346,3 +346,54 @@ fn hosted_capabilities_describe_real_hardware_rather_than_a_simulator() {
     );
     assert!(capabilities.cost_per_job_micros > 0);
 }
+
+/// R12-QUANT-1012: a provider's answer is an advisory candidate. The only
+/// way the router turns one into weights is `ClassicalValidator::validate_qaoa`,
+/// which recomputes the energy on the QUBO the job was sent and refuses a
+/// claim it does not reproduce; what comes out carries the recomputed
+/// objective, never the claim.
+///
+/// Mutation: make `validate_qaoa` build its candidate with
+/// `claimed_objective` set to the recomputed energy, so the claim is never
+/// compared -- the lying answer validates and `unwrap_err` panics.
+#[test]
+fn a_qaoa_answer_whose_claimed_energy_the_qubo_does_not_reproduce_never_becomes_a_validated_solution()
+-> Result<()> {
+    use qip_quantum::benchmark::ClassicalValidator;
+    use qip_quantum::qaoa::QaoaResult;
+    let qubo = max_cut_triangle();
+    let assignment = vec![1, 0, 0];
+    let worth = qubo.evaluate(&assignment);
+    let answer = |energy: f64| QaoaResult {
+        assignment: assignment.clone(),
+        energy,
+        expectation: energy,
+        success_probability: 0.5,
+        layers: 1,
+        angles: vec![0.1, 0.2],
+        evaluations: 7,
+    };
+    let validator = ClassicalValidator::new(1e-9)?;
+
+    // Premise: an honest claim validates, and the objective it carries is
+    // the recomputed one.
+    let honest = validator.validate_qaoa(&qubo, "scripted", &answer(worth))?;
+    assert!(approx_eq(honest.objective(), worth, 1e-12));
+    assert_eq!(honest.assignment(), &assignment[..]);
+
+    let lying = validator
+        .validate_qaoa(&qubo, "scripted", &answer(worth - 5.0))
+        .unwrap_err();
+    assert!(
+        lying
+            .message()
+            .contains("is refused however good the claim was"),
+        "{}",
+        lying.message()
+    );
+
+    let mut short = answer(worth);
+    short.assignment.pop();
+    assert!(validator.validate_qaoa(&qubo, "scripted", &short).is_err());
+    Ok(())
+}

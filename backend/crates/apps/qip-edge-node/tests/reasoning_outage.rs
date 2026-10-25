@@ -412,7 +412,11 @@ fn permitting_to_seed(
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        for action in [CreationAction::List, CreationAction::Seed] {
+        for action in [
+            CreationAction::Create,
+            CreationAction::List,
+            CreationAction::Seed,
+        ] {
             let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
             for authority in CreationAuthority::ALL {
                 permissions.record(authority, &request, "test fixture")?;

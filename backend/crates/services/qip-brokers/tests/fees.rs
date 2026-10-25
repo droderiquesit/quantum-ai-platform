@@ -299,6 +299,7 @@ fn the_resting_side_of_a_trade_is_charged_the_maker_rung_and_the_crossing_side_t
         dec!("99.00"),
         Decimal::from_int(30),
         start(),
+        &listing(VENUE, &object()),
     )?;
     let maker_fills = exchange.drain_bookable_fills();
     assert_eq!(
@@ -480,6 +481,21 @@ fn list_admitted(
         permissions.record(authority, &request, "test fixture")?;
     }
     exchange.list(object, &permissions.admit(&request)?)
+}
+
+/// An admission to list `object` at `venue`: what venue flow taken against
+/// a listed book is admitted under (R12-COVERAGE-5107).
+fn listing(venue: &str, object: &ObjectId) -> CreationAdmission {
+    let request = CreationRequest::new(CreationAction::List, venue, object.as_str(), "paper");
+    let mut permissions = CreationPermissions::new();
+    for authority in CreationAuthority::ALL {
+        permissions
+            .record(authority, &request, "test fixture")
+            .expect("a fixture permission with a reference is recorded");
+    }
+    permissions
+        .admit(&request)
+        .expect("all three authorities are recorded")
 }
 
 /// An admission to seed `object` at `venue`, minted the one way there is:

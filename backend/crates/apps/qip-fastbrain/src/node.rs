@@ -167,10 +167,14 @@ pub fn step_with(
     // claim it rests on (R12-EVID-1200): the connector's own check ran
     // against one source's private fabric, the world's against every
     // source's.
-    let intake = platform.absorb_evidence(feed.drain_evidence(), now);
     let rejections = std::mem::take(&mut batch.rejections);
-    let (released, withheld) = batch.release(&intake);
-    let observed = sensing.feed(platform, &feed.descriptor().name, released, now)?;
+    let offered = std::mem::take(&mut batch.accepted)
+        .into_iter()
+        .zip(std::mem::take(&mut batch.claims))
+        .collect();
+    let released = platform.admit_world_records(feed.drain_evidence(), offered, now);
+    let withheld = released.withheld;
+    let observed = sensing.feed(platform, &feed.descriptor().name, released.records, now)?;
     let report = platform.run_cycle(now);
     let elapsed = monotonic(began);
 

@@ -26,6 +26,7 @@ pub mod rng;
 pub mod secret;
 pub mod testing;
 pub mod time;
+pub mod untrusted;
 
 pub use config::{Config, ConfigError};
 pub use decimal::Decimal;

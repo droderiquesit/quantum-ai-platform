@@ -428,10 +428,15 @@ const PROBES: &[Probe] = &[
         defined_in: "runtime/qip-kernel/src/desk_fabric.rs",
         needle: "fabric_record(",
     },
+    // The kernel's evidence intake is reached through the seam that wraps
+    // it: since 2026-10-24 (R12-EVID-1200) every root's connector arm calls
+    // `admit_world_records`, which absorbs the poll's evidence and returns
+    // only the records the fabric stood behind, and nothing outside the
+    // kernel calls `absorb_evidence` directly.
     Probe {
-        symbol: "absorb_evidence (kernel)",
+        symbol: "admit_world_records (kernel evidence intake)",
         defined_in: "runtime/qip-kernel/src/evidence_intake.rs",
-        needle: "platform.absorb_evidence(",
+        needle: "platform.admit_world_records(",
     },
 ];
 

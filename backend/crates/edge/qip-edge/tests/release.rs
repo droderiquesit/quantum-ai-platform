@@ -31,7 +31,8 @@ use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::ArbitrageDesk;
 use qip_edge::cell::{
-    Cell, CellConfig, ExecutionReport, GATE_RELEASE_LATE, Placer, UnreleasedOrder, WorkReport,
+    Cell, CellConfig, ExecutionReport, GATE_RELEASE_LATE, GATE_RELEASE_REFUSED, Placer,
+    UnreleasedOrder, WorkReport,
 };
 use qip_edge::dispersion::DispersionPolicy;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
@@ -573,6 +574,7 @@ fn an_order_the_gateway_withdrew_unreleased_is_refused_under_its_gate_closed_and
         scheduled: t(10),
         lag: Duration::from_secs(10),
         tolerance: Duration::from_millis(250),
+        refused: None,
     });
     let second = cell.work(t(20), &mut gateway)?;
     assert!(
@@ -626,6 +628,105 @@ fn an_order_the_gateway_withdrew_unreleased_is_refused_under_its_gate_closed_and
         refusals_under(&second, GATE_RELEASE_LATE).is_empty(),
         "the withdrawal is not a pass-time refusal and must not be pushed onto the report"
     );
+    Ok(())
+}
+
+/// R12-COVERAGE-5107: an order the gateway held and then refused at its
+/// release — a listing permission withdrawn between placement and release —
+/// reaches the cell as a structured withdrawal, not as error text. The cell
+/// journals it under its own gate with the gateway's refusal, counts it on
+/// the refusal series under that gate and not under `release_late`, closes
+/// the order on its record and stops, because its chain says the order was
+/// sent and the venue never saw it. Until 2026-10-24 the refusal was only a
+/// message `advance_to` returned and the pass stopped on.
+///
+/// Mutation: make `withdraw_unreleased` ignore `refused` (treat every
+/// withdrawal as late) and the refusal is journaled and counted under
+/// `release_late` without the gateway's reason.
+#[test]
+fn an_order_the_gateway_refused_at_release_is_refused_under_its_own_gate_closed_and_stops_the_cell()
+-> Result<()> {
+    let (mut cell, metrics) = cell_with(judged_on_one_fill(100)?)?;
+    let mut gateway = ReleasingGateway::silent();
+    let first = cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        first.orders.len(),
+        2,
+        "the premise failed: the cycle did not go out: {:?}",
+        first.refusals
+    );
+    let leg = first.orders[0].order_id.clone();
+    let venue = first.orders[0].venue.clone();
+    assert!(
+        !cell.is_halted(),
+        "the premise failed: the cell is already halted"
+    );
+
+    let because = "obj-X is listed at CX, but a listing is not a standing permission";
+    gateway.withdrawn.push(UnreleasedOrder {
+        order_id: leg.clone(),
+        venue: venue.clone(),
+        scheduled: t(10),
+        lag: Duration::ZERO,
+        tolerance: Duration::from_millis(250),
+        refused: Some(because.to_string()),
+    });
+    let second = cell.work(t(20), &mut gateway)?;
+    assert!(
+        cell.is_halted(),
+        "a leg the venue refused left the cell trading"
+    );
+    let journaled = |wanted: &str| -> Vec<String> {
+        cell.journal()
+            .entries()
+            .iter()
+            .filter_map(|entry| match &entry.decision {
+                Decision::Refused { gate, reason } if gate == wanted => Some(reason.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let refused = journaled(GATE_RELEASE_REFUSED);
+    assert_eq!(
+        refused.len(),
+        1,
+        "the refusal was not journaled under `{GATE_RELEASE_REFUSED}`"
+    );
+    assert!(
+        refused[0].contains(&leg) && refused[0].contains(because),
+        "the journaled refusal does not name the order and carry the gateway's reason: {}",
+        refused[0]
+    );
+    assert!(
+        journaled(GATE_RELEASE_LATE).is_empty(),
+        "a refused release was journaled as a late one"
+    );
+    assert_eq!(
+        cell.open_orders()
+            .iter()
+            .find(|order| order.order_id == leg)
+            .and_then(|order| order.closed.clone())
+            .as_deref(),
+        Some("unreleased"),
+        "the order the venue never received is still open on the cell's record"
+    );
+    let counted = |gate: &str| {
+        metrics.snapshot().counter(
+            names::EDGE_REFUSALS,
+            &labels([("cell", CELL), ("region", REGION), ("gate", gate)]),
+        )
+    };
+    assert_eq!(
+        counted(GATE_RELEASE_REFUSED),
+        1,
+        "the refusal did not reach its series"
+    );
+    assert_eq!(
+        counted(GATE_RELEASE_LATE),
+        0,
+        "the refusal was counted as a late release"
+    );
+    assert!(refusals_under(&second, GATE_RELEASE_REFUSED).is_empty());
     Ok(())
 }
 

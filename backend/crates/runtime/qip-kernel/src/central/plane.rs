@@ -1553,6 +1553,19 @@ impl CentralPlane {
     ///
     /// A deployment that never supplied real key material is otherwise
     /// indistinguishable from one that did, which is the failure this answers.
+    /// Sign a record's canonical payload with the plane's key, for a record
+    /// the centre issues outside the envelope and approval chains (a model
+    /// promotion, R12-EXPAND-6070). HMAC: see `qip_compliance::signing` for
+    /// what that scheme is not.
+    pub(crate) fn sign_record(&self, payload: &str) -> String {
+        self.key.sign(payload)
+    }
+
+    /// Whether `signature` is the plane's signature over `payload`.
+    pub(crate) fn verifies_record(&self, payload: &str, signature: &str) -> bool {
+        self.key.verifies(payload, signature)
+    }
+
     pub const fn signing_key_is_reproducible(&self) -> bool {
         self.key_is_reproducible
     }

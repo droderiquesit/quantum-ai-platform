@@ -727,6 +727,40 @@ fn a_record_whose_claim_the_world_fabric_holds_inadmissible_is_not_released_for_
     assert_eq!(released, vec!["honest-record"]);
 }
 
+/// R12-EVID-1200: the one seam every root's connector arm goes through
+/// absorbs the poll's evidence and hands back only the records the world
+/// fabric stood behind, keeping a record that rests on no claim. Mutation:
+/// make `admit_world_records` keep every claimed record — the forged record
+/// is released and the first assertion fails.
+#[test]
+fn the_world_record_seam_releases_only_what_the_fabric_stood_behind() {
+    let mut platform = platform();
+    let honest = checked("h1", "https://a.example", "rate 1.10", "1.10", &hash('a'));
+    let mut forged = checked("f1", "https://b.example", "rate 1.12", "1.10", &hash('b'));
+    forged.record.ingestion_timestamp = at(5);
+    forged.verdict = honest.verdict.clone();
+    assert!(honest.verdict.admissible && forged.verdict.admissible);
+
+    let released = platform.admit_world_records(
+        vec![honest, forged],
+        vec![
+            ("honest-record", Some("h1".to_string())),
+            ("forged-record", Some("f1".to_string())),
+            ("unclaimed-record", None),
+        ],
+        at(30),
+    );
+
+    assert_eq!(released.records, vec!["honest-record", "unclaimed-record"]);
+    assert_eq!(released.withheld, 1);
+    assert_eq!(released.intake.admitted, 2, "{:?}", released.intake);
+    assert_eq!(
+        platform.evidence_held(),
+        2,
+        "the poll's evidence was absorbed"
+    );
+}
+
 /// Every knowledge delta the kernel has journalled, re-admitted through the
 /// contract the way a receiving brain would read it.
 fn journalled_deltas(platform: &Platform) -> Vec<KnowledgeDelta> {

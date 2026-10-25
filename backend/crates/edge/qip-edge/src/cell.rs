@@ -289,6 +289,20 @@ pub const GATE_FILL_DISPERSION: &str = "fill_dispersion";
 /// offsets were computed against. Withdrawn is the refusal.
 pub const GATE_RELEASE_LATE: &str = "release_late";
 
+/// The gate an order is refused under when the gateway held it for a later
+/// release and then refused it at that release — today, because the
+/// listing permission the gateway re-admits every release against had
+/// lapsed in between (R12-COVERAGE-5107). A `pub const` for the reason
+/// [`GATE_RELEASE_LATE`] is one: recorded from the same seam, which has no
+/// `WorkReport`.
+///
+/// Distinct from [`GATE_RELEASE_LATE`] because the remedy is: a late
+/// release is a schedule the gateway could not keep, a refused one is a
+/// permission somebody withdrew. Until 2026-10-24 the refusal reached the
+/// cell as nothing at all — `advance_to` returned it as error text, the
+/// pass stopped on it, and the cell's record kept the order open as sent.
+pub const GATE_RELEASE_REFUSED: &str = "release_refused";
+
 /// The gate a halted cell journals under when it holds resting orders and
 /// the gateway it was handed cannot withdraw them (§29.2).
 ///
@@ -1301,7 +1315,8 @@ pub struct ExecutionReport {
 
 /// An order the gateway withdrew without sending, because the instant it was
 /// told to release it at was already further in the past than it will send
-/// late (ADR 0084 §4).
+/// late (ADR 0084 §4), or because it refused the order at that release
+/// (`refused`, R12-COVERAGE-5107).
 ///
 /// Not an [`ExecutionReport`]: nothing traded. Not a cancel either — the
 /// venue never saw the order, so there is no remaining quantity for it to
@@ -1318,8 +1333,13 @@ pub struct UnreleasedOrder {
     /// How far past `scheduled` the gateway found itself on the first pass
     /// that could have released the order.
     pub lag: Duration,
-    /// The most lag the gateway will release under; what `lag` exceeded.
+    /// The most lag the gateway will release under; what `lag` exceeded,
+    /// when the order was withdrawn for being late.
     pub tolerance: Duration,
+    /// The gateway's refusal, when it withdrew the order because it refused
+    /// it at release rather than because the release came too late. `None`
+    /// is the late case, which `lag` and `tolerance` describe.
+    pub refused: Option<String>,
 }
 
 /// A fill the venue reported, attributed to the strategies whose intent the
@@ -7577,25 +7597,47 @@ impl Cell {
     /// reconciler does not hold it against the venue, and what the region
     /// committed for it is returned, because nothing was spent.
     fn withdraw_unreleased(&mut self, unreleased: UnreleasedOrder, now: Timestamp) {
-        let reason = format!(
-            "order {} for {} was to be released no earlier than {} and the gateway found that \
-             instant {} ms past on the first pass that could have released it, past the {} ms \
-             it will send late; withdrawn rather than sent late, because a leg arriving outside \
-             the window its cycle was admitted on is the exposure the release schedule exists to \
-             prevent",
-            unreleased.order_id,
-            unreleased.venue.as_str(),
-            unreleased.scheduled.to_rfc3339(),
-            unreleased.lag.as_millis(),
-            unreleased.tolerance.as_millis()
-        );
         // Recorded directly rather than through `Cell::refuse`: there is no
         // `WorkReport` on this path. See [`GATE_RELEASE_LATE`] for the
-        // enumeration this makes a constant necessary for.
-        self.metrics.refusal(GATE_RELEASE_LATE);
+        // enumeration this makes a constant necessary for; each arm passes
+        // its own `pub const`, so the label stays bounded.
+        let (gate, reason) = match &unreleased.refused {
+            None => {
+                self.metrics.refusal(GATE_RELEASE_LATE);
+                (
+                    GATE_RELEASE_LATE,
+                    format!(
+                        "order {} for {} was to be released no earlier than {} and the gateway \
+                         found that instant {} ms past on the first pass that could have \
+                         released it, past the {} ms it will send late; withdrawn rather than \
+                         sent late, because a leg arriving outside the window its cycle was \
+                         admitted on is the exposure the release schedule exists to prevent",
+                        unreleased.order_id,
+                        unreleased.venue.as_str(),
+                        unreleased.scheduled.to_rfc3339(),
+                        unreleased.lag.as_millis(),
+                        unreleased.tolerance.as_millis()
+                    ),
+                )
+            }
+            Some(refusal) => {
+                self.metrics.refusal(GATE_RELEASE_REFUSED);
+                (
+                    GATE_RELEASE_REFUSED,
+                    format!(
+                        "order {} for {} was held for release no earlier than {} and the \
+                         gateway refused it at that release, so it never reached the venue: \
+                         {refusal}",
+                        unreleased.order_id,
+                        unreleased.venue.as_str(),
+                        unreleased.scheduled.to_rfc3339()
+                    ),
+                )
+            }
+        };
         self.journal.record(
             Decision::Refused {
-                gate: GATE_RELEASE_LATE.to_string(),
+                gate: gate.to_string(),
                 reason,
             },
             now,
