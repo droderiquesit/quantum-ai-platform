@@ -59,6 +59,35 @@ pub enum StoreKind {
     KeyValue,
 }
 
+/// What a class's objects are (R12-DATA-1041).
+///
+/// There is deliberately no variant for a document, a page or any other
+/// body a world source published: the durable layer is derived knowledge,
+/// and a world document behind it is re-fetched through its manifest rather
+/// than kept (ADR 0180 decision 4). A class that wanted to keep bodies would
+/// first have to add a variant here, in a reviewed change the acceptance
+/// test `no_declared_storage_class_or_pack_body_kind_can_hold_a_document_body`
+/// fails on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Holds {
+    /// Sealed event-fabric segments: the platform's own records.
+    EventSegments,
+    /// Venue market data kept under a retention right: decoded ticks, and
+    /// the venue's frames only where the dataset's right keeps them (ADR
+    /// 0181). Market data, not a document; ADR 0180 decision 4 says why the
+    /// never-copy rule does not reach it.
+    VenueMarketData,
+    /// Trained model artifacts and the reflex packages built from them.
+    ModelArtifacts,
+    /// Knowledge packs: the compact derived form, never the source text
+    /// (`qip_contracts::knowledge_pack`).
+    KnowledgePacks,
+    /// The tick desk's simulation output.
+    SimulationOutput,
+    /// A start-up write proving the store is writable.
+    Probe,
+}
+
 /// One declared class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StorageClass {
@@ -75,6 +104,8 @@ pub struct StorageClass {
     /// or `None` for a class that never reaches a bucket. An acceptance test
     /// holds this against the module in both directions.
     pub bucket: Option<&'static str>,
+    /// What its objects are.
+    pub holds: Holds,
 }
 
 /// The classes found in the tree.
@@ -86,6 +117,7 @@ pub const DECLARED: &[StorageClass] = &[
         discipline: WriteDiscipline::Immutable,
         owner: "qip-fabricd",
         bucket: Some("archive"),
+        holds: Holds::EventSegments,
     },
     StorageClass {
         name: "tick lake",
@@ -94,6 +126,7 @@ pub const DECLARED: &[StorageClass] = &[
         discipline: WriteDiscipline::Immutable,
         owner: "qip-edge-node, qip-fastbrain, qip-deepbrain, qip-api",
         bucket: Some("archive"),
+        holds: Holds::VenueMarketData,
     },
     StorageClass {
         name: "model artifacts",
@@ -102,6 +135,7 @@ pub const DECLARED: &[StorageClass] = &[
         discipline: WriteDiscipline::Overwrite,
         owner: "qip-deepbrain",
         bucket: Some("artifacts"),
+        holds: Holds::ModelArtifacts,
     },
     StorageClass {
         name: "reflex packages",
@@ -110,6 +144,7 @@ pub const DECLARED: &[StorageClass] = &[
         discipline: WriteDiscipline::Overwrite,
         owner: "qip-deepbrain",
         bucket: Some("artifacts"),
+        holds: Holds::ModelArtifacts,
     },
     StorageClass {
         name: "knowledge packs",
@@ -118,6 +153,7 @@ pub const DECLARED: &[StorageClass] = &[
         discipline: WriteDiscipline::Overwrite,
         owner: "qip-deepbrain",
         bucket: Some("segments"),
+        holds: Holds::KnowledgePacks,
     },
     StorageClass {
         name: "tick desk output",
@@ -126,6 +162,7 @@ pub const DECLARED: &[StorageClass] = &[
         discipline: WriteDiscipline::Overwrite,
         owner: "qip-deepbrain",
         bucket: Some("simulation"),
+        holds: Holds::SimulationOutput,
     },
     StorageClass {
         name: "preflight probe",
@@ -134,6 +171,7 @@ pub const DECLARED: &[StorageClass] = &[
         discipline: WriteDiscipline::Overwrite,
         owner: "every composition root",
         bucket: None,
+        holds: Holds::Probe,
     },
 ];
 

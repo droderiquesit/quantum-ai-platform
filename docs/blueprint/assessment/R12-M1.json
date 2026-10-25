@@ -959,9 +959,14 @@
     "current": "Packs are persisted to a blob store under knowledge-packs when enabled, refused if not smaller than the source body, and decode as a world-model delta with no source text; test proves write, size and refusal.",
     "evidence": [
       "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs:211 pack holds keys not text and is measured",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs::a_connector_polls_knowledge_pack_reaches_the_store_smaller_than_its_source"
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs::a_connector_polls_knowledge_pack_reaches_the_store_smaller_than_its_source",
+      "backend/crates/libs/qip-storage/src/classes.rs (Holds)",
+      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs (MAX_PACK_TEXT_BYTES, check_compact)",
+      "backend/crates/libs/qip-evidence/src/evidence.rs (MAX_STATEMENT_BYTES, check_statement_length; also EvidenceFabric::admit)",
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs no_declared_storage_class_or_pack_body_kind_can_hold_a_document_body",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs a_claim_whose_statement_is_a_document_body_is_refused_before_it_can_be_journaled"
     ],
-    "gap": "No check that no durable store holds document bodies (the tick lake may keep raw venue bytes under an entitlement); vectors/features, summaries and episodic memory are not part of the durable layer.",
+    "gap": "2026-10-25: skeptic REFUTED and deploy dependence: claim statements and knowledge-pack text are now bounded on the only paths into the journal and the pack encoder, and every declared store states a non-document content kind, but nothing checks a write against its class's declared content and the durable summary/vector/episode layer is written only behind QIP_DEEPBRAIN_KNOWLEDGE_PACKS (an owner/egress decision, see notes); remaining step is a write-time content check per class and the pack store on a default path.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -969,10 +974,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "protobuf/Parquet formats need an ADR (ADR 0002/0009).",
-    "verification": "inspection + size metric",
+    "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards; cargo test -p qip-world-model --test evidence_fabric; cargo test -p qip-contracts --test knowledge_pack",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measured on every poll but never stored. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measured on every poll but never stored. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-25: storage classes state Holds (no document variant); knowledge packs refuse any string past 2048 bytes at encode and decode; claim statements are refused past 2048 bytes at EvidenceRecord::new and at EvidenceFabric::admit (statement is a public field, so admission is the only door into the journal). Mutations, each fails its test: drop check_compact from encode; mark a second class VenueMarketData; drop the admit check; drop the constructor check. Skeptic (code-reviewer) REFUTED: Holds is a label nothing compares writes against, and the event log held unbounded statements (closed by the statement bound after the verdict); pack store still env-gated."
   },
   {
     "id": "R12-GOV-1042",
