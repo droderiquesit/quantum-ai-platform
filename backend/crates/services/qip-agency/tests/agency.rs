@@ -2666,6 +2666,7 @@ fn the_same_message_released_under_a_second_identity_in_a_later_pass_is_withheld
             tool: "quoter-2".into(),
             identity: "desk-agent-2".into(),
             fingerprint: voice_fingerprint(&quote_draft().content),
+            content: Some(quote_draft().content),
         }],
         "the report carries the voice the pass released"
     );
@@ -3684,4 +3685,51 @@ fn each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_re
 
 fn fresh_market_policy() -> ActionPolicy {
     ActionPolicy::new(Method::Market, d(1), d(5), BTreeSet::new()).unwrap()
+}
+
+/// R12-GOV-3030: the post-release check re-reads what was released against
+/// the rules the gate holds now, and reports the two releases it cannot
+/// vouch for rather than passing them: one journaled without its text, and
+/// one whose text is not the text that was released. A clean release
+/// reports nothing. Mutation: in `recheck_released`, skip the fingerprint
+/// comparison and the altered release reads as a breach of the rule instead.
+#[test]
+fn the_post_release_check_reports_a_later_breach_an_unreadable_release_and_an_altered_one() {
+    use qip_agency::guard::{GuardPolicy, Voice, voice_fingerprint};
+    let mut conduct = guard_decl().conduct;
+    conduct
+        .conduct_rules
+        .push("prohibit:published spread".to_string());
+    let mut guard = ActionGuard::from_policy(GuardPolicy {
+        conduct,
+        tools: guard_decl().tools,
+    })
+    .unwrap();
+    let breached = "Quote 20 lots on venue-a at the published spread";
+    let clean = "Quote 20 lots on venue-a";
+    let voice = |fingerprint_of: &str, content: Option<&str>| Voice {
+        tool: "quoter".to_string(),
+        identity: "desk-agent".to_string(),
+        fingerprint: voice_fingerprint(fingerprint_of),
+        content: content.map(str::to_string),
+    };
+    guard
+        .resume_voices(vec![
+            voice(breached, Some(breached)),
+            voice(clean, Some(clean)),
+            voice(breached, None),
+            voice(clean, Some(breached)),
+        ])
+        .unwrap();
+    let findings = guard.recheck_released();
+    let rules: Vec<&str> = findings.iter().map(|f| f.rule.as_str()).collect();
+    assert_eq!(
+        rules,
+        [
+            "prohibit:published spread",
+            "unreadable",
+            "fingerprint_mismatch"
+        ]
+    );
+    assert_eq!(findings[0].fingerprint, voice_fingerprint(breached));
 }

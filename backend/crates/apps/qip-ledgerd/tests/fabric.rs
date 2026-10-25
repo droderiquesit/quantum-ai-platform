@@ -138,7 +138,12 @@ impl Fabric {
         .unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let roll_every_batch = archive.is_some();
-        let mut broker = Broker::open(root.join("broker"), clock.clone()).unwrap();
+        // A broker that knows its region, as a deployed one must (ADR 0129):
+        // the ledger reads the producing region off what it stamps.
+        let mut broker = Broker::open(root.join("broker"), clock.clone())
+            .unwrap()
+            .with_region("europe-west2")
+            .unwrap();
         if let Some(store) = archive {
             broker = broker.with_archive_reader(store);
         }
@@ -194,8 +199,10 @@ impl Fabric {
         )
         .unwrap();
         stamp_drain(&mut batch, PRODUCER, epoch, next);
+        // As the producer's authenticated session would produce it, so the
+        // broker stamps the origin the ledger reads (ADR 0129).
         broker
-            .produce_to(STREAM, partition, batch)
+            .produce_from(STREAM, partition, batch, Some(PRODUCER))
             .unwrap()
             .expect("the broker takes the batch");
         self.sequence.insert(partition, (epoch, next + count));

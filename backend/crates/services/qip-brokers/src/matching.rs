@@ -142,10 +142,16 @@ impl InstrumentBook {
 }
 
 /// Books for every listed instrument.
-// Serialize for a snapshot a person reads; deliberately not Deserialize. A
-// decoded engine would arrive with books open and liquidity resting that no
-// admission ever opened or seeded (R12-EXEC-5079), so the only way an engine
-// comes to hold a book is `open`, and venue liquidity `seed`.
+///
+/// **`Serialize` and not `Deserialize`.** An engine decoded from a payload
+/// would carry whatever books the payload named, open and seeded, and none
+/// of them opened by [`MatchingEngine::open`] under an admission — a second
+/// way for a book to come into existence beside the one that asks whether
+/// anybody permitted it (R12-COVERAGE-5107, R12-EXEC-5079). Until 2026-10-24
+/// the derive offered exactly that, to any caller holding a string. Nothing
+/// in the tree decoded one; a replay rebuilds an engine by listing and
+/// seeding through the admitted path, never by reading one back. Serialize
+/// stays, for a snapshot a person reads.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct MatchingEngine {
     /// One entry per instrument [`MatchingEngine::open`] opened, and no

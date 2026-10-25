@@ -128,6 +128,10 @@ struct Position {
 struct Owner {
     /// Realised P&L since the last reset, signed: a gain is positive.
     realised: Decimal,
+    /// The highest `realised` has stood since the last reset, never below
+    /// zero: the reset is the grant's start, and a grant starts at its peak.
+    /// What the drawdown bound (ADR 0126) is measured from.
+    peak: Decimal,
     /// The unit `realised` is held in, once anything has been realised.
     unit: Option<Unit>,
     /// When `realised` last changed. A redeploy resets it only under a grant
@@ -196,6 +200,7 @@ impl RealisedLedger {
             ));
         };
         owner.realised = total;
+        owner.peak = owner.peak.max(total);
         owner.unit = Some(unit);
         owner.realised_at = Some(at);
         Booking::Priced
@@ -210,6 +215,21 @@ impl RealisedLedger {
             Decimal::ZERO
                 .checked_sub(owner.realised)
                 .map_or(Decimal::MAX, |loss| loss.max(Decimal::ZERO))
+        })
+    }
+
+    /// The realised peak-to-trough fall `owner` has taken within its grant:
+    /// the highest its realised P&L stood since the last reset, less where it
+    /// stands now (ADR 0126 decision 2). Zero at a new high.
+    ///
+    /// A fall too large to represent is read as the largest there is, never
+    /// as none — the same rule [`Self::realised_loss`] keeps.
+    pub(crate) fn realised_drawdown(&self, owner: &str) -> Decimal {
+        self.owners.get(owner).map_or(Decimal::ZERO, |owner| {
+            owner
+                .peak
+                .checked_sub(owner.realised)
+                .map_or(Decimal::MAX, |fall| fall.max(Decimal::ZERO))
         })
     }
 
@@ -251,6 +271,7 @@ impl RealisedLedger {
         };
         if owner.realised_at.is_some_and(&granted_after) {
             owner.realised = Decimal::ZERO;
+            owner.peak = Decimal::ZERO;
             owner.unit = None;
             owner.realised_at = None;
         }

@@ -335,6 +335,7 @@ fn an_attempted_pass_leaves_three_linked_approval_records_on_the_chain() {
             goal_target: "spread under 5 bps",
             acting_identity: "desk-agent",
             learning: None,
+            post_release: &[],
             at: Timestamp::from_secs(100),
         },
     )
@@ -431,6 +432,7 @@ fn a_guard_resumed_from_the_journal_has_already_spent_what_the_journal_records()
             goal_target: "t",
             acting_identity: "desk-agent",
             learning: None,
+            post_release: &[],
             at: Timestamp::from_secs(100),
         },
     )
@@ -634,6 +636,7 @@ fn one_pass_folds_into_one_connected_lineage_and_a_dropped_approval_breaks_it() 
             goal_target: "spread under 5 bps",
             acting_identity: "desk-agent",
             learning: None,
+            post_release: &[],
             at: Timestamp::from_secs(100),
         },
     )
@@ -729,6 +732,7 @@ fn a_withheld_plan_is_journaled_with_its_reasons_and_the_alternative_sought() {
             goal_target: "spread under 5 bps",
             acting_identity: "desk-agent",
             learning: None,
+            post_release: &[],
             at: Timestamp::from_secs(100),
         },
     )

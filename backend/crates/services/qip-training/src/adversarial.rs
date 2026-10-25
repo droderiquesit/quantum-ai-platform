@@ -32,6 +32,12 @@ pub struct PerturbationPolicy {
     pub max_movement_sd: f64,
     /// The share of probe rows that may be fragile.
     pub max_fragile_share: f64,
+    /// The share of probe rows that may be fragile to a nudge of any one
+    /// feature. Separate from the pooled share because the case this suite
+    /// exists for — one split in the middle of the data — makes only the
+    /// rows within a nudge of that one threshold fragile, about six in a
+    /// hundred for a uniform feature, which a pooled tenth lets through.
+    pub max_single_feature_share: f64,
 }
 
 impl Default for PerturbationPolicy {
@@ -46,6 +52,7 @@ impl Default for PerturbationPolicy {
             input_step_sd: 0.1,
             max_movement_sd: 0.5,
             max_fragile_share: 0.1,
+            max_single_feature_share: 0.02,
         }
     }
 }
@@ -55,7 +62,8 @@ impl PerturbationPolicy {
         let fraction = |value: f64| value.is_finite() && value > 0.0;
         let valid = fraction(self.input_step_sd)
             && fraction(self.max_movement_sd)
-            && (0.0..=1.0).contains(&self.max_fragile_share);
+            && (0.0..=1.0).contains(&self.max_fragile_share)
+            && (0.0..=1.0).contains(&self.max_single_feature_share);
         if !valid {
             return Err(Error::invalid(format!(
                 "a perturbation policy needs a positive input step and movement bound and a \
@@ -72,6 +80,9 @@ pub struct PerturbationReport {
     pub rows: usize,
     /// Rows whose worst movement exceeded the bound.
     pub fragile_rows: usize,
+    /// For each feature, the rows a nudge of that feature alone made
+    /// fragile, in feature order.
+    pub fragile_by_feature: Vec<usize>,
     /// The worst movement found anywhere, as a fraction of the output's
     /// standard deviation.
     pub worst_movement_sd: f64,
@@ -94,6 +105,24 @@ impl PerturbationReport {
             return Some(format!(
                 "{} perturbed evaluation(s) refused or returned a non-finite output",
                 self.failures
+            ));
+        }
+        if let Some((feature, rows)) = self
+            .fragile_by_feature
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, rows)| **rows)
+            .filter(|(_, rows)| {
+                self.rows > 0 && **rows as f64 / self.rows as f64 > policy.max_single_feature_share
+            })
+        {
+            return Some(format!(
+                "a nudge of feature {feature} alone moves {rows} of {} probe row(s) by more than \
+                 {:.2} of the output's spread, above the {:.0}% one feature may move: the model \
+                 hangs on a split inside its own data",
+                self.rows,
+                policy.max_movement_sd,
+                policy.max_single_feature_share * 100.0
             ));
         }
         if self.fragile_share() > policy.max_fragile_share {
@@ -165,6 +194,7 @@ pub fn attack(
         .map(|column| deviation(rows.iter().map(|row| row[column])) * policy.input_step_sd)
         .collect();
     let mut fragile_rows = 0;
+    let mut fragile_by_feature = vec![0usize; arity];
     let mut failures = 0;
     let mut worst = 0.0_f64;
     for (row, base) in rows.iter().zip(&baseline) {
@@ -173,16 +203,21 @@ pub fn attack(
             if *step <= 0.0 {
                 continue;
             }
+            let mut feature_worst = 0.0_f64;
             for direction in [1.0, -1.0] {
                 let mut nudged = row.clone();
                 nudged[column] += direction * step;
                 match model(&nudged) {
                     Ok(value) if value.is_finite() => {
-                        row_worst = row_worst.max((value - base).abs() / output_sd);
+                        feature_worst = feature_worst.max((value - base).abs() / output_sd);
                     }
                     _ => failures += 1,
                 }
             }
+            if feature_worst > policy.max_movement_sd {
+                fragile_by_feature[column] += 1;
+            }
+            row_worst = row_worst.max(feature_worst);
         }
         if row_worst > policy.max_movement_sd {
             fragile_rows += 1;
@@ -192,6 +227,7 @@ pub fn attack(
     Ok(PerturbationReport {
         rows: rows.len(),
         fragile_rows,
+        fragile_by_feature,
         worst_movement_sd: worst,
         failures,
     })
@@ -239,10 +275,49 @@ mod tests {
             &PerturbationPolicy::default(),
         )?;
         assert!(report.fragile_share() > 0.5, "{report:?}");
+        // The pooled bar on its own, with the single-feature bar opened.
+        let pooled_only = PerturbationPolicy {
+            max_single_feature_share: 1.0,
+            ..PerturbationPolicy::default()
+        };
+        assert!(
+            report
+                .refusal(&pooled_only)
+                .is_some_and(|why| why.contains("probe row(s) move")),
+            "{report:?}"
+        );
+        Ok(())
+    }
+
+    /// The case the suite exists for: one split in the middle of the data.
+    /// Only the rows within a nudge of the threshold are fragile — under the
+    /// pooled tenth — and the single-feature share refuses it. An
+    /// independent skeptic showed the pooled share alone let it through.
+    /// Mutation: drop the single-feature check in `refusal` — the model is
+    /// accepted and the assertion fails.
+    #[test]
+    fn a_model_hanging_on_one_split_inside_its_data_is_refused() -> Result<()> {
+        let data: Vec<Vec<f64>> = (0..400)
+            .map(|i| {
+                vec![
+                    (i as f64 * 0.618_033_988_7) % 1.0,
+                    (i as f64 * 0.414_213_562) % 1.0,
+                ]
+            })
+            .collect();
+        let report = attack(
+            |r| Ok(if r[0] > 0.5 { 1.0 } else { 0.0 }),
+            &data,
+            &PerturbationPolicy::default(),
+        )?;
+        assert!(
+            report.fragile_share() <= PerturbationPolicy::default().max_fragile_share,
+            "premise: the pooled share alone would pass it: {report:?}"
+        );
         assert!(
             report
                 .refusal(&PerturbationPolicy::default())
-                .is_some_and(|why| why.contains("probe row(s) move")),
+                .is_some_and(|why| why.contains("feature 0 alone")),
             "{report:?}"
         );
         Ok(())

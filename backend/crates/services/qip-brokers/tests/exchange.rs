@@ -192,6 +192,91 @@ fn a_partial_fill_and_its_residual_are_the_original_quantity() -> Result<()> {
     Ok(())
 }
 
+/// R12-COVERAGE-5107: venue flow taken against a listed book is a trade in
+/// that market and can fill a client's resting order, so the venue admits it
+/// against a listing admission for exactly this instrument here, as a
+/// placement is. Until 2026-10-24 `seed_aggressor` was public and took
+/// none; the one check sat in the edge node's gateway. Each admission
+/// offered below is genuine and for something else, and the resting order
+/// is untouched; the right one takes it.
+///
+/// Mutation: drop `self.admits_listing(object_id, admission)?` from
+/// `SimulatedExchange::seed_aggressor` and the first wrong admission takes
+/// the resting order.
+#[test]
+fn venue_flow_is_taken_only_under_an_admission_to_list_exactly_this_instrument_here() -> Result<()>
+{
+    let mut exchange = live_venue(ExchangeSettings::orderly(), 11)?;
+    let ticket = exchange.ready(start())?;
+    let order = order_at(
+        "maker",
+        Side::Buy,
+        50,
+        OrderType::Limit {
+            price: dec!("99.99"),
+        },
+    );
+    exchange.submit_order(&ticket, &order, start())?;
+    let resting = exchange.resting_count();
+    let other = ObjectId::from_string("OBJ00000000000000000OTHER");
+    for (case, admission) in [
+        (
+            "an admission to seed",
+            admission_to(CreationAction::Seed, VENUE, &object())?,
+        ),
+        (
+            "an admission for another venue",
+            admission_to_list("XOTHER", &object())?,
+        ),
+        (
+            "an admission for another instrument",
+            admission_to_list(VENUE, &other)?,
+        ),
+    ] {
+        let refused = exchange
+            .seed_aggressor(
+                &object(),
+                Side::Sell,
+                dec!("99.99"),
+                Decimal::from_int(130),
+                start(),
+                &admission,
+            )
+            .expect_err(&format!("{case}: venue flow took the resting order"));
+        assert_eq!(refused.code(), "denied", "{case}: {}", refused.message());
+        assert!(
+            refused
+                .message()
+                .contains("needs an admission to list exactly this instrument"),
+            "{case} was refused for another reason: {}",
+            refused.message()
+        );
+        assert_eq!(
+            exchange.resting_count(),
+            resting,
+            "{case}: the book changed"
+        );
+        assert!(
+            exchange.drain_bookable_fills().is_empty(),
+            "{case}: a fill was booked"
+        );
+    }
+    let taken = exchange.seed_aggressor(
+        &object(),
+        Side::Sell,
+        dec!("99.99"),
+        Decimal::from_int(130),
+        start(),
+        &admission_to_list(VENUE, &object())?,
+    )?;
+    assert_eq!(
+        taken,
+        Decimal::from_int(50),
+        "the right admission took nothing"
+    );
+    Ok(())
+}
+
 #[test]
 fn venue_flow_fills_a_resting_client_order_and_the_order_record_and_the_fill_stream_agree()
 -> Result<()> {
@@ -226,6 +311,7 @@ fn venue_flow_fills_a_resting_client_order_and_the_order_record_and_the_fill_str
         dec!("99.99"),
         Decimal::from_int(130),
         start(),
+        &admission_to_list(VENUE, &object())?,
     )?;
     // The client's fifty at 99.99 is all the flow can take at its price:
     // the seeded bids are all below it, so the other eighty go nowhere.
@@ -1299,7 +1385,17 @@ fn list_admitted(
 
 /// An admission to list `object` at `venue`, all three permissions recorded.
 fn admission_to_list(venue: &str, object: &ObjectId) -> Result<CreationAdmission> {
-    let request = CreationRequest::new(CreationAction::List, venue, object.as_str(), "paper");
+    admission_to(CreationAction::List, venue, object)
+}
+
+/// An admission to `action` `object` at `venue`, all three permissions
+/// recorded.
+fn admission_to(
+    action: CreationAction,
+    venue: &str,
+    object: &ObjectId,
+) -> Result<CreationAdmission> {
+    let request = CreationRequest::new(action, venue, object.as_str(), "paper");
     let mut permissions = CreationPermissions::new();
     for authority in CreationAuthority::ALL {
         permissions.record(authority, &request, "test fixture")?;
@@ -1361,6 +1457,7 @@ fn listing_an_instrument_that_is_already_listed_is_refused_and_changes_nothing()
             dec!("0.05"),
             fixture_liquidity(),
             start(),
+            &admission_to(CreationAction::Create, VENUE, &object())?,
             &admission_to_list(VENUE, &object())?,
         )
         .expect_err("a standing listing was replaced synthetically");

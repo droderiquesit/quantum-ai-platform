@@ -784,6 +784,43 @@ pub fn check_justification(grounds: &[Ground]) -> Result<()> {
     }
 }
 
+/// Proof that an action's grounds passed [`check_justification`]
+/// (R12-GOV-6127): a value of this type exists only for grounds naming at
+/// least one independent, evidence-backed reason, because [`Self::of`] is
+/// the only way to make one and decoding runs the same check. A seam that
+/// takes one — a queued thesis, a cell's send — cannot be reached by an
+/// action whose only reason is the profit it expects or the price it wants
+/// to move, however it was assembled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<Ground>", into = "Vec<Ground>")]
+pub struct Justification(Vec<Ground>);
+
+impl Justification {
+    /// The grounds, admitted only if [`check_justification`] admits them.
+    pub fn of(grounds: Vec<Ground>) -> Result<Self> {
+        check_justification(&grounds)?;
+        Ok(Self(grounds))
+    }
+
+    pub fn grounds(&self) -> &[Ground] {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<Ground>> for Justification {
+    type Error = Error;
+
+    fn try_from(grounds: Vec<Ground>) -> Result<Self> {
+        Self::of(grounds)
+    }
+}
+
+impl From<Justification> for Vec<Ground> {
+    fn from(justification: Justification) -> Self {
+        justification.0
+    }
+}
+
 fn digest(parts: &[&str]) -> String {
     sha256_hex(parts.join("\u{1f}").as_bytes())
 }

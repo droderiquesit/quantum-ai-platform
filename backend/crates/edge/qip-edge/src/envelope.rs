@@ -54,6 +54,17 @@ impl VerifiedEnvelope {
                 envelope.strategy().as_str()
             )));
         }
+        // A drawdown block decoded off the wire is checked against the
+        // envelope's own limits here, because the block's decode cannot see
+        // them: a correctly signed stop looser than the loss limit is still
+        // not a bound (ADR 0126 decision 2).
+        envelope.check_drawdown_consistent().map_err(|error| {
+            Error::denied(format!(
+                "the capital envelope for {} is refused: {}",
+                envelope.strategy().as_str(),
+                error.message()
+            ))
+        })?;
         if envelope.cell() != expected_cell {
             return Err(Error::denied(format!(
                 "an envelope for cell {} was presented to cell {expected_cell}",
@@ -88,6 +99,17 @@ impl VerifiedEnvelope {
             now,
         )
         .map_err(|error| {
+            Error::denied(format!(
+                "the capital envelope for {} is refused: {}",
+                envelope.strategy().as_str(),
+                error.message()
+            ))
+        })?;
+        // A drawdown block decoded off the wire is checked against the
+        // envelope's own limits here, because the block's decode cannot see
+        // them: a correctly signed stop looser than the loss limit is still
+        // not a bound (ADR 0126 decision 2).
+        envelope.check_drawdown_consistent().map_err(|error| {
             Error::denied(format!(
                 "the capital envelope for {} is refused: {}",
                 envelope.strategy().as_str(),
@@ -166,6 +188,13 @@ impl VerifiedEnvelope {
         now: Timestamp,
     ) -> CapitalAdmission {
         self.inner.admit(venue, notional, used, now)
+    }
+
+    /// Refuse a further order once the strategy's realised drawdown has
+    /// reached the grant's drawdown stop; see
+    /// [`CapitalEnvelope::check_drawdown`].
+    pub fn check_drawdown(&self, drawdown: Decimal) -> std::result::Result<(), String> {
+        self.inner.check_drawdown(drawdown)
     }
 
     /// The liquidity and leverage bounds the grant was signed with, if any

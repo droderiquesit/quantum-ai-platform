@@ -19,6 +19,7 @@ exist at the moment it is needed.
 * [Development-agent controls](runbooks/development-agent-controls.md)
 * [A new project, from scratch](runbooks/new-project-from-scratch.md)
 * [The owner's switches](runbooks/owner-switches.md) — each setting committed off, and who turns it on
+* [Dev redeploy readiness](runbooks/dev-redeploy-readiness.md) — the free agent work, the protected patches and the owner's ordered steps to bring dev back to serving, with the image and CVE status and a cost estimate (2026-10-24 draft)
 * [Proving ingestion before flipping `workload_metrics_exist`](runbooks/workload-metrics-ingestion-proof.md)
 * [Operator runbook](RUNBOOK.md)
 * [M5 deployment guide](M5_DEPLOYMENT.md) and [M5 operational runbook](M5_RUNBOOK.md) — the first vertical slice

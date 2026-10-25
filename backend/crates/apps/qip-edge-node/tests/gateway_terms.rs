@@ -102,14 +102,11 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        let request = CreationRequest::new(
-            CreationAction::List,
-            venue.as_str(),
-            object.as_str(),
-            "paper",
-        );
-        for authority in CreationAuthority::ALL {
-            permissions.record(authority, &request, "test fixture")?;
+        for action in [CreationAction::Create, CreationAction::List] {
+            let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
+            for authority in CreationAuthority::ALL {
+                permissions.record(authority, &request, "test fixture")?;
+            }
         }
     }
     gateway.with_listing_permissions(permissions, "paper")

@@ -1031,6 +1031,9 @@ fn batch(schema_id: u32, records: Vec<Record>) -> Result<Batch> {
         PayloadCodec::CanonicalJson,
         records,
     )
+    // ADR 0129 §2: the writer names the kind of component that produced the
+    // batch, so the ledger can tell a cell's record from a desk's.
+    .map(|batch| batch.with_provenance(qip_events::event_fabric::codec::Provenance::EdgeNode))
 }
 
 /// The journal entry a P2 `ReflexJournalRecorded` record carries.
