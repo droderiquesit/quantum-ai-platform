@@ -124,6 +124,7 @@ fn every_passs_frame_re_materialises_byte_for_byte_from_the_lakes_raw_slot() -> 
     let mut sink = LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         "raw-1",
+        "europe-west2",
         default_retention(),
         SegmentCodec::Identity,
     )?;
