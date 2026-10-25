@@ -550,3 +550,182 @@ fn a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_
     );
     Ok(())
 }
+
+/// R12-COVERAGE-5105: private and illiquid holdings are registered classes.
+/// A private equity fund and a real-estate holding each assemble beside a
+/// listed name and trade on paper, and the fund's commitment reaches the
+/// commitment book. Withdraw either class's record, and its instrument is
+/// refused by name.
+///
+/// The class-refusal test above withdraws `DigitalAsset`, so nothing proved
+/// the private class's own record was what admitted a fund. Without that
+/// proof, a registry that admitted private funds for some other reason
+/// would read as supporting them.
+///
+/// Mutation: delete the `PrivateMarket` record from
+/// `AssetClassRegistry::shipped`. `assemble` then refuses the universe,
+/// naming the fund, and this test fails at its first `?`.
+#[test]
+fn a_private_fund_and_a_real_asset_assemble_and_trade_on_paper_and_withdrawing_either_class_refuses_it()
+-> Result<()> {
+    use qip_financial::extensions::{Extension, PrivateAssetDetails};
+    let fund = || {
+        FinancialObject::builder(
+            ObjectId::from_string("obj-FUND"),
+            "obj-FUND",
+            InstrumentType::PrivateEquityFund,
+            LiquidityProfile::illiquid(90.0, 250.0),
+        )
+        .venue("OTC")
+        .geography("US")
+        .price(dec!("100"))
+        .extension(Extension::PrivateAsset(PrivateAssetDetails {
+            vintage_year: 2024,
+            committed_capital: dec!("400000"),
+            called_capital: dec!("150000"),
+            distributed_capital: qip_core::Decimal::ZERO,
+            residual_value: dec!("160000"),
+            stage: "buyout".to_string(),
+            lockup_years: 7.0,
+            capital_call_notice_days: 10,
+            call_schedule: None,
+        }))
+        .provenance(Provenance::synthetic("administrator", start()))
+        .build(start())
+    };
+    let property = || {
+        FinancialObject::builder(
+            ObjectId::from_string("obj-PROPERTY"),
+            "obj-PROPERTY",
+            InstrumentType::RealEstate,
+            LiquidityProfile::illiquid(180.0, 200.0),
+        )
+        .venue("OTC")
+        .geography("US")
+        .price(dec!("100"))
+        .provenance(Provenance::synthetic("appraiser", start()))
+        .build(start())
+    };
+    // A private-holdings mandate: leverage capped and no five-day
+    // liquidity floor, which a private fund or a building cannot meet by
+    // construction — the conservative default refuses both orders under
+    // `liquidity`, as it should for a desk that never agreed to hold them.
+    // The limit set is the one `tests/capital_calls.rs` books its fund under.
+    let mandate = LimitSet::new("private-holdings").with(
+        qip_risk::limits::Limit::new(
+            "max-leverage",
+            qip_risk::limits::LimitKind::MaxLeverage { limit: 2.0 },
+        )
+        .with_rationale("gross exposure is capped at 2x equity"),
+    );
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe_of(vec![
+            object("obj-AAA", InstrumentType::CommonStock, None)?,
+            fund()?,
+            property()?,
+        ])?,
+        mandate,
+    )?;
+    assert!(
+        platform
+            .asset_class_registry()
+            .is_registered(AssetClass::PrivateMarket),
+        "premise: the shipped registry holds the private-market class"
+    );
+    // On paper: the fund's undrawn commitment, 400,000 committed less
+    // 150,000 called, is what the platform's commitment book carries.
+    assert_eq!(
+        platform.commitments().unfunded_total(start())?,
+        dec!("250000"),
+        "the fund assembled but its commitment never reached the book"
+    );
+
+    // Each trades on paper: an order goes through the desk's whole control
+    // path and fills at the simulated venue, by the broker's own stamp.
+    assert_eq!(
+        platform.orders().fills().len(),
+        0,
+        "premise: nothing filled"
+    );
+    for id in ["obj-FUND", "obj-PROPERTY"] {
+        let order = platform.order_for(
+            ObjectId::from_string(id),
+            qip_execution_engine::order::Side::Buy,
+            dec!("1"),
+            dec!("100"),
+            "prop-coverage",
+            vec!["hyp-coverage".to_string()],
+            start(),
+        )?;
+        platform.submit_order(order, start())?;
+    }
+    let fills = platform.orders().fills();
+    for id in ["obj-FUND", "obj-PROPERTY"] {
+        let filled = fills.iter().any(|fill| {
+            fill.simulated
+                && platform
+                    .orders()
+                    .orders()
+                    .any(|order| order.order_id == fill.order_id && order.object_id.as_str() == id)
+        });
+        assert!(filled, "{id} did not fill on paper: {fills:?}");
+    }
+
+    // And the refusing half, on the table the platform assembled against
+    // with each class's record withdrawn.
+    // Real assets are what commodities hedge with, so the registry refuses
+    // to withdraw the record at all, naming the hedge map: a stronger guard
+    // than the instrument's own refusal, and the one the sibling test above
+    // accepts for the classes it withdraws.
+    match platform
+        .asset_class_registry()
+        .clone()
+        .without(AssetClass::RealAsset)
+    {
+        Err(error) => assert!(
+            error.message().contains("real_asset") && error.message().contains("hedged with"),
+            "withdrawing real_asset was refused for another reason: {}",
+            error.message()
+        ),
+        Ok(estate) => {
+            let message = estate
+                .admit(&property()?)
+                .err()
+                .ok_or_else(|| {
+                    qip_core::Error::invalid("a real asset was admitted without its class")
+                })?
+                .message()
+                .to_string();
+            assert!(
+                message.contains("obj-PROPERTY")
+                    && message.contains("is a real_asset and no record registers"),
+                "{message}"
+            );
+        }
+    }
+    let narrowed = platform
+        .asset_class_registry()
+        .clone()
+        .without(AssetClass::PrivateMarket)?;
+    assert!(
+        !narrowed.is_registered(AssetClass::PrivateMarket),
+        "premise: the narrowed registry does not hold PrivateMarket"
+    );
+    let message = narrowed
+        .admit(&fund()?)
+        .err()
+        .ok_or_else(|| qip_core::Error::invalid("a private fund was admitted without its class"))?
+        .message()
+        .to_string();
+    assert!(
+        message.contains("obj-FUND")
+            && message.contains("is a private_market and no record registers"),
+        "{message}"
+    );
+    Ok(())
+}

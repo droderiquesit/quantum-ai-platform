@@ -2271,13 +2271,17 @@
   },
   {
     "id": "R12-CAPITAL-1097",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Functionality lives in qip-risk limits + qip-risk-engine autonomy, used every cycle; no single 'brain' boundary or autonomous loop is defined.",
     "evidence": [
       "backend/crates/libs/qip-risk/src/limits.rs:118",
-      "backend/crates/services/qip-risk-engine/src/autonomy.rs:120"
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs:120",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs (5873c09d)",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs the_risk_brain_reaches_no_alpha_and_no_other_brain_and_no_other_brain_reaches_it, only_the_kernel_and_the_apps_hold_two_brains, the_manifest_reader_sees_target_table_and_renamed_dependencies, the_cell_crate_is_not_a_brain_because_it_composes_the_risk_brains_checks",
+      "backend/crates/libs/qip-risk/tests/*, backend/crates/libs/qip-risk-engine/tests/risk_engine.rs (contract tests)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs composes qip_risk_engine every cycle; qip-api depends on qip-kernel; module.cloud_run[\"api\"] unconditional in infrastructure/terraform/main.tf"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the risk brain (qip-risk, qip-risk-engine).",
+    "gap": "None against the inspection text. 2026-10-24 (lane L1-MONEY, f5e2b93c): the skeptic findings are closed. The manifest reader now keys crates by [package] name and reads [target.*.dependencies], [dependencies.x] tables and package= renames, with a shape test. qip-edge is deliberately not a brain crate: the cell composes the risk brain's pre-trade checks (ADR 0008), and a test pins that to the dependency. Residual reader gaps the skeptic named, none hiding an edge in today's tree: [workspace.dependencies] renames, a header with a trailing comment, quoted keys, build-dependencies, a // inside a string on a scanned line, and production code after the test module.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2285,10 +2289,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
+    "verification": "cargo test -p qip-acceptance --test brain_closure (\"test result: ok. 6 passed; 0 failed\"); cargo test -p qip-risk -p qip-risk-engine; whole qip-acceptance 1602 passed, 1 failed (documentation::the_blueprint_views_are_what_their_sources_render_to, the stale traceability matrix this lane may not commit)",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-10-24 lane L1-MONEY: closure suite added; kept PARTIAL on the skeptic's findings recorded in gap. 2026-10-24 lane L1-MONEY: promoted. Mutations fired: qip-capital added to qip-risk-engine; qip-capital added to qip-execution-engine; parser target arm, table arm and rename read each dropped; qip-edge listed as a brain. Independent code-reviewer skeptic returned HOLDS, cross-checking the closure from Cargo.lock independently of the test's parser (qip-risk and qip-risk-engine reach no alpha and no brain crate; no brain crate depends on either)."
   },
   {
     "id": "R12-CAPITAL-1098",
@@ -2317,9 +2321,12 @@
     "current": "Functionality lives in qip-ledgerd binary over qip_contracts::ledger postings; no single 'brain' boundary or autonomous loop is defined.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs:103 Posting",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:1"
+      "backend/crates/apps/qip-ledgerd/src/main.rs:1",
+      "backend/crates/libs/qip-contracts/src/ledger/obligations.rs LedgerObligations (moved from qip-capital, re-exported there)",
+      "backend/crates/apps/qip-ledgerd/Cargo.toml (no qip-capital); src/store.rs uses qip_contracts::ledger::LedgerObligations",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs the_ledger_brain_reaches_no_alpha_and_no_other_brain_and_meets_them_through_contracts"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the ledger brain (qip-ledgerd over qip_contracts::ledger and ledger_operation).",
+    "gap": "2026-10-24 (lane L1-MONEY, f5e2b93c): the code half is done. LedgerObligations moved to qip_contracts::ledger and qip-ledgerd dropped qip-capital, so the ledger brain's closure reaches no alpha crate and no other brain's crate. A closure test proves it, and the skeptic confirmed it independently from Cargo.lock. Still unmet, bar part 2: qip-ledgerd is on no default shipped path. variable \"ledgerd\" defaults to null (infrastructure/terraform/variables.tf), no tfvars sets it, modules/ledgerd/main.tf says no boot image carrying qip-ledgerd exists (image.yml bakes only the execution node), and no shipped root depends on it. Closing needs a ledgerd image plus a committed environment value. That is deploy work on a protected path, and new infrastructure while billing is paused.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2327,10 +2334,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
+    "verification": "cargo test -p qip-acceptance --test brain_closure (\"test result: ok. 6 passed; 0 failed\"); cargo test -p qip-ledgerd (51 passed, 0 failed); cargo test -p qip-contracts (401 passed, 0 failed)",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-10-24 lane L1-MONEY: refactor plus closure test landed. Mutation fired: re-adding qip-capital to qip-ledgerd with the store.rs import fails the ledger test. Independent code-reviewer skeptic REFUTED on bar part 2 only (no default deployment of qip-ledgerd). Kept PARTIAL."
   },
   {
     "id": "R12-CAPITAL-1100",
@@ -2338,9 +2345,10 @@
     "current": "Functionality lives in capital-fabric settlement + edge settlement gate; no single 'brain' boundary or autonomous loop is defined.",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/settlement.rs",
-      "backend/crates/edge/qip-edge/tests/settlement.rs:274"
+      "backend/crates/edge/qip-edge/tests/settlement.rs:274",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs (5873c09d)"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the settlement brain (qip-capital-fabric settlement and qip-edge settlement).",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the settlement brain (qip-capital-fabric settlement and qip-edge settlement). 2026-10-24 (lane L1-MONEY): brain_closure.rs landed (mutations fired: qip-capital added to qip-risk-engine; qip-risk added to qip-capital; qip-capital added to qip-execution-engine; a qip_capital import in the settlement module). Independent code-reviewer skeptic REFUTED: Bar part 4: the requirement says 'A crate owns the Settlement Brain', and ADR 0127 keeps it as two modules in two crates that host other domains (corridors, custody, wallet; the cell) — an owner decision whether the requirement changes. ADR 0127 also assumes the two halves share qip_contracts settlement terms; none exist: each half defines its own SettlementConvention (qip-capital-fabric settlement.rs, qip-edge settlement.rs), two claims about one fact. qip-capital-fabric depends on qip-capital (the Capital Brain) directly, and qip-edge on qip-strategy (alpha), so the crate-level closure the ADR asks for fails for both hosts; only the modules are clean.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2351,7 +2359,7 @@
     "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-10-24 lane L1-MONEY: closure suite added; kept PARTIAL on the skeptic's findings recorded in gap."
   },
   {
     "id": "R12-DATA-1101",

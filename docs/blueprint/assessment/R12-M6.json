@@ -2895,9 +2895,14 @@
       "backend/crates/libs/qip-contracts/src/action.rs:528 PreActionGate",
       "backend/crates/libs/qip-contracts/src/action.rs:607-617 check 6 substring match",
       "backend/crates/services/qip-agency/src/conduct_brain.rs:223",
-      "backend/crates/edge/qip-edge/src/cell.rs:5517"
+      "backend/crates/edge/qip-edge/src/cell.rs:5517",
+      "backend/crates/services/qip-execution-engine/src/conduct.rs (moved from qip-edge; qip_edge::conduct re-exports it)",
+      "backend/crates/services/qip-execution-engine/src/oms.rs::OrderManager::submit step 6b (RefusalReason::Conduct) and OrderManager::cancel recording unfilled withdrawals",
+      "backend/crates/services/qip-execution-engine/tests/execution.rs::a_desk_order_after_repeated_unfilled_withdrawals_on_one_book_side_is_refused_before_the_broker",
+      "backend/crates/edge/qip-edge/tests/pricing.rs::a_cell_that_withdraws_every_resting_order_before_any_fill_is_refused_a_further_one_until_the_window_clears",
+      "backend/crates/services/qip-execution-engine/tests/execution.rs::a_kill_switch_sweep_of_unfilled_orders_is_not_counted_as_the_desks_withdrawals"
     ],
-    "gap": "Pattern-based conduct surveillance on order flow and communications.",
+    "gap": "2026-10-25 (lane L5-EDGE; independent skeptic REFUTED): (1) no production caller of OrderManager::cancel exists, so on a shipped binary's default path the desk watch sees placements only and cannot fire; (2) the node's requote path (reprice.rs, Cell::admit_replacement) carries no conduct check and requotes are uncounted, so repeated cancel-and-replace is unseen; (3) orders are checked for one pattern, place-and-cancel; the desk has no wash/self-trade refusal and nothing checks marking the close, momentum ignition or quote stuffing, which 'cross-checked for manipulation risk' reads as requiring; (4) communications are checked by rule-driven whole-word phrase matching (qip-agency check_market_conduct), which detects no coordinated pattern.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2905,10 +2910,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts -p qip-edge",
+    "verification": "cargo test -p qip-contracts -p qip-edge; cargo +1.94.1 test -p qip-execution-engine --test execution a_desk_order_after; cargo +1.94.1 test -p qip-edge --test pricing a_cell_that_withdraws_every_resting_order",
     "work_item": "",
     "size": "L",
-    "notes": "Substring conduct checks would pass a manipulative action phrased without the keywords."
+    "notes": "Substring conduct checks would pass a manipulative action phrased without the keywords. 2026-10-25 lane L5-EDGE: the cell's ConductWatch moved to qip-execution-engine and now sits on the desk's OrderManager — the one seam a desk order reaches a broker through — always on with the cell's default policy (4 unfilled withdrawals in 60 s past a 0.75 ratio, per venue, instrument and side). submit refuses under RefusalReason::Conduct before risk and before the broker; cancel records an unfilled withdrawal the desk chose; cancel_scope (kill switch) is not counted. Kernel charts it under the conduct-spoofing gate. Mutations fired: desk check skipped; placement not recorded in the window; withdrawal not recorded; the shared ratio line made never to bind (fails both the desk test and the cell's pricing.rs spoofing test). Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Part 1 held. It also found a defect, fixed the same session: cancel_scope went through cancel and so counted a kill switch's sweep as the desk's own withdrawals. Both now go through OrderManager::withdraw(chosen); only cancel counts. Mutation: the sweep counted as chosen fails the new test. Parts 2-4 failed on the four gaps recorded."
   },
   {
     "id": "R12-GOV-6127",

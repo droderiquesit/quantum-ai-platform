@@ -24939,6 +24939,8 @@ fn gate_of(refusal: &RefusalReason) -> String {
         RefusalReason::VenueUnavailable { .. } => "venue-availability",
         RefusalReason::RiskRejected { .. } => "pre-trade-risk",
         RefusalReason::VenueRejected { .. } => "venue",
+        // The edge charts the same pattern under `conduct_spoofing`.
+        RefusalReason::Conduct { .. } => "conduct-spoofing",
     }
     .to_string()
 }

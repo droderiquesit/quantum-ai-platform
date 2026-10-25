@@ -1361,6 +1361,10 @@ const NO_MONEY_AUTHORITY: &[&str] = &[
     // Ranks and budgets research records; depends on contracts and the agent
     // registries only, and a started item is a record, not an action.
     "qip-expansion",
+    // The hosted language-model adapters (ADR 0138): a completion is text
+    // behind `NumericGuard`, and the crate depends on no capital, risk or
+    // execution crate.
+    "qip-language-providers",
     "qip-learning-engine",
     "qip-market-ingestion",
     "qip-mesh",

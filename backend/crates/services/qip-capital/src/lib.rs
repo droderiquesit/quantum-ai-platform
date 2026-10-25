@@ -150,7 +150,6 @@ pub mod exposure;
 pub mod funding;
 pub mod ledger;
 pub mod margin;
-pub mod obligations;
 pub mod recall;
 pub mod reservation;
 pub mod shadow;
@@ -184,7 +183,10 @@ pub use exposure::{
 pub use margin::{
     LiquidationHorizon, LiquidityAssessment, MarginModel, MarginRequirement, assess_liquidity,
 };
-pub use obligations::LedgerObligations;
+/// Moved to `qip_contracts::ledger` (R12-CAPITAL-1099) so the ledger brain
+/// reads it without depending on the capital brain; re-exported so the
+/// kernel's composition keeps one name for it.
+pub use qip_contracts::ledger::LedgerObligations;
 pub use recall::{RecallOrder, RecallReason, RecallRegister, RecallState};
 pub use reservation::{MAXIMUM_RESERVATION_VALIDITY, Reservation, ReservationLedger};
 pub use shadow::{AllocationVariant, ShadowAllocation, ShadowPortfolioUniverse, ShadowScore};

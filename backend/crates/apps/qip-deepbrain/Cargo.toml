@@ -77,6 +77,8 @@ qip-telemetry-drain.workspace = true
 # construct it: the fast brain reads none of its variables (ADR 0008) and the
 # API serves what the brains recorded. In-tree; not a third-party dependency.
 qip-reasoning-engine.workspace = true
+# The hosted language-model adapters, linked here and nowhere else (ADR 0138).
+qip-language-providers.workspace = true
 # The anomaly-to-gap mapping (EXPAND-025, `signal_mapper.rs`) reads the
 # DISCOVER stage's `Anomaly` and writes the expansion engine's `Observation`,
 # so it needs both crates — and only a composition root off the reflex path
