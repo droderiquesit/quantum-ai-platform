@@ -93,8 +93,7 @@
 
 use crate::backend::{LedgerBackend, LedgerBatch, LocalBackend};
 use crate::telemetry::LedgerTelemetry;
-use qip_capital::LedgerObligations;
-use qip_contracts::ledger::{Account, Direction, LedgerEvent};
+use qip_contracts::ledger::{Account, Direction, LedgerEvent, LedgerObligations};
 use qip_contracts::ledger_operation::{LedgerOperation, OperationKind, Phase};
 use qip_contracts::reflex::{ChainSpan, Decision, OutcomeRecord};
 use qip_core::error::{Error, Result};

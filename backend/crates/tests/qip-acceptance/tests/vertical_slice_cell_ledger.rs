@@ -131,6 +131,12 @@ fn grant_with(gross: Decimal, order: Decimal, loss: Decimal) -> Result<VerifiedE
         qip_core::Decimal::ONE,
         capital,
     )?)?;
+    // ADR 0126 decision 2: the assembled cell requires a drawdown stop, as
+    // the centre's issuer signs one at the loss limit into every grant.
+    let loss_limit = unsigned.loss_limit();
+    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(
+        loss_limit, None, None,
+    )?)?;
     let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
     VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, CELL, t(1))
 }

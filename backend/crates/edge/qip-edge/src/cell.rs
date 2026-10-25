@@ -704,6 +704,12 @@ pub struct CellConfig {
     /// envelope it issues, so on the binary path an unbounded envelope is
     /// one the centre did not issue.
     pub exposure_bounds_required: bool,
+    /// Whether an envelope without a drawdown stop is refused (ADR 0126
+    /// decision 2). Off by default for the reason `exposure_bounds_required`
+    /// is; `qip-edge-node`'s `assemble` arms it, and the centre's issuer
+    /// signs a stop into every envelope, so on the binary path an envelope
+    /// without one is one the centre did not issue.
+    pub drawdown_stop_required: bool,
     /// The margin, in basis points of notional, a stated edge must clear on
     /// top of the cell's fixed cost (ADR 0155 §8). `None` — the only default —
     /// means the net-edge gate is not built: the value is a risk matter and no
@@ -766,6 +772,7 @@ impl CellConfig {
             journal_trimmed_on_ship: false,
             venue_health: None,
             exposure_bounds_required: false,
+            drawdown_stop_required: false,
             net_edge_margin_bp: None,
             edgeless_signals_refused: false,
         }
@@ -778,6 +785,14 @@ impl CellConfig {
     #[must_use]
     pub fn with_exposure_bounds_required(mut self) -> Self {
         self.exposure_bounds_required = true;
+        self
+    }
+
+    /// Refuse every order against an envelope that carries no drawdown stop
+    /// (ADR 0126 decision 2), under [`GATE_ENVELOPE_DRAWDOWN`].
+    #[must_use]
+    pub fn with_drawdown_stop_required(mut self) -> Self {
+        self.drawdown_stop_required = true;
         self
     }
 
@@ -5954,10 +5969,11 @@ impl Cell {
         // The drawdown stop, before the money limits: a strategy that has
         // given back its peak by the bound sends nothing more under this
         // grant, whatever headroom the loss limit still shows.
-        if let Err(reason) = deployed
-            .envelope
-            .check_drawdown(self.realised.realised_drawdown(&key))
-        {
+        if let Err(reason) = drawdown_verdict(
+            self.config.drawdown_stop_required,
+            &deployed.envelope,
+            self.realised.realised_drawdown(&key),
+        ) {
             let reason = format!(
                 "strategy {key} under grant {}: {reason}",
                 deployed.envelope.signature()
@@ -9343,15 +9359,18 @@ impl Cell {
         let fallen = self.desk.as_ref().and_then(|installed| {
             let desk = &installed.desk;
             let owner = desk.strategy().as_str();
-            desk.envelope()
-                .check_drawdown(self.realised.realised_drawdown(owner))
-                .err()
-                .map(|reason| {
-                    format!(
-                        "desk {owner} under grant {}: {reason}",
-                        desk.envelope().signature()
-                    )
-                })
+            drawdown_verdict(
+                self.config.drawdown_stop_required,
+                desk.envelope(),
+                self.realised.realised_drawdown(owner),
+            )
+            .err()
+            .map(|reason| {
+                format!(
+                    "desk {owner} under grant {}: {reason}",
+                    desk.envelope().signature()
+                )
+            })
         });
         if let Some(reason) = fallen {
             self.refuse(report, GATE_ENVELOPE_DRAWDOWN, &reason, now);
@@ -12188,6 +12207,24 @@ fn clear_for(owner: &str, is_desk: bool, at: Timestamp) -> String {
 /// rather than read from its wording: the same order against the same use
 /// with no loss booked. A different answer means the loss is what refused.
 /// Every other refusal keeps its reason exactly as the envelope gave it.
+/// The drawdown gate (ADR 0126 decision 2): a cell that requires a stop
+/// refuses an envelope without one, and any stop refuses once the strategy's
+/// realised drawdown within the grant has reached it.
+fn drawdown_verdict(
+    required: bool,
+    envelope: &VerifiedEnvelope,
+    drawdown: Decimal,
+) -> std::result::Result<(), String> {
+    if required && envelope.drawdown().is_none() {
+        return Err(format!(
+            "the envelope for {} carries no drawdown stop and this cell requires one; ask the \
+             centre for an envelope signed with its stop",
+            envelope.strategy().as_str()
+        ));
+    }
+    envelope.check_drawdown(drawdown)
+}
+
 fn drawdown_refusal(
     owner: &str,
     envelope: &VerifiedEnvelope,
