@@ -2232,7 +2232,7 @@
     "verification": "gh api repos/{owner}/{repo}/branches/main/protection",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: written as docs/blueprint/lanes/l9-CICD-9095.patch, not yet applied. It holds .github/rulesets/main-integrity.json (no deletion, no force-push, seven required checks, no bypass actor), .github/rulesets/main-review.json (code-owner review; the admin role may bypass only through a pull request, because the one code owner also authors the pull requests and GitHub refuses self-approval; dropping that bypass is the owner's call), .github/workflows/rules.yml (a daily read of GET /repos/{o}/{r}/rules/branches/main that fails when a rule is missing) and qip-acceptance branch_rules.rs (4 tests, 5 mutations each fired). A repository admin must also POST the two rulesets. PARTIAL until both are done."
   },
   {
     "id": "R12-SEC-9096",
