@@ -925,3 +925,66 @@ fn every_disposal_names_its_relief_method_and_open_plus_relieved_basis_is_what_w
             },
         );
 }
+/// A split taken through `Portfolio::adjust_position` keeps the record in step
+/// with the share count the venue now reports, so the sale of the post-split
+/// quantity closes it. The failure prevented: a book kept beside another
+/// ledger of the same fills saw the split in the other ledger only, and the
+/// sale that took that ledger flat left this record `Held` on the pre-split
+/// count — a position nobody owns, still open.
+#[test]
+fn a_split_taken_through_the_portfolio_lets_the_post_split_sale_close_the_position() {
+    let object = equity("SPLT", "100", Sector::Industrials, "US");
+    let mut book = portfolio(1_000_000);
+    book.apply_fill(
+        &object,
+        dec!("100"),
+        dec!("100"),
+        Decimal::ZERO,
+        now(),
+        None,
+    )
+    .expect("a USD fill books");
+    // Premise: one held position of 100.
+    let held = book
+        .position(&object.object_id)
+        .expect("the position exists");
+    assert_eq!(held.quantity(), dec!("100"));
+    assert_eq!(held.lifecycle(), qip_portfolio::PositionLifecycle::Held);
+
+    book.adjust_position(&object.object_id, dec!("2"), dec!("0.5"))
+        .expect("a two-for-one split adjusts a held position");
+    assert_eq!(
+        book.position(&object.object_id).map(Position::quantity),
+        Some(dec!("200"))
+    );
+    book.apply_fill(
+        &object,
+        dec!("-200"),
+        dec!("50"),
+        Decimal::ZERO,
+        later(1),
+        None,
+    )
+    .expect("the post-split sale books");
+    let closed = book
+        .position(&object.object_id)
+        .expect("the record remains");
+    assert!(
+        closed.is_flat(),
+        "the post-split sale left {}",
+        closed.quantity()
+    );
+    assert_eq!(closed.lifecycle(), qip_portfolio::PositionLifecycle::Closed);
+
+    // A holding the book does not have is refused, not created, and a
+    // non-positive factor is refused before it can flip a holding.
+    let absent = equity("NONE", "10", Sector::Industrials, "US");
+    assert!(
+        book.adjust_position(&absent.object_id, dec!("2"), dec!("0.5"))
+            .is_err()
+    );
+    assert!(
+        book.adjust_position(&object.object_id, Decimal::ZERO, dec!("1"))
+            .is_err()
+    );
+}

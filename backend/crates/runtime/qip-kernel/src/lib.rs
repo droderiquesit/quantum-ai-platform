@@ -71,6 +71,7 @@ pub mod model_tournament;
 pub mod model_trust;
 pub mod now_stage;
 pub mod platform;
+pub mod position_register;
 pub mod pre_positioning;
 pub mod precedent_declines;
 pub mod quantum_routing;

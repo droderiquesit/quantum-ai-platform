@@ -1234,6 +1234,30 @@ pub struct Platform {
     /// event log dedups on, so the two agree by construction rather than by a
     /// second rule that could drift.
     corporate_actions_applied: BTreeSet<String>,
+    /// The desk's positions as a lifecycle register (blueprint §35.1): the
+    /// same booked fills and lot adjustments [`TrackedCapital`] takes, fed
+    /// at the same two seams by [`Platform::book_desk_fill`] and
+    /// [`Platform::adjust_desk_lot`], so a held position can carry the
+    /// `Flagged` state the Asset Brain raises against it (R12-ASSET-4066).
+    ///
+    /// **Not a second account of the book.** Every figure a limit, a size or
+    /// a report reads is still `capital`'s; nothing reads this one's cash or
+    /// valuation. What it holds that `capital` cannot is the lifecycle, and
+    /// the LEARN stage's mandate review reports every cycle on which the two
+    /// disagree about which objects are held rather than letting either
+    /// win silently.
+    asset_book: Portfolio,
+    /// The mandate and target weight each object was last sized under, by
+    /// object id, written by `construct_from` once a proposal's capital is
+    /// held (R12-ASSET-4066). Bounded by the universe: one entry per object
+    /// any construction ever sized.
+    ///
+    /// Held in memory and not rebuilt on a restart, deliberately: proposals
+    /// are not journalled, so a resumed process cannot say what a resumed
+    /// position was sized toward, and its first LEARN stage flags every one.
+    /// A record invented at resume would be the platform asserting a purpose
+    /// it has no evidence of.
+    position_mandates: BTreeMap<String, crate::position_register::PositionMandate>,
 }
 
 /// How many announced-but-not-yet-due corporate actions the platform holds.
@@ -4711,6 +4735,19 @@ impl EventBody for LotAdjusted {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// The empty lifecycle register [`Platform`]'s `asset_book` starts from, and
+/// restarts from when the book is resumed from the log. One constructor for
+/// both so the resumed register is the one assembly would have built.
+fn asset_book_opened(initial_equity: Decimal, at: Timestamp) -> Portfolio {
+    Portfolio::new(
+        PortfolioId::from_string("pf-desk-assets"),
+        "desk-assets",
+        Currency::USD,
+        initial_equity,
+        at,
+    )
+}
+
 /// One open position at its average entry cost. Quantity is signed: negative
 /// is short.
 #[derive(Clone, Copy, Debug)]
@@ -5858,6 +5895,8 @@ impl Platform {
             proposals_made: 0,
             corporate_actions_pending: BTreeMap::new(),
             corporate_actions_applied: BTreeSet::new(),
+            asset_book: asset_book_opened(initial_equity, now),
+            position_mandates: BTreeMap::new(),
         };
         platform.describe_metrics();
         // Every rule reads as not dormant from assembly, so the series exists
@@ -8424,6 +8463,7 @@ impl Platform {
         });
         if let Some(opened_at) = first_fill {
             self.capital = TrackedCapital::new(self.config.initial_equity, opened_at);
+            self.asset_book = asset_book_opened(self.config.initial_equity, opened_at);
         }
         let resumed = entries.len();
         if let Some(through) = watermark {
@@ -8485,7 +8525,7 @@ impl Platform {
                             ));
                         }
                     }
-                    let moved = self.capital.apply_fill(
+                    let moved = self.book_desk_fill(
                         &fill.object_id,
                         fill.side,
                         fill.price,
@@ -8506,8 +8546,7 @@ impl Platform {
                     );
                 }
                 Entry::Adjustment(adjusted) => self
-                    .capital
-                    .adjust_lot(
+                    .adjust_desk_lot(
                         &adjusted.action,
                         &adjusted.object_id,
                         adjusted.quantity_factor,
@@ -12452,7 +12491,94 @@ impl Platform {
             BOOK_ORIGIN,
             now,
         )?;
-        self.capital.adjust_lot(key, object, quantity_factor)
+        self.adjust_desk_lot(key, object, quantity_factor)
+    }
+
+    /// Book one desk fill into [`TrackedCapital`] and the lifecycle register
+    /// together, and return what the tracked book's at-cost notional moved.
+    ///
+    /// The one place either is fed a fill, live or resumed, so the register
+    /// cannot miss a fill the book took — the way it would if each seam
+    /// remembered to call both. The register refusing the fill (an instrument
+    /// outside the universe, or priced in a unit other than the book's) does
+    /// not stop the booking: the venue has filled and `capital` is what every
+    /// limit reads. The refusal is said out loud on the cycle instead, and
+    /// the next mandate review reports the disagreement for as long as it
+    /// lasts.
+    fn book_desk_fill(
+        &mut self,
+        object_id: &str,
+        side: Side,
+        price: Decimal,
+        quantity: Decimal,
+        costs: Decimal,
+        at: Timestamp,
+    ) -> Decimal {
+        let moved = self
+            .capital
+            .apply_fill(object_id, side, price, quantity, costs, at);
+        let signed = match side {
+            Side::Buy => quantity,
+            Side::Sell => -quantity,
+        };
+        let object = self
+            .market
+            .read()
+            .universe
+            .get(&ObjectId::from_string(object_id))
+            .cloned();
+        let mirrored = match object {
+            Some(object) => self
+                .asset_book
+                .apply_fill(&object, signed, price, costs, at, None)
+                .map(|_| ()),
+            None => Err(Error::not_found(format!(
+                "{object_id} is not in the universe the platform was assembled over"
+            ))),
+        };
+        if let Err(error) = mirrored {
+            self.capture_problems.push(format!(
+                "a desk fill in {object_id} was booked and the position lifecycle register \
+                 refused it ({}); the position cannot be flagged until the two agree",
+                error.message()
+            ));
+        }
+        moved
+    }
+
+    /// Take one corporate action's share-count change on [`TrackedCapital`]
+    /// and on the lifecycle register together, for the reason
+    /// [`Self::book_desk_fill`] gives. The tracked book's refusal is returned
+    /// unchanged and the register is not touched; the register's own refusal
+    /// is a problem on the cycle, never a reason to undo the book.
+    fn adjust_desk_lot(&mut self, action: &str, object: &str, factor: Decimal) -> Result<()> {
+        let held = self.capital.positions.contains_key(object);
+        self.capital.adjust_lot(action, object, factor)?;
+        if held {
+            let adjusted = Decimal::ONE
+                .checked_div(factor)
+                .ok_or_else(|| {
+                    Error::numeric(format!(
+                        "the price factor of a share-count factor of {factor} is not \
+                         representable"
+                    ))
+                })
+                .and_then(|price_factor| {
+                    self.asset_book.adjust_position(
+                        &ObjectId::from_string(object),
+                        factor,
+                        price_factor,
+                    )
+                });
+            if let Err(error) = adjusted {
+                self.capture_problems.push(format!(
+                    "corporate action {action} adjusted the desk's holding of {object} and the \
+                     position lifecycle register refused it ({})",
+                    error.message()
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn stage_sense(&mut self, now: Timestamp) -> StageOutcome {
@@ -16384,7 +16510,103 @@ impl Platform {
                 Duration::from_hours(24),
             )?;
         }
+        // The mandate and target each leg was sized under (R12-ASSET-4066),
+        // written only now that the proposal's capital is held: a refused
+        // hold returned above, and a target the platform never committed
+        // capital to is not the target of anything it holds.
+        let mandate = self.user_ledger.desk().as_str().to_string();
+        for leg in &outcome.proposal.legs {
+            self.position_mandates.insert(
+                leg.object_id.as_str().to_string(),
+                crate::position_register::PositionMandate::new(
+                    mandate.clone(),
+                    leg.target_weight,
+                    outcome.proposal.proposal_id.as_str(),
+                    now,
+                ),
+            );
+        }
         Ok((outcome, unsizeable, capped))
+    }
+
+    /// The mandate and target weight `object_id` was last sized under, or
+    /// `None` where no construction this process ran has sized it
+    /// (R12-ASSET-4066).
+    pub fn position_mandate(
+        &self,
+        object_id: &str,
+    ) -> Option<&crate::position_register::PositionMandate> {
+        self.position_mandates.get(object_id)
+    }
+
+    /// Where the desk's position in `object_id` sits on blueprint §35.1's
+    /// lifecycle, as the register holds it, or `None` where the register has
+    /// never held it.
+    pub fn position_lifecycle(&self, object_id: &str) -> Option<qip_portfolio::PositionLifecycle> {
+        self.asset_book
+            .position(&ObjectId::from_string(object_id))
+            .map(qip_portfolio::position::Position::lifecycle)
+    }
+
+    /// Resolve every held position to the mandate and target it was sized
+    /// under, and flag through [`Portfolio::flag_position`] each that does
+    /// not resolve (R12-ASSET-4066). Returns the problems the LEARN stage
+    /// puts on the cycle.
+    ///
+    /// A position resolves when a construction recorded a mandate for it and
+    /// the ledger still holds that mandate. Anything else — a position
+    /// resumed from the log, one a path other than `construct_from` opened,
+    /// a mandate the registry no longer holds — is flagged, because a
+    /// holding with no stated purpose reads exactly like one with a purpose,
+    /// and the Asset Brain's whole claim is that it can tell them apart.
+    ///
+    /// The held set is `capital`'s, the book every limit reads. Where the
+    /// register disagrees about which objects are held, that is reported
+    /// too, every cycle it lasts, rather than one side quietly winning.
+    fn review_position_mandates(&mut self) -> Vec<String> {
+        let mut problems = Vec::new();
+        let held: Vec<String> = self.capital.positions.keys().cloned().collect();
+        for object in &held {
+            let resolved = self.position_mandates.get(object).is_some_and(|record| {
+                self.user_ledger
+                    .mandates()
+                    .keys()
+                    .any(|user| user.as_str() == record.mandate())
+            });
+            if resolved {
+                continue;
+            }
+            match self
+                .asset_book
+                .flag_position(&ObjectId::from_string(object.as_str()))
+            {
+                Ok(true) => problems.push(format!(
+                    "{object} is held with no mandate and target exposure on record, so the \
+                     position is flagged; size it through a construction or unwind it"
+                )),
+                Ok(false) => {}
+                Err(error) => problems.push(format!(
+                    "{object} is held with no mandate and target exposure on record and could \
+                     not be flagged: {}",
+                    error.message()
+                )),
+            }
+        }
+        for position in self.asset_book.positions() {
+            if !self
+                .capital
+                .positions
+                .contains_key(position.object_id.as_str())
+            {
+                problems.push(format!(
+                    "the position lifecycle register holds {} {} and the book holds none; the \
+                     two disagree about what the desk owns",
+                    position.quantity(),
+                    position.object_id.as_str()
+                ));
+            }
+        }
+        problems
     }
 
     /// `justification` is the proof the thesis stands on more than the
@@ -18806,6 +19028,9 @@ impl Platform {
         // See `crate::blueprint_objectives` for why a reader that reported
         // only the first number would be worse than no reader.
         outcome = crate::blueprint_objectives::fold(outcome, &self.objectives, now);
+        for problem in self.review_position_mandates() {
+            outcome = outcome.with_problem(problem);
+        }
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);
         }
@@ -20835,7 +21060,7 @@ impl Platform {
                     error.message()
                 ));
             }
-            let moved = self.capital.apply_fill(
+            let moved = self.book_desk_fill(
                 object_id.as_str(),
                 side,
                 fill.price,
