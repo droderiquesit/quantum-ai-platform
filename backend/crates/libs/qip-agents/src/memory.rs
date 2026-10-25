@@ -268,10 +268,6 @@ impl ResearchMemory {
         true
     }
 
-    pub fn record_lesson(&mut self, lesson: Lesson) {
-        self.lessons.push(lesson);
-    }
-
     /// Held episodes, oldest first.
     pub fn episodes(&self) -> &VecDeque<Episode> {
         &self.episodes

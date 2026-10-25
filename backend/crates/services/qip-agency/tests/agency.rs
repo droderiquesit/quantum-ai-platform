@@ -3685,3 +3685,81 @@ fn each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_re
 fn fresh_market_policy() -> ActionPolicy {
     ActionPolicy::new(Method::Market, d(1), d(5), BTreeSet::new()).unwrap()
 }
+
+/// R12-QUANT-4043: a plan the planner *searched* -- `Structural::generate`
+/// over the levers, with no plan handed in -- reaches an adapter only with a
+/// classical causal score, a policy-gate pass and a simulation record. The
+/// searcher here is the classical generator; ADR 0150/0190 build no quantum
+/// one, and the guard sits on the act stage whatever produced the plan.
+///
+/// - Searched and supported by the one causal model: simulated under every
+///   branch, selected, executed.
+/// - The same search when a second structural model says the step widens
+///   the spread: simulated, weakly identified, nothing sent.
+/// - The same search when one step's exposure exceeds the goal's risk
+///   envelope: the policy gate refuses it and nothing is sent.
+///
+/// Mutation: remove the `counterfactually_supported` refusal in
+/// `engine::execute` -- the contested searched plan executes and the
+/// `weakly identified` assertion fails.
+#[test]
+fn a_searched_plan_acts_only_with_a_causal_score_a_policy_gate_pass_and_a_simulation_record() {
+    use qip_agency::generate::GenerateDecl;
+    let searched = |exposure: Decimal| {
+        let mut r = request();
+        r.proposals.clear();
+        r.structural.as_mut().unwrap().generate = Some(GenerateDecl {
+            exposure: BTreeMap::from([("quoter".to_string(), exposure)]),
+            max_steps: 1,
+        });
+        r
+    };
+    let policy = narrow();
+
+    let mut adapter = Counting::default();
+    let report = run(searched(d(1)), Some(&policy), &mut adapter).unwrap();
+    assert!(
+        !report.candidates.is_empty(),
+        "premise: the generator searched and proposed a plan"
+    );
+    let simulated: Vec<_> = report.simulations.iter().flat_map(|s| &s.results).collect();
+    assert!(
+        simulated.len() >= 2,
+        "the searched plan was not simulated under every branch: {simulated:?}"
+    );
+    assert!(
+        matches!(report.outcome, Outcome::Executed(_)),
+        "{:?}",
+        report.outcome
+    );
+    assert_eq!(adapter.calls.len(), 1);
+
+    let mut contested = searched(d(1));
+    let decl = contested.structural.as_mut().unwrap();
+    let mut skeptic = decl.models[0].clone();
+    skeptic.name = "skeptic".into();
+    // Disagrees, but mildly: the models' mean still favours the step, so
+    // the generator ranks it and only the act stage's branch-by-branch
+    // check can stop it.
+    skeptic.links[0].coefficient = 0.2;
+    decl.models.push(skeptic);
+    let mut adapter = Counting::default();
+    let report = run(contested, Some(&policy), &mut adapter).unwrap();
+    let Outcome::Stopped(reason) = &report.outcome else {
+        panic!("expected withheld, got {:?}", report.outcome)
+    };
+    assert!(reason.contains("weakly identified"), "{reason}");
+    assert!(
+        adapter.calls.is_empty(),
+        "a contested searched plan was sent"
+    );
+
+    let mut adapter = Counting::default();
+    let report = run(searched(d(500)), Some(&policy), &mut adapter).unwrap();
+    assert!(
+        !matches!(report.outcome, Outcome::Executed(_)),
+        "a searched plan past the risk envelope executed: {:?}",
+        report.outcome
+    );
+    assert!(adapter.calls.is_empty());
+}
