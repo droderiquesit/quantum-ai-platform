@@ -70,6 +70,18 @@ permission layer refuses them to an agent whatever the delegation says.
     `infrastructure/foundation/terraform.tfvars`, applied only by the owner
     through `scripts/bootstrap-foundation.sh`.
 
+11. **R12-GOV-6127, an arbitrage leg's grounds: the requirement text
+    stands, and the row stays PARTIAL.** Lane L5 resolved every order's
+    evidence at the send seam (ADR 0200) and asked whether a leg whose
+    only ground is a standing arbitrage mandate is outside what GOV-6127
+    forbids. It is not. The bar's fourth part makes the requirement text
+    authoritative, and the text forbids an action resting on profit alone;
+    a mandate is the same authorisation for every cycle and names no
+    per-action ground. Reading the mandate as a ground would redefine the
+    requirement to pass the row, which is the thing the 2026-10-24 record
+    rules out. The row records the two skeptics' refutation and waits on a
+    per-action, non-price ground, should one exist; none is invented here.
+
 ## Owner action
 
 The agents cannot carry these out, whatever the delegation says.
