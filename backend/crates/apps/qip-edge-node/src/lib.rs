@@ -219,6 +219,10 @@ pub fn assemble_with_risk(
     // one the centre did not issue, and reading its silence as "unbounded"
     // is how a disconnected cell builds the position the bounds exist for.
     config = config.with_exposure_bounds_required();
+    // ADR 0126 decision 2: likewise a drawdown stop. The issuer signs one at
+    // the loss limit into every grant, so an envelope without it is one the
+    // centre did not issue.
+    config = config.with_drawdown_stop_required();
     // EXEC-020: the node enables only the two modes its paper path actually
     // performs, order taking and routing, and only at the venues the cell may
     // trade. The other six modes (quoting, liquidity provision, derivatives,

@@ -1452,3 +1452,48 @@ fn a_decoded_drawdown_stop_wider_than_the_loss_limit_is_refused_at_verification(
     );
     Ok(())
 }
+
+/// ADR 0126 decision 2: a cell configured to require a drawdown stop refuses
+/// an order against an envelope that carries none, under the drawdown gate,
+/// while the same envelope trades on a cell that does not require one.
+///
+/// Mutation: drop the `required && envelope.drawdown().is_none()` refusal
+/// from `drawdown_verdict` — the order goes out.
+#[test]
+fn a_cell_that_requires_a_drawdown_stop_refuses_an_envelope_without_one() -> Result<()> {
+    let unstopped = grant(ALPHA, "1000", 0)?;
+    assert!(
+        unstopped.drawdown().is_none(),
+        "premise: no stop on the grant"
+    );
+
+    let mut lenient = cell()?;
+    deploy(&mut lenient, ALPHA, SignalKind::Enter, SIZE, &unstopped)?;
+    let traded = lenient.work(t(10), &mut FillingVenue::default())?;
+    assert_eq!(
+        traded.orders.len(),
+        1,
+        "premise: the envelope trades where no stop is required"
+    );
+
+    let mut strict = cell_with(
+        CellConfig::new(CELL, REGION)
+            .with_venue(venue())
+            .with_drawdown_stop_required(),
+    )?;
+    deploy(&mut strict, ALPHA, SignalKind::Enter, SIZE, &unstopped)?;
+    let mut gateway = FillingVenue::default();
+    let refused = strict.work(t(10), &mut gateway)?;
+    assert!(
+        refused.orders.is_empty() && gateway.placed.is_empty(),
+        "an order went out against an envelope with no stop on a cell that requires one"
+    );
+    let reasons = refused_under(&refused, qip_edge::cell::GATE_ENVELOPE_DRAWDOWN);
+    assert_eq!(reasons.len(), 1, "{:?}", refused.refusals);
+    assert!(
+        reasons[0].contains("carries no drawdown stop"),
+        "{}",
+        reasons[0]
+    );
+    Ok(())
+}

@@ -96,6 +96,7 @@ pub fn capital_subject(strategy: &StrategyId, cell: &str) -> String {
         expires_at: Timestamp::from_secs(0),
         requested_by: String::new(),
         exposure: None,
+        drawdown: None,
     }
     .subject()
 }
@@ -2057,6 +2058,8 @@ impl CentralPlane {
             // the same liquidity and leverage the cell will enforce and the
             // payload comparison below covers them (R12-CAPITAL-4088).
             exposure: envelope.exposure().cloned(),
+            // And its drawdown stop, for the same reason (ADR 0126 d2).
+            drawdown: envelope.drawdown().cloned(),
         };
         let approved =
             self.compliance

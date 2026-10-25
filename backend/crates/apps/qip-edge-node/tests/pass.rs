@@ -138,6 +138,8 @@ fn grant_for(
         qip_core::Decimal::ONE,
         capital,
     )?)?;
+    let loss_limit = unsigned.loss_limit();
+    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(loss_limit)?)?;
     let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
     VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, cell, t(1))
 }
@@ -3639,6 +3641,26 @@ fn the_assembled_cell_refuses_envelopes_without_exposure_bounds() -> Result<()> 
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let node = assemble(premise, features, Arc::new(SystemClock), allocation, None)?;
     assert!(node.cell.config().exposure_bounds_required);
+    Ok(())
+}
+
+/// ADR 0126 decision 2 (R12-CAPITAL-4088): the assembled cell also requires
+/// a drawdown stop, so an envelope the centre did not stop is refused at the
+/// order rather than traded under the loss limit alone.
+///
+/// Mutation: delete `with_drawdown_stop_required` from `assemble_with_risk`
+/// — the assertion fails.
+#[test]
+fn the_assembled_cell_refuses_envelopes_without_a_drawdown_stop() -> Result<()> {
+    let premise = CellConfig::new(CELL, REGION).with_venue(venue());
+    assert!(
+        !premise.drawdown_stop_required,
+        "premise: the library default leaves it to the composition root"
+    );
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let allocation = RegionCapital::read(Some("1000000000"))?;
+    let node = assemble(premise, features, Arc::new(SystemClock), allocation, None)?;
+    assert!(node.cell.config().drawdown_stop_required);
     Ok(())
 }
 

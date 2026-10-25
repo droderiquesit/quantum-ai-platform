@@ -193,6 +193,11 @@ impl VerifiedEnvelope {
         self.inner.check_drawdown(drawdown)
     }
 
+    /// The drawdown stop the grant was signed with, if any.
+    pub fn drawdown(&self) -> Option<&qip_contracts::DrawdownBounds> {
+        self.inner.drawdown()
+    }
+
     /// Whether the grant was signed with authority bounds (ADR 0155).
     pub fn has_authority_bounds(&self) -> bool {
         self.inner.bounds().is_some()
