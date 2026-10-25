@@ -3594,9 +3594,11 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined",
       "backend/crates/services/qip-learning-engine/src/self_model.rs",
       "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::every_financial_agi_core_scope_item_names_a_seam_and_a_test_that_still_exist",
-      "backend/crates/apps/qip-deepbrain/src/main.rs AmbientAgency::open, unconditional"
+      "backend/crates/apps/qip-deepbrain/src/main.rs AmbientAgency::open, unconditional",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::reason_forms_a_hypothesis_from_a_sensed_anomaly_on_the_default_composition",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_resolved_prediction_updates_the_calibration_report"
     ],
-    "gap": "A scope map now names a seam and an existing test for all ten items, and a test pins the deep brain's unconditional AmbientAgency::open. Still PARTIAL: it is inspection, not behaviour; hypothesis generation (stage_reason) and uncertainty (calibrate_resolved) are covered only by a cycle-level test, not one named for them; planning and tool use run in the ambient agency's shadow/outbox path, not as an executing planner.",
+    "gap": "2026-10-25 (L4, commits 31e0108d and b85c96b9, skeptic REFUTED). Closed: hypothesis generation and uncertainty each cite a test named for them, and orchestration now cites the_organisation_assembles_and_dispatches, which calls dispatch. Still open: tool use is proven only as registry bookkeeping (no test or default path invokes a registered tool); research cites ResearchPlan::synthesise, whose only production path is synthesise_with via the desk; the uncertainty test checks only that a report exists with a Brier in [0, 1], not the arithmetic; planning runs in the ambient agency's shadow/outbox path only; and the inspection is presence-only (scope_inspections greps for names, it does not prove a cited test exercises its seam).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3607,7 +3609,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test scope_inspections",
     "work_item": "",
     "size": "L",
-    "notes": "Mutations 2026-10-18: renaming the counterfactual test failed the map naming 'counterfactuals'; wrapping the agency open in a conditional failed the unconditional-open test; restored."
+    "notes": "Mutations 2026-10-18: renaming the counterfactual test failed the map naming 'counterfactuals'; wrapping the agency open in a conditional failed the unconditional-open test; restored. 2026-10-25 (L4): two mutants killed (drop keep_prediction push; never store last_calibration), restored sha256-identical; skeptic REFUTED (gap); orchestration citation corrected in b85c96b9. Stays PARTIAL."
   },
   {
     "id": "R12-MODEL-1157",
