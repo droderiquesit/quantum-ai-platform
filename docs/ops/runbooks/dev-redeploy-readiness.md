@@ -318,8 +318,8 @@ Run these in this order. All dispatches go from `main`. `infra.yml`, `deploy.yml
 - `gitops_enabled=true` accounts for about $400–$490 (cluster, pods, NAT, fee, Binary Authorization for GKE). tfvars cannot switch it off: the plan refuses because the etcd key has `prevent_destroy`. The only off switch is `action=suspend`; the two brains (about $380–$385) keep billing after it.
 - Budget: `infrastructure/foundation/terraform.tfvars:15` sets dev `budget_amount = 100`, thresholds `[0.5, 0.9, 1.0]` (`:22`). It only alerts. At the estimated rate it is crossed in about 4 days. Whether it is applied, and its currency, are UNVERIFIED; the cost scout read the dev monitoring budget as off.
 - Cuts not needed for the redeploy (estimates):
-  - Explicit 50–250m requests on Argo CD, Kargo and cert-manager: save $250–$300/month.
-  - Unused Argo CD notifications-controller and applicationset-controller: $52.98.
+  - Explicit 50–250m requests on Argo CD, Kargo and cert-manager: save $250–$300/month. **Done in the dev overlays (lane L9, owner decision 9 of 2026-10-25)**: 13 containers on 11 pods, 50–250m each. Not measured on a cluster. If the cluster predates GKE's burstable Autopilot minimums, Autopilot raises each pod to its older 250m floor and the saving is smaller (UNVERIFIED).
+  - Unused Argo CD notifications-controller and applicationset-controller: $52.98. **Removed from the dev overlay (same decision).** The bootstrap applies without `--prune`, so a cluster that survived still runs both until a person runs `kubectl -n argocd delete deployment argocd-notifications-controller argocd-applicationset-controller`. A recreated cluster never gets them.
   - Flow logs at `INTERVAL_5_SEC` on 5 subnets.
   - Cloud Run logs stored twice (`_Default` and the `qip-dev-workloads` sink).
   - AR cleanup policies in dry run.

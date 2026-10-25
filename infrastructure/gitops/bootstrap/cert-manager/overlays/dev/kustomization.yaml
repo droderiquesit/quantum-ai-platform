@@ -17,3 +17,70 @@ images:
 - name: quay.io/jetstack/cert-manager-cainjector
   newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/vendor/cert-manager-cainjector
   digest: sha256:ccf6b919ec0500745a47a910118f834f9636d0aac1ff221245cd2557ed8c7c98
+patches:
+- target:
+    kind: Deployment
+    name: cert-manager
+    namespace: cert-manager
+  # Requests for every cert-manager pod (owner decision 9 of 2026-10-25,
+  # docs/blueprint/owner-decisions-2026-10-25.md). The vendored manifest sets
+  # none, and GKE Autopilot bills a container with no request at its default
+  # of 0.5 vCPU and 2 GiB. cert-manager here issues the one Certificate
+  # Kargo's webhooks need. The controller and the cainjector watch the
+  # cluster's resources and keep a cache (50m, 128Mi); the webhook only
+  # answers admission calls (50m, 64Mi). Each pair sits inside Autopilot's
+  # 1:1 to 1:6.5 vCPU-to-GiB ratio. Requests only, no limit. Whether they
+  # suffice under load is unverified until a cluster runs them.
+  patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: cert-manager
+      namespace: cert-manager
+    spec:
+      template:
+        spec:
+          containers:
+          - name: cert-manager-controller
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+- target:
+    kind: Deployment
+    name: cert-manager-cainjector
+    namespace: cert-manager
+  patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: cert-manager-cainjector
+      namespace: cert-manager
+    spec:
+      template:
+        spec:
+          containers:
+          - name: cert-manager-cainjector
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+- target:
+    kind: Deployment
+    name: cert-manager-webhook
+    namespace: cert-manager
+  patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: cert-manager-webhook
+      namespace: cert-manager
+    spec:
+      template:
+        spec:
+          containers:
+          - name: cert-manager-webhook
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
