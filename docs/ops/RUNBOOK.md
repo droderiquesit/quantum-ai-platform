@@ -60,7 +60,7 @@ can reach.** That is a measured statement, not a caution:
 | `qip-web` | library only, no binary; the console pages are served by `qip-api` | n/a | n/a |
 | `qip` (the `qip-cli` binary) | runs (**ran**) | n/a | n/a |
 | Portal and landing (Next.js) | not run (no `node_modules` installed in this worktree) | manifests exist (`infrastructure/gitops/envs/dev/portal.yaml`), not deployed | Same as the services |
-| GitOps control plane (Argo CD, Kargo, Config Connector on GKE Autopilot) | n/a | `gitops_enabled = true` in dev tfvars; cluster is **suspended** (ADR 0093); bootstrap has never succeeded because the Argo CD image fails the Trivy CRITICAL gate | Upstream release does not pass the scan gate; not cleared by an exception |
+| GitOps control plane (Argo CD, Kargo, Config Connector on GKE Autopilot) | n/a | `gitops_enabled = true` in dev tfvars; `infra.yml` run 121 (`38988479925`, 2026-10-17) bootstrapped `qip-dev-control-plane` and printed `qip-dev is Synced and Healthy`, on the derived `vendor/argocd-patched` image that `vendor.yml` run 31 scanned at 0 CRITICAL (`e3f81695`). This row said the cluster was suspended and the bootstrap had never succeeded until 2026-10-24. Kargo was not applied (its App credential is unseeded) | Upstream Argo CD still fails the scan gate and is used only as the derived image's base; nothing is cleared by an exception. Whether the cluster still runs after the deploy 403s of runs 287 and 288 is unverified (`docs/ops/runbooks/dev-redeploy-readiness.md`) |
 | Event fabric brokers, Spanner ledger, GPU pools, Vertex endpoints | n/a | `enable_* = false` everywhere; nothing in Terraform references the fabric | Not built (`docs/SYSTEM_MAP.md`, section 3) |
 | Scraping and alerting | `/metrics` is served by each process | no collector, no alert policy | `workload_metrics_exist = false`; the only published sidecar fails the platform's own scan (section 9) |
 
@@ -587,7 +587,7 @@ is a forecast.
 | Billing | Enabled on `algorik-platform-dev`; was disabled on `algorik-dev` | **ran** / baseline s3 |
 | Durable storage | Every declared deployment is `memory`; the audit chain does not survive a restart | dev `api.yaml`; banners |
 | Kill switch cannot be cleared by API | `DELETE /api/v1/kill-switch` returns 403 for everyone; only a restart lifts it, and writes no clearance record | **ran**; ADR 0065 |
-| GitOps control plane | Suspended; Argo CD image fails the Trivy CRITICAL gate; bootstrap never succeeded; Kargo never promoted | ADR 0093; deployment-path |
+| GitOps control plane | Bootstrapped in `algorik-qip-dev` and Synced and Healthy at `infra.yml` run 121 (2026-10-17) on the derived Argo CD image; Kargo not applied and never promoted; its state since the deploy 403s is unverified. Said "suspended" and "bootstrap never succeeded" until 2026-10-24 | ADR 0093; `e3f81695`; run `38988479925` |
 | Fabric and ledger | `qip-fabricd` and `qip-ledgerd` refuse to start; archiver, config and health are stubs; plaintext TCP, RF1, bearer-token design | **ran**; ADR 0100; SYSTEM_MAP S39, S05 |
 | Execution nodes | `execution_nodes = {}` in all four environments; no boot image, no allocation | tfvars |
 | Scraping | Nothing scrapes anything; every alert policy is absent | NOT-SCRAPED.md |

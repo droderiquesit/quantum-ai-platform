@@ -10,8 +10,11 @@
 # binaries Argo CD *downloads* rather than builds
 # (`hack/installers/install-kustomize.sh` fetches the prebuilt kustomize
 # release tarball), so no Argo CD release fixes it, and the Go module proxy
-# shows no kustomize newer than the v5.8.1 already in the image. Pinning
-# forward reaches nothing. The only remaining choices are to suppress the
+# showed no kustomize newer than the v5.8.1 already in the image when this
+# was written (2026-09-20). Pinning forward reached nothing. That half is
+# stale since 2026-09-30: the proxy lists v5.8.2 and v5.8.3 (read
+# 2026-10-24). The derived image still builds v5.8.1, deliberately, and
+# whether either newer release would clear the finding is unchecked. The only remaining choices are to suppress the
 # finding or to remove the bytes, and this repository does not suppress.
 #
 # What is promised here is therefore different, and weaker, and stated
