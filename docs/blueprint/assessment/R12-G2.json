@@ -2764,7 +2764,7 @@
       "backend/crates/edge/qip-edge/tests/model_manifest.rs",
       "backend/crates/runtime/qip-kernel/tests/serving.rs"
     ],
-    "gap": "OCI packaging and KMS signatures.",
+    "gap": "OCI packaging and KMS signatures. 2026-10-25 (lane L2-INTEL): stays PARTIAL. OCI manifests and GCS weights need an artifact registry and KMS signing on a deployed path; the registry and KMS key ring are declared but not applied, and new billed infrastructure is declined for now (owner decision 5, docs/blueprint/owner-decisions-2026-10-25.md). The in-tree halves exist: shadow scoring before promotion, atomic promotion by record sequence, and rollback to the recorded parent (R12-MODEL-9003's tests).",
     "implemented": true,
     "tested": true,
     "integrated": true,

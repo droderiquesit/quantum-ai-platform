@@ -54,7 +54,10 @@
 //! Nothing here holds a handle to a thesis, a size, a reservation or a
 //! broker. The aggregate, the influence weights and the compute allocation
 //! are records. A promotion refused is authority not added — never a path
-//! created.
+//! created. The one power that reaches DECIDE is ADR 0125 decision 2's veto
+//! as ADR 0170 sets it: a refutation of an important prediction is returned
+//! on [`ReasonVerdict`] and REASON forms no proposal from it. It can remove a
+//! thesis, never size or enlarge one.
 
 use qip_agents::finding::FindingStatus;
 use qip_contracts::challenge::{ChallengeRequest, VerificationResult};
@@ -283,6 +286,24 @@ impl EventBody for ModelVerified {
     }
 }
 
+/// What the tournament tells REASON about one hypothesis: a clause for the
+/// stage detail and, where the verifier society refuted an important
+/// prediction, the refutation REASON must honour (ADR 0125 decision 2,
+/// ADR 0170, R12-REASON-3108).
+///
+/// The refutation is the society's one path back into the thesis: a veto,
+/// never a size. A refuted leading explanation used to be held out of the
+/// tournament's aggregate and then sized and traded anyway, because this
+/// module returned only a string; the type carries the refusal so the caller
+/// cannot read the clause and drop the verdict.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReasonVerdict {
+    pub clause: String,
+    /// The society's summary when it refuted the prediction; `None` when it
+    /// survived or the prediction was not important enough to attack.
+    pub refuted: Option<String>,
+}
+
 /// What REASON hands the tournament about one hypothesis, all captured at
 /// the instant it was formed.
 #[derive(Debug)]
@@ -299,6 +320,16 @@ pub struct ReasonObservation<'a> {
     pub crossed_recently: Option<bool>,
     pub expected_move_bps: f64,
     pub approved: bool,
+    /// The agents that explain: those whose manifest role is `Research` or
+    /// `Adversarial` (ADR 0170 decision 2). The verifier society reads only
+    /// their views and their missing inputs. A control's or a construction
+    /// agent's finding is about how the platform acts, not about the subject
+    /// (ADR 0147 keeps control findings out of the evidence for the same
+    /// reason); counted, a risk control's negative finding read as a panel
+    /// leaning against every bullish claim, and a construction agent's
+    /// missing quantum backend as a variable every explanation left out.
+    /// The panel report itself keeps every finding.
+    pub explaining: BTreeSet<String>,
 }
 
 /// The stage's state, held by the platform across cycles.
@@ -528,13 +559,14 @@ impl TournamentStage {
 
     /// Open a question on one hypothesis, enter every forecast on it,
     /// review the disagreement, and — where the prediction is important —
-    /// put it to the verifier society. Returns a clause for REASON's detail,
-    /// or `None` when the hypothesis has no directional claim to ask about.
+    /// put it to the verifier society. Returns a clause for REASON's detail
+    /// and the society's refutation if it refuted the prediction, or `None`
+    /// when the hypothesis has no directional claim to ask about.
     pub fn observe_reasoning(
         &mut self,
         observation: ReasonObservation<'_>,
         now: Timestamp,
-    ) -> Option<String> {
+    ) -> Option<ReasonVerdict> {
         let hypothesis = observation.hypothesis;
         let sign = hypothesis.claim.implied_sign()?;
         let subject = hypothesis.subjects.first()?.as_str().to_string();
@@ -561,10 +593,10 @@ impl TournamentStage {
             self.review
                 .refused
                 .push(format!("{question}: {}", error.message()));
-            return Some(format!(
-                "; tournament refused the question: {}",
-                error.message()
-            ));
+            return Some(ReasonVerdict {
+                clause: format!("; tournament refused the question: {}", error.message()),
+                refuted: None,
+            });
         }
         self.last_regime = Some(observation.regime.clone());
         let band = LatticeHorizon::of(hypothesis.horizon);
@@ -721,6 +753,7 @@ impl TournamentStage {
         // The society, for important predictions only.
         let important = observation.approved || confidence >= IMPORTANCE_CONFIDENCE;
         let mut society_clause = String::new();
+        let mut refuted = None;
         if important {
             let dossier = self.prediction_dossier(&observation, sign, &subject, &forecasts, &rets);
             let verification = self.society.attack_prediction(&dossier, now);
@@ -728,6 +761,7 @@ impl TournamentStage {
                 let _ = self
                     .tournament
                     .hold_out(&question, verification.verdict.summary());
+                refuted = Some(verification.verdict.summary());
             }
             society_clause = format!("; verifier society: {}", verification.verdict.summary());
             // The same attack as the §27 pair a second brain can read: the
@@ -761,10 +795,13 @@ impl TournamentStage {
             forecasts: forecasts.clone(),
             aggregate_up,
         });
-        Some(format!(
-            "; tournament question opened with {} forecast(s){society_clause}",
-            forecasts.len()
-        ))
+        Some(ReasonVerdict {
+            clause: format!(
+                "; tournament question opened with {} forecast(s){society_clause}",
+                forecasts.len()
+            ),
+            refuted,
+        })
     }
 
     fn prediction_dossier(
@@ -792,6 +829,7 @@ impl TournamentStage {
             .findings
             .iter()
             .filter(|f| matches!(f.status, FindingStatus::Complete | FindingStatus::Partial))
+            .filter(|f| observation.explaining.contains(&f.agent_id))
             .map(|f| PanelView {
                 agent: f.agent_id.clone(),
                 direction: f.direction.sign(),
@@ -831,7 +869,17 @@ impl TournamentStage {
             expected_move_bps: observation.expected_move_bps,
             evidence,
             panel,
-            missing_inputs: observation.report.missing_inputs.clone(),
+            missing_inputs: observation
+                .report
+                .findings
+                .iter()
+                .filter(|f| observation.explaining.contains(&f.agent_id))
+                .flat_map(|f| {
+                    f.missing_inputs
+                        .iter()
+                        .map(move |missing| format!("{}: {missing}", f.agent_id))
+                })
+                .collect(),
             coverage: observation.report.coverage(),
             regime_crossed_recently: observation.crossed_recently,
             spread_ratio: observation.spread_ratio,
