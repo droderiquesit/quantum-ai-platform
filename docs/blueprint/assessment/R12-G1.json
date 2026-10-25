@@ -397,9 +397,10 @@
     "status": "MISSING",
     "current": "No re-fetch path exists; manifest.rs states re-reading the original is the caller's business.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/manifest.rs:31-38 module doc (no fetch)"
+      "backend/crates/libs/qip-financial/src/manifest.rs:31-38 module doc (no fetch)",
+      "docs/adr/0180-connector-health-is-scored-world-documents-are-re-fetched-never-copied-and-the-scout-records-every-first-pass-verdict.md"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Re-fetch runs on a cadence (QIP_DEEPBRAIN_REFETCH_EVERY, default 0, absent from catalogue.tf) through a connector arm no environment configures; a replay of a past document does not trigger it. Cached-copy paths exist: the deep brain's QIP_DEEPBRAIN_REPLAY_PATH and QIP_DEEPBRAIN_TAPE_PATH recorded-file adapters, and TickLakeWriter capture on ConnectorFeed. Needs code (replay-triggered re-fetch through DataReference; remove or justify the copy paths), possibly an ADR since replay and tick-lake paths are decided features, and a tfvar flip plus connector and egress owner decision.",
+    "gap": "Decided 2026-10-25 by ADR 0180 d4 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): Re-fetch runs on a cadence (QIP_DEEPBRAIN_REFETCH_EVERY, default 0, absent from catalogue.tf) through a connector arm no environment configures; a replay of a past document does not trigger it. Cached-copy paths exist: the deep brain's QIP_DEEPBRAIN_REPLAY_PATH and QIP_DEEPBRAIN_TAPE_PATH recorded-file adapters, and TickLakeWriter capture on ConnectorFeed. Needs code (replay-triggered re-fetch through DataReference; remove or justify the copy paths), possibly an ADR since replay and tick-lake paths are decided features, and a tfvar flip plus connector and egress owner decision.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -413,7 +414,7 @@
     "verification": "integration test with a fixture provider",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: A re-fetch path exists: qip-data-finder refetch.rs (ReFetchDriver, TransportRefetcher, RevisionCheck against the reference hash) and qip-deepbrain connectors.rs ConnectorArm::refetch, wired by evolution.with_refetch."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: A re-fetch path exists: qip-data-finder refetch.rs (ReFetchDriver, TransportRefetcher, RevisionCheck against the reference hash) and qip-deepbrain connectors.rs ConnectorArm::refetch, wired by evolution.with_refetch. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0180 decision 4: 'never copy' governs world documents (re-fetched by manifest and hash-checked), not venue ticks under a retention right or recorded tapes. Code left: a re-fetch triggered when a replay touches a past document, not only on QIP_DEEPBRAIN_REFETCH_EVERY. Status unchanged."
   },
   {
     "id": "R12-DATA-8019",

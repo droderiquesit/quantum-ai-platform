@@ -501,7 +501,7 @@
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127,154,178 reflex node compile set; no fast-lane crate depends on a slower lane",
       "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11,40 edge node has no compile-time dependency on cognitive crates; separate binaries"
     ],
-    "gap": "2026-10-24 (L4): the requirement has two halves. The first, world-model services that are long-running and versioned with domain-specific stores, is unmet: the world model runs in-process inside qip-kernel's cycle, and no world-model service or store is deployed (billing paused, nothing applied). Only the second half, no single model on the reflex critical path, is proven, by lane_placement and arch_001_independent_reflex. Closing it needs a deployed, versioned world-model service with its own store: a deploy and an ADR, not code in this lane.",
+    "gap": "2026-10-24 (L4, wave580): decided by ADR 0191 under the delegation. The central brains are the long-running world-model services, and the domain stores are the log's records by journalling stage. Still to do: (1) code: a versioned per-domain snapshot record on the world_model.snapshot topic, which has no producer today; (2) deploy: a separate world-model service with its own store, deferred to the deployment phase because it is billed infrastructure.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -512,7 +512,7 @@
     "verification": "cargo test -p qip-acceptance --test lane_placement --test arch_001_independent_reflex",
     "work_item": "",
     "size": "S",
-    "notes": "The not-on-critical-path half is proven; long-running versioned world-model services with domain stores are not deployed."
+    "notes": "The not-on-critical-path half is proven; long-running versioned world-model services with domain stores are not deployed. 2026-10-24 (L4, wave580): ADR 0191 recorded; no status change."
   },
   {
     "id": "R12-REASON-7024",

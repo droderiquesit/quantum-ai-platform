@@ -146,8 +146,14 @@ fn a_retention_setting_that_cannot_be_read_is_refused_by_name() -> Result<()> {
         parse_retention(Some("lse-level2=raw")).is_err(),
         "raw without its record is refused"
     );
-    let policy = parse_retention(Some("lse-level2=canonical|raw; xpar=none"))?;
-    assert!(policy["lse-level2"].raw && policy["lse-level2"].canonical);
+    // Several clauses in one setting. The raw right goes to the simulated
+    // dataset: since ADR 0181 a raw grant for a feed the lake cannot
+    // re-encode is refused (a_raw_grant_for_a_feed_the_lake_cannot_re_encode_is_refused_by_name).
+    let policy = parse_retention(Some(&format!(
+        "{SIMULATED_DATASET}=canonical|raw; lse-level2=canonical; xpar=none"
+    )))?;
+    assert!(policy[SIMULATED_DATASET].raw && policy[SIMULATED_DATASET].canonical);
+    assert!(policy["lse-level2"].canonical && !policy["lse-level2"].raw);
     assert!(!policy["xpar"].canonical);
     Ok(())
 }
@@ -171,5 +177,29 @@ fn a_sink_configured_with_zstd_seals_compressed_segments() -> Result<()> {
     let keys = lake.list("lake/class=market/")?;
     assert_eq!(keys.len(), 1);
     assert!(keys[0].ends_with(".canonical.zst"), "{keys:?}");
+    Ok(())
+}
+
+/// ADR 0181: a raw grant the lake cannot honour is refused at start, by
+/// name, rather than sealed raw-less and only counted. Mutation: drop the
+/// non-simulated raw refusal in `parse_retention` — the grant is accepted.
+#[test]
+fn a_raw_grant_for_a_feed_the_lake_cannot_re_encode_is_refused_by_name() -> Result<()> {
+    let refused = parse_retention(Some("lse-level2=canonical|raw"))
+        .expect_err("the lake cannot re-encode lse-level2's frames");
+    assert!(
+        refused.message().contains("lse-level2") && refused.message().contains("ADR 0181"),
+        "{}",
+        refused.message()
+    );
+    // The simulated dataset's raw right is the default and is accepted.
+    let granted = parse_retention(Some(&format!("{SIMULATED_DATASET}=canonical|raw")))?;
+    assert!(
+        granted
+            .get(SIMULATED_DATASET)
+            .is_some_and(|right| right.raw)
+    );
+    // And canonical alone stays grantable for any dataset.
+    assert!(parse_retention(Some("lse-level2=canonical")).is_ok());
     Ok(())
 }

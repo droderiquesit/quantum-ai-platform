@@ -134,6 +134,16 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   plans a destroy of an etcd key declaring `prevent_destroy`.** So dev is in
   a state its tfvars cannot express, and a plain `up` rebuilds the cluster;
   ADR 0093 says what it would take to make the flag able to close.
+  **Since then, and the paragraph above is kept as the state it was:**
+  `vendor/argocd-patched` (`egress/derived-images.txt`, ADR 0225) passed
+  `vendor.yml` run 31 at 0 CRITICAL and is pinned in the dev overlay
+  (`e3f81695`); `infra.yml` run 121 (2026-10-17) printed `qip-dev is Synced
+  and Healthy`; run 122 listed five Cloud Run services. `vendor.yml` run 32
+  (2026-10-18) then refused the same derived digest on CVE-2026-77459,
+  which is in Argo CD itself and fixed in 3.5.4, so a fresh mirror cannot
+  attest it until the base is bumped. Whether the cluster and the services
+  still exist after the deploy 403s of `deploy.yml` runs 287 and 288 is
+  unverified (`docs/ops/runbooks/dev-redeploy-readiness.md`).
   What is still
   true is the rule: an agent shows the plan and a person applies, and
   each plan and each observation is recorded in the commit or run that
@@ -170,9 +180,12 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   the first stage needs only this repository, the second needs Argo CD to
   be able to read it and Config Connector's CRDs to be established.
 - **What `up` will still not give you today.** The teardown destroyed
-  `module.registry`, so the six digests in `gitops/envs/dev/kustomization.yaml`
-  and the eight controller digests in `gitops/bootstrap/*/overlays/dev/`
-  name a repository that no longer holds them. The Terraform apply does not
+  `module.registry`, so the seven digests in `gitops/envs/dev/kustomization.yaml`
+  and the seven controller digests in `gitops/bootstrap/*/overlays/dev/`
+  (`grep -c 'digest: sha256:'` on each, read 2026-10-24; this said six and
+  eight) named a repository that no longer held them. `infra.yml` runs
+  108–122 have since recreated the registry, so whether it holds them now is
+  unverified either way. The Terraform apply does not
   read a digest and is unaffected; the bootstrap step in the same job is not.
   Re-mirror with `vendor.yml` and rebuild with `deploy.yml` after the apply
   has recreated the registry and the attestor, then dispatch `apps`.

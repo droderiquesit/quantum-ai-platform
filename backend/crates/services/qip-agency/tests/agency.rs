@@ -3574,7 +3574,7 @@ fn each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_re
     let market = identified(Method::Market);
     let compensated = |e: &mut WideningEvidence<'_>| {
         e.compensations
-            .push((Method::Market, "re-widen quotes; drill 2026-10-01".into()));
+            .push((Method::Market, drill("re-widen quotes", "drill-2026-10-01")));
     };
 
     let mut policy = narrow();
@@ -3657,9 +3657,12 @@ fn each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_re
     assert!(widen_broad(&mut policy, &broad).contains("compensating step for Research"));
     broad
         .compensations
-        .push((Method::Research, "retract note; drill 2026-10-02".into()));
+        .push((Method::Research, drill("retract note", "drill-2026-10-02")));
     assert!(widen_broad(&mut policy, &broad).contains("kill path"));
-    broad.kill_path = Some("agency:halt-all returns every class to shadow".into());
+    broad.kill_path = Some(drill(
+        "agency:halt-all returns every class to shadow",
+        "drill-2026-10-03",
+    ));
     let level = widen_broad(&mut policy, &broad);
     assert!(
         level.contains("reached only from NarrowCompensable"),
@@ -3681,6 +3684,105 @@ fn each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_re
 
     // Drift still returns a policy to shadow from the level it holds.
     assert_eq!(policy.observe(d(50), &[]), Authority::Shadow);
+}
+
+/// R12-EXPAND-6071: a rollback ADR 0141 asks to be "tested in a drill" is
+/// read as a drill, not as a name. Before this a non-blank string satisfied
+/// both the compensation and the kill path, so a rollback nobody had ever run
+/// met the row. Each shortfall is refused by name: a drill that did not
+/// restore the prior state, one with no record, one naming no step -- for the
+/// compensating step and for the kill path alike. Mutation: make
+/// `Drill::shortfall` return `None` -- every case below then reaches the
+/// grant refusal instead.
+#[test]
+fn a_rollback_named_but_never_rehearsed_meets_no_level_of_the_schedule() {
+    use qip_agency::autonomy::WideningEvidence;
+    let second = ActingIdentity {
+        name: "second-approver".into(),
+        authorities: BTreeSet::from([WIDEN_AUTHORITY.to_string()]),
+    };
+    let market = identified(Method::Market);
+    let research = identified(Method::Research);
+    let mut policy = narrow();
+    assert_eq!(policy.authority(), Authority::NarrowReversible, "premise");
+
+    let failed = |mutate: fn(&mut qip_agency::autonomy::Drill)| {
+        let mut d = drill("re-widen quotes", "drill-2026-10-01");
+        mutate(&mut d);
+        d
+    };
+    let cases: [(fn(&mut qip_agency::autonomy::Drill), &str); 3] = [
+        (|d| d.restored = false, "did not restore the prior state"),
+        (|d| d.record = " ".into(), "left no record"),
+        (|d| d.step = String::new(), "names no step"),
+    ];
+    for (mutate, why) in cases {
+        let mut evidence = WideningEvidence::attribution(&market);
+        evidence.clean_days = 30;
+        evidence
+            .compensations
+            .push((Method::Market, failed(mutate)));
+        let err = policy
+            .widen_to(
+                Authority::NarrowCompensable,
+                &evidence,
+                &[&operator(), &second],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("compensating step for Market tested in a drill") && err.contains(why),
+            "{why}: {err}"
+        );
+
+        let mut broad = WideningEvidence::attribution(&market);
+        broad.attributions.push(&research);
+        broad.classes = BTreeSet::from([Method::Market, Method::Research]);
+        broad.clean_days = 30;
+        broad
+            .compensations
+            .push((Method::Market, drill("re-widen quotes", "drill-2026-10-01")));
+        broad
+            .compensations
+            .push((Method::Research, drill("retract note", "drill-2026-10-02")));
+        broad.kill_path = Some(failed(mutate));
+        let err = policy
+            .widen_to(Authority::BroadInternal, &broad, &[&operator(), &second])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("kill path") && err.contains(why),
+            "kill path, {why}: {err}"
+        );
+    }
+    assert_eq!(policy.authority(), Authority::NarrowReversible);
+
+    // The same evidence with every drill rehearsed reaches the grant refusal:
+    // the drill check is what refused above, not something else on the row.
+    let mut evidence = WideningEvidence::attribution(&market);
+    evidence.clean_days = 30;
+    evidence
+        .compensations
+        .push((Method::Market, drill("re-widen quotes", "drill-2026-10-01")));
+    let err = policy
+        .widen_to(
+            Authority::NarrowCompensable,
+            &evidence,
+            &[&operator(), &second],
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("granted by no record"), "{err}");
+}
+
+/// A rehearsed rollback: it ran, restored the prior state, and left a record.
+fn drill(step: &str, record: &str) -> qip_agency::autonomy::Drill {
+    qip_agency::autonomy::Drill {
+        step: step.into(),
+        ran_at: qip_core::Timestamp::from_millis(1_790_000_000_000),
+        restored: true,
+        record: record.into(),
+    }
 }
 
 fn fresh_market_policy() -> ActionPolicy {
@@ -3732,4 +3834,82 @@ fn the_post_release_check_reports_a_later_breach_an_unreadable_release_and_an_al
         ]
     );
     assert_eq!(findings[0].fingerprint, voice_fingerprint(breached));
+}
+
+/// R12-QUANT-4043: a plan the planner *searched* -- `Structural::generate`
+/// over the levers, with no plan handed in -- reaches an adapter only with a
+/// classical causal score, a policy-gate pass and a simulation record. The
+/// searcher here is the classical generator; ADR 0150/0190 build no quantum
+/// one, and the guard sits on the act stage whatever produced the plan.
+///
+/// - Searched and supported by the one causal model: simulated under every
+///   branch, selected, executed.
+/// - The same search when a second structural model says the step widens
+///   the spread: simulated, weakly identified, nothing sent.
+/// - The same search when one step's exposure exceeds the goal's risk
+///   envelope: the policy gate refuses it and nothing is sent.
+///
+/// Mutation: remove the `counterfactually_supported` refusal in
+/// `engine::execute` -- the contested searched plan executes and the
+/// `weakly identified` assertion fails.
+#[test]
+fn a_searched_plan_acts_only_with_a_causal_score_a_policy_gate_pass_and_a_simulation_record() {
+    use qip_agency::generate::GenerateDecl;
+    let searched = |exposure: Decimal| {
+        let mut r = request();
+        r.proposals.clear();
+        r.structural.as_mut().unwrap().generate = Some(GenerateDecl {
+            exposure: BTreeMap::from([("quoter".to_string(), exposure)]),
+            max_steps: 1,
+        });
+        r
+    };
+    let policy = narrow();
+
+    let mut adapter = Counting::default();
+    let report = run(searched(d(1)), Some(&policy), &mut adapter).unwrap();
+    assert!(
+        !report.candidates.is_empty(),
+        "premise: the generator searched and proposed a plan"
+    );
+    let simulated: Vec<_> = report.simulations.iter().flat_map(|s| &s.results).collect();
+    assert!(
+        simulated.len() >= 2,
+        "the searched plan was not simulated under every branch: {simulated:?}"
+    );
+    assert!(
+        matches!(report.outcome, Outcome::Executed(_)),
+        "{:?}",
+        report.outcome
+    );
+    assert_eq!(adapter.calls.len(), 1);
+
+    let mut contested = searched(d(1));
+    let decl = contested.structural.as_mut().unwrap();
+    let mut skeptic = decl.models[0].clone();
+    skeptic.name = "skeptic".into();
+    // Disagrees, but mildly: the models' mean still favours the step, so
+    // the generator ranks it and only the act stage's branch-by-branch
+    // check can stop it.
+    skeptic.links[0].coefficient = 0.2;
+    decl.models.push(skeptic);
+    let mut adapter = Counting::default();
+    let report = run(contested, Some(&policy), &mut adapter).unwrap();
+    let Outcome::Stopped(reason) = &report.outcome else {
+        panic!("expected withheld, got {:?}", report.outcome)
+    };
+    assert!(reason.contains("weakly identified"), "{reason}");
+    assert!(
+        adapter.calls.is_empty(),
+        "a contested searched plan was sent"
+    );
+
+    let mut adapter = Counting::default();
+    let report = run(searched(d(500)), Some(&policy), &mut adapter).unwrap();
+    assert!(
+        !matches!(report.outcome, Outcome::Executed(_)),
+        "a searched plan past the risk envelope executed: {:?}",
+        report.outcome
+    );
+    assert!(adapter.calls.is_empty());
 }

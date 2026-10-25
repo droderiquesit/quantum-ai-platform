@@ -18,3 +18,89 @@ patches:
     namespace: kargo
   patch: "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: kargo-controller\n  namespace: kargo\n\
     \  annotations:\n    iam.gke.io/gcp-service-account: qip-dev-kargo@algorik-qip-dev.iam.gserviceaccount.com\n"
+- target:
+    kind: Deployment
+    name: kargo-api
+    namespace: kargo
+  # Requests for every Kargo pod (owner decision 9 of 2026-10-25,
+  # docs/blueprint/owner-decisions-2026-10-25.md). The chart renders
+  # `resources: {}`, and GKE Autopilot bills a container with no request at
+  # its default of 0.5 vCPU and 2 GiB. Kargo here watches one warehouse of
+  # three images and promotes along one chain, so the controller gets the
+  # most (100m, 256Mi) and the API, management controller and webhooks
+  # server are near idle (50m, 128Mi; 50m, 128Mi; 50m, 64Mi). Each pair sits
+  # inside Autopilot's 1:1 to 1:6.5 vCPU-to-GiB ratio. Requests only, no
+  # limit. Whether they suffice under load is unverified until a cluster runs
+  # Kargo, which none has yet.
+  patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: kargo-api
+      namespace: kargo
+    spec:
+      template:
+        spec:
+          containers:
+          - name: api
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+- target:
+    kind: Deployment
+    name: kargo-controller
+    namespace: kargo
+  patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: kargo-controller
+      namespace: kargo
+    spec:
+      template:
+        spec:
+          containers:
+          - name: controller
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+- target:
+    kind: Deployment
+    name: kargo-management-controller
+    namespace: kargo
+  patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: kargo-management-controller
+      namespace: kargo
+    spec:
+      template:
+        spec:
+          containers:
+          - name: management-controller
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+- target:
+    kind: Deployment
+    name: kargo-webhooks-server
+    namespace: kargo
+  patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: kargo-webhooks-server
+      namespace: kargo
+    spec:
+      template:
+        spec:
+          containers:
+          - name: webhooks-server
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi

@@ -608,11 +608,15 @@ pub const CODEC_VARIABLE: &str = "QIP_TICK_LAKE_CODEC";
 /// what its terms allow — rights nobody evaluated are not rights — and its
 /// ticks are used live and not kept.
 pub fn default_retention() -> BTreeMap<String, RetentionRight> {
+    // Raw too, for this one dataset (ADR 0181 decision 1): its terms are the
+    // platform's own, so nothing restricts keeping the bytes the simulated
+    // venue published. Every licensed dataset still keeps raw bytes only
+    // where its own right says so.
     BTreeMap::from([(
         crate::feed::SIMULATED_DATASET.to_string(),
         RetentionRight {
             canonical: true,
-            raw: false,
+            raw: true,
         },
     )])
 }
@@ -661,6 +665,20 @@ pub fn parse_retention(text: Option<&str>) -> Result<BTreeMap<String, RetentionR
                  record; the lake keeps raw bytes only beside the record they decode to"
             )));
         }
+        if right.raw && dataset != crate::feed::SIMULATED_DATASET {
+            // The lake keeps a venue's bytes by re-encoding each line with the
+            // venue's own encoder and checking it against the hash taken at
+            // publication (ADR 0181); only the simulated feed's encoder is in
+            // this tree. A raw grant for any other dataset is one the sink
+            // could not honour, and a sink that silently sealed it raw-less
+            // would read as a retained raw history nobody can re-materialise.
+            return Err(Error::invalid(format!(
+                "{RETENTION_VARIABLE} grants {dataset} raw retention, and the lake can keep raw \
+                 bytes only for a feed whose encoder is in this tree ({}); grant it canonical \
+                 alone until its raw frames have their own record on the spool (ADR 0181)",
+                crate::feed::SIMULATED_DATASET
+            )));
+        }
         policy.insert(dataset.to_string(), right);
     }
     Ok(policy)
@@ -684,6 +702,9 @@ pub struct LakeSink {
     retention: BTreeMap<String, RetentionRight>,
     codec: SegmentCodec,
     withheld: u64,
+    /// Partitions whose raw bytes were not kept because a line's
+    /// re-encoding did not hash to what the venue published.
+    raw_unverified: u64,
     /// The clock discipline every applied tick passes through, per venue
     /// feed and partition, before its line is written (TICK-1122). Run here,
     /// on the drain thread, because the discipline is a function of the
@@ -725,6 +746,7 @@ impl LakeSink {
             retention,
             codec,
             withheld: 0,
+            raw_unverified: 0,
             capture: CaptureStream::new(DisciplineSettings::default())?,
         })
     }
@@ -738,6 +760,12 @@ impl LakeSink {
     /// Ticks the retention policy kept out of the lake so far.
     pub const fn withheld(&self) -> u64 {
         self.withheld
+    }
+
+    /// Partitions sealed without their raw bytes because a line could not
+    /// be re-encoded to the bytes the venue published.
+    pub const fn raw_unverified(&self) -> u64 {
+        self.raw_unverified
     }
 }
 
@@ -754,6 +782,12 @@ impl Sink for LakeSink {
         // instrument and licence; a BTreeMap so the write order — and a
         // retry's — is the same every time.
         let mut by_partition: BTreeMap<(String, String, String, String), Vec<u8>> = BTreeMap::new();
+        // The venue's bytes per partition, where the dataset's right keeps
+        // them (ADR 0181): `None` once any line of the partition could not be
+        // re-encoded to what was published, so a raw slot is either the whole
+        // partition's bytes or absent, never a session with a hole in it.
+        let mut raw_by_partition: BTreeMap<(String, String, String, String), Option<Vec<u8>>> =
+            BTreeMap::new();
         for record in &batch.records {
             let event = record.decode_payload(batch.encoding)?;
             if event.topic != MARKET_EVENT_APPLIED.topic {
@@ -784,16 +818,40 @@ impl Sink for LakeSink {
                 tick.payload().object_id.as_str().to_string(),
                 tick.entitlement().dataset().to_string(),
             );
+            if self
+                .retention
+                .get(tick.entitlement().dataset())
+                .is_some_and(|right| right.raw)
+            {
+                let slot = raw_by_partition
+                    .entry(key.clone())
+                    .or_insert_with(|| Some(Vec::new()));
+                match (slot.as_mut(), crate::feed::native_line(&tick)) {
+                    (Some(bytes), Some(native)) => bytes.extend_from_slice(native.as_bytes()),
+                    (Some(_), None) => *slot = None,
+                    (None, _) => {}
+                }
+            }
             let body = by_partition.entry(key).or_default();
             body.extend_from_slice(line.as_bytes());
             body.push(b'\n');
         }
         let lake = Lake::new(self.store.as_ref()).with_codec(self.codec);
         let segment_id = format!("{}-o{offset:020}", self.cell);
-        for ((venue, date, instrument, dataset), canonical) in by_partition {
-            // The sink holds decoded events, not the venue's wire bytes, so
-            // there is no raw payload to keep here; the partition still
-            // records what the dataset's right would have allowed.
+        for (key, canonical) in by_partition {
+            // The venue's bytes ride beside the decoded lines where the
+            // dataset's right keeps them and every line re-encoded to what
+            // was published; otherwise the segment is sealed without them and
+            // the shortfall counted.
+            let raw = match raw_by_partition.remove(&key) {
+                Some(Some(bytes)) => Some(bytes),
+                Some(None) => {
+                    self.raw_unverified = self.raw_unverified.saturating_add(1);
+                    None
+                }
+                None => None,
+            };
+            let (venue, date, instrument, dataset) = key;
             let raw_retention_permitted = self.retention.get(&dataset).is_some_and(|r| r.raw);
             let partition = Partition::new(
                 RecordClass::Market,
@@ -805,7 +863,7 @@ impl Sink for LakeSink {
                     raw_retention_permitted,
                 },
             )?;
-            match lake.write_segment(&partition, &segment_id, canonical, None) {
+            match lake.write_segment(&partition, &segment_id, canonical, raw) {
                 Ok(_) => {}
                 // A segment id is one spool offset of one cell, so a sealed
                 // one is this sink's own earlier write of these same records,

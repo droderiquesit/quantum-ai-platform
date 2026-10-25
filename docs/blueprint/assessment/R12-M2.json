@@ -546,9 +546,10 @@
     "current": "backend/crates/services/qip-data-finder/src/finder.rs:324 observe_health keeps a bounded history and assessment scores reliability from SourceHealth::over",
     "evidence": [
       "backend/crates/services/qip-data-finder/tests/reliability_history.rs:41 a_source_failing_most_of_its_window_scores_low_even_when_its_probe_answers",
-      "backend/crates/services/qip-data-finder/src/finder.rs:1307 monitor has no caller outside the crate"
+      "backend/crates/services/qip-data-finder/src/finder.rs:1307 monitor has no caller outside the crate",
+      "docs/adr/0180-connector-health-is-scored-world-documents-are-re-fetched-never-copied-and-the-scout-records-every-first-pass-verdict.md"
     ],
-    "gap": "Needs a decision first. Platform has no observe_source_health, and ConnectorArm::poll measures no latency (it holds only the poll's records or error), so a HealthObservation::served cannot be built honestly; the failure half could be. The scorer reads history only when a source is assessed, and connector source ids are admitted by the licence gate and never re-assessed through DataFinder::assess, so feeding history would be read by nothing. Decide whether connector sources enter the finder's registry for periodic re-assessment (and who measures latency) before wiring observe_health.",
+    "gap": "Decided 2026-10-25 by ADR 0180 d1 (see notes for the decision and the code it leaves). Needs a decision first. Platform has no observe_source_health, and ConnectorArm::poll measures no latency (it holds only the poll's records or error), so a HealthObservation::served cannot be built honestly; the failure half could be. The scorer reads history only when a source is assessed, and connector source ids are admitted by the licence gate and never re-assessed through DataFinder::assess, so feeding history would be read by nothing. Decide whether connector sources enter the finder's registry for periodic re-assessment (and who measures latency) before wiring observe_health.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -559,7 +560,7 @@
     "verification": "cargo test -p qip-data-finder --test source_alpha",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The scorer that runs (finder.rs:1111) is 0.9/0.1 from one HEAD probe minus TLS/schema penalties; SourceHealth::over has no production caller. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Scorer reads history now, but nothing feeds it in production. Gap corrected 2026-10-18 (lane L01) after reading ConnectorArm::poll and DataFinder::observe_health; handover item (3) from the previous session confirmed as a design decision."
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The scorer that runs (finder.rs:1111) is 0.9/0.1 from one HEAD probe minus TLS/schema penalties; SourceHealth::over has no production caller. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Scorer reads history now, but nothing feeds it in production. Gap corrected 2026-10-18 (lane L01) after reading ConnectorArm::poll and DataFinder::observe_health; handover item (3) from the previous session confirmed as a design decision. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0180 decision 1 (amends ADR 0157 §8): connector polls are recorded and scored for reliability by the finder's scorer, reported and journaled, routing nothing. Code left: time each ConnectorArm poll, keep a bounded window, score it, and test that a flaky connector scores lower than a stable one. Status unchanged."
   },
   {
     "id": "R12-DATA-2025",
@@ -994,9 +995,16 @@
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs:489",
       "infrastructure/environments/dev/terraform.tfvars:280 enable_cloud_storage = false (same in test/stage/prod)",
       "grep with_tick_lake|TickLakeWriter::new in apps/runtime/services src: none",
-      "backend/crates/apps/qip-deepbrain/src/connectors.rs::TickLakeSettings"
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs::TickLakeSettings",
+      "docs/adr/0181-the-simulated-depth-dataset-permits-raw-retention-raw-frames-reach-the-lake-off-the-decision-path-and-lake-segments-are-sized-at-the-seal.md",
+      "backend/crates/apps/qip-edge-node/tests/lake_raw.rs::every_passs_frame_re_materialises_byte_for_byte_from_the_lakes_raw_slot",
+      "backend/crates/apps/qip-edge-node/src/feed.rs::native_line",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs default_retention (simulated dataset raw: true, ADR 0181)",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::every_drained_lake_segment_carries_the_venues_published_bytes_line_for_line",
+      "backend/crates/libs/qip-storage/tests/lake.rs::a_crash_while_writing_raw_bytes_is_repaired_by_the_retry_not_sealed_without_them",
+      "backend/crates/apps/qip-edge-node/tests/lake_retention.rs::a_raw_grant_for_a_feed_the_lake_cannot_re_encode_is_refused_by_name"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No raw tick is retained: LakeSink keeps only decoded canonical events (drain.rs deliver: 'there is no raw payload to keep here') and default_retention grants raw:false; ADR 0151 decision 8's raw-frame writer is not built and waits on a licence record permitting raw retention (ADR 0157, owner/vendor decision). Nothing is durable: the edge binary defaults to the memory store, enable_cloud_storage=false in every env, execution_nodes_enabled=false. No test re-materialises a captured session byte-for-byte from the lake.",
+    "gap": "2026-10-25 (after the skeptic's refutation, three of its five items addressed): a drain-driven decision_loop test now proves every segment LakeSink seals from the spool carries a raw slot whose lines are, one for one, the bytes published for its canonical ticks; Lake::write_segment writes the raw slot first and write-once, so a crash between the two can no longer leave a sealed segment without its raw bytes; and parse_retention refuses at start a raw grant for any dataset the lake cannot re-encode. Remaining: (1) durability - the edge binary's default store is memory, execution_nodes_enabled and enable_cloud_storage are false in every environment, and infrastructure/terraform/modules/data/main.tf deletes lake/class=market/ objects (raw slots included) at 90 days; meeting 'remains available for exact replay and retraining' needs a durable store on a committed deployment and either a .raw exemption from that delete rule or an owner decision on the retention bound - both cost storage and are the owner's; (2) no qip_storage reader returns raw slots (tests read raw keys directly) and the pinned manifest carries no raw hash.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1009,7 +1017,7 @@
     "verification": "cargo test -p qip-storage --test lake",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge ticks now reach a lake; not durable anywhere. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: The evidence 'grep with_tick_lake|TickLakeWriter::new ... none' is stale: qip-deepbrain main.rs and evolution.rs call with_tick_lake, only when QIP_DEEPBRAIN_TICK_LAKE_RETENTION is set, which no committed deployment sets; the edge LakeSink writes no raw bytes and no raw hash."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge ticks now reach a lake; not durable anywhere. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: The evidence 'grep with_tick_lake|TickLakeWriter::new ... none' is stale: qip-deepbrain main.rs and evolution.rs call with_tick_lake, only when QIP_DEEPBRAIN_TICK_LAKE_RETENTION is set, which no committed deployment sets; the edge LakeSink writes no raw bytes and no raw hash. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0181 decisions 1-2: the simulated depth dataset permits raw retention; raw frames travel the spool and LakeSink seals them in the segment's raw slot off the decision path. Code left: the frame record, the raw slot, default_retention raw:true for the simulated dataset, and a byte-for-byte re-materialisation test. Status unchanged. 2026-10-25 lane L3-DATA (wave580): raw retention landed (7450feb8). Mutation fired: dropping even-sequenced native lines in LakeSink - 'pass 2: the lake's raw bytes are not the frame the venue published'. Independent skeptic (security-engineer) verdict REFUTED; reasons in gap. Kept PARTIAL. 2026-10-25 later: mutations fired - LakeSink never filling raw_by_partition ('sealed without the venue's bytes'); seal-before-raw order restored in write_segment (crash test fails); non-simulated raw refusal removed (refusal test fails). An existing lake_retention assertion that accepted a raw grant for lse-level2 was changed to grant raw to the simulated dataset and canonical to lse-level2: stricter, not weaker - the sink could never honour that raw grant. Kept PARTIAL for durability, an owner cost."
   },
   {
     "id": "R12-TICK-2043",
@@ -1044,9 +1052,11 @@
       "backend/crates/edge/qip-protocols/src/itch.rs trading-action reason decode",
       "backend/crates/edge/qip-orderbook/tests/venue.rs a_circuit_breaker_halts_the_book_and_withdraws_the_auction_it_replaced",
       "backend/crates/edge/qip-protocols/tests/itch.rs a_breaker_reason_on_a_trading_action_decodes_as_a_circuit_breaker_not_an_ordinary_halt",
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:90 trading_action halt/resume"
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:90 trading_action halt/resume",
+      "backend/crates/apps/qip-edge-node/src/feed.rs status_line / DepthDecoder StatusChange arm",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_circuit_breaker_the_venue_declares_reaches_the_cell_as_a_typed_status_and_is_sealed_in_the_lake"
     ],
-    "gap": "Imbalance and circuit-breaker are now distinct typed records, but the only decoder that emits the breaker from a venue frame (qip_protocols::itch) has no production caller outside tests/acceptance, so no binary receives a breaker from a venue; only simulated sources feed the edge node.",
+    "gap": "2026-10-25 (skeptic-refuted promotion after 35e0077e): the edge node's default feed can now carry a venue status (open, auction, halted, circuit_breaker, closed) as a typed StatusChange line that the cell decodes and the lake seals, but its only input, SimulatedGateway::declare_status, has no caller outside tests, so no default process ever publishes one. Also unmet on a default path: auction and imbalance (MessageBody::AuctionUpdate's only producer is qip-market-ingestion depth.rs, used only by the qip-cli demo, which serves open snapshots); venue rejects (Cell::send records a reject on venue health and propagates the error, journaling no typed record); acknowledgements without a fill (the edge gateway keeps only OrderAck.remaining, and Decision has no ack variant). Cancels the cell starts itself are journaled. Remaining: give the simulated venue a default session schedule (open, opening auction with imbalance, close, an occasional breaker) or wire a real venue decoder, and journal typed venue-reject and ack records, each mutation-verified.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1057,7 +1067,7 @@
     "verification": "cargo test -p qip-contracts --test contracts a_circuit_breaker; cargo test -p qip-protocols --test itch a_breaker_reason; cargo test -p qip-orderbook --test venue a_circuit_breaker",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 L12: mutations that fired: dropping the LUD/MWC guard in itch.rs failed the itch test; letting accepts_orders admit CircuitBreaker failed the contracts and orderbook tests. Kept PARTIAL: closes only with a real ITCH/SBE feed wired into qip-edge-node (deploy-dependent)."
+    "notes": "2026-10-18 L12: mutations that fired: dropping the LUD/MWC guard in itch.rs failed the itch test; letting accepts_orders admit CircuitBreaker failed the contracts and orderbook tests. Kept PARTIAL: closes only with a real ITCH/SBE feed wired into qip-edge-node (deploy-dependent). 2026-10-25 lane L3-DATA (wave580): status capture path landed. Mutations fired: publish skipping wire.status (left [], right [CircuitBreaker, Open]); decoder losing the status arm (pass fails 'published 3 level(s) and the cell decoded 2'). Independent skeptic (code-reviewer) verdict REFUTED; per-type reasons in gap. Kept PARTIAL."
   },
   {
     "id": "R12-TICK-2045",
@@ -1517,8 +1527,10 @@
     "id": "R12-TICK-2064",
     "status": "MISSING",
     "current": "No learned representation or embedding code exists.",
-    "evidence": [],
-    "gap": "2026-10-24 (re-read against the tree): No market-state embedding model is trained, versioned or evaluated against a baseline anywhere: qip_contracts::market_state::StateKind::Embedding is a tag with no producer, and qip_ai::embedding::HashingEmbedder is a non-learned lexical text embedder. ModelRegistry/ModelCard (qip-ai) could version an artefact. The trainer is new code (a qip-training module or new crate), and a shipped path needs the off-by-default tick_desk enabled in a committed deployment.",
+    "evidence": [
+      "docs/adr/0182-a-simulation-lesson-is-a-promoted-claim-an-embedding-is-a-fifth-model-form-and-event-arrival-and-the-warehouse-write-path-stay-as-decided.md"
+    ],
+    "gap": "Decided 2026-10-25 by ADR 0182 d2 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): No market-state embedding model is trained, versioned or evaluated against a baseline anywhere: qip_contracts::market_state::StateKind::Embedding is a tag with no producer, and qip_ai::embedding::HashingEmbedder is a non-learned lexical text embedder. ModelRegistry/ModelCard (qip-ai) could version an artefact. The trainer is new code (a qip-training module or new crate), and a shipped path needs the off-by-default tick_desk enabled in a committed deployment.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1531,7 +1543,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Embedding code exists, not for market state: qip-ai embedding.rs Embedder trait and HashingEmbedder for text; qip-contracts market_state.rs StateKind::Embedding with no producer."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Embedding code exists, not for market state: qip-ai embedding.rs Embedder trait and HashingEmbedder for text; qip-contracts market_state.rs StateKind::Embedding with no producer. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0182 decision 2 (amends ADR 0083): a market-state embedding is the fifth model form - an in-tree linear projection with a ModelCard version and a baseline it must beat. Code left: the trainer, the card and the baseline test. Status unchanged."
   },
   {
     "id": "R12-TICK-2065",
@@ -1566,7 +1578,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:19-24 assemble step",
       "backend/crates/services/qip-lifecycle/src/evidence.rs:38,50 LeakageAudit"
     ],
-    "gap": "The tick labelling pipeline has no production caller: qip-training microstructure::build_examples is called only from tests (the deep brain's tick desk replays decisions without labelling), so there is no default-path tick dataset to guard. build_examples sorts each instrument's observations by knowable instant before windowing, so a feature later than its label anchor is structurally unreachable there and a refusal could never fire. The bar pipeline on the default path already refuses look-ahead (qip-deepbrain learning.rs audit_features_as_of).",
+    "gap": "2026-10-25 (wave580, decided under the 2026-10-24 delegation): the tick desk's off-by-default guard is kept. Switching it on would not yield a working paper capability: the desk reads qip-deepbrain's own lake namespace (main.rs builds TickDesk over config.storage.blobs(LAKE_NAMESPACE)), which holds no market segments by default (the edge node's LakeSink writes to the edge node's store, and the deep brain's own with_tick_lake capture is behind QIP_DEEPBRAIN_TICK_LAKE_RETENTION, unset everywhere), so a default-on desk would replay an empty lake every round and build_examples would never run. Closing needs a lake the deep brain can read on its default path (the edge node's segments shipped to a store both read, or the deep brain's own capture on by default under a licensed or simulated dataset), and only then an ADR superseding the guard. The label refusals themselves (LabelBuilder's uncovered-horizon refusal, build_examples' sort by knowable instant) stand and are tested in qip-training.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1579,7 +1591,7 @@
     "verification": "cargo test -p qip-training --test labels",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L21 2026-10-18: the triage closure (refuse a BookObservation knowable after the anchor in build_examples) was not implemented, because sorting makes that refusal unable to fire, which is a control that reads as protection and is not. Closing needs a production tick-labelling path (e.g. the tick desk building MicroExamples) and a guard on whatever field could carry a later instant there."
+    "notes": "Lane L21 2026-10-18: the triage closure (refuse a BookObservation knowable after the anchor in build_examples) was not implemented, because sorting makes that refusal unable to fire, which is a control that reads as protection and is not. Closing needs a production tick-labelling path (e.g. the tick desk building MicroExamples) and a guard on whatever field could carry a later instant there. 2026-10-25 lane L3-DATA (wave580): default-on wiring considered and declined, per the parent's instruction to supersede the guard only if the default desk reads a real lake; it would read an empty one. No ADR claimed. Status unchanged."
   },
   {
     "id": "R12-TICK-2067",

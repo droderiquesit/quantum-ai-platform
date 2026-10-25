@@ -1523,3 +1523,50 @@ fn at_capacity_a_stale_near_duplicate_is_folded_into_an_abstraction_before_a_uni
     assert_eq!(folded.members, vec!["dup-old".to_string()]);
     assert_eq!(folded.mean_realised_move_bps, Some(50.0));
 }
+
+/// R12-WORLD-1016: an outcome that went against its claim is recorded as a
+/// contradiction beside the claim, and the claim keeps the direction and
+/// confidence it was made at. An outcome that agreed, one not yet known, and
+/// one that cannot be graded for direction record none.
+///
+/// Mutation: in `Episode::contradiction`, report the outcome's direction as
+/// the claimed one (overwrite the claim with what happened) -- the recorded
+/// claimed direction then matches the move and the assertion below fails.
+#[test]
+fn an_outcome_against_its_claim_is_recorded_beside_the_claim_and_the_claim_keeps_its_confidence() {
+    let against = episode("e-against", "AAA", "trending", start(), -40.0);
+    assert_eq!(
+        against.claim.direction, 1.0,
+        "premise: the claim pointed up"
+    );
+    let contradiction = against
+        .contradiction()
+        .expect("a claim up and a move down is a contradiction");
+    assert_eq!(contradiction.episode_id, "e-against");
+    assert_eq!(contradiction.claimed_direction, 1.0);
+    assert_eq!(contradiction.claimed_confidence, 0.62);
+    assert_eq!(contradiction.realised_move_bps, -40.0);
+    assert_eq!(
+        Some(contradiction.resolved_at),
+        against.outcome.as_ref().map(|o| o.resolved_at)
+    );
+    // The belief itself is untouched: same direction, same confidence.
+    assert_eq!(against.claim, claim("undervalued", 1.0, 0.62));
+
+    let agreed = episode("e-agreed", "AAA", "trending", start(), 40.0);
+    assert_eq!(agreed.contradiction(), None, "an outcome that agreed");
+    let mut unresolved = episode("e-open", "AAA", "trending", start(), -40.0);
+    unresolved.outcome = None;
+    assert_eq!(unresolved.contradiction(), None, "no outcome yet");
+    let mut flat = episode("e-flat", "AAA", "trending", start(), 0.0);
+    assert_eq!(
+        flat.contradiction(),
+        None,
+        "a move of zero agrees with nothing"
+    );
+    flat.claim.direction = 0.0;
+    if let Some(outcome) = flat.outcome.as_mut() {
+        outcome.realised_move_bps = -40.0;
+    }
+    assert_eq!(flat.contradiction(), None, "a directionless claim");
+}

@@ -35,7 +35,7 @@
 
 use crate::affordance::{AffordanceGraph, ToolEdgeDraft};
 use crate::attribution::EffectAttribution;
-use crate::autonomy::{ActionPolicy, Authority};
+use crate::autonomy::{ActionPolicy, Authority, WideningEvidence};
 use crate::causal::Objective;
 use crate::comparison::ComparisonDraft;
 use crate::generate::{ScenarioSource, Simulated, Structural, StructuralDecl};
@@ -567,12 +567,37 @@ pub fn widen(
     evidence: &EffectAttribution,
     approver: &ActingIdentity,
 ) -> Result<Widening, Error> {
-    policy.widen(evidence, approver)?;
+    widen_to(
+        policy,
+        Authority::NarrowReversible,
+        &WideningEvidence::attribution(evidence),
+        &[approver],
+    )
+}
+
+/// Widen `policy` to `target` through [`ActionPolicy::widen_to`], which reads
+/// the level's [`crate::autonomy::SCHEDULE`] row (R12-EXPAND-6071, ADR 0141).
+/// A caller that may name a level is a caller whose lesser evidence is
+/// refused by that level's row, rather than one only ever asking for the
+/// first step. The record names the first attribution offered and the first
+/// approver.
+pub fn widen_to(
+    policy: &mut ActionPolicy,
+    target: Authority,
+    evidence: &WideningEvidence<'_>,
+    approvers: &[&ActingIdentity],
+) -> Result<Widening, Error> {
+    let (Some(first), Some(approver)) = (evidence.attributions.first(), approvers.first()) else {
+        return Err(Error::denied(
+            "a widening names at least one identified attribution and one approver",
+        ));
+    };
+    policy.widen_to(target, evidence, approvers)?;
     Ok(Widening {
         class: policy.class(),
-        goal_id: evidence.goal_id.clone(),
-        intervention_id: evidence.intervention_id.clone(),
-        action_id: evidence.action_id.clone(),
+        goal_id: first.goal_id.clone(),
+        intervention_id: first.intervention_id.clone(),
+        action_id: first.action_id.clone(),
         approver: approver.name.clone(),
     })
 }

@@ -14,10 +14,12 @@
 # "the pipeline signs" stays the single doctrine, and the review surface for
 # a vendored image is the commit that added its digest to the list.
 #
-# One image is vendored today: the Envoy egress proxy every Cloud Run service
-# that needs egress runs as a sidecar (infrastructure/egress/envoy.yaml,
-# modules/egress-proxy). The GitOps controllers this workflow used to mirror
-# left with the cluster (ADR 0024).
+# Ten images are vendored (infrastructure/egress/vendored-images.txt: envoy,
+# openobserve, the argocd base, redis, kargo, cert-manager x3, the Config
+# Connector operator, google-cloud-cli) plus one derived image,
+# vendor/argocd-patched (infrastructure/egress/derived-images.txt, ADR 0225).
+# This said "One image is vendored today" until 2026-10-24; ADR 0036 brought
+# the GitOps controllers back after ADR 0024 retired them.
 #
 # The copy is done with crane, not docker. `docker pull` of a multi-arch
 # index dereferences it to one platform's manifest, and pushing that back

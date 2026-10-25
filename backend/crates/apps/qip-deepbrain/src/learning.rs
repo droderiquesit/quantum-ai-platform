@@ -758,7 +758,16 @@ struct Shadowing {
     reference: String,
     artifact: ModelArtifact,
     distillation: Option<Distillation>,
+    /// The latest instant any row its fit, its holdout or a won round has
+    /// read. A round scores only rows strictly after it, and a won round
+    /// moves it forward, so no round is a win on data the model has seen.
+    seen_through: Timestamp,
 }
+
+/// Rows after `seen_through` a shadow round needs before it is scored. Fewer
+/// is a window that has not moved on enough to say anything new, and the
+/// round waits rather than being judged on a handful of bars.
+pub const MIN_FRESH_SHADOW_ROWS: usize = 20;
 
 /// Fits models from observed bars and watches the ones it has fitted age.
 pub struct LearningDesk {
@@ -1091,8 +1100,19 @@ impl LearningDesk {
             // "never promoted with an artifact" and its alias history
             // contradicts the log. A move the card already holds (same
             // instant, same direction) is not added twice.
+            //
+            // The displaced card's move is worded as the kernel worded it
+            // live: "displaced by <promoted>: <evidence>" on a promotion, the
+            // bare evidence on a rollback, whose two moves share one reading.
+            // A rollback record re-promotes a reference an earlier record
+            // already promoted, which is how the two are told apart; read
+            // bare, a restored history said the displaced model was moved on
+            // its successor's evaluation, and what it said depended on where
+            // the crash fell.
             let mut first_promotion = true;
+            let mut promoted_before: BTreeSet<&str> = BTreeSet::new();
             for record in &history {
+                let rollback = !promoted_before.insert(record.reference.as_str());
                 let moved_by = record
                     .moved_by
                     .clone()
@@ -1107,11 +1127,16 @@ impl LearningDesk {
                         .iter()
                         .any(|m| m.at == record.at && m.assigned == assigned);
                     if !held {
+                        let evidence = if assigned || rollback {
+                            evidence.clone()
+                        } else {
+                            format!("displaced by {}: {evidence}", record.reference)
+                        };
                         card.alias_moves.push(qip_ai::registry::AliasMove {
                             alias: qip_ai::registry::PRODUCTION_ALIAS.to_string(),
                             assigned,
                             moved_by: moved_by.clone(),
-                            evidence: evidence.clone(),
+                            evidence,
                             at: record.at,
                         });
                     }
@@ -1394,6 +1419,13 @@ impl LearningDesk {
                 reference: reference.clone(),
                 artifact,
                 distillation: candidate.distillation.clone(),
+                seen_through: candidate
+                    .holdout
+                    .times()
+                    .iter()
+                    .copied()
+                    .max()
+                    .unwrap_or(now),
             },
         );
         self.stats.shadowed += 1;
@@ -1433,8 +1465,40 @@ impl LearningDesk {
         now: Timestamp,
     ) -> Result<Option<PromotionOutcome>> {
         let reference = shadow.reference.clone();
-        let rows = candidate.holdout.rows();
-        let targets = candidate.holdout.targets();
+        // Only rows after everything the shadowed model has read: the fit's
+        // window, its holdout, and every round it already won. Without this a
+        // window that moved on by less than its holdout share scores the
+        // model on rows it was trained on, and a win there is an in-sample
+        // win counted as a round.
+        let fresh: Vec<usize> = candidate
+            .holdout
+            .times()
+            .iter()
+            .enumerate()
+            .filter(|(_, at)| **at > shadow.seen_through)
+            .map(|(index, _)| index)
+            .collect();
+        if fresh.len() < MIN_FRESH_SHADOW_ROWS {
+            return Ok(Some(PromotionOutcome::Shadowed {
+                reference: reference.clone(),
+                rounds_won: self
+                    .registry
+                    .get(&reference)
+                    .and_then(|card| card.shadow.as_ref())
+                    .map_or(0, |record| record.rounds_won),
+                required: MIN_SHADOW_ROUNDS,
+                reason: format!(
+                    "waiting: the new window holds {} row(s) after {}, the latest the shadowed \
+                     model has read, and a round needs {MIN_FRESH_SHADOW_ROWS}",
+                    fresh.len(),
+                    shadow.seen_through.as_secs()
+                ),
+            }));
+        }
+        let scored = candidate.holdout.select(&fresh)?;
+        let latest = scored.times().iter().copied().max().unwrap_or(now);
+        let rows = scored.rows();
+        let targets = scored.targets();
         let lost = |desk: &mut Self, reason: String| -> Result<Option<PromotionOutcome>> {
             desk.shadowing.remove(&candidate.subject);
             desk.registry.retire(&reference, now)?;
@@ -1533,6 +1597,9 @@ impl LearningDesk {
                 }));
             }
         };
+        if let Some(held) = self.shadowing.get_mut(&candidate.subject) {
+            held.seen_through = latest;
+        }
         if rounds_won < MIN_SHADOW_ROUNDS {
             return Ok(Some(PromotionOutcome::Shadowed {
                 reference,
@@ -2129,6 +2196,7 @@ impl LearningDesk {
             lineage.record_on(card);
             record_validation_scope(card, regime, &dataset)?;
             stamp_provenance(card, &provenance);
+            card.self_fitted = true;
         }
         let challenger = trainer.fit(&spec_for(CHALLENGER_CLASS), &dataset, now);
         // Skill is judged by the evaluator from the predictions each class
@@ -2187,6 +2255,7 @@ impl LearningDesk {
                     lineage.record_on(card);
                     record_validation_scope(card, regime, &dataset)?;
                     stamp_provenance(card, &provenance);
+                    card.self_fitted = true;
                 }
                 registration
             }
@@ -2373,17 +2442,59 @@ mod tests {
     /// `Platform::regime_context`; the pair shape is the platform's.
     const REGIME: &str = "trending/calm";
 
+    /// Record a completed shadow stage for a desk-fitted card, for a test that
+    /// stages a promotion by hand to reach a branch past it. The registry
+    /// refuses to promote a self-fitted card any other way (R12-EXPAND-6070).
+    fn completed_shadow(registry: &mut ModelRegistry, reference: &str) -> Result<()> {
+        registry.enter_shadow(reference, at())?;
+        for round in 1..=i64::from(MIN_SHADOW_ROUNDS) {
+            registry.record_shadow_round(
+                reference,
+                "staged by the test",
+                at().saturating_add(qip_core::Duration::from_secs(round)),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Drive the candidate `desk` holds through its shadow stage
-    /// (R12-EXPAND-6070): the first call enters shadow, and each later fit
-    /// of `bars`, a minute apart, is one shadow round. Returns the last
-    /// outcome: `Promoted` after `MIN_SHADOW_ROUNDS` won rounds, or whatever
-    /// stopped it first. The rounds score the shadowed model on the new
-    /// fit's holdout; on one fixed bar series that is the same tail, which
-    /// is enough to exercise the stage and is not a claim of fresh data.
+    /// (R12-EXPAND-6070): the first call enters shadow, and each round fits
+    /// the same learnable series extended by `SHADOW_STEP` bars per round, a
+    /// minute apart, so every round holds rows after everything the shadowed
+    /// model has read. `bars` must be `tests_support::learnable(n)`; only its
+    /// length is read. Returns the last outcome: `Promoted` after
+    /// `MIN_SHADOW_ROUNDS` won rounds, or whatever stopped it first.
     fn through_shadow(
         desk: &mut LearningDesk,
         platform: &mut Platform,
         bars: &[Bar],
+        from_cycle: u64,
+        start: Timestamp,
+    ) -> Result<Option<PromotionOutcome>> {
+        let len = bars.len();
+        through_shadow_on(
+            desk,
+            platform,
+            |step| super::tests_support::learnable(len + step)[step..].to_vec(),
+            from_cycle,
+            start,
+        )
+    }
+
+    /// Bars per shadow round: each round's window has moved on by this many.
+    const SHADOW_STEP: usize = 150;
+
+    /// [`through_shadow`] over any window: round `n` fits the bars
+    /// `window(n * SHADOW_STEP)` returns, which must be the same window moved
+    /// on by that many bars. For a test whose premise needs a later fit to
+    /// beat an earlier one, the window must make that true by construction
+    /// (`learnable_regimes`, with each fit's window inside one regime),
+    /// because on a stationary series the rounds are a coin flip between two
+    /// fits of the same model.
+    fn through_shadow_on(
+        desk: &mut LearningDesk,
+        platform: &mut Platform,
+        window: impl Fn(usize) -> Vec<Bar>,
         from_cycle: u64,
         start: Timestamp,
     ) -> Result<Option<PromotionOutcome>> {
@@ -2396,7 +2507,8 @@ mod tests {
         let mut last = entered;
         for round in 1..=u64::from(MIN_SHADOW_ROUNDS) {
             let at = start.saturating_add(qip_core::Duration::from_mins(round as i64));
-            desk.maybe_learn(&subject(), bars, REGIME, from_cycle + round, at)?;
+            let moved = window(SHADOW_STEP * round as usize);
+            desk.maybe_learn(&subject(), &moved, REGIME, from_cycle + round, at)?;
             last = desk
                 .promote_candidate(platform, at)?
                 .ok_or_else(|| Error::not_found("a shadow round's candidate"))?;
@@ -2520,6 +2632,7 @@ mod tests {
                 .teacher,
         )?;
         let later = at().saturating_add(qip_core::Duration::from_mins(1));
+        completed_shadow(&mut desk.registry, &second_reference)?;
         platform.promote_model(
             &mut desk.registry,
             &second_artifact,
@@ -2672,35 +2785,33 @@ mod tests {
             let (v1, v2) = {
                 let mut platform = file_platform()?;
                 let mut desk = learning_desk().with_artifact_store(store.clone());
-                desk.maybe_learn(
-                    &subject(),
-                    &super::tests_support::learnable(400),
-                    REGIME,
-                    1,
-                    at(),
-                )?;
+                // One window per regime of `learnable_regimes`, so each fit
+                // displaces the one before it by construction: the model from
+                // the regime before predicts the wrong sign on the rows after.
+                let window = |offset: usize, len: usize| {
+                    move |step: usize| {
+                        super::tests_support::learnable_regimes(offset + len + step)
+                            [offset + step..]
+                            .to_vec()
+                    }
+                };
+                desk.maybe_learn(&subject(), &window(0, 400)(0), REGIME, 1, at())?;
                 // Each fit is driven through its shadow stage (R12-EXPAND-6070),
                 // the second an hour after the first so its rounds are new ones.
-                let first = through_shadow(
-                    &mut desk,
-                    &mut platform,
-                    &super::tests_support::learnable(400),
-                    1,
-                    at(),
-                )?
-                .ok_or_else(|| Error::not_found("a first candidate"))?;
+                let first = through_shadow_on(&mut desk, &mut platform, window(0, 400), 1, at())?
+                    .ok_or_else(|| Error::not_found("a first candidate"))?;
                 let second_start = at().saturating_add(qip_core::Duration::from_hours(1));
                 desk.maybe_learn(
                     &subject(),
-                    &super::tests_support::learnable(1_200),
+                    &window(1_000, 1_200)(0),
                     REGIME,
                     10,
                     second_start,
                 )?;
-                let second = through_shadow(
+                let second = through_shadow_on(
                     &mut desk,
                     &mut platform,
-                    &super::tests_support::learnable(1_200),
+                    window(1_000, 1_200),
                     10,
                     second_start,
                 )?
@@ -2809,12 +2920,36 @@ mod tests {
                     .registry()
                     .get(&v1)
                     .ok_or_else(|| Error::not_found("v1"))?;
-                assert!(
-                    displaced
-                        .alias_moves
-                        .iter()
-                        .any(|m| !m.assigned && m.at == last.at),
-                    "v1's alias history lacks the displacement the log records"
+                let moved = displaced
+                    .alias_moves
+                    .iter()
+                    .find(|m| !m.assigned && m.at == last.at)
+                    .ok_or_else(|| {
+                        Error::not_found(
+                            "v1's alias history lacks the displacement the log records",
+                        )
+                    })?;
+                // Worded as the uncrashed kernel wrote it, so the history
+                // does not depend on where the crash fell.
+                let evidence = last
+                    .evidence
+                    .as_deref()
+                    .ok_or_else(|| Error::not_found("premise: the record carries evidence"))?;
+                assert_eq!(moved.evidence, format!("displaced by {v2}: {evidence}"));
+                assert_eq!(Some(moved.moved_by.as_str()), last.moved_by.as_deref());
+                // The lifecycle the moved cards would have carried, from the
+                // record: the card on the log for each is the one written
+                // before the move.
+                assert_eq!(displaced.retired_at, Some(last.at), "v1's retirement");
+                let promoted = restarted
+                    .registry()
+                    .get(&v2)
+                    .ok_or_else(|| Error::not_found("v2"))?;
+                assert_eq!(promoted.deployed_at, Some(last.at), "v2's deployment");
+                assert_eq!(
+                    promoted.rollback_parent.as_deref(),
+                    Some(v1.as_str()),
+                    "v2's rollback parent"
                 );
             }
             // And nothing on the log claims a move the promotion records do
@@ -2841,21 +2976,13 @@ mod tests {
             // Promotable means it can complete the shadow stage after the
             // restart (R12-EXPAND-6070), at an instant past every round above.
             let third_start = at().saturating_add(qip_core::Duration::from_hours(3));
-            restarted.maybe_learn(
-                &subject(),
-                &super::tests_support::learnable(2_400),
-                REGIME,
-                20,
-                third_start,
-            )?;
-            let after = through_shadow(
-                &mut restarted,
-                &mut platform,
-                &super::tests_support::learnable(2_400),
-                20,
-                third_start,
-            )?
-            .ok_or_else(|| Error::not_found("a candidate after the crash"))?;
+            let window = |step: usize| {
+                super::tests_support::learnable_regimes(2_700 + 2_400 + step)[2_700 + step..]
+                    .to_vec()
+            };
+            restarted.maybe_learn(&subject(), &window(0), REGIME, 20, third_start)?;
+            let after = through_shadow_on(&mut restarted, &mut platform, window, 20, third_start)?
+                .ok_or_else(|| Error::not_found("a candidate after the crash"))?;
             let PromotionOutcome::Promoted {
                 reference,
                 displaced,
@@ -2917,7 +3044,7 @@ mod tests {
                 Box::new(InTreeProvider),
             )
         };
-        let v1 = {
+        let (v1, v2) = {
             let mut platform = file_platform()?;
             let mut desk = learning_desk();
             desk.maybe_learn(
@@ -2970,7 +3097,7 @@ mod tests {
             desk.registry_mut().record_drift(v1, 0.0)?;
             let reactivated = platform.rollback_model(desk.registry_mut(), v2, later)?;
             assert_eq!(&reactivated, v1, "premise: the rollback reactivates v1");
-            v1.clone()
+            (v1.clone(), v2.clone())
         };
         let text =
             std::fs::read_to_string(&path).map_err(|e| Error::io(format!("read the log: {e}")))?;
@@ -3010,6 +3137,28 @@ mod tests {
         if let Err(why) = card.decision_eligibility(at()) {
             assert!(!why.contains("retired"), "{why}");
         }
+        // The degraded model's move off the alias carries the rollback's own
+        // reading, bare, as the kernel wrote it live: a rollback is not a
+        // displacement by a successor, and replayed as one it would say so.
+        let rollback = platform
+            .model_promotion_history()?
+            .into_iter()
+            .next_back()
+            .ok_or_else(|| Error::not_found("the rollback record"))?;
+        let degraded = restarted
+            .registry()
+            .get(&v2)
+            .ok_or_else(|| Error::not_found("v2"))?;
+        let moved = degraded
+            .alias_moves
+            .iter()
+            .find(|m| !m.assigned && m.at == rollback.at)
+            .ok_or_else(|| Error::not_found("v2's move off the alias at the rollback"))?;
+        assert_eq!(Some(moved.evidence.as_str()), rollback.evidence.as_deref());
+        // And the lifecycle the rollback set: the degraded model retired,
+        // and the reactivated one deployed, at the rollback's own instant.
+        assert_eq!(degraded.retired_at, Some(rollback.at), "v2's retirement");
+        assert_eq!(card.deployed_at, Some(rollback.at), "v1's redeployment");
         let _ = std::fs::remove_dir_all(&directory);
         Ok(())
     }
@@ -3168,14 +3317,45 @@ mod tests {
             "shadow promoted nothing"
         );
 
+        // A round on the very same bars holds nothing after what the model
+        // has read: it waits, and is neither won nor lost.
+        let later = at().saturating_add(qip_core::Duration::from_mins(1));
+        desk.maybe_learn(&subject(), &bars, REGIME, 2, later)?;
+        let stale = desk
+            .promote_candidate(&mut platform, later)?
+            .ok_or_else(|| Error::not_found("a shadow round"))?;
+        assert!(
+            matches!(&stale, PromotionOutcome::Shadowed { rounds_won: 0, reason, .. }
+                if reason.contains("waiting")),
+            "a round on rows the model had read was scored: {}",
+            stale.describe()
+        );
+
         let mut outcomes = Vec::new();
         for round in 1..=u64::from(MIN_SHADOW_ROUNDS) {
-            let later = at().saturating_add(qip_core::Duration::from_mins(round as i64));
-            desk.maybe_learn(&subject(), &bars, REGIME, 1 + round, later)?;
+            let later = at().saturating_add(qip_core::Duration::from_mins(10 + round as i64));
+            let step = 150 * round as usize;
+            let longer = super::tests_support::learnable(400 + step);
+            desk.maybe_learn(&subject(), &longer[step..], REGIME, 2 + round, later)?;
             outcomes.push(
                 desk.promote_candidate(&mut platform, later)?
                     .ok_or_else(|| Error::not_found("a shadow round"))?,
             );
+            if round == 1 {
+                // The window just won holds nothing new: re-running it waits,
+                // and the round is not counted twice.
+                let again = later.saturating_add(qip_core::Duration::from_secs(1));
+                desk.maybe_learn(&subject(), &longer[step..], REGIME, 90, again)?;
+                let repeat = desk
+                    .promote_candidate(&mut platform, again)?
+                    .ok_or_else(|| Error::not_found("a repeated round"))?;
+                assert!(
+                    matches!(&repeat, PromotionOutcome::Shadowed { rounds_won: 1, reason, .. }
+                        if reason.contains("waiting")),
+                    "a won window was scored again: {}",
+                    repeat.describe()
+                );
+            }
         }
         for (index, outcome) in outcomes.iter().take(outcomes.len() - 1).enumerate() {
             assert!(
@@ -3220,7 +3400,7 @@ mod tests {
             shadowed.describe()
         );
         let doomed = shadowed.reference().to_string();
-        let noise = super::tests_support::unlearnable(400);
+        let noise = super::tests_support::unlearnable(700);
         let later = at().saturating_add(qip_core::Duration::from_mins(30));
         desk.maybe_learn(&other, &noise, REGIME, 11, later)?;
         let lost = desk
@@ -4051,6 +4231,7 @@ mod tests {
 
         // Promote it. Refused unless the fit actually cleared the skill bar,
         // which is the point: this cannot be staged for a model with no signal.
+        completed_shadow(desk.registry_mut(), &reference)?;
         if desk.registry_mut().promote(&reference, at()).is_err() {
             return Err(Error::invalid(
                 "the fit did not clear the skill bar, so this test cannot reach the drift \
@@ -4103,6 +4284,7 @@ mod tests {
             .and_then(|round| round.registration)
             .ok_or_else(|| Error::not_found("a registration"))?
             .reference;
+        completed_shadow(desk.registry_mut(), &reference)?;
         if desk.registry_mut().promote(&reference, at()).is_err() {
             return Err(Error::invalid(
                 "the fit did not clear the skill bar, so this test cannot reach a promoted card",
@@ -5144,19 +5326,60 @@ mod tests_support {
     /// variance, so there is nothing for a holdout R-squared to be a share of,
     /// and a model that "passed" on it would have passed on nothing.
     pub(super) fn learnable(count: usize) -> Vec<Bar> {
+        autoregressive(count, |_| 0.6)
+    }
+
+    /// [`learnable`] in three regimes: `r(t+1) = 0.6 * r(t) + noise` to bar
+    /// 1000, `-0.6 * r(t) + noise` to bar 2700, and `0.9 * r(t) + noise`
+    /// after. The shocks are the same draws, so the first 1000 bars are
+    /// byte-identical to `learnable`'s.
+    ///
+    /// For a test whose premise is that a later fit displaces an earlier one.
+    /// On the stationary series two fits are the same model to within
+    /// sampling error, and under fresh-row shadow scoring (R12-EXPAND-6070)
+    /// which of them wins a round is decided by the draw: the crash tests'
+    /// "promotable after the restart" once lost by an rmse of 0.002230
+    /// against 0.002220 on 150 rows, a coin flip reading as a recovery
+    /// verdict. A fit that straddles a change is no better: it lost 0.003383
+    /// to 0.003365. So each fit's window here lies wholly inside one regime
+    /// (`through_shadow_on` takes the window's offset), and a model from the
+    /// regime before is actively wrong on the rows after, not merely less
+    /// precise: the sign of what it predicts is wrong. The regime borders
+    /// leave each fit's three rounds (`SHADOW_STEP` bars each) inside its own
+    /// regime: a 400-bar fit at offset 0 scores on bars 400 to 850, a
+    /// 1200-bar fit at offset 1000 on bars 2200 to 2650.
+    pub(super) fn learnable_regimes(count: usize) -> Vec<Bar> {
+        autoregressive(count, |i| match i {
+            0..1000 => 0.6,
+            1000..2700 => -0.6,
+            _ => 0.9,
+        })
+    }
+
+    /// `rising(count)` re-priced as an AR(1) return series with the given
+    /// per-bar coefficient and a fixed seed, so every caller reads the same
+    /// shocks in the same order.
+    fn autoregressive(count: usize, coefficient: impl Fn(usize) -> f64) -> Vec<Bar> {
         let mut rng = Xoshiro256::seeded(0x1EA2);
         let mut bars = rising(count);
         let mut level = 100.0_f64;
         let mut previous = 0.0_f64;
-        for bar in bars.iter_mut() {
+        for (i, bar) in bars.iter_mut().enumerate() {
             let shock = rng.uniform(-0.004, 0.004);
-            let ret = 0.6 * previous + shock;
+            let ret = coefficient(i) * previous + shock;
             previous = ret;
             level *= 1.0 + ret;
             bar.close = Decimal::from_f64(level).unwrap_or(Decimal::ONE);
             bar.open = Decimal::from_f64(level * (1.0 - ret / 2.0)).unwrap_or(Decimal::ONE);
             bar.high = Decimal::from_f64(level * 1.001).unwrap_or(Decimal::ONE);
             bar.low = Decimal::from_f64(level * 0.999).unwrap_or(Decimal::ONE);
+            // Stationary volume. `rising`'s `1000 + i` makes `volume_share` a
+            // deterministic ratio that shrinks with the index, so any later
+            // window of the same series read as drifted by construction, and
+            // a shadow round (R12-EXPAND-6070), which is a later window by
+            // definition, was refuted for a property of the fixture.
+            bar.volume =
+                Decimal::from_f64(1_000.0 * (1.0 + rng.uniform(-0.2, 0.2))).unwrap_or(Decimal::ONE);
         }
         bars
     }

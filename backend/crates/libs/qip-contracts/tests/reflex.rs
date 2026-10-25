@@ -70,6 +70,7 @@ fn a_hedge_decision_can_be_constructed_and_serialized() {
         object: "SPY".to_string(),
         quantity: "100".to_string(),
         simulated: false,
+        grounds: Vec::new(),
     };
 
     // Assert the variant is recognized and the kind() method returns "hedged"

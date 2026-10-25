@@ -1320,7 +1320,9 @@ jobs:
             echo
             echo "Nothing was deployed by this run. The digests are in the one build"
             echo "registry (${prefix}); this run attested them for ${TARGET_ENVIRONMENT}."
-            echo "The Kargo warehouse discovers them on its own poll and its promotions"
+            echo "Where Kargo is bootstrapped, its warehouse discovers the api, fastbrain"
+            echo "and deepbrain images on its own poll (qip-portal is not watched and is"
+            echo "pinned by hand in envs/<env>), and its promotions"
             echo "carry the same digests along dev, test, replay, paper, stage, prod —"
             echo "automatically into dev, on a person's approval for every later link,"
             echo "never into prod — and Argo CD's post-sync hook proves the routed"

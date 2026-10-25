@@ -134,3 +134,239 @@ patches:
   # Google's front end and the Pod, inside the VPC, after IAP has already
   # decided the caller may be there — not the hop a browser makes.
   patch: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: argocd-cmd-params-cm\ndata:\n  server.insecure: \"true\"\n"
+- target:
+    kind: Deployment
+    name: argocd-applicationset-controller
+  # Two controllers this platform never uses, removed from dev (owner
+  # decision 9 of 2026-10-25, docs/blueprint/owner-decisions-2026-10-25.md).
+  # Nothing in this repository declares an ApplicationSet
+  # (`grep -rn 'kind: ApplicationSet' infrastructure/gitops` outside upstream/
+  # finds nothing) and nothing configures a notification: argocd-notifications-cm
+  # carries upstream's empty default. Each was a pod with no requests, which
+  # GKE Autopilot bills at its default size whether or not it does anything.
+  # The objects that exist only to run them go with them: the Deployment, its
+  # Service, its identity, its RBAC and its NetworkPolicy. The CRD, the empty
+  # argocd-notifications-cm and argocd-notifications-secret stay: they hold no
+  # process, argocd-server serves the ApplicationSet API from the CRD alone,
+  # and deleting a CRD is the one removal here that would delete objects too.
+  #
+  # `apply` in infra.yml is `kubectl apply --server-side` without `--prune`,
+  # so on a cluster that already runs these two, removing them here stops
+  # nothing. A recreated cluster never gets them; a surviving one needs them
+  # deleted by a person (docs/ops/runbooks/dev-redeploy-readiness.md, §5).
+  patch: |
+    $patch: delete
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: argocd-applicationset-controller
+- target:
+    kind: Service
+    name: argocd-applicationset-controller
+  patch: |
+    $patch: delete
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: argocd-applicationset-controller
+- target:
+    kind: ServiceAccount
+    name: argocd-applicationset-controller
+  patch: |
+    $patch: delete
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: argocd-applicationset-controller
+- target:
+    kind: Role
+    name: argocd-applicationset-controller
+  patch: |
+    $patch: delete
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: argocd-applicationset-controller
+- target:
+    kind: RoleBinding
+    name: argocd-applicationset-controller
+  patch: |
+    $patch: delete
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: argocd-applicationset-controller
+- target:
+    kind: ClusterRole
+    name: argocd-applicationset-controller
+  patch: |
+    $patch: delete
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: argocd-applicationset-controller
+- target:
+    kind: ClusterRoleBinding
+    name: argocd-applicationset-controller
+  patch: |
+    $patch: delete
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: argocd-applicationset-controller
+- target:
+    kind: NetworkPolicy
+    name: argocd-applicationset-controller-network-policy
+  patch: |
+    $patch: delete
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: argocd-applicationset-controller-network-policy
+- target:
+    kind: Deployment
+    name: argocd-notifications-controller
+  patch: |
+    $patch: delete
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: argocd-notifications-controller
+- target:
+    kind: Service
+    name: argocd-notifications-controller-metrics
+  patch: |
+    $patch: delete
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: argocd-notifications-controller-metrics
+- target:
+    kind: ServiceAccount
+    name: argocd-notifications-controller
+  patch: |
+    $patch: delete
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: argocd-notifications-controller
+- target:
+    kind: Role
+    name: argocd-notifications-controller
+  patch: |
+    $patch: delete
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: argocd-notifications-controller
+- target:
+    kind: RoleBinding
+    name: argocd-notifications-controller
+  patch: |
+    $patch: delete
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: argocd-notifications-controller
+- target:
+    kind: NetworkPolicy
+    name: argocd-notifications-controller-network-policy
+  patch: |
+    $patch: delete
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: argocd-notifications-controller-network-policy
+- target:
+    kind: StatefulSet
+    name: argocd-application-controller
+  # Requests for every Argo CD pod that stays (owner decision 9). Upstream
+  # sets none, and GKE Autopilot bills a container with no request at its
+  # default of 0.5 vCPU and 2 GiB, so six mostly idle controllers were billed
+  # as six half-cores. The figures are the argo-helm chart's own commented
+  # examples raised to this platform's load: the application controller
+  # reconciles one Application (250m, 512Mi); the repo server renders
+  # kustomizations of up to 34,050 lines, so it keeps memory (100m, 512Mi);
+  # the server and redis are near idle (50m, 128Mi and 50m, 64Mi); the two
+  # init containers copy a file and run a script (50m, 64Mi). Each pair sits
+  # inside Autopilot's 1:1 to 1:6.5 vCPU-to-GiB ratio, so Autopilot does not
+  # resize it. Requests only: no limit is set here, so this changes what is
+  # reserved and billed, not when a pod is throttled or killed. Whether these
+  # are enough under real load is unverified until a cluster runs them.
+  patch: |
+    apiVersion: apps/v1
+    kind: StatefulSet
+    metadata:
+      name: argocd-application-controller
+    spec:
+      template:
+        spec:
+          containers:
+          - name: argocd-application-controller
+            resources:
+              requests:
+                cpu: 250m
+                memory: 512Mi
+- target:
+    kind: Deployment
+    name: argocd-repo-server
+  patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: argocd-repo-server
+    spec:
+      template:
+        spec:
+          initContainers:
+          - name: copyutil
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+          containers:
+          - name: argocd-repo-server
+            resources:
+              requests:
+                cpu: 100m
+                memory: 512Mi
+- target:
+    kind: Deployment
+    name: argocd-server
+  patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: argocd-server
+    spec:
+      template:
+        spec:
+          containers:
+          - name: argocd-server
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+- target:
+    kind: Deployment
+    name: argocd-redis
+  patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: argocd-redis
+    spec:
+      template:
+        spec:
+          initContainers:
+          - name: secret-init
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+          containers:
+          - name: redis
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi

@@ -1,0 +1,45 @@
+diff --git a/infrastructure/environments/dev/terraform.tfvars b/infrastructure/environments/dev/terraform.tfvars
+--- a/infrastructure/environments/dev/terraform.tfvars
++++ b/infrastructure/environments/dev/terraform.tfvars
+@@ -134,12 +134,13 @@
+ # The one environment with a control plane today: an Autopilot cluster in
+ # the `management` zone above running Config Connector, Argo CD and Kargo,
+ # reconciling infrastructure/gitops/envs/dev/ into this project. The three
+-# services `deploy.yml` last moved here — the digests images.tfvars used to
+-# record — are the digests envs/dev names, so Config Connector's first
+-# reconcile acquires each service and changes nothing; that is the evidence
+-# the ADR asks for and `docs/ops/missing-infrastructure-register.md` will
+-# record. The endpoint's /28 sits above the management zone's /24 and below
+-# the execution nodes' ladder (10.65.0.0/16 upward), overlapping neither.
++# services `deploy.yml` last moved here are the digests envs/dev names, so
++# Config Connector's first reconcile acquires each service and changes
++# nothing; that is the evidence the ADR asks for. (This paragraph also cited
++# images.tfvars and `docs/ops/missing-infrastructure-register.md` until
++# 2026-10-24; neither exists in the tree.) The endpoint's /28 sits above the
++# management zone's /24 and below the execution nodes' ladder (10.65.0.0/16
++# upward), overlapping neither.
+ #
+ # **The cluster is suspended (ADR 0093) and this flag is deliberately still
+ # `true`, which is the opposite of what that record first said.** Every
+@@ -149,6 +150,12 @@
+ # its whole purpose while a regional Autopilot control plane bills whether or
+ # not a Pod runs. The suspension is real; the mechanism is `infra.yml`'s
+ # `suspend` action, not this flag.
++#
++# Stale since 2026-10-12, kept as the record it was: `vendor.yml` run 31
++# passed the derived `vendor/argocd-patched` image at 0 CRITICAL (ADR 0225),
++# and `infra.yml` run 121 (2026-10-17) printed `qip-dev is Synced and
++# Healthy` on it. vendor.yml run 32 (2026-10-18) then refused the same digest
++# on CVE-2026-77459, which is fixed in Argo CD 3.5.4. No value below changes.
+ #
+ # Closing the flag was tried first and refused at plan time, by a guard that
+ # is right: `module.gitops_control_plane`'s `count` goes to zero with it, and
+@@ -649,7 +656,7 @@
+ # with a single click from all ingress paths, including default run.app URLs
+ # and load balancers." So the console is reachable at
+ #
+-#   https://qip-dev-portal-523718313246.us-east4.run.app
++#   https://qip-dev-portal-101249892564.us-east4.run.app
+ #
+ # on a Google-managed certificate, behind IAP, with no address reserved, no
+ # certificate ordered, no Cloud Armor policy, no zone, no registrar and no
