@@ -1203,7 +1203,7 @@
       "infrastructure/terraform/security.tf google_privateca_ca_pool.internal",
       "infrastructure/terraform/tests/security.tftest.hcl every_security_service_plans_when_named_soundly, a_workload_certificate_living_longer_than_a_day_is_refused"
     ],
-    "gap": "2026-10-24 (lane L6, row was stale at MISSING): the CA pool exists in code and is off everywhere (certificate_authority = null; enabling it is an infrastructure/environments/** change, protected, and costs money). No Fabric broker, client or VM requests or presents a certificate from it: the event-fabric protocol still authenticates by the in-tree identity table over plaintext TCP, and no composition root reads the pool's trust roots. Closing needs the tfvar flip with a real plan, and the mTLS terminator on the Fabric hop (ADR 0112 Amendment 1, R12-SEC-10031).",
+    "gap": "2026-10-25 (lane L6): no patch written. The closure is setting certificate_authority in dev tfvars (protected) and running a real plan, and CA Service is billed infrastructure, which owner-decisions-2026-10-25 decision 5 declines for now; it stays PARTIAL until the owner enables it. Earlier: 2026-10-24 (lane L6, row was stale at MISSING): the CA pool exists in code and is off everywhere (certificate_authority = null; enabling it is an infrastructure/environments/** change, protected, and costs money). No Fabric broker, client or VM requests or presents a certificate from it: the event-fabric protocol still authenticates by the in-tree identity table over plaintext TCP, and no composition root reads the pool's trust roots. Closing needs the tfvar flip with a real plan, and the mTLS terminator on the Fabric hop (ADR 0112 Amendment 1, R12-SEC-10031).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1224,7 +1224,7 @@
       "infrastructure/terraform/security.tf google_access_context_manager_service_perimeter.data",
       "infrastructure/terraform/tests/security.tftest.hcl a_perimeter_restricting_nothing_is_refused, every_security_service_plans_when_named_soundly"
     ],
-    "gap": "2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere. Enabling needs the organisation's access policy number and an infrastructure/environments/** change (protected) with a real plan; Artifact Registry is deliberately left out of the default list pending an egress rule for cross-project promotion (security.tf comment).",
+    "gap": "2026-10-25 (lane L6): no patch written. The closure needs the organisation's access-policy number, which only the owner holds, set in vpc_service_controls in dev tfvars (protected) with a dry-run then a real plan; it stays PARTIAL on that owner input and on the billing pause. Earlier: 2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere. Enabling needs the organisation's access policy number and an infrastructure/environments/** change (protected) with a real plan; Artifact Registry is deliberately left out of the default list pending an egress rule for cross-project promotion (security.tf comment).",
     "implemented": true,
     "tested": true,
     "integrated": false,
