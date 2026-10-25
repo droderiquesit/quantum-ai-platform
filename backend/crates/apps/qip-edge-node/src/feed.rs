@@ -370,9 +370,6 @@ impl SimulatedFeed {
             now,
         );
         let hash = MarketEvent::hash_payload(&payload)?;
-        // The line as the venue's publisher wrote it: the bytes the decoder
-        // read, which is what `source_hash`'s canonical re-encoding is not.
-        let native = level_line(*sequence, venue_time, id, *side, *price, *size);
         // `uncertainty` is the cell's bound for the frame, taken in
         // `publish` before the frame was decoded: see there for why.
         Ok(MarketEvent::new(
