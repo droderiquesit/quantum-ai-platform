@@ -366,7 +366,7 @@
       "backend/crates/services/qip-telemetry-drain/src/lib.rs",
       "backend/crates/services/qip-telemetry-drain/tests/credential.rs"
     ],
-    "gap": "2026-10-24 (lane L6, current corrected: it said no OTel export): OTLP export is built and off by default (QIP_OPENOBSERVE_URL unset until a collector is vendored and attested, ADR 0156 §5.4); no OpenObserve instance runs and nothing has been shown to ingest a series or span. Collection, not emission, is what is missing.",
+    "gap": "2026-10-25 (lane L6): not wired. QIP_OPENOBSERVE_URL/ORG/AUTHORIZATION stay unset by ADR 0156 §5.4, the authorization needs a mounted credential the owner holds, and ingestion is proven only by a deploy. Earlier: 2026-10-24 (lane L6, current corrected: it said no OTel export): OTLP export is built and off by default (QIP_OPENOBSERVE_URL unset until a collector is vendored and attested, ADR 0156 §5.4); no OpenObserve instance runs and nothing has been shown to ingest a series or span. Collection, not emission, is what is missing.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1669,8 +1669,8 @@
       "backend/crates/libs/qip-contracts/src/replay.rs::StatedManifest",
       "backend/crates/apps/qip-edge-node/src/replay.rs::manifest_for",
       "backend/crates/apps/qip-edge-node/src/main.rs (replay-manifests subcommand)",
-      "backend/crates/apps/qip-edge-node/tests/replay.rs::a_node_journal_replayed_under_different_gateway_settings_is_refused_on_the_marker_digest",
-      "backend/crates/apps/qip-edge-node/tests/replay.rs::replaying_a_spool_with_a_torn_tail_leaves_the_spool_byte_for_byte_as_it_was",
+      "backend/crates/apps/qip-edge-node/tests/replay_manifests.rs::a_node_journal_replayed_under_different_gateway_settings_is_refused_on_the_marker_digest",
+      "backend/crates/apps/qip-edge-node/tests/replay_manifests.rs::replaying_a_spool_with_a_torn_tail_leaves_the_spool_byte_for_byte_as_it_was",
       "backend/crates/libs/qip-contracts/tests/replay_manifest.rs::a_manifest_read_off_the_wire_missing_any_field_is_refused_and_a_complete_one_round_trips_every_field"
     ],
     "gap": "2026-10-30 (lane L5-EDGE, skeptic HOLDS-AS-PARTIAL): the manifest carries no universe, no time window (one pass instant and tape offsets) and dataset partitions only for control streams; ReplayManifest::new still builds one without assumptions, nested AppliedReadings options are not refused when absent, and nothing carries a manifest between brains — the replay is an operator subcommand with markers only under QIP_VENUE_FEED=simulated.",
@@ -1681,7 +1681,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test replay_manifest; cargo test -p qip-edge-node --test replay --test gateway",
+    "verification": "cargo test -p qip-contracts --test replay_manifest; cargo test -p qip-edge-node --test replay_manifests --test gateway",
     "work_item": "",
     "size": "M",
     "notes": "2026-10-24 ADR 0155 section 16: built, PARTIAL kept because the consumer of the manifest does not exist. Mutation fired: hard-coding the no-refusal text in assumptions_of made two gateways with different rejection probabilities yield equal assumptions and the test failed (premise: both gateways build and the default matches new()). 2026-10-30 lane L5-EDGE: mutations fired (5): skip the config_digest comparison; let an empty spool agree; put a serde default back on the wire form's assumptions; skip the assumption check on deserialise; open the spool in place instead of the copy. The widened digest is taken from SimulatedGateway::default_settings, the settings NodeGateway::open builds the simulator with; release tolerance and listing permissions are not ExchangeSettings and are not in the digest, and neither has a production caller."
@@ -2363,9 +2363,12 @@
       "backend/crates/apps/qip-edge-node/tests/feed_recovery.rs",
       "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:526",
       "backend/crates/services/qip-training/src/microstructure.rs build_examples (refused_unreliable)",
-      "backend/crates/services/qip-training/tests/microstructure.rs::no_example_is_built_across_a_span_the_replay_flagged_unreliable"
+      "backend/crates/services/qip-training/tests/microstructure.rs::no_example_is_built_across_a_span_the_replay_flagged_unreliable",
+      "backend/crates/edge/qip-feature-dag/src/engine.rs quarantine, lift_quarantine, quarantine_mask",
+      "backend/crates/edge/qip-edge/src/cell.rs mark_unreliable, apply_snapshot",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs::a_feature_computed_from_an_unreliable_book_is_quarantined_until_the_snapshot_rebuilds_it"
     ],
-    "gap": "2026-10-24 (lane L6, gap corrected): training-set exclusion is built and tested, not missing: qip-training microstructure::build_examples refuses every example whose trailing window or label horizon touches a span the tick replay flagged unreliable and counts it in refused_unreliable, and the deep brain's tick desk (tick_desk.rs) is its one caller. What remains: (1) that desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no committed environment does, so the exclusion is not on a shipped binary's default path (bar part 2); (2) 'derived features quarantined' has no mechanism of its own: nothing marks a feature computed from an unreliable book as quarantined in the feature store or the world model; (3) 'until integrity is restored' for replay is the outbox gap's refusal of the window, which does not lift when a later snapshot rebuilds the book.",
+    "gap": "2026-10-25 (lane L6): the cell's features are quarantined (read as Undefined, so no signal is raised) from the instant a book is discarded, by gap reset or crossed book, until its snapshot rebuilds it; the engine is reset at the snapshot so no window reaches back across the unreliable span. This runs in Cell::work on every pass. Remaining: no outbox window refusal exists to lift (InputGap passes cannot be made reproducible by a later snapshot, so the replay restart waits on a replay); training reads the cell's quarantine only through the tick desk, which is env-gated; the kernel and world-model feature stores have no quarantine; no execution node is deployed. Earlier: 2026-10-24 (lane L6, gap corrected): training-set exclusion is built and tested, not missing: qip-training microstructure::build_examples refuses every example whose trailing window or label horizon touches a span the tick replay flagged unreliable and counts it in refused_unreliable, and the deep brain's tick desk (tick_desk.rs) is its one caller. What remains: (1) that desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no committed environment does, so the exclusion is not on a shipped binary's default path (bar part 2); (2) 'derived features quarantined' has no mechanism of its own: nothing marks a feature computed from an unreliable book as quarantined in the feature store or the world model; (3) 'until integrity is restored' for replay is the outbox gap's refusal of the window, which does not lift when a later snapshot rebuilds the book.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2376,7 +2379,7 @@
     "verification": "cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: mutation removing the unreliable-observation and flagged-span conditions from build_examples' refusal failed no_example_is_built_across_a_span_the_replay_flagged_unreliable (tests/microstructure.rs:140, '7 passed; 1 failed'); restored by cp and cmp, 9 'test result: ok' lines. No code change. Stays PARTIAL."
+    "notes": "2026-10-24 lane L6: mutation removing the unreliable-observation and flagged-span conditions from build_examples' refusal failed no_example_is_built_across_a_span_the_replay_flagged_unreliable (tests/microstructure.rs:140, '7 passed; 1 failed'); restored by cp and cmp, 9 'test result: ok' lines. No code change. Stays PARTIAL. 2026-10-25 lane L6 (delegated agent, cherry-picked as 8af3bf87): six mutations each failed a named test (quarantine flag dropped; lift without a snapshot; mask ignored in evaluate, which raised a signal from an unreliable book, proving the leak was live; lift dropped; engine reset dropped; dependency propagation dropped). Agent's gate: five crates passed 1196, failed 0; clippy -D warnings clean."
   },
   {
     "id": "R12-RES-7103",

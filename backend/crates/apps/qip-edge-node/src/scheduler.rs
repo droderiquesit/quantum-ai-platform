@@ -75,7 +75,9 @@ use crate::share::RegionShareStatus;
 use crate::strategies::StrategyInstaller;
 use crate::telemetry::PeerSeries;
 use qip_contracts::market_event::MarketEvent;
-use qip_contracts::replay::{AppliedReadings, PassMarker, PressureRecord, WireRecord};
+use qip_contracts::replay::{
+    AppliedReadings, ControlPosition, PassMarker, PressureRecord, WireRecord,
+};
 use qip_core::canonical::canonical_json;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Timestamp, sha256_hex};
@@ -256,7 +258,15 @@ pub struct DecisionLoop {
     requoter: Option<Requoter>,
     installer: Option<ArbitrageInstaller>,
     strategies: Option<StrategyInstaller>,
-    plans: Option<(PlanCompiler, ControlHandoff)>,
+    /// The control handoff a pass boundary drains, with the plan compiler
+    /// that feeds it when the node has a plan path. `None` for the compiler
+    /// is a handoff fed by the fabric control consumer alone.
+    plans: Option<(Option<PlanCompiler>, ControlHandoff)>,
+    /// The fabric positions the last boundary consumed, for the marker of
+    /// the pass that ran under them (ADR 0100 §8): a replay fetches the
+    /// frames at these positions and re-applies them before re-driving the
+    /// pass. Empty on a turn whose boundary consumed nothing.
+    last_control: Vec<ControlPosition>,
     outbox: Outbox,
     bound: JournalBound,
     telemetry: Arc<OutboxTelemetry>,
@@ -336,6 +346,7 @@ impl DecisionLoop {
             installer: None,
             strategies: None,
             plans: None,
+            last_control: Vec::new(),
             outbox,
             bound,
             telemetry,
@@ -388,7 +399,7 @@ impl DecisionLoop {
     pub fn with_strategies(
         mut self,
         strategies: StrategyInstaller,
-        plans: Option<(PlanCompiler, ControlHandoff)>,
+        plans: Option<(Option<PlanCompiler>, ControlHandoff)>,
     ) -> Self {
         self.strategies = Some(strategies);
         self.plans = plans;
@@ -726,18 +737,21 @@ impl DecisionLoop {
     }
 
     fn apply_plan(&mut self, now: Timestamp) {
+        self.last_control.clear();
         let (Some(strategies), Some((compiler, handoff))) =
             (self.strategies.as_mut(), self.plans.as_mut())
         else {
             return;
         };
-        if let Some(named) = self.cell.compiled_plan(now).cloned()
+        if let Some(compiler) = compiler.as_mut()
+            && let Some(named) = self.cell.compiled_plan(now).cloned()
             && strategies.compiled_digest() != Some(named.digest.as_str())
             && let Err(error) = compiler.ensure(&named)
         {
             eprintln!("qip-edge-node: plan compiler: {}", error.message());
         }
         let boundary = handoff.boundary(&mut self.cell, Some(strategies), now);
+        self.last_control = boundary.positions();
         if let Some(plan) = boundary.plan {
             let described = plan.describe();
             if !plan.is_quiet() && self.last_plan.as_deref() != Some(described.as_str()) {
@@ -786,9 +800,11 @@ impl DecisionLoop {
             tape_digest: sha256_hex(canonical_json(&tape).as_bytes()),
             tape_from: applied.first().map_or(0, |event| event.origin().sequence),
             tape_to: applied.last().map_or(0, |event| event.origin().sequence),
-            // Control reaches this node over the mesh, which carries no
-            // fabric position; a fabric control consumer fills this.
-            control: Vec::new(),
+            // The positions the pass boundary consumed off the fabric control
+            // stream this turn. Control that reached the node over the mesh
+            // carries no fabric position and is not recorded here (ADR 0100
+            // §8 runs the slice with control on P0 for that reason).
+            control: self.last_control.clone(),
             readings: AppliedReadings {
                 journal_pressure: Some(PressureRecord::new(
                     state_of(pressure).as_str(),

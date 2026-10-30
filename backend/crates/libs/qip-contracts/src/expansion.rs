@@ -847,7 +847,7 @@ impl BrainSpec {
 }
 
 /// Memory kinds in the registry: episodes, semantic knowledge, procedures, failures, simulations, and compressed abstractions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryKind {
     Episodic,
@@ -938,6 +938,65 @@ impl MemoryEntry {
             .map_err(|e| Error::schema(format!("not a MemoryEntry: {e}; supply every field")))?;
         v.validate()?;
         Ok(v)
+    }
+}
+
+// --- OntologyPatch (R12-EXPAND-6029) ------------------------------------------
+
+/// The artifact ontology expansion produces: a proposed type the current
+/// schema cannot explain an observation without, as a candidate version of a
+/// named type in one family, citing the observations that wanted it. A patch
+/// proposes; `qip_agents::registries::OntologyRegistry::register` is what
+/// admits a candidate, and a patch citing nothing is refused because a type
+/// nobody observed a need for is a schema change with no reason on record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OntologyPatch {
+    pub family: OntologyTypeFamily,
+    pub name: String,
+    /// The version this patch proposes; at least one.
+    pub version: u32,
+    pub schema: String,
+    /// The observation or signal ids that wanted the type; at least one.
+    pub cited_observations: Vec<String>,
+    pub rationale: String,
+}
+
+impl OntologyPatch {
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "OntologyPatch";
+        text(R, "name", &self.name)?;
+        if self.version == 0 {
+            return Err(Error::invalid(format!(
+                "{R}.version must be at least one; version zero names no type"
+            )));
+        }
+        text(R, "schema", &self.schema)?;
+        list(R, "cited_observations", &self.cited_observations)?;
+        text(R, "rationale", &self.rationale)?;
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes)
+            .map_err(|e| Error::schema(format!("not an OntologyPatch: {e}; supply every field")))?;
+        v.validate()?;
+        Ok(v)
+    }
+
+    /// The type spec this patch proposes, for the registry to admit.
+    pub fn as_type_spec(&self) -> OntologyTypeSpec {
+        OntologyTypeSpec {
+            family: self.family,
+            name: self.name.clone(),
+            version: self.version,
+            schema: self.schema.clone(),
+            description: format!(
+                "{} [cited: {}]",
+                self.rationale,
+                self.cited_observations.join(", ")
+            ),
+        }
     }
 }
 

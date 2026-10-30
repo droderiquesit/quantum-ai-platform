@@ -24,6 +24,17 @@
  * lasts, the recovery (`restart` with the same data, `resume`, or
  * `remove_file`), and the objectives the measurement is judged against.
  *
+ * Optionally (R12-RES-10153, the frozen-sink drill): `load`, one-shot
+ * processes such as `qip event-fabric produce` started once every process
+ * is ready and before the steady state is judged, each waited for after the
+ * recovery and failed unless it exits 0, its `RESULT {json}` line kept in
+ * the record beside what the broker counted; `final`, checks read once the
+ * load has stopped, for counts that must hold over the whole run; and a
+ * metric check's `absent_as`, the value a series nothing has minted yet
+ * reads as — a refusal counter is created by its first refusal, so "never
+ * refused" is an absent series. An `after_recovery` check with `increases`
+ * is judged against the value read at the fault.
+ *
  * ## What it measures, exactly
  *
  * - `detected_ms`: fault to the first probe that sees it (the target's
@@ -112,7 +123,52 @@ export function checkScenario(scenario) {
     if (!names.has(name)) problems.push(`memory_ceiling_kib names ${name}, which is not a declared process`);
     if (!Number.isFinite(ceiling) || ceiling <= 0) problems.push(`memory_ceiling_kib.${name} must be a positive number of KiB`);
   }
+  if (scenario?.load !== undefined && !Array.isArray(scenario.load)) problems.push("load must be a list of one-shot load processes");
+  for (const l of scenario?.load ?? []) {
+    if (typeof l?.name !== "string" || !/^[a-z0-9-]+$/.test(l.name)) problems.push(`a load name is not lowercase letters, digits and -: ${JSON.stringify(l?.name)}`);
+    if (names.has(l?.name)) problems.push(`two processes or loads are named ${l?.name}`);
+    names.add(l?.name);
+    if (typeof l?.binary !== "string" || !/^[a-z0-9-]+$/.test(l.binary)) problems.push(`${l?.name}: binary must be a bare binary name, found under --bin`);
+    if (!Array.isArray(l?.args) || l.args.some((a) => typeof a !== "string")) problems.push(`${l?.name}: args must be a list of strings`);
+    for (const key of Object.keys(l?.env ?? {})) {
+      if (REFUSED_ENVIRONMENT.some((pattern) => pattern.test(key))) problems.push(`${l.name}: ${key} may not be set by a game day; drills run paper, local and simulated`);
+    }
+  }
+  if (scenario?.final !== undefined && !Array.isArray(scenario.final)) problems.push("final must be a list of checks");
   return problems;
+}
+
+/**
+ * Judge each process's peak resident size against its ceiling. One check
+ * per ceiling; a peak that could not be read fails, because a ceiling that
+ * was never compared is not a ceiling that held.
+ */
+export function judgeMemory(peaks, ceilings) {
+  return Object.entries(ceilings ?? {}).map(([name, ceiling]) => {
+    const peak = peaks?.[name];
+    return {
+      name: `${name} stayed under ${ceiling} KiB resident`,
+      ...(peak === null || peak === undefined || !Number.isFinite(peak)
+        ? { passed: false, detail: "its peak resident size could not be read, so the ceiling is unproven" }
+        : { passed: peak <= ceiling, detail: `peak ${peak} KiB` }),
+    };
+  });
+}
+
+/**
+ * The last `RESULT {json}` line a load process printed, parsed, or null.
+ * `qip event-fabric produce` prints one so a drill keeps what the producer
+ * saw beside what the broker counted; the two are independent claims about
+ * the same load, and a reader should be able to see both.
+ */
+export function loadResult(text) {
+  const lines = String(text).split("\n").filter((l) => l.startsWith("RESULT "));
+  if (lines.length === 0) return null;
+  try {
+    return JSON.parse(lines.at(-1).slice("RESULT ".length));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -232,7 +288,13 @@ export async function evaluate(check, context, { fetchImpl, previous } = {}) {
   }
   if (!check.metric) return { passed: response.status !== 0, value: response.status, detail: `${url} answered ${response.status || response.error}` };
   if (response.status !== 200) return { passed: false, value: null, detail: `${url} answered ${response.status || response.error}` };
-  const value = sumSeries(parsePrometheus(response.body), check.metric.name, check.metric.labels);
+  // `absent_as` is how a scenario says "a counter nothing has incremented
+  // yet reads as this": a refusal counter is minted on its first refusal, so
+  // "P0 was never refused" is an absent series, and without this the check
+  // could only fail. Opt-in per check, so a series a scenario expects to
+  // exist still fails when it is missing.
+  const summed = sumSeries(parsePrometheus(response.body), check.metric.name, check.metric.labels);
+  const value = summed === null && Number.isFinite(check.metric.absent_as) ? check.metric.absent_as : summed;
   if (value === null) return { passed: false, value, detail: `${check.metric.name} is not exposed at ${url}` };
   const { min, max, increases } = check.metric;
   if (min !== undefined && value < min) return { passed: false, value, detail: `${check.metric.name} = ${value} < ${min}` };
@@ -240,7 +302,7 @@ export async function evaluate(check, context, { fetchImpl, previous } = {}) {
   if (increases && previous !== undefined && previous !== null && !(value > previous)) {
     return { passed: false, value, detail: `${check.metric.name} did not increase (${previous} -> ${value})` };
   }
-  return { passed: true, value, detail: `${check.metric.name} = ${value}` };
+  return { passed: true, value, detail: `${check.metric.name} = ${value}${summed === null ? " (absent, read as stated)" : ""}` };
 }
 
 /** A free loopback port. */
@@ -280,7 +342,7 @@ function sha256File(path) {
  * Run one scenario end to end and return its result. `launch` is injectable
  * so the harness's own tests drive it with stand-in processes.
  */
-export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch, launch = defaultLaunch, now = Date.now, commit = "unknown", log = () => {} } = {}) {
+export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch, launch = defaultLaunch, now = Date.now, commit = "unknown", log = () => {}, readPeak = readPeakRssKib } = {}) {
   const ports = {};
   for (const name of portsIn(scenario)) ports[name] = await freePort();
   const context = { work, repo, ports };
@@ -288,13 +350,15 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
   const notes = [];
   const measurements = { detected_ms: null, outage_ms: null, rto_ms: null, rpo_records: null, peak_rss_kib: {} };
   const running = new Map();
+  const loads = new Map();
+  const loadResults = {};
   const binaries = {};
   const record = (phase, name, outcome) => {
     checks.push({ phase, name, passed: outcome.passed, detail: outcome.detail });
     log(`${phase} ${name}: ${outcome.passed ? "ok" : "FAILED"} — ${outcome.detail}`);
     return outcome.passed;
   };
-  const start = (p) => {
+  const launchOne = (p, into) => {
     const env = Object.fromEntries(Object.entries(p.env ?? {}).map(([k, v]) => [k, expand(v, context)]));
     for (const file of p.files ?? []) {
       const path = expand(file.path, context);
@@ -304,8 +368,9 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
     for (const dir of p.dirs ?? []) mkdirSync(expand(dir, context), { recursive: true });
     const binary = join(bin, p.binary);
     binaries[p.binary] ??= sha256File(binary);
-    running.set(p.name, launch(binary, p.args ?? [], env, join(work, `${p.name}.log`)));
+    into.set(p.name, launch(binary, (p.args ?? []).map((a) => expand(a, context)), env, join(work, `${p.name}.log`)));
   };
+  const start = (p) => launchOne(p, running);
   const allReady = async () => {
     for (const p of scenario.processes) {
       const r = await evaluate({ url: p.ready.url, status: p.ready.status ?? 200 }, context, { fetchImpl });
@@ -316,7 +381,7 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
   // The peak of each process as it stands now. A process killed and restarted
   // reports the restarted instance's peak: the first one's died with it.
   const samplePeaks = () => {
-    for (const [name, handle] of running) measurements.peak_rss_kib[name] = readPeakRssKib(handle.pid);
+    for (const [name, handle] of running) measurements.peak_rss_kib[name] = readPeak(handle.pid);
   };
   const verdict = (v) => (samplePeaks(), {
     schema: RESULT_SCHEMA,
@@ -331,6 +396,7 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
     checks,
     verdict: v,
     notes,
+    ...(scenario.load ? { load: loadResults } : {}),
   });
 
   try {
@@ -344,6 +410,11 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
       return verdict("inconclusive");
     }
     record("steady", "every process became ready", { passed: true, detail: `${readyIn} ms` });
+    // Load starts once every process answers and before the steady state
+    // is judged, so a steady check can require the load to be flowing — a
+    // consumer that has committed, a class that is being admitted — before
+    // anything is broken.
+    for (const l of scenario.load ?? []) launchOne(l, loads);
     const previous = new Map();
     for (const [i, check] of (scenario.steady ?? []).entries()) {
       const ok = await until(async () => {
@@ -375,6 +446,16 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
     else if (fault.kind === "remove_path") rmSync(expand(fault.path, context), { recursive: true, force: true });
     else writeFileSync(expand(fault.path, context), expand(fault.content ?? "", context));
     log(`fault: ${fault.kind} ${fault.process ?? fault.path}`);
+
+    // An `increases` check after recovery is judged against where the series
+    // stood when the fault hit, read here. Without that baseline it would
+    // compare with nothing and pass on any value — including the stale one a
+    // frozen consumer left behind, which is the reading a frozen-sink drill
+    // exists to tell apart from a consumer that resumed.
+    const atFault = new Map();
+    for (const [i, check] of (scenario.after_recovery ?? []).entries()) {
+      if (check.metric?.increases) atFault.set(i, (await evaluate({ ...check, metric: { ...check.metric, increases: false } }, context, { fetchImpl })).value);
+    }
 
     if (scenario.detect) {
       const seen = await until(async () => (await evaluate(scenario.detect, context, { fetchImpl })).passed, { timeoutMs: scenario.timeout_ms, now });
@@ -439,11 +520,15 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
     const recovered = await until(async () => {
       if (scenario.rpo && after === null) after = (await evaluate(scenario.rpo, context, { fetchImpl })).value;
       if (!(await allReady())) return false;
-      for (const check of scenario.after_recovery ?? []) if (!(await evaluate(check, context, { fetchImpl })).passed) return false;
+      for (const [i, check] of (scenario.after_recovery ?? []).entries()) {
+        if (!(await evaluate(check, context, { fetchImpl, previous: atFault.has(i) ? atFault.get(i) ?? undefined : undefined })).passed) return false;
+      }
       return true;
     }, { timeoutMs: scenario.timeout_ms, now });
     if (recovered === null) {
-      for (const check of scenario.after_recovery ?? []) record("recovery", check.name ?? check.url, await evaluate(check, context, { fetchImpl }));
+      for (const [i, check] of (scenario.after_recovery ?? []).entries()) {
+        record("recovery", check.name ?? check.url, await evaluate(check, context, { fetchImpl, previous: atFault.has(i) ? atFault.get(i) ?? undefined : undefined }));
+      }
       record("recovery", "every process ready again", { passed: await allReady(), detail: `not recovered within ${scenario.timeout_ms} ms` });
       return verdict("missed");
     }
@@ -465,13 +550,41 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
       }
     }
 
-    samplePeaks();
-    for (const [name, ceiling] of Object.entries(scenario.memory_ceiling_kib ?? {})) {
-      const peak = measurements.peak_rss_kib[name];
-      record("memory", `${name} stayed under ${ceiling} KiB resident`, peak === null || peak === undefined
-        ? { passed: false, detail: "its peak resident size could not be read, so the ceiling is unproven" }
-        : { passed: peak <= ceiling, detail: `peak ${peak} KiB` });
+    // Every load runs to its own end, bounded by the scenario's timeout; one
+    // still running then is killed and failed, never waited on forever.
+    for (const [name, handle] of loads) {
+      let timer;
+      const ended = await Promise.race([
+        handle.exited.then((how) => how ?? {}),
+        new Promise((r) => { timer = setTimeout(() => r(null), scenario.timeout_ms); }),
+      ]);
+      clearTimeout(timer);
+      if (ended === null) {
+        handle.signal("SIGKILL");
+        await handle.exited;
+        record("load", `${name} ran to its end`, { passed: false, detail: `still running ${scenario.timeout_ms} ms after the recovery; killed` });
+        continue;
+      }
+      let text = "";
+      try {
+        text = readFileSync(join(work, `${name}.log`), "utf8");
+      } catch {
+        text = "";
+      }
+      loadResults[name] = loadResult(text);
+      if (loadResults[name]) notes.push(`load ${name} reported: ${JSON.stringify(loadResults[name])}`);
+      record("load", `${name} ran to its end`, ended.code === 0
+        ? { passed: true, detail: "exit 0" }
+        : { passed: false, detail: `exit ${ended.code ?? ended.signal ?? "unknown"}: ${text.trim().split("\n").at(-1) ?? ""}` });
     }
+
+    // What must be true of the whole run, read once the load has stopped:
+    // a count that must never have moved is judged over the drill entire,
+    // not only over the hold.
+    for (const check of scenario.final ?? []) record("final", check.name ?? check.url, await evaluate(check, context, { fetchImpl }));
+
+    samplePeaks();
+    for (const judged of judgeMemory(measurements.peak_rss_kib, scenario.memory_ceiling_kib)) record("memory", judged.name, judged);
 
     const objectivesMet =
       measurements.rto_ms <= scenario.objectives.rto_ms &&
@@ -483,11 +596,11 @@ export async function runScenario(scenario, { bin, repo, work, fetchImpl = fetch
     notes.push(`aborted: ${cause.message}`);
     return verdict("aborted");
   } finally {
-    for (const handle of running.values()) {
+    for (const handle of [...loads.values(), ...running.values()]) {
       handle.signal("SIGCONT");
       handle.signal("SIGKILL");
     }
-    await Promise.all([...running.values()].map((h) => h.exited));
+    await Promise.all([...loads.values(), ...running.values()].map((h) => h.exited));
   }
 }
 
@@ -498,9 +611,11 @@ export function defaultLaunch(binary, args, env, logPath) {
   const chunks = [];
   child.stdout.on("data", (d) => chunks.push(d));
   child.stderr.on("data", (d) => chunks.push(d));
-  const exited = new Promise((r) => child.on("exit", () => {
+  // Resolves with how the process ended, so a one-shot load's exit code is
+  // a fact the drill records rather than one it assumes.
+  const exited = new Promise((r) => child.on("exit", (code, signal) => {
     writeFileSync(logPath, Buffer.concat(chunks));
-    r();
+    r({ code, signal });
   }));
   return {
     pid: child.pid,

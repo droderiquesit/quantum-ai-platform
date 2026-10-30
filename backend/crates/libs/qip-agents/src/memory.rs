@@ -24,6 +24,7 @@
 //! backtest of Monday, and [`ResearchMemory::lessons_as_of`] is the only way to
 //! read lessons, so that guarantee is structural rather than a convention.
 
+use qip_contracts::expansion::{MemoryEntry, MemoryKind};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{AgentRunId, LessonId};
 use qip_core::time::Timestamp;
@@ -47,6 +48,13 @@ pub const MAX_PROCEDURES: usize = 256;
 /// Positive on purpose: a threshold of zero would retain everything, and a
 /// gate that can never refuse reads as curation while doing none.
 pub const DEFAULT_IMPORTANCE_THRESHOLD: f64 = 0.3;
+
+/// How many admitted [`MemoryEntry`] records the registry keeps whole, newest
+/// last, beside its per-kind counts (R12-EXPAND-6057). The counts are the
+/// record of what was admitted; the entries are a bounded working set for a
+/// reader that wants the last few, and the oldest leaves when a newer one
+/// arrives rather than the set growing with the platform's uptime.
+pub const RETAINED_MEMORY_ENTRIES: usize = 256;
 
 /// A way of answering a kind of question, distilled from episodes that
 /// followed it and turned out right.
@@ -486,6 +494,14 @@ pub struct MemoryRegistry {
     importance_threshold: f64,
     retained: BTreeMap<String, usize>,
     compressed: BTreeMap<String, CompressedSummary>,
+    /// Entries admitted through [`Self::admit`], by kind (R12-EXPAND-6057).
+    admitted: BTreeMap<MemoryKind, usize>,
+    /// Entries [`Self::admit`] refused because a declared field was missing
+    /// or out of range. Counted on the registry, so a producer that builds a
+    /// malformed entry is visible here rather than only in its own error.
+    refused: usize,
+    /// The last [`RETAINED_MEMORY_ENTRIES`] admitted entries, oldest first.
+    entries: VecDeque<MemoryEntry>,
 }
 
 impl MemoryRegistry {
@@ -507,6 +523,9 @@ impl MemoryRegistry {
             importance_threshold,
             retained: BTreeMap::new(),
             compressed: BTreeMap::new(),
+            admitted: BTreeMap::new(),
+            refused: 0,
+            entries: VecDeque::new(),
         })
     }
 
@@ -516,6 +535,9 @@ impl MemoryRegistry {
             importance_threshold: DEFAULT_IMPORTANCE_THRESHOLD,
             retained: BTreeMap::new(),
             compressed: BTreeMap::new(),
+            admitted: BTreeMap::new(),
+            refused: 0,
+            entries: VecDeque::new(),
         }
     }
 
@@ -556,5 +578,44 @@ impl MemoryRegistry {
 
     pub fn summary_for(&self, agent_id: &str) -> Option<&CompressedSummary> {
         self.compressed.get(agent_id)
+    }
+
+    /// Admit one typed memory entry — semantic knowledge, an episode, a
+    /// procedure, a failure, a simulation or a compressed abstraction — with
+    /// its retention and value policies declared (R12-EXPAND-6057).
+    ///
+    /// Refuses, through `MemoryEntry::validate`, an entry missing a declared
+    /// field or carrying one out of range: a blank id or content, a retention
+    /// policy that keeps nothing (`max_age_ms == 0`), a value threshold
+    /// outside `[0, 1]`, a zero creation instant, an importance outside
+    /// `[0, 1]`, or no tags. The refusal is counted on the registry as well
+    /// as returned, because the producer that built the entry is the party
+    /// least likely to read its own error.
+    pub fn admit(&mut self, entry: MemoryEntry) -> Result<()> {
+        if let Err(error) = entry.validate() {
+            self.refused += 1;
+            return Err(error);
+        }
+        *self.admitted.entry(entry.kind).or_default() += 1;
+        if self.entries.len() == RETAINED_MEMORY_ENTRIES {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(entry);
+        Ok(())
+    }
+
+    /// Entries admitted under `kind` since the registry was built.
+    pub fn admitted(&self, kind: MemoryKind) -> usize {
+        self.admitted.get(&kind).copied().unwrap_or(0)
+    }
+
+    /// Entries [`Self::admit`] refused.
+    pub fn refused(&self) -> usize {
+        self.refused
+    }
+
+    /// The retained entries, oldest first.
+    pub fn entries(&self) -> impl Iterator<Item = &MemoryEntry> {
+        self.entries.iter()
     }
 }

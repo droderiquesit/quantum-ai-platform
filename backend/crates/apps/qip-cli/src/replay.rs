@@ -86,6 +86,13 @@ pub const DIFFERS: u8 = 3;
 /// word does not have to know how the line is laid out.
 pub const IDENTICAL: &str = "identical";
 
+/// What the symbolic section prints when the journal holds no derivation to
+/// re-derive. Not [`IDENTICAL`]: a journal with nothing in it to check has
+/// proved nothing, and printing the word the registries print for agreement
+/// would read as a proof. Not a disagreement either, so it does not move the
+/// exit code.
+pub const NOTHING_TO_REDERIVE: &str = "nothing to re-derive";
+
 /// What the command printed and what it exits with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verdict {
@@ -115,7 +122,7 @@ pub fn verify(journal: &Path, config: PlatformConfig, clock: Arc<dyn Clock>) -> 
     // say, and it would print as though it had been checked.
     if let Err(sequence) = log.verify_chain() {
         lines.push(labelled("chain", &broken(&log, sequence)));
-        for registry in ["eligibility", "registrations", "fabric"] {
+        for registry in ["eligibility", "registrations", "fabric", "symbolic"] {
             lines.push(labelled(
                 registry,
                 "not compared — a registry rebuilt from a broken chain is not evidence",
@@ -141,10 +148,11 @@ pub fn verify(journal: &Path, config: PlatformConfig, clock: Arc<dyn Clock>) -> 
         ("eligibility", eligibility(&platform)),
         ("registrations", registrations(&platform)),
         ("fabric", fabric(&platform)),
+        ("symbolic", symbolic(&platform)),
     ];
     let differing: Vec<&str> = verdicts
         .iter()
-        .filter(|(_, verdict)| verdict != IDENTICAL)
+        .filter(|(_, verdict)| verdict != IDENTICAL && !verdict.starts_with(NOTHING_TO_REDERIVE))
         .map(|(registry, _)| *registry)
         .collect();
     for (registry, verdict) in &verdicts {
@@ -406,6 +414,32 @@ fn fabric(platform: &Platform) -> String {
             replayed.applied,
             platform.fabric_records()
         ),
+    }
+}
+
+/// Every symbolic derivation the journal holds, re-derived by the kernel's
+/// independent checker (R12-REASON-9005): `symbolic_stage::replay_recorded`
+/// reads the derivations off the event log on disk — the cycle journal is
+/// in-memory and empty on a platform assembled on a copy — and re-runs every
+/// reasoner a record cites on what the record itself holds, refusing the
+/// first part that does not reproduce. Until this command asked, the checker
+/// ran only in tests, so an operator had a proof format and no command that
+/// checked a proof.
+///
+/// A refusal is reported by the kernel's own message, which names the
+/// hypothesis and the part that did not reproduce, and the run exits
+/// [`DIFFERS`]: a journaled derivation that does not re-derive is the same
+/// class of fact as a registry that disagrees with the log — the platform
+/// acted on something its own record does not support.
+fn symbolic(platform: &Platform) -> String {
+    match qip_kernel::symbolic_stage::replay_recorded(platform) {
+        Ok(derivations) if derivations.is_empty() => {
+            format!("{NOTHING_TO_REDERIVE} — the journal holds no symbolic derivation")
+        }
+        // Spelled exactly as the registries' agreement, because the exit
+        // code is decided by comparing every line against that one word.
+        Ok(_) => IDENTICAL.to_string(),
+        Err(refused) => format!("REFUSED — {}", refused.message()),
     }
 }
 

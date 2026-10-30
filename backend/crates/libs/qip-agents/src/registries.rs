@@ -251,6 +251,76 @@ impl CapabilityRegistry {
     pub fn capability_count(&self) -> usize {
         self.capabilities.len()
     }
+
+    /// Record a promoted capability under its verb (ADR 0158 decision 15,
+    /// R12-EXPAND-6062): the one legitimate way this registry is populated,
+    /// because a verb filled from configuration would assert `Trade` or
+    /// `Transfer` on a platform that has a simulator and nothing else.
+    ///
+    /// A verb already recorded is merged, not replaced: the new entry's
+    /// implementations join the existing ones, the confidence is the lower
+    /// of the two, because a verb is only as trusted as its least-proven
+    /// implementation, and the eligibility must be the same words, because
+    /// an implementation promoted for paper only must not widen a verb
+    /// recorded as shadow only by riding in beside it. An implementation
+    /// already recorded under the verb is refused: a capability promoted
+    /// twice is one capability, and a second entry for it would count once
+    /// per promotion in every consumer that reads the list.
+    pub fn promote(&mut self, entry: CapabilityEntry) -> Result<()> {
+        entry.validate()?;
+        // The registry's own boundary, not only its callers': an eligibility
+        // naming `live` as a word is refused whatever the verb, because this
+        // platform is paper-only (ADR 0003) and a register that would record
+        // a live capability on request is a register that reads as one.
+        // Matched as a delimited word, so `delivered` is not `live` and
+        // `limited_autonomous_live` is.
+        if entry
+            .eligibility
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word.eq_ignore_ascii_case("live"))
+        {
+            return Err(Error::denied(format!(
+                "CapabilityVerb::{:?} declares eligibility `{}`; no capability is eligible live on \
+                 a paper-trading platform, so nothing is recorded",
+                entry.verb, entry.eligibility
+            )));
+        }
+        let merged = match self.capabilities.get(&entry.verb) {
+            None => entry,
+            Some(existing) => {
+                if let Some(duplicate) = entry
+                    .implementations
+                    .iter()
+                    .find(|implementation| existing.implementations.contains(implementation))
+                {
+                    return Err(Error::denied(format!(
+                        "`{duplicate}` is already recorded under CapabilityVerb::{:?}; a \
+                         capability promoted twice is one capability, so record nothing",
+                        entry.verb
+                    )));
+                }
+                if existing.eligibility != entry.eligibility {
+                    return Err(Error::denied(format!(
+                        "CapabilityVerb::{:?} is recorded with eligibility `{}` and the new \
+                         implementation declares `{}`; an eligibility is widened by its own \
+                         promotion, not by another implementation's",
+                        entry.verb, existing.eligibility, entry.eligibility
+                    )));
+                }
+                let mut implementations = existing.implementations.clone();
+                implementations.extend(entry.implementations);
+                implementations.sort();
+                implementations.dedup();
+                CapabilityEntry {
+                    verb: entry.verb,
+                    implementations,
+                    confidence_level: existing.confidence_level.min(entry.confidence_level),
+                    eligibility: entry.eligibility,
+                }
+            }
+        };
+        self.add_capability(merged)
+    }
 }
 
 impl Default for CapabilityRegistry {

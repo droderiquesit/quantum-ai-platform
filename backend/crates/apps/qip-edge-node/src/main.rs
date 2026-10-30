@@ -120,6 +120,14 @@ const BUILD_IDENTITY_VARIABLE: &str = "QIP_BUILD_IDENTITY_FILE";
 /// Distinct from a general failure so an orchestrator can tell "this node was
 /// deployed wrong" from "this node broke", and stop restarting the first.
 const EX_CONFIG: i32 = 78;
+/// The exit status `replay` ends with when the recorded session did not
+/// reproduce; distinct from a configuration refusal so a script can tell a
+/// divergence from a misconfigured replay.
+const EX_DIVERGED: i32 = 2;
+
+/// Where `replay` reads control frames from: a directory holding the fabric's
+/// indexed archive of the control stream.
+const REPLAY_CONTROL_ARCHIVE_VARIABLE: &str = "QIP_REPLAY_CONTROL_ARCHIVE";
 
 /// How long one health request may take to arrive, and its answer to be
 /// written, before the node gives up on it.
@@ -163,11 +171,19 @@ const POLL_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 const MESH_CAPACITY: usize = 16;
 
 fn main() {
-    // The one subcommand, read before any configuration: it reads a spool
-    // and serves nothing, so it must not need the variables a node does.
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
-    if arguments.first().map(String::as_str) == Some("replay-manifests") {
-        match qip_edge_node::replay::run(&arguments[1..]) {
+    // `qip-edge-node replay <spool-dir>` re-drives a recorded session instead
+    // of running the node (ADR 0100 §8, SLICE-39); every other invocation runs
+    // the node as before. A subcommand rather than a variable, because a node
+    // that could be switched into replay by its environment is a node whose
+    // deployment could stop trading without anyone changing its binary's
+    // arguments.
+    let arguments: Vec<String> = std::env::args().collect();
+    let outcome = match arguments.get(1).map(String::as_str) {
+        Some("replay") => replay_command(arguments.get(2).map(String::as_str)),
+        // `qip-edge-node replay-manifests --spool <dir> --cell-digest <hex>`,
+        // read before any configuration: it reads a spool and serves nothing,
+        // so it must not need the variables a node does.
+        Some("replay-manifests") => match qip_edge_node::replay::run(&arguments[2..]) {
             Ok(lines) => {
                 for line in lines {
                     println!("{line}");
@@ -178,9 +194,10 @@ fn main() {
                 eprintln!("qip-edge-node: {}", error.message());
                 std::process::exit(EX_CONFIG);
             }
-        }
-    }
-    match run() {
+        },
+        _ => run(),
+    };
+    match outcome {
         Ok(()) => {}
         Err(error) if error.message().starts_with("configuration:") => {
             eprintln!("qip-edge-node: {}", error.message());
@@ -541,27 +558,14 @@ fn required(name: &str, missing: &mut Vec<String>) -> String {
 /// file that is named and unreadable is a specific fault whose message names
 /// the path. Collapsing the second into "must be set" would send an operator
 /// looking for a variable that is, in fact, already set.
-fn run() -> Result<()> {
-    let mut config = NodeConfig::from_env()?;
-
-    // The clock is read once, here, at the boundary. Everything inside the
-    // cell takes a timestamp as a parameter, which is what makes a session
-    // replayable from its journal.
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let started = clock.now();
-
-    // What every grant, payload and halt is verified against (ADR 0110):
-    // the trust bundle's public keys, or the shared key for its last
-    // release. Chosen before anything is bound, and refused when there is
-    // neither — a cell that cannot verify a grant must not trade.
-    let trust = choose_root(
-        config.trust_bundle.as_deref(),
-        config.shared_key.as_deref(),
-        config.deployment,
-        started,
-    )?;
-    println!("qip-edge-node: trust root {}", trust.describe());
-
+/// The cell's configuration as this node runs it, with the digest every pass
+/// marker carries (ADR 0100 §8). One function for the two callers that need
+/// the same answer: `run`, which stamps the digest on every marker, and
+/// `replay_command`, which must rebuild the cell under the same configuration
+/// or be refused on the digest. Two copies of this block would be two
+/// configurations that could silently drift apart, and a replay that
+/// "reproduced" a session under a configuration nobody ran.
+fn cell_configuration(config: &NodeConfig) -> Result<(CellConfig, String)> {
     let mut cell_config = CellConfig::new(&config.cell_id, &config.region);
     for venue in &config.venues {
         cell_config = cell_config.with_venue(venue.clone());
@@ -604,6 +608,219 @@ fn run() -> Result<()> {
     // Printed before widening: it is what `replay-manifests --cell-digest`
     // takes, and the replay widens it with the gateway settings it assumes.
     println!("qip-edge-node: cell configuration digest {config_digest}");
+    Ok((cell_config, config_digest))
+}
+
+/// `qip-edge-node replay <spool-dir>`: rebuild this node's cell from the same
+/// environment `run` reads, read the recorded session off `spool-dir`, and
+/// re-drive every recorded pass against it (`qip_edge_node::replay`).
+///
+/// The spool is a stopped node's, or a copy: opening a `SegmentLog` recovers
+/// a torn tail, which a running writer must not have done under it. Control
+/// frames come from the fabric's archive of the control stream when
+/// `QIP_REPLAY_CONTROL_ARCHIVE` names its directory; with no archive a pass
+/// that consumed a control frame is reported as diverged at that frame rather
+/// than replayed without it. A node on a live gateway is refused: the slice
+/// replays the seeded simulated venue and nothing else (ADR 0003, §8).
+///
+/// Exit status: zero when the session is reproduced, two when it diverged,
+/// one on a refusal.
+fn replay_command(spool: Option<&str>) -> Result<()> {
+    let spool = spool
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            Error::invalid(
+                "configuration: `replay` takes the spool directory to replay as its one argument",
+            )
+        })?;
+    let config = NodeConfig::from_env()?;
+    let trust = choose_root(
+        config.trust_bundle.as_deref(),
+        config.shared_key.as_deref(),
+        config.deployment,
+        SystemClock.now(),
+    )?;
+    let (cell_config, config_digest) = cell_configuration(&config)?;
+    let gateway_venue = config.venues.first().cloned().ok_or_else(|| {
+        Error::invalid(
+            "configuration: QIP_VENUES names no venue, so there is no venue to rebuild a \
+             gateway for; set QIP_VENUES to a comma-separated venue list",
+        )
+    })?;
+
+    // The session first, so a spool that holds nothing is refused before a
+    // cell is assembled.
+    let clock = Arc::new(qip_core::ManualClock::new(qip_core::Timestamp::from_secs(
+        0,
+    )));
+    let log_clock: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
+    let log = SegmentLog::open(spool, SegmentLogConfig::new(log_clock)).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: the spool at {spool} cannot be opened: {}",
+            error.message()
+        ))
+    })?;
+    let session = qip_edge_node::replay::RecordedSession::from_spool(&log)?;
+    let first = session.first_instant().ok_or_else(|| {
+        Error::invalid("the spool holds no pass marker; there is no recorded pass to replay")
+    })?;
+    clock.set(first);
+    println!(
+        "qip-edge-node: replaying {}/{}: {} recorded passes",
+        session.cell(),
+        session.session(),
+        session.passes().len()
+    );
+
+    let NodeAssembly {
+        telemetry,
+        mut cell,
+        ..
+    } = assembled(&config, cell_config, Arc::clone(&clock) as Arc<dyn Clock>)?;
+    // `run` seats the chain epoch on the spool writer's session before the
+    // first turn, and every `ChainOpened` entry carries it; a rebuilt cell
+    // without it would diverge on the first order sent.
+    let epoch: u64 = session.session().parse().map_err(|error| {
+        Error::invalid(format!(
+            "the recorded session '{}' is not a chain epoch this binary can seat: {error}",
+            session.session()
+        ))
+    })?;
+    cell.set_chain_epoch(epoch)?;
+    let ceiling = cell.autonomy().ceiling();
+    let choice = VenueChoice::from_env(&gateway_venue, ceiling.is_live())?;
+    let VenueChoice::Simulated { seed } = &choice else {
+        return Err(Error::denied(
+            "replay re-drives passes against the seeded simulated venue only; a node on a live \
+             gateway recorded no venue this binary can rebuild (ADR 0003; ADR 0100 §8)",
+        ));
+    };
+    let config_digest = qip_edge_node::gateway::widen_config_digest(
+        &config_digest,
+        &qip_edge_node::gateway::SimulatedGateway::default_settings(),
+    );
+    let gateway =
+        qip_edge_node::gateway::SimulatedGateway::new(gateway_venue.clone(), *seed, first)?;
+    let feed = SimulatedFeed::new(gateway_venue);
+    feed.attach(&mut cell)?;
+    let strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing);
+    // The requoter as `run` builds it, over the assembly's registry: a replay
+    // without one would re-drive a node that configured none, and diverge on
+    // its first requote.
+    let requoter = match &config.reprice {
+        Some(policy) => Some(Requoter::new(
+            policy.clone(),
+            CellMetrics::new(
+                Arc::clone(&telemetry.metrics),
+                &config.cell_id,
+                &config.region,
+            ),
+        )?),
+        None => None,
+    };
+    let rebuilt = qip_edge_node::replay::Rebuilt {
+        cell,
+        gateway,
+        feed,
+        requoter,
+        strategies: Some(strategies),
+        config_digest,
+        gateway_seed: *seed,
+    };
+
+    let archive = std::env::var(REPLAY_CONTROL_ARCHIVE_VARIABLE)
+        .ok()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty());
+    let control: Box<dyn qip_edge_node::replay::ControlSource> = match archive {
+        Some(path) => {
+            let store = qip_storage::blob::FileBlobStore::open(&path).map_err(|error| {
+                Error::invalid(format!(
+                    "configuration: {REPLAY_CONTROL_ARCHIVE_VARIABLE} names {path}, which cannot \
+                     be opened as a blob store: {}",
+                    error.message()
+                ))
+            })?;
+            println!("qip-edge-node: control frames from the archive at {path}");
+            Box::new(qip_edge_node::replay::ArchivedControl::new(
+                qip_storage::segment::archive::ArchiveReader::new(Arc::new(store)),
+            ))
+        }
+        None => {
+            println!(
+                "qip-edge-node: {REPLAY_CONTROL_ARCHIVE_VARIABLE} unset: a pass that consumed a \
+                 control frame is reported as diverged at that frame"
+            );
+            Box::new(qip_edge_node::replay::FixtureControl::new())
+        }
+    };
+    let report = qip_edge_node::replay::replay(
+        &session,
+        rebuilt,
+        control.as_ref(),
+        &qip_edge_node::replay::ReplayTrust {
+            trust,
+            grant_memory: qip_edge::mesh::DEFAULT_GRANT_MEMORY,
+        },
+        &clock,
+    )?;
+    println!("qip-edge-node: {}", report.describe());
+    if !report.is_reproduced() {
+        std::process::exit(EX_DIVERGED);
+    }
+    Ok(())
+}
+
+/// The one assembly the binary takes its cell and registry from, with the
+/// risk limits the configuration read. `run` and `replay_command` both come
+/// through here, so the rebuilt cell is assembled by the same call as the
+/// recorded one and `telemetry_wiring.rs`'s guard — that `main.rs` assembles
+/// once and builds no registry of its own — keeps counting one call.
+///
+/// The feature engine is built empty, and not left that way: which
+/// instruments this cell will trade is the plan's to say, so
+/// `StrategyInstaller` registers the standard suite for each strategy's
+/// subject as it deploys it (`Cell::register_features`). An engine nothing
+/// registered into was what every node ran until then.
+fn assembled(
+    config: &NodeConfig,
+    cell_config: CellConfig,
+    clock: Arc<dyn Clock>,
+) -> Result<NodeAssembly> {
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    assemble_with_risk(
+        cell_config,
+        features,
+        clock,
+        config.region_allocation,
+        config.mirror.clone(),
+        &config.risk_limits,
+    )
+}
+
+fn run() -> Result<()> {
+    let mut config = NodeConfig::from_env()?;
+
+    // The clock is read once, here, at the boundary. Everything inside the
+    // cell takes a timestamp as a parameter, which is what makes a session
+    // replayable from its journal.
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let started = clock.now();
+
+    // What every grant, payload and halt is verified against (ADR 0110):
+    // the trust bundle's public keys, or the shared key for its last
+    // release. Chosen before anything is bound, and refused when there is
+    // neither — a cell that cannot verify a grant must not trade.
+    let trust = choose_root(
+        config.trust_bundle.as_deref(),
+        config.shared_key.as_deref(),
+        config.deployment,
+        started,
+    )?;
+    println!("qip-edge-node: trust root {}", trust.describe());
+
+    let (cell_config, config_digest) = cell_configuration(&config)?;
     for line in config.quote_limits.banner_lines() {
         println!("{line}");
     }
@@ -614,13 +831,6 @@ fn run() -> Result<()> {
              its message-to-trade ratio narrows quoting without refusing it"
         );
     }
-    // Built empty, and not left that way: which instruments this cell will
-    // trade is the plan's to say, so `StrategyInstaller` registers the
-    // standard suite for each strategy's subject as it deploys it
-    // (`Cell::register_features`). An engine nothing registered into was
-    // what every node ran until then.
-    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
-
     // The cell, the mesh series and the registry the scrape serves are wired
     // together in the library, where a test can prove they are one registry.
     // Assembled piecewise here, that property was held by a source check on
@@ -632,14 +842,7 @@ fn run() -> Result<()> {
         telemetry,
         mut cell,
         mesh_series,
-    } = assemble_with_risk(
-        cell_config,
-        features,
-        Arc::clone(&clock),
-        config.region_allocation,
-        config.mirror.clone(),
-        &config.risk_limits,
-    )?;
+    } = assembled(&config, cell_config, Arc::clone(&clock))?;
     // Said at start, because which limits the reflex path refuses on is the
     // first thing an operator reading a refusal under `risk_gate` needs.
     println!("qip-edge-node: {}", config.risk_limits.describe());
@@ -1262,7 +1465,7 @@ fn run() -> Result<()> {
     let plans = match config.plan_path.clone() {
         Some(path) => {
             let (sender, handoff) = ControlHandoff::bounded(PLAN_HANDOFF_CAPACITY)?;
-            Some((PlanCompiler::spawn(path, sender)?, handoff))
+            Some((Some(PlanCompiler::spawn(path, sender)?), handoff))
         }
         None => None,
     };

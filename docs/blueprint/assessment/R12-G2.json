@@ -77,9 +77,14 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs LearningDesk::restore_registry seventh pass: every promotion record is replayed onto the restored cards (artifact_digest, rollback_parent on first promotion, assigned/unassigned alias moves de-duplicated and trimmed to ALIAS_MOVES_RETAINED, deployed_at from the record when the log forces Production)",
       "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_version_taken_out_of_production_returns_only_through_a_rollback (promote_model_from refuses a reference the log took out of production; a version still in production is still re-published)",
       "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_promotion_displacing_two_production_cards_records_the_parent_the_registry_chose",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs learning::tests::a_crash_after_a_promotion_displacing_two_production_cards_restores_the_parent_chosen_live"
+      "backend/crates/apps/qip-deepbrain/src/learning.rs learning::tests::a_crash_after_a_promotion_displacing_two_production_cards_restores_the_parent_chosen_live",
+      "backend/crates/libs/qip-ai/src/registry.rs MAX_CARDS, ModelRegistry::register refuses a new reference at the cap",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs::a_registry_at_its_cap_refuses_a_new_card_and_admits_a_replacement",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs evolution::tests::a_full_registry_refuses_the_round_and_journals_why",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs learning::tests::a_restore_past_the_cap_refuses_the_overflow_and_reports_it_once",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs ModelRegistrationRefused, Platform::refuse_model_registration"
     ],
-    "gap": "2026-10-25 (lane L2-INTEL): the multi-displacement limit is closed. ModelPromotion carries the rollback_parent the registry chose, and restore_registry takes it from the record. Remaining known limits: (1) re-publishing a version still in production with a non-empty displaced list would be replayed as a rollback (unreachable on the shipped path, where the desk promotes fresh versions); (2) a displaced card that was never production is retired live but restored in Validation (unreachable: the desk displaces only production cards); (3) the registry is unbounded. A refusal at capacity would eventually stop a long-running deep brain from learning, so the honest bound is eviction of retired, non-parent cards with restore_registry applying the same cap, which is not built. A drift reading that stays on one side of the threshold is re-measured, not journaled. Awaiting a skeptic.",
+    "gap": "2026-10-25 (lane L2-INTEL): the multi-displacement limit is closed. ModelPromotion carries the rollback_parent the registry chose, and restore_registry takes it from the record. Remaining known limits: (1) re-publishing a version still in production with a non-empty displaced list would be replayed as a rollback (unreachable on the shipped path, where the desk promotes fresh versions); (2) a displaced card that was never production is retired live but restored in Validation (unreachable: the desk displaces only production cards); (3) closed 2026-10-30: the registry is bounded at MAX_CARDS (4,096), refused rather than evicted (parent's ruling under the delegation); a full registry refuses the deep brain's round before the fit, counted under MODEL_PACKAGES{outcome=card_refused_at_cap} and journaled as ModelRegistrationRefused, and restore_registry applies the same cap and reports each refusal once. A drift reading that stays on one side of the threshold is re-measured, not journaled. Awaiting a skeptic.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -90,7 +95,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-ai --test model_infrastructure && cargo +1.94.1 test -p qip-deepbrain --lib -- a_restarted a_crash_around && cargo +1.94.1 test -p qip-kernel --test promotion_durability",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap narrowed. Promoted versions with evaluation evidence, mover and displacement now proven durable; mutation: journal the promotion with evidence None -> 'came back without the evaluation it was promoted on'; restored and passing. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the journal_model_registry call in maybe_learn deleted; the restore_registry call deleted; the fit-count continuation in restore_registry disabled (a restarted fit reused a restored version and replaced its card). qip-kernel, qip-deepbrain and qip-ai: 88 test binaries ok, none failed. 2026-10-24 L2-INTEL second pass: mutations fired, each restored by copy and cmp: restoring production cards (stage condition dropped) fails a_restarted_desk_restores_its_unpromoted_cards_and_still_promotes_a_better_candidate; whole-card comparison instead of same_but_drift fails a_card_is_journaled_when_registered_and_on_a_kept_change_but_not_on_drift_alone. qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 test binaries ok. 2026-10-24 L2-INTEL third pass: mutations fired, each restored by copy and cmp: production cards left out of restore_registry (the equal candidate is promoted unopposed); the promoted set skipped in restore_artifacts (the better candidate is refused for want of an artifact). Second skeptic (security-engineer) REFUTED 9c61a602 for the unopposed promotion; its reproduction is the equal-candidate half of the new test. 2026-10-24 L2-INTEL fourth pass: mutations fired, each restored by copy and cmp: stage reconciliation disabled (v1 restored Production); orphan check disabled (candidate promoted unopposed); promoted-version scan disabled (next fit reuses v2's version); the kernel's journal call in promote_model_from removed (both restart tests fail). qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 binaries ok. 2026-10-24 L2-INTEL fifth pass: mutations fired, each restored by copy and cmp: cards journaled after the record in promote_model_from (the cut after the record loses v2's card); stage reconciliation off (v2 restored in production beside v1); the artifact store write disabled (the restarted desk cannot rescore its incumbent). qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 binaries ok. 2026-10-24 L2-INTEL sixth pass: mutations fired, each restored by copy and cmp: the moved cards journaled before the record (the cut-before-record test sees v2 read as promoted); journal_moved_cards removed (both restart tests fail); retired_at kept when the log forces Production (the rollback-crash test reads the reactivated model as retired); drift compared without the threshold side (the crossing is not journaled). Gate: clippy -p qip-kernel -p qip-deepbrain clean; cargo test -p qip-kernel -p qip-deepbrain -p qip-learning-engine -p qip-training -p qip-fastbrain -p qip-api -p qip-acceptance --no-fail-fast: 169 binaries ok, qip-acceptance documentation failing only the_blueprint_views_are_what_their_sources_render_to (the matrix is re-rendered at merge) and, before ADR 0170 gained its cost section, every_decision_record_states_what_it_costs. 2026-10-24 L2-INTEL seventh pass: mutations fired and restored by cmp: dropping the artifact_digest replay fails a_crash_around at the digest assertion; dropping the displaced (unassigned) alias move fails it at the displacement assertion; dropping the assigned move fails it at the assigned assertion. qip-deepbrain lib 212 passed 0 failed. 2026-10-25 L2-INTEL eighth pass: mutations fired and restored by cmp: wording every displaced move bare fails a_crash_around (left: bare evaluation, right: 'displaced by ...'); treating a rollback record as a promotion fails a_crash_just_after_a_rollback (left: 'displaced by ...', right: the bare rollback reading). 2026-10-25 L2-INTEL ninth pass: mutation: delete the out-of-production refusal in promote_model_from; a_version_taken_out_of_production_returns_only_through_a_rollback panics at promotion_durability.rs:386 ('went back into production without a rollback'); restored by cp+cmp; passes. 2026-10-25 L2-INTEL tenth pass: the ninth skeptic's three mutations each fire and are restored by cp+cmp. retired_at not filled from the log: both crash tests fail (left None, right the record instant). deployed_at not taken from the record: both fail (a_crash_around left None; rollback test left t1, right t_rb). rollback_parent set to None: a_crash_around fails (left None, right v1). 2026-10-25 L2-INTEL: mutations: record displaced.first() as the record's rollback_parent (fails both new tests); ignore the record's parent in the replay (fails the deepbrain crash test); restored by copy + cmp."
+    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap narrowed. Promoted versions with evaluation evidence, mover and displacement now proven durable; mutation: journal the promotion with evidence None -> 'came back without the evaluation it was promoted on'; restored and passing. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the journal_model_registry call in maybe_learn deleted; the restore_registry call deleted; the fit-count continuation in restore_registry disabled (a restarted fit reused a restored version and replaced its card). qip-kernel, qip-deepbrain and qip-ai: 88 test binaries ok, none failed. 2026-10-24 L2-INTEL second pass: mutations fired, each restored by copy and cmp: restoring production cards (stage condition dropped) fails a_restarted_desk_restores_its_unpromoted_cards_and_still_promotes_a_better_candidate; whole-card comparison instead of same_but_drift fails a_card_is_journaled_when_registered_and_on_a_kept_change_but_not_on_drift_alone. qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 test binaries ok. 2026-10-24 L2-INTEL third pass: mutations fired, each restored by copy and cmp: production cards left out of restore_registry (the equal candidate is promoted unopposed); the promoted set skipped in restore_artifacts (the better candidate is refused for want of an artifact). Second skeptic (security-engineer) REFUTED 9c61a602 for the unopposed promotion; its reproduction is the equal-candidate half of the new test. 2026-10-24 L2-INTEL fourth pass: mutations fired, each restored by copy and cmp: stage reconciliation disabled (v1 restored Production); orphan check disabled (candidate promoted unopposed); promoted-version scan disabled (next fit reuses v2's version); the kernel's journal call in promote_model_from removed (both restart tests fail). qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 binaries ok. 2026-10-24 L2-INTEL fifth pass: mutations fired, each restored by copy and cmp: cards journaled after the record in promote_model_from (the cut after the record loses v2's card); stage reconciliation off (v2 restored in production beside v1); the artifact store write disabled (the restarted desk cannot rescore its incumbent). qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 binaries ok. 2026-10-24 L2-INTEL sixth pass: mutations fired, each restored by copy and cmp: the moved cards journaled before the record (the cut-before-record test sees v2 read as promoted); journal_moved_cards removed (both restart tests fail); retired_at kept when the log forces Production (the rollback-crash test reads the reactivated model as retired); drift compared without the threshold side (the crossing is not journaled). Gate: clippy -p qip-kernel -p qip-deepbrain clean; cargo test -p qip-kernel -p qip-deepbrain -p qip-learning-engine -p qip-training -p qip-fastbrain -p qip-api -p qip-acceptance --no-fail-fast: 169 binaries ok, qip-acceptance documentation failing only the_blueprint_views_are_what_their_sources_render_to (the matrix is re-rendered at merge) and, before ADR 0170 gained its cost section, every_decision_record_states_what_it_costs. 2026-10-24 L2-INTEL seventh pass: mutations fired and restored by cmp: dropping the artifact_digest replay fails a_crash_around at the digest assertion; dropping the displaced (unassigned) alias move fails it at the displacement assertion; dropping the assigned move fails it at the assigned assertion. qip-deepbrain lib 212 passed 0 failed. 2026-10-25 L2-INTEL eighth pass: mutations fired and restored by cmp: wording every displaced move bare fails a_crash_around (left: bare evaluation, right: 'displaced by ...'); treating a rollback record as a promotion fails a_crash_just_after_a_rollback (left: 'displaced by ...', right: the bare rollback reading). 2026-10-25 L2-INTEL ninth pass: mutation: delete the out-of-production refusal in promote_model_from; a_version_taken_out_of_production_returns_only_through_a_rollback panics at promotion_durability.rs:386 ('went back into production without a rollback'); restored by cp+cmp; passes. 2026-10-25 L2-INTEL tenth pass: the ninth skeptic's three mutations each fire and are restored by cp+cmp. retired_at not filled from the log: both crash tests fail (left None, right the record instant). deployed_at not taken from the record: both fail (a_crash_around left None; rollback test left t1, right t_rb). rollback_parent set to None: a_crash_around fails (left None, right v1). 2026-10-25 L2-INTEL: mutations: record displaced.first() as the record's rollback_parent (fails both new tests); ignore the record's parent in the replay (fails the deepbrain crash test); restored by copy + cmp. 2026-10-30 L2-INTEL cap: mutations, each fired, restored by copy + cmp. Disabling the cap check in register fails a_registry_at_its_cap; disabling registry_full in maybe_learn fails a_full_registry_refuses_the_round; dropping the restore's refusal report fails a_restore_past_the_cap."
   },
   {
     "id": "R12-WORLD-9004",
@@ -119,13 +124,14 @@
   {
     "id": "R12-REASON-9005",
     "status": "PARTIAL",
-    "current": "Each formed hypothesis carries a SymbolicDerivation; symbolic_stage::verify is an in-tree checker that re-derives the rule verdict, timeline, posterior, acting answer, intervention, violated assumptions and uncertainty from the record and refuses at the first part that does not reproduce; corrupting any of them fails verification (five tests).",
+    "current": "Each formed hypothesis carries a SymbolicDerivation; symbolic_stage::verify is the in-tree independent checker that re-derives the rule verdict (pack name and version checked), timeline, posterior, acting answer, intervention, violated assumptions and uncertainty from the record and refuses at the first part that does not reproduce. Since 2026-10-25 the operator-run `qip replay --journal <path>` (qip-cli replay.rs, a default path under bar part 2) carries a fourth section, symbolic, which calls symbolic_stage::replay_recorded: every derivation on the event log on disk is decoded through the kernel's own two steps and re-derived against the assembled platform's causal graph; a derivation that does not reproduce prints `REFUSED — <the kernel's refusal>` and the run exits 3 (DIFFERS), as a disagreeing registry does. replay_recorded exists because the kernel's cycle journal is an in-memory transport, empty on a platform assembled on a copy of a journal file, so the earlier replay(&platform) re-derived nothing on that path. Reasoning runs in the kernel's own process, not on separately provisioned compute (ADR 0002's refusal of an external solver stands; the requirement text says 'wherever possible').",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:768 replay",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:654-748 five corruption tests"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs verify, replay, replay_recorded (over the event log)",
+      "backend/crates/apps/qip-cli/src/replay.rs symbolic section; main.rs replay help names the derivation re-check and exit 3",
+      "backend/crates/apps/qip-cli/tests/replay.rs a_journal_with_a_corrupted_symbolic_derivation_fails_qip_replay (a properly chained second derivation with a zeroed posterior: chain intact, symbolic REFUSED naming the posterior, exit 3)",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces and the five corruption tests of verify"
     ],
-    "gap": "The checker runs only in tests: no binary or operator surface calls symbolic_stage::replay/verify on a journal, and reasoning does not run on separately provisioned compute (ADR 0002's refusal of an external solver stands).",
+    "gap": "2026-10-25 (lane L2b; independent read-only skeptic REFUTED on bar part 4): the requirement's first clause, \"runs on dedicated compute\", is declined rather than impossible — ADR 0002 refuses an external solver and owner decision 5 (docs/blueprint/owner-decisions-2026-10-25.md) declines new billed infrastructure — and 'wherever possible' qualifies the second clause, so under bar part 4 the row stays PARTIAL with the ADR and the decision cited until the owner changes the requirement or admits the compute. The checker clause is met: symbolic_stage::verify re-verifies every part of the artefact, corrupting any part fails verification, and the operator-run `qip replay` now re-derives every journaled derivation off the event log (replay_recorded) and exits 3 on a refusal. Also noted by the skeptic: a decode failure and a re-derivation refusal both print REFUSED (the kernel's message tells them apart), and the CLI mutation exercises the display, not verify, whose own mutations are lane L05's five corruption tests.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -133,10 +139,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test symbolic_federation",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-cli --test replay && cargo +1.94.1 test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 by lane L05: the checkable artefact and its re-checker now exist and each part's comparison was mutation-verified (disable -> its test fails 'a corrupted derivation was accepted'); PARTIAL kept because nothing deployed runs the checker."
+    "notes": "Re-graded 2026-10-18 by lane L05: the checkable artefact and its re-checker now exist and each part's comparison was mutation-verified (disable -> its test fails 'a corrupted derivation was accepted'); PARTIAL kept because nothing deployed runs the checker. 2026-10-25 lane L2b (wave580): CLI section added; qip-cli gains a qip-market dev-dependency (workspace crate) for the sensed-bars fixture. The first version read replay(&platform) and passed vacuously because the assembled platform's journal was empty; the test caught it (the forged record was not refused) and replay_recorded was added. Mutation fired: replacing the symbolic section's Err arm with IDENTICAL -> test FAILED \"the corrupted derivation was not refused by re-derivation\"; restored byte for byte (cmp), tests/replay.rs 6 passed. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED on the dedicated-compute clause as the gap records; held part 2 (operator-run default path, unconditional section), the test's claim and the single-reader property of replay_recorded. Its finding 6 was applied: a journal with no derivation now prints `nothing to re-derive — ...` and still exits 0 instead of printing `identical`."
   },
   {
     "id": "R12-TICK-9006",
@@ -775,9 +781,10 @@
       "backend/crates/libs/qip-contracts/tests/challenge.rs a_verdict_that_contradicts_its_own_reports_is_refused",
       "backend/crates/services/qip-learning-engine/src/verifier.rs VerifierSociety::challenge_prediction, Verification::as_result",
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs challenge_exchange and TournamentReview.challenges",
-      "backend/crates/runtime/qip-kernel/src/model_tournament.rs tests::a_fatal_attack_is_recorded_as_a_refuted_result_that_answers_its_request"
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs tests::a_fatal_attack_is_recorded_as_a_refuted_result_that_answers_its_request",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs an_important_prediction_journals_a_challenge_exchange_on_its_tournament_review"
     ],
-    "gap": "Two limits. The call site that pushes the exchange (TournamentStage::observe_reasoning) is not driven by a test: no fixture cycle forms an important prediction (the first-cycle fixture forms a hypothesis at confidence 0.42, below IMPORTANCE_CONFIDENCE and unapproved), so only the extracted challenge_exchange helper is mutation-proven. And nothing outside the journal reads the pair: challenge_prediction, the receiving-brain entry point, has no caller outside tests.",
+    "gap": "One limit remains. Nothing outside the journal reads the pair: challenge_prediction, the receiving-brain entry point, has no caller outside tests; it waits on the fabric topic the deep brain would read requests from (R12-AMBIENT-10108). The push site is now proven: 2026-10-25 lane L2b added model_tournament.rs an_important_prediction_journals_a_challenge_exchange_on_its_tournament_review, which drives TournamentStage::observe_reasoning with an approved hypothesis (and the same hypothesis unapproved under IMPORTANCE_CONFIDENCE as the premise) and asserts the review carries one ChallengeExchange whose result answers its request and agrees with the verification.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -785,10 +792,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test challenge && cargo test -p qip-learning-engine --lib verifier && cargo test -p qip-kernel --lib model_tournament",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-contracts --test challenge && cargo +1.94.1 test -p qip-learning-engine --lib verifier && cargo +1.94.1 test -p qip-kernel --lib model_tournament",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutations fired - the survived-over-refutation arm removed from VerificationResultFields::check ('survived was accepted over a refuting finding'); SocietyVerdict::Refuted mapped to ChallengeVerdict::Survived in Verification::as_result (the learning-engine fatal-challenge test and the kernel exchange test both failed on the contract's refusal); the unheld-critic check removed in challenge_prediction ('a critic nobody holds was answered for'). Kept PARTIAL for the two limits."
+    "notes": "2026-10-18 lane L23: mutations fired - the survived-over-refutation arm removed from VerificationResultFields::check ('survived was accepted over a refuting finding'); SocietyVerdict::Refuted mapped to ChallengeVerdict::Survived in Verification::as_result (the learning-engine fatal-challenge test and the kernel exchange test both failed on the contract's refusal); the unheld-critic check removed in challenge_prediction ('a critic nobody holds was answered for'). Kept PARTIAL for the two limits. 2026-10-25 lane L2b (wave580): push-site test added (unit, in the stage's own module, with ReasonObservation built by hand because no cycle fixture forms an important prediction). Mutation fired: replacing `Ok(exchange) => self.review.challenges.push(exchange)` with `Ok(_) => {}` -> \"left: 0 right: 1\"; restored byte for byte (cmp), model_tournament 5 passed. Stays PARTIAL on the receiving caller, which depends on R12-AMBIENT-10108."
   },
   {
     "id": "R12-AMBIENT-9033",
@@ -821,16 +828,15 @@
   {
     "id": "R12-AMBIENT-9034",
     "status": "PARTIAL",
-    "current": "ComputePlan exists (qip-contracts control.rs:175 ComputePlanFields, issued by qip-expansion meta.rs for every QPU grant) and model weights are the reputation-weighted bids MetaIntelligence prices. Since 2026-10-18 the deployed market calls MetaIntelligence::allocate_within with ResearchConfig::agent_budgets, read from QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS (domain/horizon/regime=units, comma-separated; a malformed entry or a key named twice is refused), so a research agent past its stated budget is declined over_agent_budget on the default path.",
+    "current": "ComputePlan exists (qip-contracts control.rs ComputePlanFields, issued by qip-expansion meta.rs for every QPU grant); the deployed research market (ResearchLoop::run_market, every sweep on the default node path) bids every open item and calls MetaIntelligence::allocate_within with the resource budgets and ResearchConfig::agent_budgets (QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS, domain/horizon/regime=units; malformed or duplicate keys refused; a negative budget refused), so a research agent past its stated budget is declined `over_agent_budget` and starts nothing, and model influence is the reputation-weighted bid the market prices. Since 2026-10-25 the market is on the log: ResearchRound::market carries a MarketRecord (the agent budgets the round allocated within, every grant with the reputation weight in basis points it was priced on, its resource, units, expected value, clearing price and charge, every decline with the market's reason, and what was spent), built from the same AllocationRound the grants are carried out from, and the ambient journal writes it as AmbientRecord::Market for every sweep in which something bid.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/research.rs:353 ResearchConfig::agent_budgets",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:364 parse_agent_budgets",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:2359 run_market calls allocate_within",
-      "backend/crates/apps/qip-deepbrain/tests/research_market.rs:432 a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing (mutation: call allocate; the zero-budget agent is granted and the test fails)",
-      "backend/crates/services/qip-expansion/src/meta.rs:555 MetaIntelligence::allocate_within",
-      "backend/crates/services/qip-expansion/tests/meta.rs:373 an_agent_bid_over_its_compute_budget_is_refused"
+      "backend/crates/apps/qip-deepbrain/src/research.rs run_market -> MetaIntelligence::allocate_within(&bids, &budget, &self.config.agent_budgets, now); MarketRecord, GrantLine, AgentBudgetLine; round.market",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs AmbientRecord::Market, written in AmbientJournal::record",
+      "backend/crates/services/qip-expansion/src/meta.rs allocate_within (Decline::OverAgentBudget), MetaIntelligence::reputation / ReputationBook::standing().weight_bp()",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs a_research_round_journals_the_agent_budgets_and_model_weights_it_allocated_on",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing"
     ],
-    "gap": "No committed deployment states QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS (a dev value under infrastructure/environments/dev/**, which this lane may not edit), so deployed agents are bounded by the resource budgets alone. No AgentBudget or ModelWeight record is emitted into the event log, so the bound and the weights are not replayable from it.",
+    "gap": "2026-10-25 (lane L2b; independent read-only skeptic REFUTED on bar parts 4 and 2): the requirement's test clause says a ComputePlan bounds per-agent budgets and model weights — ComputePlanFields (qip-contracts control.rs:259-273) carries one budget for the whole QPU plan and no per-agent or per-model field, the per-agent bound is a separate map handed to allocate_within, and nothing anywhere bounds a model weight (the journaled weight_bp is read, never capped; the tree has no ModelWeight type); and agent_budgets is empty by default with QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS set in no committed environment, so the per-agent bound sits behind an env var every environment leaves unset. Met: the refusal of an agent past its stated budget, the ComputePlan on QPU grants, and since 2026-10-25 the journaled MarketRecord (budgets, grants with their weight, declines, spend). Closing it: a ComputePlan that carries the per-agent budget lines and a model-weight ceiling the allocator enforces, a default budget set in the shipped configuration (fail closed), and a model-weight refusal test. Also noted: a grant whose question has no cell is left off the record (research.rs run_market `if let Some((key, _)) = cells.get(..)`), caught only by the units-sum assertion.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -838,10 +844,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research_market a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research_market",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L18: the allocator's agent bound landed with a mutated test (deleting the agent-budget check grants the agent five units and the second bid); a negative agent budget is refused. The research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged. 2026-10-18 lane L03: the research.rs call site and its configuration landed, mutation-verified; PARTIAL on the deployment value and the event-log record."
+    "notes": "2026-10-18 lane L18: the allocator's agent bound landed with a mutated test (deleting the agent-budget check grants the agent five units and the second bid); a negative agent budget is refused. The research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged. 2026-10-18 lane L03: the research.rs call site and its configuration landed, mutation-verified; PARTIAL on the deployment value and the event-log record. 2026-10-25 lane L2b (wave580): market record journaled. Mutation fired: deleting the AmbientRecord::Market append in AmbientJournal::record -> \"left: 0 right: 1\" on the record count; restored byte for byte (cmp), research_market 9 passed, ambient_journal 10 passed (its record-count assertion moved 4 -> 5 for the market record, named in its message). Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records; held the default-path call of run_market, the Decimal/BTreeMap replayability of the record and the refusal test; noted the weight assertion would pass on the uninformed default of 5000 bp. Its doc-placement finding was fixed (the new structs had displaced ResearchRound's doc comment)."
   },
   {
     "id": "R12-WORLD-9035",
@@ -2031,7 +2037,7 @@
     "verification": "inspection of ci.yml",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-25 lane L9: the protected half is already on the branch: ci.yml's test job, acceptance partition, uploads the replay-bench artifact, and pipeline_scripts.rs pins it. What remains is code, not a protected path: a committed baseline and a test that diffs against it. That half stays with lane L6."
+    "notes": "2026-10-25 lane L9: the protected half is already on the branch: ci.yml's test job, acceptance partition, uploads the replay-bench artifact, and pipeline_scripts.rs pins it. What remains is code, not a protected path: a committed baseline and a test that diffs against it. That half stays with lane L6. 2026-10-25 lane L9, later the same day: L6 confirmed it holds this row, so the code half was examined here and no code was added. The replay delta already has a committed baseline: tick_replay.rs's RECORDED_DIGEST (2610f37b…). The replay test recomputes it from the recorded bytes on every host and fails when it moves, and its comment makes any move a stated decision. The benchmark half has no machine-independent absolute baseline to commit. performance.rs compares per-operation cost at two input sizes within one run against committed tolerances (2.0x), which is the load-invariant form of a baseline, and the replay-bench artifact keeps the absolute numbers for 90 days. A committed file of absolute timings diffed by a test would fail on a slower runner, and nothing could decide whether that was a regression. Whether the digest plus the ratio tolerances close 'replay and benchmark delta jobs', or a non-failing delta report is still wanted, is for the parent to rule. Stays PARTIAL. Parent ruling 2026-10-30: stays PARTIAL. RECORDED_DIGEST is a replay-fidelity baseline and a fixed ratio limit is a bound, so closing the row needs relative figures recorded on a named runner class with a delta test, and that runner class is not known until a deployment."
   },
   {
     "id": "R12-GCP-9086",
@@ -2057,12 +2063,14 @@
   },
   {
     "id": "R12-RES-9087",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "No SRE agent or incident-to-test pipeline.",
-    "evidence": [],
-    "gap": "Build it.",
-    "implemented": false,
-    "tested": false,
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::each_incident_record_links_a_drafted_replay_fixture_that_reproduces_it"
+    ],
+    "gap": "2026-10-30 (lane L6): ADR 0213: every incident record links a drafted replay fixture naming its journal window (sequence range, SHA-256 over the window's record hashes, platform-log range, correlation ids), drafted only if replaying it reproduces the same shift; no reproducing fixture means no automated action. Remaining: committing the fixture as a test and showing it fails before the fix is a person's act, and no fuzz or game-day test is drafted, so the inspection's 'links a new test that fails before the fix' is met only as a drafted link. Earlier: Build it.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -2071,7 +2079,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-30 lane L6 (delegated agent, cherry-picked): mutation: the fixture link dropped failed at research.rs:800 ('INC-deepbrain-000001 links no fixture: dropped')."
   },
   {
     "id": "R12-CICD-9088",
@@ -3519,7 +3527,7 @@
       "backend/crates/apps/qip-edge-node/src/strategies.rs StrategyInstaller::install_compiled",
       "backend/crates/apps/qip-edge-node/tests/strategies.rs::each_package_the_node_activates_is_counted_once_and_a_rollback_apart"
     ],
-    "gap": "2026-10-24 (lane L6): emitted, not yet on a default path: the node activates a package only when QIP_STRATEGY_PLAN_PATH is set (main.rs builds the PlanCompiler only then), and the execution-node module's strategy_plan_path defaults to \"\" in every environment, so on a default configuration no package is ever activated and the series never moves (bar part 2). No collector scrapes the node either (modules/observability/NOT-SCRAPED.md), which matters if the requirement's 'carries' is read as collection.",
+    "gap": "2026-10-25 (lane L6): not wired. strategy_plan_path lives in protected dev tfvars under an execution node that execution_nodes_enabled = false keeps from existing, and setting it activates a paper strategy on a billed node, so it is the owner's flip. Earlier: 2026-10-24 (lane L6): emitted, not yet on a default path: the node activates a package only when QIP_STRATEGY_PLAN_PATH is set (main.rs builds the PlanCompiler only then), and the execution-node module's strategy_plan_path defaults to \"\" in every environment, so on a default configuration no package is ever activated and the series never moves (bar part 2). No collector scrapes the node either (modules/observability/NOT-SCRAPED.md), which matters if the requirement's 'carries' is read as collection.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3660,9 +3668,12 @@
       "backend/crates/libs/qip-observability/src/aiops.rs:1-8",
       "backend/crates/libs/qip-observability/tests/aiops.rs",
       "backend/crates/runtime/qip-kernel/tests/self_observation.rs:112",
-      "backend/crates/apps/qip-deepbrain/src/operations.rs::Operations::observe"
+      "backend/crates/apps/qip-deepbrain/src/operations.rs::Operations::observe",
+      "docs/adr/0213-an-incident-is-journalled-and-drafted-with-its-replay-fixture-and-only-a-runbook-acts-and-only-on-this-node.md",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs IncidentRecord, ReplayFixture, runbook_for",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_detected_anomaly_yields_a_journaled_incident_a_runbook_action_and_nothing_else_all_audited"
     ],
-    "gap": "No incident/PR integration, no reading of recent diffs, no scaling, rollback, restart or drain actions.",
+    "gap": "2026-10-30 (lane L6): ADR 0213 (Accepted under the owner's delegation): a detected iteration-time shift yields an IncidentRecord journalled in the remediation journal and drafted to an operations outbox, never sent; only proposals a runbook matches reach the Remediator, every action is audited in the record, and scale/rollback/restart/drain of other services are recorded for_a_person. This runs on the deep brain's default path. Still PARTIAL under bar part 4: the requirement's opening of incidents/PRs is only drafted, and scaling and pre-approved rollback/restart/drain are declined by ADR 0213 decision 2 (no cloud credential is held). Earlier: No incident/PR integration, no reading of recent diffs, no scaling, rollback, restart or drain actions.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3673,7 +3684,7 @@
     "verification": "cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-30 lane L6 (delegated agent, cherry-picked): mutations: skipping the audit entry failed at research.rs:713 (record.actions == audited); letting a non-runbook action through failed at :708 (left 3 right 2). Agent's gate: qip-deepbrain passed 332, failed 0; ambient_effect_boundary, authority_paths, runtime_reachability, untrusted_content, aiops_remediation, arch_048_deepbrain_composition, scope_inspections all passed."
   },
   {
     "id": "R12-OBS-9159",
@@ -3824,7 +3835,7 @@
     "status": "MISSING",
     "current": "No delivery SLOs in code.",
     "evidence": [],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "2026-10-25 (lane L6): no patch written. The recording sites belong in deploy.yml and ci.yml (protected), and delivery_objectives in critical_paths.rs has nothing to read until they exist; PR acceptance and rework rate also need a GitHub API credential, which the owner holds. It stays PARTIAL on the protected workflows and that credential. Earlier: Declare the missing objectives, record them, and prove ingestion.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -4085,7 +4096,7 @@
       "infrastructure/terraform/modules/registry/tests/secondary.tftest.hcl",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs::no_data_store_beyond_those_the_register_records_is_left_without_a_customer_managed_key"
     ],
-    "gap": "2026-10-24 (lane L6): (1) the root module does not pass secondary_region (wiring it needs a variable in infrastructure/terraform/variables.tf, a protected path) and no environment names one; (2) nothing copies a promoted digest into the secondary repository, and no prod promotion checks the digest is there: that belongs to the release pipeline (deploy.yml/Kargo, protected) and prod is never promoted from a workflow today; (3) no real plan.",
+    "gap": "2026-10-25 (lane L6): no patch written. The closure adds secondary_region to the root variables and dev tfvars (protected) and a deploy.yml digest-copy step; a second region's registry is new billed infrastructure under decision 5, and the parked second-region decision (decision 4) governs it, so it stays PARTIAL until the owner reopens it. Earlier: 2026-10-24 (lane L6): (1) the root module does not pass secondary_region (wiring it needs a variable in infrastructure/terraform/variables.tf, a protected path) and no environment names one; (2) nothing copies a promoted digest into the secondary repository, and no prod promotion checks the digest is there: that belongs to the release pipeline (deploy.yml/Kargo, protected) and prod is never promoted from a workflow today; (3) no real plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,

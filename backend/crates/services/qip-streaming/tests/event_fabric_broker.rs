@@ -882,7 +882,8 @@ fn a_batch_retried_after_a_broker_restart_appears_once_and_a_stale_epoch_is_stil
 ///
 /// Mutation: make `Broker::stamp_origin` a no-op and the stamped batch reads
 /// back without its origin; drop the arrival refusal and the pre-stamped
-/// batch is appended.
+/// batch is appended; drop the partition from `stamp_broker` and the
+/// in-process batch reads back with no partition (R12-FABRIC-8084).
 #[test]
 fn a_broker_stamps_its_region_partition_and_the_sessions_principal_and_refuses_a_producers_own()
 -> Result<()> {
@@ -890,7 +891,9 @@ fn a_broker_stamps_its_region_partition_and_the_sessions_principal_and_refuses_a
     let dir = temp_dir("origin");
     let stream = "outcomes";
     let broker = Broker::open(&dir, clock())?.with_region("europe-west2")?;
-    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+    // Two partitions, and the in-process batch goes to the second: a stamp
+    // that always wrote partition 0 passed this test while it had one.
+    broker.declare_stream(stream, 2, policy(), config(10_000_000))?;
     broker.register_schema(stream, 1, 1, sample_shape())?;
 
     let session = broker
@@ -902,13 +905,14 @@ fn a_broker_stamps_its_region_partition_and_the_sessions_principal_and_refuses_a
         )?
         .map_err(|refused| refused.error)?;
     let in_process = broker
-        .produce_to(stream, 0, drain_batch("cell-a", 1, 1, 1, b"no-session"))?
+        .produce_to(stream, 1, drain_batch("cell-b", 1, 0, 1, b"no-session"))?
         .map_err(|refused| refused.error)?;
     let stamped = first_batch(
         broker
             .fetch(stream, 0, session.base_offset(), 65_536)?
             .batches(),
     );
+    assert_eq!(stamped.partition, Some(0));
     assert_eq!(
         stamped.origin.map(|origin| *origin),
         Some(BrokerOrigin {
@@ -919,12 +923,17 @@ fn a_broker_stamps_its_region_partition_and_the_sessions_principal_and_refuses_a
     );
     let unstamped = first_batch(
         broker
-            .fetch(stream, 0, in_process.base_offset(), 65_536)?
+            .fetch(stream, 1, in_process.base_offset(), 65_536)?
             .batches(),
     );
     assert_eq!(
         unstamped.origin, None,
         "a producer with no session was given a principal"
+    );
+    assert_eq!(
+        unstamped.partition,
+        Some(1),
+        "a producer with no session was appended without the partition it went to"
     );
 
     let mut forged = drain_batch("cell-a", 1, 2, 2, b"forged");
@@ -942,6 +951,21 @@ fn a_broker_stamps_its_region_partition_and_the_sessions_principal_and_refuses_a
         .expect_err("a producer-stamped origin was appended");
     assert!(
         refused.error.message().contains("stamped by the broker"),
+        "{:?}",
+        refused.error
+    );
+    assert_eq!(broker.metadata(stream, 0)?.high_watermark(), high_water);
+
+    let mut forged_partition = drain_batch("cell-a", 1, 2, 2, b"forged-partition");
+    forged_partition.partition = Some(0);
+    let refused = broker
+        .produce_to(stream, 0, forged_partition)?
+        .expect_err("a producer-stamped partition was appended");
+    assert!(
+        refused
+            .error
+            .message()
+            .contains("already stamped with partition 0"),
         "{:?}",
         refused.error
     );

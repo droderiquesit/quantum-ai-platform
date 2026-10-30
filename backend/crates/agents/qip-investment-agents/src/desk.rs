@@ -44,6 +44,79 @@ pub struct RiskView {
     pub limits: LimitSet,
 }
 
+/// Which way an execution went, as the desk tells its readers.
+///
+/// A local enum rather than the execution engine's `Side`, because this crate
+/// may not depend on the execution engine (libs and agents sit beneath the
+/// services): the kernel maps one onto the other where it feeds the desk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TradeSide {
+    Buy,
+    Sell,
+}
+
+impl TradeSide {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Buy => "buy",
+            Self::Sell => "sell",
+        }
+    }
+
+    /// `+1` for a buy, `-1` for a sell: the sign that turns a price
+    /// difference into "worse for us".
+    pub fn sign(self) -> f64 {
+        match self {
+            Self::Buy => 1.0,
+            Self::Sell => -1.0,
+        }
+    }
+}
+
+/// One of the platform's own executed orders, as an adversary probe reads it
+/// (R12-REASON-3023): what was asked, what was paid, and when.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutionRecord {
+    pub order_id: String,
+    pub object_id: String,
+    pub side: TradeSide,
+    /// Quantity filled. Always positive.
+    pub quantity: qip_core::Decimal,
+    /// The reference price when the order was created, the base slippage
+    /// is measured from.
+    pub arrival_price: qip_core::Decimal,
+    /// Quantity-weighted fill price.
+    pub fill_price: qip_core::Decimal,
+    pub placed_at: qip_core::Timestamp,
+    pub filled_at: qip_core::Timestamp,
+    pub venue: String,
+}
+
+impl ExecutionRecord {
+    /// Slippage against arrival in basis points, positive when the fill was
+    /// worse for the platform: paid more on a buy, received less on a sell.
+    /// A statistic (`f64`) computed from money (`Decimal`); the crossing is
+    /// here, once.
+    pub fn adverse_slippage_bp(&self) -> Option<f64> {
+        let arrival = self.arrival_price.to_f64();
+        let fill = self.fill_price.to_f64();
+        (arrival.is_finite() && arrival > 0.0 && fill.is_finite())
+            .then(|| self.side.sign() * (fill - arrival) / arrival * 10_000.0)
+    }
+}
+
+/// The platform's own order and fill history, bounded, most recent last.
+///
+/// What a probe for strategies that exploit the platform itself reads: an
+/// adversary who has learned the platform's flow shows up as fills that are
+/// systematically worse than arrival, and as a flow regular enough to be
+/// learned. Empty on a desk the kernel has not fed, which the probe reports
+/// as nothing examined rather than as nothing found.
+#[derive(Debug, Default)]
+pub struct ExecutionView {
+    pub executions: Vec<ExecutionRecord>,
+}
+
 /// Trading restrictions by object id.
 ///
 /// Deterministic data rather than a model's reading of a policy document:
@@ -76,6 +149,11 @@ pub struct Desk {
     pub compliance: Gated<ComplianceView>,
     pub memory: Gated<ResearchMemory>,
     pub library: Gated<SearchIndex>,
+    /// The platform's own executions (R12-REASON-3023). Empty from
+    /// [`Desk::new`]; the kernel re-points this gate at the slot it feeds
+    /// every REASON, and a test hands one in through
+    /// [`Desk::with_executions`].
+    pub executions: Gated<ExecutionView>,
 }
 
 impl Desk {
@@ -104,7 +182,23 @@ impl Desk {
             ),
             memory: Gated::new(memory, Capability::ReadResearchMemory, "research-memory"),
             library: Gated::new(library, Capability::ReadNews, "research-library"),
+            executions: Gated::new(
+                ExecutionView::default(),
+                Capability::ReadExecutionHistory,
+                "execution-history",
+            ),
         }
+    }
+
+    /// The desk with `executions` behind the execution-history gate, under
+    /// the capability and label [`Desk::new`] chose for it.
+    pub fn with_executions(mut self, executions: ExecutionView) -> Self {
+        self.executions = Gated::new(
+            executions,
+            self.executions.required(),
+            self.executions.label(),
+        );
+        self
     }
 
     /// A desk with nothing in it, for tests and for a cold start.

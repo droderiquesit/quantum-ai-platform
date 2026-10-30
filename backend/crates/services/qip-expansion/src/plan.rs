@@ -175,12 +175,20 @@ impl Derivation {
 pub enum Environment {
     Historical,
     Simulated,
-    Paper,
+    /// A forward window in which the candidate is computed beside the paper
+    /// book and never installed (ADR 0142 d1).
     Shadow,
+    /// A later, disjoint forward window in which the candidate is installed
+    /// in the paper book and acts (ADR 0142 d2).
+    Paper,
 }
 
 impl Environment {
-    pub const ORDER: [Self; 4] = [Self::Historical, Self::Simulated, Self::Paper, Self::Shadow];
+    /// ADR 0142 d3: a candidate reaches the acting environment only after it
+    /// has been scored forward without acting. Until 2026-10-25 this read
+    /// Historical, Simulated, Paper, Shadow, and "shadow" was the second half
+    /// of the same post-start fills paper was scored on.
+    pub const ORDER: [Self; 4] = [Self::Historical, Self::Simulated, Self::Shadow, Self::Paper];
 }
 
 /// One step of a synthesised research plan.

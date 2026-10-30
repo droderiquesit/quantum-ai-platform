@@ -275,6 +275,77 @@ pub struct FederationReview {
     /// exposure. Absent on a record written before the field existed.
     #[serde(default)]
     pub request_spreads_bp: Vec<u32>,
+    /// Every proposition on which two views point opposite ways, each past
+    /// [`CONTRADICTION_MARGIN`] from even odds (R12-WORLD-1181). This is
+    /// distinct from a wide spread. Two members at 0.55 and 0.95 disagree on
+    /// how likely the outcome is; two at 0.85 and 0.15 assert opposite
+    /// outcomes, and only the second is a contradiction. Derived from the
+    /// recorded views alone, so [`replay`] recomputes and checks it. Absent
+    /// on a record written before the field existed.
+    #[serde(default)]
+    pub contradictions: Vec<ViewContradiction>,
+}
+
+/// How far from even odds each of two opposed views must be before the
+/// pair is recorded as a contradiction, not a lean. A chosen constant: a
+/// view at 0.55 against one at 0.45 is two members near indifference, not
+/// two claims, and recording it would bury the contradictions that matter.
+pub const CONTRADICTION_MARGIN: f64 = 0.1;
+
+/// Two members asserting opposite outcomes for one proposition. Both views
+/// are kept as recorded; nothing here picks a side.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ViewContradiction {
+    pub proposition: String,
+    /// The member most sure the proposition holds, and its probability.
+    pub for_model: String,
+    pub for_probability: f64,
+    /// The member most sure it does not, and its probability.
+    pub against_model: String,
+    pub against_probability: f64,
+}
+
+/// The contradictions in `arbitrations`: per proposition, the most confident
+/// view on each side of even odds, when both are past
+/// [`CONTRADICTION_MARGIN`]. Ties go to the lower model id, so a replay
+/// names the same pair.
+pub fn contradictions_in(arbitrations: &[Arbitration]) -> Vec<ViewContradiction> {
+    let mut found = Vec::new();
+    for a in arbitrations {
+        let mut views: Vec<&qip_world_model::federation::ScoredView> =
+            a.disagreement.views.iter().collect();
+        views.sort_by(|x, y| x.model.cmp(&y.model));
+        let most_for = views
+            .iter()
+            .filter(|v| v.probability >= 0.5 + CONTRADICTION_MARGIN)
+            .fold(
+                None,
+                |best: Option<&&qip_world_model::federation::ScoredView>, v| match best {
+                    Some(b) if b.probability >= v.probability => Some(b),
+                    _ => Some(v),
+                },
+            );
+        let most_against = views
+            .iter()
+            .filter(|v| v.probability <= 0.5 - CONTRADICTION_MARGIN)
+            .fold(
+                None,
+                |best: Option<&&qip_world_model::federation::ScoredView>, v| match best {
+                    Some(b) if b.probability <= v.probability => Some(b),
+                    _ => Some(v),
+                },
+            );
+        if let (Some(f), Some(g)) = (most_for, most_against) {
+            found.push(ViewContradiction {
+                proposition: a.proposition.clone(),
+                for_model: f.model.clone(),
+                for_probability: f.probability,
+                against_model: g.model.clone(),
+                against_probability: g.probability,
+            });
+        }
+    }
+    found
 }
 
 impl EventBody for FederationReview {
@@ -309,9 +380,14 @@ impl FederationReview {
         } else {
             format!(", uncovered: {}", self.uncovered.join(", "))
         };
+        let contradicted = if self.contradictions.is_empty() {
+            String::new()
+        } else {
+            format!(", {} contradiction(s)", self.contradictions.len())
+        };
         format!(
             "; federation of {} model(s) arbitrated {} proposition(s) ({}), resolved {}, \
-             abandoned {}, {} silent{uncovered}",
+             abandoned {}, {} silent{uncovered}{contradicted}",
             self.population.len(),
             self.arbitrations.len(),
             if decisions.is_empty() {
@@ -1355,6 +1431,7 @@ impl FederationStage {
             .collect();
         let journal_base = self.federation.journal_base();
         let events = self.federation.drain_journal();
+        let contradictions = contradictions_in(&arbitrations);
         FederationReview {
             cycle: inputs.cycle,
             at: now,
@@ -1371,6 +1448,7 @@ impl FederationStage {
             events,
             information_requests,
             request_spreads_bp,
+            contradictions,
         }
     }
 
@@ -1608,6 +1686,13 @@ pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<FederationRevi
                     a.proposition, review.cycle
                 )));
             }
+        }
+        if review.contradictions != contradictions_in(&review.arbitrations) {
+            return Err(qip_core::error::Error::invalid(format!(
+                "the journaled contradictions of cycle {} are not the ones its own recorded \
+                 views contain; the record is not trusted as a replay",
+                review.cycle
+            )));
         }
         reviews.push(review);
     }
@@ -2246,5 +2331,57 @@ mod tests {
         assert!(stage.federation().journal().is_empty());
         let second = stage.run(&inputs(2, 101.0, day(1), None), day(1));
         assert_eq!(second.journal_base, first.events.len());
+    }
+
+    /// R12-WORLD-1181: a contradiction is two views on opposite sides of even
+    /// odds, each past the margin; a wide spread on one side, or two views
+    /// near indifference, is not one. Mutation: drop the `most_against`
+    /// condition in `contradictions_in` -- the one-sided spread is then
+    /// named a contradiction.
+    #[test]
+    fn only_views_on_opposite_sides_past_the_margin_are_a_contradiction() {
+        use qip_world_model::federation::{Arbitration, Disagreement, ViewLineage};
+        let view = |model: &str, probability: f64| ScoredView {
+            model: model.to_string(),
+            probability,
+            evidence_fit: 0.5,
+            predictive_performance: Some(0.5),
+            causal_coherence: 0.5,
+            uncertainty: 0.3,
+            composite: Some(0.5),
+            lineage: ViewLineage {
+                depth: 0,
+                parents: Vec::new(),
+                trigger: None,
+            },
+        };
+        let arbitration = |proposition: &str, views: Vec<ScoredView>| Arbitration {
+            proposition: proposition.into(),
+            at: day(0),
+            decision: Decision::Branch,
+            reason: "test".into(),
+            disagreement: Disagreement { views, spread: 0.0 },
+            arbitrated_probability: None,
+            expired: Vec::new(),
+            research: None,
+        };
+        let found = contradictions_in(&[
+            arbitration("one-sided", vec![view("a", 0.65), view("b", 0.95)]),
+            arbitration("indifferent", vec![view("a", 0.55), view("b", 0.45)]),
+            arbitration(
+                "opposed",
+                vec![view("c", 0.15), view("a", 0.85), view("b", 0.7)],
+            ),
+        ]);
+        assert_eq!(
+            found,
+            vec![ViewContradiction {
+                proposition: "opposed".into(),
+                for_model: "a".into(),
+                for_probability: 0.85,
+                against_model: "c".into(),
+                against_probability: 0.15,
+            }]
+        );
     }
 }

@@ -572,6 +572,75 @@ fn no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_regi
     }
 }
 
+/// R12-GCP-10014: a Private Service Connect endpoint reaches Google APIs and
+/// sits on no trading hot path. The only PSC forwarding rule is the
+/// connectivity module's, whose target is a Google API bundle by validation;
+/// a forwarding rule in the execution node's module, or any service
+/// attachment, would be a PSC hop a venue order could cross.
+///
+/// Mutation: add a `google_compute_forwarding_rule` to
+/// `modules/execution-node/main.tf`, or point the connectivity rule's target
+/// at a service attachment. The scan names it.
+#[test]
+fn the_only_private_service_connect_endpoint_reaches_google_apis_and_none_fronts_the_execution_node()
+ {
+    let all = resources();
+    let psc: Vec<&Resource> = all
+        .iter()
+        .filter(|r| {
+            r.kind == "google_compute_global_address" && r.body.contains("PRIVATE_SERVICE_CONNECT")
+        })
+        .collect();
+    assert!(
+        psc.iter()
+            .any(|r| r.file.contains("modules/connectivity/") && r.name == "google_apis"),
+        "premise: the connectivity module declares the Google APIs PSC address; the walk is \
+         not reaching it"
+    );
+    // Every PSC address is either the Google APIs endpoint or edge-mesh's
+    // cross-region cell address. The latter is consumed by no forwarding
+    // rule anywhere (checked below), so it carries nothing; a rule that
+    // consumed it would be a PSC hop between cells.
+    for address in &psc {
+        assert!(
+            (address.file.contains("modules/connectivity/") && address.name == "google_apis")
+                || (address.file.contains("modules/edge-mesh/")
+                    && address.name == "cell_psc_endpoint"),
+            "{} declares a PSC address nobody argued for",
+            address.at()
+        );
+    }
+    for resource in &all {
+        assert!(
+            resource.kind != "google_compute_service_attachment",
+            "{} publishes a service through PSC; a producer endpoint is how a venue would come \
+             to sit behind a PSC hop",
+            resource.at()
+        );
+        if resource.kind.contains("forwarding_rule") {
+            assert!(
+                !resource.file.contains("modules/execution-node/"),
+                "{} puts a forwarding rule on the execution node, the trading hot path",
+                resource.at()
+            );
+            if resource
+                .body
+                .contains("google_compute_global_address.google_apis")
+            {
+                assert!(
+                    resource.body.lines().any(|line| {
+                        let line = line.trim();
+                        line.starts_with("target ")
+                            && line.ends_with("= var.private_service_connect_target")
+                    }),
+                    "{} is the PSC endpoint and no longer targets the validated Google API bundle",
+                    resource.at()
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn every_backend_bucket_is_served_through_cloud_cdn_with_an_explicit_cache_mode_and_no_backend_service_is()
  {

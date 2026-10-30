@@ -48,6 +48,12 @@ pub enum Origin {
     ModelDrift,
     /// A hosted model refusing or garbling its replies past a stated rate.
     ModelErrorRate,
+    /// Two sources asserting different values for one claim key, unresolved
+    /// in the world fabric.
+    ContestedEvidence,
+    /// A subject whose evidence is contested and into which the causal graph
+    /// holds no live claim that would say which side is right.
+    MissingCausalLink,
 }
 
 impl Origin {
@@ -64,6 +70,8 @@ impl Origin {
             Self::PersistentDiscrepancy => "detector:persistent_discrepancy",
             Self::ModelDrift => "detector:model_drift",
             Self::ModelErrorRate => "detector:model_error_rate",
+            Self::ContestedEvidence => "detector:contested_evidence",
+            Self::MissingCausalLink => "detector:missing_causal_link",
         }
     }
 }
@@ -533,6 +541,125 @@ pub fn contradictions(readings: &[Reading]) -> Vec<Observation> {
                 // A two-way split of equal size is the strongest
                 // contradiction there is and scores one.
                 2.0 * minority / total,
+            )
+        })
+        .collect()
+}
+
+/// One claim key the world fabric holds an unresolved contest on, as the
+/// kernel reads it out (`Platform::contested_claims`): the subject the
+/// claims are about, the attribute they disagree on, each value with the
+/// claim ids asserting it, and the knowledge deltas that recorded the
+/// conflict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContestedKey {
+    pub subject: String,
+    pub attribute: String,
+    /// Each competing value and the claims asserting it; two or more.
+    pub hypotheses: BTreeMap<String, BTreeSet<String>>,
+    /// Journaled knowledge-delta ids naming this conflict (R12-EXPAND-6039).
+    pub deltas: Vec<String>,
+}
+
+/// Claim keys two or more sources assert different values for, unresolved
+/// (§22's "contradictory evidence", R12-EXPAND-6011). What is wanting is a
+/// source that would settle it, so the class is data — distinct from
+/// [`missing_causal_links`], which says the platform has no link that would
+/// explain which side is right. Severity is twice the smallest value's share
+/// of the asserting claims, as [`contradictions`] scores a split of
+/// detectors: two values evenly split score one, a single dissenter against
+/// nine scores 0.2, and three values evenly split score two thirds, because
+/// the smallest camp is then a third of the claims. A key with fewer than
+/// two values is not a contest and raises nothing.
+pub fn contested_evidence(contested: &[ContestedKey]) -> Vec<Observation> {
+    contested
+        .iter()
+        .filter(|key| key.hypotheses.len() >= 2)
+        .map(|key| {
+            let counts: Vec<usize> = key.hypotheses.values().map(BTreeSet::len).collect();
+            let total: usize = counts.iter().sum();
+            let minority = counts.iter().copied().min().unwrap_or(0);
+            let mut evidence: Vec<String> = key
+                .hypotheses
+                .iter()
+                .flat_map(|(value, claims)| {
+                    claims
+                        .iter()
+                        .map(move |claim| format!("claim:{claim}={value}"))
+                })
+                .collect();
+            evidence.extend(key.deltas.iter().map(|delta| format!("delta:{delta}")));
+            observe(
+                Origin::ContestedEvidence,
+                GapTrigger::Contradiction,
+                Wanting::Source,
+                format!(
+                    "`{}`'s `{}` is asserted as {} by {} claims with no resolution",
+                    key.subject,
+                    key.attribute,
+                    key.hypotheses
+                        .keys()
+                        .map(|v| format!("`{v}`"))
+                        .collect::<Vec<_>>()
+                        .join(" and "),
+                    total
+                ),
+                "evidence",
+                evidence,
+                // `total >= 2` and `minority >= 1` here, so the share is in
+                // (0, 0.5] and the doubled share in (0, 1].
+                2.0 * minority as f64 / total as f64,
+            )
+        })
+        .collect()
+}
+
+/// Subjects whose evidence is contested and that `explained` does not name:
+/// the causal graph holds no live claim into them, so nothing the platform
+/// believes could say which of the disagreeing sources is right
+/// (R12-EXPAND-6011, ADR 0151 d12 as amended). One observation per subject,
+/// however many of its keys are contested; severity is the subject's share
+/// of every contested key, so a subject carrying all of the disagreement
+/// scores one and one of ten equally contested subjects scores 0.1.
+///
+/// `explained` is the kernel's reading of the causal graph by the same
+/// subject id the fabric keys claims on (`Platform::causally_explained`),
+/// not a guessed map from causal variables to instruments — the map the ADR
+/// refused to build.
+pub fn missing_causal_links(
+    contested: &[ContestedKey],
+    explained: &BTreeSet<String>,
+) -> Vec<Observation> {
+    let total = contested.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut by_subject: BTreeMap<&str, Vec<&ContestedKey>> = BTreeMap::new();
+    for key in contested {
+        by_subject
+            .entry(key.subject.as_str())
+            .or_default()
+            .push(key);
+    }
+    by_subject
+        .into_iter()
+        .filter(|(subject, _)| !explained.contains(*subject))
+        .map(|(subject, keys)| {
+            let evidence: Vec<String> = keys
+                .iter()
+                .map(|key| format!("contested:{}/{}", key.subject, key.attribute))
+                .collect();
+            observe(
+                Origin::MissingCausalLink,
+                GapTrigger::Contradiction,
+                Wanting::CausalLink,
+                format!(
+                    "`{subject}` has {} contested claim key(s) and no live causal claim into it",
+                    keys.len()
+                ),
+                "market",
+                evidence,
+                keys.len() as f64 / total as f64,
             )
         })
         .collect()

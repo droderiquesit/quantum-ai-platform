@@ -101,7 +101,7 @@ mod tests {
             passed: true,
         });
         let mut registry = ModelRegistry::new();
-        registry.register(card);
+        registry.register(card)?;
         let published = registry.promote_artifact(&artifact, now)?;
         Ok((published, artifact.digest))
     }
