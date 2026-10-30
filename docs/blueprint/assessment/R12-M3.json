@@ -52,12 +52,15 @@
   {
     "id": "R12-REASON-3003",
     "status": "PARTIAL",
-    "current": "qip-deepbrain campaign.rs runs a TTL-scoped learning campaign from the deep brain binary.",
+    "current": "Every learning round of the deep brain runs a bounded research campaign on the shipped default path: EvolutionEngine::maybe_learn (built by main.rs through EvolutionEngine::over_synthetic for the synthetic arm and EvolutionEngine::new for a replay or feed; learning cadence every_cycles 8 by default, no env var) calls campaign::assemble, which resolves the licensing door, fetches the window into a TTL-bounded FetchCampaign cache (CacheBound: CAMPAIGN_TTL, CAMPAIGN_CACHE_ENTRIES), verifies the extent against the ledger and the cache, sketches the result with its declared bound, reads the window back out of the cache, closes the campaign (FetchCampaign::close consumes the cache and returns only the manifest) and journals ResearchCampaignClosed under its own topic. LearningDesk::learn_window then fits on that window and scores the fit out of sample on its held-out tail against the classical baseline (holdout_fraction 0.25; the holdout rmse, r2 and row count ride the registered card, journaled by journal_model_registry). The backtest the campaign runs is that out-of-sample evaluation of a forecaster, not a trade-level P&L backtest; purged cross-validation runs on the strategy turn (maybe_turn, PurgedSplit), which does not go through a campaign. The requirement text asks for bounded campaigns (fetch, verify, backtest, emit results/manifest); a goal-scoped research plan is REASON-3061 (SweepPlanRecord).",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/campaign.rs:1-12 bounded TTL fetch campaign",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:379-416 campaign gating at the learning round"
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs assemble: door -> FetchCampaign::open/fetch -> ledger record -> sketch -> cache read-back -> close -> Platform::journal_campaign",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs maybe_learn calls campaign::assemble on the learning cadence; main.rs builds the engine on every arm",
+      "backend/crates/services/qip-data-finder/src/campaign.rs FetchCampaign::close(self) -> CampaignManifest: the cache is dropped, the manifest persists",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs a_learning_round_emits_a_campaign_manifest_and_deletes_its_ttl_cache",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs a_window_is_assembled_through_a_campaign_whose_manifest_is_journaled"
     ],
-    "gap": "Campaigns are learning-assembly fetch/backtest only; no goal-driven research-campaign planner launching campaigns from open questions.",
+    "gap": "2026-10-25 (lane L2b, two independent read-only skeptics, both REFUTED): the requirement word \"backtest\" means a strategy-level backtest in the blueprint source that defines this arrow (docs/architecture/algorik-blueprint-v10.1-source.md:1956-1958, \"backtest and purged CV over the cache\"; every other use of the word in that source and in qip-simulation-engine/src/backtest.rs is trade P&L), and the campaign path (campaign::assemble, called only from maybe_learn) feeds a forecaster fit scored on a holdout tail; the strategy turn (maybe_turn, PurgedSplit, holdout gate) backtests but does not fetch its window through a campaign. Closing it: route maybe_turn's window through campaign::assemble (or run qip_simulation_engine's Backtester over the assembled window in maybe_learn) and assert the backtest result beside the manifest. Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -65,10 +68,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-deepbrain campaign",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_learning_round_emits_a_campaign_manifest_and_deletes_its_ttl_cache",
     "work_item": "",
-    "size": "L",
-    "notes": "Tested flag based on campaign tests inside the deepbrain crate; not re-run here."
+    "size": "S",
+    "notes": "Tested flag based on campaign tests inside the deepbrain crate; not re-run here. 2026-10-25 lane L2b (wave580): the row restated the requirement as a goal-driven planner, which its text does not ask for (bar part 4); re-graded against the text. New test a_learning_round_emits_a_campaign_manifest_and_deletes_its_ttl_cache drives the production engine through a learning round and asserts the manifest is on the log with its fetch entry and sketched result, and that the persisted record carries no cache and is a fraction of the window it describes. Mutation fired: replacing platform.journal_campaign(closed, now)? in campaign::assemble with true -> \"assertion left == right failed: one campaign closed, one manifest journaled, left: 0, right: 1\"; restored byte for byte, test result: ok. 1 passed. Skeptic round 1 (code-reviewer, read-only, default REFUTED): REFUTED on the backtest clause: learn_window scores a holdout tail, no trades, no purged CV, and the test did not assert the result. Answered: the test now asserts the registered card names this campaign and carries the holdout evaluation (holdout_observations >= 1, holdout_rmse present, passed matches the registration), and the row text no longer claims purged CV. Whether an out-of-sample holdout evaluation satisfies \"backtest\" is the open reading; the row records it as the forecaster sense. Skeptic round 2 (code-reviewer, read-only): REFUTED on the reading of \"backtest\" (bar part 4; citations in the gap). Row stays PARTIAL; the new test and the corrected current text are kept because they prove the fetch/verify/manifest/cache half on the default path."
   },
   {
     "id": "R12-AGENCY-3004",
@@ -1284,13 +1287,16 @@
   {
     "id": "R12-REASON-3057",
     "status": "PARTIAL",
-    "current": "The kernel loads a versioned rule pack (v2) and evaluates it per hypothesis; replay re-evaluates and refuses a non-reproducing verdict. Besides eligibility and the paper-boundary/kill-switch invariants, v2 carries a market-structure fact (lot_headroom: the position budget left after buying one lot at the last price, from the instrument's lot and multiplier and the tightest MaxPositionWeight) and an accounting fact (cash_headroom: cash left after one lot), each gating r10-eligible, with rules r60/r61 naming the breach and invariant i30 forbidding eligibility on negative cash.",
+    "current": "The kernel loads a versioned rule pack (v3 since 2026-10-25) and evaluates it per hypothesis in REASON; replay re-evaluates and refuses a non-reproducing verdict or a record written under another pack version. The pack holds eligibility (r10), the paper-boundary and kill-switch invariants (i10, i20), market structure (lot_headroom, r60), accounting (cash_headroom, r61, i30) and, from v3, contracts: contract_expiry_margin_days, the floored whole days from the claim's deadline (formed_at + horizon) to the subject's expiry, read in reason_symbolically from the future's or option's extension that Platform::new takes off the universe at assembly (contract_expiries, beside lot_units); r70-contract-expires-before-horizon names the breach, gates r10-eligible, and invariant i40 forbids eligibility past expiry. An undated subject carries no margin and the rule does not fire. Deterministic and cited: every verdict names the pack, its version and the rule trace, and verify reproduces it from the journaled inputs.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs rule_pack (v2: r60, r61, i30), rule_inputs",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs rule_pack (v3: r70, i40 beside r60/r61/i30), rule_inputs (expiry_margin_days), SymbolicInput::contract_expiry_margin_days",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::new contract_expiries from Extension::Future|Option; reason_symbolically computes the margin",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs a_hypothesis_whose_contract_expires_before_its_horizon_is_ruled_against_and_replays",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs a_hypothesis_on_a_future_that_expires_before_its_horizon_is_ruled_against_on_the_cycle",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs a_hypothesis_whose_smallest_lot_breaks_the_budget_or_the_cash_is_ruled_against_and_replays",
-      "backend/crates/runtime/qip-kernel/src/platform.rs lot_headrooms, called from reason_symbolically"
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces"
     ],
-    "gap": "Tick-grid and contract-specification rules (expiry, deliverability, multiplier) are not in the pack: the tape the platform holds is f64-derived, so an on-tick rule would rule against every synthetic price, and a contract rule needs the derivative extension's expiry carried into SymbolicInput. Accounting is one invariant (no negative cash after the smallest lot), not a double-entry check.",
+    "gap": "2026-10-25 (lane L2b; independent read-only skeptic REFUTED on bar part 2): the contract rule is on the cycle but its input is not on any shipped path — Platform::new reads contract_expiries from the assembly universe only, qip-api's catalogue loader refuses every derivative (qip-financial catalogue.rs:322-327, \"a derivative is registered through ingestion, not the reference catalogue\"), data/datasets/universe.json holds common stock only, the deep brain's reference universe builds only Extension::Bond, and no ingestion record registers an instrument into the kernel's maps after assembly; so on every committed default path the subject is undated and r70 cannot fire. Closing it: a shipped universe (or an ingestion registration seam that also writes lot_units, derivative_types and contract_expiries) carrying a dated contract, then the cycle test re-run against that path. The same assembly-only source feeds lot_headroom, so the v2 market-structure rule fires only for instruments the assembly universe lists, which today it does. Tick-grid and double-entry remain out by design; deliverability is on the extension and not yet a rule.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1298,10 +1304,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --lib symbolic_stage && cargo test -p qip-kernel --test symbolic_federation",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib symbolic_stage && cargo +1.94.1 test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Pack bumped to v2, so a record written under v1 is refused at replay (verify names the pack version). Mutation fired: dropping the two headroom conditions from r10-eligible -> the lot case stays eligible and the unit test fails."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Pack bumped to v2, so a record written under v1 is refused at replay (verify names the pack version). Mutation fired: dropping the two headroom conditions from r10-eligible -> the lot case stays eligible and the unit test fails. 2026-10-25 lane L2b (wave580): pack bumped to v3 with the contract rule, so a v2 record is refused at replay (verify names the version). Mutations fired: (1) dropping the expiry_margin_days condition from r10-eligible -> the expiring case derives eligible, i40 refuses the pack and the unit test fails on `derived()` being None (symbolic_stage.rs:1277); (2) dropping that condition and i40 -> `assertion left != right failed, left: Some(Bool(true)) right: Some(Bool(true))` on eligible; (3) mapping a future to no expiry in Platform::new -> the cycle test fails with \"the future's expiry did not reach the pack\" and inputs holding lot/cash headroom but no margin. Each restored byte for byte (cmp) and re-run ok. The cycle fixture's hypothesis is rejected at confidence 0.20 for its own reasons, so the eligibility assertion there is carried by the r70 fact and the negative margin, not by eligible alone. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED on part 2 as the gap records; holds on citation/version (verify refuses a v2 record, symbolic_stage.rs verify), on the shipped cycle calling reason_symbolically, on the mutations' reasons, and on the floored-day arithmetic (expiry at or after the deadline instant reads 0 and eligible; the boundary is the deadline instant plus 24h, not a calendar day). Row stays PARTIAL; v3 pack, seam and both tests are kept."
   },
   {
     "id": "R12-REASON-3058",

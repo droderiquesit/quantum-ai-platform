@@ -67,6 +67,7 @@ fn main() {
         "storage" => storage_command().map(|()| OK),
         "registrations" => registrations_command(&arguments[1..]),
         "replay" => replay_command(&arguments[1..]),
+        "simulate" => simulate_command(&arguments[1..]).map(|()| OK),
         "blueprint" => blueprint_command(&arguments[1..]),
         // R12-GCP-9120: infra.yml runs this on the saved plan before `up`.
         "change-window" => qip_cli::change_window::run(&arguments[1..], SystemClock.now()),
@@ -145,6 +146,11 @@ fn print_help() {
     println!("                    eligibility, registration and fabric registries from");
     println!("                    it alone, against the platform this configuration");
     println!("                    assembles");
+    println!("  simulate --set <path> [--shard k/n]");
+    println!("                    replay a recorded tick set with its orders and plans");
+    println!("                    against rebuilt books (queue, latency, fees, impact);");
+    println!("                    --shard replays only the instruments whose stable hash");
+    println!("                    lands in shard k of n, so n jobs together replay the set");
     println!("  blueprint render|check [--root <path>]");
     println!("                    render the blueprint registers from their JSON sources,");
     println!("                    or exit 3 if a committed view is stale");
@@ -637,6 +643,53 @@ fn replay_command(arguments: &[String]) -> Result<u8> {
         println!("{line}");
     }
     Ok(verdict.code)
+}
+
+/// `qip simulate --set <path> [--shard k/n]`.
+///
+/// Without `--shard` the whole set replays as shard 1/1; that is the
+/// documented default, not a value corrected from a bad one. A malformed
+/// shard is refused by [`qip_cli::simulate::Shard::parse`].
+fn simulate_command(arguments: &[String]) -> Result<()> {
+    let mut set = None;
+    let mut shard = None;
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        let slot = match argument.as_str() {
+            "--set" => &mut set,
+            "--shard" => &mut shard,
+            other => {
+                return Err(Error::invalid(format!(
+                    "unexpected argument {other}; usage: qip simulate --set <path> [--shard k/n]"
+                )));
+            }
+        };
+        let value = rest
+            .next()
+            .ok_or_else(|| Error::invalid(format!("{argument} needs a value after it")))?;
+        if slot.replace(value.clone()).is_some() {
+            return Err(Error::invalid(format!(
+                "{argument} was given twice; which one is meant is not something this command \
+                 will guess"
+            )));
+        }
+    }
+    let Some(set) = set else {
+        return Err(Error::invalid(
+            "`qip simulate` needs --set <path>, the recorded tick set to replay. There is no \
+             default: a default would replay history the operator did not choose",
+        ));
+    };
+    let shard = match shard {
+        None => qip_cli::simulate::Shard::WHOLE,
+        Some(text) => qip_cli::simulate::Shard::parse(&text)?,
+    };
+    let set = qip_cli::simulate::ReplaySet::read(&PathBuf::from(set))?;
+    let shard_run = qip_cli::simulate::run(&set, shard)?;
+    for line in qip_cli::simulate::lines(&shard_run) {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -12,6 +12,12 @@ repository.workspace = true
 # could be handed it and run coordination on the decision thread again, which
 # is what this crate was cut out of `qip-edge-node` to stop.
 [dependencies]
+# No `qip-arbitrage` here, though origination prices the measured peer round
+# trip the way the desk's net-edge calculator does (R12-MESH-5069): that
+# crate reaches the durable fabric through the contracts it shares, and the
+# mesh and the fabric share no crate in either direction
+# (qip-acceptance `architecture.rs`, R12-COVERAGE-7194). The one formula
+# both use lives in `qip_core::exposure`.
 qip-core.workspace = true
 qip-peer.workspace = true
 # ADR 0112: the peer mesh is mutual TLS. `qip_tls` loads the workload

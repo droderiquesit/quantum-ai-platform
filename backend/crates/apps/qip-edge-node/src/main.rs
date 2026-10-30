@@ -1084,6 +1084,7 @@ fn run() -> Result<()> {
     let mut sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
         config.storage.blobs(LAKE_NAMESPACE)?,
         &config.cell_id,
+        &config.region,
         retention,
         lake_codec,
     )?)];

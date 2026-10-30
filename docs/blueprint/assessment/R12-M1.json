@@ -1725,12 +1725,18 @@
   {
     "id": "R12-MESH-1073",
     "status": "PARTIAL",
-    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Reservations use ReservationBook, not the cell's RegionTable.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Reservations use ReservationBook, not the cell's RegionTable. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
       "backend/crates/services/qip-mesh/src/peer.rs:1148 ReservationBook",
-      "backend/crates/services/qip-capital/src/reservation.rs:100 ReservationLedger"
+      "backend/crates/services/qip-capital/src/reservation.rs:100 ReservationLedger",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Default-on peer link; reservation against cell capital.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1738,19 +1744,25 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test downward_signed_path; cargo test -p qip-mesh",
+    "verification": "cargo test -p qip-acceptance --test downward_signed_path; cargo test -p qip-mesh; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-MESH-1074",
     "status": "PARTIAL",
-    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs:180 OpportunityEpoch"
+      "backend/crates/services/qip-mesh/src/peer.rs:180 OpportunityEpoch",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Default-on peer link.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1758,21 +1770,27 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test downward_signed_path; cargo test -p qip-mesh",
+    "verification": "cargo test -p qip-acceptance --test downward_signed_path; cargo test -p qip-mesh; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-MESH-1075",
     "status": "PARTIAL",
-    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Edge-state exchange region to region exists only when configured.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Edge-state exchange region to region exists only when configured. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/mesh.rs:317 exchange",
       "backend/crates/apps/qip-edge-node/src/cross_region.rs:129 CrossRegionMirror",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:5772 ingest_cell_report"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:5772 ingest_cell_report",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Default-on peer link.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1780,10 +1798,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test downward_signed_path; cargo test -p qip-mesh",
+    "verification": "cargo test -p qip-acceptance --test downward_signed_path; cargo test -p qip-mesh; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-QUANT-1076",
@@ -3545,9 +3563,10 @@
     "current": "Licensing posture before use, manifests, revision detection, manipulation risk and hash-chained log exist; corroboration/contradiction not integrated.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:784",
-      "backend/crates/runtime/qip-kernel/tests/references.rs:169"
+      "backend/crates/runtime/qip-kernel/tests/references.rs:169",
+      "backend/crates/tests/qip-acceptance/tests/evidence_trust_scope.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Every scope item has code (source identity and provenance on EvidenceRecord; licensing via per-poll admission; freshness and manipulation in the DataFinder; corroboration, contradiction and confidence in the qip-evidence fabric; the hash-chained event log as audit trail), but no inspection artefact or test maps each item to a root and a named test. On default paths only the audit trail and the per-cycle poisoning scan run, and the scan reads an empty fabric because no environment configures a connector; freshness and manipulation run only via the DiscoveryDesk, off everywhere. Needs connector and discovery tfvar flips plus the owner's egress decision, and code for the inspection mapping.",
+    "gap": "2026-10-25: skeptic REFUTED and deploy dependence: tests/evidence_trust_scope.rs checks names and the Cargo closure, not execution from main, and five of nine items (identity, provenance, licensing via connector arms; freshness, manipulation via the discovery desk) run only on paths every committed tfvars leaves off (deepbrain_connector, deepbrain_discover_every); remaining step is those paths on a default path plus a test that drives them from a composition root, or an owner restatement.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3558,7 +3577,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Corroboration and contradiction are integrated: Platform::absorb_evidence runs in all three roots, tested in qip-kernel tests/evidence_intake.rs."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Corroboration and contradiction are integrated: Platform::absorb_evidence runs in all three roots, tested in qip-kernel tests/evidence_intake.rs. 2026-10-25: f2dae5e3 adds a nine-item table test naming a symbol, a reaching production file and a proving test per scope item. Skeptic (security-engineer) REFUTED as above."
   },
   {
     "id": "R12-WORLD-1155",
@@ -3806,12 +3825,18 @@
   {
     "id": "R12-MESH-1166",
     "status": "PARTIAL",
-    "current": "Protocol types in qip-mesh; multi-leg execution in qip-execution-engine multileg; no transport, no clock sync.",
+    "current": "Protocol types in qip-mesh; multi-leg execution in qip-execution-engine multileg; no transport, no clock sync. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
       "backend/crates/services/qip-mesh/src/peer.rs:180",
-      "backend/crates/services/qip-execution-engine/src/multileg.rs"
+      "backend/crates/services/qip-execution-engine/src/multileg.rs",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3819,10 +3844,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item",
+    "verification": "inspection + crate tests per scope item; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-MESH-1167",
@@ -4595,9 +4620,10 @@
       "backend/crates/libs/qip-storage/src/lake.rs:191 Manifest",
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::the_lake_alone_rebuilds_the_book_the_venue_published",
       "backend/crates/apps/qip-edge-node/tests/lake_clock.rs::reading_the_lake_back_returns_each_ticks_disciplined_clock",
-      "backend/crates/libs/qip-storage/src/lake_history.rs RecordedTick::clock / RecordedClock"
+      "backend/crates/libs/qip-storage/src/lake_history.rs RecordedTick::clock / RecordedClock",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs the_book_rebuilt_from_the_lake_equals_the_book_the_cell_reconstructed_from_the_bytes"
     ],
-    "gap": "2026-10-24 (skeptic-refuted promotion, then partly addressed): on the edge node's default path the feed's applied ticks are disciplined and sealed by LakeSink; decision_loop::the_lake_alone_rebuilds_the_book_the_venue_published reads them back through qip_storage::lake_history and replays them with qip_orderbook::replay to the simulated venue's own depth, and since the same day lake_history::decode_line carries the clock block into RecordedTick::clock, which lake_clock.rs::reading_the_lake_back_returns_each_ticks_disciplined_clock checks against hand-worked figures. Remaining: (1) the rebuilt book is compared with the venue's depth, not with the book the cell itself reconstructed from the frame (Cell exposes no book or book digest), so a fault in Cell::on_bytes decoding is invisible to the proof; (2) the lake holds MarketEvents captured from the publisher's structured lines, not events derived from the bytes the cell decoded (drain.rs: 'The sink holds decoded events, not the venue's wire bytes'), so 'captured bytes produce ... lake segments' holds only loosely; (3) 'replay branching from it' has no consumer on a default path: the only production lake reader is qip-deepbrain tick_desk, off unless QIP_DEEPBRAIN_TICK_EVERY is set, which no committed environment sets; live features branching from the lake are not shown. (1)-(2) are code (a cell book digest accessor and a byte-derived capture); (3) needs a deployment change or an owner restatement.",
+    "gap": "2026-10-25: skeptic REFUTED: the book rebuilt from the lake equals Cell::book_digest (85b0d971), but the lake seals publisher messages, not the events the cell normalized, so no test proves replay reproduces normalized events field for field, and capture runs only behind the gated feed into a memory store; remaining step is sealing (or comparing) the cell-normalized events on a default or committed-enabled capture path.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4608,6 +4634,6 @@
     "verification": "cargo test -p qip-edge-node --test decision_loop the_lake_alone; cargo test -p qip-edge-node --test lake_clock",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: A composition root writes market segments: qip-edge-node main.rs run() builds LakeSink::new(config.storage.blobs(LAKE_NAMESPACE)...) and drain.rs LakeSink::deliver seals every MARKET_EVENT_APPLIED tick with a disciplined clock block. The binary's default store is memory; the committed execution-node template sets QIP_STORAGE_TARGET=engine and QIP_VENUE_FEED=simulated, but no node is provisioned. 2026-10-24 lane L3-DATA: write-read-replay test added (1f35c346). Mutations fired, restored by cp + cmp: LakeSink::deliver skipping even-sequenced ticks ('only 37 of 73 ticks reached the lake', bounded by PATIENCE); feed capturing each level one above the published price (bids rebuilt from the lake differ); decode_line returning clock: None (read-back test left None, right Some(..)). Independent skeptic (code-reviewer) verdict REFUTED: read-back dropped the clock (since fixed), replay compared against venue not cell books, lake not byte-derived, replay consumer off by default. Kept PARTIAL."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: A composition root writes market segments: qip-edge-node main.rs run() builds LakeSink::new(config.storage.blobs(LAKE_NAMESPACE)...) and drain.rs LakeSink::deliver seals every MARKET_EVENT_APPLIED tick with a disciplined clock block. The binary's default store is memory; the committed execution-node template sets QIP_STORAGE_TARGET=engine and QIP_VENUE_FEED=simulated, but no node is provisioned. 2026-10-24 lane L3-DATA: write-read-replay test added (1f35c346). Mutations fired, restored by cp + cmp: LakeSink::deliver skipping even-sequenced ticks ('only 37 of 73 ticks reached the lake', bounded by PATIENCE); feed capturing each level one above the published price (bids rebuilt from the lake differ); decode_line returning clock: None (read-back test left None, right Some(..)). Independent skeptic (code-reviewer) verdict REFUTED: read-back dropped the clock (since fixed), replay compared against venue not cell books, lake not byte-derived, replay consumer off by default. Kept PARTIAL. 2026-10-25: 85b0d971 adds Cell::book_digest and the book-equality test (decoder mutation). Skeptic (code-reviewer) REFUTED as above."
   }
 ]
