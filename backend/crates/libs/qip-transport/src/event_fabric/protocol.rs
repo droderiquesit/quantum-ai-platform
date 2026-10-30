@@ -464,6 +464,22 @@ pub struct ProduceAck {
     high_watermark: u64,
     archived_through: u64,
     managed_commit_epoch: Option<u64>,
+    credit: Option<ProducerCredit>,
+}
+
+/// The credit window a broker grants a producer with each acknowledgement
+/// (R12-FABRIC-8089): how many payload bytes this producer may still send to
+/// the stream before the window refills, and when it refills. Flow control
+/// at the producer, before the wire: a producer holding a credit smaller
+/// than its next batch waits for the refill instead of sending a batch the
+/// broker will refuse, so an over-quota producer costs the broker nothing
+/// and its own wait is the broker's number, not a guess.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProducerCredit {
+    /// Payload bytes the producer may still send in the current window.
+    pub bytes: u64,
+    /// Milliseconds until the window refills to the stream's byte quota.
+    pub refills_in_ms: u64,
 }
 
 impl ProduceAck {
@@ -482,7 +498,23 @@ impl ProduceAck {
             high_watermark,
             archived_through,
             managed_commit_epoch: None,
+            credit: None,
         })
+    }
+
+    /// The credit window the broker grants with this acknowledgement
+    /// (R12-FABRIC-8089): what the producer may still send before the
+    /// window refills, and when it refills.
+    pub fn with_credit(mut self, credit: ProducerCredit) -> Self {
+        self.credit = Some(credit);
+        self
+    }
+
+    /// The credit window granted with this acknowledgement, or `None` from a
+    /// broker that grants none — an older build, whose producers then flow
+    /// as they did before the window: refused on the wire when over quota.
+    pub fn credit(&self) -> Option<ProducerCredit> {
+        self.credit
     }
 
     /// Mark this acknowledgement as given after the managed consensus
@@ -529,6 +561,8 @@ struct ProduceAckWire {
     archived_through: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     managed_commit_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credit: Option<ProducerCredit>,
 }
 
 impl From<ProduceAck> for ProduceAckWire {
@@ -540,6 +574,7 @@ impl From<ProduceAck> for ProduceAckWire {
             high_watermark: value.high_watermark,
             archived_through: value.archived_through,
             managed_commit_epoch: value.managed_commit_epoch,
+            credit: value.credit,
         }
     }
 }
@@ -555,8 +590,12 @@ impl TryFrom<ProduceAckWire> for ProduceAck {
             wire.high_watermark,
             wire.archived_through,
         )?;
-        Ok(match wire.managed_commit_epoch {
+        let ack = match wire.managed_commit_epoch {
             Some(epoch) => ack.with_managed_commit(epoch),
+            None => ack,
+        };
+        Ok(match wire.credit {
+            Some(credit) => ack.with_credit(credit),
             None => ack,
         })
     }

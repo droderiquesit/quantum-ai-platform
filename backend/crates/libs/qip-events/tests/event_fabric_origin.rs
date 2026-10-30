@@ -2,7 +2,10 @@
 //! producing region, partition and authenticated principal travel in the
 //! batch, stamped by the broker, and the producing component's kind by the
 //! writer — so a consumer reads them off the wire instead of supplying its
-//! own. Until this the ledger stamped every envelope "central".
+//! own. Until this the ledger stamped every envelope "central". The
+//! partition is stamped on every append (`stamp_broker_partition`, or the
+//! origin's own copy); the region and principal are the origin, written when
+//! a session authenticated.
 //!
 //! Every test encodes to wire bytes and decodes before reading, because the
 //! in-memory struct a test just built proves nothing about the codec.
@@ -16,7 +19,7 @@ use qip_events::event_fabric::bindings;
 use qip_events::event_fabric::codec::{
     Batch, BrokerOrigin, DecodeOutcome, FORMAT_VERSION, FORMAT_VERSION_WITHOUT_ORIGIN,
     LogicalTimestamp, MessageType, PayloadCodec, Provenance, Record, stamp_broker,
-    stamp_broker_origin, stamp_drain,
+    stamp_broker_origin, stamp_broker_partition, stamp_drain,
 };
 use qip_events::event_fabric::envelope::{FabricContext, FabricEnvelope};
 use qip_events::event_fabric::policy::{BATCH_SCHEMA_VERSION, QosClass};
@@ -63,6 +66,7 @@ fn batch() -> Batch {
         },
         None,
     );
+    stamp_broker_partition(&mut batch, 3);
     batch
 }
 
@@ -107,32 +111,78 @@ fn consumer() -> FabricContext {
     }
 }
 
-/// Mutation: drop the origin or provenance from `Batch::encode` (or from
-/// the decode) and the round trip loses the field.
+/// Mutation: drop the origin, the partition or the provenance from
+/// `Batch::encode` (or from the decode) and the round trip loses the field;
+/// drop the principal from the origin's encoding and `back.origin` reads a
+/// different principal or fails to decode.
 #[test]
 fn a_stamped_batch_round_trips_its_region_partition_principal_and_provenance() {
     let bytes = wire(&stamped());
     assert_eq!(version_of(&bytes), FORMAT_VERSION);
     let back = decoded(&bytes);
     assert_eq!(back, stamped());
+    assert_eq!(back.partition, Some(3));
     assert_eq!(back.origin, Some(Box::new(origin())));
     assert_eq!(back.provenance, Some(Provenance::EdgeNode));
 }
 
-/// A batch carrying neither field keeps version 1's exact bytes, so every
-/// batch written before ADR 0129 — and every chain hash over one — is
-/// unchanged; it decodes with both explicitly absent, never defaulted.
+/// A batch carrying none of the three fields keeps version 1's exact bytes,
+/// so every batch written before ADR 0129 — and every chain hash over one —
+/// is unchanged; it decodes with all three explicitly absent, never
+/// defaulted. Such a batch is one a broker on the old build appended: it
+/// carries the broker's offset and epoch and no partition, which is what
+/// `old()` models by clearing the one field the new stamp added.
 #[test]
 fn a_batch_without_the_fields_keeps_version_ones_bytes_and_decodes_them_as_absent() {
-    let bytes = wire(&batch());
+    let bytes = wire(&old());
     assert_eq!(version_of(&bytes), FORMAT_VERSION_WITHOUT_ORIGIN);
     let back = decoded(&bytes);
+    assert_eq!(back.partition, None);
     assert_eq!(back.origin, None);
     assert_eq!(back.provenance, None);
     assert_eq!(
         wire(&back),
         bytes,
         "re-encoding an old batch moved its bytes"
+    );
+}
+
+/// A batch as a broker appended it before format version 2: every
+/// broker-owned field set except the partition, which did not exist.
+fn old() -> Batch {
+    let mut old = batch();
+    old.partition = None;
+    old
+}
+
+/// R12-FABRIC-8084: the partition is stamped on every broker append, so a
+/// batch produced in-process — no session, no principal, no origin — still
+/// says which partition it was appended to, and a reader of it as another
+/// partition is refused exactly as a reader of a session's batch is.
+///
+/// Mutation: make `origin_facts` check the partition only inside the
+/// `Some(origin)` arm and the in-process batch opens as partition 4.
+#[test]
+fn an_in_process_batch_carries_its_partition_without_an_origin_and_is_refused_as_another() {
+    let bytes = wire(&batch());
+    assert_eq!(version_of(&bytes), FORMAT_VERSION);
+    let back = decoded(&bytes);
+    assert_eq!(back.partition, Some(3), "premise: the broker stamped it");
+    assert_eq!(back.origin, None, "premise: no session, so no origin");
+
+    // The producer's own preflight names its region, so an unstamped origin
+    // is allowed; the stamped partition still binds the read.
+    let mut producer = consumer();
+    producer.region = Some("europe-west2".to_string());
+    let envelope = FabricEnvelope::open(&back, 0, &producer, &bindings::ALL).unwrap();
+    assert_eq!(envelope.partition(), 3);
+
+    producer.partition = 4;
+    let refusal = FabricEnvelope::open(&back, 0, &producer, &bindings::ALL)
+        .expect_err("a batch appended to partition 3 was read as partition 4");
+    assert!(
+        refusal.message().contains("appended to partition 3"),
+        "{refusal:?}"
     );
 }
 
@@ -188,6 +238,11 @@ fn a_consumer_fabricated_region_a_wrong_partition_and_an_unstamped_batch_are_ref
     assert!(FabricEnvelope::open(&batch, 0, &elsewhere, &bindings::ALL).is_err());
 
     let unstamped = decoded(&wire(&batch_with_provenance_only()));
+    assert_eq!(
+        unstamped.partition,
+        Some(3),
+        "premise: only the origin is missing"
+    );
     let refusal = FabricEnvelope::open(&unstamped, 0, &consumer(), &bindings::ALL)
         .expect_err("an unstamped batch was given a region by its reader");
     assert!(
@@ -208,7 +263,8 @@ fn an_unknown_provenance_byte_is_refused() {
     let mut bytes = good.clone();
     // Header: prefix (14) | message type, flags, encoding (3) | schema id,
     // version (8) | producer id (4 + len) | epochs, sequences, offsets (32) |
-    // HLC (12) | previous hash tag (1) | provenance (1).
+    // HLC (12) | previous hash tag (1) | provenance (1) | origin tag (1,
+    // partition-only) and partition (4) | record count (4).
     let producer_len = "cell-a".len();
     let at = 14 + 3 + 8 + 4 + producer_len + 32 + 12 + 1;
     assert_eq!(bytes[at], 2, "premise: this is the desk's provenance byte");
@@ -216,7 +272,7 @@ fn an_unknown_provenance_byte_is_refused() {
     // Re-seal the batch CRC — over the header through the record count,
     // stored in the four bytes after it — so the provenance check is the
     // one that refuses, not the CRC.
-    let header_end = at + 1 + 1 + 4;
+    let header_end = at + 1 + 1 + 4 + 4;
     let crc = qip_events::event_fabric::crc32c::crc32c(&bytes[14..header_end]);
     bytes[header_end..header_end + 4].copy_from_slice(&crc.to_le_bytes());
     let refusal = Batch::decode(&bytes).expect_err("an unknown provenance decoded");

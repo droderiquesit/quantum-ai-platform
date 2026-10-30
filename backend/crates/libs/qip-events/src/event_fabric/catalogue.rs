@@ -121,12 +121,101 @@ pub struct Grant {
     pub key_scope: KeyScope,
 }
 
-/// A catalogue document as committed: streams and their policies, and the
-/// grants issued against them.
+/// Which way a spine frame travels (ADR 0128 decision 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameDirection {
+    /// Centre to cell: signed control.
+    Down,
+    /// Cell to centre: state.
+    Up,
+}
+
+impl FrameDirection {
+    fn parse(raw: &str, frame: &str) -> Result<Self> {
+        match raw {
+            "down" => Ok(Self::Down),
+            "up" => Ok(Self::Up),
+            other => Err(Error::invalid(format!(
+                "spine frame '{frame}' declares unknown direction '{other}'; it is 'down' or 'up'"
+            ))),
+        }
+    }
+}
+
+/// What authenticates a spine frame at the receiver, beyond the mutual-TLS
+/// session every frame travels in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameSigning {
+    /// The capital envelope's own signature, verified by the cell.
+    EnvelopeSignature,
+    /// The policy payload's signature over its signed bytes.
+    PayloadSignature,
+    /// The halt command's MAC over its signing payload.
+    CommandMac,
+    /// The session alone: the frame carries no signature of its own.
+    Session,
+}
+
+impl FrameSigning {
+    fn parse(raw: &str, frame: &str) -> Result<Self> {
+        match raw {
+            "envelope_signature" => Ok(Self::EnvelopeSignature),
+            "payload_signature" => Ok(Self::PayloadSignature),
+            "command_mac" => Ok(Self::CommandMac),
+            "session" => Ok(Self::Session),
+            other => Err(Error::invalid(format!(
+                "spine frame '{frame}' declares unknown signing class '{other}'"
+            ))),
+        }
+    }
+}
+
+/// How a spine frame survives the link being down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameDurability {
+    /// Spooled at the sender and delivered in order: an instruction that
+    /// must arrive, and arrive after the one before it.
+    DurableOrdered,
+    /// The next frame supersedes this one: state, where the latest is what
+    /// matters and a missed one is replaced rather than replayed.
+    Superseding,
+}
+
+impl FrameDurability {
+    fn parse(raw: &str, frame: &str) -> Result<Self> {
+        match raw {
+            "durable_ordered" => Ok(Self::DurableOrdered),
+            "superseding" => Ok(Self::Superseding),
+            other => Err(Error::invalid(format!(
+                "spine frame '{frame}' declares unknown durability '{other}'"
+            ))),
+        }
+    }
+}
+
+/// One frame the mesh spine carries, catalogued beside the fabric's streams
+/// (ADR 0128 decision 5, R12-FABRIC-10077): so "every internal asynchronous
+/// contract" has one place a person reads, the control half included. The
+/// spine's frame types live in `qip-mesh`, which this crate may not name;
+/// `qip-acceptance` holds the two to each other.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpineFrame {
+    /// The frame type's name in `qip_mesh::spine`, or the delta's body type.
+    pub name: String,
+    /// The topic the frame travels under.
+    pub topic: Topic,
+    pub direction: FrameDirection,
+    pub signing: FrameSigning,
+    pub durability: FrameDurability,
+}
+
+/// A catalogue document as committed: streams and their policies, the
+/// grants issued against them, and the spine's frames beside them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Catalogue {
     streams: BTreeMap<String, StreamDeclaration>,
     grants: Vec<Grant>,
+    spine_frames: Vec<SpineFrame>,
 }
 
 #[derive(Deserialize)]
@@ -134,6 +223,17 @@ struct RawCatalogue {
     streams: Vec<RawStream>,
     #[serde(default)]
     grants: Vec<RawGrant>,
+    #[serde(default)]
+    spine_frames: Vec<RawSpineFrame>,
+}
+
+#[derive(Deserialize)]
+struct RawSpineFrame {
+    name: String,
+    topic: String,
+    direction: String,
+    signing: String,
+    durability: String,
 }
 
 /// The catalogue's wire shape for one stream. Every field beside `name` and
@@ -268,7 +368,44 @@ impl Catalogue {
         for raw_grant in raw.grants {
             grants.push(Self::grant_from_raw(raw_grant, &streams)?);
         }
-        Ok(Self { streams, grants })
+        let mut spine_frames: Vec<SpineFrame> = Vec::with_capacity(raw.spine_frames.len());
+        for raw_frame in raw.spine_frames {
+            let frame = Self::spine_frame_from_raw(raw_frame)?;
+            if spine_frames.iter().any(|known| known.name == frame.name) {
+                return Err(Error::invalid(format!(
+                    "spine frame '{}' is catalogued twice",
+                    frame.name
+                )));
+            }
+            spine_frames.push(frame);
+        }
+        Ok(Self {
+            streams,
+            grants,
+            spine_frames,
+        })
+    }
+
+    fn spine_frame_from_raw(raw: RawSpineFrame) -> Result<SpineFrame> {
+        let name = raw.name.trim().to_string();
+        if name.is_empty() {
+            return Err(Error::invalid(
+                "a spine frame entry names no frame type".to_string(),
+            ));
+        }
+        let topic = Topic::from_name(&raw.topic).ok_or_else(|| {
+            Error::invalid(format!(
+                "spine frame '{name}' names unknown topic '{}'",
+                raw.topic
+            ))
+        })?;
+        Ok(SpineFrame {
+            direction: FrameDirection::parse(&raw.direction, &name)?,
+            signing: FrameSigning::parse(&raw.signing, &name)?,
+            durability: FrameDurability::parse(&raw.durability, &name)?,
+            name,
+            topic,
+        })
     }
 
     fn declaration_from_raw(raw: RawStream) -> Result<StreamDeclaration> {
@@ -441,5 +578,11 @@ impl Catalogue {
 
     pub fn grants(&self) -> &[Grant] {
         &self.grants
+    }
+
+    /// The mesh spine's frames, catalogued beside the streams (ADR 0128
+    /// decision 5). Empty for a catalogue that lists none.
+    pub fn spine_frames(&self) -> &[SpineFrame] {
+        &self.spine_frames
     }
 }

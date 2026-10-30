@@ -52,12 +52,13 @@ use qip_core::error::{Error, Result};
 use qip_events::{EventBody, Topic};
 use qip_market_ingestion::connector::evidence::CheckedEvidence;
 use qip_observability::metrics::labels;
+use qip_world_model::causal::CausalEdge;
 use qip_world_model::fabric::{ClaimKey, JournaledClaim, KeyOutcome};
 pub use qip_world_model::poisoning::{
     PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Claims a connector forwarded into the world fabric, by `outcome`:
 /// `admitted`, `contested` (admitted and opened or joined a contest),
@@ -137,6 +138,36 @@ struct AdmittedClaim<'a> {
     versions: (u64, u64),
 }
 
+/// The one spelling of a claim key a knowledge delta asserts under, written
+/// by the producer and read back by [`Platform::contested_claims`]: a reader
+/// that re-derived the key from the contest would join a delta to a contest
+/// only while the two spellings happened to agree.
+pub fn delta_key(key: &ClaimKey) -> String {
+    format!(
+        "{}/{}@{}",
+        key.subject,
+        key.attribute,
+        key.instant.as_nanos()
+    )
+}
+
+/// One claim key the world fabric holds two or more unresolved values for,
+/// as the deep brain's sweep reads it (R12-EXPAND-6011, ADR 0151 d12): the
+/// key, each value with the claims asserting it, and the knowledge deltas
+/// whose `conflicts` recorded the disagreement (R12-EXPAND-6039). Bounded by
+/// the fabric's capacity, which bounds the contests it can hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContestedClaim {
+    pub key: ClaimKey,
+    /// The key as the deltas assert it: [`delta_key`] of `key`.
+    pub asserted_as: String,
+    /// Each competing value and the claim ids asserting it.
+    pub hypotheses: BTreeMap<String, BTreeSet<String>>,
+    /// Ids of the journaled knowledge deltas that named this key's conflict,
+    /// in log order; empty when the log retains none.
+    pub deltas: Vec<String>,
+}
+
 /// Build the contract delta for one admitted claim, or say why the claim
 /// cannot be one. A claim whose weight is outside `[0, 1]` is refused rather
 /// than clamped into a confidence nobody computed.
@@ -155,12 +186,7 @@ fn knowledge_delta_for(claim: &AdmittedClaim<'_>, now: Timestamp) -> Result<Know
         base_version: claim.versions.0,
         new_version: claim.versions.1,
         changes: vec![ChangeOp::Assert {
-            key: format!(
-                "{}/{}@{}",
-                claim.key.subject,
-                claim.key.attribute,
-                claim.key.instant.as_nanos()
-            ),
+            key: delta_key(claim.key),
             value: claim.value.to_string(),
         }],
         provenance: vec![claim.id.to_string(), format!("doc:{}", claim.document_hash)],
@@ -454,5 +480,101 @@ impl Platform {
     /// fabric was fed rather than read a clean scan of nothing.
     pub fn evidence_held(&self) -> usize {
         self.world.read().evidence().len()
+    }
+
+    /// Every knowledge delta the log retains under
+    /// [`KNOWLEDGE_DELTA_ORIGIN`], in log order (R12-EXPAND-6039). The
+    /// `world_model.updated` topic carries other records too (lattice
+    /// reviews, federation and NOW stages), so a frame is decoded only when
+    /// its idempotency key carries the delta prefix. A delta that does not
+    /// decode is an error, not a skipped record: a sweep that silently read
+    /// past one would report fewer conflicts than the kernel journaled.
+    pub fn knowledge_deltas(&self) -> Result<Vec<KnowledgeDeltaFields>> {
+        self.event_log()
+            .by_topic(Topic::WorldModelUpdated)
+            .into_iter()
+            .filter(|frame| {
+                frame
+                    .idempotency_key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with(KNOWLEDGE_DELTA_PREFIX))
+            })
+            .map(|frame| {
+                let envelope = qip_streaming::envelope::StreamEnvelope::from_frame(frame)?;
+                Ok(envelope.decode::<KnowledgeDeltaRecord>()?.body.delta)
+            })
+            .collect()
+    }
+
+    /// The claim keys the world fabric holds unresolved contests on, each
+    /// joined to the knowledge deltas that recorded a conflict under it
+    /// (R12-EXPAND-6011, R12-EXPAND-6039). The contests come from the fabric,
+    /// so a contest a later claim resolved is absent, and the list is bounded
+    /// by the fabric's capacity rather than by the log. The deltas are the
+    /// caller's reading of [`Self::knowledge_deltas`], handed in so one
+    /// decode serves both this join and the caller's own count.
+    pub fn contested_claims(&self, deltas: &[KnowledgeDeltaFields]) -> Vec<ContestedClaim> {
+        let mut conflicts_by_key: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        for delta in deltas.iter().filter(|d| !d.conflicts.is_empty()) {
+            for change in &delta.changes {
+                if let ChangeOp::Assert { key, .. } = change {
+                    conflicts_by_key
+                        .entry(key.as_str())
+                        .or_default()
+                        .push(delta.delta_id.clone());
+                }
+            }
+        }
+        self.world
+            .read()
+            .evidence()
+            .contests()
+            .iter()
+            .filter(|(_, contest)| contest.is_contested())
+            .map(|(key, contest)| {
+                let asserted_as = delta_key(key);
+                let deltas = conflicts_by_key
+                    .get(asserted_as.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                ContestedClaim {
+                    key: key.clone(),
+                    asserted_as,
+                    hypotheses: contest.hypotheses.clone(),
+                    deltas,
+                }
+            })
+            .collect()
+    }
+
+    /// Of `subjects`, those the causal graph holds at least one live claim
+    /// into as of `now` — the same `incoming` the federation's causal member
+    /// reads, keyed by the instrument id the evidence fabric keys claims on.
+    /// A contested subject absent from this set has disagreeing evidence and
+    /// no causal link that would say which side is right (R12-EXPAND-6011).
+    pub fn causally_explained<'a>(
+        &self,
+        subjects: impl IntoIterator<Item = &'a str>,
+        now: Timestamp,
+    ) -> BTreeSet<String> {
+        let world = self.world.read();
+        subjects
+            .into_iter()
+            .filter(|subject| !world.causal().incoming(subject, now).is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Admit one causal claim to the world model, on the world model's own
+    /// terms: `WorldModel::claim_causal` refuses a blank end and a quantum
+    /// result offered as proof, and records the edge in the world model's
+    /// own change journal, exactly as the cycle's re-estimation pass does
+    /// through the same method. The edge reaches no event-log record from
+    /// either caller, so this seam adds no second kind of unjournaled edge;
+    /// it exists so a test can hold a causal claim against a contest
+    /// without running a cycle, and it is not a knowledge-pack loader —
+    /// one of those would need an event-log record of its own first.
+    pub fn claim_causal(&mut self, edge: CausalEdge) -> Result<()> {
+        self.world.update(|world| world.claim_causal(edge))
     }
 }

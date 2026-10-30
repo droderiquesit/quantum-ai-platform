@@ -204,3 +204,45 @@ It would be revived by a named consumer decision for any one of them.
   because they change the sizing bound; any floor under the decision-3
   multiplier (R12-TICK-1002).
 - Nothing is PROTECTED or paper-boundary.
+
+## Amendment — 2026-10-25, the missing-link detector is built on the subject id, not a map
+
+Decision 12 withheld the missing-causal-link detector until "an
+operator-declared variable-to-subject map" existed, because
+`Platform::world().causal().edges()` names causal variables and the sweep's
+detectors key on subject ids. That premise was half right. The causal graph is
+keyed on instrument id at both ends, and the kernel already reads it that way:
+`Platform::causal_views` (`platform.rs`, located by symbol) calls
+`world.causal().incoming(subject, now)` with the same subject id the evidence
+fabric keys claims on. No map is needed to ask "does any live causal claim
+reach this subject"; the question the decision refused to guess at is the one
+the kernel was already answering for the federation's causal member.
+
+So the two detectors are built, with these terms (R12-EXPAND-6011):
+
+- **The bounded list of contested keys is the fabric's own.** Decision 12
+  said the kernel "retains a bounded list of contested `ClaimKey`s (bounded
+  by the evidence fabric's capacity)". It does, as `EvidenceFabric::contests`,
+  which the fabric keeps for its own resolution logic and which its capacity
+  bounds. `Platform::contested_claims` reads that map and returns the
+  unresolved entries; no second copy is kept on the intake report, because a
+  copy the report retained would need its own bound and its own eviction and
+  could disagree with the fabric about which contests are still open.
+- **`qip_expansion::detectors::contested_evidence`** raises one data-class gap
+  per unresolved contest, citing every asserting claim with its value and the
+  journaled knowledge deltas that recorded the conflict (R12-EXPAND-6039's
+  record, read back off `world_model.updated` by `Platform::knowledge_deltas`).
+  Severity is the minority's share of the asserting claims, the score
+  `contradictions` already gives a split of detectors.
+- **`qip_expansion::detectors::missing_causal_links`** raises one causal-class
+  gap per contested subject into which the graph holds no live claim at the
+  sweep's instant, taking that set from `Platform::causally_explained`, which
+  is `incoming(subject, now)` and nothing else. It is deliberately not a
+  detector over "subjects with no causal link" in general: a subject nothing
+  disagrees about and nothing explains is not a gap anybody measured.
+
+What stays as decided: coverage dimensions, the belief price level, and
+anything needing a measured source the platform does not have. The
+`contested_keys` field named under "Code it constrains" was never added and is
+superseded by the accessor above; the register row for R12-EXPAND-6011 is
+re-graded against this amendment.

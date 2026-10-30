@@ -100,6 +100,30 @@ impl EventBody for ModelRegistered {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// The origin a refused model registration is journaled under.
+pub const MODEL_REGISTRATION_REFUSED_ORIGIN: &str = "kernel/model-registration-refused";
+
+/// A model card the registry refused because it holds
+/// `qip_ai::registry::MAX_CARDS` cards (R12-MODEL-9003).
+///
+/// The cap refuses rather than evicts, and a refusal nobody can see is an
+/// eviction with better manners: learning stops for a subject and nothing
+/// says why. So each refusal is counted
+/// (`MODEL_PACKAGES{outcome="card_refused_at_cap"}`) and journaled here,
+/// naming what was refused: the card's reference when the card exists, or
+/// the subject whose next fit the deep brain declined to start.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelRegistrationRefused {
+    pub refused: String,
+    pub reason: String,
+    pub at: Timestamp,
+}
+
+impl EventBody for ModelRegistrationRefused {
+    const TOPIC: Topic = Topic::ModelEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 /// Whether two cards differ only in a drift reading that stays on the same
 /// side of the card's threshold. A reading that crosses it changes whether
 /// the model may inform a decision, so it is a record; one that does not is
@@ -358,6 +382,9 @@ pub struct ModelManifestIssue {
     /// Promoted distillates left out because their card's data licence does
     /// not permit the location the manifest was issued for (R12-TICK-2091).
     unlicensed: usize,
+    /// Promoted distillates left out because the release's rollout record
+    /// does not target the cell, or not now (ADR 0149 decision 4).
+    untargeted: usize,
 }
 
 impl ModelManifestIssue {
@@ -407,7 +434,7 @@ impl ModelManifestIssue {
                 self.unreleased
             )
         };
-        if self.unlicensed == 0 {
+        let line = if self.unlicensed == 0 {
             line
         } else {
             format!(
@@ -415,7 +442,22 @@ impl ModelManifestIssue {
                  does not permit this location",
                 self.unlicensed
             )
+        };
+        if self.untargeted == 0 {
+            line
+        } else {
+            format!(
+                "{line}; {} promoted distillate(s) withheld because the release's rollout record \
+                 does not target this cell now",
+                self.untargeted
+            )
         }
+    }
+
+    /// Distillates withheld because their announcement does not target the
+    /// cell the manifest was issued for.
+    pub fn untargeted(&self) -> usize {
+        self.untargeted
     }
 }
 
@@ -772,6 +814,47 @@ impl Platform {
                 labels([("outcome", "cards_unjournaled")]),
             );
         }
+    }
+
+    /// Count and journal a model registration the registry refused at its
+    /// cap (see [`ModelRegistrationRefused`]).
+    pub fn refuse_model_registration(
+        &mut self,
+        refused: &str,
+        reason: &str,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.telemetry.metrics.count(
+            names::MODEL_PACKAGES,
+            labels([("outcome", "card_refused_at_cap")]),
+        );
+        self.journal_record(
+            ModelRegistrationRefused {
+                refused: refused.to_string(),
+                reason: reason.to_string(),
+                at: now,
+            },
+            MODEL_REGISTRATION_REFUSED_ORIGIN,
+            now,
+        )
+    }
+
+    /// Every model registration the log records as refused at the cap, in log
+    /// order.
+    pub fn refused_model_registrations(&self) -> Result<Vec<ModelRegistrationRefused>> {
+        let mut refused = Vec::new();
+        for record in self.event_log().records() {
+            if record.event.topic == Topic::ModelEvaluated
+                && record.event.lineage.producer == MODEL_REGISTRATION_REFUSED_ORIGIN
+            {
+                refused.push(
+                    StreamEnvelope::from_frame(&record.event)?
+                        .decode::<ModelRegistrationRefused>()?
+                        .body,
+                );
+            }
+        }
+        Ok(refused)
     }
 
     /// Every registered card the log holds, the newest record per reference,
@@ -1269,6 +1352,23 @@ impl Platform {
     /// location the centre has not been told — withholds every restricted
     /// distillate: a licence that cannot be checked is not a licence granted.
     pub fn model_manifest_for(&self, location: Option<&str>) -> Result<ModelManifestIssue> {
+        self.model_manifest_targeted(location, None)
+    }
+
+    /// [`Self::model_manifest_for`], for one cell: `target` is the cell's
+    /// region, its node id and the instant the manifest is issued at. With
+    /// control-pack announcements admitted (ADR 0149 decision 4), a
+    /// distillate whose pack is announced is named only where its
+    /// announcement targets that region and node inside its window, and
+    /// withheld from every manifest issued with no target — a rollout record
+    /// can only narrow what a cell is told. A pack nobody announced is
+    /// unaffected.
+    pub fn model_manifest_targeted(
+        &self,
+        location: Option<&str>,
+        target: Option<(&str, &str, Timestamp)>,
+    ) -> Result<ModelManifestIssue> {
+        let mut untargeted = 0usize;
         let mut models = BTreeMap::new();
         let mut packs = BTreeMap::new();
         let mut produced_at: Option<Timestamp> = None;
@@ -1301,6 +1401,18 @@ impl Platform {
                 };
                 match released.get(&promotion.artifact_digest) {
                     Some(pack) if pack.inline_model.as_ref() == Some(&inline) => {
+                        let announced = self
+                            .control_announcements
+                            .as_ref()
+                            .and_then(|held| held.get(&promotion.artifact_digest));
+                        if let Some(announcement) = announced
+                            && !target.is_some_and(|(region, node, now)| {
+                                announcement.targets(region, node, now)
+                            })
+                        {
+                            untargeted += 1;
+                            continue;
+                        }
                         packs.insert(entry.name.clone(), pack.clone());
                     }
                     _ => {
@@ -1320,7 +1432,17 @@ impl Platform {
                 pack: self.model_pack.clone(),
                 unreleased,
                 unlicensed,
+                untargeted,
             }),
+            None if untargeted > 0 => Err(Error::denied(format!(
+                "{untargeted} promoted distillate(s) held and the release's rollout record \
+                 targets none of them at {} inside its window; the trained_models slot ships \
+                 unproduced for it",
+                target.map_or_else(
+                    || "a cell the manifest was not issued for".to_string(),
+                    |(region, node, _)| format!("node {node} in {region}")
+                )
+            ))),
             None if unlicensed > 0 && unreleased == 0 => Err(Error::denied(format!(
                 "{unlicensed} promoted distillate(s) held and the training-data licence of each \
                  refuses {}; the trained_models slot ships unproduced for it",

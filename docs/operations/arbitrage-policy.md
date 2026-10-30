@@ -37,7 +37,7 @@ the start size in the funding instrument.
   "strategy": "arb-desk",
   "funding_instrument": "USD",
   "venues": {
-    "XNYS": { "class": "Exchange", "taker_cost": "0.0005" }
+    "XNYS": { "class": "Exchange", "taker_cost": "0.0005", "simulated": true }
   },
   "markets": [
     { "venue": "XNYS", "market": "AAA-USD@XNYS", "base": "AAA", "quote": "USD" }
@@ -50,12 +50,19 @@ the start size in the funding instrument.
 |---|---|
 | `strategy` | The desk's strategy id — the name the edge node's installer is configured with. The grant is looked up by it; a grant for any other strategy funds no desk. |
 | `funding_instrument` | The instrument the grant is denominated in. Its start size is the grant's per-order limit, never a value here. |
-| `venues` | Every venue a market may name, keyed by venue id. `class` is one of `Exchange`, `DarkPool`, `Ecn`, `Derivatives`, `OverTheCounter`, `CryptoExchange`; `taker_cost` is a proportional cost in `[0, 1)`, written as a decimal string. |
+| `venues` | Every venue a market may name, keyed by venue id. `class` is one of `Exchange`, `DarkPool`, `Ecn`, `Derivatives`, `OverTheCounter`, `CryptoExchange`; `taker_cost` is a proportional cost in `[0, 1)`, written as a decimal string. `simulated` states that the venue is the platform's own simulator; it is `false` when absent, and a market at a venue not stated simulated must state its `costs` (ADR 0154 decision 3), because no costs is priced by the cell as a certain, free fill. |
 | `markets` | The books the desk may price, in the order its conversions will be listed. Each names its venue, the book's own instrument id, the `base` it is priced in units of and the `quote` it is priced against. Each book becomes two trade edges: buying the base out of the quote on the ask, selling it back on the bid. At most 128 markets. |
 | `start_sizes` | How much of each non-funding instrument a cycle may commit, in that instrument's units, as decimal strings. The centre holds no price to convert a grant into these, so they are stated. |
 
 Unknown fields are refused. Money and costs are decimal strings, never
 floating point.
+
+**A stated fill probability is a ceiling.** Once a venue has been sent 30
+orders, the centre lowers each stated `fill_probability` there to the 95 per
+cent lower bound of the share of those orders that filled at all, and never
+raises it (ADR 0154 decision 3). An order still resting counts as unfilled.
+The tally is held in memory, so a restart returns to the stated figures
+until 30 orders are seen again.
 
 Whether any cycle is taken is the cell's decision, made alone against its own
 books (ADR 0008). The policy names what may be priced; it is never an order,
@@ -75,6 +82,7 @@ and refuses, naming the entry, any of:
 * a market at a venue `venues` does not describe, or with an empty market,
   base or quote, or whose base equals its quote, or listed twice;
 * a venue no market names;
+* a market with no `costs` at a venue not stated `simulated`;
 * a funding instrument no market trades, or a start size for the funding
   instrument itself (the grant sizes it);
 * a start size that is not positive, for an instrument no market trades, or

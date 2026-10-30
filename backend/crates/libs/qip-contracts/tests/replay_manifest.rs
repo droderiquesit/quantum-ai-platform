@@ -226,3 +226,63 @@ fn a_blank_assumption_or_a_missing_model_version_is_refused_naming_what_is_missi
     let blank_version = BTreeMap::from([("fill".to_string(), String::new())]);
     assert!(ReplayManifest::with_assumptions(marker(), assumptions(), blank_version).is_err());
 }
+
+/// Mutation: put `#[serde(default)]` back on the wire form's `assumptions` —
+/// a manifest stripped of them reads back as one that never stated them.
+#[test]
+fn a_manifest_read_off_the_wire_missing_any_field_is_refused_and_a_complete_one_round_trips_every_field()
+-> Result<()> {
+    // The failure this prevents: until 2026-10-25 `assumptions` and
+    // `model_versions` were `#[serde(default)]`, so a manifest that lost them
+    // between brains was read back as one that had never stated them, and a
+    // replay "reproduced" a run under a fill model nobody could name.
+    let stated = ReplayManifest::with_assumptions(marker(), assumptions(), versions())?;
+    let whole: serde_json::Value = serde_json::to_value(&stated)?;
+
+    // Premise: the complete manifest round-trips, every field preserved.
+    let back: ReplayManifest = serde_json::from_value(whole.clone())?;
+    assert_eq!(back, stated);
+    assert_eq!(back.marker(), &marker());
+    assert_eq!(back.reproducibility_hash(), stated.reproducibility_hash());
+
+    let top = whole
+        .as_object()
+        .ok_or_else(|| qip_core::error::Error::invalid("a manifest encodes as an object"))?;
+    assert_eq!(top.len(), 4, "premise: four top-level fields: {top:?}");
+    for field in top.keys() {
+        let mut missing = whole.clone();
+        if let Some(object) = missing.as_object_mut() {
+            object.remove(field);
+        }
+        let refused = serde_json::from_value::<ReplayManifest>(missing);
+        assert!(refused.is_err(), "a manifest missing {field} was read back");
+    }
+    let marker_fields: Vec<String> = whole["marker"]
+        .as_object()
+        .map(|object| object.keys().cloned().collect())
+        .unwrap_or_default();
+    assert!(marker_fields.len() >= 13, "premise: {marker_fields:?}");
+    for field in &marker_fields {
+        let mut missing = whole.clone();
+        if let Some(object) = missing["marker"].as_object_mut() {
+            object.remove(field);
+        }
+        assert!(
+            serde_json::from_value::<ReplayManifest>(missing).is_err(),
+            "a manifest whose marker is missing {field} was read back"
+        );
+    }
+
+    // Present but empty is refused as `with_assumptions` refuses it.
+    let mut blank = whole.clone();
+    blank["assumptions"]["fill"] = serde_json::Value::String(String::new());
+    let refused = serde_json::from_value::<ReplayManifest>(blank)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(refused.contains("no fill assumption"), "{refused}");
+    let mut unversioned = whole;
+    unversioned["model_versions"] = serde_json::json!({});
+    assert!(serde_json::from_value::<ReplayManifest>(unversioned).is_err());
+    Ok(())
+}

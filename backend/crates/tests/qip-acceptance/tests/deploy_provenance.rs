@@ -549,3 +549,75 @@ esac
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_portal_build_id_follows_the_commit_epoch_deploy_passes_and_is_never_a_constant() {
+    // R12-CICD-10117. Next names `/_next/static/<id>/` and writes `BUILD_ID`
+    // from a random id unless `generateBuildId` is pinned, so two builds of
+    // one commit differed in 453 of 2,921 output files (measured
+    // 2026-10-25). deploy.yml already passes the commit's epoch as
+    // `SOURCE_DATE_EPOCH`. The id is useful only if the config reads it and
+    // the Dockerfile's build stage declares it, because an undeclared build
+    // arg never reaches `npm run build`. A constant id would also be
+    // reproducible, and wrong: every path is served `immutable` for a year,
+    // so a constant pins browsers to the first deploy's manifests.
+    let config = read("frontend/portal/next.config.ts");
+    let code: String = config
+        .lines()
+        .filter(|line| {
+            let line = line.trim_start();
+            !line.starts_with("//") && !line.starts_with('*') && !line.starts_with("/*")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let pinned = code
+        .split("generateBuildId:")
+        .nth(1)
+        .unwrap_or_else(|| panic!("frontend/portal/next.config.ts does not set generateBuildId"));
+    let body: String = pinned.chars().take(200).collect();
+    assert!(
+        body.contains("process.env.SOURCE_DATE_EPOCH"),
+        "the portal's generateBuildId does not read SOURCE_DATE_EPOCH, so its build id does not \
+         follow the commit: {body}"
+    );
+    assert!(
+        body.contains("${process.env.SOURCE_DATE_EPOCH}"),
+        "the portal's build id is not derived from SOURCE_DATE_EPOCH's value, so it is the same \
+         for every commit: {body}"
+    );
+
+    let dockerfile = read("infrastructure/docker/portal.Dockerfile");
+    let build_stage: Vec<&str> = dockerfile
+        .lines()
+        .skip_while(|line| !(line.starts_with("FROM ") && line.ends_with(" AS build")))
+        .skip(1)
+        .take_while(|line| !line.starts_with("FROM "))
+        .collect();
+    // Premise: the build stage was found and runs the build.
+    assert!(
+        build_stage
+            .iter()
+            .any(|line| line.trim() == "RUN npm run build"),
+        "premise: portal.Dockerfile's build stage was not read"
+    );
+    let declared = build_stage
+        .iter()
+        .position(|line| line.trim() == "ARG SOURCE_DATE_EPOCH");
+    let builds = build_stage
+        .iter()
+        .position(|line| line.trim() == "RUN npm run build");
+    assert!(
+        matches!((declared, builds), (Some(d), Some(b)) if d < b),
+        "portal.Dockerfile's build stage does not declare ARG SOURCE_DATE_EPOCH before \
+         `npm run build`, so deploy.yml's --build-arg never reaches next.config.ts"
+    );
+
+    // And deploy.yml does pass it on the portal's path, the custom-Dockerfile
+    // branch of the build step.
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        deploy.contains("recipe=(--build-arg \"SOURCE_DATE_EPOCH=${epoch}\")"),
+        "deploy.yml's build recipe no longer starts from SOURCE_DATE_EPOCH, so the portal's build \
+         id has nothing to follow"
+    );
+}

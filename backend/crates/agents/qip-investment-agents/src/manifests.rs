@@ -50,6 +50,8 @@ pub mod ids {
     pub const COMPLIANCE: &str = "compliance-control";
     pub const POISONING: &str = "poisoning-detector";
     pub const PORTFOLIO_ASSET: &str = "portfolio-asset-brain";
+    pub const SELF_EXPLOITATION: &str = "self-exploitation-probe";
+    pub const REGIME_BREAK: &str = "regime-break-probe";
 }
 
 /// Owning teams. Used by the governance rules to check independence, so these
@@ -167,6 +169,57 @@ pub fn portfolio_asset_brain(reviewed_at: Timestamp) -> AgentManifest {
     .with_limitations(vec![
         "reads the book as the kernel last wrote it; it forms no view on any instrument".into(),
         "states no horizon or hedge: those live in the kernel's position records".into(),
+    ])
+}
+
+/// R12-REASON-3023: the adversary that asks whether somebody is trading
+/// against the platform. Reads the platform's own executions, which no
+/// research agent may; publishes nothing; owned by independent review.
+pub fn self_exploitation_probe(reviewed_at: Timestamp) -> AgentManifest {
+    AgentManifest::research(
+        ids::SELF_EXPLOITATION,
+        "Self-Exploitation Probe",
+        "reads the platform's own fills for slippage that is systematically against it and for an order flow regular enough for a counterparty to learn",
+        reviewed_at,
+    )
+    .with_role(AgentRole::Adversarial)
+    .with_capabilities(
+        analyst_reads()
+            .with(Capability::ReadExecutionHistory)
+            .with(Capability::ChallengeHypothesis),
+    )
+    .with_owner(owners::REVIEW)
+    .escalating_to(ids::CHIEF)
+    .with_competencies(vec![
+        "adverse slippage concentrated on one side across many fills".into(),
+        "repeated (instrument, side, size) patterns in the platform's own flow".into(),
+    ])
+    .with_limitations(vec![
+        "sees only executions the kernel has fed the desk, bounded".into(),
+        "cannot name the counterparty; it names the pattern".into(),
+    ])
+}
+
+/// R12-REASON-3023: the adversary that asks whether the market the models
+/// were fitted on is still the market. Reads the tape only.
+pub fn regime_break_probe(reviewed_at: Timestamp) -> AgentManifest {
+    AgentManifest::research(
+        ids::REGIME_BREAK,
+        "Regime Break Probe",
+        "compares each instrument's recent return window against the prior one and flags a volatility or mean shift outside the prior window's band",
+        reviewed_at,
+    )
+    .with_role(AgentRole::Adversarial)
+    .with_capabilities(analyst_reads().with(Capability::ChallengeHypothesis))
+    .with_owner(owners::REVIEW)
+    .escalating_to(ids::CHIEF)
+    .with_competencies(vec![
+        "volatility ratio of the recent window to the prior".into(),
+        "mean shift of the recent window in prior-window standard errors".into(),
+    ])
+    .with_limitations(vec![
+        "needs forty bars per instrument; a thinner tape is reported as unscanned".into(),
+        "names a break in the tape, not its cause".into(),
     ])
 }
 
@@ -609,6 +662,8 @@ pub fn roster(reviewed_at: Timestamp) -> Roster {
         compliance_control(reviewed_at),
         poisoning_detector(reviewed_at),
         portfolio_asset_brain(reviewed_at),
+        self_exploitation_probe(reviewed_at),
+        regime_break_probe(reviewed_at),
     ])
 }
 

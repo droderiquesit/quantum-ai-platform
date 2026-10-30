@@ -299,7 +299,9 @@ fn an_artifact_whose_arity_disagrees_with_its_card_is_refused_before_anything_ch
         metrics: BTreeMap::new(),
         passed: true,
     });
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("a registry below its cap admits a card");
     assert!(
         InTreeProvider.serve(&artifact).is_ok(),
         "premise: the provider serves the artifact on its own terms"

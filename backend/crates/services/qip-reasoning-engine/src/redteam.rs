@@ -95,6 +95,9 @@ pub enum ChallengeKind {
     DataLicensing,
     /// Contradicting evidence exists and was not addressed.
     UnaddressedContradiction,
+    /// The only support is research that proposes rather than measures, a
+    /// quantum exploration result (R12-QUANT-4042).
+    ResearchOnlySupport,
 }
 
 impl ChallengeKind {
@@ -112,6 +115,7 @@ impl ChallengeKind {
             Self::StaleEvidence => "stale_evidence",
             Self::DataLicensing => "data_licensing",
             Self::UnaddressedContradiction => "unaddressed_contradiction",
+            Self::ResearchOnlySupport => "research_only_support",
         }
     }
 }
@@ -366,6 +370,27 @@ impl RedTeam {
                 Severity::Fatal,
                 "every supporting item is an unattributed report".to_string(),
                 "obtain attributable evidence before this can be acted on",
+                &mut challenges,
+            );
+        }
+
+        // Exploration is research, never validation (R12-QUANT-4042, §11): a
+        // quantum search proposes where to look and measures nothing, so a
+        // thesis whose every supporting item is such a result has no empirical
+        // support at all, however confident it reads.
+        let supporting = hypothesis.evidence.with_stance(Stance::Supports);
+        let exploration_only = !supporting.is_empty()
+            && supporting
+                .iter()
+                .all(|e| e.kind == EvidenceKind::QuantumExploration);
+        if exploration_only {
+            raise(
+                ChallengeKind::ResearchOnlySupport,
+                Severity::Fatal,
+                "every supporting item is a quantum exploration result, which is research and \
+                 not empirical validation"
+                    .to_string(),
+                "test the explored hypothesis against observed data before this can be acted on",
                 &mut challenges,
             );
         }

@@ -48,17 +48,27 @@ pub enum Scope {
     /// The held book: its exposure, the positions held with no mandate and
     /// the ones being divested (R12-ASSET-3019).
     PortfolioAsset,
+    /// Strategies that exploit the platform itself: fills systematically
+    /// worse than arrival, a flow regular enough to be learned
+    /// (R12-REASON-3023).
+    SelfExploitation,
+    /// A break in an instrument's return regime: the recent window's
+    /// volatility or mean has left the band the prior window set
+    /// (R12-REASON-3023).
+    RegimeBreak,
 }
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 6] = [
+    pub const ALL: [Scope; 8] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
         Scope::StressScenario,
         Scope::RiskRecommendation,
         Scope::PortfolioAsset,
+        Scope::SelfExploitation,
+        Scope::RegimeBreak,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -69,6 +79,8 @@ impl Scope {
             Self::StressScenario => "stress_scenario",
             Self::RiskRecommendation => "risk_recommendation",
             Self::PortfolioAsset => "portfolio_asset",
+            Self::SelfExploitation => "self_exploitation",
+            Self::RegimeBreak => "regime_break",
         }
     }
 
@@ -90,6 +102,8 @@ impl Scope {
                 "positions_flagged_without_mandate",
                 "positions_unwinding",
             ],
+            Self::SelfExploitation => &["self_exploitation_findings"],
+            Self::RegimeBreak => &["regime_break_findings"],
         }
     }
 

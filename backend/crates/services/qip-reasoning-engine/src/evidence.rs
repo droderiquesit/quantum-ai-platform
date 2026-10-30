@@ -52,6 +52,11 @@ pub enum EvidenceKind {
     ThirdPartyResearch,
     /// An unattributed report.
     Rumour,
+    /// A candidate a quantum-assisted search of a hypothesis space returned
+    /// (R12-QUANT-4042, §11). Research only: the search proposes where to
+    /// look and measures nothing about the world, so it is never empirical
+    /// validation. A hypothesis resting on it alone is refused in review.
+    QuantumExploration,
 }
 
 impl EvidenceKind {
@@ -66,6 +71,7 @@ impl EvidenceKind {
             Self::AlternativeData => "alternative_data",
             Self::ThirdPartyResearch => "third_party_research",
             Self::Rumour => "rumour",
+            Self::QuantumExploration => "quantum_exploration",
         }
     }
 
@@ -82,6 +88,10 @@ impl EvidenceKind {
             Self::News => 0.70,
             Self::ThirdPartyResearch => 0.60,
             Self::Rumour => 0.25,
+            // No higher than a rumour: an exploration result says a region of
+            // the hypothesis space is worth testing, not that anything in it
+            // is true.
+            Self::QuantumExploration => 0.25,
         }
     }
 

@@ -5,8 +5,8 @@ use crate::graph::{FeatureGraph, FeatureId};
 use crate::state::{MarketReads, MarketState};
 use qip_contracts::{FeatureKey, FeatureValue, FeatureVector, MarketMessage, Revision};
 use qip_core::error::{Error, Result};
-use qip_core::{Duration, Timestamp};
-use std::collections::BTreeMap;
+use qip_core::{Duration, ObjectId, Timestamp};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What the engine remembers about one node between passes.
 #[derive(Clone, Copy, Debug)]
@@ -53,6 +53,14 @@ pub struct FeatureEngine {
     evaluations: u64,
     /// Reused dependency buffer: the hot path allocates nothing per node.
     scratch: Vec<FeatureValue>,
+    /// Instruments whose market state is known to be unreliable — a book
+    /// discarded for a sequence gap or a cross and not yet rebuilt — and the
+    /// instant that became known. Every feature reading one, directly or
+    /// through a dependency, is quarantined: it evaluates to `Undefined` in
+    /// every vector until [`Self::lift_quarantine`]. Bounded by the
+    /// instruments the owner tracks, because only the owner's discard path
+    /// adds an entry and its rebuild path removes it.
+    quarantined: BTreeMap<String, Timestamp>,
 }
 
 impl Default for FeatureEngine {
@@ -75,6 +83,7 @@ impl FeatureEngine {
             computations: 0,
             evaluations: 0,
             scratch: Vec::new(),
+            quarantined: BTreeMap::new(),
         }
     }
 
@@ -182,12 +191,107 @@ impl FeatureEngine {
             }
         }
 
+        // A quarantined node is still computed — its slot keeps whatever the
+        // unreliable state yields, so the revision history stays the
+        // engine's — but no vector carries that value out. A strategy
+        // reading it sees `Undefined` and raises nothing, which is the
+        // runtime's existing refusal for an input it cannot trust.
+        let quarantined = self.quarantine_mask();
         let mut vector = FeatureVector::new(as_of);
         for &id in self.graph.order() {
             let slot = self.slots[id];
-            vector.insert(self.graph.node(id).key.clone(), slot.value, slot.revision);
+            let value = if quarantined[id] {
+                FeatureValue::Undefined
+            } else {
+                slot.value
+            };
+            vector.insert(self.graph.node(id).key.clone(), value, slot.revision);
         }
         Ok(vector)
+    }
+
+    /// Quarantine every feature of `subject`, and every feature computed
+    /// from one, from `since` until [`Self::lift_quarantine`].
+    ///
+    /// The failure this prevents: a book discarded for an abandoned sequence
+    /// gap goes on receiving increments, so the engine's own copy of it is
+    /// rebuilt piecemeal — a bid here, an ask there — and a mid computed
+    /// from that partial book reads as healthy. A crossed book was worse:
+    /// the owner discarded its own copy and never told the engine, which
+    /// kept the cross and served features from it. Such a value reached
+    /// strategies as if it were a price, and a signal raised on it is a
+    /// label a model later learns from.
+    ///
+    /// Idempotent: a second discard before the rebuild keeps the first
+    /// instant, because the unreliable span began then, not later.
+    pub fn quarantine(&mut self, subject: &ObjectId, since: Timestamp) {
+        self.quarantined
+            .entry(subject.as_str().to_string())
+            .or_insert(since);
+    }
+
+    /// End `subject`'s quarantine, returning when it began, or `None` if it
+    /// was not quarantined.
+    ///
+    /// Only the owner's rebuild path calls this, after it has reset the
+    /// instrument's state here and replayed the rebuilt book into it — so
+    /// no series that resumes afterwards reaches back across the
+    /// unreliable span.
+    pub fn lift_quarantine(&mut self, subject: &ObjectId) -> Option<Timestamp> {
+        let since = self.quarantined.remove(subject.as_str());
+        if since.is_some()
+            && let Some(nodes) = self.by_subject.get(subject.as_str())
+        {
+            for &id in nodes {
+                self.graph.mark_transitively(id, &mut self.dirty);
+            }
+        }
+        since
+    }
+
+    /// When `subject`'s quarantine began, if it is quarantined.
+    pub fn quarantined_since(&self, subject: &ObjectId) -> Option<Timestamp> {
+        self.quarantined.get(subject.as_str()).copied()
+    }
+
+    /// Whether `key` is quarantined: it reads a quarantined instrument
+    /// directly or through any dependency. An unregistered key is not.
+    pub fn is_quarantined(&self, key: &FeatureKey) -> bool {
+        let Some(id) = self.graph.id_of(key) else {
+            return false;
+        };
+        self.quarantine_mask()[id.index()]
+    }
+
+    /// Every registered feature currently quarantined, in key order so a
+    /// report built from it replays identically.
+    pub fn quarantined_features(&self) -> BTreeSet<String> {
+        let mask = self.quarantine_mask();
+        self.graph
+            .order()
+            .iter()
+            .filter(|&&id| mask[id])
+            .map(|&id| self.graph.node(id).key.canonical())
+            .collect()
+    }
+
+    /// One flag per node: quarantined itself, or computed from one that is.
+    /// Walked in topological order, so a dependency is decided before
+    /// anything that reads it.
+    fn quarantine_mask(&self) -> Vec<bool> {
+        let mut mask = vec![false; self.graph.len()];
+        if self.quarantined.is_empty() {
+            return mask;
+        }
+        for &id in self.graph.order() {
+            let node = self.graph.node(id);
+            mask[id] = node
+                .subjects
+                .iter()
+                .any(|subject| self.quarantined.contains_key(subject))
+                || node.dependencies.iter().any(|&dependency| mask[dependency]);
+        }
+        mask
     }
 
     /// Dirty everything that reads an instrument which has just crossed the
@@ -245,9 +349,14 @@ impl FeatureEngine {
             .is_some_and(|id| self.dirty[id.index()])
     }
 
-    /// The value held for a feature, without evaluating.
+    /// The value held for a feature, without evaluating — `Undefined` while
+    /// the feature is quarantined, for the reason [`Self::quarantine`] gives.
     pub fn value(&self, key: &FeatureKey) -> Option<FeatureValue> {
-        self.graph.id_of(key).map(|id| self.slots[id.index()].value)
+        let id = self.graph.id_of(key)?;
+        if self.quarantine_mask()[id.index()] {
+            return Some(FeatureValue::Undefined);
+        }
+        Some(self.slots[id.index()].value)
     }
 
     /// The revision held for a feature, without evaluating.

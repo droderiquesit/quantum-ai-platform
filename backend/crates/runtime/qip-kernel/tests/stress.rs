@@ -95,10 +95,16 @@ fn platform() -> Result<Platform> {
 /// variance, every beta is refused, and a test built on that would assert the
 /// refusal path while claiming to assert the model.
 fn bars(symbol: &str, count: i64, phase: f64) -> Vec<Bar> {
+    bars_with_noise(symbol, count, phase, 0.02)
+}
+
+/// [`bars`] with the noise's full width given: `0.02` is `bars`' own tape,
+/// and a wider one is a more volatile name with the same shape.
+fn bars_with_noise(symbol: &str, count: i64, phase: f64, width: f64) -> Vec<Bar> {
     let mut price = 100.0_f64;
     (0..count)
         .map(|i| {
-            let noise = ((i as f64 * 0.7548776662 + phase) % 1.0 - 0.5) * 0.02;
+            let noise = ((i as f64 * 0.7548776662 + phase) % 1.0 - 0.5) * width;
             let open = price;
             price *= 1.0 + noise;
             let at = start().saturating_sub(Duration::from_days(count - i));
@@ -1114,6 +1120,90 @@ fn a_unanimously_approved_thesis_is_still_narrowed_by_confidence_and_vetoed_by_r
     assert!(
         breaches_shortfall(&state(&tail)),
         "a book with a sixteen percent left tail was not vetoed on expected shortfall"
+    );
+    Ok(())
+}
+
+/// R12-RISK-4116, pending the owner: on the shipped default, the generated
+/// joint tail world is computed every cycle and reported with the reserve it
+/// would demand, and the survival reserve actually applied is the one the
+/// book demanded before that world existed. Applying it raises the capital
+/// the survival governor withholds, which is a change to a financial risk
+/// control the owner has not authorised.
+///
+/// The second platform, identical but with the reserve applied, is the
+/// control: it shows that this book's joint world does raise the reserve, so
+/// the default's unchanged figure is a world withheld and not a world that
+/// cost nothing.
+///
+/// Mutation: default `apply_joint_tail_reserve` to `true` in `Platform::new`
+/// and the default's applied reserve rises to the advisory one.
+#[test]
+fn a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before()
+-> Result<()> {
+    let run = |applied: bool| -> Result<Platform> {
+        let mut platform = platform()?;
+        // The shipped default is the platform as built, never one set to
+        // `false`: a test that set it would pass whatever the default is.
+        if applied {
+            platform.set_joint_tail_reserve_applied(true);
+        }
+        // A wider tape than `bars`' own: volatile enough that the joint world
+        // passes the stress tolerance and outweighs the factor library, so
+        // applying it would raise the reserve.
+        for (symbol, phase) in [("AAA", 0.0), ("BBB", 0.31)] {
+            platform.observe(
+                bars_with_noise(symbol, 120, phase, 0.10)
+                    .into_iter()
+                    .map(|bar| SensedRecord::Bar(Box::new(bar)))
+                    .collect(),
+            );
+        }
+        buy(&mut platform, "AAA", dec!("40000"), start())?;
+        buy(&mut platform, "BBB", dec!("40000"), start())?;
+        platform.run_cycle(start().saturating_add(Duration::from_days(1)));
+        Ok(platform)
+    };
+    let shipped = run(false)?;
+    let control = run(true)?;
+    let stress = shipped
+        .stress_report()
+        .expect("premise: the book is stressed");
+    assert!(
+        stress
+            .advisory_worlds
+            .iter()
+            .any(|w| w.scenario == qip_kernel::tail::SYNTHETIC_JOINT),
+        "the joint world was not reported: {:?}",
+        stress.advisory_worlds
+    );
+    assert!(
+        stress
+            .tail_worlds
+            .iter()
+            .all(|w| w.scenario != qip_kernel::tail::SYNTHETIC_JOINT),
+        "the joint world is applied on the shipped default"
+    );
+    let advisory = stress
+        .advisory_reserve
+        .expect("the would-be reserve is computed");
+    let applied = shipped
+        .applied_stress_reserve()?
+        .expect("premise: a reserve is computed");
+    let raised = control
+        .applied_stress_reserve()?
+        .expect("premise: a reserve is computed");
+    assert!(
+        advisory > applied,
+        "premise: the joint world would raise this book's reserve ({advisory} against {applied})"
+    );
+    assert_eq!(
+        raised, advisory,
+        "the control applies exactly the reported would-be reserve"
+    );
+    assert!(
+        applied < raised,
+        "the shipped default applied the joint world's reserve ({applied}, raised {raised})"
     );
     Ok(())
 }

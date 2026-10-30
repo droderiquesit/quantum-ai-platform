@@ -446,8 +446,8 @@ pub fn standard_agents(
     quantum_backend_available: bool,
 ) -> Vec<Arc<dyn Agent>> {
     use crate::{
-        analysts, construction, control, execution, fast, learning, poisoning, portfolio_brain,
-        reasoning, review,
+        adversary, analysts, construction, control, execution, fast, learning, poisoning,
+        portfolio_brain, reasoning, review,
     };
 
     vec![
@@ -530,6 +530,14 @@ pub fn standard_agents(
         // the agents above were already given keep their sequence.
         Arc::new(poisoning::PoisoningDetector::new(
             manifests::poisoning_detector(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(adversary::SelfExploitationProbe::new(
+            manifests::self_exploitation_probe(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(adversary::RegimeBreakProbe::new(
+            manifests::regime_break_probe(reviewed_at),
             desk.clone(),
         )),
         Arc::new(portfolio_brain::PortfolioAssetAnalyst::new(

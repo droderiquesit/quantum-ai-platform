@@ -112,3 +112,42 @@ fn removing_an_ambient_brain_drops_its_scope_from_the_registry() {
     assert!(!without_agency.scopes().contains(INTERVENTION_PLANNING));
     assert!(without_agency.scopes().contains(ATTENTION_ROUTING));
 }
+
+/// R12-WORLD-3025: the World Model Arbitration Brain is constructed in the
+/// production registry, and removing it drops its scope from coverage. The
+/// node then refuses to start, since `standard` requires the scope. Nothing
+/// else on record covers world-model arbitration, so the removal is
+/// observable.
+///
+/// Mutation: in `brains::standard`, skip `registry.register(arbitration_spec())`
+/// -- `standard` then refuses to build, naming the missing scope, and the
+/// first unwrap fails.
+#[test]
+fn removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage() {
+    use qip_deepbrain::brains::{
+        REQUIRED_SCOPES, WORLD_MODEL_ARBITRATION, WORLD_MODEL_ARBITRATION_BRAIN,
+    };
+    let platform = platform();
+    let registry = standard(platform.organisation().roster()).unwrap();
+    let spec = registry
+        .get(WORLD_MODEL_ARBITRATION_BRAIN)
+        .expect("the arbitration brain is in the production registry");
+    assert!(spec.validate().is_ok());
+    assert!(registry.scopes().contains(WORLD_MODEL_ARBITRATION));
+    assert!(REQUIRED_SCOPES.contains(&WORLD_MODEL_ARBITRATION));
+    assert!(registry.require_coverage().is_ok(), "premise: covered");
+
+    let without = registry.without(WORLD_MODEL_ARBITRATION_BRAIN);
+    assert!(
+        !without.scopes().contains(WORLD_MODEL_ARBITRATION),
+        "another brain still claims world-model arbitration"
+    );
+    let refused = without
+        .require_coverage()
+        .expect_err("a registry without the arbitration brain is refused");
+    assert!(
+        refused.message().contains(WORLD_MODEL_ARBITRATION),
+        "{}",
+        refused.message()
+    );
+}

@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkScenario, defaultLaunch, get, isLoopbackUrl, parsePrometheus, readPeakRssKib, runScenario, sumSeries, validateResult } from "./harness.mjs";
+import { checkScenario, defaultLaunch, evaluate, get, isLoopbackUrl, judgeMemory, loadResult, parsePrometheus, readPeakRssKib, runScenario, sumSeries, validateResult } from "./harness.mjs";
 import { attempts, main as escalationMain, runDrill, validateRecord as validateEscalation } from "./agent-escalation.mjs";
 import { readFileSync as readFileForDrill, readdirSync as readdirForDrill } from "node:fs";
 import { join as joinForDrill } from "node:path";
@@ -322,4 +322,166 @@ test("a ceiling on a process whose peak cannot be read fails closed", async () =
     assert.ok(result.checks.some((c) => c.phase === "memory" && !c.passed && /could not be read/.test(c.detail)));
     assert.deepEqual(validateResult(result), []);
   });
+});
+
+// --- R12-RES-10153: the frozen-sink backpressure drill ----------------------
+
+const FROZEN_SINK = new URL("./scenarios/frozen-sink.json", import.meta.url);
+const frozenSinkResults = () => {
+  const dir = new URL("../../docs/ops/game-days/results/", import.meta.url);
+  return readdirSync(dir).filter((f) => f.endsWith("-frozen-sink.json")).map((f) => JSON.parse(readFileSync(new URL(f, dir), "utf8")));
+};
+
+// The ceiling is judged at its edge: a peak equal to the ceiling holds, one
+// KiB more does not. Mutation: compare `peak < ceiling` — the equal row
+// fails; compare `peak >= ceiling` or drop the comparison — the over row
+// passes and this fails.
+test("a memory ceiling one KiB below the observed peak fails, and the peak itself holds", () => {
+  const [at] = judgeMemory({ fabricd: 25088 }, { fabricd: 25088 });
+  assert.equal(at.passed, true, at.detail);
+  const [below] = judgeMemory({ fabricd: 25088 }, { fabricd: 25087 });
+  assert.equal(below.passed, false, below.detail);
+  assert.match(below.name, /fabricd stayed under 25087 KiB/);
+  const [unread] = judgeMemory({ fabricd: null }, { fabricd: 1_000_000 });
+  assert.equal(unread.passed, false, "an unread peak is not a peak under the ceiling");
+  assert.deepEqual(judgeMemory({ fabricd: 1 }, {}), [], "no ceiling, nothing judged");
+});
+
+// The committed drill's own numbers: the recorded fabricd peak is under the
+// scenario's ceiling (so `met` was earned), and the same record judged
+// against a ceiling one KiB below that peak would have failed — the ceiling
+// is a comparison that could have gone the other way on this run's data.
+test("the committed frozen-sink result would have failed under a ceiling below its own measured peak", () => {
+  const scenario = JSON.parse(readFileSync(FROZEN_SINK, "utf8"));
+  const results = frozenSinkResults();
+  assert.ok(results.length >= 1, "premise: a frozen-sink game day is recorded");
+  for (const result of results) {
+    const peak = result.measurements.peak_rss_kib.fabricd;
+    assert.ok(Number.isFinite(peak) && peak > 0, `premise: the broker's peak was measured, got ${peak}`);
+    const [held] = judgeMemory(result.measurements.peak_rss_kib, { fabricd: scenario.memory_ceiling_kib.fabricd });
+    assert.equal(held.passed, true, held.detail);
+    const [tight] = judgeMemory(result.measurements.peak_rss_kib, { fabricd: peak - 1 });
+    assert.equal(tight.passed, false, tight.detail);
+    assert.equal(result.verdict, "met", JSON.stringify(result.checks.filter((c) => !c.passed)));
+    assert.ok(result.checks.some((c) => c.phase === "memory" && c.passed), "the record carries its memory check");
+  }
+});
+
+// End to end over real child processes: the same observed peak, judged
+// against a ceiling one KiB under it and against the peak itself. The peak
+// is pinned through a /proc stand-in so both runs see the same number — a
+// real process's high water mark moves between runs, and a test comparing
+// two different peaks would prove nothing about the edge.
+test("a drill whose ceiling is below the peak it observes is missed end to end", async () => {
+  const root = mkdtempSync(join(tmpdir(), "game-day-proc-"));
+  try {
+    mkdirSync(join(root, "77"));
+    writeFileSync(join(root, "77", "status"), "Name:\tfake\nVmHWM:\t   40960 kB\n");
+    assert.equal(readPeakRssKib(77, root), 40960, "premise: the pinned peak reads");
+    const readPeak = () => readPeakRssKib(77, root);
+    await withScratch(async ({ bin, work }) => {
+      const over = await runScenario(scenario({ memory_ceiling_kib: { broker: 40959 } }), { bin, repo: work, work, readPeak });
+      assert.equal(over.measurements.peak_rss_kib.broker, 40960);
+      assert.equal(over.verdict, "missed", JSON.stringify(over.checks, null, 1));
+      assert.ok(over.checks.some((c) => c.phase === "memory" && !c.passed && /peak 40960 KiB/.test(c.detail)));
+      assert.deepEqual(validateResult(over), []);
+      const at = await runScenario(scenario({ memory_ceiling_kib: { broker: 40960 } }), { bin, repo: work, work, readPeak });
+      assert.equal(at.verdict, "met", JSON.stringify(at.checks, null, 1));
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A refusal counter is minted on its first refusal, so "never refused" is
+// an absent series. Mutation: ignore `absent_as` — the first assertion
+// fails; apply it to a present series — the present-and-nonzero row passes
+// and the third assertion fails.
+test("an absent counter reads as its stated value only when the check says so", async () => {
+  const body = 'qip_event_fabric_refusals_total{class="p2_market_journal",reason="quota"} 3\n';
+  const fetchImpl = async () => ({ status: 200, text: async () => body });
+  const context = { work: "/w", repo: "/r", ports: { f: 1 } };
+  const never = (labels, extra = {}) => ({ url: "http://127.0.0.1:${PORT:f}/metrics", metric: { name: "qip_event_fabric_refusals_total", labels, max: 0, ...extra } });
+  assert.equal((await evaluate(never({ class: "p0_control" }, { absent_as: 0 }), context, { fetchImpl })).passed, true);
+  assert.equal((await evaluate(never({ class: "p0_control" }), context, { fetchImpl })).passed, false, "absent without absent_as is not exposed");
+  assert.equal((await evaluate(never({ class: "p2_market_journal" }, { absent_as: 0 }), context, { fetchImpl })).passed, false, "a present 3 is not read as 0");
+});
+
+const loadEntry = (overrides = {}) => ({ name: "load-a", binary: "fake-service", args: ["--peer", "127.0.0.1:${PORT:broker}"], env: { FAKE_EXIT_AFTER_MS: "300" }, ...overrides });
+
+// A load is a one-shot process the drill waits for and whose exit it
+// records. Mutation: skip awaiting loads, or record every load as passed —
+// the failing load below then reads as met.
+test("a load that ran to its end is recorded with what it reported, and one that failed makes the drill missed", async () => {
+  await withScratch(async ({ bin, work }) => {
+    const good = await runScenario(scenario({ load: [loadEntry()] }), { bin, repo: work, work });
+    assert.equal(good.verdict, "met", JSON.stringify(good.checks, null, 1));
+    assert.ok(good.checks.some((c) => c.phase === "load" && c.passed && /load-a ran to its end/.test(c.name)));
+    assert.deepEqual(good.load["load-a"], { attempted: 3, admitted: 3, refused: {} });
+    assert.deepEqual(validateResult(good), []);
+
+    const bad = await runScenario(scenario({ load: [loadEntry({ env: { FAKE_EXIT_AFTER_MS: "100", FAKE_EXIT_CODE: "1" } })] }), { bin, repo: work, work });
+    assert.equal(bad.verdict, "missed");
+    assert.ok(bad.checks.some((c) => c.phase === "load" && !c.passed && /exit 1/.test(c.detail)), JSON.stringify(bad.checks, null, 1));
+  });
+});
+
+// Checks over the whole run are read after the load stops. Mutation: skip
+// the `final` loop — the impossible final check below then passes.
+test("a final check that does not hold once the load has stopped makes the drill missed", async () => {
+  await withScratch(async ({ bin, work }) => {
+    const result = await runScenario(scenario({
+      load: [loadEntry()],
+      final: [{ name: "a count that must stay at zero", url: "http://127.0.0.1:${PORT:cell}/metrics", metric: { name: "fake_records_total", max: 0 } }],
+    }), { bin, repo: work, work });
+    assert.equal(result.verdict, "missed");
+    assert.ok(result.checks.some((c) => c.phase === "final" && !c.passed));
+  });
+});
+
+// After recovery, `increases` is judged against the value read at the
+// fault. Mutation: drop the `atFault` baseline (pass no `previous`) — a
+// series that never moves then reads as having increased and this drill,
+// whose after-recovery expectation is false, reads as met.
+test("an after-recovery increase is measured from the fault, so a series that never moved fails", async () => {
+  await withScratch(async ({ bin, work }) => {
+    const frozen = scenario({
+      fault: { kind: "pause", process: "broker" },
+      recovery: { kind: "resume", process: "broker" },
+      rpo: undefined,
+      objectives: { rto_ms: 5000 },
+      // Longer than a probe of the paused broker (2 s), so the detection
+      // holds and the only thing that can miss is the expectation under test.
+      timeout_ms: 4000,
+      after_recovery: [{ name: "a constant that cannot rise", url: "http://127.0.0.1:${PORT:cell}/metrics", metric: { name: "fake_empty_total", increases: true } }],
+    });
+    delete frozen.rpo;
+    const result = await runScenario(frozen, { bin, repo: work, work });
+    assert.equal(result.verdict, "missed", JSON.stringify(result.checks, null, 1));
+    assert.ok(result.checks.some((c) => c.phase === "recovery" && !c.passed && /did not increase/.test(c.detail)));
+
+    const moving = scenario({
+      fault: { kind: "pause", process: "broker" },
+      recovery: { kind: "resume", process: "broker" },
+      objectives: { rto_ms: 5000 },
+      after_recovery: [{ name: "the resumed broker counts again", url: "http://127.0.0.1:${PORT:broker}/metrics", metric: { name: "fake_records_total", increases: true } }],
+    });
+    delete moving.rpo;
+    const resumed = await runScenario(moving, { bin, repo: work, work });
+    assert.equal(resumed.verdict, "met", JSON.stringify(resumed.checks, null, 1));
+  });
+});
+
+test("a load that would leave paper, local and simulated, or names no args, is refused", () => {
+  assert.deepEqual(checkScenario(scenario({ load: [loadEntry()] })), []);
+  const venue = checkScenario(scenario({ load: [loadEntry({ env: { QIP_VENUE_ADAPTER: "live" } })] }));
+  assert.ok(venue.some((p) => /load-a: QIP_VENUE_ADAPTER may not be set/.test(p)), venue.join("\n"));
+  assert.ok(checkScenario(scenario({ load: [loadEntry({ args: "event-fabric produce" })] })).some((p) => /args must be a list/.test(p)));
+  assert.ok(checkScenario(scenario({ load: [loadEntry({ name: "broker" })] })).some((p) => /two processes or loads are named broker/.test(p)));
+});
+
+test("a load's RESULT line is read back, and a load that printed none reports null", () => {
+  assert.deepEqual(loadResult("PRODUCE x\nRESULT {\"admitted\":2}\nPAPER TRADING\n"), { admitted: 2 });
+  assert.equal(loadResult("PRODUCE x\n"), null);
+  assert.equal(loadResult("RESULT {not json"), null);
 });

@@ -771,6 +771,15 @@ pub const MIN_FRESH_SHADOW_ROWS: usize = 20;
 
 /// Fits models from observed bars and watches the ones it has fitted age.
 pub struct LearningDesk {
+    /// Cards the restore could not re-register because the registry was at
+    /// `qip_ai::registry::MAX_CARDS`, with the refusal, for the caller to
+    /// count and journal (R12-MODEL-9003). Drained by
+    /// [`Self::take_cap_refusals`].
+    cap_refusals: Vec<(String, String)>,
+    /// References already reported refused, so a restore that runs before
+    /// every round reports each one once rather than once a round. Bounded
+    /// by the cards the log holds.
+    cap_reported: BTreeSet<String>,
     config: LearningConfig,
     policy: SkillPolicy,
     registry: ModelRegistry,
@@ -895,6 +904,8 @@ pub type ArtifactRestore = (Vec<String>, Vec<(String, String)>);
 impl LearningDesk {
     pub fn new(config: LearningConfig, seed: u64) -> Self {
         Self {
+            cap_refusals: Vec::new(),
+            cap_reported: BTreeSet::new(),
             config,
             policy: SkillPolicy::default(),
             registry: ModelRegistry::new(),
@@ -1181,8 +1192,18 @@ impl LearningDesk {
                 self.fits = self.fits.max(fit);
             }
             if self.registry.get(&card.reference()).is_none() {
-                self.registry.register(card.clone());
-                restored += 1;
+                // The same cap the live registry refused at, so a restored
+                // registry refuses where the run did: a replay that admitted
+                // what the run refused would not be a replay.
+                match self.registry.register(card.clone()) {
+                    Ok(()) => restored += 1,
+                    Err(refusal) => {
+                        if self.cap_reported.insert(card.reference()) {
+                            self.cap_refusals
+                                .push((card.reference(), refusal.message().to_string()));
+                        }
+                    }
+                }
             }
         }
         restored
@@ -1368,6 +1389,9 @@ impl LearningDesk {
         let mut best_incumbent: Option<f64> = None;
         let mut baseline_name = "the held-out mean predictor (skill bar)".to_string();
         for incumbent in &incumbents {
+            if let Some(refusal) = self.stressed_claim_refusal(&reference, incumbent) {
+                return not_promoted(refusal);
+            }
             let Some(held) = self.promoted_artifacts.get(incumbent) else {
                 return not_promoted(format!(
                     "incumbent {incumbent} stands in production and this desk holds no \
@@ -1542,6 +1566,9 @@ impl LearningDesk {
             .collect();
         let mut production: Option<(String, f64)> = None;
         for incumbent in &incumbents {
+            if let Some(refusal) = self.stressed_claim_refusal(&reference, incumbent) {
+                return lost(self, refusal);
+            }
             let Some(held) = self.promoted_artifacts.get(incumbent) else {
                 return lost(
                     self,
@@ -1760,6 +1787,43 @@ impl LearningDesk {
     /// Bars a subject needs before a fit is worth attempting.
     pub const fn minimum_bars(&self) -> usize {
         self.config.minimum_bars
+    }
+
+    /// Why `candidate` may not be promoted on beating `incumbent`, when the
+    /// claim is about a stressed regime the incumbent was never validated in
+    /// (ADR 0149 decision 10, R12-MODEL-6074).
+    ///
+    /// The candidate's card names the regime its round was judged in. Where
+    /// that regime is stressed, "it beats the incumbent there" is a claim
+    /// about a regime the incumbent may never have been scored in, and a win
+    /// over a baseline nobody validated under stress is not evidence the
+    /// candidate stays calibrated under it.
+    fn stressed_claim_refusal(&self, candidate: &str, incumbent: &str) -> Option<String> {
+        let claimed = self.registry.get(candidate)?;
+        let baseline = self.registry.get(incumbent);
+        claimed
+            .validated_regimes
+            .iter()
+            .filter(|regime| qip_ai::registry::is_stressed_regime(regime))
+            .find(|regime| baseline.is_none_or(|card| !card.validated_regimes.contains(*regime)))
+            .map(|regime| {
+                format!(
+                    "{candidate} would be promoted on beating {incumbent} in the stressed regime \
+                     {regime}, and {incumbent} was never validated in it; a comparative claim \
+                     about a stressed regime needs a baseline scored there (ADR 0149 decision 10)"
+                )
+            })
+    }
+
+    /// The cards the restore refused at the registry's cap since the last
+    /// call, each with its refusal, for the caller to count and journal.
+    pub fn take_cap_refusals(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.cap_refusals)
+    }
+
+    /// Whether the registry is at its cap, so the next fit would be refused.
+    pub fn registry_full(&self) -> bool {
+        self.registry.len() >= qip_ai::registry::MAX_CARDS
     }
 
     /// Note a round that opened no campaign because the door refused it.
@@ -2527,6 +2591,52 @@ mod tests {
         Ok(Some(last))
     }
 
+    /// R12-MODEL-9003: a restore applies the live registry's cap. A log
+    /// holding more cards than the cap (two registries journaled into it)
+    /// restores up to the cap and reports each card it refused once, for
+    /// the engine to count and journal. Mutation: drop the push in
+    /// `restore_registry`'s refusal arm — the overflow card is refused
+    /// silently and the report assertion fails.
+    #[test]
+    fn a_restore_past_the_cap_refuses_the_overflow_and_reports_it_once() -> Result<()> {
+        use qip_ai::registry::{MAX_CARDS, ModelCard};
+        let mut platform = serving_platform()?;
+        let card = |n: usize| {
+            ModelCard::new(
+                qip_core::ModelId::from_string(format!("m-overflow-{n}")),
+                "overflow",
+                format!("7.{n}.0"),
+                "research",
+                at(),
+            )
+        };
+        let mut first = ModelRegistry::new();
+        for n in 0..MAX_CARDS {
+            first.register(card(n))?;
+        }
+        let mut second = ModelRegistry::new();
+        second.register(card(MAX_CARDS))?;
+        platform.journal_model_registry(&first, at())?;
+        platform.journal_model_registry(&second, at())?;
+        assert_eq!(
+            platform.registered_model_cards().count(),
+            MAX_CARDS + 1,
+            "premise: the log holds one card past the cap"
+        );
+
+        let mut desk = learning_desk();
+        desk.restore_registry(&platform);
+        assert_eq!(desk.registry().len(), MAX_CARDS);
+        let refused = desk.take_cap_refusals();
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(refused[0].1.contains("its cap"), "{:?}", refused[0]);
+        // Reported once: a second restore finds the same overflow and stays
+        // quiet about it.
+        desk.restore_registry(&platform);
+        assert!(desk.take_cap_refusals().is_empty());
+        Ok(())
+    }
+
     fn learning_desk() -> LearningDesk {
         LearningDesk::new(
             LearningConfig {
@@ -3024,13 +3134,6 @@ mod tests {
         Ok(())
     }
 
-    /// R12-MODEL-9003: a crash just after a rollback record. The reactivated
-    /// predecessor's card on the log is the one written before the record:
-    /// Retired, with its retirement instant. The restore puts it back in
-    /// production from the promotion log, and with it clears the retirement,
-    /// so the model the log says is in production is not read as retired.
-    /// Mutation: keep `retired_at` when the log forces a card to Production —
-    /// the card reads as retired and the assertion fails.
     /// R12-MODEL-9003: a crash just after a promotion that displaced two
     /// production cards restores the rollback parent the live registry
     /// chose — the more recently deployed of the two — not the first
@@ -3139,6 +3242,13 @@ mod tests {
         Ok(())
     }
 
+    /// R12-MODEL-9003: a crash just after a rollback record. The reactivated
+    /// predecessor's card on the log is the one written before the record:
+    /// Retired, with its retirement instant. The restore puts it back in
+    /// production from the promotion log, and with it clears the retirement,
+    /// so the model the log says is in production is not read as retired.
+    /// Mutation: keep `retired_at` when the log forces a card to Production —
+    /// the card reads as retired and the assertion fails.
     #[test]
     fn a_crash_just_after_a_rollback_restores_the_reactivated_model_not_as_retired() -> Result<()> {
         let directory = std::env::temp_dir().join(format!(
@@ -3276,6 +3386,74 @@ mod tests {
         assert_eq!(degraded.retired_at, Some(rollback.at), "v2's retirement");
         assert_eq!(card.deployed_at, Some(rollback.at), "v1's redeployment");
         let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
+    }
+
+    /// R12-MODEL-6074, ADR 0149 decision 10: a candidate is not promoted on
+    /// a claim about a stressed regime its baseline was never validated in.
+    /// The incumbent is fitted and promoted in a calm regime; the candidate's
+    /// round is judged in `crisis/high`, so beating the incumbent there is a
+    /// win over a baseline nobody scored under stress. The control: the same
+    /// candidate against an incumbent whose card lists `crisis/high` is not
+    /// refused for it. Mutation: make `is_stressed_regime` return false — the
+    /// first assertion fails.
+    #[test]
+    fn a_candidate_is_not_promoted_on_a_stressed_regime_claim_its_baseline_was_never_validated_in()
+    -> Result<()> {
+        const STRESSED: &str = "crisis/high";
+        assert!(qip_ai::registry::is_stressed_regime(STRESSED));
+        assert!(
+            !qip_ai::registry::is_stressed_regime(REGIME),
+            "premise: {REGIME} is calm"
+        );
+        let attempt = |incumbent_regimes: &[&str]| -> Result<PromotionOutcome> {
+            let mut desk = learning_desk();
+            let mut platform = serving_platform()?;
+            let bars = super::tests_support::learnable(400);
+            desk.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
+            let incumbent = match through_shadow(&mut desk, &mut platform, &bars, 1, at())? {
+                Some(PromotionOutcome::Promoted { reference, .. }) => reference,
+                other => {
+                    return Err(Error::invalid(format!(
+                        "premise: the incumbent was promoted: {other:?}"
+                    )));
+                }
+            };
+            if let Some(card) = desk.registry.get_mut(&incumbent) {
+                for regime in incumbent_regimes {
+                    card.validated_regimes.insert((*regime).to_string());
+                }
+            }
+            let later = at().saturating_add(qip_core::Duration::from_hours(2));
+            desk.maybe_learn(
+                &subject(),
+                &super::tests_support::learnable(1_200),
+                STRESSED,
+                40,
+                later,
+            )?;
+            desk.promote_candidate(&mut platform, later)?
+                .ok_or_else(|| Error::not_found("a candidate in the stressed round"))
+        };
+
+        let refused = attempt(&[])?;
+        let PromotionOutcome::NotPromoted { reason, .. } = &refused else {
+            return Err(Error::invalid(format!(
+                "a stressed-regime claim against an unvalidated baseline went ahead: {}",
+                refused.describe()
+            )));
+        };
+        assert!(
+            reason.contains("stressed regime crisis/high"),
+            "refused for another reason: {reason}"
+        );
+
+        let control = attempt(&[STRESSED])?;
+        assert!(
+            !control.describe().contains("stressed regime"),
+            "a baseline validated in the stressed regime was still refused for it: {}",
+            control.describe()
+        );
         Ok(())
     }
 
@@ -4271,7 +4449,7 @@ mod tests {
         .with_training_data(vec![dataset_name(&subject())]);
         let stranger_reference = stranger.reference();
         let tracked_before = desk.tracked();
-        desk.registry_mut().register(stranger);
+        desk.registry_mut().register(stranger)?;
 
         // Premise, in three parts: the desk kept exactly one fitted sample,
         // the registry now holds two cards -- so one of them has no sample
@@ -4498,7 +4676,7 @@ mod tests {
             .cloned()
             .ok_or_else(|| Error::not_found("the card"))?;
         stripped.feature_lineage.clear();
-        desk.registry_mut().register(stripped);
+        desk.registry_mut().register(stripped)?;
         let outcome = desk
             .promote_candidate(&mut platform, at())?
             .ok_or_else(|| Error::not_found("a candidate"))?;
@@ -5123,7 +5301,7 @@ mod tests {
         )
         .with_features(FEATURES.iter().map(|f| (*f).to_string()).collect());
         let orphan_reference = orphan.reference();
-        desk.registry_mut().register(orphan);
+        desk.registry_mut().register(orphan)?;
 
         // The premise: the card really does name no instrument, and really is
         // in the registry the round walks.
