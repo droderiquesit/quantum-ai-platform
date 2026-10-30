@@ -695,7 +695,7 @@
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277 no machine inside a mesh",
       "backend/crates/tests/qip-acceptance/tests/no_service_mesh.rs::nothing_the_repository_deploys_enrols_a_workload_in_a_service_mesh (the mesh never carries Reflex traffic: no mesh is declared)"
     ],
-    "gap": "mTLS for warm services is met by ADR 0112's hop table (Amendment 1): rustls mTLS with CA Service workload certificates on every Compute Engine hop, IAM invocation into Cloud Run. Needs CA Service issuance in Terraform and the composition roots, and the IAM evidence of API-8113. The mesh itself is refused.",
+    "gap": "2026-10-25 (lane L6): not wired. certificate_authority is protected dev tfvars and CA Service is billed infrastructure, which owner-decisions-2026-10-25 decision 5 declines for now. Earlier: mTLS for warm services is met by ADR 0112's hop table (Amendment 1): rustls mTLS with CA Service workload certificates on every Compute Engine hop, IAM invocation into Cloud Run. Needs CA Service issuance in Terraform and the composition roots, and the IAM evidence of API-8113. The mesh itself is refused.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2886,7 +2886,7 @@
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:380",
       "backend/crates/apps/qip-ledgerd/src/telemetry.rs:122 LEDGER_LAG gauge"
     ],
-    "gap": "Ledger-lag threshold wire into the cell; transfer gating.",
+    "gap": "2026-10-25 (lane L6): not wired. The default is the mesh variables on qip-api, but the Cloud Run API serves no mesh (catalogue.tf) and the cells it would reach need execution_nodes_enabled (protected tfvars, billed nodes), so a paper-only default has nothing to talk to until a node is deployed. Earlier: Ledger-lag threshold wire into the cell; transfer gating.",
     "implemented": true,
     "tested": true,
     "integrated": true,

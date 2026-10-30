@@ -3512,7 +3512,7 @@
       "backend/crates/apps/qip-edge-node/src/strategies.rs StrategyInstaller::install_compiled",
       "backend/crates/apps/qip-edge-node/tests/strategies.rs::each_package_the_node_activates_is_counted_once_and_a_rollback_apart"
     ],
-    "gap": "2026-10-24 (lane L6): emitted, not yet on a default path: the node activates a package only when QIP_STRATEGY_PLAN_PATH is set (main.rs builds the PlanCompiler only then), and the execution-node module's strategy_plan_path defaults to \"\" in every environment, so on a default configuration no package is ever activated and the series never moves (bar part 2). No collector scrapes the node either (modules/observability/NOT-SCRAPED.md), which matters if the requirement's 'carries' is read as collection.",
+    "gap": "2026-10-25 (lane L6): not wired. strategy_plan_path lives in protected dev tfvars under an execution node that execution_nodes_enabled = false keeps from existing, and setting it activates a paper strategy on a billed node, so it is the owner's flip. Earlier: 2026-10-24 (lane L6): emitted, not yet on a default path: the node activates a package only when QIP_STRATEGY_PLAN_PATH is set (main.rs builds the PlanCompiler only then), and the execution-node module's strategy_plan_path defaults to \"\" in every environment, so on a default configuration no package is ever activated and the series never moves (bar part 2). No collector scrapes the node either (modules/observability/NOT-SCRAPED.md), which matters if the requirement's 'carries' is read as collection.",
     "implemented": true,
     "tested": true,
     "integrated": true,

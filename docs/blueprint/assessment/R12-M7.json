@@ -366,7 +366,7 @@
       "backend/crates/services/qip-telemetry-drain/src/lib.rs",
       "backend/crates/services/qip-telemetry-drain/tests/credential.rs"
     ],
-    "gap": "2026-10-24 (lane L6, current corrected: it said no OTel export): OTLP export is built and off by default (QIP_OPENOBSERVE_URL unset until a collector is vendored and attested, ADR 0156 §5.4); no OpenObserve instance runs and nothing has been shown to ingest a series or span. Collection, not emission, is what is missing.",
+    "gap": "2026-10-25 (lane L6): not wired. QIP_OPENOBSERVE_URL/ORG/AUTHORIZATION stay unset by ADR 0156 §5.4, the authorization needs a mounted credential the owner holds, and ingestion is proven only by a deploy. Earlier: 2026-10-24 (lane L6, current corrected: it said no OTel export): OTLP export is built and off by default (QIP_OPENOBSERVE_URL unset until a collector is vendored and attested, ADR 0156 §5.4); no OpenObserve instance runs and nothing has been shown to ingest a series or span. Collection, not emission, is what is missing.",
     "implemented": true,
     "tested": true,
     "integrated": true,

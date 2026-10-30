@@ -4382,7 +4382,7 @@
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:218 world-model/arbitration/reasoner/planner crates in lane 3",
       "backend/crates/apps/qip-deepbrain/src/main.rs:518"
     ],
-    "gap": "Tick replay/microstructure training off unless QIP_DEEPBRAIN_TICK_EVERY set; several lane-3 crates only via kernel.",
+    "gap": "2026-10-25 (lane L6): not wired. Setting QIP_DEEPBRAIN_TICK_EVERY with the tick entitlements in the dev deep brain manifest grants a data licence, and a licensing grant is evaluated before a source is used (data-and-streaming rule), so it waits for the owner's licensing call. Earlier: Tick replay/microstructure training off unless QIP_DEEPBRAIN_TICK_EVERY set; several lane-3 crates only via kernel.",
     "implemented": true,
     "tested": true,
     "integrated": true,
