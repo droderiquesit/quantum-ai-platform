@@ -32,7 +32,7 @@
       "backend/crates/runtime/qip-kernel/tests/learning.rs:523 declined counterfactual record test",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:1688 counterfactual outcomes journaled"
     ],
-    "gap": "No unified training-data export of all paths; hedges/unwinds/agency proposals not captured.",
+    "gap": "No unified training-data export of all paths; hedges/unwinds/agency proposals not captured. 2026-10-30 (lane L2-INTEL), one sentence: the hedge half is held by owner decision 7 (no declared hedge policy, so run_hedge_brain proposes nothing to record), and the ambient-draft half is the ambient door's, so a unified export of all paths cannot cover hedges on a default path.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -79,7 +79,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:826 declined and filled share one cap"
     ],
-    "gap": "No counterfactual for hedged or unwound positions: Platform has no queue of hedge proposals or unwinds to price, and evaluate_alternatives prices a placed order's size arms, not a hedge or an unwind leg. Needs a design decision on what an unwound or hedged path's alternative is (the unhedged hold? the held-to-horizon position?) before a queue and a twin arm can be built. The partial-fill half is closed.",
+    "gap": "No counterfactual for hedged or unwound positions: Platform has no queue of hedge proposals or unwinds to price, and evaluate_alternatives prices a placed order's size arms, not a hedge or an unwind leg. Needs a design decision on what an unwound or hedged path's alternative is (the unhedged hold? the held-to-horizon position?) before a queue and a twin arm can be built. The partial-fill half is closed. 2026-10-30 (lane L2-INTEL), one sentence: held by owner decision 7; a hedge is surveyed only under a declared hedge policy, no composition root declares one, and a default policy would be a new target exposure, so a hedges-not-taken counterfactual would score nothing on a default path.",
     "implemented": true,
     "tested": true,
     "integrated": true,
