@@ -80,6 +80,16 @@ fn main() {
         // R12-CONTRACT-7064: the publish workflow's three steps from an
         // unsigned draft to a release pack, and the check that decides
         // whether one loads. The verdict is the exit code.
+        // R12-CONTRACT-7091: a signed pack's rollout record, and whether one
+        // stands for a node. The verdict is the exit code.
+        "control-pack" => {
+            qip_cli::control_pack::run(&arguments[1..], SystemClock.now()).map(|(lines, code)| {
+                for line in lines {
+                    println!("{line}");
+                }
+                code
+            })
+        }
         "model-pack" => {
             qip_cli::model_pack::run(&arguments[1..], SystemClock.now()).map(|(lines, code)| {
                 for line in lines {
@@ -118,6 +128,11 @@ fn print_help() {
     println!("  registrations [--config <path>]");
     println!("                    every catalogued source's requirement and standing,");
     println!("                    and the exact secret-add command for a pending one");
+    println!("  control-pack announce <pack.json> --rollout <rollout.json>");
+    println!(
+        "  control-pack verify <announcement.json> --pack <pack.json> --region <r> --node <n>"
+    );
+    println!("                    a signed pack's rollout record, and whether it targets a node");
     println!("  model-pack signing-message <pack.json> --key-version <name>");
     println!("  model-pack attach-signature <pack.json> --key-version <name> --der <hex>");
     println!("  model-pack verify <pack.json> --trust-bundle <path> [--now <rfc3339>]");

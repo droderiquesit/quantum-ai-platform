@@ -2088,9 +2088,16 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/control_pack.rs:65 type",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:931 a_control_pack_announcement_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:945 a_control_pack_announcement_refuses_each_broken_invariant"
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:945 a_control_pack_announcement_refuses_each_broken_invariant",
+      "backend/crates/libs/qip-contracts/src/control_pack.rs::attestation_of, ControlPackAnnouncementFields::targets",
+      "backend/crates/runtime/qip-kernel/src/model_trust.rs::Platform::admit_control_announcements",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs::Platform::model_manifest_targeted",
+      "backend/crates/apps/qip-api/src/mesh.rs::pending_policy issues each cell's trained_models slot for that cell when announcements are held",
+      "backend/crates/apps/qip-cli/src/control_pack.rs (qip control-pack announce / verify)",
+      "backend/crates/runtime/qip-kernel/tests/release_packs.rs::a_pack_announced_for_another_node_is_withheld_from_this_nodes_manifest",
+      "backend/crates/apps/qip-cli/tests/control_pack.rs::an_announcement_stands_only_for_the_node_it_targets_and_only_for_the_pack_it_attests"
     ],
-    "gap": "Decided (ADR 0149 decisions 1-4): the announcement is the release's rollout record, never built by the kernel, and the centre only narrows by it. Not built: no ControlPackAnnouncement producer or reader exists outside qip-contracts (grep), and Platform::model_manifest_for(location) takes neither a node identity nor a time, so there is nothing to narrow by target_nodes or the activation window; its only callers (qip-api mesh.rs, qip-deepbrain learning.rs) pass no location at all and ship one manifest for every cell. Closing needs (1) a per-node manifest request that carries the cell's node id, (2) model_trust.rs admitting announcements beside packs with attestation equal to the signed pack's digest, (3) model_manifest_for narrowing by target_regions, target_nodes and the window, and (4) the reviewed release file that emits the announcement, which is a protected workflow edit left to a person. Corrected 2026-10-24.",
+    "gap": "2026-10-25 (lane L5-EDGE): the announcement path is built end to end in code, but nothing supplies one on a default path: no composition root reads an announcements file (a new qip-api variable would sit beside QIP_MODEL_PACKS_PATH, itself unset in every committed environment), the mesh that carries the narrowed slot needs QIP_MESH_CELLS, and the release workflow call that emits the record is a protected path (a person's edit). Acknowledgements counted from PolicyApplied (ADR 0149 d4) are not built.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2098,10 +2105,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts; cargo +1.94.1 test -p qip-kernel --test release_packs; cargo +1.94.1 test -p qip-cli --test control_pack",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11, 2026-10-18 (lane L06). 2026-10-24 lane T6-MODEL-AGENTS: not implemented; a kernel-only slice with no per-node caller would sit on no running path, and an announcement admitted with none narrowing must never withhold a model from a deployment that admitted none. Kept PARTIAL."
+    "notes": "Re-graded 2026-10-11, 2026-10-18 (lane L06). 2026-10-24 lane T6-MODEL-AGENTS: not implemented; a kernel-only slice with no per-node caller would sit on no running path, and an announcement admitted with none narrowing must never withhold a model from a deployment that admitted none. Kept PARTIAL. 2026-10-25 lane L5-EDGE, ADR 0149 decision 4 built: the attestation is SHA-256 of the signed pack's canonical bytes plus its signature (attestation_of); the kernel admits announcements only for an admitted pack they attest to, one per artifact, and only beside admitted packs; model_manifest_targeted names an announced distillate only to a node and region it targets inside its window and withholds it from a manifest issued for no node; qip-api's mesh issues each cell's slot for that cell when announcements are held; qip-cli control-pack announce fills digest, signers and attestation from the pack over a reviewed rollout file, and verify exits 3 on a pack or target mismatch. Mutations fired (6): manifest ignores targets; admission skips the attestation; targets drops the node filter; targets drops the window; CLI verify skips the attestation; CLI verify skips the targets."
   },
   {
     "id": "R12-CONTRACT-7092",

@@ -347,6 +347,9 @@ pub struct ModelManifestIssue {
     /// Promoted distillates left out because their card's data licence does
     /// not permit the location the manifest was issued for (R12-TICK-2091).
     unlicensed: usize,
+    /// Promoted distillates left out because the release's rollout record
+    /// does not target the cell, or not now (ADR 0149 decision 4).
+    untargeted: usize,
 }
 
 impl ModelManifestIssue {
@@ -396,7 +399,7 @@ impl ModelManifestIssue {
                 self.unreleased
             )
         };
-        if self.unlicensed == 0 {
+        let line = if self.unlicensed == 0 {
             line
         } else {
             format!(
@@ -404,7 +407,22 @@ impl ModelManifestIssue {
                  does not permit this location",
                 self.unlicensed
             )
+        };
+        if self.untargeted == 0 {
+            line
+        } else {
+            format!(
+                "{line}; {} promoted distillate(s) withheld because the release's rollout record \
+                 does not target this cell now",
+                self.untargeted
+            )
         }
+    }
+
+    /// Distillates withheld because their announcement does not target the
+    /// cell the manifest was issued for.
+    pub fn untargeted(&self) -> usize {
+        self.untargeted
     }
 }
 
@@ -1256,6 +1274,23 @@ impl Platform {
     /// location the centre has not been told — withholds every restricted
     /// distillate: a licence that cannot be checked is not a licence granted.
     pub fn model_manifest_for(&self, location: Option<&str>) -> Result<ModelManifestIssue> {
+        self.model_manifest_targeted(location, None)
+    }
+
+    /// [`Self::model_manifest_for`], for one cell: `target` is the cell's
+    /// region, its node id and the instant the manifest is issued at. With
+    /// control-pack announcements admitted (ADR 0149 decision 4), a
+    /// distillate whose pack is announced is named only where its
+    /// announcement targets that region and node inside its window, and
+    /// withheld from every manifest issued with no target — a rollout record
+    /// can only narrow what a cell is told. A pack nobody announced is
+    /// unaffected.
+    pub fn model_manifest_targeted(
+        &self,
+        location: Option<&str>,
+        target: Option<(&str, &str, Timestamp)>,
+    ) -> Result<ModelManifestIssue> {
+        let mut untargeted = 0usize;
         let mut models = BTreeMap::new();
         let mut packs = BTreeMap::new();
         let mut produced_at: Option<Timestamp> = None;
@@ -1288,6 +1323,18 @@ impl Platform {
                 };
                 match released.get(&promotion.artifact_digest) {
                     Some(pack) if pack.inline_model.as_ref() == Some(&inline) => {
+                        let announced = self
+                            .control_announcements
+                            .as_ref()
+                            .and_then(|held| held.get(&promotion.artifact_digest));
+                        if let Some(announcement) = announced
+                            && !target.is_some_and(|(region, node, now)| {
+                                announcement.targets(region, node, now)
+                            })
+                        {
+                            untargeted += 1;
+                            continue;
+                        }
                         packs.insert(entry.name.clone(), pack.clone());
                     }
                     _ => {
@@ -1307,7 +1354,17 @@ impl Platform {
                 pack: self.model_pack.clone(),
                 unreleased,
                 unlicensed,
+                untargeted,
             }),
+            None if untargeted > 0 => Err(Error::denied(format!(
+                "{untargeted} promoted distillate(s) held and the release's rollout record \
+                 targets none of them at {} inside its window; the trained_models slot ships \
+                 unproduced for it",
+                target.map_or_else(
+                    || "a cell the manifest was not issued for".to_string(),
+                    |(region, node, _)| format!("node {node} in {region}")
+                )
+            ))),
             None if unlicensed > 0 && unreleased == 0 => Err(Error::denied(format!(
                 "{unlicensed} promoted distillate(s) held and the training-data licence of each \
                  refuses {}; the trained_models slot ships unproduced for it",

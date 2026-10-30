@@ -432,6 +432,13 @@ pub struct Platform {
     /// every promoted distillate, as before; `Some` names only those a
     /// verified, two-person pack covers — `Some` of nothing names none.
     pub(crate) release_packs: Option<BTreeMap<String, qip_contracts::policy::ModelPack>>,
+    /// The release's rollout records, by the artifact digest each announces
+    /// (ADR 0149 decision 4, R12-CONTRACT-7091). Read only to narrow: a
+    /// distillate whose pack is announced is named only to a cell its
+    /// announcement targets, inside its window. `None` until a composition
+    /// root supplies them beside the packs.
+    pub(crate) control_announcements:
+        Option<BTreeMap<String, qip_contracts::control_pack::ControlPackAnnouncement>>,
     /// Who moves the production alias in this process: the model desk named
     /// through `Platform::name_model_desk` (MODEL-057). `None` until one is
     /// named, and a promotion or rollback is refused while it is, because a
@@ -5718,6 +5725,7 @@ impl Platform {
             journaled_cards: crate::model_serving::resume_model_registrations(&event_log)?,
             model_pack: crate::model_serving::resume_model_pack(&event_log)?,
             release_packs: None,
+            control_announcements: None,
             model_desk: None,
             fallback: qip_data_finder::retention::FallbackSeries::bounded(),
             fallback_refused: BTreeSet::new(),
