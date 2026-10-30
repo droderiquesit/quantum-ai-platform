@@ -601,6 +601,10 @@ pub struct Platform {
     /// error was charted and read by nothing, so a twin that was wrong about
     /// a venue stayed wrong by the same amount for ever.
     fill_calibration: qip_twin::calibration::FillCalibration,
+    /// The last Lane 2 refresh (R12-ARCH-1191): liquidity maps, per-venue
+    /// execution quality and the narrowing-only intervention DECIDE reads.
+    /// `None` until the first cycle; replaced, never edited, once a minute.
+    tactical: Option<crate::tactical_lane::TacticalRefresh>,
     /// Strategies whose capital grants are narrowed because the twin's replay
     /// of fills at their venue diverged from the venue (R12-RES-7104), each
     /// until a re-promotion recorded after it. Resumed from the log, so a
@@ -6138,6 +6142,7 @@ impl Platform {
             cell_fills_queued: CellFillsQueued::default(),
             fill_scores: Vec::new(),
             fill_calibration: qip_twin::calibration::FillCalibration::default(),
+            tactical: None,
             replay_divergence_holds: replay_divergence_resumed.0,
             replay_divergence_windows: replay_divergence_resumed.1,
             feasibility_refusals: Vec::new(),
@@ -12474,7 +12479,12 @@ impl Platform {
         let mut mark = self.context.now();
         let sensed = self.stage_sense(now);
         self.finish_stage(&mut stages, sensed, &mut mark);
-        let understood = self.stage_understand(now);
+        let mut understood = self.stage_understand(now);
+        // Lane 2 (R12-ARCH-1191), after the world is understood and before
+        // anything is sized, so a refresh that narrows an instrument binds
+        // the DECIDE stage of the same cycle. Due once a minute; on every
+        // other cycle it leaves the last refresh in force.
+        self.refresh_tactical_lane(now, &mut understood);
         self.finish_stage(&mut stages, understood, &mut mark);
         let mut discovered = self.stage_discover(now);
         self.breadth_discover(now, &mut discovered);
@@ -17218,6 +17228,23 @@ impl Platform {
                 .iter()
                 .map(|thesis| thesis.object_id.as_str().to_string()),
             &self.federation_narrowing,
+        );
+        // Lane 2's execution-quality narrowing (R12-ARCH-1191): an
+        // instrument filled at a venue the twin no longer models has its
+        // bound narrowed by the replay-divergence multiplier, never above
+        // one — `Narrowing` cannot hold a factor that is not strictly inside
+        // (0, 1). It compounds with the regime and federation caps, which
+        // read other evidence. With the fill-record cap above it combines as
+        // the stronger of the two and never their product: both read the
+        // same fill scores, and one fill error is evidence once.
+        crate::tactical_lane::narrow(
+            &mut caps,
+            &mut capped,
+            theses
+                .iter()
+                .map(|thesis| thesis.object_id.as_str().to_string()),
+            self.tactical.as_ref(),
+            |object| self.sizing_cap_multiplier(object),
         );
         // ADR 0125 decision 4 for the forecast lattice (R12-WORLD-9024): the
         // bound narrows by the share of its tactical forecasts' life left,
@@ -24632,6 +24659,42 @@ impl Platform {
         )
     }
 
+    /// The last Lane 2 refresh, `None` before the first cycle
+    /// (R12-ARCH-1191): the liquidity maps, per-venue execution quality and
+    /// the instrument narrowings DECIDE sizes under.
+    pub fn tactical_refresh(&self) -> Option<&crate::tactical_lane::TacticalRefresh> {
+        self.tactical.as_ref()
+    }
+
+    /// Run Lane 2 when it is due, journal any change in its narrowings, and
+    /// adopt the refresh.
+    ///
+    /// Journaled before it is adopted, as the replay-divergence hold is: a
+    /// narrowing DECIDE sizes under is a narrowing the log carries. A record
+    /// that cannot be written leaves the previous refresh in force — the
+    /// bound the log does describe — and says so on the stage.
+    fn refresh_tactical_lane(&mut self, now: Timestamp, stage: &mut StageOutcome) {
+        if !crate::tactical_lane::TacticalRefresh::due(self.tactical.as_ref(), now) {
+            return;
+        }
+        let (refresh, problems) =
+            crate::tactical_lane::refresh(&self.liquidity, &self.fill_scores, self.cycle, now);
+        stage.problems.extend(problems);
+        for entry in crate::tactical_lane::changes(self.tactical.as_ref(), &refresh) {
+            if let Err(error) =
+                self.journal_record(entry, crate::tactical_lane::TACTICAL_LANE_ORIGIN, now)
+            {
+                stage.problems.push(format!(
+                    "lane 2's refresh was not adopted because a change in its narrowings could                      not be journaled; the previous refresh stays in force: {}",
+                    error.message()
+                ));
+                return;
+            }
+        }
+        stage.detail.push_str(&format!("; {}", refresh.describe()));
+        self.tactical = Some(refresh);
+    }
+
     /// The twin's per-venue fill calibration, as the scored fills have moved
     /// it (R12-TICK-2080).
     pub fn fill_calibration(&self) -> &qip_twin::calibration::FillCalibration {
@@ -27307,6 +27370,194 @@ mod decide_tests {
         assert!(
             ageing < fresh,
             "sizing did not contract on staleness: {ageing} vs fresh {fresh}"
+        );
+    }
+
+    /// R12-ARCH-1191: Lane 2 runs on the central cycle's default path, once
+    /// a minute, and its intervention only narrows.
+    ///
+    /// Through `run_cycle`, because the failure this prevents is the one the
+    /// requirement's assessment found: the topology and the fill scores both
+    /// existed and nothing on the cycle refreshed a map or a venue's quality
+    /// from them. Three cycles: the first refreshes; one thirty seconds later
+    /// does not, although new depth and new fills have arrived; one a minute
+    /// after the first does, and carries both. Then two platforms differing
+    /// only in whether AAPL's venue is modelled size the same theses, and the
+    /// one whose venue the twin misses sizes AAPL strictly smaller.
+    ///
+    /// Mutations: return before the refresh in `refresh_tactical_lane` (the
+    /// first `expect` fails); multiply the cap by the reciprocal in
+    /// `tactical_lane::narrow` (the strict size assertion fails).
+    #[test]
+    fn the_central_cycle_refreshes_execution_quality_and_liquidity_maps_every_minute() {
+        use crate::replay_divergence::{
+            REPLAY_DIVERGENCE_MIN_SAMPLE, REPLAY_DIVERGENCE_MULTIPLIER,
+        };
+        use qip_financial::quality::DataQuality;
+        use qip_market::quote::Quote;
+
+        let t0 = Timestamp::from_secs(1_760_000_100);
+        let quote = |venue: &str, at: Timestamp| {
+            SensedRecord::Quote(Quote {
+                object_id: qip_core::ObjectId::from_string("AAPL"),
+                venue: venue.to_string(),
+                at,
+                capture_time: at,
+                sequence: None,
+                bid: Decimal::from_int(99),
+                ask: Decimal::from_int(101),
+                bid_size: Decimal::from_int(500),
+                ask_size: Decimal::from_int(500),
+                quality: DataQuality::default(),
+            })
+        };
+        let scores = |object: &str, venue: &str, error_bps: f64| -> Vec<FillScore> {
+            (0..REPLAY_DIVERGENCE_MIN_SAMPLE)
+                .map(|index| FillScore {
+                    order_id: OrderId::from_string(format!("ord-lane2-{venue}-{index}")),
+                    object_id: qip_core::ObjectId::from_string(object),
+                    venue: venue.to_string(),
+                    filled_at: t0.saturating_sub(Duration::from_mins(30)),
+                    scored_at: t0.saturating_sub(Duration::from_mins(20)),
+                    smaller_favoured: false,
+                    larger_favoured: false,
+                    trade_error_bps: Some(error_bps),
+                    unfilled: Decimal::ZERO,
+                    realised_slippage_bps: None,
+                    predicted_slippage_bps: None,
+                    predicted_outcome_bps: None,
+                    realised_outcome_bps: None,
+                    outcome_error_bps: None,
+                })
+                .collect()
+        };
+
+        let mut platform = small_book_platform();
+        assert!(
+            platform.tactical_refresh().is_none(),
+            "a refresh exists before any cycle ran"
+        );
+        platform.observe(vec![quote(
+            "XNAS",
+            t0.saturating_sub(Duration::from_secs(10)),
+        )]);
+        platform
+            .fill_scores
+            .extend(scores("AAPL", "venue-unmodelled", -250.0));
+
+        let first = platform.run_cycle(t0);
+        let refresh = platform
+            .tactical_refresh()
+            .expect("the first cycle ran no Lane 2 refresh");
+        assert_eq!(refresh.refreshed_at, t0);
+        assert_eq!(
+            refresh.liquidity.get("AAPL").map(|map| map.venue_count()),
+            Some(1),
+            "AAPL's map was not published from the quote SENSE absorbed: {refresh:?}"
+        );
+        let quality = refresh
+            .execution_quality
+            .get("venue-unmodelled")
+            .expect("the venue's execution quality was not refreshed from its fill scores");
+        assert_eq!(quality.sample, REPLAY_DIVERGENCE_MIN_SAMPLE);
+        assert_eq!(
+            quality.narrowing.map(|narrowing| narrowing.multiplier()),
+            Some(REPLAY_DIVERGENCE_MULTIPLIER)
+        );
+        let (narrowing, venue) = refresh
+            .instrument_narrowings
+            .get("AAPL")
+            .expect("AAPL, filled at a venue past the threshold, was not narrowed");
+        assert_eq!(venue, "venue-unmodelled");
+        assert!(narrowing.multiplier() < Decimal::ONE);
+        let understand = first.stage(Stage::Understand).expect("understand ran");
+        assert!(
+            understand
+                .detail
+                .contains("lane 2 refreshed: 1 liquidity map(s)"),
+            "{}",
+            understand.detail
+        );
+
+        // Inside the minute: a second venue quotes and a second venue's
+        // fills are scored, and the refresh in force does not move.
+        platform.observe(vec![quote(
+            "ARCX",
+            t0.saturating_add(Duration::from_secs(20)),
+        )]);
+        platform
+            .fill_scores
+            .extend(scores("MSFT", "venue-modelled", 5.0));
+        platform.run_cycle(t0.saturating_add(Duration::from_secs(30)));
+        let held = platform.tactical_refresh().expect("the refresh was lost");
+        assert_eq!(held.refreshed_at, t0, "Lane 2 refreshed inside its minute");
+        assert_eq!(
+            held.liquidity.get("AAPL").map(|map| map.venue_count()),
+            Some(1)
+        );
+        assert!(!held.execution_quality.contains_key("venue-modelled"));
+
+        // At the minute: both arrive.
+        let minute = t0.saturating_add(Duration::from_mins(1));
+        platform.run_cycle(minute);
+        let refreshed = platform.tactical_refresh().expect("the refresh was lost");
+        assert_eq!(
+            refreshed.refreshed_at, minute,
+            "Lane 2 did not refresh at the minute"
+        );
+        assert_eq!(
+            refreshed.liquidity.get("AAPL").map(|map| map.venue_count()),
+            Some(2),
+            "the map was not refreshed with the venue that quoted inside the minute"
+        );
+        let modelled = refreshed
+            .execution_quality
+            .get("venue-modelled")
+            .expect("the second venue's quality was not refreshed at the minute");
+        assert_eq!(modelled.narrowing, None, "a modelled venue was narrowed");
+        assert!(
+            !refreshed.instrument_narrowings.contains_key("MSFT"),
+            "an instrument filled only at a modelled venue was narrowed"
+        );
+        assert!(refreshed.instrument_narrowings.contains_key("AAPL"));
+
+        // Narrowing only, at the seam DECIDE sizes through.
+        let sized = |error_bps: f64| {
+            let mut platform = small_book_platform();
+            platform
+                .fill_scores
+                .extend(scores("AAPL", "venue-x", error_bps));
+            platform.run_cycle(t0);
+            feed_history(&mut platform, "AAPL", 30);
+            feed_history(&mut platform, "MSFT", 30);
+            platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+            platform
+                .pending_theses
+                .push(justified(thesis("MSFT", -0.4)));
+            let decided = platform.stage_decide(t0);
+            let aapl = platform.proposals.last().and_then(|proposal| {
+                proposal
+                    .legs
+                    .iter()
+                    .find(|leg| leg.object_id.as_str() == "AAPL")
+                    .map(|leg| leg.quantity.abs())
+            });
+            (decided, aapl)
+        };
+        let (plain, modelled) = sized(5.0);
+        let modelled = modelled.expect("premise: AAPL is sized at a modelled venue");
+        assert!(!plain.detail.contains("by Lane 2"), "{}", plain.detail);
+        let (decided, narrowed) = sized(-250.0);
+        assert!(
+            decided.detail.contains("AAPL: filled at venue-x")
+                && decided.detail.contains("by Lane 2"),
+            "{}",
+            decided.detail
+        );
+        let narrowed = narrowed.expect("a narrowed instrument is still sized");
+        assert!(
+            narrowed < modelled,
+            "Lane 2's intervention did not narrow AAPL: {narrowed} vs {modelled}"
         );
     }
 

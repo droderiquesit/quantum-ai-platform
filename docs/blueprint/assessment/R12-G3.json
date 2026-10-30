@@ -299,11 +299,13 @@
     "status": "PARTIAL",
     "current": "modules/connectivity has a PSC global address and forwarding rule gated by enable_private_service_connect (off).",
     "evidence": [
-      "infrastructure/terraform/modules/connectivity/main.tf:134-163 PSC address/forwarding rule (count on flag)"
+      "infrastructure/terraform/modules/connectivity/main.tf:134-163 PSC address/forwarding rule (count on flag)",
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl::private_service_connect_plans_one_endpoint_for_the_restricted_google_apis_and_nothing_else",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs::the_only_private_service_connect_endpoint_reaches_google_apis_and_none_fronts_the_execution_node"
     ],
-    "gap": "Gated off everywhere.",
+    "gap": "2026-10-25 (lane L6): both halves of the check are proven in code: a mocked plan plans one PSC endpoint for the restricted Google API bundle, and an acceptance scan refuses any service attachment, any forwarding rule on the execution node, and any rule routing through edge-mesh's cross-region cell PSC address (which no rule consumes today). Remaining: enable_private_service_connect is false in every environment and the address is unset (protected tfvars), and it is useful only once a circuit and far-end DNS exist, so no endpoint is planned on a default path. Earlier: Gated off everywhere.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -312,7 +314,7 @@
     "verification": "terraform plan with enable_private_service_connect=true",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L6: terraform 1.9.8 test in a scratch copy, mock provider: 11 passed. Mutations: the endpoint target set to all-apis failed the new run; a forwarding rule added to modules/execution-node/main.tf failed the acceptance scan at 'puts a forwarding rule on the execution node, the trading hot path'; the target set to a service attachment failed it at 'no longer targets the validated Google API bundle'. Each restored and checked with cmp."
   },
   {
     "id": "R12-GCP-10015",
@@ -693,7 +695,7 @@
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277 no machine inside a mesh",
       "backend/crates/tests/qip-acceptance/tests/no_service_mesh.rs::nothing_the_repository_deploys_enrols_a_workload_in_a_service_mesh (the mesh never carries Reflex traffic: no mesh is declared)"
     ],
-    "gap": "mTLS for warm services is met by ADR 0112's hop table (Amendment 1): rustls mTLS with CA Service workload certificates on every Compute Engine hop, IAM invocation into Cloud Run. Needs CA Service issuance in Terraform and the composition roots, and the IAM evidence of API-8113. The mesh itself is refused.",
+    "gap": "2026-10-25 (lane L6): not wired. certificate_authority is protected dev tfvars and CA Service is billed infrastructure, which owner-decisions-2026-10-25 decision 5 declines for now. Earlier: mTLS for warm services is met by ADR 0112's hop table (Amendment 1): rustls mTLS with CA Service workload certificates on every Compute Engine hop, IAM invocation into Cloud Run. Needs CA Service issuance in Terraform and the composition roots, and the IAM evidence of API-8113. The mesh itself is refused.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1203,7 +1205,7 @@
       "infrastructure/terraform/security.tf google_privateca_ca_pool.internal",
       "infrastructure/terraform/tests/security.tftest.hcl every_security_service_plans_when_named_soundly, a_workload_certificate_living_longer_than_a_day_is_refused"
     ],
-    "gap": "2026-10-24 (lane L6, row was stale at MISSING): the CA pool exists in code and is off everywhere (certificate_authority = null; enabling it is an infrastructure/environments/** change, protected, and costs money). No Fabric broker, client or VM requests or presents a certificate from it: the event-fabric protocol still authenticates by the in-tree identity table over plaintext TCP, and no composition root reads the pool's trust roots. Closing needs the tfvar flip with a real plan, and the mTLS terminator on the Fabric hop (ADR 0112 Amendment 1, R12-SEC-10031).",
+    "gap": "2026-10-25 (lane L6): no patch written. The closure is setting certificate_authority in dev tfvars (protected) and running a real plan, and CA Service is billed infrastructure, which owner-decisions-2026-10-25 decision 5 declines for now; it stays PARTIAL until the owner enables it. Earlier: 2026-10-24 (lane L6, row was stale at MISSING): the CA pool exists in code and is off everywhere (certificate_authority = null; enabling it is an infrastructure/environments/** change, protected, and costs money). No Fabric broker, client or VM requests or presents a certificate from it: the event-fabric protocol still authenticates by the in-tree identity table over plaintext TCP, and no composition root reads the pool's trust roots. Closing needs the tfvar flip with a real plan, and the mTLS terminator on the Fabric hop (ADR 0112 Amendment 1, R12-SEC-10031).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1224,7 +1226,7 @@
       "infrastructure/terraform/security.tf google_access_context_manager_service_perimeter.data",
       "infrastructure/terraform/tests/security.tftest.hcl a_perimeter_restricting_nothing_is_refused, every_security_service_plans_when_named_soundly"
     ],
-    "gap": "2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere. Enabling needs the organisation's access policy number and an infrastructure/environments/** change (protected) with a real plan; Artifact Registry is deliberately left out of the default list pending an egress rule for cross-project promotion (security.tf comment).",
+    "gap": "2026-10-25 (lane L6): no patch written. The closure needs the organisation's access-policy number, which only the owner holds, set in vpc_service_controls in dev tfvars (protected) with a dry-run then a real plan; it stays PARTIAL on that owner input and on the billing pause. Earlier: 2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere. Enabling needs the organisation's access policy number and an infrastructure/environments/** change (protected) with a real plan; Artifact Registry is deliberately left out of the default list pending an egress rule for cross-project promotion (security.tf comment).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1245,7 +1247,7 @@
       "infrastructure/terraform/security.tf google_data_loss_prevention_discovery_config.lake",
       "infrastructure/terraform/tests/security.tftest.hcl a_discovery_scan_for_nothing_is_refused"
     ],
-    "gap": "2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere; enabling it is an infrastructure/environments/** change (protected) that bills, and needs a real plan. Logs are not inspected: the requirement names stores and logs, and the discovery config covers BigQuery and Cloud Storage only (log redaction would need a log sink into one of them or a Logging exclusion/redaction, neither declared).",
+    "gap": "2026-10-25 (lane L6): blocked on a conflict with a standing guard. The code half (a CMEK BigQuery copy of the workload logs, named by the discovery config) was built and then reverted, because manifest_wiring's OBS-020 guard (every_workload_identity_may_write_to_cloud_logging_in_its_own_project_and_no_sink_routes_logs_elsewhere) refuses any sink that routes logs out of Cloud Logging, and SDP cannot scan Cloud Logging buckets. The owner decides: an ADR admitting one SDP-only sink beside OBS-020, or another way to scan the logs. Also off in every environment (protected tfvars, billed). Earlier: 2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere; enabling it is an infrastructure/environments/** change (protected) that bills, and needs a real plan. Logs are not inspected: the requirement names stores and logs, and the discovery config covers BigQuery and Cloud Storage only (log redaction would need a log sink into one of them or a Logging exclusion/redaction, neither declared).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1256,7 +1258,7 @@
     "verification": "scratch copy: terraform test -filter=tests/security.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation setting the discovery config's status to PAUSED (security.tf:468) failed every_security_service_plans_when_named_soundly; restored (cmp), 13 passed."
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation setting the discovery config's status to PAUSED (security.tf:468) failed every_security_service_plans_when_named_soundly; restored (cmp), 13 passed. 2026-10-25 lane L6 (delegated agent, cherry-picked): mutations in a scratch copy: sink ungated failed no_log_copy_exists_while_sensitive_data_protection_is_off; destination pointed at the research dataset, delete permission added to the writer role, and the discovery regex pointed elsewhere each failed the sdp-on run. Agent's acceptance: infrastructure 161, security 29, security_controls 12, terraform_contract 12, terraform_plan 13, identity_separation 5, data_infrastructure_guards 8 passed, 0 failed. 2026-10-25 lane L6: the sink (db60f078) was reverted after the whole acceptance suite failed OBS-020's guard on it; the agent had run only the suites it judged relevant."
   },
   {
     "id": "R12-OBS-10057",
@@ -2904,7 +2906,7 @@
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:380",
       "backend/crates/apps/qip-ledgerd/src/telemetry.rs:122 LEDGER_LAG gauge"
     ],
-    "gap": "Ledger-lag threshold wire into the cell; transfer gating.",
+    "gap": "2026-10-25 (lane L6): not wired. The default is the mesh variables on qip-api, but the Cloud Run API serves no mesh (catalogue.tf) and the cells it would reach need execution_nodes_enabled (protected tfvars, billed nodes), so a paper-only default has nothing to talk to until a node is deployed. Earlier: Ledger-lag threshold wire into the cell; transfer gating.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3500,9 +3502,12 @@
       "tests/qip-acceptance/tests/event_fabric_scaling.rs::fabric_097_each_sink_failure_and_backpressure_isolated_from_others",
       "scripts/game-day/harness.mjs readPeakRssKib, memory_ceiling_kib",
       "scripts/game-day/harness.test.mjs (peak resident size tests)",
-      "docs/ops/game-days/README.md"
+      "docs/ops/game-days/README.md",
+      "backend/crates/apps/qip-cli/src/event_fabric/produce.rs (qip event-fabric produce)",
+      "scripts/game-day/scenarios/frozen-sink.json",
+      "docs/ops/game-days/results/2026-10-25-frozen-sink.json"
     ],
-    "gap": "2026-10-24: the RSS sampler is built and tested (harness.test.mjs). Two things remain, both needing more than the harness: a process that drives producers past a stream's lag limit (no standalone producer binary exists; the cell produces outcomes only when it fires orders, see R12-RES-10154), and a frozen-sink.json scenario using the existing 'pause' fault (SIGSTOP on qip-ledgerd) with a memory_ceiling_kib on qip-fabricd, run once and its result committed under docs/ops/game-days/results. Until the drill has run, the row is code without a recorded drill.",
+    "gap": "2026-10-25 (lane L6): the drill ran against real qip-fabricd, qip-ledgerd and qip binaries on loopback and was met: fabricd's peak resident memory was 22872 KiB under a 65536 KiB ceiling, P0 and P1 were never refused while the ledger was paused, P2 was throttled by quota, the P1 backlog drained with RPO 0 and RTO 224 ms; the same drill with a 16384 KiB ceiling was missed. Remaining: the broker never sheds P2 (shed_total has no production caller) and classes share no queue, so 'P0/P1 keep priority' is shown as per-producer quota, not priority shedding; the P1 lag-limit refusal was not reached locally; single host, debug builds, nothing deployed. The four older scenarios no longer start without QIP_DEPLOYMENT=local and QIP_TLS_MODE=plaintext. Earlier: 2026-10-24: the RSS sampler is built and tested (harness.test.mjs). Two things remain, both needing more than the harness: a process that drives producers past a stream's lag limit (no standalone producer binary exists; the cell produces outcomes only when it fires orders, see R12-RES-10154), and a frozen-sink.json scenario using the existing 'pause' fault (SIGSTOP on qip-ledgerd) with a memory_ceiling_kib on qip-fabricd, run once and its result committed under docs/ops/game-days/results. Until the drill has run, the row is code without a recorded drill.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3515,7 +3520,7 @@
     "verification": "node --test scripts/game-day/harness.test.mjs; then the frozen-sink game-day",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L17 from harness.mjs's fault kinds and the scenarios directory; nothing in the code changed. 2026-10-24 N2-FABRIC-DATA: split step (1) done. Mutations that fired, each restored byte for byte: VmHWM read as VmRSS (the /proc test fails), ceiling comparison inverted (the ceiling test fails), an unreadable peak counted as passed (the fail-closed test fails). Kept PARTIAL."
+    "notes": "Gap corrected 2026-10-18 by lane L17 from harness.mjs's fault kinds and the scenarios directory; nothing in the code changed. 2026-10-24 N2-FABRIC-DATA: split step (1) done. Mutations that fired, each restored byte for byte: VmHWM read as VmRSS (the /proc test fails), ceiling comparison inverted (the ceiling test fails), an unreadable peak counted as passed (the fail-closed test fails). Kept PARTIAL. 2026-10-25 lane L6 (delegated agent, cherry-picked as 4cdfec42): harness mutations (ceiling compared with <, ceiling never compared, no baseline at the fault, final loop skipped, absent_as ignored, load exit ignored) each failed a named harness.test.mjs test; Rust mutations (quota counted as admitted, as both, upper bound dropped, P2 on a P1 topic) each failed a named test. Agent's gate: qip-cli + qip-fabricd passed 161, failed 0; harness.test.mjs 30 pass."
   },
   {
     "id": "R12-RES-10154",

@@ -4399,9 +4399,11 @@
     "current": "Central cycle (fastbrain) runs risk/capital/quote review; liquidity maps and tactical interventions absent.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:14332 quote review",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital",
+      "backend/crates/runtime/qip-kernel/src/tactical_lane.rs (Lane 2: liquidity maps, venue execution quality, narrowing-only intervention, beyond_fill_record)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs run_cycle Lane 2 step, Platform::tactical_refresh"
     ],
-    "gap": "Liquidity maps, execution-quality refresh, tactical interventions.",
+    "gap": "2026-10-25 (lane L6): Lane 2 runs on the central cycle once a minute between UNDERSTAND and DISCOVER: LiquidityTopology maps for every instrument (aged-out ones listed unmapped), per-venue execution quality from the twin's fill scores, and a narrowing-only DECIDE weight-bound intervention that combines with ADR 0063's fill-record narrowing as the stronger of the two, never the product. Remaining: the maps and quality reach no cell (the policy payload has no slot for them); the intervention reuses the replay-divergence threshold rather than a dedicated Lane 2 one, deliberately, since no new risk number may be set under the delegation; observability.md's sentence that qip_venue_fill_error_bps is read by nothing that decides needs restating (protected .claude path). Earlier: Liquidity maps, execution-quality refresh, tactical interventions.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4412,7 +4414,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-25 lane L6 (delegated agent, cherry-picked): mutations each failing a named test: skipping the refresh ('the first cycle ran no Lane 2 refresh'), dividing instead of multiplying ('did not narrow AAPL: 30 vs 15'), dropping the cadence ('Lane 2 refreshed inside its minute'), admitting a factor of 1 ('1 was admitted as a narrowing'), and compounding with the fill record ('Lane 2 and the fill record compounded on one set of fills', which also failed valuation_seam.rs at 0.005). The lane chose 'one fill error is evidence once' when the first version broke valuation_seam.rs; the test was not edited. Agent's gate: qip-kernel passed 1093, failed 0; compliance_proof 8, paper_boundary 5, security 29 passed."
   },
   {
     "id": "R12-ARCH-1192",
@@ -4422,7 +4424,7 @@
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:218 world-model/arbitration/reasoner/planner crates in lane 3",
       "backend/crates/apps/qip-deepbrain/src/main.rs:518"
     ],
-    "gap": "Tick replay/microstructure training off unless QIP_DEEPBRAIN_TICK_EVERY set; several lane-3 crates only via kernel.",
+    "gap": "2026-10-25 (lane L6): not wired. Setting QIP_DEEPBRAIN_TICK_EVERY with the tick entitlements in the dev deep brain manifest grants a data licence, and a licensing grant is evaluated before a source is used (data-and-streaming rule), so it waits for the owner's licensing call. Earlier: Tick replay/microstructure training off unless QIP_DEEPBRAIN_TICK_EVERY set; several lane-3 crates only via kernel.",
     "implemented": true,
     "tested": true,
     "integrated": true,

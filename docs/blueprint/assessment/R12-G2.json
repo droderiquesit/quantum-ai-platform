@@ -2063,12 +2063,14 @@
   },
   {
     "id": "R12-RES-9087",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "No SRE agent or incident-to-test pipeline.",
-    "evidence": [],
-    "gap": "Build it.",
-    "implemented": false,
-    "tested": false,
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::each_incident_record_links_a_drafted_replay_fixture_that_reproduces_it"
+    ],
+    "gap": "2026-10-30 (lane L6): ADR 0213: every incident record links a drafted replay fixture naming its journal window (sequence range, SHA-256 over the window's record hashes, platform-log range, correlation ids), drafted only if replaying it reproduces the same shift; no reproducing fixture means no automated action. Remaining: committing the fixture as a test and showing it fails before the fix is a person's act, and no fuzz or game-day test is drafted, so the inspection's 'links a new test that fails before the fix' is met only as a drafted link. Earlier: Build it.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -2077,7 +2079,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-30 lane L6 (delegated agent, cherry-picked): mutation: the fixture link dropped failed at research.rs:800 ('INC-deepbrain-000001 links no fixture: dropped')."
   },
   {
     "id": "R12-CICD-9088",
@@ -3525,7 +3527,7 @@
       "backend/crates/apps/qip-edge-node/src/strategies.rs StrategyInstaller::install_compiled",
       "backend/crates/apps/qip-edge-node/tests/strategies.rs::each_package_the_node_activates_is_counted_once_and_a_rollback_apart"
     ],
-    "gap": "2026-10-24 (lane L6): emitted, not yet on a default path: the node activates a package only when QIP_STRATEGY_PLAN_PATH is set (main.rs builds the PlanCompiler only then), and the execution-node module's strategy_plan_path defaults to \"\" in every environment, so on a default configuration no package is ever activated and the series never moves (bar part 2). No collector scrapes the node either (modules/observability/NOT-SCRAPED.md), which matters if the requirement's 'carries' is read as collection.",
+    "gap": "2026-10-25 (lane L6): not wired. strategy_plan_path lives in protected dev tfvars under an execution node that execution_nodes_enabled = false keeps from existing, and setting it activates a paper strategy on a billed node, so it is the owner's flip. Earlier: 2026-10-24 (lane L6): emitted, not yet on a default path: the node activates a package only when QIP_STRATEGY_PLAN_PATH is set (main.rs builds the PlanCompiler only then), and the execution-node module's strategy_plan_path defaults to \"\" in every environment, so on a default configuration no package is ever activated and the series never moves (bar part 2). No collector scrapes the node either (modules/observability/NOT-SCRAPED.md), which matters if the requirement's 'carries' is read as collection.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3666,9 +3668,12 @@
       "backend/crates/libs/qip-observability/src/aiops.rs:1-8",
       "backend/crates/libs/qip-observability/tests/aiops.rs",
       "backend/crates/runtime/qip-kernel/tests/self_observation.rs:112",
-      "backend/crates/apps/qip-deepbrain/src/operations.rs::Operations::observe"
+      "backend/crates/apps/qip-deepbrain/src/operations.rs::Operations::observe",
+      "docs/adr/0213-an-incident-is-journalled-and-drafted-with-its-replay-fixture-and-only-a-runbook-acts-and-only-on-this-node.md",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs IncidentRecord, ReplayFixture, runbook_for",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_detected_anomaly_yields_a_journaled_incident_a_runbook_action_and_nothing_else_all_audited"
     ],
-    "gap": "No incident/PR integration, no reading of recent diffs, no scaling, rollback, restart or drain actions.",
+    "gap": "2026-10-30 (lane L6): ADR 0213 (Accepted under the owner's delegation): a detected iteration-time shift yields an IncidentRecord journalled in the remediation journal and drafted to an operations outbox, never sent; only proposals a runbook matches reach the Remediator, every action is audited in the record, and scale/rollback/restart/drain of other services are recorded for_a_person. This runs on the deep brain's default path. Still PARTIAL under bar part 4: the requirement's opening of incidents/PRs is only drafted, and scaling and pre-approved rollback/restart/drain are declined by ADR 0213 decision 2 (no cloud credential is held). Earlier: No incident/PR integration, no reading of recent diffs, no scaling, rollback, restart or drain actions.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3679,7 +3684,7 @@
     "verification": "cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-30 lane L6 (delegated agent, cherry-picked): mutations: skipping the audit entry failed at research.rs:713 (record.actions == audited); letting a non-runbook action through failed at :708 (left 3 right 2). Agent's gate: qip-deepbrain passed 332, failed 0; ambient_effect_boundary, authority_paths, runtime_reachability, untrusted_content, aiops_remediation, arch_048_deepbrain_composition, scope_inspections all passed."
   },
   {
     "id": "R12-OBS-9159",
@@ -3830,7 +3835,7 @@
     "status": "MISSING",
     "current": "No delivery SLOs in code.",
     "evidence": [],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "2026-10-25 (lane L6): no patch written. The recording sites belong in deploy.yml and ci.yml (protected), and delivery_objectives in critical_paths.rs has nothing to read until they exist; PR acceptance and rework rate also need a GitHub API credential, which the owner holds. It stays PARTIAL on the protected workflows and that credential. Earlier: Declare the missing objectives, record them, and prove ingestion.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -4091,7 +4096,7 @@
       "infrastructure/terraform/modules/registry/tests/secondary.tftest.hcl",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs::no_data_store_beyond_those_the_register_records_is_left_without_a_customer_managed_key"
     ],
-    "gap": "2026-10-24 (lane L6): (1) the root module does not pass secondary_region (wiring it needs a variable in infrastructure/terraform/variables.tf, a protected path) and no environment names one; (2) nothing copies a promoted digest into the secondary repository, and no prod promotion checks the digest is there: that belongs to the release pipeline (deploy.yml/Kargo, protected) and prod is never promoted from a workflow today; (3) no real plan.",
+    "gap": "2026-10-25 (lane L6): no patch written. The closure adds secondary_region to the root variables and dev tfvars (protected) and a deploy.yml digest-copy step; a second region's registry is new billed infrastructure under decision 5, and the parked second-region decision (decision 4) governs it, so it stays PARTIAL until the owner reopens it. Earlier: 2026-10-24 (lane L6): (1) the root module does not pass secondary_region (wiring it needs a variable in infrastructure/terraform/variables.tf, a protected path) and no environment names one; (2) nothing copies a promoted digest into the secondary repository, and no prod promotion checks the digest is there: that belongs to the release pipeline (deploy.yml/Kargo, protected) and prod is never promoted from a workflow today; (3) no real plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,

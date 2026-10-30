@@ -89,6 +89,7 @@ pub mod source_discovery;
 pub mod source_lifecycle;
 pub mod survival;
 pub mod symbolic_stage;
+pub mod tactical_lane;
 pub mod tail;
 #[cfg(test)]
 pub(crate) mod thesis_fixture;
