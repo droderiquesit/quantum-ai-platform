@@ -79,11 +79,9 @@ test("the console gateway opens its breaker after consecutive upstream failures 
     const took = Date.now() - started;
     expect(refused.status()).toBe(503);
     expect(refused.headers()["x-qip-gateway"]).toBe("open");
-    // No `cache-control` assertion, deliberately: the handler sets `no-store`
-    // like every gateway answer, but `next.config.ts`'s `/:path*` header rule
-    // overwrites it with `public, max-age=31536000, immutable` on every
-    // response this app serves. That is a defect older than this breaker and
-    // outside its change; asserting `no-store` here would fail on it.
+    // A refusal is never cached: `next.config.ts` once overwrote every
+    // response's Cache-Control with a year-long `immutable`, this one included.
+    expect(refused.headers()["cache-control"]).toBe("no-store");
     expect(Number(refused.headers()["retry-after"])).toBeGreaterThanOrEqual(1);
     const body = (await refused.json()) as { error: string; gateway: string; upstream: string };
     expect(body.gateway).toBe("open");

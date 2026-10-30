@@ -56,6 +56,16 @@ const nextConfig: NextConfig = {
         { key: "X-Content-Type-Options", value: "nosniff" },
         { key: "Referrer-Policy", value: "no-referrer" },
         { key: "X-Frame-Options", value: "DENY" },
+      ],
+    },
+    // Only hashed build output may be cached for a year. This used to sit in
+    // the `/:path*` rule above, which overwrote every response's
+    // Cache-Control — the gateway's and the stream's `no-store` included — so
+    // a proxy or browser was told to keep a blotter, a refusal or a login
+    // page for a year as immutable. A cached blotter is a wrong blotter.
+    {
+      source: "/_next/static/:path*",
+      headers: [
         { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
       ],
     },
