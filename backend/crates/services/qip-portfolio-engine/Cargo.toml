@@ -10,7 +10,11 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 qip-core.workspace = true
+qip-contracts.workspace = true
 qip-optimization-engine.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

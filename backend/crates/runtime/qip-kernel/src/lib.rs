@@ -89,6 +89,8 @@ pub mod source_lifecycle;
 pub mod survival;
 pub mod symbolic_stage;
 pub mod tail;
+#[cfg(test)]
+pub(crate) mod thesis_fixture;
 pub mod valuation;
 pub mod venue_admission;
 pub mod venue_measurement;
