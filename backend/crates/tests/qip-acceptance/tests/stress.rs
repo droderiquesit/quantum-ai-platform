@@ -1699,7 +1699,9 @@ fn training_that_misses_its_bar_promotes_nothing_and_names_the_shortfall() -> Re
     )
     .with_purpose("estimates margin compression from floating-rate funding");
     let reference = card.reference();
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("a registry below its cap admits a card");
     registry.record_evaluation(
         &reference,
         EvaluationRecord {

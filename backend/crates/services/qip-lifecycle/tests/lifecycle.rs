@@ -885,6 +885,9 @@ fn healthy_observation(at: Timestamp) -> LiveObservation {
     }
 }
 
+// A fixture returning the registry itself: an empty registry refusing one
+// card is the failure report.
+#[allow(clippy::expect_used)]
 fn healthy_registry(now: Timestamp) -> ModelRegistry {
     let mut registry = ModelRegistry::new();
     let mut card = ModelCard::new(
@@ -901,7 +904,9 @@ fn healthy_registry(now: Timestamp) -> ModelRegistry {
         metrics: BTreeMap::new(),
         passed: true,
     });
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("an empty registry admits a card");
     registry
 }
 

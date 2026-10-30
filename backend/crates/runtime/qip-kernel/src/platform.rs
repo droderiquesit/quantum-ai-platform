@@ -3755,6 +3755,29 @@ pub struct CalibrationJournal {
     pub brier_score: f64,
     pub confidence_adjustment: f64,
     pub is_overconfident: bool,
+    /// Each panel agent's hit rate over the graded theses it argued, in the
+    /// same window (R12-MODEL-10123). It is on the journal because a score
+    /// held only in memory is a score a restart forgets and an auditor cannot
+    /// read: until 2026-10-25 the feedback engine computed it every LEARN
+    /// pass and nothing recorded it. Agents below the sample the feedback
+    /// engine requires are withheld there, so they are absent here, not zero.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub hit_rate_by_agent: BTreeMap<String, f64>,
+}
+
+impl CalibrationJournal {
+    /// The entry for a LEARN pass that graded `evaluated_this_cycle` theses
+    /// and left `calibration` over its window.
+    pub fn of(evaluated_this_cycle: usize, calibration: &CalibrationReport) -> Self {
+        Self {
+            evaluated_this_cycle,
+            evaluations_in_window: calibration.evaluated,
+            brier_score: calibration.brier_score,
+            confidence_adjustment: calibration.confidence_adjustment,
+            is_overconfident: calibration.is_overconfident,
+            hit_rate_by_agent: calibration.hit_rate_by_agent.clone(),
+        }
+    }
 }
 
 /// What one call to [`Platform::learn_from`] produced.
@@ -11110,7 +11133,9 @@ impl Platform {
             .iter()
             .any(|evaluation| evaluation.verdict.is_informative());
         let report = if informative {
-            let report = self.feedback.process(&self.evaluations, now)?;
+            let report = self
+                .feedback
+                .process(&Self::keyed_by_agent(&self.evaluations, &roster), now)?;
             // Statistics, and therefore `f64` end to end: the Brier score
             // and the adjustment are already floats in the report.
             self.telemetry.metrics.gauge(
@@ -19881,6 +19906,49 @@ impl Platform {
         (Some(detail), None)
     }
 
+    /// The roster agent a contributor run id is a run of: the chief mints
+    /// `run-<manifest id>-<sequence>`, matched against the roster rather than
+    /// parsed (see [`Self::components_of`]).
+    fn agent_of<'r>(contributor: &str, roster: &'r [String]) -> Option<&'r String> {
+        let rest = contributor.strip_prefix("run-")?;
+        roster.iter().find(|id| {
+            rest.strip_prefix(id.as_str())
+                .and_then(|tail| tail.strip_prefix('-'))
+                .is_some_and(|sequence| sequence.parse::<u64>().is_ok())
+        })
+    }
+
+    /// The evaluations as the feedback engine must see them: each
+    /// contributor named by the agent it is a run of, not by the run.
+    ///
+    /// The failure this prevents (R12-MODEL-10123): a contributor is a run
+    /// id, `run-<manifest id>-<sequence>`, unique to one run. The feedback
+    /// engine keyed its per-agent hit rate on that id, so every agent had
+    /// one episode per key, every rate was withheld below the sample, and
+    /// agents were never scored. The same key let the lesson bar's "two
+    /// distinct contributors" be met by one agent run twice. A run of an
+    /// agent no longer on the roster keeps its run id and stays withheld,
+    /// rather than being charged to whichever prefix happened to fit.
+    fn keyed_by_agent(evaluations: &[Evaluation], roster: &[String]) -> Vec<Evaluation> {
+        evaluations
+            .iter()
+            .map(|evaluation| {
+                let mut keyed = evaluation.clone();
+                let mut agents: Vec<String> = Vec::with_capacity(keyed.contributors.len());
+                for contributor in &evaluation.contributors {
+                    let agent = Self::agent_of(contributor, roster)
+                        .cloned()
+                        .unwrap_or_else(|| contributor.clone());
+                    if !agents.contains(&agent) {
+                        agents.push(agent);
+                    }
+                }
+                keyed.contributors = agents;
+                keyed
+            })
+            .collect()
+    }
+
     /// The components a graded thesis is charged to.
     ///
     /// The detector is the hypothesis class — [`Self::synthesise`] sets the
@@ -19895,15 +19963,7 @@ impl Platform {
     fn components_of(evaluation: &Evaluation, roster: &[String]) -> Result<Vec<ComponentKey>> {
         let mut components = vec![ComponentKey::detector(&evaluation.class)?];
         for contributor in &evaluation.contributors {
-            let Some(rest) = contributor.strip_prefix("run-") else {
-                continue;
-            };
-            let analyst = roster.iter().find(|id| {
-                rest.strip_prefix(id.as_str())
-                    .and_then(|tail| tail.strip_prefix('-'))
-                    .is_some_and(|sequence| sequence.parse::<u64>().is_ok())
-            });
-            if let Some(analyst) = analyst {
+            if let Some(analyst) = Self::agent_of(contributor, roster) {
                 let key = ComponentKey::analyst(analyst)?;
                 if !components.contains(&key) {
                     components.push(key);
@@ -20085,13 +20145,10 @@ impl Platform {
         match &learned.report {
             Some(report) => {
                 summary.push_str(&format!("; calibration {}", report.calibration.summarise()));
-                self.cycle_calibration = Some(CalibrationJournal {
-                    evaluated_this_cycle: learned.evaluations.len(),
-                    evaluations_in_window: report.calibration.evaluated,
-                    brier_score: report.calibration.brier_score,
-                    confidence_adjustment: report.calibration.confidence_adjustment,
-                    is_overconfident: report.calibration.is_overconfident,
-                });
+                self.cycle_calibration = Some(CalibrationJournal::of(
+                    learned.evaluations.len(),
+                    &report.calibration,
+                ));
             }
             None => summary.push_str("; nothing informative yet to calibrate on"),
         }
@@ -29986,7 +30043,9 @@ mod central_sizing_tests {
         card.drift_threshold = 0.2;
         card.drift_score = 0.1;
         let mut registry = ModelRegistry::new();
-        registry.register(card);
+        registry
+            .register(card)
+            .expect("an empty registry admits a card");
         platform.observe_model_drift(&registry);
         assert!(platform.drifted_models().is_empty());
         assert_eq!(
@@ -30682,6 +30741,78 @@ mod self_model_tests {
             2,
             "an origin nobody measured was handed a factor: {handed:?}"
         );
+    }
+
+    /// R12-MODEL-10123: LEARN scores each panel agent from the theses it
+    /// argued, keyed by the agent and not by the run. Every contributor is a
+    /// distinct run id, so keyed by run each agent held one episode per key
+    /// and no rate ever cleared the sample: agents were never scored.
+    /// Mutation: hand the feedback engine `self.evaluations` unkeyed in
+    /// `learn_from` — the analyst's rate is withheld and the first assertion
+    /// fails.
+    #[test]
+    fn ten_graded_theses_argued_by_one_analyst_score_that_analyst_not_its_runs() {
+        let mut platform = platform();
+        let analyst = "macro-analyst";
+        assert!(
+            platform
+                .organisation
+                .roster()
+                .iter()
+                .any(|manifest| manifest.id == analyst),
+            "premise: {analyst} is on the roster"
+        );
+        let resolves_at = start().saturating_add(Duration::from_days(5));
+        // Ten misses and nothing else, so the rate is exactly zero.
+        for n in 1..=10 {
+            let id = format!("hyp-agent-{n}");
+            let claim = ThesisClaim {
+                hypothesis_id: id.clone(),
+                class: "price_dislocation".to_string(),
+                subject: "obj-AAA".to_string(),
+                formed_at: start(),
+                resolves_at,
+                direction: 1.0,
+                expected_move_bps: 200.0,
+                confidence: 0.7,
+                falsifiers: vec!["it reverts".to_string()],
+                contributors: vec![format!("run-{analyst}-{n}")],
+            };
+            let outcome = ThesisOutcome {
+                hypothesis_id: id,
+                observed_at: resolves_at,
+                realised_move_bps: -180.0,
+                realised_pnl: 0.0,
+                falsifiers_triggered: Vec::new(),
+                mechanism_confirmed: None,
+            };
+            platform
+                .learn_from(&[claim], &[outcome], resolves_at)
+                .expect("a resolvable claim grades");
+        }
+        let calibration = platform
+            .calibration()
+            .expect("ten informative verdicts calibrate");
+        assert_eq!(
+            calibration.hit_rate_by_agent.get(analyst),
+            Some(&0.0),
+            "{analyst} argued ten graded theses and was not scored: {:?}; withheld {:?}",
+            calibration.hit_rate_by_agent,
+            calibration.withheld
+        );
+        assert!(
+            calibration
+                .hit_rate_by_agent
+                .keys()
+                .all(|key| !key.starts_with("run-")),
+            "an agent was scored under a run id: {:?}",
+            calibration.hit_rate_by_agent
+        );
+        // And the journal entry LEARN writes carries the scores, so a
+        // restart or an auditor reads them from the log. Mutation: leave
+        // `hit_rate_by_agent` empty in `CalibrationJournal::of`.
+        let entry = CalibrationJournal::of(10, calibration);
+        assert_eq!(entry.hit_rate_by_agent, calibration.hit_rate_by_agent);
     }
 
     #[test]

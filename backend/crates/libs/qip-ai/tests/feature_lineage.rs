@@ -47,7 +47,9 @@ fn card_with(lineage: &[(&str, FeatureOrigin)]) -> ModelCard {
 fn promote(card: ModelCard) -> Result<(), String> {
     let mut registry = ModelRegistry::default();
     let reference = card.reference();
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("a registry below its cap admits a card");
     registry
         .promote(&reference, at(10))
         .map_err(|e| e.message().to_string())

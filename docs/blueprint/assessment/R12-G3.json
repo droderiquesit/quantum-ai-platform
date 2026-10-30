@@ -2800,13 +2800,15 @@
   {
     "id": "R12-MODEL-10123",
     "status": "PARTIAL",
-    "current": "LEARN calls calibrate_resolved/learn_from, score_declined/evaluate_alternatives and score_filled; cost-router keeps reputation. Hedges and agents not scored.",
+    "current": "LEARN calls calibrate_resolved/learn_from, score_declined/evaluate_alternatives and score_filled; cost-router keeps reputation. Hedges and agents not scored. Since 2026-10-25 LEARN scores each panel agent from the theses it argued, keyed by agent: Platform::keyed_by_agent maps each contributor run id to its roster agent before FeedbackEngine::process, and the cycle journal's CalibrationJournal carries hit_rate_by_agent. Before this, contributors were run ids, unique per run, so every agent rate was withheld below the ten-episode sample and agents were never scored. The same key had let the lesson bar's two distinct contributors be met by one agent run twice.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:8901 learn_from",
       "backend/crates/runtime/qip-kernel/src/platform.rs:17136 evaluate_alternatives",
-      "backend/crates/services/qip-cost-router/src/reputation.rs"
+      "backend/crates/services/qip-cost-router/src/reputation.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::agent_of, Platform::keyed_by_agent, CalibrationJournal::of",
+      "backend/crates/runtime/qip-kernel/src/platform.rs self_model_tests::ten_graded_theses_argued_by_one_analyst_score_that_analyst_not_its_runs"
     ],
-    "gap": "Agent and hedge scoring.",
+    "gap": "2026-10-30 (lane L2-INTEL): the in-lane skeptic REFUTED 7bce976f on bar part 1. The default-path write in calibrate_resolved can drop hit_rate_by_agent with every qip-kernel test green, because the unit test calls CalibrationJournal::of directly and never drives stage_learn, calibrate_resolved or journal_cycle. Not re-reviewed (no third round). Behaviour change named by the skeptic: qip-deepbrain research.rs incompetent_specialists reads hit_rate_by_agent and can now fire; it was dead while every key was a run id. Hedges stay unscored: no composition root declares a hedge policy, and owner decision 7 holds one.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2814,10 +2816,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib self_model_tests",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " 2026-10-25 L2-INTEL: mutations, each fired, restored by copy + cmp: the feedback engine handed unkeyed evaluations; CalibrationJournal::of leaving hit_rate_by_agent empty; agent_of matching no contributor. Each fails ten_graded_theses_argued_by_one_analyst_score_that_analyst_not_its_runs."
   },
   {
     "id": "R12-RES-10124",

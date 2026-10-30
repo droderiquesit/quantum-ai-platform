@@ -202,7 +202,7 @@ pub fn register_fit(
     });
 
     let reference = card.reference();
-    registry.register(card);
+    registry.register(card)?;
 
     Ok(ModelRegistration {
         reference,

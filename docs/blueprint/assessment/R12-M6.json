@@ -1670,13 +1670,16 @@
   {
     "id": "R12-MODEL-6074",
     "status": "PARTIAL",
-    "current": "require_calibrated_baseline refuses candidates without a calibrated baseline; regime-split scoring exists; no stress/regime-shift calibration check.",
+    "current": "require_calibrated_baseline refuses candidates without a calibrated baseline; regime-split scoring exists; no stress/regime-shift calibration check. Since 2026-10-30 (ADR 0149 decision 10): qip_ai::registry::is_stressed_regime reads a stressed regime from the regime_context label (market crisis/illiquid or volatility high/extreme; an unreadable label reads as stressed). The deep brain's promote stage refuses a candidate whose round was judged in a stressed regime when an incumbent it would displace does not list that regime in validated_regimes (LearningDesk::stressed_claim_refusal, at entering shadow and at the shadow round's comparison).",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/central/models.rs:65",
       "backend/crates/runtime/qip-kernel/tests/models.rs:386",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:2605"
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:2605",
+      "backend/crates/libs/qip-ai/src/registry.rs is_stressed_regime",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs LearningDesk::stressed_claim_refusal",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs learning::tests::a_candidate_is_not_promoted_on_a_stressed_regime_claim_its_baseline_was_never_validated_in"
     ],
-    "gap": "require_calibrated_baseline (central/models.rs) still checks one calibration on the baseline's card. The scoreboard slice the closure names is not at learning.rs:2605 any more, and the training datasets carry no regime label, so 'the stressed-regime slice' has no definition to calibrate on; closing it needs that definition (for example the worst-decile targets or the regime_context label), a stress calibration recorded on the card by register_fit, and a decision that a baseline without one is refused - a policy change that would refuse every baseline registered today.",
+    "gap": "2026-10-30 (lane L2-INTEL): ADR 0149 decision 10's baseline rule is built on the deep brain's promote stage, but the in-lane skeptic REFUTED it against the requirement text (bar part 4). The candidate's own calibration under a stressed regime is never measured. A first promotion with no incumbent is never checked. The test's control does not assert a promotion, and the shadow-round copy of the check has no test. The remaining step is a candidate-side calibration measured in the stressed regime and refused when miscalibrated, applied with or without an incumbent.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1687,7 +1690,7 @@
     "verification": "cargo test -p qip-kernel --test models",
     "work_item": "",
     "size": "M",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. 2026-10-30 L2-INTEL: mutations, each fired, restored by copy + cmp: is_stressed_regime always false; the entering-shadow check removed. Each fails a_candidate_is_not_promoted_on_a_stressed_regime_claim_its_baseline_was_never_validated_in."
   },
   {
     "id": "R12-REFLEX-6075",
