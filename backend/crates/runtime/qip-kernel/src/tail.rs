@@ -626,9 +626,49 @@ pub fn survival_worlds(book: &TailBook<'_>, at: Timestamp) -> Vec<TailWorld> {
             ),
         ));
     }
-
-    out.push(synthetic_joint(book, &held, &vols, &unmeasured_vol, at));
     out
+}
+
+/// The generated joint world over `book` ([`SYNTHETIC_JOINT`]), or `None`
+/// for no equity or no position, as [`survival_worlds`] is.
+///
+/// Deliberately **not** one of [`survival_worlds`]: the survival reserve and
+/// hedge selection read those, and this world is usually the worst of them,
+/// so applying it raises the capital the survival governor withholds. That
+/// is a change to a financial risk control and awaits the owner's
+/// authorisation; until then the platform computes it, reports it and its
+/// would-be reserve as advisory, and applies it only where a composition
+/// root has turned on `Platform::set_joint_tail_reserve_applied`, which none
+/// does.
+pub fn joint_world(book: &TailBook<'_>, at: Timestamp) -> Option<TailWorld> {
+    let equity = book.equity;
+    if !(equity.is_finite() && equity > 0.0) || book.positions.is_empty() {
+        return None;
+    }
+    let held: Vec<&TailPosition> = book
+        .positions
+        .iter()
+        .filter(|position| position.notional != 0.0 && position.notional.is_finite())
+        .collect();
+    let mut unmeasured = Vec::new();
+    let vols: Vec<f64> = held
+        .iter()
+        .map(|position| {
+            match book
+                .price_history
+                .get(&position.object)
+                .map(Vec::as_slice)
+                .and_then(daily_volatility)
+            {
+                Some(vol) => vol,
+                None => {
+                    unmeasured.push(position.object.clone());
+                    UNMEASURED_DAILY_VOLATILITY
+                }
+            }
+        })
+        .collect();
+    Some(synthetic_joint(book, &held, &vols, &unmeasured, at))
 }
 
 /// See [`SYNTHETIC_JOINT`]. Statistics, so `f64`. The pairwise
@@ -1141,6 +1181,23 @@ mod tests {
         );
     }
 
+    fn joint_of(
+        positions: &[TailPosition],
+        history: &BTreeMap<String, Vec<f64>>,
+        seed: u64,
+    ) -> TailWorld {
+        joint_world(
+            &TailBook {
+                positions,
+                price_history: history,
+                equity: 1_000_000.0,
+                seed,
+            },
+            at(),
+        )
+        .expect("premise: a held book with equity has a joint world")
+    }
+
     fn series(start: f64, moves: &[f64]) -> Vec<f64> {
         let mut prices = vec![start];
         for move_ in moves {
@@ -1354,7 +1411,7 @@ mod tests {
         let history = BTreeMap::from([("obj-AAA".to_string(), a), ("obj-BBB".to_string(), b)]);
         let positions = [held("obj-AAA", 500_000.0), held("obj-BBB", -500_000.0)];
         let generated = book_of(&positions, &history, 11);
-        let joint = world(&generated, SYNTHETIC_JOINT).clone();
+        let joint = joint_of(&positions, &history, 11);
         let library = worlds(
             &[
                 ("obj-AAA".into(), 500_000.0),
@@ -1367,9 +1424,7 @@ mod tests {
         let others: Vec<&TailWorld> = generated
             .iter()
             .chain(library.iter())
-            .filter(|w| {
-                w.scenario != SYNTHETIC_JOINT && !SYNTHETIC_WORLDS.contains(&w.scenario.as_str())
-            })
+            .filter(|w| !SYNTHETIC_WORLDS.contains(&w.scenario.as_str()))
             .collect();
         assert!(
             others.iter().any(|w| w.scenario == REGIME_FLIP)
@@ -1392,13 +1447,13 @@ mod tests {
                 other.loss
             );
         }
-        assert_eq!(
-            &joint,
-            world(&book_of(&positions, &history, 11), SYNTHETIC_JOINT)
-        );
         assert!(
-            (joint.loss - world(&book_of(&positions, &history, 12), SYNTHETIC_JOINT).loss).abs()
-                > 1e-6,
+            generated.iter().all(|w| w.scenario != SYNTHETIC_JOINT),
+            "the joint world is advisory and never one of the applied survival worlds"
+        );
+        assert_eq!(joint, joint_of(&positions, &history, 11));
+        assert!(
+            (joint.loss - joint_of(&positions, &history, 12).loss).abs() > 1e-6,
             "two cycles generated the same joint world"
         );
     }
@@ -1431,7 +1486,7 @@ mod tests {
         for seed in [3, 17, 99] {
             let generated = book_of(&positions, &history, seed);
             let flip = world(&generated, REGIME_FLIP).loss;
-            let joint = world(&generated, SYNTHETIC_JOINT).loss;
+            let joint = joint_of(&positions, &history, seed).loss;
             assert!(flip > 0.0, "premise: the regime flip charges the book");
             // The floor written out, not read from the constants it checks.
             let bound = 1.25 * 0.75_f64.sqrt() * flip;
@@ -1454,7 +1509,7 @@ mod tests {
             ("obj-BBB".to_string(), series(100.0, &[-0.02, 0.03, -0.025])),
         ]);
         let positions = [held("obj-AAA", -1.0e200), held("obj-BBB", -1.0e200)];
-        let joint = world(&book_of(&positions, &history, 5), SYNTHETIC_JOINT).clone();
+        let joint = joint_of(&positions, &history, 5);
         assert!(
             joint.loss.is_infinite() && joint.loss > 0.0,
             "an overflowed joint world read as {}",
