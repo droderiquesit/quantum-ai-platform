@@ -413,8 +413,13 @@ impl Platform {
     /// rebuild that silently dropped one would hold a different belief from
     /// the fabric that wrote the journal.
     pub fn journaled_evidence(&self) -> Result<Vec<JournaledClaim>> {
-        self.event_log()
-            .by_topic(Topic::EvidenceAdmitted)
+        Self::journaled_evidence_in(self.event_log())
+    }
+
+    /// [`Self::journaled_evidence`] over a log the platform does not yet
+    /// own: what assembly reads to rebuild the fabric before the first cycle.
+    pub(crate) fn journaled_evidence_in(log: &qip_events::EventLog) -> Result<Vec<JournaledClaim>> {
+        log.by_topic(Topic::EvidenceAdmitted)
             .into_iter()
             .map(|frame| {
                 let envelope = qip_streaming::envelope::StreamEnvelope::from_frame(frame)?;

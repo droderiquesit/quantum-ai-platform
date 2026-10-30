@@ -30,9 +30,12 @@
       "backend/crates/services/qip-data-finder/src/ingestion.rs:52 plan_for",
       "backend/crates/services/qip-data-finder/src/ingestion.rs:79 descriptor_for",
       "backend/crates/services/qip-data-finder/tests/registration_is_not_ingestion.rs registration does not imply ingestion",
-      "backend/crates/services/qip-market-ingestion/src/connectors/manifests/ seven hand-written shipped manifests"
+      "backend/crates/services/qip-market-ingestion/src/connectors/manifests/ seven hand-written shipped manifests",
+      "backend/crates/apps/qip-cli/src/adapter_proposals.rs (propose)",
+      "backend/crates/apps/qip-cli/src/main.rs (qip registrations propose)",
+      "backend/crates/apps/qip-cli/tests/adapter_proposals.rs"
     ],
-    "gap": "No path from a discovered registration to a running adapter: the descriptor is not consumed by any composition root, and connectors are only the seven shipped by hand.",
+    "gap": "2026-10-25: owner decision (skeptic REFUTED on part 4): qip registrations propose prints, for each candidate the finder registers, the adapter plan and descriptor matching its access mechanism (refused ones get the finder's reason), but ADR 0157 §4/§5 and ADR 0180 decision 3 decline generated adapters and the requirement names the Scout, so whether an operator-run printed proposal meets 'the Scout ... proposes for review' is the owner's call.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -40,10 +43,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test registration_is_not_ingestion",
+    "verification": "cargo test -p qip-cli --test adapter_proposals",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-25: qip registrations propose --candidates <path> assesses each catalogue entry through Platform::assess_sources (reviewed egress route per entry, in-memory event log, print-only) and proposes plan_for/descriptor_for for registered sources. Mutation: route Rejected into the adapter arm; test fails. Skeptic (security-engineer): parts 1-3 hold; REFUTED on part 4 (ADR 0180 decision 3); only REST is exercised."
   },
   {
     "id": "R12-DATA-2003",
@@ -896,9 +899,13 @@
       "backend/crates/libs/qip-evidence/src/fabric.rs:54-56",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:121-131",
       "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:854 an_open_contest_survives_a_fabric_filled_past_capacity_with_unrelated_claims",
-      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them"
+      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them",
+      "backend/crates/services/qip-world-model/src/world.rs (WorldModel::rebuild_evidence)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::new rebuilds the evidence fabric; stage_understand contest detail)",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs a_contest_and_its_resolving_evidence_survive_a_restart_from_the_event_log",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them"
     ],
-    "gap": "2026-10-24 (re-read): the earlier 'unjournaled' is stale - since ADR 0152 §2 every admitted claim is journaled to evidence.admitted (Platform::absorb_evidence, EvidenceAdmittedRecord), Platform::journaled_evidence reads them back in log order and EvidenceFabric::rebuild re-admits them, so contests and resolutions are derivable from the log (kernel tests/evidence_intake.rs). What remains: no composition root restores the event log at start-up or calls EvidenceFabric::rebuild over journaled_evidence, so a restarted process starts with an empty fabric and no contest survives a restart on any default path; nothing outside qip-evidence and tests reads contests (grep of .contests() finds no production reader); and a fabric whose every held claim is contested still evicts the oldest contested claim. Closing needs a start-up restore of the journal (from the chain archive) in qip-deepbrain/qip-fastbrain/qip-api with a rebuild of the world fabric and a restart test proving a contest and its resolving id survive.",
+    "gap": "2026-10-25: deploy dependence (skeptic REFUTED on part 2): the fabric's contests now survive a restart and are reported on UNDERSTAND, but claims reach the fabric only through Platform::admit_world_records draining the fastbrain/api connector arm, which exists only under QIP_CONNECTOR_* and which every committed tfvars leaves off, so no committed deployment forms a contest; remaining step is evidence admission on a default path (or an operator qip-cli route).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -908,10 +915,10 @@
       "R12-EVID-2032"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test evidence_fabric",
+    "verification": "cargo test -p qip-kernel --test evidence_intake; cargo test -p qip-world-model --test evidence_fabric",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed). 2026-10-24 lane L3-DATA: gap corrected in both directions (journal and rebuild exist; start-up restore and a downstream reader do not). Kept PARTIAL."
+    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed). 2026-10-24 lane L3-DATA: gap corrected in both directions (journal and rebuild exist; start-up restore and a downstream reader do not). Kept PARTIAL. 2026-10-25: Platform::new now rebuilds the world's evidence fabric from the journaled EvidenceAdmitted claims, so contests, both hypotheses and the resolving claim survive a restart; UNDERSTAND reports open and resolved contests. Mutations: skip rebuild_evidence (restarted contests differ, test fails); drop contest_detail from the stage line (stage assertion fails). Skeptic (security-engineer) REFUTED on default path only; it also noted the rebuild fails closed: a later release whose EvidenceFabric::default differs from the writer's stops Platform::new on an existing log, by design (Principle 3), with no operator recovery path documented yet."
   },
   {
     "id": "R12-EVID-2039",
@@ -1159,7 +1166,7 @@
     "verification": "cargo test -p qip-edge-node --test lake_clock",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: within-stream alignment now on the drain (tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock checks arrival_order through the corrections equality); cross-venue and region metadata not reached. 2026-10-25: 367f8451 stamps region, cell, clock_source and cross_partition (bounded at MAX_ALIGNED_PARTITIONS) on every lake line; three mutations in the commit. Skeptic (code-reviewer) REFUTED, and found a live defect: the spool floors instants to the millisecond, so two ticks a microsecond apart on 50 us clocks were stamped 'before'; fixed in the following commit by widening each side by half the spool quantum."
+    "notes": "Corrected 2026-10-18 by lane L09: within-stream alignment now on the drain (tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock checks arrival_order through the corrections equality); cross-venue and region metadata not reached. 2026-10-25: 367f8451 stamps region, cell, clock_source and cross_partition (bounded at MAX_ALIGNED_PARTITIONS) on every lake line; three mutations in the commit. Skeptic (code-reviewer) REFUTED, and found a live defect: the spool floors instants to the millisecond, so two ticks a microsecond apart on 50 us clocks were stamped 'before'; fixed in the following commit by widening each side by half the spool quantum. 2026-10-25: 68d92f3b fixes the skeptic's sub-millisecond false order (SPOOL_TRUNCATION_HALF_WIDTH); test ticks_the_spool_floored_to_different_milliseconds_are_not_ordered_by_the_floor; mutation (drop the widening) fails both alignment tests. Row handed to L3b 2026-10-25."
   },
   {
     "id": "R12-TICK-2049",
