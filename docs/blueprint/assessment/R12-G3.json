@@ -4331,9 +4331,13 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/feature.rs:413-470 ForecastLattice",
       "backend/crates/tests/qip-acceptance/tests/m6_foundation.rs",
-      "backend/crates/libs/qip-contracts/src/forecast.rs::ForecastFields"
+      "backend/crates/libs/qip-contracts/src/forecast.rs::ForecastFields",
+      "backend/crates/services/qip-portfolio-engine/src/construction.rs ApprovedThesis.return_forecast, expected_return(), validate",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::return_forecast",
+      "backend/crates/services/qip-portfolio-engine/tests/portfolio.rs::an_approved_thesis_without_a_return_forecast_is_refused",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::a_thesis_return_forecast_takes_its_spread_from_the_instruments_own_history"
     ],
-    "gap": "Decided by ADR 0140 (accepted 2026-10-18): A forecast is material when it reaches a size, a capital plan, a published record or a promotion, and every material forecast is a qip_contracts Forecast: lattice members, DemandForecast and the return forecast an ApprovedThesis is sized on. Code left: lattice members as Forecast, DemandForecast holding a Forecast, ApprovedThesis carrying its return Forecast with refusal and round-trip tests.",
+    "gap": "2026-10-30 (L4, commit 244f0bcd, skeptic REFUTED). Closed: an ApprovedThesis is sized only on a validated qip_contracts Forecast (return_forecast), refused on decode without one, for another instrument, past its expiry or without a median; the kernel builds it in Platform::return_forecast from the instrument's own return spread, Uncalibrated, single-model, regime and impact stated unmeasurable; lattice members already carry a Forecast. Still open: DemandForecast (qip-capital-fabric forecast.rs) is not a Forecast, only convertible through a fallible to_forecast() whose one caller counts successes for a detail line; the expiry check is proven only on hand-built theses, and on the default path pending theses are sized the next DECIDE, so it fires only when a cycle gap exceeds the horizon; one expired thesis refuses the whole construction batch; the median is the anomaly reversion still clamped to [-0.5, 0.5] (pre-existing, against the refuse-not-clamp principle) and is not supported by the history the spread comes from; epistemic variance is variance/n, a formula, not a measured model uncertainty.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4344,7 +4348,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D13; gap before it: Calibration may be Uncalibrated (no score); thesis beliefs and other forecasts (ForecastLattice in feature.rs, demand forecasts) do not use this contract, so not every material forecast carries it. ADR lane 2026-10-18: gap re-graded against ADR 0140; gap before it: Delegable decision D13 (design-decisions-2026-10-18.json), ADR not yet written: Thesis beliefs, feature forecasts and capital-fabric demand forecasts carry qip_contracts::forecast::Forecast. Needs that ADR, then the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D13; gap before it: Calibration may be Uncalibrated (no score); thesis beliefs and other forecasts (ForecastLattice in feature.rs, demand forecasts) do not use this contract, so not every material forecast carries it. ADR lane 2026-10-18: gap re-graded against ADR 0140; gap before it: Delegable decision D13 (design-decisions-2026-10-18.json), ADR not yet written: Thesis beliefs, feature forecasts and capital-fabric demand forecasts carry qip_contracts::forecast::Forecast. Needs that ADR, then the code. 2026-10-30 (L4), commit 244f0bcd: three mutants killed (drop the target check; drop read_at(now); constant spread), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-MODEL-10188",
