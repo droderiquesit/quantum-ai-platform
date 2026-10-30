@@ -160,3 +160,77 @@ fn world_model_claim_causal_rejects_any_quantum_sourced_evidence_in_mixed_list()
         "a claim with any quantum-sourced evidence, even mixed, must be refused"
     );
 }
+
+/// R12-QUANT-4044: a causal claim cannot cite a quantum branch-selection
+/// result, on every insertion path, not only `WorldModel::claim_causal`.
+/// `CausalEdge::validate` refuses it. `CausalGraph::add`, infallible for its
+/// callers, does not absorb it and records the refusal. `reestimate` refuses
+/// a supporting claim that cites one, so a quantum id cannot reach an
+/// existing edge's evidence either. A classical citation passes all three,
+/// which is the premise that the quantum id and not the call is refused.
+///
+/// Mutation: remove the check in `CausalGraph::reestimate` -- the quantum
+/// citation then joins the edge's evidence.
+#[test]
+fn a_causal_edge_citing_quantum_evidence_is_refused_on_every_insertion_path() {
+    use qip_world_model::causal::{CausalGraph, SupportingClaim};
+    let edge = |evidence: &str| {
+        let mut e = CausalEdge::new(
+            "price_a",
+            "price_b",
+            Mechanism::Sentiment,
+            0.5,
+            Duration::from_hours(1),
+            now(),
+        )
+        .unwrap();
+        e.evidence = vec![evidence.to_string()];
+        e
+    };
+    assert!(edge("filing:10-k-2026").validate().is_ok(), "premise");
+    let refused = edge("quantum:branch-selection-7").validate().unwrap_err();
+    assert!(refused.to_string().contains("causal proof"), "{refused}");
+
+    let mut graph = CausalGraph::new();
+    graph.add(edge("quantum:branch-selection-7"));
+    assert_eq!(
+        graph.len(),
+        0,
+        "add absorbed an edge citing a quantum result"
+    );
+    assert_eq!(graph.refused().len(), 1);
+    assert!(graph.refused()[0].contains("quantum:branch-selection-7"));
+    graph.add(edge("filing:10-k-2026"));
+    assert_eq!(graph.len(), 1, "premise: a classical edge is absorbed");
+
+    let claim = |evidence: &str| {
+        let mut c = SupportingClaim::new("price_a", "price_b", Mechanism::Sentiment, 0.6, now());
+        c.evidence = vec![evidence.to_string()];
+        c
+    };
+    assert!(
+        graph
+            .reestimate(
+                [claim("observation:tape-1")],
+                Duration::from_days(90),
+                now()
+            )
+            .is_ok(),
+        "premise: a classical claim re-estimates"
+    );
+    let refused = graph
+        .reestimate(
+            [claim("quantum:branch-selection-8")],
+            Duration::from_days(90),
+            now(),
+        )
+        .unwrap_err();
+    assert!(refused.to_string().contains("causal proof"), "{refused}");
+    assert!(
+        graph
+            .edges()
+            .iter()
+            .all(|e| e.evidence.iter().all(|id| !id.starts_with("quantum:"))),
+        "a quantum citation reached an edge's evidence"
+    );
+}
