@@ -506,15 +506,18 @@
   {
     "id": "R12-REASON-3023",
     "status": "PARTIAL",
-    "current": "AdversarialReviewer and, since 2026-10-18, PoisoningDetector are constructed in Organisation::standard. The detector is rostered as an adversary (challenges, publishes nothing, owner independent-review) and reports Ambiguous rather than Negative, so a campaign in the fabric is weighed as context rather than as bearish evidence on every thesis. It scans the world model's evidence fabric, which the platform feeds.",
+    "current": "Three of the five named areas now have an adversary in Organisation::standard that emits a finding for its scope and whose removal drops that scope from coverage: source poisoning (PoisoningDetector over the evidence fabric, Scope::SourcePoisoning), regime breaks (RegimeBreakProbe since 2026-10-25: the last ten returns' volatility at twice the prior thirty's, or their mean three prior-window standard errors away, Scope::RegimeBreak) and strategies that exploit the platform itself (SelfExploitationProbe since 2026-10-25: fills systematically worse than arrival across at least ten measurable fills, or an (instrument, side, size) flow repeated three times, over Desk.executions, which the kernel feeds before every REASON from its own order manager behind Capability::ReadExecutionHistory, Scope::SelfExploitation). All adversaries are rostered under AgentRole::Adversarial and independent review, challenge and publish nothing, and report Ambiguous rather than Negative. AdversarialReviewer attacks the hypothesis (hit rates, lessons, position already on, library hits) and returns no_data when it finds no objection; it carries no manipulation check, and its one model-failure proxy (an agent right under half the time over ten resolved episodes) is not a Scope.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/chief.rs:458 PoisoningDetector in standard_agents",
-      "backend/crates/agents/qip-investment-agents/src/manifests.rs poisoning_detector, on manifests::roster",
-      "backend/crates/agents/qip-investment-agents/src/chief.rs Organisation::new refuses an agent not on the roster",
-      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:2319 removing_the_poisoning_detector_drops_source_poisoning_from_coverage",
-      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:2338 an_agent_outside_the_roster_does_not_assemble"
+      "backend/crates/agents/qip-investment-agents/src/adversary.rs SelfExploitationProbe / probe_self_exploitation, RegimeBreakProbe / compare_regimes",
+      "backend/crates/agents/qip-investment-agents/src/desk.rs ExecutionView, ExecutionRecord::adverse_slippage_bp, Desk::with_executions",
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs self_exploitation_probe, regime_break_probe, on roster; chief.rs standard_agents constructs both",
+      "backend/crates/agents/qip-investment-agents/src/coverage.rs Scope::SelfExploitation, Scope::RegimeBreak",
+      "backend/crates/runtime/qip-kernel/src/platform.rs brief_the_desk_on_executions, called from stage_reason beside brief_the_desk_on_risk",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs removing_the_self_exploitation_probe_drops_self_exploitation_from_coverage, removing_the_regime_break_probe_drops_regime_breaks_from_coverage, removing_the_poisoning_detector_drops_source_poisoning_from_coverage",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs a_fill_the_platform_made_is_on_the_desk_for_the_self_exploitation_probe_next_cycle",
+      "backend/crates/agents/qip-investment-agents/src/adversary.rs unit tests: fills_systematically_worse_than_arrival_are_a_finding_and_a_balanced_flow_is_not, the_same_order_three_times_is_a_learnable_flow, a_recent_window_whose_volatility_or_mean_leaves_the_prior_band_is_a_break"
     ],
-    "gap": "Source poisoning is covered; regime breaks and strategies that exploit the platform itself have no probe in any agent. A self-exploitation probe needs the platform's own order and fill history on the desk, which no facility carries.",
+    "gap": "2026-10-25 (lane L2b; independent read-only skeptic REFUTED on bar part 4): manipulation and model failure, two of the requirement's five areas, have no detector and no Scope: review.rs:60-145 checks hit rates, lessons, the position and the library and never the tape or the book for spoofing, layering or wash patterns, and the only manipulation detection in the tree is source-level (poisoning.rs coordinated_manipulation); model failure has only the reviewer's hit-rate proxy, which emits no fact when it raises no objection, so neither area can be shown to drop from coverage when its adversary is removed. Closing it: a market-manipulation probe over the desk's book and tape and a model-failure probe over the model cards' drift and skill verdicts, each with a Scope and a removal test. Also noted: the self-exploitation scope is uncovered until the platform's first fill (no_data on an empty execution view), and the regime probe's emission is proven on a hand-built desk, not on the cycle.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -522,10 +525,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation removing_the_poisoning_detector_drops_source_poisoning_from_coverage",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-investment-agents --no-fail-fast && cargo +1.94.1 test -p qip-kernel --test kernel a_fill_the_platform_made",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: poisoning wired and mutation-verified (dropping the detector from standard_agents failed the test; removing the roster check failed an_agent_outside_the_roster_does_not_assemble). Kept PARTIAL for regime breaks and self-exploitation."
+    "notes": "Lane L16, 2026-10-18: poisoning wired and mutation-verified (dropping the detector from standard_agents failed the test; removing the roster check failed an_agent_outside_the_roster_does_not_assemble). Kept PARTIAL for regime breaks and self-exploitation. 2026-10-25 lane L2b (wave580): regime-break and self-exploitation probes built, rostered and fed. Mutations fired: renaming the self_exploitation_findings fact -> removal test fails at its fact assertion (fact_value None) and the scope is no longer evidenced; renaming regime_break_findings -> likewise; deleting self.brief_the_desk_on_executions() from stage_reason -> kernel test fails \"the probe never saw the platform's own fill: []\". Each restored byte for byte (cmp) and re-run ok (organisation 52 passed, kernel 43 passed, lib 10 passed). Skeptic (code-reviewer, read-only, default REFUTED): REFUTED on part 4 as the gap records; held parts 1-3 for the two new probes (feed on the default cycle at stage_reason, mutations for the right reasons, governance satisfied, statistics deterministic with BTreeMap iteration and division guards). Row stays PARTIAL; both probes, the execution feed and the four tests are kept."
   },
   {
     "id": "R12-AMBIENT-3024",
@@ -558,9 +561,11 @@
       "backend/crates/services/qip-world-model/src/federation.rs:362 Federation (in-process only; module doc says no composition root builds it)",
       "backend/crates/services/qip-world-model/tests/federation.rs:243 arbitration_produces_each_of_the_four_actions_with_a_reason_and_the_right_output",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation",
+      "backend/crates/apps/qip-deepbrain/src/brains.rs arbitration_spec, REQUIRED_SCOPES, BrainRegistry::require_coverage",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage"
     ],
-    "gap": "Not constructed as a specialist Brain in the production organisation; no coverage registry drops its scope when removed; decisions are recorded, never acted on.",
+    "gap": "2026-10-25 (L4, commit 4f9bdc2d, skeptic REFUTED). Closed: the deep brain registry (brains::standard) carries a World Model Arbitration Brain entry over world-model-arbitration, and require_coverage refuses start when that scope is missing. Still open: the entry is a hand-written BrainSpec describing the kernel FederationStage, not a specialist constructed in the production organisation (the qip-investment-agents roster has none); removing it stops nothing but start-up, since FederationStage::run is independent of the registry and main.rs only prints the registry; the spec is not tied to the FederationReview the stage journals; the fast brain and qip-api build the same Platform with no registry or coverage check; and under ADR 0158 decision 8 a spec enters through the Cognitive Compiler or a reviewed spec, with calibration tracked, which this literal (calibration 0.0) is not.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -571,7 +576,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-25 (L4), commit 4f9bdc2d: two mutants killed (skip the register call; require_coverage always passes), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-REASON-3026",
@@ -766,9 +771,12 @@
     "current": "qip_agents::memory::ResearchMemory holds versioned procedures. record_procedure stores the next version of a named procedure only on at least MINIMUM_PROCEDURE_SUPPORT (3) distinct held episodes resolved correct by then, refusing a blank name, no steps or a blank step. Each name keeps up to VERSIONS_PER_PROCEDURE (16) versions, and MAX_PROCEDURES bounds the names. procedure_as_of retrieves the latest version known at a date, so past decisions stay reconstructable.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/memory.rs::ResearchMemory::record_procedure, procedure_as_of",
-      "backend/crates/libs/qip-agents/tests/memory.rs::a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version"
+      "backend/crates/libs/qip-agents/tests/memory.rs::a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version",
+      "backend/crates/runtime/qip-kernel/src/platform.rs distil_procedure, procedure_name, Platform::procedures_briefed",
+      "backend/crates/libs/qip-agents/src/finding.rs AgentBrief.procedures",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::an_analysts_distilled_procedure_is_retrieved_at_its_next_convening"
     ],
-    "gap": "2026-10-24 (L4): the row said no procedure store existed. That was stale: store, versioning and retrieval exist and are tested. What is missing is the integration the requirement's test names. No production code calls record_procedure or procedure_as_of (grep finds only tests/memory.rs), so no procedure is distilled from the kernel's resolved episodes, and none is retrieved for reuse by a later run. Closing it needs LEARN to distil a procedure from an analyst's resolved-correct episodes, the next convening of that analyst to retrieve it, and a cycle-level test.",
+    "gap": "2026-10-30 (L4, commit ad473767, skeptic REFUTED). Closed: a procedure is stored and versioned on the default LEARN path (write_research_memory -> distil_procedure, once an analyst holds MINIMUM_PROCEDURE_SUPPORT correct calls, a version only when support changes) and retrieved at the next convening on the default REASON path into AgentBrief.procedures, recorded by Platform::procedures_briefed. Still open: no agent reads brief.procedures, so the procedure is delivered and not reused; its steps are past calls (question and lean), not a method anything could follow; strategy templates, data adapters, playbooks and remediation patterns are not stored at all and no ADR declines them; the test seeds memory through write_research_memory rather than driving LEARN end to end; MAX_PROCEDURES (256) has no supersede path for procedures, unreachable at today's roster size.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -779,7 +787,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agents --test memory a_procedure_is_recorded_only_after_enough_correct_episodes",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->MISSING. Unchanged. 2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed. Not promoted: there is no running path."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->MISSING. Unchanged. 2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed. Not promoted: there is no running path. 2026-10-30 (L4), commit ad473767: three mutants killed (skip distil_procedure; brief without procedures, killed once the record was read off the brief; count a repeated run twice), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-WORLD-3035",
@@ -1431,12 +1439,14 @@
   },
   {
     "id": "R12-REASON-3063",
-    "status": "MISSING",
-    "current": "Nothing converts a validated discovery into a rule/predicate; StrategyCompiler compiles grammar-generated strategies, not discoveries.",
+    "status": "PARTIAL",
+    "current": "qip-reasoning-engine's CognitiveCompiler (compiler.rs) compiles a verified Discovery into a bounded reflex package: it refuses a discovery that passed fewer than all CRITERIA (9) verification criteria, one above the uncertainty bound, or one with no finding; formalises the finding as a machine-checkable derivation citing its evidence ids and the evaluation id; emits ReflexRule predicates (Condition::Equals over named inputs, a bounded add_bps adjustment, refused not clamped past MAX_ADJUSTMENT_BPS); and signs the package with an installed PackageSigner. The deep brain calls it on the default research sweep (research.rs:3325, ResearchLoop distilling each promoted fill-bias correction into a fill-bias@venue rule, criteria counted from the promotion's own evaluation findings), counting refusals under the REFLEX_PACKAGES series; the deep brain installs no signer (main.rs:869-905), so packages are held unsigned and none is published.",
     "evidence": [
-      "backend/crates/edge/qip-strategy/src/compile.rs:210 StrategyCompiler"
+      "backend/crates/services/qip-reasoning-engine/src/compiler.rs CognitiveCompiler::compile, CRITERIA, CompilerBounds, MAX_ADJUSTMENT_BPS",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:3325 self.compiler.compile(&discovery, now) on the default sweep",
+      "backend/crates/services/qip-reasoning-engine/tests/compiler.rs a_verified_discovery_compiles_into_a_bounded_package_a_cell_loads_and_applies, the_formalisation_is_a_machine_checkable_derivation_citing_its_evidence, a_discovery_that_failed_a_criterion_is_not_compiled, an_adjustment_beyond_the_reflex_bound_is_refused_not_clamped"
     ],
-    "gap": "Build the discovery-to-rule path.",
+    "gap": "2026-10-25 (lane L2b; independent read-only skeptic REFUTED on bar part 4): the compiled predicate never executes anywhere real: ReflexPackage::evaluate and SignedReflexPackage::load (qip-contracts reflex_package.rs:302, :251) have no production caller, no loader exists under crates/edge or crates/runtime, and the only consumer is qip-deepbrain/tests/research_market.rs; signing is test-only because the deep brain installs no PackageSigner. Also noted: on the default path distil runs after promotion, so the compiler's criteria refusal re-checks a gate already passed and only the uncertainty bound can refuse there. Closing it: a cell or kernel loader that verifies a signed package against the model-pack trust entries and evaluates its rules on the pass (REASON-3115), plus an installed signer (REASON-10099 / REASON-7203).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1444,10 +1454,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-reasoning-engine --test compiler",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L2b (wave580): the row said MISSING and cited a strategy compiler; the discovery-to-reflex path exists in compiler.rs and is called from the research loop. Record corrected, no code change. Mutation run: lowering the criteria check to accept CRITERIA - 1 passes (`< CRITERIA - 1`) -> compiler.rs test a_discovery_that_failed_a_criterion_is_not_compiled FAILED (compiler.rs:158); restored byte for byte (cmp), test result: ok. 7 passed. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records; held the citation, the default-path call and the non-hard-coded criteria count. Row moves MISSING -> PARTIAL: compilation exists on the default path, execution of the compiled predicate does not."
   },
   {
     "id": "R12-AMBIENT-3064",

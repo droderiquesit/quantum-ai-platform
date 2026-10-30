@@ -37,10 +37,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use qip_acceptance::read;
-use qip_events::event_fabric::catalogue::{Catalogue, KeyScope, Permission};
+use qip_events::EventBody;
+use qip_events::event_fabric::catalogue::{
+    Catalogue, FrameDirection, FrameDurability, FrameSigning, KeyScope, Permission,
+};
 use qip_events::event_fabric::policy::{Mirroring, OverloadPolicy, QosClass};
+use qip_mesh::spine::{CELL_DELTA_TOPIC, CapitalGrantFrame, HaltFrame, PolicyFrame};
 
 const CATALOGUE: &str = "infrastructure/event-fabric/streams.local.json";
+const MANAGED_CATALOGUE: &str = "infrastructure/event-fabric/streams.managed.json";
+const SPINE_SOURCE: &str = "backend/crates/services/qip-mesh/src/spine.rs";
 const SCHEMA_LOCK: &str = "backend/crates/libs/qip-events/schemas.lock.json";
 
 /// The one cell the local slice runs. `reflex:<cell>` is its identity, and
@@ -137,7 +143,7 @@ fn the_committed_catalogue_validates_and_declares_every_field_of_every_stream() 
         .collect();
     assert_eq!(
         top,
-        BTreeSet::from(["grants", "streams"]),
+        BTreeSet::from(["grants", "spine_frames", "streams"]),
         "the catalogue holds a top-level key Catalogue::parse ignores"
     );
     // The same for a grant: a `key_scpoe` beside no `key_scope` is refused by
@@ -202,6 +208,98 @@ fn the_committed_catalogue_validates_and_declares_every_field_of_every_stream() 
             "stream '{name}' entitles '{}', which this platform never needs",
             policy.entitlement().usage()
         );
+    }
+}
+
+/// ADR 0128 decision 5 (R12-FABRIC-10077): the spine's frames are catalogued
+/// beside the fabric's streams, so "every internal asynchronous contract"
+/// has one place a person reads. Every `pub struct *Frame` in
+/// `qip_mesh::spine`, and the cell delta the spine carries up, has an entry
+/// in both committed catalogues; each entry's topic is the one the frame
+/// type actually travels under; and no entry names a frame the spine does
+/// not define, so the catalogue cannot describe a contract that is not there.
+///
+/// Mutation: delete the `HaltFrame` entry from `streams.local.json` — fails
+/// at "catalogued". Mutation: change its topic to `policy.distributed` —
+/// fails at "travels under".
+#[test]
+fn every_qip_mesh_spine_frame_type_is_catalogued_beside_the_fabric_streams() {
+    let source = read(SPINE_SOURCE);
+    let mut defined: BTreeSet<String> = source
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("pub struct "))
+        .filter_map(|rest| {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            name.ends_with("Frame").then_some(name)
+        })
+        .collect();
+    assert_eq!(
+        defined,
+        BTreeSet::from([
+            "CapitalGrantFrame".to_string(),
+            "HaltFrame".to_string(),
+            "PolicyFrame".to_string(),
+        ]),
+        "premise: the spine's frame types are the three ADR 0128 names"
+    );
+    // The upward delta is not a frame type: the cell's `CellStateDelta`
+    // travels as an `AnyEvent` under `CELL_DELTA_TOPIC`.
+    defined.insert("CellStateDelta".to_string());
+
+    let expected_topics = BTreeMap::from([
+        ("CapitalGrantFrame", <CapitalGrantFrame as EventBody>::TOPIC),
+        ("PolicyFrame", <PolicyFrame as EventBody>::TOPIC),
+        ("HaltFrame", <HaltFrame as EventBody>::TOPIC),
+        ("CellStateDelta", CELL_DELTA_TOPIC),
+    ]);
+
+    for path in [CATALOGUE, MANAGED_CATALOGUE] {
+        let catalogue = match Catalogue::parse(read(path).as_bytes()) {
+            Ok(catalogue) => catalogue,
+            Err(error) => panic!("{path} is refused by Catalogue::parse: {error}"),
+        };
+        let catalogued: BTreeSet<String> = catalogue
+            .spine_frames()
+            .iter()
+            .map(|frame| frame.name.clone())
+            .collect();
+        for name in &defined {
+            assert!(
+                catalogued.contains(name),
+                "{path}: spine frame {name} is not catalogued beside the fabric streams"
+            );
+        }
+        for frame in catalogue.spine_frames() {
+            let expected = expected_topics.get(frame.name.as_str()).unwrap_or_else(|| {
+                panic!(
+                    "{path}: catalogues '{}', which the spine does not define",
+                    frame.name
+                )
+            });
+            assert_eq!(
+                frame.topic, *expected,
+                "{path}: {} travels under {:?}, not the catalogued topic",
+                frame.name, expected
+            );
+            let (direction, durability) = match frame.name.as_str() {
+                "CapitalGrantFrame" => (FrameDirection::Down, FrameDurability::DurableOrdered),
+                "CellStateDelta" => (FrameDirection::Up, FrameDurability::Superseding),
+                _ => (FrameDirection::Down, FrameDurability::Superseding),
+            };
+            assert_eq!(frame.direction, direction, "{path}: {}", frame.name);
+            assert_eq!(frame.durability, durability, "{path}: {}", frame.name);
+            // Every downward frame is signed by its own payload; only the
+            // upward delta rests on the session alone (ADR 0128 decision 1).
+            assert_eq!(
+                frame.signing == FrameSigning::Session,
+                frame.direction == FrameDirection::Up,
+                "{path}: {} — a downward frame carries its own signature",
+                frame.name
+            );
+        }
     }
 }
 

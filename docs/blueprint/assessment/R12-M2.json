@@ -1757,9 +1757,10 @@
       "backend/crates/services/qip-market-ingestion/src/tape.rs:13-30 release by known_at",
       "backend/crates/services/qip-twin/tests/twin.rs:221 planning_an_alternative_against_a_later_market_is_refused_and_names_the_leak",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::maybe_round_with_orders",
-      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_tick_round_replays_the_platforms_own_orders_and_records_fill_versus_assumption_rows"
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_tick_round_replays_the_platforms_own_orders_and_records_fill_versus_assumption_rows",
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::the_run_loop_hands_the_platforms_own_orders_to_the_tick_desk"
     ],
-    "gap": "2026-10-24 (wave580): the tick round now replays the platform's own orders - qip-deepbrain node.rs hands TickDesk::maybe_round_with_orders platform.orders().orders(); market and limit orders from the lookback window replay against the recorded market and TickRound::order_rows records each replayed fill beside the venue's (gap_bps); scheduled algorithms are counted unreplayable. Remaining: (1) the desk is off by default (QIP_DEEPBRAIN_TICK_EVERY unset in every committed environment; the deep brain's own lake namespace holds no market segments by default, so a default-on desk would replay nothing) - turning it on needs an ADR superseding the desk's deliberate off-by-default guard plus a lake source shared with the edge node; (2) the requirement's named unit proof - a decision view cannot read a bar before its close time, failing if a same-day bar is visible intraday - is not what this round tests and is not re-graded here; (3) the node.rs handoff itself is not pinned by a test (the run-loop test's platform holds no orders).",
+    "gap": "2026-10-25 (wave580 lane L3b): the node.rs handoff is now pinned - the run-loop test submits an order through Platform::submit_order and asserts every round's order_rows + unreplayable_orders covers it (mutation: node.rs handing Vec::new() fails it with [(0, 0), (0, 0)]). Remaining: (1) the desk is off by default (QIP_DEEPBRAIN_TICK_EVERY unset in every committed environment; the deep brain's own lake namespace holds no market segments by default, so a default-on desk would replay nothing - R12-TICK-2066's 2026-10-25 decision keeps the guard); (2) the requirement's named unit proof - a decision view cannot read a bar before its close time, failing if a same-day bar is visible intraday - is evidenced by qip-twin asof::view_at and twin.rs planning_an_alternative_against_a_later_market_is_refused_and_names_the_leak but was not re-run and mutation-verified by this lane.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1772,7 +1773,7 @@
     "verification": "cargo test -p qip-deepbrain --test tick_desk a_tick_round_replays_the_platforms_own_orders",
     "work_item": "",
     "size": "M",
-    "notes": "Checked 2026-10-18 against tick_desk.rs maybe_round/round. 2026-10-24 lane L3-DATA (wave580): order handoff landed. Mutation fired: maybe_round_with_orders passing Vec::new() again - 'the replay did not take the platform's own orders: []'. qip-execution-engine moved from qip-deepbrain dev-dependencies to dependencies (the execution engine's allowed-dependents list already names qip-deepbrain). Not promoted; no skeptic run because the row is not claimed COMPLETE."
+    "notes": "Checked 2026-10-18 against tick_desk.rs maybe_round/round. 2026-10-24 lane L3-DATA (wave580): order handoff landed. Mutation fired: maybe_round_with_orders passing Vec::new() again - 'the replay did not take the platform's own orders: []'. qip-execution-engine moved from qip-deepbrain dev-dependencies to dependencies (the execution engine's allowed-dependents list already names qip-deepbrain). Not promoted; no skeptic run because the row is not claimed COMPLETE. 2026-10-25 lane L3b (wave580): run-loop handoff pin added; mutation fired (node.rs passing an empty order list: 'the run loop handed the desk none of the platform's 1 order(s): [(0, 0), (0, 0)]'), restored by cp + cmp. cargo test -p qip-deepbrain --no-fail-fast: 15 binaries, 331 passed, 0 failed. Not promoted: the desk default stands under the 2066 decision."
   },
   {
     "id": "R12-TICK-2074",

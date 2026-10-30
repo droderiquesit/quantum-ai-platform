@@ -110,6 +110,13 @@ impl ResearchCampaign {
     pub fn is_complete(&self) -> bool {
         self.stages.len() == Environment::ORDER.len()
     }
+
+    /// Whether `environment` was recorded. A campaign that ran shadow and
+    /// was never installed has no paper stage by design (ADR 0142 d2), and
+    /// its null is concluded on three stages rather than left running.
+    pub fn ran(&self, environment: Environment) -> bool {
+        self.stages.iter().any(|(e, _)| *e == environment)
+    }
 }
 
 /// The nine questions an independent evaluation asks (§23.1 step 6).

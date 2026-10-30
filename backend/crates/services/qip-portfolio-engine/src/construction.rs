@@ -12,6 +12,7 @@
 //! under-invested, and the proposal says so in its own compromises.
 
 use crate::proposal::{Proposal, ProposalLeg, Side};
+use qip_contracts::forecast::Forecast;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, ProposalId};
 use qip_core::time::Timestamp;
@@ -28,15 +29,72 @@ pub struct ApprovedThesis {
     pub object_id: ObjectId,
     /// Direction and strength, in `[-1, 1]`. Signed: negative is a short.
     pub conviction: f64,
-    /// Expected return over the horizon, as a fraction. Computed upstream from
-    /// the thesis, never chosen here.
-    pub expected_return: f64,
+    /// The forecast of the instrument's return over the thesis's horizon, as
+    /// a fraction, that sizing reads (ADR 0140, R12-WORLD-10187). A return
+    /// that reaches a size is a material forecast. It carries a horizon, a
+    /// distribution, a calibration, the models' disagreement, its evidence
+    /// lineage and an expiry, and [`Forecast`] refuses construction without
+    /// each one. This field replaced a bare `expected_return: f64`, which
+    /// carried none of them, so a stale or uncalibrated return was sized
+    /// exactly like a fresh, measured one. The expected return sizing uses is
+    /// the forecast's median ([`Self::expected_return`]), read from here, not
+    /// stated a second time beside it.
+    pub return_forecast: Forecast,
     /// Reference price for sizing.
     pub price: Decimal,
 }
 
+/// What a return forecast's target is named, after the instrument id.
+pub const RETURN_TARGET_SUFFIX: &str = "/return";
+
+/// The quantile the expected return is read at: the median, in basis points.
+pub const MEDIAN_BP: u32 = 5_000;
+
 impl ApprovedThesis {
+    /// The return sizing optimises against: the forecast's median. Refused
+    /// when the forecast states no median, because a mean or a mode stood in
+    /// for it would be a figure the forecast did not give.
+    pub fn expected_return(&self) -> Result<f64> {
+        let qip_contracts::forecast::OutcomeDistribution::Quantiles { points } =
+            &self.return_forecast.distribution
+        else {
+            return Err(Error::invalid(format!(
+                "thesis {}'s return forecast is categorical; a return is sized off a quantile \
+                 distribution with a median",
+                self.hypothesis_id
+            )));
+        };
+        let median = points
+            .iter()
+            .find(|p| p.quantile_bp == MEDIAN_BP)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "thesis {}'s return forecast states no median ({MEDIAN_BP} bp); state one \
+                     rather than have sizing interpolate it",
+                    self.hypothesis_id
+                ))
+            })?;
+        // Decimal to f64 here: the optimiser works in statistics, not money.
+        let value = median.value.to_f64();
+        if !value.is_finite() {
+            return Err(Error::numeric(format!(
+                "thesis {} has a non-finite expected return",
+                self.hypothesis_id
+            )));
+        }
+        Ok(value)
+    }
+
     pub fn validate(&self) -> Result<()> {
+        let target = format!("{}{RETURN_TARGET_SUFFIX}", self.object_id.as_str());
+        if self.return_forecast.target != target {
+            return Err(Error::invalid(format!(
+                "thesis {} on {} carries a forecast of `{}`; it is sized only on a forecast of \
+                 `{target}`",
+                self.hypothesis_id, self.object_id, self.return_forecast.target
+            )));
+        }
+        self.expected_return()?;
         if !(-1.0..=1.0).contains(&self.conviction) {
             return Err(Error::invalid(format!(
                 "thesis {} has conviction {} outside [-1, 1]",
@@ -46,12 +104,6 @@ impl ApprovedThesis {
         if self.price <= Decimal::ZERO {
             return Err(Error::invalid(format!(
                 "thesis {} has no usable price",
-                self.hypothesis_id
-            )));
-        }
-        if !self.expected_return.is_finite() {
-            return Err(Error::numeric(format!(
-                "thesis {} has a non-finite expected return",
                 self.hypothesis_id
             )));
         }
@@ -313,7 +365,14 @@ impl PortfolioConstructor {
         }
         for thesis in theses {
             thesis.validate()?;
+            // A return forecast past its expiry is not sized on, however
+            // valid the thesis is otherwise.
+            thesis.return_forecast.read_at(now)?;
         }
+        let expected_returns = theses
+            .iter()
+            .map(ApprovedThesis::expected_return)
+            .collect::<Result<Vec<f64>>>()?;
         if equity.amount <= Decimal::ZERO {
             return Err(Error::invalid("cannot size a proposal against no equity"));
         }
@@ -391,7 +450,7 @@ impl PortfolioConstructor {
         let achievable = (cap_only - reduction).max(0.0);
         let mut problem = PortfolioProblem::new(assets.clone(), covariance.to_vec())?
             .with_objective(Objective::MeanVariance)
-            .with_expected_returns(theses.iter().map(|t| t.expected_return).collect())
+            .with_expected_returns(expected_returns)
             .with_risk_aversion(self.mandate.risk_aversion)
             .with_bounds(lower, upper)
             .with_constraint(PortfolioConstraint::equals(

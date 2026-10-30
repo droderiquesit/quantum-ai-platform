@@ -18,6 +18,7 @@
 
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::degradation::{Capability, Freshness};
+use qip_contracts::feature::FeatureValue;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
@@ -30,6 +31,7 @@ use qip_edge::cell::{
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
 use qip_feature_dag::engine::FeatureEngine;
+use qip_feature_dag::features::Mid;
 use qip_feature_dag::state::MarketState;
 use qip_orderbook::venue::VenueState;
 use qip_protocols::FeedKey;
@@ -37,7 +39,7 @@ use qip_protocols::decoder::{Decoder, Diagnostics};
 use qip_routing::health::HealthPolicy;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
-use qip_strategy::ir::{Expr, Rule, StrategySpec};
+use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
 use qip_strategy::program::Program;
 
 const CELL: &str = "london-1";
@@ -941,6 +943,143 @@ fn a_gap_raises_a_snapshot_request_and_the_book_is_priced_from_again_only_once_t
     Ok(())
 }
 
+/// A strategy on `instrument` that enters whenever the instrument's mid is
+/// positive — so it raises a signal exactly when the mid it reads is a
+/// number, and nothing else about the rule can be what stops it.
+fn mid_reading_strategy(id: &str, instrument: &str) -> Result<(CompiledStrategy, Program)> {
+    let mid = Mid::key(&object(instrument));
+    let catalogue = FeatureCatalogue::new().declaring([(mid.clone(), Type::Exact)])?;
+    let mut compiler = StrategyCompiler::new(catalogue);
+    let spec = StrategySpec::new(
+        StrategyId::new(id),
+        object(instrument),
+        Duration::from_secs(30),
+    )
+    .with_rule(Rule::new(
+        "mid-is-a-price",
+        SignalKind::Enter,
+        Expr::feature(mid).greater_than(Expr::Exact(d("0"))),
+        Expr::Exact(d("10")),
+        Expr::Statistic(0.5),
+        10,
+    ));
+    let compiled = compiler.compile(&spec)?;
+    Ok((compiled, compiler.into_program()))
+}
+
+fn signals_from<'a>(report: &'a WorkReport, strategy: &str) -> Vec<&'a str> {
+    report
+        .signals
+        .iter()
+        .filter(|signal| signal.strategy.as_str() == strategy)
+        .map(|signal| signal.object_id.as_str())
+        .collect()
+}
+
+#[test]
+fn a_feature_computed_from_an_unreliable_book_is_quarantined_until_the_snapshot_rebuilds_it()
+-> Result<()> {
+    // R12-RES-7102. The failure this prevents: the cell discarded a book
+    // for an abandoned sequence gap and refused to price an order from it,
+    // but the feature engine kept its own copy of the market. Increments
+    // arriving after the discard rebuilt that copy one side at a time, and
+    // the moment both sides were back the mid read as a healthy number — so
+    // a strategy raised a signal from a book the cell had just declared
+    // wrong, and the journaled signal is what labels and training read.
+    let mut cell = fed_cell(&[])?;
+    let mut gateway = Gateway::default();
+    let acme = object("obj-ACME");
+    let mid = Mid::key(&acme);
+    cell.track(VenueState::aggregated(
+        acme.clone(),
+        venue(XLON),
+        VenueStatus::Open,
+    ));
+    cell.register_features(vec![Box::new(Mid::new(acme.clone()))])?;
+    let strategy = "s-mid-ACME";
+    let (compiled, program) = mid_reading_strategy(strategy, "obj-ACME")?;
+    cell.deploy_with_pricing(
+        compiled,
+        program,
+        signed_envelope(strategy)?,
+        PricingPolicy::Marketable,
+    )?;
+
+    // Premise: on a reliable book the same feature is a number, is not
+    // quarantined, and the strategy reading it raises its signal.
+    feed(
+        &mut cell,
+        XLON,
+        "1\tobj-ACME\tB\t99\t500\n2\tobj-ACME\tA\t101\t400",
+        t(10),
+    )?;
+    let report = cell.work(t(10), &mut gateway)?;
+    assert!(
+        !cell.features().is_quarantined(&mid),
+        "the premise failed: a feature of a reliable book is quarantined"
+    );
+    assert_eq!(
+        cell.features().value(&mid),
+        Some(FeatureValue::Exact(d("100")))
+    );
+    assert_eq!(
+        signals_from(&report, strategy),
+        vec!["obj-ACME"],
+        "the premise failed: the mid strategy does not fire on a reliable book: {:?}",
+        report.refusals
+    );
+
+    // Sequences 3 and 4 never arrive. Five is held, the deadline passes,
+    // and the gap is abandoned: the book is discarded at t(12).
+    feed(&mut cell, XLON, "5\tobj-ACME\tB\t99\t450", t(11))?;
+    cell.work(t(12), &mut gateway)?;
+    assert_eq!(
+        resets(&cell),
+        vec![(XLON.to_string(), "obj-ACME".to_string(), t(12))],
+        "the premise failed: the abandoned gap did not discard the book"
+    );
+    // The stream carries on after the hole. Six restores the ask, so the
+    // engine's copy of the book has both sides again, built from
+    // increments on top of a hole.
+    let after = |millis: i64| at_ms(12_000 + millis);
+    feed(&mut cell, XLON, "6\tobj-ACME\tA\t101\t400", after(10))?;
+    assert!(
+        !cell.sequence_gap_open_at(&venue(XLON)) && !cell.snapshot_requests().is_empty(),
+        "the premise failed: the gap is still open, or the book is not awaiting a snapshot"
+    );
+    let report = cell.work(after(20), &mut gateway)?;
+    assert!(
+        cell.features().is_quarantined(&mid),
+        "a feature of a book awaiting its snapshot is not quarantined"
+    );
+    assert_eq!(
+        cell.features().quarantined_since(&acme),
+        Some(t(12)),
+        "the quarantine does not start at the instant the book was discarded"
+    );
+    assert_eq!(cell.features().value(&mid), Some(FeatureValue::Undefined));
+    assert_eq!(
+        signals_from(&report, strategy),
+        Vec::<&str>::new(),
+        "a signal was raised from a feature of an unreliable book"
+    );
+
+    // The snapshot rebuilds the book: the quarantine lifts, the feature is
+    // the rebuilt book's mid, and the strategy fires again.
+    cell.apply_snapshot(&venue(XLON), &acme, &whole_book("100", "102"), t(13))?;
+    let report = cell.work(t(13), &mut gateway)?;
+    assert!(
+        !cell.features().is_quarantined(&mid),
+        "the snapshot rebuilt the book and the feature is still quarantined"
+    );
+    assert_eq!(
+        cell.features().value(&mid),
+        Some(FeatureValue::Exact(d("101"))),
+        "the feature after the rebuild is not the snapshot's mid"
+    );
+    assert_eq!(signals_from(&report, strategy), vec!["obj-ACME"]);
+    Ok(())
+}
 /// A gateway with a cancel path, which remembers what rests where and every
 /// cancel it was asked for — and can be told one venue refuses them.
 #[derive(Debug, Default)]

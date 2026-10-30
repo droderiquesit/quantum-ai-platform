@@ -780,6 +780,7 @@ mod tests {
             causal: Vec::new(),
             causal_drivers: 0,
             causal_drivers_unconnected: 0,
+            episodes: Vec::new(),
             tail_worlds: worlds
                 .iter()
                 .map(|(name, loss)| TailWorld {
@@ -791,6 +792,8 @@ mod tests {
                     detail: String::new(),
                 })
                 .collect(),
+            advisory_worlds: Vec::new(),
+            advisory_reserve: None,
         }
     }
 

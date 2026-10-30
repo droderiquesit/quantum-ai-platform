@@ -15,6 +15,7 @@
 //! `Roster::validate` in the tests, and the individual combinations are refused
 //! by `AgentManifest::validate` in `qip-agents`.
 
+pub mod adversary;
 pub mod analysts;
 pub mod chief;
 pub mod construction;

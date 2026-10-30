@@ -541,6 +541,7 @@ impl CausalEdge {
     /// the check is put where every path meets rather than on the one path
     /// that is currently hypothetical.
     pub fn validate(&self) -> Result<()> {
+        refuse_quantum_evidence(&self.cause, &self.effect, &self.evidence)?;
         if self.cause.trim().is_empty() || self.effect.trim().is_empty() {
             return Err(Error::invalid(format!(
                 "a causal edge must name both the cause it runs from and the effect it runs to, \
@@ -1033,10 +1034,42 @@ impl PropagationResult {
     }
 }
 
+/// The prefix a quantum result's evidence id carries. A quantum-assisted
+/// selection of counterfactual or intervention branches is a selection aid
+/// for expensive simulation, never causal proof (R12-QUANT-4044, §11), so no
+/// causal edge cites one, by any path.
+pub const QUANTUM_EVIDENCE_PREFIX: &str = "quantum:";
+
+/// How many refused insertions [`CausalGraph::refused`] keeps, newest last.
+pub const REFUSED_EDGE_HISTORY: usize = 64;
+
+/// Refuse evidence ids that cite a quantum result, naming the first.
+pub fn refuse_quantum_evidence<'a>(
+    cause: &str,
+    effect: &str,
+    evidence: impl IntoIterator<Item = &'a String>,
+) -> Result<()> {
+    match evidence
+        .into_iter()
+        .find(|id| id.starts_with(QUANTUM_EVIDENCE_PREFIX))
+    {
+        Some(id) => Err(Error::denied(format!(
+            "the link {cause} -> {effect} cites `{id}`, a quantum result; a quantum branch \
+             selection is a selection aid for simulation and no quantum result is treated as \
+             causal proof, so cite the observation the selected branch was tested against"
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// A directed graph of causal claims.
 #[derive(Debug, Default)]
 pub struct CausalGraph {
     edges: Vec<CausalEdge>,
+    /// Insertions [`Self::add`] refused, with why, newest last and bounded by
+    /// [`REFUSED_EDGE_HISTORY`]. `add` is infallible for its many callers,
+    /// so a refusal is kept where it can be read, never dropped silently.
+    refused: Vec<String>,
     /// Cause to the indices of its outgoing edges.
     by_cause: BTreeMap<String, Vec<usize>>,
     by_effect: BTreeMap<String, Vec<usize>>,
@@ -1062,6 +1095,11 @@ impl CausalGraph {
         Self::default()
     }
 
+    /// Insertions [`Self::add`] refused, newest last.
+    pub fn refused(&self) -> &[String] {
+        &self.refused
+    }
+
     pub fn len(&self) -> usize {
         self.edges.len()
     }
@@ -1080,6 +1118,15 @@ impl CausalGraph {
     /// current than the newest thing it holds, and letting it rewind would
     /// turn a replay of history into a stale reading.
     pub fn add(&mut self, edge: CausalEdge) {
+        // R12-QUANT-4044: an edge citing a quantum result is not absorbed,
+        // whoever calls; the refusal is kept in `refused`.
+        if let Err(error) = refuse_quantum_evidence(&edge.cause, &edge.effect, &edge.evidence) {
+            self.refused.push(error.message().to_string());
+            if self.refused.len() > REFUSED_EDGE_HISTORY {
+                self.refused.remove(0);
+            }
+            return;
+        }
         // ADR 0087: a hold recorded for the pair breaks a run of failures.
         // The platform's precedence pass writes a pass as a *new* edge
         // carrying `holds_in = {regime}` rather than marking the edge it
@@ -1211,6 +1258,9 @@ impl CausalGraph {
         let mut in_horizon: BTreeMap<EdgeKey, Vec<SupportingClaim>> = BTreeMap::new();
         for claim in claims {
             claims_considered += 1;
+            // R12-QUANT-4044: evidence reaches an edge through this path too,
+            // so the quantum-citation refusal is here as well as on insertion.
+            refuse_quantum_evidence(&claim.cause, &claim.effect, &claim.evidence)?;
             if !claim.strength.is_finite() || !(0.0..=1.0).contains(&claim.strength) {
                 return Err(Error::invalid(format!(
                     "a claim supporting {} -> {} measured a transmission of {}; a transmission is \
