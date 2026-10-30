@@ -28,11 +28,12 @@
 //! is left at full weight rather than at a fabricated one.
 
 use crate::evaluation::Evaluation;
+use qip_contracts::degradation::{Capability as TableRow, Freshness};
 use qip_core::error::{Error, Result};
 use qip_core::time::Timestamp;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 /// Outcomes each component keeps. Older ones fall off the front.
@@ -441,6 +442,52 @@ impl CapabilityEstimate {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SelfModel {
     components: BTreeMap<ComponentKey, CapabilityEstimate>,
+    /// The newest operational-health reading, or `None` before the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    health: Option<OperationalHealth>,
+    /// The asset classes the platform can act in, or `None` where no
+    /// boundary has been declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    boundary: Option<BTreeSet<String>>,
+}
+
+/// How the platform was running when it last looked at itself
+/// (R12-WORLD-3036).
+///
+/// A record of graded forecasts says how reliable each component has been.
+/// It says nothing about whether the platform is halted, or which of the
+/// things it sizes on have gone stale. A self-model without that would
+/// describe a halted platform reading year-old relationships as one with a
+/// good forecasting record. These are facts the kernel already holds; this
+/// is where the platform's account of itself keeps them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationalHealth {
+    pub observed_at: Timestamp,
+    /// Whether the global kill switch was tripped.
+    pub halted: bool,
+    /// Every row of the §6.2 degradation table that did not read fresh, with
+    /// what it read. Empty when every row was fresh.
+    pub degraded: BTreeMap<TableRow, Freshness>,
+}
+
+impl OperationalHealth {
+    /// Whether nothing was wrong at the reading.
+    pub fn is_healthy(&self) -> bool {
+        !self.halted && self.degraded.is_empty()
+    }
+}
+
+/// Where a class lies against the platform's declared boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundaryReading {
+    /// Inside the declared boundary.
+    Inside,
+    /// Declared, and this class is not in it.
+    Outside,
+    /// No boundary has been declared, so nothing can be said. This is kept
+    /// apart from `Inside` on purpose: an undeclared boundary is not
+    /// permission.
+    Undeclared,
 }
 
 impl SelfModel {
@@ -576,6 +623,52 @@ impl SelfModel {
                 .or_insert(capability.weight());
         }
         factors
+    }
+
+    /// Record an operational-health reading. A reading older than the one
+    /// held is refused: the newest fact is the one that holds, and a replay
+    /// that applied readings out of order would leave an old one standing.
+    pub fn observe_health(&mut self, health: OperationalHealth) -> Result<()> {
+        if let Some(held) = &self.health
+            && health.observed_at < held.observed_at
+        {
+            return Err(Error::invalid(format!(
+                "a health reading at {:?} is older than the one held at {:?}; refuse it rather \
+                 than let an old reading stand for the platform's state",
+                health.observed_at, held.observed_at
+            )));
+        }
+        self.health = Some(health);
+        Ok(())
+    }
+
+    /// The newest operational-health reading, if any.
+    pub fn health(&self) -> Option<&OperationalHealth> {
+        self.health.as_ref()
+    }
+
+    /// Declare the asset classes the platform can act in. An empty set is a
+    /// declaration that it can act in none, and every class then reads
+    /// outside, which is not the same as no declaration. A blank class name is
+    /// refused: it is a caller bug that would put an unnamed class inside.
+    pub fn declare_boundary(&mut self, classes: impl IntoIterator<Item = String>) -> Result<()> {
+        let classes: BTreeSet<String> = classes.into_iter().collect();
+        if classes.iter().any(|c| c.trim().is_empty()) {
+            return Err(Error::invalid(
+                "a capability boundary names no blank asset class",
+            ));
+        }
+        self.boundary = Some(classes);
+        Ok(())
+    }
+
+    /// Where `class` lies against the declared boundary.
+    pub fn boundary_of(&self, class: &str) -> BoundaryReading {
+        match &self.boundary {
+            None => BoundaryReading::Undeclared,
+            Some(classes) if classes.contains(class) => BoundaryReading::Inside,
+            Some(_) => BoundaryReading::Outside,
+        }
     }
 
     pub fn len(&self) -> usize {
