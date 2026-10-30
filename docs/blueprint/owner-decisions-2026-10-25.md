@@ -82,6 +82,17 @@ permission layer refuses them to an agent whatever the delegation says.
     rules out. The row records the two skeptics' refutation and waits on a
     per-action, non-price ground, should one exist; none is invented here.
 
+12. **R12-CICD-9095, the admin bypass in the review ruleset (2026-10-25,
+    under the standing delegation).** Lane L9's `main-review.json` lets the
+    admin role bypass required review, and only through a pull request.
+    Decision: the patch stays as written. Without any bypass every merge is
+    blocked, because the one code owner also authors the pull requests and
+    GitHub refuses self-approval; a bypass that also covered a direct push
+    would let a commit skip CI. Posting the rulesets changes a production
+    security boundary, so only the owner does it, after reading both files.
+    R12-CICD-9095, 8032, 9083 and R12-GCP-9086 stay PARTIAL until the patches
+    are applied and, for 9095, the rulesets are live.
+
 ## Owner action
 
 The agents cannot carry these out, whatever the delegation says.
@@ -95,6 +106,24 @@ The agents cannot carry these out, whatever the delegation says.
   which `e2948eab` closed. Its six siblings P1, P2, P4, P5, P6 and P7 were
   applied on the integration branch on 2026-10-25; each corrects a comment
   or a printed line and changes no value.
+- `git apply` lane L9's three gate patches, each adding a refusal and
+  weakening none (decision 3; written 2026-10-25 at L9 head `a0e727bf`):
+  - `docs/blueprint/lanes/l9-CICD-8032.patch` (R12-CICD-8032, R12-GCP-9086):
+    `.github/workflows/drift.yml`, a daily `terraform plan` of dev with
+    `-detailed-exitcode` that fails the run on exit 2 or a plan error;
+    agents are refused its dispatch.
+  - `docs/blueprint/lanes/l9-CICD-9095.patch` (R12-CICD-9095):
+    `.github/rulesets/main-{integrity,review}.json`,
+    `.github/workflows/rules.yml` (a daily read of the live rules) and the
+    `branch_rules` acceptance suite. The files enforce nothing by
+    themselves: the owner, as repository admin, must also POST both
+    rulesets. The review ruleset lets the admin role bypass, but only
+    through a pull request; decision 12 says why.
+  - `docs/blueprint/lanes/l9-CICD-9083.patch` (R12-CICD-9083): agent-guard
+    step 1c, requiring an `Agent-Lane` trailer after
+    `lane_manifest.trailer_required_after`. The switch ships null because
+    `round-3.json` names no lane of the running round; it turns on with
+    that round's manifest.
 - Approve the rolling pull request's head, so that `agent boundary` passes
   (decision 3).
 - When ready to deploy, follow `docs/ops/runbooks/dev-redeploy-readiness.md`

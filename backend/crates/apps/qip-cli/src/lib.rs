@@ -25,3 +25,4 @@ pub mod event_fabric;
 pub mod model_pack;
 pub mod registrations;
 pub mod replay;
+pub mod simulate;

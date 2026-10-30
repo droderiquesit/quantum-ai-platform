@@ -89,6 +89,7 @@ fn a_licensed_dataset_with_no_retention_right_is_used_live_and_not_kept() -> Res
     let mut sink = LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         "edge-1",
+        "europe-west2",
         default_retention(),
         SegmentCodec::Identity,
     )?;
@@ -117,6 +118,7 @@ fn a_licensed_dataset_with_no_retention_right_is_used_live_and_not_kept() -> Res
     let mut sink = LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         "edge-2",
+        "europe-west2",
         granted,
         SegmentCodec::Identity,
     )?;
@@ -166,6 +168,7 @@ fn a_sink_configured_with_zstd_seals_compressed_segments() -> Result<()> {
     let mut sink = LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         "edge-1",
+        "europe-west2",
         default_retention(),
         SegmentCodec::zstd(3)?,
     )?;

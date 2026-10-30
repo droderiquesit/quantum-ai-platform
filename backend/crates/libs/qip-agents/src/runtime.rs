@@ -570,3 +570,210 @@ pub fn manifest_digest(manifest: &AgentManifest) -> String {
     let encoded = serde_json::to_vec(manifest).unwrap_or_default();
     qip_core::hash::sha256_hex(&encoded)
 }
+
+/// One run the host could not perform, held for a later attempt.
+///
+/// What is kept is the brief and the host's reason, not the agent: the
+/// backlog belongs to the organisation that owns the agents, and a record
+/// that carried an `Arc<dyn Agent>` would keep a retired agent alive past
+/// the roster that authorised it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeferredRun {
+    pub agent_id: String,
+    /// The brief the run was asked, so a retry asks the same question.
+    pub brief: AgentBrief,
+    /// The host's reason on the latest refusal.
+    pub reason: String,
+    /// How many times the run has been deferred, the first included.
+    pub attempts: u32,
+    pub first_deferred_at: Timestamp,
+    pub last_deferred_at: Timestamp,
+}
+
+/// What [`AgentBacklog::defer`] did with a run that could not be performed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Deferral {
+    /// Held for the first time.
+    Queued,
+    /// Already held for this agent and brief; the attempt count moved.
+    Repeated { attempts: u32 },
+    /// Not held: the backlog is at capacity, or the run has exhausted its
+    /// retries. The run is reported and dropped, never silently kept.
+    Refused { reason: String },
+}
+
+/// A bounded queue of runs the agent runtime could not perform.
+///
+/// R12-AGENCY-10063: when the runtime that hosts the agents fails — a
+/// manifest past review, a budget it cannot fund — the agents degrade to a
+/// backlog, and nothing waits on them. Two properties hold the second half.
+/// The backlog is bounded: a persistently refused roster fills it to
+/// `capacity` and every later deferral is [`Deferral::Refused`], counted by
+/// the caller, so a runtime outage cannot grow memory for as long as it
+/// lasts. And a deferral is never an error: `defer` returns what it did,
+/// and the caller's dispatch goes on to the next agent.
+///
+/// A run is retried at most [`AgentBacklog::max_attempts`] times, keyed by
+/// agent and brief question: the same agent asked the same question again
+/// is one entry whose attempt count rises, not a new entry per cycle, so a
+/// roster refused on every cycle of a ninety-day lapse holds one entry per
+/// agent and not one per cycle.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentBacklog {
+    capacity: usize,
+    max_attempts: u32,
+    entries: Vec<DeferredRun>,
+    /// Deferrals refused because the backlog was full or the run had used
+    /// its attempts, since assembly. A number rather than a list, because
+    /// the list is what the bound forbids.
+    refused: u64,
+    /// Entries retired because the agent later ran, since assembly.
+    retired: u64,
+}
+
+impl AgentBacklog {
+    /// Attempts a deferred run gets before it is dropped as refused: the
+    /// first deferral and two retries. Three because a manifest lapse is not
+    /// something a retry fixes — an operator re-reviews it — and a budget
+    /// refusal that holds three cycles running is a configuration, not a
+    /// transient.
+    pub const DEFAULT_MAX_ATTEMPTS: u32 = 3;
+
+    /// Build a backlog holding at most `capacity` deferred runs.
+    ///
+    /// Refuses zero: a backlog that can hold nothing is a dispatch that
+    /// drops every refused run while reporting that it defers them.
+    pub fn new(capacity: usize) -> Result<Self> {
+        Self::with_max_attempts(capacity, Self::DEFAULT_MAX_ATTEMPTS)
+    }
+
+    /// Build a backlog with an explicit retry bound; refuses zero of either.
+    pub fn with_max_attempts(capacity: usize, max_attempts: u32) -> Result<Self> {
+        if capacity == 0 {
+            return Err(Error::invalid(
+                "an agent backlog needs a capacity of at least one; a zero-capacity backlog \
+                 drops every deferred run while reading as a queue",
+            ));
+        }
+        if max_attempts == 0 {
+            return Err(Error::invalid(
+                "an agent backlog needs at least one attempt per deferred run; zero attempts \
+                 refuses every deferral on arrival",
+            ));
+        }
+        Ok(Self {
+            capacity,
+            max_attempts,
+            entries: Vec::new(),
+            refused: 0,
+            retired: 0,
+        })
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.entries.len() >= self.capacity
+    }
+
+    /// Deferrals refused at capacity or past the attempt bound.
+    pub fn refused(&self) -> u64 {
+        self.refused
+    }
+
+    /// Entries retired because the agent later ran.
+    pub fn retired(&self) -> u64 {
+        self.retired
+    }
+
+    /// Deferred runs, oldest first.
+    pub fn entries(&self) -> &[DeferredRun] {
+        &self.entries
+    }
+
+    /// The deferred run held for `agent_id`, if any.
+    pub fn pending(&self, agent_id: &str) -> Option<&DeferredRun> {
+        self.entries.iter().find(|run| run.agent_id == agent_id)
+    }
+
+    /// Hold a run the host could not perform.
+    ///
+    /// Never an error. A full backlog or an exhausted run is
+    /// [`Deferral::Refused`] with the reason, for the caller to count and
+    /// report; the caller's dispatch continues either way.
+    pub fn defer(
+        &mut self,
+        agent_id: &str,
+        brief: &AgentBrief,
+        reason: impl Into<String>,
+        now: Timestamp,
+    ) -> Deferral {
+        let reason = reason.into();
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|run| run.agent_id == agent_id && run.brief.question == brief.question)
+        {
+            let attempts = self.entries[index].attempts.saturating_add(1);
+            if attempts > self.max_attempts {
+                let dropped = self.entries.remove(index);
+                self.refused = self.refused.saturating_add(1);
+                return Deferral::Refused {
+                    reason: format!(
+                        "{agent_id} has been deferred {} time(s) on `{}` and is dropped from the \
+                         backlog; the latest refusal was: {reason}",
+                        dropped.attempts, brief.question
+                    ),
+                };
+            }
+            let run = &mut self.entries[index];
+            run.attempts = attempts;
+            run.reason = reason;
+            run.last_deferred_at = now;
+            return Deferral::Repeated { attempts };
+        }
+        if self.is_full() {
+            self.refused = self.refused.saturating_add(1);
+            return Deferral::Refused {
+                reason: format!(
+                    "the agent backlog holds {} deferred run(s), its capacity; {agent_id}'s run \
+                     on `{}` is dropped rather than queued without bound ({reason})",
+                    self.capacity, brief.question
+                ),
+            };
+        }
+        self.entries.push(DeferredRun {
+            agent_id: agent_id.to_string(),
+            brief: brief.clone(),
+            reason,
+            attempts: 1,
+            first_deferred_at: now,
+            last_deferred_at: now,
+        });
+        Deferral::Queued
+    }
+
+    /// Drop every deferred run held for `agent_id`: the agent ran. Returns
+    /// how many were retired.
+    pub fn retire(&mut self, agent_id: &str) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|run| run.agent_id != agent_id);
+        let retired = before - self.entries.len();
+        self.retired = self.retired.saturating_add(retired as u64);
+        retired
+    }
+}

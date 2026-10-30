@@ -153,9 +153,12 @@
       "backend/crates/services/qip-simulation-engine/src/backtest.rs",
       "backend/crates/services/qip-simulation-engine/tests/simulation.rs",
       "backend/crates/tests/qip-acceptance/tests/tick_replay.rs",
-      "backend/crates/apps/qip-cli/src/replay.rs"
+      "backend/crates/apps/qip-cli/src/replay.rs",
+      "backend/crates/apps/qip-edge-node/src/feed.rs (ReplayFeed)",
+      "backend/crates/apps/qip-edge-node/src/pass.rs (run_replay_pass)",
+      "backend/crates/apps/qip-edge-node/tests/lake_replay.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Partly met: the no-action baseline refusal is in qip-agency plan.rs (tested in qip-agency tests/agency.rs) and intervention simulation is wired to agency plans through qip-cli agency.rs TwinScenarios (qip-cli tests/agency.rs). Missing: retained history (edge lake in memory by default, enable_cloud_storage=false everywhere, execution_nodes_enabled=false) and any test that replaying retained history yields the same decisions (tick_replay.rs reproduces events, books and fills, not decisions). Sharding comes from the row's KUBERNETES tag, not the requirement text. Needs tfvar flips plus a decision-replay test.",
+    "gap": "2026-10-25: skeptic REFUTED: ReplayFeed and run_replay_pass (4768c327) reproduce a fresh cell's decisions over lake history, but no shipped binary calls them and the lake defaults to a memory store, so no retained history exists to replay; remaining step is a qip-cli path that replays a durable lake through run_replay_pass.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -163,10 +166,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test tick_replay && cargo test -p qip-simulation-engine",
+    "verification": "cargo test -p qip-edge-node --test lake_replay",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'tick replay (qip-cli replay, qip-edge-node replay)' is stale: qip-cli replay verifies the event-log hash chain and registries, and qip-edge-node src/replay.rs is a doc stub; the tick replay engine is qip_simulation_engine::tick_replay::ReplaySession, reached only from qip-deepbrain tick_desk."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'tick replay (qip-cli replay, qip-edge-node replay)' is stale: qip-cli replay verifies the event-log hash chain and registries, and qip-edge-node src/replay.rs is a doc stub; the tick replay engine is qip_simulation_engine::tick_replay::ReplaySession, reached only from qip-deepbrain tick_desk. 2026-10-25: 4768c327 adds ReplayFeed and run_replay_pass sharing decide_act_reconcile; replaying_retained_lake_history_through_a_fresh_cell_yields_the_same_decisions compares every WorkReport, journal entry and chain tail. Skeptic (code-reviewer) REFUTED on default path."
   },
   {
     "id": "R12-QUANT-9007",
@@ -874,9 +877,11 @@
       "backend/crates/services/qip-simulation-engine/src/venue.rs",
       "backend/crates/services/qip-simulation-engine/src/agents.rs",
       "backend/crates/services/qip-simulation-engine/tests/agents.rs",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled",
+      "backend/crates/apps/qip-cli/src/simulate.rs",
+      "backend/crates/apps/qip-cli/tests/simulate.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Queue modelling is evidenced (qip-simulation-engine tests/tick_replay.rs a_resting_limit_order_waits_behind_the_size_already_queued_at_its_price documents the mutation dropping queue_ahead). What remains is running the twin as sharded replay/simulation jobs: infrastructure/gitops holds no Job, CronJob or indexed-job manifest for simulation (the replay gate is a Kargo promotion gate), and ReplaySession is reached only from the off-by-default tick_desk. Needs a job entrypoint, manifests and a deployment, likely an ADR or workload-register entry.",
+    "gap": "2026-10-25: requirement clause unmet: qip simulate --set <path> --shard k/n (f2f3d6c4) runs sharded queue-position replay from a shipped CLI, but participant behaviour is replayed prints, not simulated participants, and no committed sharded job exists; remaining step is a participant model on the replay path (or an owner restatement) — the in-lane skeptic graded it HOLDS weakly and the lane kept it PARTIAL on that clause under bar part 4.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -884,10 +889,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-simulation-engine",
+    "verification": "cargo test -p qip-simulation-engine --test tick_replay; cargo test -p qip-cli --test simulate",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: f2f3d6c4 adds qip simulate with SHA-256 instrument-bucket sharding; union of shards equals the unsharded run, coupled sets and malformed k/n are refused (mutations in the commit). Skeptic (security-engineer): HOLDS weakly; lane held back on the participant clause."
   },
   {
     "id": "R12-WORLD-9037",
@@ -1983,7 +1988,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (run only on dispatch, none committed) was stale. Nothing implemented; no protected path touched."
+    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (run only on dispatch, none committed) was stale. Nothing implemented; no protected path touched. 2026-10-25 lane L9: written as docs/blueprint/lanes/l9-CICD-9083.patch, not yet applied. agent-guard.mjs step 1c refuses an agent commit committed at or after lane_manifest.trailer_required_after with no Agent-Lane trailer, judges an unreadable date as after the instant, refuses an unparseable instant and exempts merge commits. One node test; 4 mutations each fired. The switch is committed as null because round-3.json names no lane of the running round. Turning it on is the owner's change, made together with that round's manifest. PARTIAL until then."
   },
   {
     "id": "R12-SEC-9084",
@@ -2031,7 +2036,7 @@
     "verification": "inspection of ci.yml",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: the protected half is already on the branch: ci.yml's test job, acceptance partition, uploads the replay-bench artifact, and pipeline_scripts.rs pins it. What remains is code, not a protected path: a committed baseline and a test that diffs against it. That half stays with lane L6."
   },
   {
     "id": "R12-GCP-9086",
@@ -2053,7 +2058,7 @@
     "verification": "cargo test -p qip-acceptance --test cicd_governance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: taken by the drift route, docs/blueprint/lanes/l9-CICD-8032.patch (shared with R12-CICD-8032), a scheduled plan of dev that fails on drift. The SCC Premium route is paid and was not taken (owner decision 5 of 2026-10-25). PARTIAL until the patch is applied and a scheduled run is seen."
   },
   {
     "id": "R12-RES-9087",
@@ -2239,7 +2244,7 @@
     "verification": "gh api repos/{owner}/{repo}/branches/main/protection",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: written as docs/blueprint/lanes/l9-CICD-9095.patch, not yet applied. It holds .github/rulesets/main-integrity.json (no deletion, no force-push, seven required checks, no bypass actor), .github/rulesets/main-review.json (code-owner review; the admin role may bypass only through a pull request, because the one code owner also authors the pull requests and GitHub refuses self-approval; dropping that bypass is the owner's call), .github/workflows/rules.yml (a daily read of GET /repos/{o}/{r}/rules/branches/main that fails when a rule is missing) and qip-acceptance branch_rules.rs (4 tests, 5 mutations each fired). A repository admin must also POST the two rulesets. PARTIAL until both are done."
   },
   {
     "id": "R12-SEC-9096",
@@ -2417,7 +2422,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: no patch. The GitHub provider's attribute_condition in modules/cicd admits only refs/heads/* (`attribute.ref.startsWith('refs/heads/')`), and a pull_request run presents refs/pull/<n>/merge, so a ci.yml plan job on pull requests cannot authenticate unless that condition is widened. Widening it weakens a gate, which decision 3 does not cover. This is an owner decision: widen it for a plan-only identity, or plan on push to work branches instead."
   },
   {
     "id": "R12-CICD-9104",
@@ -2538,7 +2543,7 @@
     "verification": "gcloud artifacts docker images describe --show-sbom-references",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: no patch, for the reason docs/blueprint/lanes/L02-protected-patches.md gives. Whether `gcloud artifacts sbom load` accepts this repository's CycloneDX output is unconfirmed, and an unverified step in deploy.yml could fail every deployment. It needs a confirmed format, then a re-spec, and that waits on a reachable registry."
   },
   {
     "id": "R12-SEC-9109",

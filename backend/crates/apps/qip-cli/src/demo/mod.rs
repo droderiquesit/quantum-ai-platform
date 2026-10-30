@@ -93,7 +93,7 @@ use qip_brokers::credential::{
 };
 use qip_brokers::rest::{RestOrderEntryAdapter, RestVenueConfig};
 use qip_capital::envelope::{EnvelopeIssuer, EnvelopeTerms};
-use qip_contracts::governance::Approval;
+use qip_contracts::governance::{Approval, Entitlement, Usage};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -806,7 +806,7 @@ impl LiveDemo {
             vec![RestInstrument::new(object(), script::SYMBOL, VENUE)],
         )?;
         let documents = NarrativeAdapter::new(
-            document_config(&base),
+            document_config(&base, start),
             vec![NarrativeSubject::new(script::ENTITY, script::ISSUER)],
             vec![script::SERIES.to_string()],
         )?;
@@ -1261,7 +1261,7 @@ fn price_config(base: &str) -> RestFeedConfig {
     }
 }
 
-fn document_config(base: &str) -> NarrativeFeedConfig {
+fn document_config(base: &str, start: Timestamp) -> NarrativeFeedConfig {
     NarrativeFeedConfig {
         name: "demo-vendor-documents".into(),
         provider: "a loopback document and macro-release vendor".into(),
@@ -1276,6 +1276,16 @@ fn document_config(base: &str) -> NarrativeFeedConfig {
         window: Duration::from_days(120),
         max_records: 100,
         max_document_bytes: 4096,
+        // The licence every document manifest records (R12-DATA-8013). The
+        // vendor is a double in this process, so the grant is this
+        // demonstration's own statement, scoped to research and to the year
+        // the run's clock starts in, not a licence anybody signed.
+        entitlement: Some(Entitlement::Granted {
+            dataset: "demo-vendor-documents".into(),
+            usage: Usage::Research,
+            expires_at: start.saturating_add(Duration::from_days(365)),
+        }),
+        freshness: Duration::from_days(1),
         http: http_limits(),
     }
 }
