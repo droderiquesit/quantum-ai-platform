@@ -482,7 +482,7 @@
       "backend/crates/services/qip-data-finder/tests/sandbox_lifecycle.rs:11-35 test records strings into Reasoning and asserts them back",
       "backend/crates/services/qip-data-finder/src/decision.rs LifecycleStage enum"
     ],
-    "gap": "2026-10-24 (re-read against the tree): There is no sandbox: DataFinder::assess goes from Register straight into the registry and nothing records LifecycleStage::Sandbox or Promote (decision.rs); Platform::observe has no gate holding a new source's records out of the world model; no promotion event or topic exists in qip-events; ADR 0157 §4 makes every connector a hand-written reviewed change, so no generated adapter exists to sandbox. Needs code (a kernel gate and a promotion topic) for the integration test, and for a default path a connector enabled by tfvar (deepbrain_connector, market_data_connector null in every env) and the owner's egress decision.",
+    "gap": "2026-10-30: owner decision: a source the finder registers never gets an adapter (ADR 0157 §4, ADR 0180 decision 3), and the connectors that do feed the world model are hand-written licensed arms off in every committed tfvars, so there is no sandboxed output for a promotion gate to hold back; the requirement needs restating to the hand-written-connector model (or generated adapters admitted by ADR) before a gate would guard anything that runs.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -495,7 +495,7 @@
     "verification": "a test that ingests from a sandboxed source and asserts the world model is unchanged",
     "work_item": "",
     "size": "M",
-    "notes": "The DATA-034 sandbox test is vacuous with respect to behaviour. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: tests/sandbox_lifecycle.rs now drives the real DataFinder (a_registered_source_reaches_the_registry_with_no_sandbox_or_promotion_stage_recorded) and pins the absence of a Sandbox stage."
+    "notes": "The DATA-034 sandbox test is vacuous with respect to behaviour. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: tests/sandbox_lifecycle.rs now drives the real DataFinder (a_registered_source_reaches_the_registry_with_no_sandbox_or_promotion_stage_recorded) and pins the absence of a Sandbox stage. 2026-10-30: lane L3-data read admit_world_records/absorb_evidence: records are tied to connector claim ids, never to finder registrations, so a kernel sandbox gate keyed on registered sources would match nothing. No code written; no skeptic round (nothing to grade)."
   },
   {
     "id": "R12-DATA-2022",

@@ -1852,7 +1852,7 @@
       "backend/crates/runtime/qip-kernel/src/now_stage.rs:487-529",
       "qip-world-model/tests/now_brain.rs::a_belief_delta_carries_moments_and_manifests_and_a_raw_payload_is_refused"
     ],
-    "gap": "Each NOW delta cites a manifest name minted inside the kernel (kernel/bar-history, cycle-N), not a connector manifest entry, and the reference ledger (references.rs DataReferenceRecorded) is keyed by fetch digest and source id, which no NOW reading carries. A resolver that refused an unresolvable citation would refuse every delta today; the readings must first carry the digest of the fetch they came from, through the world model feature store.",
+    "gap": "2026-10-30: deploy dependence: the only external evidence that can stand behind NOW state arrives through the connector arm (fastbrain/api/deepbrain), which every committed tfvars leaves off, so on the default path every NOW delta rests on the platform's own simulated bars and there is no external evidence for a manifest citation to resolve; remaining step is threading FetchDigest and source id from connector SensedRecords through the feature store into ManifestRefs once a connector runs on a committed path.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1865,7 +1865,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "S",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. 2026-10-18 lane L06: not implemented; the closure as graded would refuse every NOW delta. Left PARTIAL with the corrected gap."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. 2026-10-18 lane L06: not implemented; the closure as graded would refuse every NOW delta. Left PARTIAL with the corrected gap. 2026-10-30: lane L3-data: not implemented this round; the closure's test ('every NOW delta from connector data cites a manifest the reference ledger resolves') can only be driven by a test-built connector, which the bar does not count."
   },
   {
     "id": "R12-WORLD-3082",
