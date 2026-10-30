@@ -320,6 +320,28 @@ impl Snapshot {
         })
     }
 
+    /// The series of this snapshot as Cloud Monitoring `TimeSeries` objects,
+    /// for the push exporter ADR 0121 puts in each central binary because
+    /// nothing scrapes a Cloud Run service.
+    ///
+    /// Counters become `CUMULATIVE` series starting at `start` — the instant
+    /// the exporter was started, which is when every counter in this process
+    /// last stood at zero — gauges become `GAUGE` points at `now`, and
+    /// histograms become `CUMULATIVE` distributions with this registry's own
+    /// bucket bounds. A series the API would refuse is named in
+    /// `unencodable` rather than sent; see [`crate::cloud_monitoring`] for
+    /// the shape, the one bucket boundary that differs from `/metrics`, and
+    /// why the writer's identity is a resource label and not a metric label.
+    /// Pure: the caller supplies both instants and does the I/O.
+    pub fn to_cloud_monitoring_time_series(
+        &self,
+        task: &crate::cloud_monitoring::MonitoredTask,
+        start: qip_core::Timestamp,
+        now: qip_core::Timestamp,
+    ) -> crate::cloud_monitoring::TimeSeriesEncoding {
+        crate::cloud_monitoring::encode(self, task, start, now)
+    }
+
     /// Prometheus text exposition, for scraping.
     pub fn to_prometheus(&self) -> String {
         let mut out = String::new();
@@ -1333,6 +1355,19 @@ pub mod names {
     /// that never filled in.
     pub const TELEMETRY_EXPORT_ATTEMPTS: &str = "qip_observability_export_attempts_total";
     pub const TELEMETRY_EXPORT_FAILURES: &str = "qip_observability_export_failures_total";
+
+    /// The Cloud Monitoring push exporter's own account of itself (ADR 0121,
+    /// R12-OBS-9143). Requests it attempted; requests that failed, by
+    /// `reason` (`token`, `timeout`, `transport`, `refused`, `encoding`); and
+    /// series that did not reach the API, by `reason` (`unencodable`,
+    /// `over_budget`, `request_failed`). Every reason is an enum in
+    /// `qip-telemetry-drain`. Two failure counters rather than one because a
+    /// request and a series are different units: one refused request can
+    /// cost two hundred series, and a series the API would refuse costs no
+    /// request at all.
+    pub const METRICS_EXPORT_REQUESTS: &str = "qip_metrics_export_requests_total";
+    pub const METRICS_EXPORT_FAILURES: &str = "qip_metrics_export_failures_total";
+    pub const METRICS_EXPORT_SERIES_DROPPED: &str = "qip_metrics_export_series_dropped_total";
 
     // Event fabric and ledger metrics. The event fabric carries platform
     // events; ledgers record amendments to authoritative state. Both are bounded

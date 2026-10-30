@@ -74,6 +74,8 @@
 //!
 //! [`TELEMETRY_EXPORT_FAILURES`]: qip_observability::metrics::names::TELEMETRY_EXPORT_FAILURES
 
+pub mod cloud_monitoring;
+
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Timestamp};
 use qip_observability::Telemetry;
