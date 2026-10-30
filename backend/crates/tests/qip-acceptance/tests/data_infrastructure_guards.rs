@@ -873,6 +873,12 @@ fn a_canary_in_a_rest_narrative_or_alternative_body_is_found_in_no_durable_store
             window: Duration::from_mins(30),
             max_records: 100,
             max_document_bytes: 512,
+            entitlement: Some(qip_contracts::governance::Entitlement::Granted {
+                dataset: "vendor-documents".into(),
+                usage: qip_contracts::governance::Usage::Research,
+                expires_at: qip_core::Timestamp::from_millis(1_893_456_000_000),
+            }),
+            freshness: Duration::from_hours(6),
             http: limits,
         },
         vec![NarrativeSubject::new("ent-northwind", "NWSC")],

@@ -38,6 +38,10 @@ use qip_contracts::capital::{CapitalAdmission, Utilisation};
 use qip_contracts::degradation::{Capability, DegradationState, Freshness, StrategyClass};
 use qip_contracts::intent::{Contributor, CycleLeg, Intent, NetIntent, net, netting_ratio};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
+use qip_contracts::opportunity_token::{
+    ExecutionPolicy, LegSide, OpportunityToken, OpportunityTokenFields, TokenLeg, TokenLineage,
+    UnwindPolicy,
+};
 use qip_contracts::policy::Dispositions;
 use qip_contracts::regional_episode::{EpisodeKind, RegionalEpisode};
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
@@ -265,6 +269,14 @@ pub const GATE_FEED_LOSS_PLAYBOOK: &str = "feed_loss_playbook";
 /// whose only reason is the trade itself (R12-GOV-6127). A constant for the
 /// same cardinality reason as every gate here.
 pub const GATE_JUSTIFICATION: &str = "justification";
+
+/// The gate a sale is refused under when it needs borrow the venue has not
+/// stated it can lend, or would open a short whose funding the venue has
+/// not stated (R12-REFLEX-5038). Armed by
+/// [`CellConfig::with_borrow_required`]; recorded at [`Cell::send`], which
+/// has no report to push a refusal onto, so it is a constant for the
+/// cardinality reason every directly recorded gate is.
+pub const GATE_BORROW: &str = "borrow";
 
 /// Five per cent. Venues quoting one instrument normally sit within a few
 /// basis points; a gap twenty times the widest arbitrage the scanner acts
@@ -704,6 +716,15 @@ pub struct CellConfig {
     /// envelope it issues, so on the binary path an unbounded envelope is
     /// one the centre did not issue.
     pub exposure_bounds_required: bool,
+    /// Whether a sale beyond what the cell holds long at a venue is refused
+    /// unless the cell holds that venue's stated borrow availability, large
+    /// enough, and a stated funding rate (R12-REFLEX-5038), under
+    /// [`GATE_BORROW`]. Off by default for the reason
+    /// [`Self::exposure_bounds_required`] is: suites minted before the venue
+    /// stated either would stop. `qip-edge-node`'s `assemble` arms it; its
+    /// simulated feed states neither fact, because the simulated exchange
+    /// models no lending, so on that path a sale needing borrow is refused.
+    pub borrow_required: bool,
     /// Whether an envelope without a drawdown stop is refused (ADR 0126
     /// decision 2). Off by default for the reason `exposure_bounds_required`
     /// is; `qip-edge-node`'s `assemble` arms it, and the centre's issuer
@@ -772,6 +793,7 @@ impl CellConfig {
             journal_trimmed_on_ship: false,
             venue_health: None,
             exposure_bounds_required: false,
+            borrow_required: false,
             drawdown_stop_required: false,
             net_edge_margin_bp: None,
             edgeless_signals_refused: false,
@@ -785,6 +807,16 @@ impl CellConfig {
     #[must_use]
     pub fn with_exposure_bounds_required(mut self) -> Self {
         self.exposure_bounds_required = true;
+        self
+    }
+
+    /// Refuse a sale that needs borrow the venue has not stated it can lend,
+    /// or whose short carries no stated funding rate, under [`GATE_BORROW`]
+    /// (R12-REFLEX-5038). The fail-closed reading of an absent fact: a venue
+    /// that said nothing about borrow lends nothing the cell may count on.
+    #[must_use]
+    pub fn with_borrow_required(mut self) -> Self {
+        self.borrow_required = true;
         self
     }
 
@@ -2729,6 +2761,28 @@ impl Cell {
 
     pub fn liquidity(&self) -> &CellLiquidity {
         &self.liquidity
+    }
+
+    /// The fingerprint of the book this cell holds for `object` at `venue`
+    /// ([`qip_orderbook::BookSnapshot::digest`]), or `None` when it tracks no
+    /// book there (R12-TICK-1201).
+    ///
+    /// Read-only, and read from the state every gate prices against rather
+    /// than from a copy, so a replay outside the cell — the tick lake read
+    /// back through `qip_orderbook::replay` — can prove it rebuilt the book
+    /// this cell actually decided from. Without it the only comparison
+    /// available was the lake against the venue's own depth, which cannot
+    /// see a decoder that misread the venue's bytes: the venue and the lake
+    /// would agree and the cell would trade off a third book nobody checked.
+    ///
+    /// Not filtered by staleness, unlike [`CellLiquidity`]'s pricing
+    /// accessors: this answers "what does the cell hold", and a stale book is
+    /// still what it holds. [`qip_orderbook::venue::VenueState::is_stale`]
+    /// says whether it may be priced from.
+    pub fn book_digest(&self, venue: &VenueId, object: &ObjectId) -> Option<String> {
+        self.liquidity
+            .get(venue, object)
+            .map(|state| state.snapshot().book.digest())
     }
 
     pub fn dropcopy_mut(&mut self) -> &mut DropCopyReconciler {
@@ -6610,6 +6664,10 @@ impl Cell {
             );
             return Err(Error::denied(reason));
         }
+        // Borrow and funding, the cell's own local state (R12-REFLEX-5038):
+        // a sale beyond what the cell holds long here needs borrow the venue
+        // stated it can lend and a funding rate the venue stated it charges.
+        self.borrow_admit(object_id, venue, side, quantity, now)?;
         // The fence, before the risk gate: a process that does not own the
         // venue session has no business asking whether an order is within
         // limits, and the refusal should say which it was.
@@ -6922,6 +6980,70 @@ impl Cell {
             }
         }
         grounds
+    }
+
+    /// Refuse under [`GATE_BORROW`] a sale of `quantity` of `object_id` at
+    /// `venue` that needs borrow the cell does not hold a statement for, or
+    /// that opens a short with no stated funding rate. Admits every buy, and
+    /// a sale the cell's confirmed long position at the venue covers, and
+    /// everything on a cell not armed with
+    /// [`CellConfig::with_borrow_required`].
+    fn borrow_admit(
+        &mut self,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        now: Timestamp,
+    ) -> Result<()> {
+        // The side is the book the order takes from: a sale hits the bid.
+        if !self.config.borrow_required || side != BookSide::Bid {
+            return Ok(());
+        }
+        let held = self.position(venue, object_id).max(Decimal::ZERO);
+        let needed = quantity - held;
+        if !needed.is_positive() {
+            return Ok(());
+        }
+        let instrument = object_id.as_str();
+        let reason = match (
+            self.funding.borrow_availability(instrument),
+            self.funding.funding_rate(instrument),
+        ) {
+            (None, _) => Some(format!(
+                "a sale of {quantity} {instrument} at {} needs {needed} borrowed and the venue \
+                 has stated no borrow availability; an unstated lender lends nothing",
+                venue.as_str()
+            )),
+            (Some(borrow), _) if borrow.quantity().is_none_or(|lendable| lendable < needed) => {
+                Some(format!(
+                    "a sale of {quantity} {instrument} at {} needs {needed} borrowed and the \
+                     venue states {} available",
+                    venue.as_str(),
+                    borrow
+                        .quantity()
+                        .map_or_else(|| "none".to_string(), |lendable| lendable.to_string())
+                ))
+            }
+            (_, None) => Some(format!(
+                "a sale of {quantity} {instrument} at {} opens a short and the venue has \
+                 stated no funding rate for it, so its carry is unknown",
+                venue.as_str()
+            )),
+            _ => None,
+        };
+        let Some(reason) = reason else {
+            return Ok(());
+        };
+        self.metrics.refusal(GATE_BORROW);
+        self.journal.record(
+            Decision::Refused {
+                gate: GATE_BORROW.to_string(),
+                reason: reason.clone(),
+            },
+            now,
+        );
+        Err(Error::denied(reason))
     }
 
     /// Why `justification` cannot be sent at `now`, or `None` when it can
@@ -9193,9 +9315,18 @@ impl Cell {
         for venue in &venues {
             self.metrics.message_sent(venue, MessageKind::Placement);
         }
+        // Statistics, not money: a ratio of two quantities of one instrument,
+        // crossed to whole basis points for the token's integer field.
+        let priced = opportunity.net_edge.quantity();
+        let edge_bp = priced
+            .is_positive()
+            .then(|| opportunity.net() * Decimal::from_int(10_000) / priced)
+            .and_then(|bp| bp.truncate_dp(0).to_string().parse::<i32>().ok());
         Some(AdmittedCycle {
             cycle_id: cycle_id.to_string(),
             net: opportunity.net(),
+            edge_bp,
+            hold_id: region_hold_id_for_cycle(pass, cycle_id),
             legs: intents,
             notional,
         })
@@ -9635,6 +9766,7 @@ impl Cell {
         // cycle that rests a leg sends that leg alone and the rest later.
         let schedule = self.fill_times.release_schedule(&venues);
         let mut orders: Vec<String> = Vec::with_capacity(cycle.legs.len());
+        let mut sent: Vec<(usize, Decimal)> = Vec::with_capacity(cycle.legs.len());
         for position in 0..cycle.legs.len() {
             let (order_id, quantity) = self.send_cycle_leg(
                 cycle,
@@ -9647,6 +9779,7 @@ impl Cell {
                 report,
             )?;
             orders.push(order_id.clone());
+            sent.push((position, quantity));
             self.observe_cycle_leg(
                 cycle,
                 position,
@@ -9659,12 +9792,14 @@ impl Cell {
             )?;
         }
         // Every leg is out, so the cycle's hold on the region is spend.
-        self.commit_cycle_hold(&cycle.cycle_id);
+        let committed = self.commit_cycle_hold(&cycle.cycle_id);
+        let token = opportunity_token(cycle, &sent, ExecutionPolicy::AllOrNone, committed, now);
         self.journal.record(
             Decision::CycleCommitted {
                 cycle_id: cycle.cycle_id.clone(),
                 orders,
                 net: cycle.net.to_string(),
+                token,
             },
             now,
         );
@@ -9896,6 +10031,7 @@ impl Cell {
             return Err(error);
         }
         let mut orders = vec![order_id];
+        let mut legs_sent: Vec<(usize, Decimal)> = vec![(position, sent)];
         // ADR 0084: the legs crossed against the rested one go out together
         // on this pass, so they are scheduled as a set of their own — the
         // rested leg is already at its venue and is not in it.
@@ -9939,6 +10075,7 @@ impl Cell {
                 report,
             )?;
             orders.push(id.clone());
+            legs_sent.push((other, quantity));
             self.observe_cycle_leg(
                 &cycle,
                 other,
@@ -9950,11 +10087,19 @@ impl Cell {
                 report,
             )?;
         }
+        let token = opportunity_token(
+            &cycle,
+            &legs_sent,
+            ExecutionPolicy::Sequential,
+            committed,
+            now,
+        );
         self.journal.record(
             Decision::CycleCommitted {
                 cycle_id: cycle_id.to_string(),
                 orders,
                 net: cycle.net.to_string(),
+                token,
             },
             now,
         );
@@ -12026,6 +12171,70 @@ struct CrossingWindow {
 /// The router is built once, where the desk is installed. Rebuilding it per
 /// pass would re-read configuration on the hot path, and configuration read on
 /// the hot path is how a pass comes to depend on when it ran.
+/// The origin desk's record of a committed cycle as an [`OpportunityToken`]
+/// (R12-CONTRACT-7068, ADR 0154 decision 7), or `None` when the contract
+/// refuses it — an edge below one basis point is one the token cannot
+/// describe, and the cycle's own entry still records it.
+///
+/// Built from what went out, never from the plan: `sent` is each leg's
+/// position in the cycle and the quantity sent for it, so a decomposed leg
+/// is described at the size the venue was asked for. `execution` is how the
+/// cell worked the legs — all at once, or the rested leg first. The unwind is
+/// the cell's own: flatten at the touch, with no loss bound, because none is
+/// enforced. The reservation is the region hold, when one was committed.
+fn opportunity_token(
+    cycle: &AdmittedCycle,
+    sent: &[(usize, Decimal)],
+    execution: ExecutionPolicy,
+    committed: Decimal,
+    now: Timestamp,
+) -> Option<Box<OpportunityToken>> {
+    let legs = sent
+        .iter()
+        .filter_map(|(position, quantity)| {
+            let leg = cycle.legs.get(*position)?;
+            Some(TokenLeg {
+                venue: leg.venue.clone(),
+                instrument: leg.object_id.as_str().to_string(),
+                side: if leg.signed_size.is_positive() {
+                    LegSide::Buy
+                } else {
+                    LegSide::Sell
+                },
+                quantity: *quantity,
+            })
+        })
+        .collect();
+    let expires_at = cycle.legs.iter().map(|leg| leg.valid_until).min()?;
+    OpportunityToken::new(OpportunityTokenFields {
+        schema_version:
+            <OpportunityTokenFields as qip_contracts::validated::Contract>::SCHEMA_VERSION,
+        opportunity: qip_contracts::signal::OpportunityId::new(cycle.cycle_id.clone()),
+        cycle_id: cycle.cycle_id.clone(),
+        version: 1,
+        lineage: TokenLineage::Original,
+        legs,
+        size: cycle.notional,
+        edge_bp: cycle.edge_bp?,
+        issued_at: now,
+        expires_at,
+        reservations: if committed.is_positive() {
+            vec![cycle.hold_id.clone()]
+        } else {
+            Vec::new()
+        },
+        execution,
+        // The cell's own unwind: `unwind_cycle` offsets each filled leg at
+        // the touch the book serves, and enforces no loss bound. So none is
+        // stated — the plan's residual exposure is an exposure, possibly a sum
+        // across currencies, and calling it a loss bound would be a claim the
+        // cell does not keep.
+        unwind: UnwindPolicy::FlattenAtMarket,
+    })
+    .ok()
+    .map(Box::new)
+}
+
 /// What one evidence reference is worth at the send seam (ADR 0200).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Resolution {
@@ -12051,6 +12260,12 @@ struct AdmittedCycle {
     cycle_id: String,
     /// The scanner's net edge, in units of the start instrument.
     net: Decimal,
+    /// The same net edge in basis points of the quantity it was priced for
+    /// (both in units of the start instrument, so the ratio has no unit),
+    /// truncated toward zero; `None` when that quantity is not positive.
+    edge_bp: Option<i32>,
+    /// The region hold this cycle was admitted under.
+    hold_id: String,
     /// In plan order. Every one carries `NettingPolicy::NoNet` by
     /// construction, which is what `CycleLeg` exists to guarantee.
     legs: Vec<Intent>,
@@ -13313,6 +13528,110 @@ mod crossing_tests {
                 1,
                 "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_short_sale_is_refused_when_the_venue_states_no_borrow() -> Result<()> {
+        // R12-REFLEX-5038. The cell held funding and borrow state that
+        // nothing wrote and nothing read: a sale needing borrow the venue
+        // said it could not lend went out on the strength of the cell never
+        // having asked. `send_on` sells one unit and the cell holds none, so
+        // every send below needs one unit borrowed.
+        use crate::funding::{BorrowAvailability, FundingRate};
+        use qip_core::dec;
+        let armed = || -> Result<Cell> {
+            let config = CellConfig::new(CELL, "europe-west2")
+                .with_venue(venue())
+                .with_borrow_required();
+            let features =
+                FeatureEngine::new(MarketState::default(), qip_core::Duration::from_secs(5));
+            let mut cell = Cell::new(config, features)?;
+            cell.track(book());
+            raise_signal(&mut cell, "alpha");
+            Ok(cell)
+        };
+        let grounds = |cell: &Cell| {
+            vec![Ground::Evidence(format!(
+                "journal:signal_raised:{}",
+                cell.signal_sequences["alpha"]
+            ))]
+        };
+        let instrument = object().as_str().to_string();
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+
+        // Premise: with borrow and funding stated, the sale goes.
+        let mut cell = armed()?;
+        cell.set_borrow_availability(
+            instrument.clone(),
+            BorrowAvailability::available(dec!("10")),
+        );
+        cell.set_funding_rate(instrument.clone(), FundingRate::new(Decimal::ZERO));
+        let held = grounds(&cell);
+        send_on(&mut cell, held, &mut gateway)?;
+        assert_eq!(
+            gateway.placed.len(),
+            1,
+            "the premise failed: the stated sale was refused"
+        );
+
+        type Statement = (Option<BorrowAvailability>, Option<FundingRate>);
+        let refused: [(&str, Statement); 4] = [
+            ("nothing stated", (None, None)),
+            (
+                "the venue states it lends none",
+                (
+                    Some(BorrowAvailability::unavailable()),
+                    Some(FundingRate::new(Decimal::ZERO)),
+                ),
+            ),
+            (
+                "the venue lends less than the sale needs",
+                (
+                    Some(BorrowAvailability::available(dec!("0.5"))),
+                    Some(FundingRate::new(Decimal::ZERO)),
+                ),
+            ),
+            (
+                "borrow stated and no funding rate",
+                (Some(BorrowAvailability::available(dec!("10"))), None),
+            ),
+        ];
+        for (case, (borrow, funding)) in refused {
+            let mut cell = armed()?;
+            if let Some(borrow) = borrow {
+                cell.set_borrow_availability(instrument.clone(), borrow);
+            }
+            if let Some(funding) = funding {
+                cell.set_funding_rate(instrument.clone(), funding);
+            }
+            let before = cell.journal().entries().len();
+            let grounds = grounds(&cell);
+            let error = match send_on(&mut cell, grounds, &mut gateway) {
+                Ok(placed) => panic!("{case}: the sale was sent: {placed:?}"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), "denied", "{case}: {error}");
+            assert_eq!(
+                gateway.placed.len(),
+                1,
+                "{case}: the venue was called anyway"
+            );
+            let gates: Vec<String> = cell
+                .journal()
+                .entries()
+                .iter()
+                .skip(before)
+                .filter_map(|entry| match &entry.decision {
+                    Decision::Refused { gate, .. } => Some(gate.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(gates, vec![GATE_BORROW.to_string()], "{case}");
         }
         Ok(())
     }

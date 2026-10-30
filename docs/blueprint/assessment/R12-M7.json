@@ -43,7 +43,7 @@
     "verification": "terraform plan with execution_nodes naming one region",
     "work_item": "",
     "size": "S",
-    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL. 2026-10-24 lane L6: a conflict for the owner, not a code gap: modules/execution-node/variables.tf's machine_type validation admits only c4-highcpu-8/16 and c4d-highcpu-8/16 and refuses C3 and C3D, following R12-REFLEX-8002 (GCP v3.0 §1, 'a C3 or N2 shape must be refused at plan'), while this row's check asks that 'a non-C3 machine_type is refused'. The requirement's own text allows 'C3/C3D-class (or equivalent)', which C4/C4D can be read to meet; the check's literal wording cannot be met without breaking REFLEX-8002. Recorded, not changed. 2026-10-24 lane L6: ADR 0211 (Accepted under the owner's 2026-10-24 delegation) resolves the C3-versus-C4 conflict: the check reads as refusing every shape outside the C4/C4D high-CPU class, which variables.tf already does. The row stays PARTIAL only on the deploy gap: no node declared, protected tfvars, no real plan (billing paused)."
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL. 2026-10-24 lane L6: a conflict for the owner, not a code gap: modules/execution-node/variables.tf's machine_type validation admits only c4-highcpu-8/16 and c4d-highcpu-8/16 and refuses C3 and C3D, following R12-REFLEX-8002 (GCP v3.0 §1, 'a C3 or N2 shape must be refused at plan'), while this row's check asks that 'a non-C3 machine_type is refused'. The requirement's own text allows 'C3/C3D-class (or equivalent)', which C4/C4D can be read to meet; the check's literal wording cannot be met without breaking REFLEX-8002. Recorded, not changed. 2026-10-24 lane L6: ADR 0211 (Accepted under the owner's 2026-10-24 delegation) resolves the C3-versus-C4 conflict: the check reads as refusing every shape outside the C4/C4D high-CPU class, which variables.tf already does. The row stays PARTIAL only on the deploy gap: no node declared, protected tfvars, no real plan (billing paused). 2026-10-25 lane L9: no patch. The closure turns on execution_nodes_enabled for a billed C4 node, and owner decision 5 of 2026-10-25 declined new billed infrastructure. It stays PARTIAL until that decision changes."
   },
   {
     "id": "R12-REFLEX-7003",
@@ -1551,9 +1551,11 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/opportunity_token.rs:91 type",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:319 an_opportunity_token_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:337 an_opportunity_token_refuses_each_broken_invariant"
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:337 an_opportunity_token_refuses_each_broken_invariant",
+      "backend/crates/edge/qip-edge/src/cell.rs::opportunity_token, journaled on Decision::CycleCommitted.token at both commit sites (whole-out AllOrNone, rested Sequential)",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs::a_committed_cycle_journals_an_opportunity_token_whose_legs_equal_the_legs_sent"
     ],
-    "gap": "The Lane 1 frame carries an epoch by decision (ADR 0154 d7, accepted): qip_peer::PeerMessage::Token stays an OpportunityEpoch and the receiver re-derives legs from its own whitelist; the contract OpportunityToken is the origin desk's own record. Not built: the desk-side construction of that record from legs, size, edge and reservations in qip-arbitrage / qip-edge-node. Restated 2026-10-24.",
+    "gap": "2026-10-25 (lane L5-EDGE; independent skeptic REFUTED): (1) no committed path installs a desk or commits a cycle: qip-edge-node needs QIP_ARBITRAGE_STRATEGY, a fresh signed CycleWhitelist and a strategy envelope, which arrive only over the mesh (QIP_MESH_PEER) or the control handoff, and no committed environment enables an execution node; (2) 'between brains': the token sits only in the cell's journal, and ADR 0154 decision 7 keeps the peer wire an epoch, which declines the requirement's text (bar part 4), so this needs an owner decision; (3) a committed cycle whose edge is below one basis point journals no token, because the contract refuses a zero edge and the record is made after the legs are out.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1561,10 +1563,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh",
+    "verification": "cargo test -p qip-mesh; cargo +1.94.1 test -p qip-edge --test arbitrage a_committed_cycle",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure placed construction in qip-mesh, which does not hold the fields. Lane T1-EDGE 2026-10-24: wire change dropped by ADR 0154 d7; no code changed, kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure placed construction in qip-mesh, which does not hold the fields. Lane T1-EDGE 2026-10-24: wire change dropped by ADR 0154 d7; no code changed, kept PARTIAL. 2026-10-25 lane L5-EDGE: the cell now constructs and journals an OpportunityToken when it commits a cycle: the legs as sent (venue, instrument, side, sent quantity), size (the legs' notional), edge (net over the priced quantity, whole bp), TTL (the earliest leg validity), the region hold as reservation when committed, execution AllOrNone or Sequential (rested), unwind FlattenAtMarket (a contract variant added for an unwind with no stated loss bound), lineage Original v1. Mutations fired: one leg dropped from the token; token not journaled. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED on parts 2 and 4. It also found the first unwind (Flatten bounded by the plan's residual exposure) dishonest: that is an exposure, possibly summed across currencies, and nothing enforces it. Replaced by UnwindPolicy::FlattenAtMarket."
   },
   {
     "id": "R12-CONTRACT-7069",

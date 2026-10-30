@@ -109,6 +109,7 @@
 //! response carrying a filing with a hundred thousand line items is refused
 //! before any of it is allocated.
 
+use qip_contracts::governance::Entitlement;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
 use qip_events::Topic;
@@ -116,7 +117,7 @@ use qip_financial::intelligence::{
     EntityMention, FiscalPeriod, FundamentalUpdate, MacroObservation, NewsItem, NewsSource,
     Sentiment,
 };
-use qip_financial::manifest::SourceManifest;
+use qip_financial::manifest::{ManifestV2, Refetch, SourceManifest};
 use qip_financial::quality::{DataQuality, LicensingClass, Provenance};
 use qip_transport::{ClientLimits, HttpClient, HttpRequest, Method, Url};
 use serde::Deserialize;
@@ -150,6 +151,22 @@ const DEFAULT_PUBLICATION_DELAY: Duration = Duration::from_mins(15);
 /// lists describe the same transport and have to change together.
 const CLIENT_OWNED_HEADERS: [&str; 4] =
     ["host", "content-length", "connection", "transfer-encoding"];
+/// How long a document's bytes may be relied on before a re-fetch, by default.
+/// A day: a news document revised in place is caught by the next day's
+/// re-read at the latest, rather than never.
+const DEFAULT_FRESHNESS: Duration = Duration::from_days(1);
+
+/// The parser lineage every manifest this module writes records (R12-DATA-8013).
+///
+/// Constants of this module rather than configuration: the parser *is* this
+/// decoder, and a lineage a deployment could set would let a configuration
+/// claim that code it does not run read the bytes. Bump
+/// [`NARRATIVE_PARSER_VERSION`] whenever `decode_news` changes what extent it
+/// hashes or how it reads a field, so a replay can tell which decoder produced
+/// a sealed manifest.
+pub const NARRATIVE_PARSER_NAME: &str = "qip-market-ingestion/narrative";
+/// See [`NARRATIVE_PARSER_NAME`].
+pub const NARRATIVE_PARSER_VERSION: &str = "1";
 
 /// One issuer this feed is allowed to report on.
 ///
@@ -220,6 +237,18 @@ pub struct NarrativeFeedConfig {
     /// `NewsItem::manifest` reports the length of, so the cap and the record
     /// count the same bytes. A document over this is refused, never truncated.
     pub max_document_bytes: usize,
+    /// What the licence this deployment holds for the feed says it may do with
+    /// the bytes, recorded on every manifest (R12-DATA-8013). `None` is
+    /// unconfigured, and an unconfigured adapter reports itself unavailable
+    /// rather than writing a manifest that names no licence — a reference whose
+    /// terms nobody recorded reads later as one whose terms were never a
+    /// question. Recorded as given, including a `Denied` or expired grant: like
+    /// [`Self::licensing`] it labels and does not adjudicate.
+    pub entitlement: Option<Entitlement>,
+    /// How long after the bytes are read they may be relied on without a
+    /// re-fetch; each manifest's `fresh_until` is the read instant plus this.
+    /// Refused at zero or below, which would write a manifest stale when read.
+    pub freshness: Duration,
     /// Transport limits. The peer chooses how much to send; these decide how
     /// much this process will hold and how long it will wait.
     pub http: ClientLimits,
@@ -244,6 +273,9 @@ impl Default for NarrativeFeedConfig {
             window: Duration::from_mins(30),
             max_records: 5_000,
             max_document_bytes: 128 * 1024,
+            // Deliberately not a granted entitlement: see the field.
+            entitlement: None,
+            freshness: DEFAULT_FRESHNESS,
             http: ClientLimits {
                 // Four megabytes where the price feed allows one: a page of
                 // filings carries full text, and a limit that refuses the
@@ -278,6 +310,8 @@ impl std::fmt::Debug for NarrativeFeedConfig {
             .field("window", &self.window)
             .field("max_records", &self.max_records)
             .field("max_document_bytes", &self.max_document_bytes)
+            .field("entitlement", &self.entitlement)
+            .field("freshness", &self.freshness)
             .field("http", &self.http)
             .finish()
     }
@@ -415,6 +449,13 @@ impl NarrativeAdapter {
                  in it at all",
             ));
         }
+        if config.freshness <= Duration::ZERO {
+            return Err(Error::invalid(format!(
+                "freshness is {:?}; every manifest would be stale at the instant its bytes were \
+                 read. Set how long a document may be relied on before it is re-fetched",
+                config.freshness
+            )));
+        }
         let header = config.api_key_header.trim().to_ascii_lowercase();
         if header.is_empty() {
             return Err(Error::invalid(
@@ -524,6 +565,14 @@ impl NarrativeAdapter {
                  adapter will not treat an anonymous endpoint as a licensed one",
                 self.config.api_key_header
             ));
+        }
+        if self.config.entitlement.is_none() {
+            missing.push(
+                "no entitlement: set `entitlement` to the licence this deployment holds for the \
+                 feed. Every document's manifest records it, and a manifest naming no licence \
+                 would read later as one whose terms were never a question"
+                    .into(),
+            );
         }
         if self.subjects.is_empty() && self.series.is_empty() {
             missing.push(
@@ -803,6 +852,20 @@ impl NarrativeAdapter {
     /// endpoint never reaches a decode; it is a refusal and not an
     /// `expect` because a manifest whose locator resolves to nothing is a
     /// reference that has quietly become a deletion.
+    ///
+    /// Always version 2 (R12-DATA-8013, ADR 0132 decision 3). A v1 manifest
+    /// records where the bytes were and what they hashed to, and nothing about
+    /// the licence they were read under, how long they may be relied on, which
+    /// code parsed them or how to read them again — so a re-fetch had to be
+    /// reconstructed from configuration that may since have changed. The six
+    /// added fields come from this deployment's configuration and this
+    /// module's own lineage: the configured `entitlement`, `fresh_until` as the
+    /// read instant plus the configured `freshness`, the parser constants, and
+    /// `Refetch::Locator`, because the locator is the endpoint and the vendor's
+    /// id and reading it again is how the hash is checked. No etag and no
+    /// cursor: the wire carries no version tag, and this feed is polled by a
+    /// publication window rather than resumed from a position, so either would
+    /// be a value invented here.
     fn manifest_for(
         &self,
         document_id: &str,
@@ -817,12 +880,29 @@ impl NarrativeAdapter {
                 self.config.name
             )));
         };
+        let Some(entitlement) = &self.config.entitlement else {
+            return Err(Error::invalid(format!(
+                "{}: the document {document_id:?} was decoded with no entitlement configured, so \
+                 its manifest could not record the licence it was read under; set `entitlement`",
+                self.config.name
+            )));
+        };
+        let v2 = ManifestV2::new(
+            None,
+            entitlement.clone(),
+            None,
+            read_at.saturating_add(self.config.freshness),
+            NARRATIVE_PARSER_NAME,
+            NARRATIVE_PARSER_VERSION,
+            Refetch::Locator,
+        )?;
         SourceManifest::of(
             self.config.name.clone(),
             format!("{endpoint}#{document_id}"),
             read_at,
             document,
-        )
+        )?
+        .with_v2(v2)
     }
 
     /// A news item is knowable when it was published, plus the vendor's delay.

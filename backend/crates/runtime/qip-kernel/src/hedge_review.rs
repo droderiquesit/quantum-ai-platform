@@ -424,6 +424,77 @@ fn exposures_of(state: &RiskState, universe: &Universe) -> Result<HedgeExposures
     Ok(HedgeExposures::new(breakdown).with_instruments(by_instrument))
 }
 
+/// Every declared policy that relates to `instrument`, described in words:
+/// those whose axis and bucket name the instrument's own classification
+/// (the position is hedged by the policy), and those whose hedge instrument
+/// *is* `instrument` (the position is the hedge). R12-ASSET-4068.
+///
+/// Classified exactly as [`exposures_of`] classifies a notional — the same
+/// catalogue fields, the same [`UNCLASSIFIED`] bucket for an instrument the
+/// platform has no record of — so a policy the survey would charge this
+/// position to is a policy this names, and no other. A factor axis matches
+/// on a non-zero loading only: a zero loading contributes nothing to the
+/// factor's exposure and is not exposure to it. A loading that is not a
+/// finite number is refused, as `exposures_of` refuses it, rather than read
+/// as unexposed.
+///
+/// An empty answer is returned as empty; saying *why* no policy applies is
+/// the caller's, which knows whether any policy was declared at all.
+pub fn policies_relating_to(
+    declarations: &[HedgePolicyDeclaration],
+    instrument: &str,
+    universe: &Universe,
+) -> Result<Vec<String>> {
+    let record = universe.get(&ObjectId::from_string(instrument));
+    let mut related = Vec::new();
+    for policy in declarations {
+        if policy.instrument.as_str() == instrument {
+            related.push(format!(
+                "{} (this position is the hedge for {} {})",
+                policy.name,
+                policy.axis.as_str(),
+                policy.bucket
+            ));
+        }
+        let covers = match (policy.axis, record) {
+            (HedgeAxis::Instrument, _) => policy.bucket == instrument,
+            (HedgeAxis::AssetClass, None) => policy.bucket == UNCLASSIFIED,
+            (_, None) => false,
+            (HedgeAxis::AssetClass, Some(record)) => policy.bucket == record.asset_class.as_str(),
+            (HedgeAxis::Sector, Some(record)) => policy.bucket == record.sector.as_str(),
+            (HedgeAxis::Country, Some(record)) => policy.bucket == record.geography,
+            (HedgeAxis::Currency, Some(record)) => policy.bucket == record.currency.as_str(),
+            (HedgeAxis::Issuer, Some(record)) => {
+                policy.bucket == record.issuer.as_deref().unwrap_or(record.symbol.as_str())
+            }
+            (HedgeAxis::Factor, Some(record)) => {
+                match record.risk.factor_exposures.loadings.get(&policy.bucket) {
+                    None => false,
+                    Some(loading) if !loading.is_finite() => {
+                        return Err(Error::invalid(format!(
+                            "{instrument} states a loading of {loading} on factor {}, which is \
+                             not a number; correct the reference record — a factor read as flat \
+                             is one no hedge policy can defend",
+                            policy.bucket
+                        )));
+                    }
+                    Some(loading) => *loading != 0.0,
+                }
+            }
+        };
+        if covers {
+            related.push(format!(
+                "{} (hedged with {} on {} {})",
+                policy.name,
+                policy.instrument.as_str(),
+                policy.axis.as_str(),
+                policy.bucket
+            ));
+        }
+    }
+    Ok(related)
+}
+
 /// The hedge survey, as the log carries it.
 ///
 /// The whole outcome list, not a count: §31.4's value is that a person can

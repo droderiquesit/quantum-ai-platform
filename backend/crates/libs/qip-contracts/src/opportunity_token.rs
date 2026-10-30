@@ -50,6 +50,10 @@ pub enum UnwindPolicy {
     Flatten { max_loss: Decimal },
     /// Hedge the residual on a named instrument and venue.
     Hedge { venue: VenueId, instrument: String },
+    /// Flatten the filled legs at the touch, with no loss bound stated: what
+    /// a cell that offsets a broken cycle at whatever the book serves does,
+    /// said as such rather than under a bound nothing enforces.
+    FlattenAtMarket,
 }
 
 /// Which revision of an opportunity this is.
@@ -143,7 +147,7 @@ impl Contract for OpportunityTokenFields {
                 named(c, "unwind.venue", venue.as_str())?;
                 named(c, "unwind.instrument", instrument)?;
             }
-            UnwindPolicy::Flatten { .. } => {}
+            UnwindPolicy::Flatten { .. } | UnwindPolicy::FlattenAtMarket => {}
         }
         match self.lineage {
             TokenLineage::Original if self.version != 1 => refuse(
