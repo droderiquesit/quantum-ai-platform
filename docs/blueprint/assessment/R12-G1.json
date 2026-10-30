@@ -1400,7 +1400,7 @@
       "infrastructure/terraform/modules/execution-node/main.tf:683 iap_ssh firewall",
       "infrastructure/terraform/tests/pam.tftest.hcl (18 runs)"
     ],
-    "gap": "2026-10-24 (lane L6, current corrected: it said no PAM entitlements in Terraform): (1) pam_entitlements is empty in every environment, so no privileged role is in fact granted through PAM; enabling one is an infrastructure/environments/** change (protected) with a real plan, tracked with R12-SEC-9123/9060; (2) no workforce identity pool; (3) standing privileged grants outside PAM (the owner's own roles) are not inventoried, so 'privileged access must be temporary' is not proven of the project.",
+    "gap": "2026-10-25 (lane L6): no patch written. The closure adds a PAM entitlement in dev tfvars (protected) and runs a real plan, and the workforce pool waits on the owner's choice of identity provider; a tfvars flip is neither a gate nor a comment correction under decision 3, so it is the owner's to apply, and no plan can run while billing is paused. Earlier: 2026-10-24 (lane L6, current corrected: it said no PAM entitlements in Terraform): (1) pam_entitlements is empty in every environment, so no privileged role is in fact granted through PAM; enabling one is an infrastructure/environments/** change (protected) with a real plan, tracked with R12-SEC-9123/9060; (2) no workforce identity pool; (3) standing privileged grants outside PAM (the owner's own roles) are not inventoried, so 'privileged access must be temporary' is not proven of the project.",
     "implemented": true,
     "tested": true,
     "integrated": true,

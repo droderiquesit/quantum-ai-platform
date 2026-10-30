@@ -3825,7 +3825,7 @@
     "status": "MISSING",
     "current": "No delivery SLOs in code.",
     "evidence": [],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "2026-10-25 (lane L6): no patch written. The recording sites belong in deploy.yml and ci.yml (protected), and delivery_objectives in critical_paths.rs has nothing to read until they exist; PR acceptance and rework rate also need a GitHub API credential, which the owner holds. It stays PARTIAL on the protected workflows and that credential. Earlier: Declare the missing objectives, record them, and prove ingestion.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -4086,7 +4086,7 @@
       "infrastructure/terraform/modules/registry/tests/secondary.tftest.hcl",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs::no_data_store_beyond_those_the_register_records_is_left_without_a_customer_managed_key"
     ],
-    "gap": "2026-10-24 (lane L6): (1) the root module does not pass secondary_region (wiring it needs a variable in infrastructure/terraform/variables.tf, a protected path) and no environment names one; (2) nothing copies a promoted digest into the secondary repository, and no prod promotion checks the digest is there: that belongs to the release pipeline (deploy.yml/Kargo, protected) and prod is never promoted from a workflow today; (3) no real plan.",
+    "gap": "2026-10-25 (lane L6): no patch written. The closure adds secondary_region to the root variables and dev tfvars (protected) and a deploy.yml digest-copy step; a second region's registry is new billed infrastructure under decision 5, and the parked second-region decision (decision 4) governs it, so it stays PARTIAL until the owner reopens it. Earlier: 2026-10-24 (lane L6): (1) the root module does not pass secondary_region (wiring it needs a variable in infrastructure/terraform/variables.tf, a protected path) and no environment names one; (2) nothing copies a promoted digest into the secondary repository, and no prod promotion checks the digest is there: that belongs to the release pipeline (deploy.yml/Kargo, protected) and prod is never promoted from a workflow today; (3) no real plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,

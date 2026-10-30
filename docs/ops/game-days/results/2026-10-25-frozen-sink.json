@@ -1,0 +1,215 @@
+{
+  "schema": "qip.game-day.result/v1",
+  "scenario": "frozen-sink",
+  "drill": "R12-RES-10153 broker backpressure under a frozen sink: qip-ledgerd, the P1 outcomes stream's consumer, is paused (SIGSTOP) while P0, P1 and P2 producers load qip-fabricd at stated rates; the broker keeps admitting P0 and P1 with no refusal of either, throttles only the P2 producer driven past its own quota, keeps its resident memory under a stated ceiling, and the resumed ledger commits again and catches up.",
+  "run_at": "2026-10-25T06:20:06.191Z",
+  "commit": "b4d00759 plus the uncommitted tree of the commit that records this result (qip event-fabric produce, frozen-sink scenario)",
+  "environment": "local",
+  "binaries": {
+    "qip-fabricd": "b185dc76f1d6997aeb85e4f55b4875858d72713234e8d662c9c738cad739166e",
+    "qip-ledgerd": "ce0b66a34b2f523dd97c54435b759477673b2b7e0e8d06d17a051f5884d327e1",
+    "qip": "c04083f5611cc447db69e7692af0fccaead8de61fd02a4bbff0265b4cdd705a5"
+  },
+  "objectives": {
+    "rto_ms": 10000,
+    "rpo_records": 0
+  },
+  "measurements": {
+    "detected_ms": 2004,
+    "outage_ms": 10224,
+    "rto_ms": 224,
+    "rpo_records": 0,
+    "peak_rss_kib": {
+      "fabricd": 22872,
+      "ledgerd": 8880
+    }
+  },
+  "checks": [
+    {
+      "phase": "steady",
+      "name": "every process became ready",
+      "passed": true,
+      "detail": "30 ms"
+    },
+    {
+      "phase": "steady",
+      "name": "P0 control records are being admitted",
+      "passed": true,
+      "detail": "held after 14 ms"
+    },
+    {
+      "phase": "steady",
+      "name": "P1 outcome records are being admitted",
+      "passed": true,
+      "detail": "held after 2 ms"
+    },
+    {
+      "phase": "steady",
+      "name": "P2 journal records are being admitted",
+      "passed": true,
+      "detail": "held after 106 ms"
+    },
+    {
+      "phase": "steady",
+      "name": "the ledger has committed its checkpoint on the P1 stream",
+      "passed": true,
+      "detail": "held after 2 ms"
+    },
+    {
+      "phase": "fault",
+      "name": "the ledger no longer answers",
+      "passed": true,
+      "detail": "2004 ms"
+    },
+    {
+      "phase": "during",
+      "name": "P0 keeps being admitted with the sink frozen",
+      "passed": true,
+      "detail": "held for 10000 ms"
+    },
+    {
+      "phase": "during",
+      "name": "P1 keeps being admitted while its own consumer is frozen",
+      "passed": true,
+      "detail": "held for 10000 ms"
+    },
+    {
+      "phase": "during",
+      "name": "P2 keeps being admitted between its throttles",
+      "passed": true,
+      "detail": "held for 10000 ms"
+    },
+    {
+      "phase": "during",
+      "name": "no P0 produce is refused",
+      "passed": true,
+      "detail": "held for 10000 ms"
+    },
+    {
+      "phase": "during",
+      "name": "no P1 produce is refused",
+      "passed": true,
+      "detail": "held for 10000 ms"
+    },
+    {
+      "phase": "during",
+      "name": "the broker keeps serving",
+      "passed": true,
+      "detail": "held for 10000 ms"
+    },
+    {
+      "phase": "recovery",
+      "name": "every process ready again",
+      "passed": true,
+      "detail": "224 ms after the recovery action"
+    },
+    {
+      "phase": "recovery",
+      "name": "the resumed ledger commits its checkpoint again",
+      "passed": true,
+      "detail": "held"
+    },
+    {
+      "phase": "recovery",
+      "name": "the resumed ledger has caught up to within 4 batches of the P1 high watermark",
+      "passed": true,
+      "detail": "held"
+    },
+    {
+      "phase": "load",
+      "name": "load-p0 ran to its end",
+      "passed": true,
+      "detail": "exit 0"
+    },
+    {
+      "phase": "load",
+      "name": "load-p1 ran to its end",
+      "passed": true,
+      "detail": "exit 0"
+    },
+    {
+      "phase": "load",
+      "name": "load-p2 ran to its end",
+      "passed": true,
+      "detail": "exit 0"
+    },
+    {
+      "phase": "final",
+      "name": "P0 was never refused across the whole drill",
+      "passed": true,
+      "detail": "qip_event_fabric_refusals_total = 0 (absent, read as stated)"
+    },
+    {
+      "phase": "final",
+      "name": "P1 was never refused across the whole drill",
+      "passed": true,
+      "detail": "qip_event_fabric_refusals_total = 0 (absent, read as stated)"
+    },
+    {
+      "phase": "final",
+      "name": "the P2 producer driven past its quota was throttled, visibly",
+      "passed": true,
+      "detail": "qip_event_fabric_refusals_total = 16"
+    },
+    {
+      "phase": "memory",
+      "name": "fabricd stayed under 65536 KiB resident",
+      "passed": true,
+      "detail": "peak 22872 KiB"
+    }
+  ],
+  "verdict": "met",
+  "notes": [
+    "durable position before the fault: 16",
+    "durable position when the recovered process first answered: 80",
+    "load load-p0 reported: {\"admitted\":44,\"admitted_records\":44,\"attempted\":44,\"behind\":84,\"class\":\"p0_control\",\"duration_ms\":16000,\"elapsed_ms\":18079,\"producers\":4,\"rate_per_producer\":2,\"records_per_batch\":1,\"refused\":{},\"stream\":\"control.local\"}",
+    "load load-p1 reported: {\"admitted\":128,\"admitted_records\":128,\"attempted\":128,\"behind\":128,\"class\":\"p1_outcomes\",\"duration_ms\":16000,\"elapsed_ms\":18068,\"producers\":16,\"rate_per_producer\":1,\"records_per_batch\":1,\"refused\":{},\"stream\":\"reflex-outcomes.local\"}",
+    "load load-p2 reported: {\"admitted\":374,\"admitted_records\":23936,\"attempted\":390,\"behind\":1210,\"class\":\"p2_market_journal\",\"duration_ms\":16000,\"elapsed_ms\":16004,\"producers\":1,\"rate_per_producer\":100,\"records_per_batch\":64,\"refused\":{\"quota\":16},\"stream\":\"reflex-journal.local\"}"
+  ],
+  "load": {
+    "load-p0": {
+      "admitted": 44,
+      "admitted_records": 44,
+      "attempted": 44,
+      "behind": 84,
+      "class": "p0_control",
+      "duration_ms": 16000,
+      "elapsed_ms": 18079,
+      "producers": 4,
+      "rate_per_producer": 2,
+      "records_per_batch": 1,
+      "refused": {},
+      "stream": "control.local"
+    },
+    "load-p1": {
+      "admitted": 128,
+      "admitted_records": 128,
+      "attempted": 128,
+      "behind": 128,
+      "class": "p1_outcomes",
+      "duration_ms": 16000,
+      "elapsed_ms": 18068,
+      "producers": 16,
+      "rate_per_producer": 1,
+      "records_per_batch": 1,
+      "refused": {},
+      "stream": "reflex-outcomes.local"
+    },
+    "load-p2": {
+      "admitted": 374,
+      "admitted_records": 23936,
+      "attempted": 390,
+      "behind": 1210,
+      "class": "p2_market_journal",
+      "duration_ms": 16000,
+      "elapsed_ms": 16004,
+      "producers": 1,
+      "rate_per_producer": 100,
+      "records_per_batch": 64,
+      "refused": {
+        "quota": 16
+      },
+      "stream": "reflex-journal.local"
+    }
+  }
+}

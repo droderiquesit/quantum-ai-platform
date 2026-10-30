@@ -182,6 +182,12 @@ fn print_help() {
     );
     println!("                    fetch a partition and verify its batch chain: AGREES (0) or");
     println!("                    DIFFERS (3). Reads the fabric; re-drives nothing");
+    println!(
+        "  event-fabric produce --peer <loopback-address:port> --stream <name> --class <p0|p1|p2> --partition <n> --producer-id <id> --rate <batches/s> --duration-ms <ms> [--records-per-batch <n>] [--payload-bytes <n>] [--producers <n>]"
+    );
+    println!("                    paced, bounded synthetic load on one stream for a game-day");
+    println!("                    drill (token from QIP_EVENT_FABRIC_PRODUCE_TOKEN_FILE);");
+    println!("                    prints admitted and refused counts; sends no order");
     println!("  event-fabric schema-gate --base <lock> --head <lock>");
     println!("                    judge the head's schemas.lock.json against the base's:");
     println!("                    exit 3 if a field was removed, renamed or retyped");
