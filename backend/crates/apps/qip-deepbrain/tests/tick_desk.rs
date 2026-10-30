@@ -24,6 +24,10 @@ use qip_deepbrain::tick_desk::{
     ENTITLEMENTS_VARIABLE, EVERY_VARIABLE, MEASURE_CODEC_VARIABLE, OUTPUT_NAMESPACE, TickDesk,
     TickDeskConfig, skill_gate,
 };
+use qip_financial::asset_class::{InstrumentType, Sector};
+use qip_financial::costs::LiquidityProfile;
+use qip_financial::object::FinancialObject;
+use qip_financial::quality::Provenance as Quality;
 use qip_financial::universe::Universe;
 use qip_kernel::platform::FillScore;
 use qip_kernel::{Platform, PlatformConfig};
@@ -854,5 +858,115 @@ fn a_tick_round_replays_the_platforms_own_orders_and_records_fill_versus_assumpt
         "an unfilled order has no actual price"
     );
     assert_eq!(limit.gap_bps, None);
+    Ok(())
+}
+
+/// R12-TICK-2073: the run loop hands the tick desk the platform's own
+/// orders, so a round replays what the desk actually sent against the market
+/// that existed rather than an empty decision list. `node.rs` is the only
+/// caller of `maybe_round_with_orders`, and until this test the handoff was
+/// pinned by nothing: the run-loop test above holds no orders, so passing
+/// `Vec::new()` again would have left every test green.
+///
+/// Mutation: hand the desk an empty order list in `node.rs` and every round
+/// reports no order row and nothing unreplayable; the test fails.
+#[test]
+fn the_run_loop_hands_the_platforms_own_orders_to_the_tick_desk() -> Result<()> {
+    let start = at(400_000);
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start));
+    let platform_config = PlatformConfig::default();
+    let context = Context::new(clock.clone(), platform_config.seed);
+    let mut universe = Universe::new();
+    universe.insert(
+        FinancialObject::builder(
+            ObjectId::from_string("obj-ACME"),
+            "obj-ACME",
+            InstrumentType::CommonStock,
+            LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+        )
+        .venue("XLON")
+        .sector(Sector::InformationTechnology)
+        .price(d(100.0))
+        .provenance(Quality::synthetic("tick-desk-test", start))
+        .build(start)?,
+    )?;
+    let mut platform = Platform::new(
+        platform_config,
+        context,
+        Telemetry::silent(),
+        universe,
+        LimitSet::conservative_default(),
+    )?;
+    let order = platform.order_for(
+        ObjectId::from_string("obj-ACME"),
+        qip_execution_engine::order::Side::Buy,
+        d(5.0),
+        d(100.0),
+        "proposal-1",
+        vec!["hypothesis-1".to_string()],
+        start,
+    )?;
+    platform.submit_order(order, start)?;
+    let held = platform.orders().orders().count();
+    assert!(held >= 1, "premise: the platform holds an order of its own");
+
+    let node_config = DeepBrainConfig {
+        cycle_interval: Duration::from_millis(1),
+        max_cycles: Some(2),
+        ..DeepBrainConfig::default()
+    };
+    let roster = qip_deepbrain::roster::clear(start)?;
+    let status = Arc::new(Mutex::new(NodeStatus::opening(
+        &roster,
+        &node_config,
+        start,
+    )));
+    let archive = ChainArchive::open(Arc::new(MemoryKeyValueStore::default()))?;
+    let lake = Arc::new(MemoryBlobStore::new());
+    let ticks = seal_session(&lake, "vendor-depth")?;
+    assert!(ticks > 0, "premise: the lake holds history");
+    let mut desk = TickDesk::new(
+        config(),
+        lake as Arc<dyn BlobStore>,
+        Arc::new(MemoryBlobStore::new()),
+    );
+    let mut rounds = Vec::new();
+    node::run_with(
+        &mut platform,
+        &archive,
+        &node_config,
+        &status,
+        &Arc::new(AtomicBool::new(false)),
+        &clock,
+        0,
+        None,
+        Loops {
+            desk: None,
+            research: None,
+            operations: None,
+            tick: Some(&mut desk),
+            permissions: None,
+            ambient: None,
+            agency: None,
+            warehouse: None,
+        },
+        |outcome| {
+            assert!(
+                outcome.side_failures.is_empty(),
+                "{:?}",
+                outcome.side_failures
+            );
+            if let Some(round) = &outcome.tick {
+                rounds.push((round.order_rows.len(), round.unreplayable_orders));
+            }
+        },
+    )?;
+    assert_eq!(rounds.len(), 2, "a round on each of the two cycles");
+    assert!(
+        rounds
+            .iter()
+            .all(|(rows, unreplayable)| rows + unreplayable >= held),
+        "the run loop handed the desk none of the platform's {held} order(s): {rounds:?}"
+    );
     Ok(())
 }

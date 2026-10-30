@@ -98,7 +98,13 @@ pub fn anomaly_to_observation(anomaly: &Anomaly) -> Observation {
         wanting,
         observation: anomaly.description.clone(),
         affected_domains: vec!["market".to_string()],
-        evidence: vec![anomaly.detector.clone()],
+        // The detector first, as every observation names its origin, then
+        // the subject, so a gap raised from this anomaly can name the thing
+        // it was about (an ontology patch is named for it, R12-EXPAND-6029).
+        evidence: vec![
+            anomaly.detector.clone(),
+            format!("subject:{}", anomaly.subject),
+        ],
         severity,
         economic_value,
         risk_value,

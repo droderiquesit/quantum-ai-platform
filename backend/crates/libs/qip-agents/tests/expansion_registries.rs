@@ -1,7 +1,86 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
+use qip_agents::registries::CapabilityRegistry;
 use qip_agents::research::{ResearchRegistry, Screening, Verdict};
 use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
+use qip_contracts::expansion::{CapabilityEntry, CapabilityVerb};
+
+/// ADR 0158 decision 15: the one way the Capability Registry is populated is
+/// a promoted capability declaring its verb. Two promotions under one verb
+/// are one entry with both implementations at the lower confidence; the same
+/// implementation promoted twice is refused, so a consumer counting a verb's
+/// implementations counts capabilities and not promotions; and a second
+/// implementation cannot widen the verb's eligibility by riding in beside it.
+/// Mutation: make `promote` call `add_capability(entry)` without merging —
+/// the second promotion replaces the first and the `implementations` and
+/// `confidence_level` assertions fail; delete the duplicate check — the
+/// `is_err` assertion fails; delete the live-eligibility refusal — the
+/// `limited_autonomous_live` entry is recorded and `capability_count` is 1.
+#[test]
+fn a_second_promotion_under_one_verb_merges_its_implementation_and_a_repeat_is_refused() {
+    let entry = |implementation: &str, confidence: f64, eligibility: &str| CapabilityEntry {
+        verb: CapabilityVerb::Simulate,
+        implementations: vec![implementation.to_string()],
+        confidence_level: confidence,
+        eligibility: eligibility.to_string(),
+    };
+    let mut registry = CapabilityRegistry::new();
+    assert_eq!(registry.capability_count(), 0, "premise: empty");
+
+    registry
+        .promote(entry("fill-bias XSIM", 1.0, "paper and shadow only"))
+        .unwrap();
+    registry
+        .promote(entry("fill-bias XNYS", 0.8, "paper and shadow only"))
+        .unwrap();
+    let simulate = registry
+        .get_capability(CapabilityVerb::Simulate)
+        .expect("the verb is recorded");
+    assert_eq!(
+        simulate.implementations,
+        vec!["fill-bias XNYS".to_string(), "fill-bias XSIM".to_string()]
+    );
+    assert!(
+        (simulate.confidence_level - 0.8).abs() < 1e-12,
+        "{simulate:?}"
+    );
+    assert_eq!(
+        registry.capability_count(),
+        1,
+        "one verb, two implementations"
+    );
+    assert_eq!(registry.current_version(), 3, "each promotion is a version");
+
+    let repeat = registry.promote(entry("fill-bias XSIM", 1.0, "paper and shadow only"));
+    assert!(repeat.is_err(), "the same implementation promoted twice");
+    let widened = registry.promote(entry("fill-bias XLON", 1.0, "paper only"));
+    assert!(widened.is_err(), "another eligibility under the same verb");
+    let mut fresh = CapabilityRegistry::new();
+    let live = CapabilityEntry {
+        verb: CapabilityVerb::Settle,
+        implementations: vec!["settle-at-venue".to_string()],
+        confidence_level: 1.0,
+        eligibility: "limited_autonomous_live".to_string(),
+    };
+    assert!(
+        fresh.promote(live).is_err(),
+        "an eligibility naming live is refused by the registry itself, not only by its callers"
+    );
+    assert_eq!(fresh.capability_count(), 0);
+    assert_eq!(registry.current_version(), 3, "a refusal moves no version");
+    assert_eq!(
+        registry
+            .get_capability(CapabilityVerb::Simulate)
+            .map(|c| c.implementations.len()),
+        Some(2)
+    );
+    assert!(
+        registry
+            .promote(entry("", 1.0, "paper and shadow only"))
+            .is_err(),
+        "an entry the contract refuses is not recorded"
+    );
+}
 
 #[test]
 fn a_tool_of_each_of_the_ten_kinds_resolves_by_kind_with_its_scope() {
@@ -191,8 +270,68 @@ mod memory_registry {
     use qip_agents::memory::{
         Disposition, Episode, EpisodeOutcome, MemoryRegistry, ResearchMemory,
     };
+    use qip_contracts::expansion::{MemoryEntry, MemoryKind, RetentionPolicy, ValuePolicy};
     use qip_core::ids::AgentRunId;
     use qip_core::time::Timestamp;
+
+    fn entry(kind: MemoryKind, max_age_ms: u64) -> MemoryEntry {
+        MemoryEntry {
+            id: format!("{kind:?}-1"),
+            kind,
+            content: "which way it would move: concluded positive; moved 10 bps".to_string(),
+            retention_policy: RetentionPolicy {
+                max_age_ms,
+                description: "one year".to_string(),
+            },
+            value_policy: ValuePolicy {
+                importance_threshold: 0.3,
+                rationale: "calibration surprise".to_string(),
+            },
+            created_at_ms: 1_760_000_000_000,
+            importance: 0.9,
+            tags: vec!["analyst-a".to_string()],
+        }
+    }
+
+    /// R12-EXPAND-6057: the registry LEARN writes through holds typed entries
+    /// with their policies declared, and refuses one that declares none. A
+    /// retention of zero milliseconds keeps nothing and is the "missing"
+    /// retention policy in a struct whose field cannot be absent. Mutation:
+    /// make `admit` skip `validate` — the zero-retention entry is admitted,
+    /// `admitted(Failure)` reads 1 and `refused()` 0.
+    #[test]
+    fn a_memory_entry_without_a_retention_policy_is_refused_by_the_registry_learn_writes_through() {
+        let mut registry = MemoryRegistry::standard();
+        assert_eq!(registry.entries().count(), 0, "premise: empty");
+
+        registry.admit(entry(MemoryKind::Episodic, 1_000)).unwrap();
+        registry
+            .admit(entry(MemoryKind::Simulation, 1_000))
+            .unwrap();
+        assert_eq!(registry.admitted(MemoryKind::Episodic), 1);
+        assert_eq!(registry.admitted(MemoryKind::Simulation), 1);
+
+        let refused = registry.admit(entry(MemoryKind::Failure, 0));
+        assert!(
+            refused.is_err(),
+            "a retention policy keeping nothing is no policy"
+        );
+        assert_eq!(registry.admitted(MemoryKind::Failure), 0);
+        assert_eq!(registry.refused(), 1);
+        assert_eq!(
+            registry.entries().count(),
+            2,
+            "the refused entry is not held"
+        );
+
+        let mut blank = entry(MemoryKind::Procedural, 1_000);
+        blank.tags.clear();
+        assert!(
+            registry.admit(blank).is_err(),
+            "an entry with no tags names nothing"
+        );
+        assert_eq!(registry.refused(), 2);
+    }
 
     fn at(text: &str) -> Timestamp {
         Timestamp::parse_rfc3339(text).unwrap()

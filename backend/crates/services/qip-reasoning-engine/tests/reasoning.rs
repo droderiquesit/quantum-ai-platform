@@ -1874,3 +1874,71 @@ fn a_hypothesis_is_expired_when_read_after_its_ttl() -> Result<()> {
 
     Ok(())
 }
+
+/// R12-QUANT-4042, §11: quantum-assisted exploration of a hypothesis space is
+/// research, never validation. A hypothesis whose only support is
+/// exploration results is rejected in adversarial review with a fatal
+/// `ResearchOnlySupport` challenge, however reliable the items claim to be.
+/// The same results beside an observed market price raise no such
+/// challenge: exploration may suggest where to look, and observed data
+/// supports the claim. The kind's reliability ceiling sits no higher than a
+/// rumour's.
+///
+/// Mutation: delete the exploration-only check in `RedTeam::review` -- the
+/// fatal `ResearchOnlySupport` challenge is then absent.
+#[test]
+fn a_hypothesis_whose_only_support_is_a_quantum_exploration_result_is_rejected_by_adversarial_review()
+ {
+    assert!(
+        EvidenceKind::QuantumExploration.reliability_ceiling()
+            <= EvidenceKind::Rumour.reliability_ceiling()
+    );
+    assert!(!EvidenceKind::QuantumExploration.is_primary());
+    let explored = |id: &str, origin: &str| {
+        evidence(
+            id,
+            EvidenceKind::QuantumExploration,
+            Stance::Supports,
+            origin,
+            0.25,
+            0.9,
+        )
+    };
+    let only = EvidenceSet::from_items(vec![explored("q1", "qaoa-a"), explored("q2", "qaoa-b")]);
+    let hypothesis = Hypothesis::form(draft(only, sound_chain())).unwrap();
+    let mut team = RedTeam::new(ReviewPolicy::default());
+    let outcome = team.review(&hypothesis, Some(0.1), now(), &mut ids());
+    assert!(
+        !outcome.approved(),
+        "an exploration-only thesis was approved"
+    );
+    assert!(
+        outcome
+            .fatal()
+            .iter()
+            .any(|c| c.kind == ChallengeKind::ResearchOnlySupport),
+        "{:?}",
+        outcome.kinds()
+    );
+
+    let observed = EvidenceSet::from_items(vec![
+        explored("q1", "qaoa-a"),
+        evidence(
+            "m1",
+            EvidenceKind::MarketObservation,
+            Stance::Supports,
+            "xnys",
+            0.95,
+            0.8,
+        ),
+    ]);
+    let hypothesis = Hypothesis::form(draft(observed, sound_chain())).unwrap();
+    let outcome = team.review(&hypothesis, Some(0.1), now(), &mut ids());
+    assert!(
+        !outcome
+            .kinds()
+            .contains(&ChallengeKind::ResearchOnlySupport),
+        "observed support beside an exploration result was refused as research-only: {:?}",
+        outcome.kinds()
+    );
+}

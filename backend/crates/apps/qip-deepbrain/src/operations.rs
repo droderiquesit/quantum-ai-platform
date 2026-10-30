@@ -23,7 +23,32 @@
 //! threshold. The incident's timeline joins it with the data anomalies,
 //! model drift and venue behaviour the same window saw, so the operator
 //! reads one ordered account instead of four dashboards.
+//!
+//! # What an incident leaves behind (ADR 0213)
+//!
+//! Every iteration's time is journalled as an [`IterationSample`] before the
+//! detector reads it, so the series a shift was found in is a window of a
+//! hash-chained log and not a buffer that died with the process. When a
+//! shift opens an incident, in this order:
+//!
+//! 1. A [`ReplayFixture`] naming that window by journal sequence range, the
+//!    platform log's sequence range and the cycles' correlation ids is built,
+//!    replayed from the journal, and drafted to the operations outbox only if
+//!    the replay finds the same shift. No fixture, no automated action: a
+//!    regression is turned into a test before anything is done about it
+//!    (R12-RES-9087).
+//! 2. The diagnosis proposes actions. Only those a committed runbook names
+//!    reach the [`Remediator`]; the rest — scaling, rolling back, restarting
+//!    or draining anything but this node's own research — are written into
+//!    the record for a person, because they need a cloud credential this
+//!    process does not hold and will not be given (R12-OBS-9158).
+//! 3. An [`IncidentRecord`] carrying every audit record the remediator wrote
+//!    for the incident and the fixture's digest is journalled, then drafted to
+//!    the outbox. Nothing is sent anywhere: the outbox is a file a person
+//!    reads, and opening the incident or the pull request outside is their
+//!    act through their own credential (ADR 0114 D8).
 
+use qip_agency::outbox::OUTBOX_CHANNEL;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, Timestamp};
 use qip_events::{Envelope, EventBody, EventLog, Topic};
@@ -36,6 +61,7 @@ use qip_observability::critical_paths;
 use qip_observability::metrics::{Metrics, labels, names};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -69,6 +95,179 @@ pub fn runbooks() -> Vec<Runbook> {
 /// The producer every remediation record carries.
 pub const REMEDIATION_ORIGIN: &str = "deepbrain/aiops";
 
+/// The producer every journalled iteration sample carries.
+pub const SAMPLE_ORIGIN: &str = "deepbrain/aiops-sample";
+
+/// The producer every journalled incident record carries.
+pub const INCIDENT_ORIGIN: &str = "deepbrain/aiops-incident";
+
+/// The producer every draft in the operations outbox carries.
+pub const OPERATIONS_OUTBOX_ORIGIN: &str = "deepbrain/aiops-outbox";
+
+/// The series the level-shift detector reads.
+pub const ITERATION_SERIES: &str = "qip_deepbrain_iteration_ms";
+
+/// How far before a shift an incident's timeline, and the diagnosis's look
+/// for a recent promotion, reach. The timeline's existing lookback, named so
+/// the two cannot drift apart; not a new threshold.
+pub const INCIDENT_LOOKBACK: Duration = Duration::from_hours(1);
+
+/// Why a proposed action that no runbook names is left for a person.
+pub const FOR_A_PERSON: &str = "no runbook names it, and carrying it out needs a cloud \
+     credential this process does not hold and will not be given (ADR 0213 decision 2); a \
+     person reads the incident and acts through their own";
+
+/// The node's runbook for `action` on `target`, if one names both.
+pub fn runbook_for(action: &str, target: &str) -> Option<String> {
+    runbooks()
+        .into_iter()
+        .find(|r| r.action == action && r.targets.contains(target))
+        .map(|r| r.name)
+}
+
+/// One iteration's time as the detector will read it, journalled first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IterationSample {
+    pub at: Timestamp,
+    pub cycle: u64,
+    pub iteration_ms: f64,
+    /// The platform log's last sequence when the sample was taken.
+    pub platform_sequence: Option<u64>,
+    /// The cycle's correlation id, where its journal entry was found.
+    pub correlation_id: Option<String>,
+}
+
+impl EventBody for IterationSample {
+    const TOPIC: Topic = Topic::SystemAlert;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The regression an incident is, as a window of the operations journal that
+/// replays to the same shift: a draft for a person to commit as a test.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplayFixture {
+    pub incident: String,
+    pub series: String,
+    pub half: usize,
+    /// First and last journal sequence of the window, inclusive.
+    pub journal_sequences: (u64, u64),
+    /// Samples the window holds; a replay finding any other count refuses.
+    pub samples: usize,
+    /// SHA-256 over the window's record hashes in order, so the fixture names
+    /// these records and not others that happen to share their sequences.
+    pub window_digest: String,
+    /// The platform log's sequences the window spans, where it had any.
+    pub platform_sequences: Option<(u64, u64)>,
+    /// The cycles' correlation ids, to join the platform log.
+    pub correlation_ids: BTreeSet<String>,
+    /// What the window must replay to.
+    pub expected: Anomaly,
+    /// The test a person commits, in words.
+    pub proposed_test: String,
+}
+
+/// An incident's link to its drafted fixture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FixtureLink {
+    /// The outbox record's payload hash: the digest of the fixture as drafted.
+    pub digest: String,
+    pub outbox_sequence: u64,
+}
+
+/// An action the diagnosis proposed that no runbook names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HumanAction {
+    pub action: String,
+    pub target: String,
+    pub why: String,
+}
+
+/// The incident as journalled and drafted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IncidentRecord {
+    pub incident: String,
+    pub opened_at: Timestamp,
+    pub shift: Anomaly,
+    pub timeline: Vec<TimelineEvent>,
+    /// Every audit record the remediator wrote for this incident, in order.
+    pub actions: Vec<AuditRecord>,
+    /// Proposed actions left for a person, with why.
+    pub for_a_person: Vec<HumanAction>,
+    /// The drafted fixture, or why none could be drafted.
+    pub fixture: std::result::Result<FixtureLink, String>,
+    /// Where the record was drafted: never anywhere a message leaves from.
+    pub channel: String,
+}
+
+impl EventBody for IncidentRecord {
+    const TOPIC: Topic = Topic::SystemAlert;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// A draft in the operations outbox.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum OperationsDraft {
+    Fixture(ReplayFixture),
+    Incident(IncidentRecord),
+}
+
+impl EventBody for OperationsDraft {
+    const TOPIC: Topic = Topic::SystemAlert;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// A draft as it sits in the outbox, with its digest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DraftRecord {
+    pub sequence: u64,
+    pub digest: String,
+    pub draft: OperationsDraft,
+}
+
+/// SHA-256 over the record hashes of a window, in order.
+fn window_digest<'a>(hashes: impl Iterator<Item = &'a str>) -> String {
+    let mut joined = String::new();
+    for hash in hashes {
+        joined.push_str(hash);
+        joined.push('\n');
+    }
+    qip_core::sha256_hex(joined.as_bytes())
+}
+
+/// Replay `fixture`'s window from `journal` through the detector.
+///
+/// Refuses a window whose sample count or record hashes are not the ones the
+/// fixture names, rather than replaying different records under its name.
+pub fn replay_fixture(
+    journal: &RemediationJournal,
+    fixture: &ReplayFixture,
+) -> Result<Option<Anomaly>> {
+    let (from, to) = fixture.journal_sequences;
+    let window: Vec<(u64, String, IterationSample)> = journal
+        .samples()?
+        .into_iter()
+        .filter(|(sequence, _, _)| (from..=to).contains(sequence))
+        .collect();
+    if window.len() != fixture.samples {
+        return Err(Error::invalid(format!(
+            "the fixture names {} samples in journal sequences {from}..={to} and the journal \
+             holds {}; replay it against the journal it was drafted from",
+            fixture.samples,
+            window.len()
+        )));
+    }
+    if window_digest(window.iter().map(|(_, hash, _)| hash.as_str())) != fixture.window_digest {
+        return Err(Error::invalid(
+            "the journal's records in the fixture's window are not the ones it was drafted from",
+        ));
+    }
+    let points: Vec<(Timestamp, f64)> = window
+        .iter()
+        .map(|(_, _, sample)| (sample.at, sample.iteration_ms))
+        .collect();
+    detect_level_shift(&fixture.series, &points, fixture.half)
+}
+
 /// One remediation audit record as it sits on the journal (R12-CICD-9081).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemediationEntry {
@@ -89,26 +288,57 @@ impl EventBody for RemediationEntry {
 #[derive(Debug, Clone)]
 pub struct RemediationJournal {
     log: Arc<Mutex<EventLog>>,
+    /// The operations outbox (ADR 0213): incident and fixture drafts for a
+    /// person, on a chain of its own. Not the agency's outbox file, which the
+    /// agency door alone appends to; two writers on one chain is a chain
+    /// neither can vouch for.
+    outbox: Arc<Mutex<EventLog>>,
     clock: Arc<dyn Clock>,
+}
+
+fn open_verified(path: Option<PathBuf>, what: &str) -> Result<EventLog> {
+    let log = match path {
+        Some(path) => EventLog::open(path)?,
+        None => EventLog::in_memory(),
+    };
+    if let Err(sequence) = log.verify_chain() {
+        return Err(Error::invalid(format!(
+            "the {what}'s hash chain breaks at sequence {sequence}; move the file aside rather \
+             than extend it"
+        )));
+    }
+    Ok(log)
+}
+
+fn lock(log: &Mutex<EventLog>) -> Result<std::sync::MutexGuard<'_, EventLog>> {
+    log.lock()
+        .map_err(|_| Error::io("an operations log's lock was poisoned"))
+}
+
+fn suffixed(path: &std::path::Path, suffix: &str) -> PathBuf {
+    let mut name: OsString = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
 }
 
 impl RemediationJournal {
     /// Open the journal at `path`, or in memory, refusing a chain that does
     /// not verify: appending to an edited journal extends a record nobody can
-    /// trust.
+    /// trust. The outbox sits at `path` with `.outbox.jsonl` appended.
     pub fn open(path: Option<PathBuf>, clock: Arc<dyn Clock>) -> Result<Self> {
-        let log = match path {
-            Some(path) => EventLog::open(path)?,
-            None => EventLog::in_memory(),
-        };
-        if let Err(sequence) = log.verify_chain() {
-            return Err(Error::invalid(format!(
-                "the remediation journal's hash chain breaks at sequence {sequence}; move the \
-                 file aside rather than extend it"
-            )));
-        }
+        let outbox = path.as_deref().map(|p| suffixed(p, ".outbox.jsonl"));
+        Self::open_pair(path, outbox, clock)
+    }
+
+    /// Open the journal and the outbox at paths of their own.
+    pub fn open_pair(
+        journal: Option<PathBuf>,
+        outbox: Option<PathBuf>,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
         Ok(Self {
-            log: Arc::new(Mutex::new(log)),
+            log: Arc::new(Mutex::new(open_verified(journal, "remediation journal")?)),
+            outbox: Arc::new(Mutex::new(open_verified(outbox, "operations outbox")?)),
             clock,
         })
     }
@@ -119,26 +349,144 @@ impl RemediationJournal {
         platform_log: &qip_kernel::EventLogDestination,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
-        Self::open(
-            match platform_log {
-                qip_kernel::EventLogDestination::InMemory => None,
-                qip_kernel::EventLogDestination::File { path, .. } => {
-                    let mut name = path.as_os_str().to_owned();
-                    name.push(".aiops.jsonl");
-                    Some(PathBuf::from(name))
-                }
-            },
-            clock,
-        )
+        match platform_log {
+            qip_kernel::EventLogDestination::InMemory => Self::open_pair(None, None, clock),
+            qip_kernel::EventLogDestination::File { path, .. } => Self::open_pair(
+                Some(suffixed(path, ".aiops.jsonl")),
+                Some(suffixed(path, ".aiops-outbox.jsonl")),
+                clock,
+            ),
+        }
     }
 
+    fn append_to<T: EventBody>(
+        log: &Mutex<EventLog>,
+        prefix: &str,
+        producer: &str,
+        correlation: &str,
+        at: Timestamp,
+        body: T,
+    ) -> Result<(u64, String)> {
+        let mut log = lock(log)?;
+        let next = log.len() as u64 + 1;
+        let event = Envelope::new(
+            qip_core::EventId::from_string(format!("{prefix}-{next}")),
+            at,
+            at,
+            qip_core::lineage::Lineage::root(
+                qip_core::CorrelationId::from_string(correlation.to_string()),
+                producer,
+            ),
+            body,
+        )
+        .erase()?;
+        let digest = event.payload_hash.clone();
+        let sequence = log.append(&event)?;
+        Ok((sequence, digest))
+    }
+
+    fn journal_entry<T: EventBody>(
+        &self,
+        producer: &str,
+        correlation: &str,
+        at: Timestamp,
+        body: T,
+    ) -> Result<u64> {
+        Self::append_to(&self.log, "evt-aiops", producer, correlation, at, body).map(|(s, _)| s)
+    }
+
+    /// Append a draft to the outbox and return its link. The append is the
+    /// outbox's whole effect; nothing in the platform reads it but a person.
+    fn draft(
+        &self,
+        correlation: &str,
+        at: Timestamp,
+        draft: OperationsDraft,
+    ) -> Result<FixtureLink> {
+        let (outbox_sequence, digest) = Self::append_to(
+            &self.outbox,
+            "evt-aiops-outbox",
+            OPERATIONS_OUTBOX_ORIGIN,
+            correlation,
+            at,
+            draft,
+        )?;
+        Ok(FixtureLink {
+            digest,
+            outbox_sequence,
+        })
+    }
+
+    /// Every incident record journalled, in order.
+    pub fn incidents(&self) -> Result<Vec<IncidentRecord>> {
+        let log = lock(&self.log)?;
+        log.events()
+            .filter(|e| e.lineage.producer == INCIDENT_ORIGIN)
+            .map(|e| Ok(e.decode::<IncidentRecord>()?.body))
+            .collect()
+    }
+
+    /// Every journalled iteration sample with its sequence and record hash.
+    pub fn samples(&self) -> Result<Vec<(u64, String, IterationSample)>> {
+        let log = lock(&self.log)?;
+        log.records()
+            .iter()
+            .filter(|r| r.event.lineage.producer == SAMPLE_ORIGIN)
+            .map(|r| {
+                Ok((
+                    r.sequence,
+                    r.record_hash.clone(),
+                    r.event.decode::<IterationSample>()?.body,
+                ))
+            })
+            .collect()
+    }
+
+    /// Every outbox draft, in order, with its digest.
+    pub fn drafts(&self) -> Result<Vec<DraftRecord>> {
+        let outbox = lock(&self.outbox)?;
+        outbox
+            .records()
+            .iter()
+            .filter(|r| r.event.lineage.producer == OPERATIONS_OUTBOX_ORIGIN)
+            .map(|r| {
+                Ok(DraftRecord {
+                    sequence: r.sequence,
+                    digest: r.event.payload_hash.clone(),
+                    draft: r.event.decode::<OperationsDraft>()?.body,
+                })
+            })
+            .collect()
+    }
+
+    /// The fixture `link` names, found by digest and sequence, or `None`.
+    pub fn linked_fixture(&self, link: &FixtureLink) -> Result<Option<ReplayFixture>> {
+        Ok(self.drafts()?.into_iter().find_map(|d| match d.draft {
+            OperationsDraft::Fixture(fixture)
+                if d.digest == link.digest && d.sequence == link.outbox_sequence =>
+            {
+                Some(fixture)
+            }
+            _ => None,
+        }))
+    }
+
+    /// Whether both chains still verify.
+    pub fn verify(&self) -> Result<()> {
+        for (what, log) in [("journal", &self.log), ("outbox", &self.outbox)] {
+            if let Err(sequence) = lock(log)?.verify_chain() {
+                return Err(Error::invalid(format!(
+                    "the operations {what}'s chain breaks at sequence {sequence}"
+                )));
+            }
+        }
+        Ok(())
+    }
     /// Every record journalled so far, in order.
     pub fn records(&self) -> Result<Vec<AuditRecord>> {
-        let log = self
-            .log
-            .lock()
-            .map_err(|_| Error::io("the remediation journal's lock was poisoned"))?;
+        let log = lock(&self.log)?;
         log.events()
+            .filter(|e| e.lineage.producer == REMEDIATION_ORIGIN)
             .map(|e| Ok(e.decode::<RemediationEntry>()?.body.record))
             .collect()
     }
@@ -227,6 +575,14 @@ pub struct Incident {
     pub timeline: Vec<TimelineEvent>,
     /// The remediation's result, or the refusal's reason.
     pub remediation: std::result::Result<String, String>,
+    /// Proposed actions no runbook names, left for a person (ADR 0213).
+    pub for_a_person: Vec<HumanAction>,
+    /// The drafted replay fixture, or why none could be drafted.
+    pub fixture: std::result::Result<FixtureLink, String>,
+    /// The incident record's journal sequence and its outbox draft's link,
+    /// or why the record could not be written. The action, if one ran, ran
+    /// either way and its audit records are on the journal already.
+    pub recorded: std::result::Result<(u64, FixtureLink), String>,
 }
 
 /// What the loop did this iteration.
@@ -253,6 +609,27 @@ impl OperationsRound {
                     Err(why) => format!("refused: {why}"),
                 }
             ));
+            if !incident.for_a_person.is_empty() {
+                parts.push(format!(
+                    "for a person: {}",
+                    incident
+                        .for_a_person
+                        .iter()
+                        .map(|a| format!("{} {}", a.action, a.target))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            parts.push(match &incident.fixture {
+                Ok(link) => format!("replay fixture drafted ({})", link.digest),
+                Err(why) => format!("no replay fixture: {why}"),
+            });
+            parts.push(match &incident.recorded {
+                Ok((sequence, _)) => {
+                    format!("incident journalled at {sequence} and drafted, nothing sent")
+                }
+                Err(why) => format!("incident record not written: {why}"),
+            });
         }
         if let Some(outcome) = self.quantum {
             parts.push(format!("quantum job {outcome}"));
@@ -291,13 +668,22 @@ pub fn quantum_outcome(
     (dispatch.abandoned.is_some() || dispatch.lost.is_some()).then_some("failed")
 }
 
+fn in_memory_book() -> Result<RemediationJournal> {
+    RemediationJournal::open_pair(None, None, Arc::new(qip_core::SystemClock))
+}
+
 #[derive(Debug)]
 pub struct Operations {
     deployment: EntityKey,
     graph: EntityGraph,
-    iterations: VecDeque<(Timestamp, f64)>,
+    /// Each retained iteration with the journal sequence of its sample.
+    iterations: VecDeque<(Timestamp, f64, u64)>,
     timeline: VecDeque<TimelineEvent>,
     remediator: Remediator<CapabilitySwitch>,
+    /// Where samples and incident records are journalled and drafts are
+    /// written. In memory unless the node built this with
+    /// [`Self::journalled`].
+    book: RemediationJournal,
     incidents: u64,
     /// The end of the last shift an incident was opened on, so one shift is
     /// one incident however many iterations still see it in the window.
@@ -308,25 +694,41 @@ pub struct Operations {
 }
 
 impl Operations {
+    /// Samples, incident records and drafts go to an in-memory journal and
+    /// outbox; the remediator keeps its in-process trail only.
     pub fn new(started: Timestamp) -> Result<Self> {
-        Self::build(started, None)
+        Self::build(started, None, in_memory_book()?)
     }
 
     /// As [`Self::new`], with every remediation's audit record written to
-    /// `journal` before the effector runs (R12-CICD-9081). A deployed node is
-    /// built this way: an in-process trail does not survive the restart a
-    /// disabled capability is waiting for.
+    /// `journal` before the effector runs (R12-CICD-9081), and samples,
+    /// incident records and drafts written to `journal` and its outbox
+    /// (ADR 0213). A deployed node is built this way: an in-process trail
+    /// does not survive the restart a disabled capability is waiting for.
     pub fn journalled(started: Timestamp, journal: RemediationJournal) -> Result<Self> {
-        Self::build(started, Some(Box::new(journal)))
+        Self::build(started, Some(Box::new(journal.clone())), journal)
     }
 
     /// As [`Self::journalled`], to any sink: for a test that must make the
-    /// journal fail at a chosen record.
+    /// journal fail at a chosen record. The book is in memory.
     pub fn journalled_to(started: Timestamp, sink: Box<dyn AuditSink>) -> Result<Self> {
-        Self::build(started, Some(sink))
+        Self::build(started, Some(sink), in_memory_book()?)
     }
 
-    fn build(started: Timestamp, journal: Option<Box<dyn AuditSink>>) -> Result<Self> {
+    /// The journal and outbox this loop writes samples, incident records and
+    /// drafts to.
+    pub const fn book(&self) -> &RemediationJournal {
+        &self.book
+    }
+
+    fn build(
+        started: Timestamp,
+        journal: Option<Box<dyn AuditSink>>,
+        book: RemediationJournal,
+    ) -> Result<Self> {
+        // A restarted node numbers on from the incidents its journal holds,
+        // so an incident id names one incident and one fixture.
+        let incidents = book.incidents()?.len() as u64;
         let mut timeline = VecDeque::new();
         timeline.push_back(TimelineEvent {
             source: TimelineSource::Deployment,
@@ -344,7 +746,8 @@ impl Operations {
                 }
                 None => Remediator::new(runbooks(), CapabilitySwitch::default())?,
             },
-            incidents: 0,
+            book,
+            incidents,
             last_shift_end: None,
             fills_read: 0,
             package_promoted_at: None,
@@ -521,14 +924,39 @@ impl Operations {
             );
         }
 
+        // The sample is journalled before the detector may read it, so every
+        // point a shift is found in is a record a fixture can name. One the
+        // journal refuses never enters the series: the series and the journal
+        // must hold the same points or a fixture would not replay.
+        if !facts.iteration_ms.is_finite() {
+            return Err(Error::numeric(
+                "a non-finite iteration time reached the operations loop; it is neither \
+                 journalled nor read by the detector",
+            ));
+        }
+        let entry = self.cycle_entry(platform, facts)?;
+        let sample = IterationSample {
+            at,
+            cycle: facts.cycle,
+            iteration_ms: facts.iteration_ms,
+            platform_sequence: platform.event_log().records().last().map(|r| r.sequence),
+            correlation_id: entry.as_ref().map(|e| e.correlation_id.clone()),
+        };
+        let sequence = self.book.journal_entry(
+            SAMPLE_ORIGIN,
+            &format!("deepbrain-cycle-{}", facts.cycle),
+            at,
+            sample,
+        )?;
         if self.iterations.len() == SERIES_RETAINED {
             self.iterations.pop_front();
         }
-        self.iterations.push_back((at, facts.iteration_ms));
+        self.iterations
+            .push_back((at, facts.iteration_ms, sequence));
         if self.iterations.len() >= 2 * SHIFT_HALF {
-            let points: Vec<(Timestamp, f64)> = self.iterations.iter().copied().collect();
-            if let Some(shift) =
-                detect_level_shift("qip_deepbrain_iteration_ms", &points, SHIFT_HALF)?
+            let points: Vec<(Timestamp, f64)> =
+                self.iterations.iter().map(|(t, v, _)| (*t, *v)).collect();
+            if let Some(shift) = detect_level_shift(ITERATION_SERIES, &points, SHIFT_HALF)?
                 && self
                     .last_shift_end
                     .is_none_or(|end| shift.window_start > end)
@@ -537,7 +965,7 @@ impl Operations {
             }
         }
 
-        if let Some(routing) = self.cycle_routing(platform, facts)?
+        if let Some(routing) = entry.and_then(|e| e.solver_routing)
             && let Some(outcome) = quantum_outcome(&routing)
         {
             metrics.count(names::QUANTUM_JOBS, labels([("outcome", outcome)]));
@@ -558,6 +986,76 @@ impl Operations {
         Ok(round)
     }
 
+    /// The actions the diagnosis proposes for an iteration-time shift, by
+    /// comparing the shift with what changed: always shedding this node's
+    /// optional load, and scaling the node; and a rollback of the model
+    /// package where one was promoted inside the incident's lookback. Only
+    /// the first is a runbook's; the others are a person's.
+    fn proposals(&self, shift: &Anomaly) -> Vec<(&'static str, &'static str)> {
+        let mut proposed = vec![
+            ("disable_capability", "research"),
+            ("scale", "qip-deepbrain"),
+        ];
+        if self.package_promoted_at.is_some_and(|promoted| {
+            promoted >= shift.window_start.saturating_sub(INCIDENT_LOOKBACK)
+        }) {
+            proposed.push(("rollback", "model-package"));
+        }
+        proposed
+    }
+
+    /// The fixture for `shift`: the retained series as a journal window,
+    /// replayed from the journal before it is drafted. A window that does
+    /// not replay to `shift` is refused, and with it every automated action.
+    fn draft_fixture(&self, id: &str, shift: &Anomaly, at: Timestamp) -> Result<FixtureLink> {
+        let (Some(first), Some(last)) = (self.iterations.front(), self.iterations.back()) else {
+            return Err(Error::invalid(
+                "an incident with no samples has no window to replay",
+            ));
+        };
+        let (from, to) = (first.2, last.2);
+        let window: Vec<(u64, String, IterationSample)> = self
+            .book
+            .samples()?
+            .into_iter()
+            .filter(|(sequence, _, _)| (from..=to).contains(sequence))
+            .collect();
+        let platform: Vec<u64> = window
+            .iter()
+            .filter_map(|(_, _, s)| s.platform_sequence)
+            .collect();
+        let fixture = ReplayFixture {
+            incident: id.to_string(),
+            series: ITERATION_SERIES.to_string(),
+            half: SHIFT_HALF,
+            journal_sequences: (from, to),
+            samples: window.len(),
+            window_digest: window_digest(window.iter().map(|(_, hash, _)| hash.as_str())),
+            platform_sequences: platform
+                .iter()
+                .min()
+                .copied()
+                .zip(platform.iter().max().copied()),
+            correlation_ids: window
+                .iter()
+                .filter_map(|(_, _, s)| s.correlation_id.clone())
+                .collect(),
+            expected: shift.clone(),
+            proposed_test: format!(
+                "replay journal sequences {from}..={to} of the operations journal through \
+                 detect_level_shift({ITERATION_SERIES:?}, half {SHIFT_HALF}) and assert it \
+                 finds this shift; commit it before the fix, then show a window recorded after \
+                 the fix replaying to no shift"
+            ),
+        };
+        if replay_fixture(&self.book, &fixture)?.as_ref() != Some(shift) {
+            return Err(Error::invalid(
+                "the journalled window does not replay to the shift the detector found",
+            ));
+        }
+        self.book.draft(id, at, OperationsDraft::Fixture(fixture))
+    }
+
     fn open_incident(
         &mut self,
         shift: Anomaly,
@@ -573,52 +1071,125 @@ impl Operations {
         // From an hour before the shift began, so what led into it is on the
         // same page as the shift itself.
         let timeline = build_timeline(
-            shift.window_start.saturating_sub(Duration::from_hours(1)),
+            shift.window_start.saturating_sub(INCIDENT_LOOKBACK),
             at,
             &events,
         )?;
-        let action = "disable_capability";
-        let remediation = match self.remediator.remediate_outcome(&id, action, "research") {
-            Ok(applied) => {
-                // An action that ran is counted as run even when the sink
-                // then refused its outcome record: the capability is off
-                // either way, and `refused` would tell an operator it is on.
-                let (outcome, note) = match &applied.unjournalled {
-                    None => ("applied", String::new()),
-                    Some(why) => (
-                        "applied_unjournalled",
-                        format!("; its outcome could not be journalled: {why}"),
-                    ),
-                };
+
+        // The regression becomes a test before anything is done about it.
+        let fixture = self
+            .draft_fixture(&id, &shift, at)
+            .map_err(|e| e.message().to_string());
+
+        // Only a proposal a committed runbook names reaches the remediator;
+        // every other one is a person's, written into the record with why.
+        let (automated, others): (Vec<_>, Vec<_>) = self
+            .proposals(&shift)
+            .into_iter()
+            .partition(|(action, target)| runbook_for(action, target).is_some());
+        let for_a_person: Vec<HumanAction> = others
+            .into_iter()
+            .map(|(action, target)| HumanAction {
+                action: action.to_string(),
+                target: target.to_string(),
+                why: FOR_A_PERSON.to_string(),
+            })
+            .collect();
+
+        let mut results = Vec::new();
+        let mut refusal = None;
+        for (action, target) in automated {
+            if let Err(why) = &fixture {
                 metrics.count(
                     names::AIOPS_REMEDIATIONS,
-                    labels([("action", action), ("outcome", outcome)]),
+                    labels([("action", action), ("outcome", "withheld_no_fixture")]),
                 );
-                Ok(format!("{}{note}", applied.result))
+                refusal.get_or_insert_with(|| {
+                    format!("withheld: no replay fixture could be drafted ({why})")
+                });
+                continue;
             }
-            Err(refused) => {
-                metrics.count(
-                    names::AIOPS_REMEDIATIONS,
-                    labels([("action", action), ("outcome", "refused")]),
-                );
-                Err(refused.message().to_string())
+            match self.remediator.remediate_outcome(&id, action, target) {
+                Ok(applied) => {
+                    // An action that ran is counted as run even when the sink
+                    // then refused its outcome record: the capability is off
+                    // either way, and `refused` would tell an operator it is on.
+                    let (outcome, note) = match &applied.unjournalled {
+                        None => ("applied", String::new()),
+                        Some(why) => (
+                            "applied_unjournalled",
+                            format!("; its outcome could not be journalled: {why}"),
+                        ),
+                    };
+                    metrics.count(
+                        names::AIOPS_REMEDIATIONS,
+                        labels([("action", action), ("outcome", outcome)]),
+                    );
+                    results.push(format!("{}{note}", applied.result));
+                }
+                Err(refused) => {
+                    metrics.count(
+                        names::AIOPS_REMEDIATIONS,
+                        labels([("action", action), ("outcome", "refused")]),
+                    );
+                    refusal.get_or_insert_with(|| refused.message().to_string());
+                }
             }
+        }
+        let remediation = match refusal {
+            Some(why) => Err(why),
+            None if results.is_empty() => Err("no runbook names any proposed action".to_string()),
+            None => Ok(results.join("; ")),
         };
+
+        // Every audit record the remediator wrote for this incident, read
+        // back from its trail rather than restated, so the record and the
+        // trail cannot disagree about what was done.
+        let actions: Vec<AuditRecord> = self
+            .remediator
+            .audit()
+            .records()
+            .iter()
+            .filter(|r| r.incident == id)
+            .cloned()
+            .collect();
+        let record = IncidentRecord {
+            incident: id.clone(),
+            opened_at: at,
+            shift: shift.clone(),
+            timeline: timeline.clone(),
+            actions,
+            for_a_person: for_a_person.clone(),
+            fixture: fixture.clone(),
+            channel: OUTBOX_CHANNEL.to_string(),
+        };
+        let recorded = self
+            .book
+            .journal_entry(INCIDENT_ORIGIN, &id, at, record.clone())
+            .and_then(|sequence| {
+                self.book
+                    .draft(&id, at, OperationsDraft::Incident(record))
+                    .map(|link| (sequence, link))
+            })
+            .map_err(|e| e.message().to_string());
         Ok(Incident {
             id,
             shift,
             timeline,
             remediation,
+            for_a_person,
+            fixture,
+            recorded,
         })
     }
 
-    /// The cycle's journalled solver routing, read back from the log rather
-    /// than from a field the kernel would have to expose for this.
-    fn cycle_routing(
+    /// The cycle's journal entry, read back from the log rather than from a
+    /// field the kernel would have to expose for this.
+    fn cycle_entry(
         &self,
         platform: &Platform,
         facts: &IterationFacts<'_>,
-    ) -> Result<Option<qip_kernel::platform::SolverRoutingJournal>> {
+    ) -> Result<Option<qip_kernel::CycleJournalEntry>> {
         use qip_events::EventBody;
         let filter = qip_events::EventFilter::new()
             .topic(qip_kernel::CycleJournalEntry::TOPIC)
@@ -628,7 +1199,7 @@ impl Operations {
                 continue;
             };
             if entry.body.cycle == facts.cycle {
-                return Ok(entry.body.solver_routing);
+                return Ok(Some(entry.body));
             }
         }
         Ok(None)

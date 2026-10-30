@@ -530,3 +530,174 @@ fn a_journal_a_running_node_holds_is_refused_naming_the_holder_not_as_a_corrupt_
     std::fs::remove_file(&path).ok();
     Ok(())
 }
+
+/// `count` daily bars for the fixture instrument with a jump two thirds of
+/// the way in, as the kernel's own tests sense them, so a cycle forms a
+/// hypothesis and journals its symbolic derivation.
+fn sensed_bars(count: usize) -> Result<Vec<qip_market_ingestion::adapter::SensedRecord>> {
+    use qip_market::bar::{Bar, Interval};
+    let decimal = |value: f64| {
+        qip_core::Decimal::from_f64(value)
+            .ok_or_else(|| Error::numeric(format!("{value} has no decimal form")))
+    };
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            let jump = if i == count * 2 / 3 { 0.09 } else { 0.0 };
+            let open = price;
+            price *= 1.0 + noise + jump;
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            Ok(qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(
+                Bar {
+                    object_id: ObjectId::from_string(INSTRUMENT),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: at,
+                    open: decimal(open)?,
+                    high: decimal(open.max(price) * 1.002)?,
+                    low: decimal(open.min(price) * 0.998)?,
+                    close: decimal(price)?,
+                    volume: dec!("1000000"),
+                    trade_count: 5_000,
+                    vwap: qip_core::Decimal::from_f64((open + price) / 2.0),
+                    quality: qip_financial::quality::DataQuality::default(),
+                },
+            )))
+        })
+        .collect()
+}
+
+/// A journal in which one cycle formed a hypothesis and journaled its
+/// symbolic derivation.
+fn write_journal_with_a_derivation(path: &Path) -> Result<()> {
+    let _gate = gate();
+    let config = PlatformConfig::default().with_event_log_file(path);
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe()?,
+        LimitSet::conservative_default(),
+    )?;
+    platform.observe(sensed_bars(120)?);
+    platform.run_cycle(start());
+    if qip_kernel::symbolic_stage::replay(&platform)?.is_empty() {
+        return Err(Error::invalid(
+            "premise: the cycle formed no hypothesis, so the journal holds no derivation",
+        ));
+    }
+    Ok(())
+}
+
+/// R12-REASON-9005: the operator's `qip replay` re-derives every journaled
+/// symbolic derivation through the kernel's independent checker and exits
+/// non-zero when one does not reproduce. Until this the checker existed and
+/// ran only in tests; a proof format with no command that checks a proof.
+///
+/// The corruption keeps the hash chain intact on purpose: a record edited in
+/// place breaks the chain and is refused before any derivation is read,
+/// which is the tamper test above. Here a second derivation is appended
+/// through the log's own `append`, properly chained, whose posterior was
+/// zeroed after it was derived — exactly what a build whose reasoner had
+/// drifted, or a forged record, would leave. The chain says the record is
+/// what was written; only re-derivation says it is false.
+///
+/// Mutation: in `replay.rs::symbolic`, replace `Err(refused) => format!(..)`
+/// with `Err(_) => IDENTICAL.to_string()` — the forged journal exits 0 and
+/// the last assertions fail. Verified and restored.
+#[test]
+fn a_journal_with_a_corrupted_symbolic_derivation_fails_qip_replay() -> Result<()> {
+    use qip_core::ids::EventKind;
+    use qip_core::lineage::{CorrelationKind, Lineage};
+    use qip_events::EventBody;
+    use qip_events::log::EventLog;
+    use qip_kernel::symbolic_stage::{Step, SymbolicDerivation};
+    use qip_streaming::envelope::{EventFacts, StreamEnvelope};
+    use qip_streaming::provenance::{Region, SourceId, SourceIdentity, SourceType, Subject};
+
+    let path = journal_path("symbolic")?;
+    write_journal_with_a_derivation(&path)?;
+
+    // Premise: the clean journal re-derives and the run exits zero.
+    let (printed, stderr, code) = run(&["replay", "--journal", &path.display().to_string()])?;
+    assert_eq!(
+        verdict(&printed, "symbolic").as_deref(),
+        Some(IDENTICAL),
+        "a journal nothing touched did not re-derive:\n{printed}{stderr}"
+    );
+    assert_eq!(code, i32::from(AGREES), "{printed}{stderr}");
+
+    // Forge: a properly chained second derivation whose posterior is not
+    // what its own network derives.
+    {
+        let _gate = gate();
+        let mut log = EventLog::open(&path)?;
+        let recorded: SymbolicDerivation = log
+            .by_topic(<SymbolicDerivation as EventBody>::TOPIC)
+            .into_iter()
+            .filter_map(|frame| StreamEnvelope::from_frame(frame).ok())
+            .filter_map(|envelope| envelope.decode::<SymbolicDerivation>().ok())
+            .map(|decoded| decoded.body)
+            .next()
+            .ok_or_else(|| Error::not_found("the derivation the cycle journaled"))?;
+        // The same hypothesis id on purpose: a new id would move the
+        // timeline's event names and the refusal would land on the timeline
+        // before the posterior was ever compared.
+        let mut forged = recorded;
+        let Step::Derived(posterior) = &mut forged.posterior else {
+            return Err(Error::invalid(
+                "premise: the recorded derivation carries a derived posterior to corrupt",
+            ));
+        };
+        assert!(
+            posterior.values().any(|p| *p != 0.0),
+            "premise: the posterior holds a figure zeroing would change"
+        );
+        for p in posterior.values_mut() {
+            *p = 0.0;
+        }
+        let (context, _clock) = Context::deterministic(start(), 11);
+        let facts = EventFacts::derived(
+            SourceIdentity::new(
+                SourceId::new("qip-kernel"),
+                SourceType::Internal,
+                Region::new("home"),
+            ),
+            Subject::unattributed(),
+            <SymbolicDerivation as EventBody>::TOPIC,
+        );
+        let envelope = StreamEnvelope::seal(
+            context.ids().generate::<EventKind>(start()),
+            Lineage::root(
+                context.ids().generate::<CorrelationKind>(start()),
+                "kernel/symbolic",
+            ),
+            forged,
+            start(),
+            start(),
+            facts,
+        )?;
+        log.append(&envelope.to_frame()?)?;
+    }
+
+    let (printed, stderr, code) = run(&["replay", "--journal", &path.display().to_string()])?;
+    assert_eq!(
+        verdict(&printed, "chain").as_deref(),
+        Some("intact"),
+        "the appended record broke the chain, so this is the tamper test again:\n{printed}{stderr}"
+    );
+    let symbolic = verdict(&printed, "symbolic").unwrap_or_default();
+    assert!(
+        symbolic.starts_with("REFUSED") && symbolic.contains("posterior"),
+        "the corrupted derivation was not refused by re-derivation:\n{printed}{stderr}"
+    );
+    assert_eq!(
+        code,
+        i32::from(DIFFERS),
+        "a journal whose derivation does not re-derive exited {code}:\n{printed}{stderr}"
+    );
+    std::fs::remove_file(&path).ok();
+    Ok(())
+}

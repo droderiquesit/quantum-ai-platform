@@ -8,15 +8,19 @@
 
 use qip_agents::tools::{ToolKind, ToolName, ToolRegistry};
 use qip_contracts::expansion::{CapabilityVerb, GapClass};
-use qip_core::Decimal;
+use qip_core::{Decimal, Duration, Timestamp};
 use qip_expansion::campaigns::{self, TickCampaignDetector, TickCampaignTrigger};
 use qip_expansion::curriculum::{Budget, State, TaskKind};
-use qip_expansion::desk::{Admission, CloseReason, DeskConfig, ExpansionDesk, question_for};
-use qip_expansion::detectors::{
-    Decline, Origin, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
-    contradictions, coverage, incompetent_specialists, low_confidence, model_drift,
-    refusal_clusters, repeated_vetoes, split_by_wanting, unexplained_residuals,
+use qip_expansion::desk::{
+    Admission, CloseReason, DeskConfig, ExpansionDesk, Lineage, question_for,
 };
+use qip_expansion::detectors::{
+    ContestedKey, Decline, Origin, PersistenceTracker, Reading, Refusal, Residual,
+    anomaly_clusters, contested_evidence, contradictions, coverage, incompetent_specialists,
+    low_confidence, missing_causal_links, model_drift, refusal_clusters, repeated_vetoes,
+    split_by_wanting, unexplained_residuals,
+};
+use qip_expansion::executor::{CampaignPolicy, FillResidual, run_fill_bias_campaign};
 use qip_expansion::gap::{GapTrigger, Observation, Wanting, classify, raise};
 use qip_expansion::plan::{AcquisitionAction, Environment, ResearchPlan, Step};
 use qip_expansion::promotion::{
@@ -125,6 +129,98 @@ fn two_sources_reading_one_subject_in_opposite_directions_is_a_missing_causal_li
     assert_eq!(class_of(&raised[0]), GapClass::Causal);
     // An even split is the strongest contradiction.
     assert!((raised[0].severity - 1.0).abs() < 1e-12);
+}
+
+/// Until 2026-10-25 the sweep read "contradictory evidence" and "missing
+/// causal link" off one split of price-direction readings, and a
+/// disagreement between two *sources* about a *fact* raised nothing. The two
+/// are now two detectors over the fabric's contests (R12-EXPAND-6011): a
+/// contest is a data gap whichever subject it is on, and the causal gap is
+/// raised only for a subject the causal graph holds no live claim into.
+/// Mutation: make `missing_causal_links` ignore `explained` — the graph-
+/// explained subject is then raised too and the `len() == 1` assertion fails;
+/// or make `contested_evidence` want a `CausalLink` — the two classes
+/// collapse and the class assertions fail.
+#[test]
+fn a_contested_claim_raises_a_contradiction_gap_distinct_from_a_missing_causal_link() {
+    let key = |subject: &str, values: &[(&str, &[&str])], deltas: &[&str]| ContestedKey {
+        subject: subject.into(),
+        attribute: "rate".into(),
+        hypotheses: values
+            .iter()
+            .map(|(value, claims)| ((*value).to_string(), set(claims)))
+            .collect(),
+        deltas: deltas.iter().map(|d| (*d).to_string()).collect(),
+    };
+    // EURUSD: an even split, one claim each; obj-A: nine against one.
+    let contested = vec![
+        key(
+            "EURUSD",
+            &[("1.10", &["a1"]), ("1.20", &["b1"])],
+            &["kd-b1"],
+        ),
+        key(
+            "obj-A",
+            &[
+                (
+                    "100",
+                    &["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9"],
+                ),
+                ("90", &["d1"]),
+            ],
+            &[],
+        ),
+    ];
+    assert!(
+        contested.iter().all(|k| k.hypotheses.len() == 2),
+        "premise: both keys are contested"
+    );
+
+    let data = contested_evidence(&contested);
+    assert_eq!(data.len(), 2, "one data gap per contested key: {data:?}");
+    for observation in &data {
+        assert_eq!(observation.trigger, GapTrigger::Contradiction);
+        assert_eq!(class_of(observation), GapClass::Data);
+        assert_eq!(observation.evidence[0], Origin::ContestedEvidence.as_str());
+    }
+    assert!(
+        (data[0].severity - 1.0).abs() < 1e-12,
+        "an even split: {data:?}"
+    );
+    assert!(
+        (data[1].severity - 0.2).abs() < 1e-12,
+        "one against nine: {data:?}"
+    );
+    assert!(
+        data[0].evidence.iter().any(|e| e == "delta:kd-b1"),
+        "the knowledge delta that recorded the conflict is cited: {:?}",
+        data[0].evidence
+    );
+    assert!(
+        data[0].evidence.iter().any(|e| e == "claim:b1=1.20"),
+        "each asserting claim is cited with its value: {:?}",
+        data[0].evidence
+    );
+
+    // The causal graph explains obj-A and not EURUSD.
+    let causal = missing_causal_links(&contested, &set(&["obj-A"]));
+    assert_eq!(causal.len(), 1, "only the unexplained subject: {causal:?}");
+    assert_eq!(causal[0].trigger, GapTrigger::Contradiction);
+    assert_eq!(class_of(&causal[0]), GapClass::Causal);
+    assert_eq!(causal[0].evidence[0], Origin::MissingCausalLink.as_str());
+    assert!(causal[0].observation.contains("`EURUSD`"), "{causal:?}");
+    assert!(
+        (causal[0].severity - 0.5).abs() < 1e-12,
+        "one of two contested keys: {causal:?}"
+    );
+    assert_ne!(
+        class_of(&data[0]),
+        class_of(&causal[0]),
+        "the two gaps go to different desks"
+    );
+    // Nothing contested raises nothing, whatever the graph holds.
+    assert!(missing_causal_links(&[], &set(&[])).is_empty());
+    assert!(contested_evidence(&[]).is_empty());
 }
 
 #[test]
@@ -679,6 +775,193 @@ fn evaluation(question: &str, failing: Option<Criterion>) -> EvaluationRecord {
         })
         .collect();
     EvaluationRecord::new(question, findings).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// ADR 0142 d3 and d4: the campaign's order is Historical, Simulated,
+/// Shadow, Paper, and a paper stage recorded before shadow is refused as out
+/// of order. Mutation: restore the old `ORDER` (Paper before Shadow) — the
+/// third assertion admits Paper and fails.
+#[test]
+fn shadow_is_scored_before_paper_and_a_paper_stage_recorded_first_is_refused() {
+    assert_eq!(
+        Environment::ORDER,
+        [
+            Environment::Historical,
+            Environment::Simulated,
+            Environment::Shadow,
+            Environment::Paper,
+        ]
+    );
+    let mut c = ResearchCampaign::open("q").unwrap_or_else(|e| panic!("{e}"));
+    c.record(Environment::Historical, provenance()).unwrap();
+    c.record(Environment::Simulated, provenance()).unwrap();
+    assert!(
+        c.record(Environment::Paper, provenance()).is_err(),
+        "paper before shadow is a candidate acting before it was scored forward"
+    );
+    assert!(c.ran(Environment::Simulated) && !c.ran(Environment::Shadow));
+    c.record(Environment::Shadow, provenance()).unwrap();
+    assert!(!c.is_complete(), "three stages are not a complete campaign");
+    c.record(Environment::Paper, provenance()).unwrap();
+    assert!(c.is_complete());
+}
+
+fn fill(at_minutes: i64, error_bps: f64) -> FillResidual {
+    FillResidual {
+        venue: "XSIM".to_string(),
+        at: t0().saturating_add(Duration::from_mins(at_minutes)),
+        error_bps,
+    }
+}
+
+/// Ten historical fills with a 40 bp bias, then `post` fills after the start
+/// at `error`, one a minute, each at its own instant.
+fn biased_fills(post: usize, error: f64) -> Vec<FillResidual> {
+    let mut out: Vec<FillResidual> = (0..10)
+        .map(|i| fill(i - 60, if i % 2 == 0 { 35.0 } else { 45.0 }))
+        .collect();
+    out.extend((0..post).map(|i| fill(i as i64 + 1, error + if i % 2 == 0 { -2.0 } else { 2.0 })));
+    out
+}
+
+/// A desk with one started fill-residual item at XSIM, and that item's
+/// question and lineage, the way the deep brain's loop hands them to the
+/// campaign.
+fn started_fill_item() -> (String, Lineage) {
+    let mut desk = desk_with(&[("model-fit", ToolKind::ModelEndpoint)]);
+    let observation = unexplained_residuals(
+        &[Residual {
+            subject: "XSIM".into(),
+            error_bps: 50.0,
+        }],
+        25.0,
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+    .remove(0);
+    let raised = raise(observation).unwrap_or_else(|e| panic!("{e}"));
+    desk.offer(raised, &BTreeSet::new(), &set(&["US"]));
+    let report = desk
+        .finish_sweep(Budget {
+            compute: Decimal::from_int(10),
+            capital: Decimal::from_int(10),
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+    let Some(question) = report.started.first().cloned() else {
+        panic!("premise: the residual gap started: {report:?}");
+    };
+    let Some(lineage) = desk.lineage(&question).cloned() else {
+        panic!("premise: a started item has a lineage");
+    };
+    (question, lineage)
+}
+
+fn t0() -> Timestamp {
+    Timestamp::from_secs(1_800_000_000)
+}
+
+/// ADR 0142 d4 and d5 at the fill-bias campaign. A candidate whose shadow
+/// window clears is installed, carries an installation record naming both
+/// windows with paper opening after shadow closed, and is scored in paper;
+/// one whose paper window then fails carries a withdrawal; one whose shadow
+/// does not clear is never installed and has no paper stage; and a campaign
+/// whose paper window shares an instant with its shadow window is refused.
+/// Mutations: delete the `disjoint_windows(shadow, paper)?` call — the
+/// overlapping campaign runs and the `is_err` assertion fails; record the
+/// Paper stage unconditionally — the never-installed candidate has four
+/// stages and the `is_complete` assertion fails.
+#[test]
+fn a_campaign_whose_paper_window_overlaps_its_shadow_window_is_refused() {
+    let policy = CampaignPolicy::default();
+    let (question, lineage) = started_fill_item();
+    let run = |fills: &[FillResidual]| {
+        run_fill_bias_campaign(
+            &question,
+            &lineage,
+            fills,
+            t0(),
+            &policy,
+            true,
+            Decimal::from_int(4),
+            Decimal::from_int(48),
+        )
+    };
+
+    // Installed and promoted: the bias holds in both windows.
+    let held = run(&biased_fills(8, 40.0))
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("premise: enough fills on both sides of the start");
+    assert!(held.campaign.is_complete(), "{:?}", held.campaign);
+    let installation = held
+        .installation
+        .as_ref()
+        .expect("shadow cleared, so the correction was installed");
+    assert!(
+        installation.shadow_window.1 < installation.paper_window.0,
+        "paper opens after shadow closes: {installation:?}"
+    );
+    assert_eq!(installation.installed_at, installation.shadow_window.1);
+    assert!(held.withdrawal.is_none(), "{:?}", held.withdrawal);
+    assert_eq!(
+        held.campaign
+            .stages()
+            .iter()
+            .map(|(e, _)| *e)
+            .collect::<Vec<_>>(),
+        Environment::ORDER.to_vec()
+    );
+
+    // Installed and withdrawn: the bias holds in shadow and reverses in paper.
+    let mut reversing = biased_fills(4, 40.0);
+    reversing.extend((0..4).map(|i| fill(i + 5, -40.0)));
+    let withdrawn = run(&reversing)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("premise: enough fills");
+    assert!(
+        withdrawn.installation.is_some(),
+        "shadow cleared: {withdrawn:?}"
+    );
+    let withdrawal = withdrawn
+        .withdrawal
+        .as_ref()
+        .expect("paper did not clear, so the correction was withdrawn");
+    assert!(withdrawal.reason.contains("withdrawn"), "{withdrawal:?}");
+    assert!(
+        withdrawn
+            .evaluation
+            .failed()
+            .contains(&Criterion::RegimeSensitivity)
+    );
+
+    // Never installed: no bias out of sample, so shadow refuses it and there
+    // is no paper stage to score.
+    let refused = run(&biased_fills(8, 0.0))
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("premise: enough fills");
+    assert!(refused.installation.is_none(), "{refused:?}");
+    assert!(refused.withdrawal.is_none());
+    assert!(
+        !refused.campaign.is_complete(),
+        "a never-installed candidate has no paper stage"
+    );
+    assert!(refused.campaign.ran(Environment::Shadow));
+    assert!(!refused.campaign.ran(Environment::Paper));
+    assert!(
+        refused
+            .evaluation
+            .failed()
+            .contains(&Criterion::IncrementalValue)
+    );
+
+    // Overlapping: the last shadow fill and the first paper fill share an
+    // instant, so the windows are not disjoint and the campaign is refused.
+    let mut overlapping = biased_fills(8, 40.0);
+    overlapping[13].at = overlapping[14].at;
+    assert_eq!(
+        overlapping[13].at, overlapping[14].at,
+        "premise: the split instant is shared"
+    );
+    let error = run(&overlapping).expect_err("overlapping windows are refused");
+    assert!(error.to_string().contains("disjoint"), "{error}");
 }
 
 #[test]

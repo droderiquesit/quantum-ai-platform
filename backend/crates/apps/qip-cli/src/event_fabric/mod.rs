@@ -16,6 +16,7 @@ pub mod admin;
 pub mod grant;
 pub mod inspect;
 pub mod lag;
+pub mod produce;
 pub mod schema_gate;
 
 use qip_core::error::{Error, Result};
@@ -32,7 +33,7 @@ use std::sync::Arc;
 ///
 /// The one list [`dispatch`] matches and the unknown-subcommand refusal
 /// prints, so the two cannot disagree about what exists.
-pub const SUBCOMMANDS: [&str; 7] = [
+pub const SUBCOMMANDS: [&str; 8] = [
     grant::SUBCOMMAND,
     admin::ISOLATE,
     admin::RELEASE,
@@ -40,6 +41,7 @@ pub const SUBCOMMANDS: [&str; 7] = [
     inspect::HEALTH,
     inspect::REPLAY,
     schema_gate::SUBCOMMAND,
+    produce::SUBCOMMAND,
 ];
 
 /// How a variable is looked up: the process environment in production, a
@@ -217,6 +219,7 @@ pub fn dispatch(arguments: &[String], environment: &Environment) -> Result<Outco
             inspect::run(action, &arguments[1..], environment)
         }
         schema_gate::SUBCOMMAND => schema_gate::run(&arguments[1..], environment),
+        produce::SUBCOMMAND => produce::run(&arguments[1..], environment),
         other => Err(Error::invalid(format!(
             "unknown event-fabric subcommand {other:?}; the family is: {}",
             SUBCOMMANDS.join(", ")

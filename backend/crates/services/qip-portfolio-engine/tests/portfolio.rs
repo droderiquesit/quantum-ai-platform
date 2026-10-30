@@ -9,13 +9,20 @@
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
+use qip_contracts::forecast::{
+    Calibration, Forecast, ForecastFields, OutcomeDistribution, QuantilePoint, Stated, TailMass,
+    TailSide, UncertaintyDecomposition,
+};
+use qip_contracts::validated::Contract;
 use qip_core::error::Result;
 use qip_core::ids::{ObjectId, ProposalId};
 use qip_core::testing::approx_eq;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Currency, Decimal, Money, dec};
 use qip_optimization_engine::router::ComputeRouter;
-use qip_portfolio_engine::construction::{ApprovedThesis, Mandate, PortfolioConstructor};
+use qip_portfolio_engine::construction::{
+    ApprovedThesis, MEDIAN_BP, Mandate, PortfolioConstructor, RETURN_TARGET_SUFFIX,
+};
 use qip_portfolio_engine::proposal::{Proposal, ProposalLeg, ProposalStatus, Side};
 use std::collections::BTreeMap;
 
@@ -36,9 +43,62 @@ fn thesis(symbol: &str, conviction: f64, expected: f64) -> ApprovedThesis {
         hypothesis_id: format!("hyp-{symbol}"),
         object_id: object(symbol),
         conviction,
-        expected_return: expected,
+        return_forecast: return_forecast(&object(symbol), expected),
         price: dec!("100"),
     }
+}
+
+/// A return forecast for a hand-built thesis (R12-WORLD-10187): a median at
+/// `median`, five points of spread either side, issued at the epoch and
+/// expiring long after `now()`.
+#[allow(clippy::expect_used)] // a fixture that cannot be built is the failure report
+fn return_forecast(object: &ObjectId, median: f64) -> Forecast {
+    let at = |v: f64| Decimal::from_f64(v).expect("a fixture return is representable");
+    Forecast::new(ForecastFields {
+        schema_version: ForecastFields::SCHEMA_VERSION,
+        forecast_id: format!("fixture/{}/return", object.as_str()),
+        model: "fixture".to_string(),
+        target: format!("{}{RETURN_TARGET_SUFFIX}", object.as_str()),
+        issued_at: Timestamp::EPOCH,
+        horizon: Duration::from_days(5),
+        distribution: OutcomeDistribution::Quantiles {
+            points: vec![
+                QuantilePoint {
+                    quantile_bp: 1_000,
+                    value: at(median - 0.05),
+                },
+                QuantilePoint {
+                    quantile_bp: MEDIAN_BP,
+                    value: at(median),
+                },
+                QuantilePoint {
+                    quantile_bp: 9_000,
+                    value: at(median + 0.05),
+                },
+            ],
+        },
+        uncertainty: UncertaintyDecomposition {
+            epistemic: Decimal::ZERO,
+            aleatoric: at(0.0025),
+        },
+        tail: TailMass {
+            side: TailSide::Below,
+            threshold: Decimal::ZERO,
+            probability_bp: 1_000,
+        },
+        models_consulted: 1,
+        model_disagreement: Decimal::ZERO,
+        regime_confidence_bp: Stated::Unmeasurable {
+            unmeasurable: "fixture".to_string(),
+        },
+        expected_impact: Stated::Unmeasurable {
+            unmeasurable: "fixture".to_string(),
+        },
+        calibration: Calibration::Uncalibrated,
+        evidence_lineage: vec!["fixture".to_string()],
+        expires_at: Timestamp::from_secs(4_000_000_000),
+    })
+    .expect("the fixture forecast is valid")
 }
 
 fn covariance(n: usize) -> Vec<Vec<f64>> {
@@ -947,6 +1007,86 @@ fn a_leg_reports_its_quantity_at_the_unnarrowed_budget_from_the_same_pass_and_a_
         refusal.message().contains("narrowing contracts"),
         "{}",
         refusal.message()
+    );
+    Ok(())
+}
+
+/// R12-WORLD-10187, ADR 0140: an approved thesis is sized only on a
+/// validated return forecast. A thesis record without one is refused on
+/// decode. One whose forecast is of another instrument is refused before
+/// sizing. One whose forecast has expired is refused at construction. One
+/// whose forecast states no median is refused, so sizing never interpolates
+/// a return the forecast did not give. A valid thesis round-trips byte for
+/// byte, and sizing reads its expected return off the forecast's median.
+///
+/// Mutation: in `ApprovedThesis::validate`, drop the target check -- the
+/// thesis carrying another instrument's forecast is then sized.
+#[test]
+fn an_approved_thesis_without_a_return_forecast_is_refused() -> Result<()> {
+    let good = thesis("AAA", 0.9, 0.08);
+    assert!((good.expected_return()? - 0.08).abs() < 1e-12);
+    let encoded = serde_json::to_string(&good).expect("a thesis encodes");
+    let decoded: ApprovedThesis = serde_json::from_str(&encoded).expect("and decodes");
+    assert_eq!(decoded, good, "a valid thesis round-trips");
+
+    let mut bare = serde_json::to_value(&good).expect("a thesis encodes");
+    bare.as_object_mut()
+        .expect("an object")
+        .remove("return_forecast");
+    assert!(
+        serde_json::from_value::<ApprovedThesis>(bare).is_err(),
+        "a thesis with no return forecast decoded"
+    );
+
+    let elsewhere = ApprovedThesis {
+        return_forecast: return_forecast(&object("BBB"), 0.08),
+        ..thesis("AAA", 0.9, 0.08)
+    };
+    let refused = build(&[elsewhere], Mandate::default(), &BTreeMap::new())
+        .expect_err("a thesis sized on another instrument's forecast");
+    assert!(
+        refused.message().contains("/return"),
+        "{}",
+        refused.message()
+    );
+
+    let mut stale_fields = return_forecast(&object("AAA"), 0.08).fields().clone();
+    stale_fields.expires_at = now();
+    let stale = ApprovedThesis {
+        return_forecast: Forecast::new(stale_fields).expect("valid, only expired"),
+        ..thesis("AAA", 0.9, 0.08)
+    };
+    let refused = build(&[stale], Mandate::default(), &BTreeMap::new())
+        .expect_err("a thesis sized on an expired forecast");
+    assert!(
+        refused.message().contains("expired"),
+        "{}",
+        refused.message()
+    );
+
+    let mut no_median = return_forecast(&object("AAA"), 0.08).fields().clone();
+    no_median.distribution = OutcomeDistribution::Quantiles {
+        points: vec![
+            QuantilePoint {
+                quantile_bp: 1_000,
+                value: dec!("0.03"),
+            },
+            QuantilePoint {
+                quantile_bp: 9_000,
+                value: dec!("0.13"),
+            },
+        ],
+    };
+    let medianless = ApprovedThesis {
+        return_forecast: Forecast::new(no_median).expect("valid, only medianless"),
+        ..thesis("AAA", 0.9, 0.08)
+    };
+    let refused = build(&[medianless], Mandate::default(), &BTreeMap::new())
+        .expect_err("a thesis whose forecast states no median");
+    assert!(
+        refused.message().contains("no median"),
+        "{}",
+        refused.message()
     );
     Ok(())
 }

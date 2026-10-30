@@ -1,0 +1,311 @@
+{
+  "name": "frozen-sink",
+  "drill": "R12-RES-10153 broker backpressure under a frozen sink: qip-ledgerd, the P1 outcomes stream's consumer, is paused (SIGSTOP) while P0, P1 and P2 producers load qip-fabricd at stated rates; the broker keeps admitting P0 and P1 with no refusal of either, throttles only the P2 producer driven past its own quota, keeps its resident memory under a stated ceiling, and the resumed ledger commits again and catches up.",
+  "hold_ms": 10000,
+  "timeout_ms": 30000,
+  "processes": [
+    {
+      "name": "fabricd",
+      "binary": "qip-fabricd",
+      "dirs": [
+        "${WORK}/fabric/data",
+        "${WORK}/fabric/archive"
+      ],
+      "files": [
+        {
+          "path": "${WORK}/fabric/identities",
+          "content": "reflex:cell-local ${SHA256:game-day-cell-credential-local-drills-only}\nledger ${SHA256:game-day-ledger-credential-local-drills-only}\nrelease-controller ${SHA256:game-day-release-credential-local-drills-only}\noperator ${SHA256:game-day-operator-credential-local-drills-only}\n"
+        }
+      ],
+      "env": {
+        "QIP_EVENT_FABRIC_DATA_DIR": "${WORK}/fabric/data",
+        "QIP_EVENT_FABRIC_CATALOGUE": "${REPO}/infrastructure/event-fabric/streams.local.json",
+        "QIP_EVENT_FABRIC_IDENTITIES_FILE": "${WORK}/fabric/identities",
+        "QIP_EVENT_FABRIC_ARCHIVE_DIR": "${WORK}/fabric/archive",
+        "QIP_EVENT_FABRIC_LISTEN": "127.0.0.1:${PORT:fabric}",
+        "QIP_EVENT_FABRIC_HEALTH_LISTEN": "127.0.0.1:${PORT:fabric-health}",
+        "QIP_EVENT_FABRIC_PARTITIONS": "1",
+        "QIP_EVENT_FABRIC_REGION": "local",
+        "QIP_DEPLOYMENT": "local",
+        "QIP_TLS_MODE": "plaintext"
+      },
+      "ready": {
+        "url": "http://127.0.0.1:${PORT:fabric-health}/health"
+      }
+    },
+    {
+      "name": "ledgerd",
+      "binary": "qip-ledgerd",
+      "dirs": [
+        "${WORK}/ledger/archive"
+      ],
+      "files": [
+        {
+          "path": "${WORK}/ledger/fabric-token",
+          "content": "game-day-ledger-credential-local-drills-only"
+        }
+      ],
+      "env": {
+        "QIP_LEDGER_ARCHIVE_PATH": "${WORK}/ledger/archive",
+        "QIP_LEDGER_LISTEN_ADDR": "127.0.0.1:${PORT:ledger}",
+        "QIP_LEDGER_FABRIC_CONSUMER_GROUP": "ledger",
+        "QIP_LEDGER_FABRIC_URL": "http://127.0.0.1:${PORT:fabric}",
+        "QIP_LEDGER_FABRIC_STREAM": "reflex-outcomes.local",
+        "QIP_LEDGER_FABRIC_PARTITIONS": "1",
+        "QIP_LEDGER_FABRIC_TOKEN_FILE": "${WORK}/ledger/fabric-token",
+        "QIP_LEDGER_ENVIRONMENT": "workstation",
+        "QIP_DEPLOYMENT": "local",
+        "QIP_TLS_MODE": "plaintext"
+      },
+      "ready": {
+        "url": "http://127.0.0.1:${PORT:ledger}/health"
+      }
+    }
+  ],
+  "load": [
+    {
+      "name": "load-p0",
+      "binary": "qip",
+      "files": [
+        {
+          "path": "${WORK}/load/release-controller-token",
+          "content": "game-day-release-credential-local-drills-only"
+        }
+      ],
+      "env": {
+        "QIP_EVENT_FABRIC_PRODUCE_TOKEN_FILE": "${WORK}/load/release-controller-token"
+      },
+      "args": [
+        "event-fabric", "produce",
+        "--peer", "127.0.0.1:${PORT:fabric}",
+        "--stream", "control.local",
+        "--class", "p0",
+        "--partition", "0",
+        "--producer-id", "game-day-load-p0",
+        "--producers", "4",
+        "--rate", "2",
+        "--duration-ms", "16000"
+      ]
+    },
+    {
+      "name": "load-p1",
+      "binary": "qip",
+      "files": [
+        {
+          "path": "${WORK}/load/cell-token-p1",
+          "content": "game-day-cell-credential-local-drills-only"
+        }
+      ],
+      "env": {
+        "QIP_EVENT_FABRIC_PRODUCE_TOKEN_FILE": "${WORK}/load/cell-token-p1"
+      },
+      "args": [
+        "event-fabric", "produce",
+        "--peer", "127.0.0.1:${PORT:fabric}",
+        "--stream", "reflex-outcomes.local",
+        "--class", "p1",
+        "--partition", "0",
+        "--producer-id", "game-day-load-p1",
+        "--producers", "16",
+        "--rate", "1",
+        "--duration-ms", "16000"
+      ]
+    },
+    {
+      "name": "load-p2",
+      "binary": "qip",
+      "files": [
+        {
+          "path": "${WORK}/load/cell-token-p2",
+          "content": "game-day-cell-credential-local-drills-only"
+        }
+      ],
+      "env": {
+        "QIP_EVENT_FABRIC_PRODUCE_TOKEN_FILE": "${WORK}/load/cell-token-p2"
+      },
+      "args": [
+        "event-fabric", "produce",
+        "--peer", "127.0.0.1:${PORT:fabric}",
+        "--stream", "reflex-journal.local",
+        "--class", "p2",
+        "--partition", "0",
+        "--producer-id", "game-day-load-p2",
+        "--rate", "100",
+        "--records-per-batch", "64",
+        "--payload-bytes", "64",
+        "--duration-ms", "16000"
+      ]
+    }
+  ],
+  "steady": [
+    {
+      "name": "P0 control records are being admitted",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_append_total",
+        "labels": { "stream": "control.local", "outcome": "success" },
+        "increases": true
+      }
+    },
+    {
+      "name": "P1 outcome records are being admitted",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_append_total",
+        "labels": { "stream": "reflex-outcomes.local", "outcome": "success" },
+        "increases": true
+      }
+    },
+    {
+      "name": "P2 journal records are being admitted",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_append_total",
+        "labels": { "stream": "reflex-journal.local", "outcome": "success" },
+        "increases": true
+      }
+    },
+    {
+      "name": "the ledger has committed its checkpoint on the P1 stream",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_group_lag",
+        "labels": { "group": "ledger", "stream": "reflex-outcomes.local" },
+        "min": 0
+      }
+    }
+  ],
+  "fault": {
+    "kind": "pause",
+    "process": "ledgerd"
+  },
+  "detect": {
+    "name": "the ledger no longer answers",
+    "url": "http://127.0.0.1:${PORT:ledger}/health",
+    "status": 0
+  },
+  "during": [
+    {
+      "name": "P0 keeps being admitted with the sink frozen",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_append_total",
+        "labels": { "stream": "control.local", "outcome": "success" },
+        "increases": true
+      }
+    },
+    {
+      "name": "P1 keeps being admitted while its own consumer is frozen",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_append_total",
+        "labels": { "stream": "reflex-outcomes.local", "outcome": "success" },
+        "increases": true
+      }
+    },
+    {
+      "name": "P2 keeps being admitted between its throttles",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_append_total",
+        "labels": { "stream": "reflex-journal.local", "outcome": "success" },
+        "increases": true
+      }
+    },
+    {
+      "name": "no P0 produce is refused",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_refusals_total",
+        "labels": { "class": "p0_control" },
+        "max": 0,
+        "absent_as": 0
+      }
+    },
+    {
+      "name": "no P1 produce is refused",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_refusals_total",
+        "labels": { "class": "p1_outcomes" },
+        "max": 0,
+        "absent_as": 0
+      }
+    },
+    {
+      "name": "the broker keeps serving",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/health",
+      "status": 200
+    }
+  ],
+  "recovery": {
+    "kind": "resume",
+    "process": "ledgerd"
+  },
+  "after_recovery": [
+    {
+      "name": "the resumed ledger commits its checkpoint again",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_group_lag_checks_total",
+        "increases": true
+      }
+    },
+    {
+      "name": "the resumed ledger has caught up to within 4 batches of the P1 high watermark",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_group_lag",
+        "labels": { "group": "ledger", "stream": "reflex-outcomes.local" },
+        "max": 4
+      }
+    }
+  ],
+  "final": [
+    {
+      "name": "P0 was never refused across the whole drill",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_refusals_total",
+        "labels": { "class": "p0_control" },
+        "max": 0,
+        "absent_as": 0
+      }
+    },
+    {
+      "name": "P1 was never refused across the whole drill",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_refusals_total",
+        "labels": { "class": "p1_outcomes" },
+        "max": 0,
+        "absent_as": 0
+      }
+    },
+    {
+      "name": "the P2 producer driven past its quota was throttled, visibly",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+      "metric": {
+        "name": "qip_event_fabric_refusals_total",
+        "labels": { "class": "p2_market_journal", "reason": "quota" },
+        "min": 1
+      }
+    }
+  ],
+  "memory_ceiling_kib": {
+    "fabricd": 65536
+  },
+  "rpo": {
+    "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+    "metric": {
+      "name": "qip_event_fabric_high_watermark",
+      "labels": {
+        "stream": "reflex-outcomes.local"
+      }
+    }
+  },
+  "objectives": {
+    "rto_ms": 10000,
+    "rpo_records": 0
+  }
+}

@@ -1012,6 +1012,7 @@ mod tests {
             tail_worlds: worlds,
             advisory_worlds: Vec::new(),
             advisory_reserve: None,
+            episodes: Vec::new(),
         }
     }
 

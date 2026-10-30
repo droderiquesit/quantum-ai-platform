@@ -1172,6 +1172,7 @@ fn arbitrage_policy(venues: &[&str]) -> ArbitragePolicy {
                     WhitelistedVenue {
                         class: VenueClass::Exchange,
                         taker_cost: dec!("0.0005"),
+                        simulated: true,
                     },
                 )
             })

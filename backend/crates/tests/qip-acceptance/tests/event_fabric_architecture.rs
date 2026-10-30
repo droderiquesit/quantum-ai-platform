@@ -143,6 +143,125 @@ fn names_any(crates: &Path, dirs: &[PathBuf], tokens: &[&str]) -> (usize, Vec<(S
     (files.len(), found)
 }
 
+// --- no fourth cross-process path (ADR 0128 decision 4) --------------------
+
+/// A send across a process boundary that is none of the admitted seams,
+/// as it would appear in an app crate's production source: a socket the
+/// crate opens itself, or the mesh's raw publisher, which only
+/// `qip_mesh::spine` may drive.
+const RAW_SEND_TOKENS: [&str; 4] = [
+    "TcpStream::connect",
+    "UdpSocket",
+    "UnixStream",
+    "MeshPublisher",
+];
+
+/// The four admitted seams, by symbol (ADR 0128 decision 4): a new
+/// transport fails the scan by name because it is not one of these.
+const ADMITTED_SEND_SEAMS: [&str; 4] = [
+    "qip_mesh::spine",
+    "qip_transport::event_fabric",
+    "qip_peer_link",
+    "HttpClient",
+];
+
+/// A process that connects to its own listener to unblock `accept` so the
+/// listener thread can see the shutdown flag. A loopback poke of the
+/// process's own socket, not a send to another process; named here so the
+/// scan stays blind to nothing else.
+const SELF_POKES: [(&str, &str); 2] = [
+    ("apps/qip-ledgerd/src/lib.rs", "TcpStream::connect"),
+    ("apps/qip-fabricd/src/lib.rs", "TcpStream::connect"),
+];
+
+/// ADR 0128 decision 4 (R12-FABRIC-10177): no app crate sends across a
+/// process except through the mesh spine, the fabric producer, the peer link
+/// or a request through the transport's HTTP client to a named synchronous
+/// route. Every other way out of a process — a socket the crate opens, the
+/// mesh's raw publisher — is refused by name, in production source only
+/// (`#[cfg(test)]` modules are stripped), with the two self-pokes above as
+/// the whole allow-list.
+///
+/// Mutation: add `let _ = std::net::TcpStream::connect("127.0.0.1:1");` to
+/// any `fn` in `crates/apps/qip-api/src/main.rs` — fails naming that file.
+/// Mutation: drop a self-poke from `SELF_POKES` — fails at the premise that
+/// the scan sees it.
+#[test]
+fn no_app_crate_sends_across_a_process_except_through_the_spine_the_fabric_producer_the_peer_link_or_a_named_synchronous_route()
+ {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let apps = crates.join("apps");
+    let mut files = Vec::new();
+    rust_files(&apps, &mut files);
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut seams_used: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut walked = 0usize;
+    for file in &files {
+        let name = file
+            .strip_prefix(&crates)
+            .expect("under crates/")
+            .to_string_lossy()
+            .replace('\\', "/");
+        // Production source only: `src/` files, with every `#[cfg(test)]`
+        // module stripped, so a test's loopback socket is not a finding
+        // and a real one cannot hide in one.
+        if !name.contains("/src/") {
+            continue;
+        }
+        let source = qip_acceptance::production_text(&fs::read_to_string(file).unwrap_or_default());
+        walked += 1;
+        for seam in ADMITTED_SEND_SEAMS {
+            if source.contains(seam) {
+                seams_used.insert(seam);
+            }
+        }
+        for token in RAW_SEND_TOKENS {
+            let named = source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .any(|line| {
+                    line.match_indices(token).any(|(i, _)| {
+                        !line[..i].ends_with(is_ident)
+                            && !line[i + token.len()..].starts_with(is_ident)
+                    })
+                });
+            if named {
+                found.push((name.clone(), token.to_string()));
+            }
+        }
+    }
+    assert!(
+        walked > 0,
+        "walked no production files under {}",
+        apps.display()
+    );
+    // Premise: the admitted seams are live in the apps, so the list is the
+    // platform's and not an aspiration; and the scan sees the self-pokes,
+    // so a green below is a scan that looked.
+    for seam in ADMITTED_SEND_SEAMS {
+        assert!(
+            seams_used.contains(seam),
+            "no app names the admitted seam {seam}; the list is stale"
+        );
+    }
+    for (file, token) in SELF_POKES {
+        assert!(
+            found.iter().any(|(f, t)| f == file && t == token),
+            "the scan did not see {file}'s {token}; it is blind"
+        );
+    }
+    let offenders: Vec<_> = found
+        .iter()
+        .filter(|(file, token)| !SELF_POKES.iter().any(|(f, t)| f == file && t == token))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "an app crate sends across a process outside the spine, the fabric producer, the peer \
+         link and the HTTP client: {offenders:?}"
+    );
+}
+
 /// CICD-018's third seeded case: "adds a blocking call on the hot path".
 ///
 /// The dependency rules in `architecture.rs` stop the cell reaching a model or

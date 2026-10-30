@@ -221,9 +221,60 @@ pub struct CampaignResult {
     pub correction: FillBiasCorrection,
     /// Champion minus challenger mean absolute error in the shadow stage.
     pub shadow_improvement_bps: f64,
+    /// The same in the paper stage; zero when there was none.
     pub paper_improvement_bps: f64,
     /// The bootstrap's 5th and 95th percentile of the bias, in basis points.
     pub bias_band_bps: (f64, f64),
+    /// That the correction was installed for the paper window, once shadow
+    /// cleared (ADR 0142 d5). `None` is a candidate never installed, which
+    /// has no paper stage.
+    pub installation: Option<Installation>,
+    /// That the installed correction was withdrawn because paper did not
+    /// clear (ADR 0142 d5). Never `Some` without `installation`.
+    pub withdrawal: Option<Withdrawal>,
+}
+
+/// The record that a candidate correction was installed in the paper fill
+/// model at the close of its shadow window (ADR 0142 d5): the proof the ADR
+/// asks for is that no installation falls inside the shadow window and that
+/// every paper fill arrives after this instant.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Installation {
+    pub venue: String,
+    pub bias_bps: f64,
+    /// The last shadow fill's instant; the paper window opens after it.
+    pub installed_at: Timestamp,
+    /// The shadow window the installation was decided on.
+    pub shadow_window: (Timestamp, Timestamp),
+    /// The paper window the installed correction acted over.
+    pub paper_window: (Timestamp, Timestamp),
+}
+
+/// The record that an installed correction was withdrawn because its paper
+/// window did not clear (ADR 0142 d5).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Withdrawal {
+    pub venue: String,
+    pub withdrawn_at: Timestamp,
+    pub reason: String,
+}
+
+/// ADR 0142 d4: the shadow window lies wholly before the paper window. Two
+/// fills at one instant on either side of the split would put the same
+/// instant in both windows, and a candidate scored "forward" on a fill it
+/// was also installed for is scored on nothing.
+fn disjoint_windows(shadow: &[&FillResidual], paper: &[&FillResidual]) -> Result<()> {
+    match (shadow.last(), paper.first()) {
+        (Some(last_shadow), Some(first_paper)) if last_shadow.at >= first_paper.at => {
+            Err(Error::invalid(format!(
+                "the shadow window ends at {} and the paper window opens at {}; the two must be \
+                 disjoint and shadow first, so the campaign is refused",
+                last_shadow.at.to_rfc3339(),
+                first_paper.at.to_rfc3339()
+            )))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn mean(values: impl Iterator<Item = f64>) -> f64 {
@@ -275,8 +326,13 @@ pub fn run_fill_bias_campaign(
     if historical.len() < policy.min_fit || post.len() < 2 * policy.min_eval {
         return Ok(None);
     }
+    // Shadow first, then paper (ADR 0142 d3): the earlier half is the
+    // forward window the candidate is scored on without acting, the later
+    // half the window it acts in once installed. The two must not share an
+    // instant (d4).
     let half = post.len() / 2;
-    let (paper, shadow) = post.split_at(half);
+    let (shadow, paper) = post.split_at(half);
+    disjoint_windows(shadow, paper)?;
 
     let mut campaign = ResearchCampaign::open(question)?;
     let lineage_of = |set: &[&FillResidual]| -> Vec<String> {
@@ -331,16 +387,8 @@ pub fn run_fill_bias_campaign(
         },
     )?;
 
-    // Paper and shadow: out of sample, champion against challenger.
-    let paper_improvement = mae(paper, 0.0) - mae(paper, bias);
-    campaign.record(
-        Environment::Paper,
-        Provenance {
-            dataset_digest: digest_of(paper)?,
-            lineage: lineage_of(paper),
-            seed: 0,
-        },
-    )?;
+    // Shadow: out of sample and never installed, champion against
+    // challenger on fills the candidate did not touch.
     let shadow_improvement = mae(shadow, 0.0) - mae(shadow, bias);
     campaign.record(
         Environment::Shadow,
@@ -350,6 +398,51 @@ pub fn run_fill_bias_campaign(
             seed: 0,
         },
     )?;
+    // Phase two (ADR 0142 d5): the correction is installed only when shadow
+    // clears the policy's bar, and the paper stage exists only for an
+    // installed correction. A candidate shadow refused has three stages and
+    // no paper window, which is the fact the ADR wants on the record rather
+    // than a paper score for a candidate that never acted.
+    let window = |set: &[&FillResidual]| -> (Timestamp, Timestamp) {
+        (
+            set.first().map_or(started_at, |r| r.at),
+            set.last().map_or(started_at, |r| r.at),
+        )
+    };
+    let installed = shadow_improvement >= policy.min_improvement_bps;
+    let mut installation = None;
+    let mut withdrawal = None;
+    let mut paper_improvement = 0.0;
+    if installed {
+        let installed_at = shadow.last().map_or(started_at, |r| r.at);
+        installation = Some(Installation {
+            venue: venue.to_string(),
+            bias_bps: bias,
+            installed_at,
+            shadow_window: window(shadow),
+            paper_window: window(paper),
+        });
+        paper_improvement = mae(paper, 0.0) - mae(paper, bias);
+        campaign.record(
+            Environment::Paper,
+            Provenance {
+                dataset_digest: digest_of(paper)?,
+                lineage: lineage_of(paper),
+                seed: 0,
+            },
+        )?;
+        if paper_improvement <= 0.0 {
+            withdrawal = Some(Withdrawal {
+                venue: venue.to_string(),
+                withdrawn_at: paper.last().map_or(installed_at, |r| r.at),
+                reason: format!(
+                    "paper improvement {paper_improvement:.2} bp did not clear zero; the \
+                     correction installed at {} is withdrawn",
+                    installed_at.to_rfc3339()
+                ),
+            });
+        }
+    }
 
     let correction = FillBiasCorrection {
         venue: venue.to_string(),
@@ -372,12 +465,21 @@ pub fn run_fill_bias_campaign(
     let mut findings = BTreeMap::new();
     findings.insert(
         Criterion::Calibration,
-        finding(
-            corrected_mean.abs() < paper_mean.abs(),
-            format!(
-                "paper mean residual {paper_mean:.2} bp uncorrected, {corrected_mean:.2} bp corrected"
-            ),
-        ),
+        if installed {
+            finding(
+                corrected_mean.abs() < paper_mean.abs(),
+                format!(
+                    "paper mean residual {paper_mean:.2} bp uncorrected, {corrected_mean:.2} bp \
+                     corrected"
+                ),
+            )
+        } else {
+            finding(
+                false,
+                "no paper stage: shadow did not clear and the correction was never installed"
+                    .to_string(),
+            )
+        },
     );
     findings.insert(
         Criterion::Robustness,
@@ -404,10 +506,18 @@ pub fn run_fill_bias_campaign(
     findings.insert(
         Criterion::RegimeSensitivity,
         finding(
-            paper_improvement > 0.0 && shadow_improvement > 0.0,
-            format!(
-                "improvement {paper_improvement:.2} bp in paper and {shadow_improvement:.2} bp in shadow"
-            ),
+            installed && paper_improvement > 0.0 && shadow_improvement > 0.0,
+            if installed {
+                format!(
+                    "improvement {shadow_improvement:.2} bp in shadow and {paper_improvement:.2} \
+                     bp in paper after installation"
+                )
+            } else {
+                format!(
+                    "improvement {shadow_improvement:.2} bp in shadow; never installed, so no \
+                     paper window"
+                )
+            },
         ),
     );
     findings.insert(
@@ -465,5 +575,7 @@ pub fn run_fill_bias_campaign(
         shadow_improvement_bps: shadow_improvement,
         paper_improvement_bps: paper_improvement,
         bias_band_bps: (low, high),
+        installation,
+        withdrawal,
     }))
 }

@@ -135,6 +135,33 @@ fn a_producer_past_its_byte_quota_is_refused_even_within_its_message_quota() {
     assert!(refusal.to_string().contains("bytes"), "{refusal}");
 }
 
+/// R12-FABRIC-8089's credit window, as the broker grants it: every ack
+/// says how many payload bytes the producer may still send this second and
+/// when the window refills, so the producer can hold a batch it cannot fund
+/// before the wire. Mutation: report `policy.byte_quota_per_producer()` as
+/// the credit instead of what is left — the second ack reads 10, not 0.
+#[test]
+fn an_ack_grants_the_credit_left_in_the_window_and_when_it_refills() {
+    let (b, clock) = broker(10, 1_000);
+    let first = b.produce("orders", "k", batch("p1", 0, b"123456")).unwrap();
+    let credit = first.credit().expect("an ack carries a credit window");
+    assert_eq!(credit.bytes, 4, "ten bytes of quota less the six just sent");
+    assert_eq!(
+        credit.refills_in_ms, 1_000,
+        "premise: the clock sits at a whole second, so the window is fresh"
+    );
+    clock.advance(Duration::from_millis(250));
+    let second = b.produce("orders", "k", batch("p1", 1, b"1234")).unwrap();
+    let credit = second.credit().expect("an ack carries a credit window");
+    assert_eq!(credit.bytes, 0, "the window is spent");
+    assert_eq!(
+        credit.refills_in_ms, 750,
+        "the refill is the rest of the second"
+    );
+    // And a broker on this build never grants more than the quota holds.
+    assert!(credit.bytes <= 10);
+}
+
 /// A refused batch must not consume its sequence number, and the budget
 /// returns with the next window. Mutation: delete the `spent.retain(..)`
 /// line in `charge_quota` — the old window's spend is never discarded and

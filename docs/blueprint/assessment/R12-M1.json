@@ -474,25 +474,27 @@
   {
     "id": "R12-EXPAND-1021",
     "status": "PARTIAL",
-    "current": "OntologyRegistry and CapabilityRegistry exist in qip-agents; data-finder discovers and registers sources at runtime (deepbrain DiscoveryDesk). Ontology/tool/brain registries are not used by any composition root.",
+    "current": "OntologyRegistry and CapabilityRegistry exist in qip-agents; data-finder discovers and registers sources at runtime (deepbrain DiscoveryDesk). Since 2026-10-30 the deep brain's ResearchLoop registers a candidate Event type (version one above the latest held) for every ontology gap its sweep raises, citing the gap's signal id in the type's description (propose_type, R12-EXPAND-6029), and records every promoted capability in its CapabilityRegistry (R12-EXPAND-6062); tool gaps still propose a read-only, sandboxed tool spec (expansion_rows::an_execution_gap_needing_a_tool_the_node_lacks_proposes_a_read_only_tool_spec_with_its_lineage).",
     "evidence": [
       "backend/crates/libs/qip-agents/src/registries.rs:21 OntologyRegistry (no production caller)",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:502 DiscoveryDesk wired"
+      "backend/crates/apps/qip-deepbrain/src/main.rs:502 DiscoveryDesk wired",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::propose_type (OntologyRegistry::register from a gap)",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs::an_observation_wanting_a_type_leaves_a_validated_ontology_patch_citing_it_and_registers_the_candidate"
     ],
-    "gap": "Runtime registration of ontology, tools, brains and model families from gap triggers.",
+    "gap": "Brains and model families are not registered from gaps (specialists stay gap-only under ADR 0158 d8); a tool gap proposes a spec but registers no tool in the node's ToolRegistry; the ontology candidate's only producer input (reference-data surprises) arrives through env-gated connectors. No skeptic round ran (the lane was parked), so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-EXPAND-1014"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents",
+    "verification": "cargo test -p qip-deepbrain --test expansion_rows an_observation_wanting; cargo test -p qip-agents",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-30 lane L4b: ontology half landed with R12-EXPAND-6029 (mutation: dropping the register call failed the test at get_latest None; restored byte-for-byte). Kept PARTIAL."
   },
   {
     "id": "R12-TICK-1022",
@@ -3279,10 +3281,15 @@
   },
   {
     "id": "R12-AMBIENT-1142",
-    "status": "MISSING",
-    "current": "No always-running ambient process maintains scenario branches; kernel forecasts are computed per cycle on request.",
-    "evidence": [],
-    "gap": "An ambient loop in deepbrain.",
+    "status": "PARTIAL",
+    "current": "The deep brain's ambient loop maintains scenario branches without a request: ResearchLoop::sweep_over, run on every deep-brain sweep from the node loop, calls conditional_scenarios (research.rs), which for every Risk or Assumption signal of the round turns the signal's own last move on each affected subject into a one-day FactorShock scenario, keyed on the signal's inputs so a replay yields the same digest, and journals it as AmbientRecord::Scenario caused by that signal. The schedule is the sweep cadence; nothing outside the loop asks for a scenario.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over -> self.conditional_scenarios(platform, &metrics, &mut round) (the one call, on the default sweep), fn conditional_scenarios",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:586 research.maybe_sweep on the node loop; ResearchConfig::default every_cycles 1 (research.rs:417), no committed environment sets QIP_DEEPBRAIN_RESEARCH_EVERY",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs AmbientRecord::Scenario",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (asserts the risk surprise yields a journaled scenario carrying the 30% move as a one-day shock)"
+    ],
+    "gap": "2026-10-25 (lane L2b; independent read-only skeptic REFUTED on bar parts 4 and 1): scenarios are generated afresh each sweep and overwritten (research.rs:2620 round.scenarios = generated), nothing is kept on the loop between sweeps, so no branch is updated, carried forward or retired, and the journaled Scenario is write-only (its only reader is the journal writer, ambient_journal.rs:230); and the named test calls loop_.sweep and ambient.record itself (tests/ambient_journal.rs:397-414), never maybe_sweep or the node loop, so the schedule clause (\"on a schedule without external request\") is not what the test proves. Closing it: a ScenarioBranches state on ResearchLoop that each sweep updates (re-shocks a held branch on the subject's new tape, retires one whose signal has lapsed) and journals the update, read by at least the simulation or risk path, plus a node-level test through maybe_sweep.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3292,10 +3299,10 @@
       "R12-AMBIENT-1005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-25 lane L2b (wave580): the row said MISSING while the code and its test had landed; record corrected, no code change. Mutation run as the test's own comment names: deleting the self.conditional_scenarios(..) call in sweep_over -> FAILED at ambient_journal.rs:472 \"the risk surprise yields a scenario\"; restored byte for byte (cmp), test result: ok. 1 passed. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records; held part 2 (default cadence on). Row moves MISSING -> PARTIAL: generation and journaling exist on the default path, maintenance does not."
   },
   {
     "id": "R12-AMBIENT-1143",
@@ -3613,9 +3620,11 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined",
       "backend/crates/services/qip-learning-engine/src/self_model.rs",
       "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::every_financial_agi_core_scope_item_names_a_seam_and_a_test_that_still_exist",
-      "backend/crates/apps/qip-deepbrain/src/main.rs AmbientAgency::open, unconditional"
+      "backend/crates/apps/qip-deepbrain/src/main.rs AmbientAgency::open, unconditional",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::reason_forms_a_hypothesis_from_a_sensed_anomaly_on_the_default_composition",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_resolved_prediction_updates_the_calibration_report"
     ],
-    "gap": "A scope map now names a seam and an existing test for all ten items, and a test pins the deep brain's unconditional AmbientAgency::open. Still PARTIAL: it is inspection, not behaviour; hypothesis generation (stage_reason) and uncertainty (calibrate_resolved) are covered only by a cycle-level test, not one named for them; planning and tool use run in the ambient agency's shadow/outbox path, not as an executing planner.",
+    "gap": "2026-10-25 (L4, commits 31e0108d and b85c96b9, skeptic REFUTED). Closed: hypothesis generation and uncertainty each cite a test named for them, and orchestration now cites the_organisation_assembles_and_dispatches, which calls dispatch. Still open: tool use is proven only as registry bookkeeping (no test or default path invokes a registered tool); research cites ResearchPlan::synthesise, whose only production path is synthesise_with via the desk; the uncertainty test checks only that a report exists with a Brier in [0, 1], not the arithmetic; planning runs in the ambient agency's shadow/outbox path only; and the inspection is presence-only (scope_inspections greps for names, it does not prove a cited test exercises its seam).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3626,7 +3635,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test scope_inspections",
     "work_item": "",
     "size": "L",
-    "notes": "Mutations 2026-10-18: renaming the counterfactual test failed the map naming 'counterfactuals'; wrapping the agency open in a conditional failed the unconditional-open test; restored."
+    "notes": "Mutations 2026-10-18: renaming the counterfactual test failed the map naming 'counterfactuals'; wrapping the agency open in a conditional failed the unconditional-open test; restored. 2026-10-25 (L4): two mutants killed (drop keep_prediction push; never store last_calibration), restored sha256-identical; skeptic REFUTED (gap); orchestration citation corrected in b85c96b9. Stays PARTIAL."
   },
   {
     "id": "R12-MODEL-1157",
@@ -3677,9 +3686,14 @@
     "current": "qip-evolution generate/mutate/promotion and qip-lifecycle demotion run from deepbrain; scale of thousands not measured.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/evolution.rs:36",
-      "backend/crates/services/qip-lifecycle/src/demotion.rs"
+      "backend/crates/services/qip-lifecycle/src/demotion.rs",
+      "backend/crates/services/qip-lifecycle/src/ledger.rs MAX_LIVE_STRATEGIES = 4_096 (ADR 0149 decision 15); retired ids compact to tombstones",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs::a_thousand_strategies_promote_and_retire_through_the_ledger_with_the_live_set_bounded_and_a_retired_id_still_refused",
+      "backend/crates/runtime/qip-kernel/src/central/factory.rs StrategyFactory::register live-count refusal",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_full_desk_refuses_a_new_candidate_until_one_retires_and_a_retired_id_stays_refused",
+      "backend/crates/services/qip-evolution/tests/evolution.rs:413 the_same_challenger_wins_a_small_search_and_loses_a_large_one (5,000 generated and counted)"
     ],
-    "gap": "Scale of thousands is measured for generation and trial counting only (evolution.rs the_same_challenger_wins_a_small_search_and_loses_a_large_one generates 5,000 candidates and counts 5,000 trials); promotion and demotion of 1,000+ strategies through the lifecycle ledger, and a bound on that ledger's working set (LifecycleLedger keeps every strategy's entries in a BTreeMap with no cap), are unmeasured.",
+    "gap": "2026-10-30 (lane L2-INTEL): the in-lane skeptic REFUTED it. Of the eight scope items, generate and backtest are reached from qip-deepbrain's EvolutionEngine, but simulate has no step of its own and stress has no code. Paper trade is unreachable: PaperEvidence has no production constructor, so no strategy reaches GateStage::Paper. Decay and retire are reachable only after a promotion past Paper, so they fire on nothing on the default path. The 1,000-strategy measure drives the ledger directly, not the factory from a root. The bounded live set (MAX_LIVE_STRATEGIES, mutation-verified at central.rs) holds.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3690,7 +3704,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: not attempted; a scale test over an unbounded ledger would measure growth, not a bounded working set. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: not attempted; a scale test over an unbounded ledger would measure growth, not a bounded working set. Kept PARTIAL. 2026-10-30 L2-INTEL: mutation live >= usize::MAX in central/factory.rs fails a_full_desk_refuses_a_new_candidate_until_one_retires_and_a_retired_id_stays_refused; restored by copy + cmp."
   },
   {
     "id": "R12-ASSET-1160",
@@ -4152,9 +4166,12 @@
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1103 act_on_decisions (Branch and Merge arms)",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1652 a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1716 a_merge_decision_folds_two_branches_into_one_and_leaves_the_roots_alone",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs contradictions_in, FederationReview.contradictions, replay re-check",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::opposed_views_past_the_margin_are_journaled_as_a_contradiction_distinct_from_a_wide_spread",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::tests::only_views_on_opposite_sides_past_the_margin_are_a_contradiction"
     ],
-    "gap": "The Merge arm is proven only by handing act_on_decisions a hand-built Merge arbitration over two seeded branches: no default-path scenario yet produces a Merge decision while two branches hold views, so the arm has not run from a real pass. Contradiction detection is still not a distinct mechanism.",
+    "gap": "2026-10-25 (L4, commit a6e97463, skeptic REFUTED). Closed: contradiction detection is a distinct mechanism (FederationReview.contradictions, ViewContradiction past CONTRADICTION_MARGIN, recomputed and checked on replay) on the default path through understand_federation. Still open: the Merge arm is proven only on a hand-built arbitration, no real pass yet produces a Merge while two branches hold views; a contradiction is only recorded, nothing branches, abstains, narrows or requests information on it (narrowings_of reads spread alone); no inspection map in qip-acceptance names this row's scope items; CONTRADICTION_MARGIN 0.1 is a chosen constant without a measurement; the real-pass test does not assert that an unopposed arbitration exists, so the one-sided case is covered only by the unit test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4165,7 +4182,7 @@
     "verification": "cargo test -p qip-kernel --lib federation_stage",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutation fired: dropping the branches filter on the Merge arm merges roots and a_merge_decision_folds_two_branches... fails."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutation fired: dropping the branches filter on the Merge arm merges roots and a_merge_decision_folds_two_branches... fails. 2026-10-25 (L4), commit a6e97463: mutants: no contradictions recorded (killed, replay refuses); against-side condition dropped (survived the real-pass test, killed by the unit test); restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-AGENCY-1182",
@@ -4382,9 +4399,11 @@
     "current": "Central cycle (fastbrain) runs risk/capital/quote review; liquidity maps and tactical interventions absent.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:14332 quote review",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital",
+      "backend/crates/runtime/qip-kernel/src/tactical_lane.rs (Lane 2: liquidity maps, venue execution quality, narrowing-only intervention, beyond_fill_record)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs run_cycle Lane 2 step, Platform::tactical_refresh"
     ],
-    "gap": "Liquidity maps, execution-quality refresh, tactical interventions.",
+    "gap": "2026-10-25 (lane L6): Lane 2 runs on the central cycle once a minute between UNDERSTAND and DISCOVER: LiquidityTopology maps for every instrument (aged-out ones listed unmapped), per-venue execution quality from the twin's fill scores, and a narrowing-only DECIDE weight-bound intervention that combines with ADR 0063's fill-record narrowing as the stronger of the two, never the product. Remaining: the maps and quality reach no cell (the policy payload has no slot for them); the intervention reuses the replay-divergence threshold rather than a dedicated Lane 2 one, deliberately, since no new risk number may be set under the delegation; observability.md's sentence that qip_venue_fill_error_bps is read by nothing that decides needs restating (protected .claude path). Earlier: Liquidity maps, execution-quality refresh, tactical interventions.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4395,7 +4414,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-25 lane L6 (delegated agent, cherry-picked): mutations each failing a named test: skipping the refresh ('the first cycle ran no Lane 2 refresh'), dividing instead of multiplying ('did not narrow AAPL: 30 vs 15'), dropping the cadence ('Lane 2 refreshed inside its minute'), admitting a factor of 1 ('1 was admitted as a narrowing'), and compounding with the fill record ('Lane 2 and the fill record compounded on one set of fills', which also failed valuation_seam.rs at 0.005). The lane chose 'one fill error is evidence once' when the first version broke valuation_seam.rs; the test was not edited. Agent's gate: qip-kernel passed 1093, failed 0; compliance_proof 8, paper_boundary 5, security 29 passed."
   },
   {
     "id": "R12-ARCH-1192",
@@ -4405,7 +4424,7 @@
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:218 world-model/arbitration/reasoner/planner crates in lane 3",
       "backend/crates/apps/qip-deepbrain/src/main.rs:518"
     ],
-    "gap": "Tick replay/microstructure training off unless QIP_DEEPBRAIN_TICK_EVERY set; several lane-3 crates only via kernel.",
+    "gap": "2026-10-25 (lane L6): not wired. Setting QIP_DEEPBRAIN_TICK_EVERY with the tick entitlements in the dev deep brain manifest grants a data licence, and a licensing grant is evaluated before a source is used (data-and-streaming rule), so it waits for the owner's licensing call. Earlier: Tick replay/microstructure training off unless QIP_DEEPBRAIN_TICK_EVERY set; several lane-3 crates only via kernel.",
     "implemented": true,
     "tested": true,
     "integrated": true,

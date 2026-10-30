@@ -1129,3 +1129,55 @@ fn the_standard_suite_carries_the_queue_toxicity_and_liquidity_families() {
         );
     }
 }
+
+// --- quarantine (R12-RES-7102) ----------------------------------------------
+
+#[test]
+fn a_quarantined_instrument_withholds_every_feature_computed_from_it_and_nothing_else() {
+    // The failure this prevents: a feature of another instrument computed
+    // from an unreliable one's mid would carry the bad value out under a
+    // healthy subject, if the quarantine were keyed on the subject alone and
+    // not on what the feature was computed from.
+    let a = object("AAA");
+    let b = object("BBB");
+    let at = Timestamp::from_secs(1_700_000_000);
+    let mut engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(30));
+    engine.register(Box::new(Mid::new(a.clone()))).unwrap();
+    engine.register(Box::new(Mid::new(b.clone()))).unwrap();
+    let echo = Echo {
+        name: "echo_of_a",
+        subject: b.clone(),
+        depends_on: vec![Mid::key(&a)],
+    };
+    let echo_key = echo.key();
+    engine.register(Box::new(echo)).unwrap();
+    engine.ingest(&quote(&a, "99", "101", 10, at, 1)).unwrap();
+    engine.ingest(&quote(&b, "49", "51", 10, at, 2)).unwrap();
+
+    // Premise: nothing is quarantined and every value is defined.
+    let clean = engine.evaluate(at).unwrap();
+    assert!(engine.quarantined_features().is_empty());
+    assert!(clean.is_complete(), "{:?}", clean.undefined());
+
+    engine.quarantine(&a, at);
+    let held = engine.evaluate(at).unwrap();
+    assert_eq!(
+        engine.quarantined_features(),
+        [Mid::key(&a).canonical(), echo_key.canonical()]
+            .into_iter()
+            .collect(),
+        "the quarantine did not reach exactly the instrument's features and their dependents"
+    );
+    assert_eq!(held.get(&Mid::key(&a)), Some(FeatureValue::Undefined));
+    assert_eq!(held.get(&echo_key), Some(FeatureValue::Undefined));
+    assert_eq!(
+        held.get(&Mid::key(&b)),
+        clean.get(&Mid::key(&b)),
+        "an instrument nobody quarantined lost its feature"
+    );
+
+    assert_eq!(engine.lift_quarantine(&a), Some(at));
+    let lifted = engine.evaluate(at).unwrap();
+    assert!(engine.quarantined_features().is_empty());
+    assert_eq!(lifted.get(&echo_key), clean.get(&echo_key));
+}

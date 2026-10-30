@@ -38,7 +38,7 @@ fn eligible_model() -> Result<ModelRegistry> {
             now().saturating_sub(Duration::from_days(200)),
         )
         .with_purpose("forecast realised volatility one day ahead"),
-    );
+    )?;
     registry.record_evaluation(
         MODEL,
         EvaluationRecord {

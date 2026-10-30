@@ -93,6 +93,36 @@ const IAP_BASE_URL = `http://127.0.0.1:${IAP_PORT}`;
 const IAP_STUB_PORT = Number(process.env.PLAYWRIGHT_IAP_STUB_PORT ?? 3318);
 
 /**
+ * An eighth instance, for the gateway's circuit breaker (R12-GCP-8119), with
+ * an upstream port the breaker suite itself opens and closes.
+ *
+ * It cannot share any instance above. The breaker is per process, and every
+ * other instance either points at a dead port many suites hit in parallel —
+ * where whichever suite tripped it first would decide what every other suite
+ * saw — or at the stub the worker and wire suites need answering. Here the
+ * threshold and cool-down are small so the suite can watch a full cycle in a
+ * few seconds, and nothing else talks to this process.
+ */
+const BREAKER_PORT = Number(process.env.PLAYWRIGHT_BREAKER_PORT ?? 3319);
+const BREAKER_BASE_URL = `http://127.0.0.1:${BREAKER_PORT}`;
+const BREAKER_UPSTREAM_PORT = Number(process.env.PLAYWRIGHT_BREAKER_UPSTREAM_PORT ?? 3320);
+
+/**
+ * The breaker threshold on the instances deliberately pointed at a dead port.
+ *
+ * Those suites — `boundary.spec.ts`, `gateway-writes.spec.ts`,
+ * `registrations-gateway.spec.ts` among them — use "the gateway reported
+ * `unreachable`" as their proof that a write got past the allowlist and was
+ * forwarded. Under the default threshold of five the first five such requests
+ * would open the circuit and every later one would read `open`, so which
+ * assertion held would depend on test order. The breaker is not disabled — it
+ * still counts — it is set where these suites never reach it. The breaker's
+ * own behaviour is proven on the instance above, and the worker instance runs
+ * the defaults.
+ */
+const DEAD_PORT_BREAKER_THRESHOLD = "1000000";
+
+/**
  * The audience the IAP instance is configured with, in the shape a real one
  * takes. `tests/iap.spec.ts` repeats it and the two must match exactly — an
  * audience is compared for equality, and a test whose token names a different
@@ -134,7 +164,7 @@ export default defineConfig({
       // and gate.spec needs the one where nothing was said about it; running
       // any of them here would test the wrong server — this one is pointed at
       // a dead port on purpose.
-      testIgnore: /(worker|wire|auth|gate|identity-provider|iap)\.spec\.ts/,
+      testIgnore: /(worker|wire|auth|gate|identity-provider|iap|gateway-breaker)\.spec\.ts/,
     },
     {
       name: "tablet-chromium",
@@ -175,6 +205,14 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], baseURL: IAP_BASE_URL, viewport: { width: 1280, height: 900 } },
       testMatch: /iap\.spec\.ts/,
     },
+    {
+      // No browser is launched: the suite drives the gateway with the `request`
+      // fixture, because the breaker lives in the route handler and a
+      // `page.route` stub would fulfil the request before it ran.
+      name: "breaker-chromium",
+      use: { ...devices["Desktop Chrome"], baseURL: BREAKER_BASE_URL },
+      testMatch: /gateway-breaker\.spec\.ts/,
+    },
   ],
   webServer: [
     {
@@ -190,6 +228,7 @@ export default defineConfig({
         // silently succeeding against something real.
         QIP_API_BASE_URL: "http://127.0.0.1:9",
         QIP_API_TIMEOUT_MS: "1500",
+        QIP_API_BREAKER_THRESHOLD: DEAD_PORT_BREAKER_THRESHOLD,
         NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
         ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
         // The explicit kiosk opt-out. These suites predate accounts and
@@ -237,6 +276,7 @@ export default defineConfig({
       env: {
         QIP_API_BASE_URL: "http://127.0.0.1:9",
         QIP_API_TIMEOUT_MS: "1500",
+        QIP_API_BREAKER_THRESHOLD: DEAD_PORT_BREAKER_THRESHOLD,
         NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
         ALGORIK_AUTH_REQUIRED: "true",
         ALGORIK_IDENTITY_STORE_DIR: ".algorik-test-identity",
@@ -260,6 +300,7 @@ export default defineConfig({
       env: {
         QIP_API_BASE_URL: "http://127.0.0.1:9",
         QIP_API_TIMEOUT_MS: "1500",
+        QIP_API_BREAKER_THRESHOLD: DEAD_PORT_BREAKER_THRESHOLD,
         NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
         ALGORIK_AUTH_REQUIRED: "true",
         // A project name, not a project: no call is ever made with it, because
@@ -297,6 +338,7 @@ export default defineConfig({
       env: {
         QIP_API_BASE_URL: "http://127.0.0.1:9",
         QIP_API_TIMEOUT_MS: "1500",
+        QIP_API_BREAKER_THRESHOLD: DEAD_PORT_BREAKER_THRESHOLD,
         NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
         ALGORIK_AUTH_REQUIRED: "true",
         ALGORIK_IDENTITY_STORE_DIR: ".algorik-test-iap",
@@ -319,9 +361,30 @@ export default defineConfig({
       env: {
         QIP_API_BASE_URL: "http://127.0.0.1:9",
         QIP_API_TIMEOUT_MS: "1500",
+        QIP_API_BREAKER_THRESHOLD: DEAD_PORT_BREAKER_THRESHOLD,
         NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
         ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
         ALGORIK_COOKIE_SECURE: "false",
+      },
+    },
+    {
+      // Nothing listens on the upstream port until `gateway-breaker.spec.ts`
+      // opens it. Threshold three, cool-down four seconds, timeout one second:
+      // small enough to watch a whole open/half-open/closed cycle in one test.
+      command: `npm run start -- --port ${BREAKER_PORT} --hostname 127.0.0.1`,
+      url: `${BREAKER_BASE_URL}/welcome`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+      stdout: "ignore",
+      stderr: "pipe",
+      env: {
+        QIP_API_BASE_URL: `http://127.0.0.1:${BREAKER_UPSTREAM_PORT}`,
+        QIP_API_TIMEOUT_MS: "1000",
+        QIP_API_BREAKER_THRESHOLD: "3",
+        QIP_API_BREAKER_COOLDOWN_MS: "4000",
+        NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
+        ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
+        ALGORIK_AUTH_REQUIRED: "false",
       },
     },
   ],
