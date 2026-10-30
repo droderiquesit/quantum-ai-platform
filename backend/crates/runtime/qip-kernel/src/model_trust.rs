@@ -73,6 +73,62 @@ impl Platform {
         Ok(count)
     }
 
+    /// Admit the release's rollout records beside its packs (ADR 0149
+    /// decision 4, R12-CONTRACT-7091), replacing any held, or refuse the
+    /// whole set and leave the held one in place.
+    ///
+    /// Each must announce a pack this process admitted — its `digest` is the
+    /// pack's artifact digest — and attest to that signed pack: `attestation`
+    /// equal to [`qip_contracts::control_pack::attestation_of`] of it. An
+    /// announcement of nothing admitted, of another signing of the same
+    /// artifact, or a second announcement of one artifact, is refused: each
+    /// would be a rollout record for a release this process does not hold.
+    /// Refused too with no packs admitted, since an announcement only
+    /// narrows a release and there is none to narrow.
+    pub fn admit_control_announcements(
+        &mut self,
+        announcements: Vec<qip_contracts::control_pack::ControlPackAnnouncement>,
+    ) -> Result<usize> {
+        let Some(packs) = &self.release_packs else {
+            return Err(Error::denied(
+                "control-pack announcements arrived and no release packs are admitted; an \
+                 announcement narrows a release, so admit the release packs first",
+            ));
+        };
+        let mut admitted = BTreeMap::new();
+        for announcement in announcements {
+            let Some(pack) = packs.get(&announcement.digest) else {
+                return Err(Error::denied(format!(
+                    "control-pack announcement for {} names no admitted release pack",
+                    announcement.digest
+                )));
+            };
+            if announcement.attestation != qip_contracts::control_pack::attestation_of(pack) {
+                return Err(Error::denied(format!(
+                    "control-pack announcement for {} does not attest to the admitted signed \
+                     pack; it was made for another signing of the artifact or for none",
+                    announcement.digest
+                )));
+            }
+            let digest = announcement.digest.clone();
+            if admitted.insert(digest.clone(), announcement).is_some() {
+                return Err(Error::invalid(format!(
+                    "two control-pack announcements name {digest}; one release, one rollout \
+                     record"
+                )));
+            }
+        }
+        let count = admitted.len();
+        self.control_announcements = Some(admitted);
+        Ok(count)
+    }
+
+    /// Whether a rollout record narrows the manifest, so each cell's must be
+    /// issued for that cell ([`Self::model_manifest_targeted`]).
+    pub const fn control_announcements_narrow(&self) -> bool {
+        self.control_announcements.is_some()
+    }
+
     /// Whether the slot is held to signed release packs.
     pub const fn model_packs_gate_the_manifest(&self) -> bool {
         self.release_packs.is_some()
