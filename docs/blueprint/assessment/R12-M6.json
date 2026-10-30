@@ -480,9 +480,10 @@
       "runtime/qip-kernel/tests/model_tournament.rs::each_forecaster_a_cycle_credited_is_attributed_a_share_of_the_marked_pnl_that_sums_to_the_position",
       "runtime/qip-kernel/tests/model_tournament.rs::an_order_citing_a_hypothesis_a_cycle_formed_is_attributed_its_model_and_evidence_source",
       "backend/crates/runtime/qip-kernel/src/attribution.rs capital_by_forecaster, AttributionPass.deployed, AttributionRecorded.capital_by_forecaster",
-      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::each_forecaster_is_attributed_the_capital_its_orders_deployed_and_the_shares_sum_to_the_book_notional"
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::each_forecaster_is_attributed_the_capital_its_orders_deployed_and_the_shares_sum_to_the_book_notional",
+      "backend/crates/runtime/qip-kernel/src/attribution.rs attribution::tests::capital_is_split_once_per_order_across_its_forecasters_however_many_fills_it_had"
     ],
-    "gap": "2026-10-30 (lane L2-INTEL): P&L and deployed capital are attributed per forecaster on the default LEARN path and journaled. The in-lane skeptic REFUTED the first test on bar part 1: it checked the deployed notional against itself. The test now also asserts the order's notional equals quantity times price from the outcome capture, an independent record, and the arithmetic mutation fires. It has not been re-reviewed (no third round). Still unexercised: the per-order dedup across several fills and models. Capital is read as deployed notional, not a grant or risk-usage figure.",
+    "gap": "2026-10-30 (lane L2-INTEL): P&L and deployed capital are attributed per forecaster on the default LEARN path and journaled. The in-lane skeptic REFUTED the first test on bar part 1: it checked the deployed notional against itself. The test now also asserts the order's notional equals quantity times price from the outcome capture, an independent record, and the arithmetic mutation fires. It has not been re-reviewed (no third round). The per-order split across several fills and models is now tested (a unit test; dropping the per-order guard fails it). Capital is read as deployed notional, not a grant or risk-usage figure.",
     "implemented": true,
     "tested": true,
     "integrated": true,
