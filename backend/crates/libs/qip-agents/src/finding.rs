@@ -312,6 +312,15 @@ pub struct AgentBrief {
     /// conviction reads it, and the type keeps it out of `context`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub precedent: Option<BriefPrecedent>,
+    /// The procedures memory holds for the agents convened, as known at
+    /// `as_of` (R12-WORLD-3034). A procedure is distilled only from episodes
+    /// that followed it and resolved correct, so it is the desk's record of
+    /// how a kind of question has been answered well. It is typed and kept
+    /// apart from `context` for the reason `precedent` is: the reviewer's
+    /// lesson matcher substring-matches `context`, and steps written there
+    /// could move an objection count. Empty where memory holds none.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub procedures: Vec<crate::memory::Procedure>,
     /// Instruments in scope.
     pub objects: Vec<ObjectId>,
     /// Entities in scope, by resolved entity id.
@@ -332,6 +341,7 @@ impl AgentBrief {
             question: question.into(),
             context: String::new(),
             precedent: None,
+            procedures: Vec::new(),
             objects: Vec::new(),
             entities: Vec::new(),
             as_of,
@@ -352,6 +362,12 @@ impl AgentBrief {
     /// prose and let it change an objection count.
     pub fn with_precedent(mut self, precedent: BriefPrecedent) -> Self {
         self.precedent = Some(precedent);
+        self
+    }
+
+    /// Hand the convened agents the procedures memory holds for them.
+    pub fn with_procedures(mut self, procedures: Vec<crate::memory::Procedure>) -> Self {
+        self.procedures = procedures;
         self
     }
 

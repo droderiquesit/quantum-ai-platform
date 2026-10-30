@@ -5,7 +5,7 @@ use crate::evidence::EvidenceRecord;
 use crate::fabric::{EvidenceFabric, EvidenceVerdict, JournaledClaim, KeyOutcome};
 use qip_ai::embedding::{Embedder, HashingEmbedder};
 use qip_ai::retrieval::{Document, RetrievalResult, SearchIndex};
-use qip_core::error::{Error, Result};
+use qip_core::error::Result;
 use qip_core::{Context, Duration, Timestamp};
 use qip_entity_resolution::entity::{Entity, EntityKind, EntityRecord};
 use qip_entity_resolution::resolver::Resolver;
@@ -445,14 +445,9 @@ impl WorldModel {
     /// caused three stages downstream, and why refusing here rather than
     /// absorbing it is the smaller failure.
     pub fn claim_causal(&mut self, edge: CausalEdge) -> Result<()> {
+        // `validate` refuses an edge citing a quantum result, as `add` and
+        // `reestimate` do (R12-QUANT-4044).
         edge.validate()?;
-        for evidence_id in &edge.evidence {
-            if evidence_id.starts_with("quantum:") {
-                return Err(Error::denied(
-                    "no quantum result is treated as causal proof",
-                ));
-            }
-        }
         let description = format!(
             "{} affects {} via {}",
             edge.cause,
