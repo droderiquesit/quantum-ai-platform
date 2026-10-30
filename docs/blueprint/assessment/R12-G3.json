@@ -299,11 +299,13 @@
     "status": "PARTIAL",
     "current": "modules/connectivity has a PSC global address and forwarding rule gated by enable_private_service_connect (off).",
     "evidence": [
-      "infrastructure/terraform/modules/connectivity/main.tf:134-163 PSC address/forwarding rule (count on flag)"
+      "infrastructure/terraform/modules/connectivity/main.tf:134-163 PSC address/forwarding rule (count on flag)",
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl::private_service_connect_plans_one_endpoint_for_the_restricted_google_apis_and_nothing_else",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs::the_only_private_service_connect_endpoint_reaches_google_apis_and_none_fronts_the_execution_node"
     ],
-    "gap": "Gated off everywhere.",
+    "gap": "2026-10-25 (lane L6): both halves of the check are proven in code: a mocked plan plans one PSC endpoint for the restricted Google API bundle, and an acceptance scan refuses any service attachment, any forwarding rule on the execution node, and any rule routing through edge-mesh's cross-region cell PSC address (which no rule consumes today). Remaining: enable_private_service_connect is false in every environment and the address is unset (protected tfvars), and it is useful only once a circuit and far-end DNS exist, so no endpoint is planned on a default path. Earlier: Gated off everywhere.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -312,7 +314,7 @@
     "verification": "terraform plan with enable_private_service_connect=true",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L6: terraform 1.9.8 test in a scratch copy, mock provider: 11 passed. Mutations: the endpoint target set to all-apis failed the new run; a forwarding rule added to modules/execution-node/main.tf failed the acceptance scan at 'puts a forwarding rule on the execution node, the trading hot path'; the target set to a service attachment failed it at 'no longer targets the validated Google API bundle'. Each restored and checked with cmp."
   },
   {
     "id": "R12-GCP-10015",
