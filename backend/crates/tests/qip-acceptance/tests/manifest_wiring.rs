@@ -2404,21 +2404,6 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-edge-node",
-        "QIP_PEER_MESH_LISTEN",
-        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
-    ),
-    (
-        "qip-edge-node",
-        "QIP_PEER_MESH_PEERS",
-        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
-    ),
-    (
-        "qip-edge-node",
-        "QIP_PEER_MESH_CLOCK_BOUND_MS",
-        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
-    ),
-    (
-        "qip-edge-node",
         "QIP_SPOOL_WRITER_CPU",
         "Unset, the spool writer is left to the scheduler and its placement \
          is read from the kernel and announced at start \
@@ -2495,15 +2480,6 @@ const NO_PRODUCER_STATES_THE_ACCEPTABLE_BUILDS_YET: &str = "Unset because the \
      `deployment` halt series at all rather than a zero.";
 
 /// The node-to-node coordination mesh.
-const THE_PEER_MESH_HAS_NO_DEPLOYED_PEER: &str = "The peer transport is \
-     mutual TLS off-host (ADR 0112) and plaintext only on loopback in a \
-     `local` deployment (`qip-peer-link/src/wire.rs`, `PeerSettings::validate`). \
-     A deployed node's peers are other execution nodes, and none exists: \
-     `execution_nodes = {}` in every environment, so there is no peer \
-     address to name and no peer workload certificate issued to admit. \
-     Unset, the node announces that it coordinates with no other cell \
-     directly; the clock bound is read only once a mesh is configured.";
-
 #[test]
 fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_be_unset() {
     // The direction nothing checked, and the one whose symptom is silence.

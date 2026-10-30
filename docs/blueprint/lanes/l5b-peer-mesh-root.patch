@@ -1,0 +1,80 @@
+From: lane L5b (wave580), 2026-10-25
+Subject: Carry `peer_mesh` from the root's execution_nodes map into the execution-node module
+
+The execution-node module (unprotected, landed in this lane's branch) now
+takes a `peer_mesh` variable, renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS
+and QIP_PEER_MESH_CLOCK_BOUND_MS into node.env when it is set, opens the
+firewall both ways for exactly the peers named, and refuses at plan every
+value the binary would refuse at start (tests/peer-mesh.tftest.hcl, 10 runs).
+Without this patch nothing can set it: the root's `execution_nodes` object
+type has no `peer_mesh` field, and adding one is an edit to
+infrastructure/terraform/variables.tf, which is protected, so the root's
+main.tf line that would pass it cannot land alone either (terraform validate
+refuses an unknown attribute). The dev tfvars entry (also protected) gains
+`peer_mesh = null` so the choice is visible where a reviewer reads it.
+
+What the patch does not do: declare a second node or a peer address. Both are
+billed infrastructure declined by decision 5 of 2026-10-25, and a peer's
+address must be stable, which a managed instance group's machine is not
+(see the module variable's description). The patch adds a gate and a field
+whose default leaves every environment exactly as it was; it weakens
+nothing (decision 3 of 2026-10-25). Apply with
+`git apply docs/blueprint/lanes/l5b-peer-mesh-root.patch`, then run
+`terraform fmt -check`, `terraform validate` and
+`cargo test -p qip-acceptance --test infrastructure --test terraform_contract --test manifest_wiring`.
+
+diff --git a/infrastructure/terraform/variables.tf b/infrastructure/terraform/variables.tf
+--- a/infrastructure/terraform/variables.tf
++++ b/infrastructure/terraform/variables.tf
+@@ -355,6 +355,23 @@
+     # list that decides that, and the binary refuses a declaration naming a
+     # venue outside it rather than adding one.
+     cross_region_mirror_path = optional(string, "")
++    # ADR 0116: the peer Reflex Mesh this node joins, or null for a node that
++    # coordinates with no other cell directly — which is every node, because
++    # a peer needs a stable address and whatever fronts a managed instance
++    # group's machine with one is billed infrastructure declined by decision
++    # 5 of 2026-10-25. The module validates every field against what
++    # `qip-edge-node` would refuse at start (modules/execution-node, variable
++    # `peer_mesh`), and renders the three QIP_PEER_MESH_* lines only when this
++    # is set. Null here cannot be mistaken for an empty mesh: the module
++    # refuses a map naming no peer.
++    peer_mesh = optional(object({
++      listen_port    = number
++      clock_bound_ms = optional(number)
++      peers = map(object({
++        address = string
++        port    = number
++      }))
++    }))
+   }))
+ 
+   default = {}
+diff --git a/infrastructure/terraform/main.tf b/infrastructure/terraform/main.tf
+--- a/infrastructure/terraform/main.tf
++++ b/infrastructure/terraform/main.tf
+@@ -767,6 +767,10 @@
+   # a property of where that cell sits, not of the environment. Empty is every
+   # venue at home, which is what every node has run as.
+   cross_region_mirror_path = each.value.cross_region_mirror_path
++  # ADR 0116: null for every declared node until a peer has a stable address
++  # (modules/execution-node/README.md, "The peer mesh is declared here and is
++  # null everywhere").
++  peer_mesh = each.value.peer_mesh
+ 
+   # Per node and never defaulted; see the variable's own description.
+   region_allocation = each.value.region_allocation
+diff --git a/infrastructure/environments/dev/terraform.tfvars b/infrastructure/environments/dev/terraform.tfvars
+--- a/infrastructure/environments/dev/terraform.tfvars
++++ b/infrastructure/environments/dev/terraform.tfvars
+@@ -263,6 +263,10 @@
+     # what the node trades, and the binary refuses at start-up a declaration
+     # naming a venue outside `venues` above.
+     cross_region_mirror_path = ""
++    # ADR 0116: no peer. A second node and the stable address that fronts
++    # each peer are billed (decision 5 of 2026-10-25); the module refuses a
++    # mesh naming no peer, so null is the only honest value until then.
++    peer_mesh = null
+   }
+ }
+ 

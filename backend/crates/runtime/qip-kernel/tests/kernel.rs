@@ -2038,3 +2038,101 @@ fn a_halted_kernel_and_a_stale_area_appear_in_the_self_models_health_and_an_unre
     assert!(!after.halted, "the reading kept a halt that has cleared");
     Ok(())
 }
+
+/// R12-AGENCY-10063 on the default cycle: when the agent runtime refuses
+/// every run — here a roster past its review interval, the outage an
+/// in-process runtime can actually have — the panel degrades to the
+/// organisation's bounded backlog, the cycle runs all eight stages, and an
+/// order the platform holds is still accepted and worked. Nothing in ACT
+/// waits on the organisation. Cycles under a lapse that lasts hold one
+/// backlog entry per agent, never one per cycle, and never more than the
+/// backlog's capacity.
+///
+/// Mutation: delete the `self.backlog.defer(..)` arm for `RunStatus::Refused`
+/// in `Organisation::dispatch` — the backlog stays empty and the per-agent
+/// assertion fails. Verified and restored.
+#[test]
+fn a_lapsed_panel_is_deferred_to_a_bounded_backlog_and_the_cycle_still_acts() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    let roster = platform.organisation().roster().len();
+    assert!(roster > 1, "nothing to defer");
+    assert!(
+        platform.organisation().backlog().is_empty(),
+        "premise: nothing deferred at assembly"
+    );
+    platform.observe(bars("AAA", 120));
+    let later = start().saturating_add(Duration::from_days(91));
+
+    let report = platform.run_cycle(later);
+    let reason = report.stage(Stage::Reason).expect("REASON reports");
+    assert!(
+        !reason.detail.contains("nothing in the queue"),
+        "premise: the panel did not convene, so no run could be refused: {}",
+        reason.detail
+    );
+    assert!(!report.halted, "a refused panel halted the platform");
+    assert_eq!(
+        report.stages.len(),
+        8,
+        "a stage did not run: {:?}",
+        report.stages
+    );
+    assert!(report.stage(Stage::Act).is_some(), "ACT did not run");
+
+    // Every run the host refused is on the backlog, once. Counted from the
+    // audit trail rather than the roster: an agent that declines the brief
+    // as out of scope is never handed to the host and so is never refused.
+    let refused: std::collections::BTreeSet<&str> = platform
+        .organisation()
+        .audit()
+        .records()
+        .iter()
+        .filter(|run| matches!(run.status, qip_agents::runtime::RunStatus::Refused { .. }))
+        .map(|run| run.agent_id.as_str())
+        .collect();
+    assert!(
+        refused.len() >= roster / 2,
+        "premise: the lapsed roster was not refused: {} of {roster}",
+        refused.len()
+    );
+    let backlog = platform.organisation().backlog();
+    assert_eq!(
+        backlog.len(),
+        refused.len(),
+        "one deferred run per refused agent"
+    );
+    for agent in &refused {
+        let pending = backlog
+            .pending(agent)
+            .unwrap_or_else(|| panic!("{agent} is not on the backlog"));
+        assert_eq!(pending.attempts, 1, "{agent}");
+    }
+    assert!(backlog.len() <= backlog.capacity());
+
+    // Execution is unaffected: an order is accepted while the panel is down.
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-backlog",
+        vec!["hyp-backlog".to_string()],
+        later,
+    );
+    platform.submit_order(order, later).map_err(|error| {
+        qip_core::error::Error::invalid(format!(
+            "an order was refused while the panel was deferred: {}",
+            error.message()
+        ))
+    })?;
+
+    // A lapse that lasts does not grow the backlog past its bound.
+    let capacity = platform.organisation().backlog().capacity();
+    for day in 1..=6 {
+        platform.observe(bars("AAA", 120 + day));
+        let report = platform.run_cycle(later.saturating_add(Duration::from_days(day as i64)));
+        assert!(!report.halted);
+        assert!(platform.organisation().backlog().len() <= capacity);
+    }
+    Ok(())
+}

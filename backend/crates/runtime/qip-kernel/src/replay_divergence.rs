@@ -359,6 +359,11 @@ mod tests {
             larger_favoured: false,
             trade_error_bps: error,
             unfilled: Decimal::ZERO,
+            realised_slippage_bps: None,
+            predicted_slippage_bps: None,
+            predicted_outcome_bps: None,
+            realised_outcome_bps: None,
+            outcome_error_bps: None,
         }
     }
 

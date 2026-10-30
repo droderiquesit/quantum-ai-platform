@@ -95,6 +95,13 @@ qip-capital-fabric.workspace = true
 # the day it changed.
 qip-streaming.workspace = true
 
+# --- what `qip simulate` needs (R12-TICK-9036) -------------------------------
+#
+# The tick-level market digital twin: rebuilt books, queue position, latency,
+# fees and impact. A service crate already in the workspace; the CLI is the
+# composition root that runs it shard by shard.
+qip-simulation-engine.workspace = true
+
 # No `ring` here, although the grant's mutual-TLS test mints certificates
 # with it through `qip-transport/tests/support/certs.rs`: that file names it
 # as `qip_transport::ring`, the re-export of the one pin in `qip-tls`, and

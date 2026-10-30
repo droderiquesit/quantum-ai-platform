@@ -49,5 +49,6 @@ pub use memory::{
 };
 pub use registries::{CapabilityRegistry, OntologyRegistry};
 pub use runtime::{
-    Agent, AgentContext, AgentHost, AgentRunRecord, Gated, Reading, RunStatus, Upstream,
+    Agent, AgentBacklog, AgentContext, AgentHost, AgentRunRecord, Deferral, DeferredRun, Gated,
+    Reading, RunStatus, Upstream,
 };

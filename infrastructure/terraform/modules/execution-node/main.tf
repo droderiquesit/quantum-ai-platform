@@ -469,6 +469,7 @@ resource "google_compute_instance_template" "node" {
       default_pricing            = var.default_pricing
       strategy_plan_path         = var.strategy_plan_path
       cross_region_mirror_path   = var.cross_region_mirror_path
+      peer_mesh                  = var.peer_mesh
       region_allocation          = var.region_allocation
       isolated_cpus              = local.isolated_cpus
       first_isolated_cpu         = local.first_isolated_cpu
@@ -645,6 +646,63 @@ resource "google_compute_firewall" "venue" {
 
   destination_ranges = [each.value.cidr]
   target_tags        = [local.node_tag]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+# The peer mesh (ADR 0116), both ways and for the peers named alone.
+#
+# Egress to each peer's stable address on its port, and ingress from each
+# peer's address on this node's listen port: the two rules are what let
+# `qip-peer-link` connect out and accept in, and neither exists while
+# `peer_mesh` is null. Per peer address, never per subnet — a peer is one
+# machine fronted by one address, and a rule admitting its range would admit
+# whatever else is in it. The link authenticates every connection with a
+# workload certificate (ADR 0112); these rules decide only who can reach the
+# handshake. Logged, like the venue rules, because a connection on this port
+# is a counterparty.
+resource "google_compute_firewall" "peer_mesh_egress" {
+  count = var.peer_mesh == null ? 0 : 1
+
+  project = var.project_id
+  name    = "${local.name}-peer-mesh-egress"
+  network = var.network_id
+
+  direction = "EGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = distinct([for peer in values(var.peer_mesh.peers) : "${peer.port}"])
+  }
+
+  destination_ranges = distinct([for peer in values(var.peer_mesh.peers) : "${peer.address}/32"])
+  target_tags        = [local.node_tag]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+resource "google_compute_firewall" "peer_mesh_ingress" {
+  count = var.peer_mesh == null ? 0 : 1
+
+  project = var.project_id
+  name    = "${local.name}-peer-mesh-ingress"
+  network = var.network_id
+
+  direction = "INGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = ["${var.peer_mesh.listen_port}"]
+  }
+
+  source_ranges = distinct([for peer in values(var.peer_mesh.peers) : "${peer.address}/32"])
+  target_tags   = [local.node_tag]
 
   log_config {
     metadata = "INCLUDE_ALL_METADATA"
@@ -910,6 +968,7 @@ resource "google_compute_instance_template" "standby" {
       default_pricing            = var.default_pricing
       strategy_plan_path         = var.strategy_plan_path
       cross_region_mirror_path   = var.cross_region_mirror_path
+      peer_mesh                  = var.peer_mesh
       region_allocation          = var.region_allocation
       isolated_cpus              = local.isolated_cpus
       first_isolated_cpu         = local.first_isolated_cpu
