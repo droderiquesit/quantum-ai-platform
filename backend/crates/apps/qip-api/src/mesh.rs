@@ -981,7 +981,30 @@ pub fn pending_policy(
         // cell is exactly one thing — a plan carrying a named distillate
         // inline may be installed — and nothing about sizing or pausing:
         // `PolicyItem::capability` maps this slot to no §6.2 capability.
-        payload.trained_models = models.clone();
+        payload.trained_models = if platform.control_announcements_narrow() {
+            // ADR 0149 decision 4: with a rollout record held, a distillate
+            // is named only to a cell it targets, so this cell's manifest is
+            // issued for this cell. A cell in no declared region cannot be
+            // matched against a target and is told nothing announced.
+            let region = regions.and_then(|membership| membership.region_of(&cell));
+            match platform
+                .model_manifest_targeted(None, region.map(|region| (region, cell.as_str(), now)))
+            {
+                Ok(issue) => {
+                    pending.models.push(format!("{cell}: {}", issue.describe()));
+                    issue.slot()
+                }
+                Err(error) => {
+                    pending.models.push(format!(
+                        "trained models for {cell}: not shipped, {}",
+                        error.message()
+                    ));
+                    Slot::unproduced()
+                }
+            }
+        } else {
+            models.clone()
+        };
         // Slot 11, assigned unconditionally and to every cell, including
         // when nothing is withdrawn. An empty set is a statement — "the
         // centre is applying no withdrawal" — and a cell that could not tell

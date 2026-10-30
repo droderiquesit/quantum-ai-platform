@@ -180,6 +180,21 @@ fn main() {
     let arguments: Vec<String> = std::env::args().collect();
     let outcome = match arguments.get(1).map(String::as_str) {
         Some("replay") => replay_command(arguments.get(2).map(String::as_str)),
+        // `qip-edge-node replay-manifests --spool <dir> --cell-digest <hex>`,
+        // read before any configuration: it reads a spool and serves nothing,
+        // so it must not need the variables a node does.
+        Some("replay-manifests") => match qip_edge_node::replay::run(&arguments[2..]) {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+                return;
+            }
+            Err(error) => {
+                eprintln!("qip-edge-node: {}", error.message());
+                std::process::exit(EX_CONFIG);
+            }
+        },
         _ => run(),
     };
     match outcome {
@@ -590,6 +605,9 @@ fn cell_configuration(config: &NodeConfig) -> Result<(CellConfig, String)> {
     // Recorded on every pass marker, so a replay can refuse to call a pass
     // reproduced under a configuration it was not run under.
     let config_digest = qip_core::sha256_hex(format!("{cell_config:?}").as_bytes());
+    // Printed before widening: it is what `replay-manifests --cell-digest`
+    // takes, and the replay widens it with the gateway settings it assumes.
+    println!("qip-edge-node: cell configuration digest {config_digest}");
     Ok((cell_config, config_digest))
 }
 

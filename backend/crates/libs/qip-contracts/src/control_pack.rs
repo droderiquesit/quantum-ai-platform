@@ -128,3 +128,26 @@ impl Contract for ControlPackAnnouncementFields {
         Ok(())
     }
 }
+
+/// The attestation an announcement of `pack` carries (ADR 0149 decision 4):
+/// SHA-256, as hex, of the signed pack's canonical bytes followed by its
+/// signature. Over the signature too, so an announcement attests to the one
+/// signed release and not to any pack that happens to share its contents.
+pub fn attestation_of(pack: &crate::policy::ModelPack) -> String {
+    let mut bytes = pack.signing_payload();
+    bytes.extend_from_slice(pack.signature.as_bytes());
+    qip_core::sha256_hex(&bytes)
+}
+
+impl ControlPackAnnouncementFields {
+    /// Whether this announcement is meant for `node` in `region` at `now`:
+    /// both named among its targets, inside the activation window, and
+    /// before expiry. What the centre narrows a cell's manifest by.
+    pub fn targets(&self, region: &str, node: &str, now: Timestamp) -> bool {
+        self.target_regions.iter().any(|target| target == region)
+            && self.target_nodes.iter().any(|target| target == node)
+            && self.activate_from <= now
+            && now < self.activate_until
+            && now < self.expires_at
+    }
+}

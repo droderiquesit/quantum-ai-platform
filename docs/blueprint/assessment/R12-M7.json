@@ -1660,14 +1660,20 @@
   {
     "id": "R12-CONTRACT-7073",
     "status": "PARTIAL",
-    "current": "SimulatedGateway::replay_assumptions renders ReplayAssumptions from the ExchangeSettings the venue was built with (qip-edge-node/src/gateway.rs assumptions_of: latency and jitter, rejection probability, fees, with none stated where a setting is zero), and SimulatedGateway::default_settings is the one function new() and the node digest both read. main.rs widens the pass marker config_digest to cover those settings (widen_config_digest) on the simulated path, so a node under other gateway settings records a different digest. ReplayManifest::with_assumptions accepts the rendered text and model versions. The PassMarker topic and schema lock are untouched and no topic is added.",
+    "current": "SimulatedGateway::replay_assumptions renders ReplayAssumptions from the ExchangeSettings the venue was built with (qip-edge-node/src/gateway.rs assumptions_of: latency and jitter, rejection probability, fees, with none stated where a setting is zero), and SimulatedGateway::default_settings is the one function new() and the node digest both read. main.rs widens the pass marker config_digest to cover those settings (widen_config_digest) on the simulated path, so a node under other gateway settings records a different digest. ReplayManifest::with_assumptions accepts the rendered text and model versions. The PassMarker topic and schema lock are untouched and no topic is added. 2026-10-30 lane L5-EDGE: ReplayManifest deserialises only through StatedManifest, every field required and deny_unknown_fields, a blank assumption or missing model version refused as with_assumptions refuses it. qip_edge_node::replay builds one manifest per PassMarked record a node spooled, under the simulated gateway's default assumptions and model versions, refusing a marker whose config_digest is not the cell digest widened with those settings and refusing an empty spool; it reads a copy of the spool so recovery never truncates a running node's journal. `qip-edge-node replay-manifests --spool <dir> --cell-digest <hex>` runs it, and the node prints its cell configuration digest at start-up.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/gateway.rs::assumptions_of",
       "backend/crates/apps/qip-edge-node/src/gateway.rs::widen_config_digest",
       "backend/crates/apps/qip-edge-node/src/main.rs (config_digest widened after the venue choice)",
-      "backend/crates/apps/qip-edge-node/tests/gateway.rs::a_replay_manifest_built_from_the_gateways_settings_names_them_and_a_gateway_with_other_settings_yields_other_assumptions_and_a_different_config_digest"
+      "backend/crates/apps/qip-edge-node/tests/gateway.rs::a_replay_manifest_built_from_the_gateways_settings_names_them_and_a_gateway_with_other_settings_yields_other_assumptions_and_a_different_config_digest",
+      "backend/crates/libs/qip-contracts/src/replay.rs::StatedManifest",
+      "backend/crates/apps/qip-edge-node/src/replay.rs::manifest_for",
+      "backend/crates/apps/qip-edge-node/src/main.rs (replay-manifests subcommand)",
+      "backend/crates/apps/qip-edge-node/tests/replay_manifests.rs::a_node_journal_replayed_under_different_gateway_settings_is_refused_on_the_marker_digest",
+      "backend/crates/apps/qip-edge-node/tests/replay_manifests.rs::replaying_a_spool_with_a_torn_tail_leaves_the_spool_byte_for_byte_as_it_was",
+      "backend/crates/libs/qip-contracts/tests/replay_manifest.rs::a_manifest_read_off_the_wire_missing_any_field_is_refused_and_a_complete_one_round_trips_every_field"
     ],
-    "gap": "No replayer exists (2026-10-24): grep -rln ReplayManifest backend/crates finds only qip-contracts, so nothing constructs a manifest from a recorded marker and replay_assumptions at replay time; the manifest is built only in tests. The digest widening runs in the node binary, the assumptions rendering is exercised by the test only. Closing needs a replay tool that reads recorded markers and the run gateway settings, which is not designed.",
+    "gap": "2026-10-30 (lane L5-EDGE, skeptic HOLDS-AS-PARTIAL): the manifest carries no universe, no time window (one pass instant and tape offsets) and dataset partitions only for control streams; ReplayManifest::new still builds one without assumptions, nested AppliedReadings options are not refused when absent, and nothing carries a manifest between brains — the replay is an operator subcommand with markers only under QIP_VENUE_FEED=simulated.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1675,10 +1681,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test gateway",
+    "verification": "cargo test -p qip-contracts --test replay_manifest; cargo test -p qip-edge-node --test replay_manifests --test gateway",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 section 16: built, PARTIAL kept because the consumer of the manifest does not exist. Mutation fired: hard-coding the no-refusal text in assumptions_of made two gateways with different rejection probabilities yield equal assumptions and the test failed (premise: both gateways build and the default matches new())."
+    "notes": "2026-10-24 ADR 0155 section 16: built, PARTIAL kept because the consumer of the manifest does not exist. Mutation fired: hard-coding the no-refusal text in assumptions_of made two gateways with different rejection probabilities yield equal assumptions and the test failed (premise: both gateways build and the default matches new()). 2026-10-30 lane L5-EDGE: mutations fired (5): skip the config_digest comparison; let an empty spool agree; put a serde default back on the wire form's assumptions; skip the assumption check on deserialise; open the spool in place instead of the copy. The widened digest is taken from SimulatedGateway::default_settings, the settings NodeGateway::open builds the simulator with; release tolerance and listing permissions are not ExchangeSettings and are not in the digest, and neither has a production caller."
   },
   {
     "id": "R12-CONTRACT-7074",
@@ -2088,9 +2094,16 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/control_pack.rs:65 type",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:931 a_control_pack_announcement_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:945 a_control_pack_announcement_refuses_each_broken_invariant"
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:945 a_control_pack_announcement_refuses_each_broken_invariant",
+      "backend/crates/libs/qip-contracts/src/control_pack.rs::attestation_of, ControlPackAnnouncementFields::targets",
+      "backend/crates/runtime/qip-kernel/src/model_trust.rs::Platform::admit_control_announcements",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs::Platform::model_manifest_targeted",
+      "backend/crates/apps/qip-api/src/mesh.rs::pending_policy issues each cell's trained_models slot for that cell when announcements are held",
+      "backend/crates/apps/qip-cli/src/control_pack.rs (qip control-pack announce / verify)",
+      "backend/crates/runtime/qip-kernel/tests/release_packs.rs::a_pack_announced_for_another_node_is_withheld_from_this_nodes_manifest",
+      "backend/crates/apps/qip-cli/tests/control_pack.rs::an_announcement_stands_only_for_the_node_it_targets_and_only_for_the_pack_it_attests"
     ],
-    "gap": "Decided (ADR 0149 decisions 1-4): the announcement is the release's rollout record, never built by the kernel, and the centre only narrows by it. Not built: no ControlPackAnnouncement producer or reader exists outside qip-contracts (grep), and Platform::model_manifest_for(location) takes neither a node identity nor a time, so there is nothing to narrow by target_nodes or the activation window; its only callers (qip-api mesh.rs, qip-deepbrain learning.rs) pass no location at all and ship one manifest for every cell. Closing needs (1) a per-node manifest request that carries the cell's node id, (2) model_trust.rs admitting announcements beside packs with attestation equal to the signed pack's digest, (3) model_manifest_for narrowing by target_regions, target_nodes and the window, and (4) the reviewed release file that emits the announcement, which is a protected workflow edit left to a person. Corrected 2026-10-24.",
+    "gap": "2026-10-25 (lane L5-EDGE): the announcement path is built end to end in code, but nothing supplies one on a default path: no composition root reads an announcements file (a new qip-api variable would sit beside QIP_MODEL_PACKS_PATH, itself unset in every committed environment), the mesh that carries the narrowed slot needs QIP_MESH_CELLS, and the release workflow call that emits the record is a protected path (a person's edit). Acknowledgements counted from PolicyApplied (ADR 0149 d4) are not built.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2098,10 +2111,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts; cargo +1.94.1 test -p qip-kernel --test release_packs; cargo +1.94.1 test -p qip-cli --test control_pack",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11, 2026-10-18 (lane L06). 2026-10-24 lane T6-MODEL-AGENTS: not implemented; a kernel-only slice with no per-node caller would sit on no running path, and an announcement admitted with none narrowing must never withhold a model from a deployment that admitted none. Kept PARTIAL."
+    "notes": "Re-graded 2026-10-11, 2026-10-18 (lane L06). 2026-10-24 lane T6-MODEL-AGENTS: not implemented; a kernel-only slice with no per-node caller would sit on no running path, and an announcement admitted with none narrowing must never withhold a model from a deployment that admitted none. Kept PARTIAL. 2026-10-25 lane L5-EDGE, ADR 0149 decision 4 built: the attestation is SHA-256 of the signed pack's canonical bytes plus its signature (attestation_of); the kernel admits announcements only for an admitted pack they attest to, one per artifact, and only beside admitted packs; model_manifest_targeted names an announced distillate only to a node and region it targets inside its window and withholds it from a manifest issued for no node; qip-api's mesh issues each cell's slot for that cell when announcements are held; qip-cli control-pack announce fills digest, signers and attestation from the pack over a reviewed rollout file, and verify exits 3 on a pack or target mismatch. Mutations fired (6): manifest ignores targets; admission skips the attestation; targets drops the node filter; targets drops the window; CLI verify skips the attestation; CLI verify skips the targets."
   },
   {
     "id": "R12-CONTRACT-7092",
