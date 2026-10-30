@@ -995,6 +995,11 @@ fn run() -> Result<()> {
         "  operations:       level shifts in iteration time open an incident; the one runbook \
          may switch off research until restart, and its audit record is journalled first"
     );
+    println!(
+        "  incidents:        each is journalled with its audit records and drafted, with a \
+         replay fixture of its journal window, to the operations outbox; nothing is sent, and \
+         scaling, rollback, restart or drain is left to a person (ADR 0213)"
+    );
 
     // The tick desk (`tick_desk.rs`): the one reader of recorded market
     // history in a shipped binary. Off unless QIP_DEEPBRAIN_TICK_EVERY is
