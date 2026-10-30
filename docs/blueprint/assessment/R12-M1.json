@@ -474,25 +474,27 @@
   {
     "id": "R12-EXPAND-1021",
     "status": "PARTIAL",
-    "current": "OntologyRegistry and CapabilityRegistry exist in qip-agents; data-finder discovers and registers sources at runtime (deepbrain DiscoveryDesk). Ontology/tool/brain registries are not used by any composition root.",
+    "current": "OntologyRegistry and CapabilityRegistry exist in qip-agents; data-finder discovers and registers sources at runtime (deepbrain DiscoveryDesk). Since 2026-10-30 the deep brain's ResearchLoop registers a candidate Event type (version one above the latest held) for every ontology gap its sweep raises, citing the gap's signal id in the type's description (propose_type, R12-EXPAND-6029), and records every promoted capability in its CapabilityRegistry (R12-EXPAND-6062); tool gaps still propose a read-only, sandboxed tool spec (expansion_rows::an_execution_gap_needing_a_tool_the_node_lacks_proposes_a_read_only_tool_spec_with_its_lineage).",
     "evidence": [
       "backend/crates/libs/qip-agents/src/registries.rs:21 OntologyRegistry (no production caller)",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:502 DiscoveryDesk wired"
+      "backend/crates/apps/qip-deepbrain/src/main.rs:502 DiscoveryDesk wired",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::propose_type (OntologyRegistry::register from a gap)",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs::an_observation_wanting_a_type_leaves_a_validated_ontology_patch_citing_it_and_registers_the_candidate"
     ],
-    "gap": "Runtime registration of ontology, tools, brains and model families from gap triggers.",
+    "gap": "Brains and model families are not registered from gaps (specialists stay gap-only under ADR 0158 d8); a tool gap proposes a spec but registers no tool in the node's ToolRegistry; the ontology candidate's only producer input (reference-data surprises) arrives through env-gated connectors. No skeptic round ran (the lane was parked), so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-EXPAND-1014"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents",
+    "verification": "cargo test -p qip-deepbrain --test expansion_rows an_observation_wanting; cargo test -p qip-agents",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-30 lane L4b: ontology half landed with R12-EXPAND-6029 (mutation: dropping the register call failed the test at get_latest None; restored byte-for-byte). Kept PARTIAL."
   },
   {
     "id": "R12-TICK-1022",
