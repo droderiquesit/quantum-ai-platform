@@ -555,9 +555,11 @@
       "backend/crates/services/qip-world-model/src/federation.rs:362 Federation (in-process only; module doc says no composition root builds it)",
       "backend/crates/services/qip-world-model/tests/federation.rs:243 arbitration_produces_each_of_the_four_actions_with_a_reason_and_the_right_output",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation",
+      "backend/crates/apps/qip-deepbrain/src/brains.rs arbitration_spec, REQUIRED_SCOPES, BrainRegistry::require_coverage",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage"
     ],
-    "gap": "Not constructed as a specialist Brain in the production organisation; no coverage registry drops its scope when removed; decisions are recorded, never acted on.",
+    "gap": "2026-10-25 (L4, commit 4f9bdc2d, skeptic REFUTED). Closed: the deep brain registry (brains::standard) carries a World Model Arbitration Brain entry over world-model-arbitration, and require_coverage refuses start when that scope is missing. Still open: the entry is a hand-written BrainSpec describing the kernel FederationStage, not a specialist constructed in the production organisation (the qip-investment-agents roster has none); removing it stops nothing but start-up, since FederationStage::run is independent of the registry and main.rs only prints the registry; the spec is not tied to the FederationReview the stage journals; the fast brain and qip-api build the same Platform with no registry or coverage check; and under ADR 0158 decision 8 a spec enters through the Cognitive Compiler or a reviewed spec, with calibration tracked, which this literal (calibration 0.0) is not.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -568,7 +570,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-25 (L4), commit 4f9bdc2d: two mutants killed (skip the register call; require_coverage always passes), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-REASON-3026",
