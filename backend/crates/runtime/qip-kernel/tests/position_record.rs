@@ -663,3 +663,52 @@ fn the_desk_reads_the_book_the_cycle_opened_marked_at_its_latest_close() -> Resu
     );
     Ok(())
 }
+
+/// R12-TICK-2090: the kernel keeps every instrument it has seen trade in a
+/// universe history, and a delisting dates the end of its membership
+/// without removing it — so a date before the delisting still finds the
+/// instrument, and a date after does not. Before this the history type
+/// existed with no caller, and the only universe a backtest could ask was
+/// the current one.
+///
+/// Mutation: drop the `universe_history.delist` arm in
+/// `Platform::apply_corporate_action` — the instrument is still a member
+/// after its delisting and the last assertion fails.
+#[test]
+fn the_kernels_universe_history_keeps_a_delisted_instrument_for_the_dates_it_traded() -> Result<()>
+{
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("universe-history"), start())?;
+    platform.observe(tape("AAA"));
+    let delisted = start().saturating_sub(Duration::from_days(10));
+    platform.observe(vec![SensedRecord::CorporateAction(Box::new(
+        CorporateAction {
+            object_id: aaa.clone(),
+            ex_date: delisted,
+            record_date: None,
+            payment_date: None,
+            kind: CorporateActionKind::Delisting {
+                reason: "acquired for cash".to_string(),
+            },
+            announced_at: start().saturating_sub(Duration::from_days(40)),
+        },
+    ))]);
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+
+    let history = platform.universe_history();
+    assert!(history.is_named(&aaa), "premise: the instrument is listed");
+    let before = start().saturating_sub(Duration::from_days(20));
+    assert!(
+        history
+            .members_as_of(before)
+            .iter()
+            .any(|listing| listing.object_id == aaa),
+        "a date before the delisting finds the instrument that later went"
+    );
+    assert!(
+        !history.is_member_at(&aaa, start().saturating_sub(Duration::from_days(5))),
+        "a date after the delisting does not"
+    );
+    Ok(())
+}

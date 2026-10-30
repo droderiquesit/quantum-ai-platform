@@ -1321,6 +1321,14 @@ pub struct Platform {
     /// of which has no admissible plan is refused before it holds capital,
     /// so nothing reaches ACT without one.
     position_exit_plans: BTreeMap<String, qip_financial::position_record::ExitPlan>,
+    /// Every instrument the platform has seen trade, from its first bar,
+    /// with the delistings and renames its corporate actions dated
+    /// (R12-TICK-2090). In memory and rebuilt every process from the bars
+    /// and actions re-fed to it, like the bar history it rides beside: a
+    /// backtest that asked the current universe who existed last year would
+    /// not see the names that have since gone, which is survivorship hidden
+    /// in a lookup.
+    universe_history: qip_financial::history::UniverseHistory,
 }
 
 /// How many announced-but-not-yet-due corporate actions the platform holds.
@@ -6089,6 +6097,7 @@ impl Platform {
             position_mandates: BTreeMap::new(),
             position_horizons: BTreeMap::new(),
             position_exit_plans: BTreeMap::new(),
+            universe_history: qip_financial::history::UniverseHistory::new(),
         };
         platform.describe_metrics();
         // Every rule reads as not dormant from assembly, so the series exists
@@ -10933,6 +10942,32 @@ impl Platform {
         });
     }
 
+    /// List `object_id` in the universe history from `at` the first time the
+    /// platform sees it, under the universe record's symbol (or its id where
+    /// the universe holds no record). Later sightings change nothing.
+    fn note_listing(&mut self, object_id: &ObjectId, at: Timestamp) {
+        if self.universe_history.is_named(object_id) {
+            return;
+        }
+        let symbol = self.market.read().universe.get(object_id).map_or_else(
+            || object_id.as_str().to_string(),
+            |record| record.symbol.clone(),
+        );
+        if let Err(error) = self.universe_history.list(object_id.clone(), symbol, at) {
+            self.capture_problems.push(format!(
+                "{object_id} could not be listed in the universe history: {}",
+                error.message()
+            ));
+        }
+    }
+
+    /// Every instrument the platform has seen trade, with the delistings and
+    /// renames dated (R12-TICK-2090): what a backtest asks who was a member
+    /// on a past date.
+    pub fn universe_history(&self) -> &qip_financial::history::UniverseHistory {
+        &self.universe_history
+    }
+
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
     /// it.
     pub fn desk_book_view(&self) -> Reading<'_, BookView> {
@@ -11733,6 +11768,7 @@ impl Platform {
                 SensedRecord::Bar(bar) => {
                     let key = bar.object_id.as_str().to_string();
                     self.ensure_world_object(key.as_str(), bar.close_time());
+                    self.note_listing(&bar.object_id, bar.open_time);
                     push_bounded(
                         self.price_history.entry(key.clone()).or_default(),
                         bar.close.to_f64(),
@@ -12857,6 +12893,30 @@ impl Platform {
                 let closes: Vec<f64> = bars.iter().map(|bar| bar.close.to_f64()).collect();
                 self.price_history.insert(object.to_string(), closes);
             }
+        }
+
+        // The universe history takes the action every process, as the
+        // series does (R12-TICK-2090): a delisting dates the end of the
+        // instrument's membership and keeps its record, and a rename starts a
+        // new symbol era, so a past date still finds the instrument and its
+        // old ticker.
+        self.note_listing(&action.object_id, action.ex_date);
+        let dated = match &action.kind {
+            qip_market::corporate_action::CorporateActionKind::Delisting { .. } => Some(
+                self.universe_history
+                    .delist(&action.object_id, action.ex_date),
+            ),
+            qip_market::corporate_action::CorporateActionKind::Renamed { new_symbol } => Some(
+                self.universe_history
+                    .rename(&action.object_id, new_symbol.clone(), action.ex_date),
+            ),
+            _ => None,
+        };
+        if let Some(Err(error)) = dated {
+            self.capture_problems.push(format!(
+                "the universe history refused corporate action {key} on {object}: {}",
+                error.message()
+            ));
         }
 
         // A book the log rebuilt has already taken this action in an earlier

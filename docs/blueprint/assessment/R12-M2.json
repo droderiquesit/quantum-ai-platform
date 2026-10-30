@@ -2170,9 +2170,14 @@
       "backend/crates/libs/qip-financial/src/history.rs:63,144",
       "backend/crates/libs/qip-financial/tests/history.rs:36 a_universe_as_of_a_past_date_includes_an_instrument_delisted_afterwards",
       "backend/crates/libs/qip-financial/tests/history.rs:69 a_replay_window_across_a_venue_outage_reports_the_outage",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:19350-19360 corporate action kinds"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:19350-19360 corporate action kinds",
+      "backend/crates/services/qip-simulation-engine/src/backtest.rs (Backtester::run_with_history, BacktestResult.outages)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (universe_history, note_listing, apply_corporate_action delist/rename)",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs (maybe_turn snapshot, run_with_history)",
+      "backend/crates/services/qip-simulation-engine/tests/universe_history.rs a_backtest_over_a_past_date_includes_an_instrument_delisted_later_and_reports_the_outage",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs the_kernels_universe_history_keeps_a_delisted_instrument_for_the_dates_it_traded"
     ],
-    "gap": "2026-10-24 (re-read against the tree): qip-financial/src/history.rs UniverseHistory (members_as_of, rename, delist, outages_overlapping) still has no caller outside its tests; nothing on a shipped path fills it (the kernel keeps none, and Platform::apply_corporate_action does not call delist or rename on a Delisting/Renamed action). The only production backtest, qip-simulation-engine Backtester::run (called from qip-deepbrain src/evolution.rs), takes the current qip_financial::universe::Universe, which by its own doc drops delisted names; no kernel stage or adapter records a venue outage, so a replay has nothing to report. Plain code but multi-part: kernel-held history fed from corporate actions, a source of venue-outage facts, and Backtester/training reading members_as_of and outages_overlapping.",
+    "gap": "2026-10-30: skeptic REFUTED: the kernel keeps a universe history (listed at first bar, delist/rename dated from corporate actions) and the deep brain's default-path evolution backtests through Backtester::run_with_history, which refuses non-members and reports overlapping outages, but no shipped feed emits Delisting or Renamed actions (tape.rs builds only CashDividend), nothing calls UniverseHistory::record_outage outside tests, and failed products have no state; remaining step is production writers for delistings, renames and venue outages plus a failed-product state.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2180,10 +2185,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial --test history",
+    "verification": "cargo test -p qip-simulation-engine --test universe_history; cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Corporate-action evidence line stale: corporate_action_class (Delisting, Renamed) now sits near platform.rs:24168; platform.rs:19350 is borrow-availability code."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Corporate-action evidence line stale: corporate_action_class (Delisting, Renamed) now sits near platform.rs:24168; platform.rs:19350 is borrow-availability code. 2026-10-30: UniverseHistory gets its first production caller. Mutations, each failing: drop the membership refusal in rebalance; report no outages; drop the kernel's delist arm. Skeptic (code-reviewer): evolution loop is on the default path (every_cycles 4); REFUTED on the missing writers and failed products."
   },
   {
     "id": "R12-TICK-2091",
