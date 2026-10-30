@@ -3303,9 +3303,13 @@
     "current": "Nine alert policies are declared but gated off (workload_metrics_exist=false); the Cloud Run GMP sidecar is refused because the only published image fails the Trivy gate; the node receiver waits on a node.",
     "evidence": [
       "infrastructure/terraform/modules/observability/main.tf:23-401",
-      "infrastructure/terraform/modules/cloudrun/main.tf:382 collector_config"
+      "infrastructure/terraform/modules/cloudrun/main.tf:382 collector_config",
+      "backend/crates/libs/qip-observability/src/cloud_monitoring.rs Snapshot::to_cloud_monitoring_time_series",
+      "backend/crates/services/qip-telemetry-drain/src/cloud_monitoring.rs (exporter: start, push_once, spawn_push)",
+      "backend/crates/libs/qip-observability/tests/cloud_monitoring.rs::a_pushed_snapshot_encodes_counters_as_cumulative_series_and_histograms_as_distributions",
+      "backend/crates/services/qip-telemetry-drain/tests/cloud_monitoring.rs"
     ],
-    "gap": "Push the registry snapshot from the central binaries to Cloud Monitoring over the REST adapter (ADR 0122), re-point the nine alert policies to the pushed types, read a series back in dev, then flip workload_metrics_exist.",
+    "gap": "2026-10-25 (lane L6): the push exists and is off everywhere: qip-api, qip-fastbrain and qip-deepbrain start it only when QIP_METRICS_EXPORT_PROJECT is set, which no environment does (argued in manifest_wiring's READ_BUT_NOT_SET). Remaining, all deploy-side: a route to monitoring.googleapis.com (egress-proxy listener for the API and deep brain; the fast brain has no proxy under ADR 0024) or direct egress with mounted roots; roles/monitoring.metricWriter on the three service accounts; the QIP_METRICS_EXPORT_* values per environment; the nine non-edge alert policies re-pointed at custom.googleapis.com/qip/* (and every_metric_an_alert_policy_queries_is_one_the_platform_emits taught the prefix); proof of ingestion, then workload_metrics_exist. A registry observation exactly on a bucket bound charts one bucket lower (documented). Earlier: Push the registry snapshot from the central binaries to Cloud Monitoring over the REST adapter (ADR 0122), re-point the nine alert policies to the pushed types, read a series back in dev, then flip workload_metrics_exist.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3316,7 +3320,7 @@
     "verification": "scrape proof, then flip workload_metrics_exist",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). 2026-10-25 lane L6 (delegated agent, cherry-picked as 037e6569): mutations: counters written as GAUGE failed the encoder test (metricKind GAUGE vs CUMULATIVE); dropping the Authorization header failed the loopback push test (left None); removing the abandon-on-timeout break failed the silent-server test (2 requests vs 1). Agent's gate: six crates passed 946, failed 0; clippy -D warnings clean. The lane added a manifest_wiring delegation rule for cloud_monitoring::start, without which the four variables were invisible to the check (the rule made the suite fail until the twelve entries were argued), then argued them."
   },
   {
     "id": "R12-OBS-9144",
