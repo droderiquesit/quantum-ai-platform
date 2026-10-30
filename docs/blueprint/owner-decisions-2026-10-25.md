@@ -150,6 +150,14 @@ The agents cannot carry these out, whatever the delegation says.
     that round's manifest.
 - Approve the rolling pull request's head, so that `agent boundary` passes
   (decision 3).
+- Decide R12-RISK-4116's reserve (raised 2026-10-30 by lane L1). The joint
+  tail world L1 built in `qip-kernel/src/tail.rs` is one more survival
+  world, and `survival::worst_world` takes the worst, so letting it count
+  raises the survival reserve the platform holds back. Raising a risk
+  limit is an alteration the agents may not make, tightening included, so
+  on the shipped default path the world runs and its would-be reserve is
+  journaled and reported but not applied. Saying "apply it" turns it on;
+  until then the row stays PARTIAL.
 - When ready to deploy, follow `docs/ops/runbooks/dev-redeploy-readiness.md`
   §4: enable billing, raise the budget alert (decision 10), then dispatch
   `infra.yml` and `deploy.yml` in the order given.
