@@ -1045,6 +1045,10 @@ pub struct Platform {
     /// LEARN now writes it where a thesis resolves; see
     /// [`Self::write_research_memory`].
     research_memory: Upstream<ResearchMemory>,
+    /// The procedures the last convening was briefed with, by name and
+    /// version (R12-WORLD-3034): the record that a distilled procedure was
+    /// retrieved for reuse, not only stored.
+    procedures_briefed: Vec<(String, u32)>,
     /// The value policy over the episodes `research_memory` holds: which
     /// resolved analyst calls were surprising enough to keep whole and which
     /// are counted into a per-analyst summary (ADR 0152 decision 8,
@@ -2681,6 +2685,61 @@ const PRECEDENT_K: usize = 5;
 /// reader asking "what was the platform's picture of this name" can hold in
 /// their head at once. It is not a threshold and nothing fires on it.
 const CAUSAL_CONTEXT_LIMIT: usize = 5;
+
+/// The most recent correct calls an analyst's procedure is distilled from.
+/// A window, not a lifetime: a way of answering that worked two years ago
+/// and has not been followed since is not the desk's procedure now.
+const PROCEDURE_WINDOW: usize = 8;
+
+/// The name an analyst's procedure is kept under in research memory.
+fn procedure_name(agent_id: &str) -> String {
+    format!("procedure:{agent_id}")
+}
+
+/// Record a new version of `agent_id`'s procedure when memory holds at least
+/// [`qip_agents::memory::MINIMUM_PROCEDURE_SUPPORT`] of its calls resolved
+/// correct by `at` and the newest of them differ from the version held
+/// (R12-WORLD-3034). Each step is one such call, the question with the lean
+/// that answered it, in the order made. `Ok(None)` where there is nothing
+/// new to record; a refusal from memory is returned for the cycle's record.
+fn distil_procedure(
+    memory: &mut qip_agents::memory::ResearchMemory,
+    agent_id: &str,
+    at: Timestamp,
+) -> Result<Option<u32>> {
+    // One call counts once however many times it was written: a run recorded
+    // twice is the same evidence, and counting it again would version the
+    // procedure on nothing new.
+    let mut seen = BTreeSet::new();
+    let correct: Vec<&qip_agents::memory::Episode> = memory
+        .episodes()
+        .iter()
+        .filter(|e| e.agent_id == agent_id)
+        .filter(|e| {
+            e.outcome
+                .as_ref()
+                .is_some_and(|o| o.correct && o.resolved_at <= at)
+        })
+        .filter(|e| seen.insert(e.run_id.clone()))
+        .collect();
+    if correct.len() < qip_agents::memory::MINIMUM_PROCEDURE_SUPPORT {
+        return Ok(None);
+    }
+    let recent = &correct[correct.len().saturating_sub(PROCEDURE_WINDOW)..];
+    let support: Vec<qip_core::ids::AgentRunId> = recent.iter().map(|e| e.run_id.clone()).collect();
+    let name = procedure_name(agent_id);
+    if memory
+        .procedure_as_of(&name, at)
+        .is_some_and(|held| held.supporting_episodes == support)
+    {
+        return Ok(None);
+    }
+    let steps: Vec<String> = recent
+        .iter()
+        .map(|e| format!("{}: lean {}", e.question, e.conclusion))
+        .collect();
+    memory.record_procedure(&name, steps, support, at).map(Some)
+}
 
 /// The precedent as the panel is briefed on it, from what REASON recalled.
 ///
@@ -5851,6 +5910,7 @@ impl Platform {
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
+            procedures_briefed: Vec::new(),
             pending_theses: Vec::new(),
             justified_hypotheses: justification::JustifiedHypotheses::default(),
             outside_priors: BTreeMap::new(),
@@ -11272,6 +11332,12 @@ impl Platform {
         }
     }
 
+    /// The procedures the last convening was briefed with, by name and
+    /// version (R12-WORLD-3034).
+    pub fn procedures_briefed(&self) -> &[(String, u32)] {
+        &self.procedures_briefed
+    }
+
     /// The most recent calibration, if any thesis has resolved informatively.
     pub fn calibration(&self) -> Option<&CalibrationReport> {
         self.last_calibration.as_ref()
@@ -14757,6 +14823,26 @@ impl Platform {
             }
         }
 
+        // Procedures: what memory has distilled for each analyst on the
+        // roster from its own correct calls, as known now (R12-WORLD-3034),
+        // handed over through the brief's typed field for the reason
+        // precedent is.
+        let procedures: Vec<qip_agents::memory::Procedure> = {
+            let memory = self.research_memory.read();
+            self.organisation
+                .roster()
+                .iter()
+                .filter_map(|m| memory.procedure_as_of(&procedure_name(&m.id), now).cloned())
+                .collect()
+        };
+        brief = brief.with_procedures(procedures);
+        // Read off the brief the panel receives, not the list it was built
+        // from, so the record cannot claim a briefing that did not happen.
+        self.procedures_briefed = brief
+            .procedures
+            .iter()
+            .map(|p| (p.name.clone(), p.version))
+            .collect();
         let report = self.organisation.dispatch(&brief, now, lineage);
         self.telemetry
             .metrics
@@ -15819,6 +15905,20 @@ impl Platform {
                 registry.consult(&analyst_episode);
                 memory.record_episode(analyst_episode);
             }
+            // Distil each analyst's procedure once memory holds enough of its
+            // calls that came out right (R12-WORLD-3034). The next convening
+            // reads it back through the brief.
+            let mut refused = Vec::new();
+            for stance in &episode.stances {
+                if let Err(error) = distil_procedure(memory, &stance.agent_id, now) {
+                    refused.push(format!(
+                        "{}'s procedure was not recorded: {}",
+                        stance.agent_id,
+                        error.message()
+                    ));
+                }
+            }
+            self.capture_problems.extend(refused);
         });
 
         if episode.claim.direction == 0.0 {
@@ -25786,6 +25886,138 @@ mod decide_tests {
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
+    }
+
+    /// R12-WORLD-3034: an analyst's distilled procedure is retrieved at its
+    /// next convening. Three resolved calls of one roster analyst that came
+    /// out right are written through the LEARN path, and memory then holds a
+    /// first version of that analyst's procedure, citing the three calls.
+    /// Writing nothing new records no second version. A later cycle that
+    /// convenes the panel on a sensed anomaly briefs it with that procedure,
+    /// by name and version.
+    ///
+    /// Mutations: drop the `distil_procedure` call in `write_research_memory`
+    /// (memory holds no procedure); brief the panel without procedures
+    /// (`procedures_briefed` stays empty).
+    #[test]
+    fn an_analysts_distilled_procedure_is_retrieved_at_its_next_convening() {
+        use qip_ai::memory::{
+            AnalystStance, ClaimRecord, DecisionTaken, EpisodeOutcome, FindingsSummary,
+            RegimeLabel, StanceDirection,
+        };
+        use qip_market::bar::{Bar, Interval};
+        use qip_market_ingestion::adapter::SensedRecord;
+        let start = Timestamp::from_secs(1_760_000_000);
+        let mut platform = small_book_platform();
+        let analyst = platform
+            .organisation
+            .roster()
+            .iter()
+            .next()
+            .expect("a roster")
+            .id
+            .clone();
+        let name = procedure_name(&analyst);
+        let resolved = |n: i64| Episode {
+            episode_id: format!("ep-{n}"),
+            instrument: "AAPL".to_string(),
+            regime: RegimeLabel {
+                market: "trending".to_string(),
+                volatility: "normal".to_string(),
+            },
+            state: None,
+            causal_context: Vec::new(),
+            findings: FindingsSummary {
+                runs: 1,
+                findings: 1,
+                coverage: 1.0,
+                contested: false,
+            },
+            stances: vec![AnalystStance {
+                agent_id: analyst.clone(),
+                direction: StanceDirection::Positive,
+                conviction: 0.7,
+            }],
+            claim: ClaimRecord {
+                class: "price_move".to_string(),
+                claim: "undervalued".to_string(),
+                direction: 1.0,
+                confidence: 0.6,
+            },
+            horizon: Duration::from_days(1),
+            decision: DecisionTaken::Approved,
+            outcome: Some(EpisodeOutcome {
+                resolved_at: start.saturating_sub(Duration::from_days(10 - n)),
+                realised_move_bps: 40.0,
+                realised_pnl: 0.0,
+                expected_move_bps: None,
+                fills: Vec::new(),
+            }),
+            at: start.saturating_sub(Duration::from_days(11 - n)),
+            known_at: start.saturating_sub(Duration::from_days(10 - n)),
+            model_version: None,
+            model_derived: false,
+        };
+        let learned_at = start.saturating_sub(Duration::from_days(5));
+        for n in 1..=3 {
+            platform.write_research_memory(&resolved(n), learned_at);
+        }
+        let procedure = platform
+            .research_memory()
+            .procedure_as_of(&name, learned_at)
+            .cloned()
+            .expect("three correct calls distil a procedure");
+        assert_eq!(procedure.version, 1);
+        assert_eq!(procedure.supporting_episodes.len(), 3);
+        assert_eq!(procedure.steps.len(), 3);
+        platform.write_research_memory(&resolved(3), learned_at);
+        assert_eq!(
+            platform
+                .research_memory()
+                .procedure_as_of(&name, learned_at)
+                .map(|p| p.version),
+            Some(1),
+            "the same support was recorded again as a new version"
+        );
+
+        // A sensed tape whose last bars jump convenes the panel.
+        let mut price = 100.0_f64;
+        let bars: Vec<SensedRecord> = (0..120)
+            .map(|i| {
+                let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
+                let jump = if i == 80 { 0.09 } else { 0.0 };
+                let open = price;
+                price *= 1.0 + noise + jump;
+                let px = |v: f64| Decimal::from_f64(v).expect("a price");
+                SensedRecord::Bar(Box::new(Bar {
+                    object_id: qip_core::ObjectId::from_string("AAPL"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: start.saturating_sub(Duration::from_days(120 - i)),
+                    open: px(open),
+                    high: px(open.max(price) * 1.002),
+                    low: px(open.min(price) * 0.998),
+                    close: px(price),
+                    volume: Decimal::from_int(1_000_000),
+                    trade_count: 5_000,
+                    vwap: Decimal::from_f64((open + price) / 2.0),
+                    quality: qip_financial::quality::DataQuality::default(),
+                }))
+            })
+            .collect();
+        platform.observe(bars);
+        assert!(platform.procedures_briefed().is_empty(), "premise");
+        let report = platform.run_cycle(start);
+        assert!(
+            !platform.predictions().is_empty(),
+            "premise: the panel convened and formed a claim:\n{}",
+            report.summarise()
+        );
+        assert!(
+            platform.procedures_briefed().contains(&(name.clone(), 1)),
+            "the convening was not briefed with {name}: {:?}",
+            platform.procedures_briefed()
+        );
     }
 
     /// R12-WORLD-10187: the return forecast a thesis is sized on is the
