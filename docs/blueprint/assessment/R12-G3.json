@@ -3480,9 +3480,12 @@
       "tests/qip-acceptance/tests/event_fabric_scaling.rs::fabric_097_each_sink_failure_and_backpressure_isolated_from_others",
       "scripts/game-day/harness.mjs readPeakRssKib, memory_ceiling_kib",
       "scripts/game-day/harness.test.mjs (peak resident size tests)",
-      "docs/ops/game-days/README.md"
+      "docs/ops/game-days/README.md",
+      "backend/crates/apps/qip-cli/src/event_fabric/produce.rs (qip event-fabric produce)",
+      "scripts/game-day/scenarios/frozen-sink.json",
+      "docs/ops/game-days/results/2026-10-25-frozen-sink.json"
     ],
-    "gap": "2026-10-24: the RSS sampler is built and tested (harness.test.mjs). Two things remain, both needing more than the harness: a process that drives producers past a stream's lag limit (no standalone producer binary exists; the cell produces outcomes only when it fires orders, see R12-RES-10154), and a frozen-sink.json scenario using the existing 'pause' fault (SIGSTOP on qip-ledgerd) with a memory_ceiling_kib on qip-fabricd, run once and its result committed under docs/ops/game-days/results. Until the drill has run, the row is code without a recorded drill.",
+    "gap": "2026-10-25 (lane L6): the drill ran against real qip-fabricd, qip-ledgerd and qip binaries on loopback and was met: fabricd's peak resident memory was 22872 KiB under a 65536 KiB ceiling, P0 and P1 were never refused while the ledger was paused, P2 was throttled by quota, the P1 backlog drained with RPO 0 and RTO 224 ms; the same drill with a 16384 KiB ceiling was missed. Remaining: the broker never sheds P2 (shed_total has no production caller) and classes share no queue, so 'P0/P1 keep priority' is shown as per-producer quota, not priority shedding; the P1 lag-limit refusal was not reached locally; single host, debug builds, nothing deployed. The four older scenarios no longer start without QIP_DEPLOYMENT=local and QIP_TLS_MODE=plaintext. Earlier: 2026-10-24: the RSS sampler is built and tested (harness.test.mjs). Two things remain, both needing more than the harness: a process that drives producers past a stream's lag limit (no standalone producer binary exists; the cell produces outcomes only when it fires orders, see R12-RES-10154), and a frozen-sink.json scenario using the existing 'pause' fault (SIGSTOP on qip-ledgerd) with a memory_ceiling_kib on qip-fabricd, run once and its result committed under docs/ops/game-days/results. Until the drill has run, the row is code without a recorded drill.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3495,7 +3498,7 @@
     "verification": "node --test scripts/game-day/harness.test.mjs; then the frozen-sink game-day",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L17 from harness.mjs's fault kinds and the scenarios directory; nothing in the code changed. 2026-10-24 N2-FABRIC-DATA: split step (1) done. Mutations that fired, each restored byte for byte: VmHWM read as VmRSS (the /proc test fails), ceiling comparison inverted (the ceiling test fails), an unreadable peak counted as passed (the fail-closed test fails). Kept PARTIAL."
+    "notes": "Gap corrected 2026-10-18 by lane L17 from harness.mjs's fault kinds and the scenarios directory; nothing in the code changed. 2026-10-24 N2-FABRIC-DATA: split step (1) done. Mutations that fired, each restored byte for byte: VmHWM read as VmRSS (the /proc test fails), ceiling comparison inverted (the ceiling test fails), an unreadable peak counted as passed (the fail-closed test fails). Kept PARTIAL. 2026-10-25 lane L6 (delegated agent, cherry-picked as 4cdfec42): harness mutations (ceiling compared with <, ceiling never compared, no baseline at the fault, final loop skipped, absent_as ignored, load exit ignored) each failed a named harness.test.mjs test; Rust mutations (quota counted as admitted, as both, upper bound dropped, P2 on a P1 topic) each failed a named test. Agent's gate: qip-cli + qip-fabricd passed 161, failed 0; harness.test.mjs 30 pass."
   },
   {
     "id": "R12-RES-10154",
