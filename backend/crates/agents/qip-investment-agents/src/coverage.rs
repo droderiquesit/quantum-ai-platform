@@ -45,16 +45,26 @@ pub enum Scope {
     StressScenario,
     /// How much risk to shed (R12-RISK-3021).
     RiskRecommendation,
+    /// Strategies that exploit the platform itself: fills systematically
+    /// worse than arrival, a flow regular enough to be learned
+    /// (R12-REASON-3023).
+    SelfExploitation,
+    /// A break in an instrument's return regime: the recent window's
+    /// volatility or mean has left the band the prior window set
+    /// (R12-REASON-3023).
+    RegimeBreak,
 }
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 5] = [
+    pub const ALL: [Scope; 7] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
         Scope::StressScenario,
         Scope::RiskRecommendation,
+        Scope::SelfExploitation,
+        Scope::RegimeBreak,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -64,6 +74,8 @@ impl Scope {
             Self::RiskForecast => "risk_forecast",
             Self::StressScenario => "stress_scenario",
             Self::RiskRecommendation => "risk_recommendation",
+            Self::SelfExploitation => "self_exploitation",
+            Self::RegimeBreak => "regime_break",
         }
     }
 
@@ -80,6 +92,8 @@ impl Scope {
             Self::RiskForecast => &["forecast_value_at_risk", "forecast_expected_shortfall"],
             Self::StressScenario => &["stress_loss_3sd_day"],
             Self::RiskRecommendation => &["recommended_gross_reduction"],
+            Self::SelfExploitation => &["self_exploitation_findings"],
+            Self::RegimeBreak => &["regime_break_findings"],
         }
     }
 

@@ -150,7 +150,9 @@ use qip_financial::intelligence::MacroObservation;
 use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
-use qip_investment_agents::desk::{BookView, ComplianceView, Desk, MarketView, RiskView};
+use qip_investment_agents::desk::{
+    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, MarketView, RiskView, TradeSide,
+};
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
     Evaluation, Outcome as ThesisOutcome, ThesisClaim, ThesisEvaluator,
@@ -226,6 +228,12 @@ use qip_world_model::resolution_source::ResolutionSourceClaim;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+/// How many of the platform's own executions the desk's adversary probe is
+/// shown (R12-REASON-3023): the most recent this many, oldest dropped. A
+/// bound rather than the whole history, for the retention rule and because
+/// a flow pattern worth a finding repeats inside a window this size.
+pub const EXECUTION_HISTORY_KEPT: usize = 256;
 
 /// The assembled platform.
 #[derive(Debug)]
@@ -1040,6 +1048,11 @@ pub struct Platform {
     /// [`Platform::risk_state`] here before the panel is convened; see
     /// [`Self::brief_the_desk_on_risk`].
     risk: Upstream<RiskView>,
+    /// The platform's own executions as the desk's adversary probe reads
+    /// them (R12-REASON-3023): rebuilt from the order manager before every
+    /// REASON by `brief_the_desk_on_executions`, bounded to the most recent
+    /// `EXECUTION_HISTORY_KEPT`.
+    executions: Upstream<ExecutionView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -5517,6 +5530,8 @@ impl Platform {
         desk.world = world.gate(desk.world.required(), desk.world.label());
         desk.market = market.gate(desk.market.required(), desk.market.label());
         desk.risk = risk.gate(desk.risk.required(), desk.risk.label());
+        let executions = Upstream::new(ExecutionView::default());
+        desk.executions = executions.gate(desk.executions.required(), desk.executions.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -5926,6 +5941,7 @@ impl Platform {
             world,
             market,
             risk,
+            executions,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -10765,6 +10781,44 @@ impl Platform {
         });
     }
 
+    /// Write the platform's own executed orders into the slot the desk's
+    /// self-exploitation probe reads, before the panel is convened
+    /// (R12-REASON-3023). Rebuilt from the order manager each time rather
+    /// than appended to, so the view can never disagree with the orders it
+    /// describes, and bounded to the most recent `EXECUTION_HISTORY_KEPT`
+    /// so a long-running desk does not hand the panel its whole history.
+    fn brief_the_desk_on_executions(&self) {
+        let mut records: Vec<ExecutionRecord> = self
+            .orders
+            .orders()
+            .filter(|order| !order.fills.is_empty())
+            .filter_map(|order| {
+                let fill_price = weighted_fill_price(&order.fills)?;
+                let filled_at = order.fills.iter().map(|fill| fill.at).max()?;
+                let venue = order.fills.last()?.venue.clone();
+                Some(ExecutionRecord {
+                    order_id: order.order_id.as_str().to_string(),
+                    object_id: order.object_id.as_str().to_string(),
+                    side: match order.side {
+                        Side::Buy => TradeSide::Buy,
+                        Side::Sell => TradeSide::Sell,
+                    },
+                    quantity: order.fills.iter().map(|fill| fill.quantity).sum(),
+                    arrival_price: order.arrival_price,
+                    fill_price,
+                    placed_at: order.created_at,
+                    filled_at,
+                    venue,
+                })
+            })
+            .collect();
+        records.sort_by(|a, b| (a.filled_at, &a.order_id).cmp(&(b.filled_at, &b.order_id)));
+        if records.len() > EXECUTION_HISTORY_KEPT {
+            records.drain(..records.len() - EXECUTION_HISTORY_KEPT);
+        }
+        self.executions.update(|view| view.executions = records);
+    }
+
     /// Where liquidity lives, per instrument across venues, as fed from the
     /// books and quotes the platform has observed.
     pub fn liquidity(&self) -> &LiquidityTopology {
@@ -14461,6 +14515,7 @@ impl Platform {
             expired.len() as f64,
         );
         self.brief_the_desk_on_risk();
+        self.brief_the_desk_on_executions();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
             return outcome;

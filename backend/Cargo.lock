@@ -315,6 +315,7 @@ dependencies = [
  "qip-feature-dag",
  "qip-financial",
  "qip-kernel",
+ "qip-market",
  "qip-market-ingestion",
  "qip-mesh",
  "qip-observability",

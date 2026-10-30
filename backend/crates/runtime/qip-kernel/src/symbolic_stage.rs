@@ -1041,6 +1041,42 @@ pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<SymbolicDeriva
     Ok(out)
 }
 
+/// [`replay`] over the event log instead of the cycle journal: every
+/// derivation the log on disk holds, oldest first, each re-derived by
+/// [`verify`] against the platform's causal graph.
+///
+/// The cycle journal is an in-memory transport that holds what this process
+/// journaled; a platform assembled on a copy of a journal file — which is
+/// what `qip replay` does — has an empty one, and [`replay`] on it re-derives
+/// nothing and says so by returning nothing. An operator checking a proof
+/// needs the record that outlives the process, which is the event log, so
+/// this reads the log's own frames through the same two decoding steps the
+/// kernel takes (R12-REASON-9005). A frame under the topic that is not a
+/// derivation — the topic carries other evidence bodies — is skipped by its
+/// key, as [`replay`] skips it.
+pub fn replay_recorded(platform: &crate::platform::Platform) -> Result<Vec<SymbolicDerivation>> {
+    let world = platform.world();
+    let mut out = Vec::new();
+    for frame in platform
+        .event_log()
+        .by_topic(<SymbolicDerivation as EventBody>::TOPIC)
+    {
+        let envelope = qip_streaming::envelope::StreamEnvelope::from_frame(frame)?;
+        let key = envelope.idempotency_key();
+        let ours = key
+            .strip_prefix(<SymbolicDerivation as EventBody>::TOPIC.name())
+            .and_then(|rest| rest.strip_prefix(':'))
+            .is_some_and(|k| k.starts_with(IDEMPOTENCY_PREFIX));
+        if !ours {
+            continue;
+        }
+        let derivation = envelope.decode::<SymbolicDerivation>()?.body;
+        verify(&derivation, world.causal())?;
+        out.push(derivation);
+    }
+    Ok(out)
+}
+
 /// The independent check (R12-REASON-9005): re-run each reasoner a
 /// derivation cites on what the record itself holds, and refuse the record
 /// at the first part that does not reproduce.

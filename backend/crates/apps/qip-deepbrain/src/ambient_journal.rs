@@ -87,6 +87,14 @@ pub enum AmbientRecord {
         cycle: u64,
         delta: qip_contracts::microstructure_delta::MicrostructureDelta,
     },
+    /// The compute market the sweep ran (R12-AMBIENT-9034): the agent
+    /// budgets it allocated within, each grant with the reputation weight
+    /// it was priced on, each decline with its reason, and what was spent.
+    /// Written for every sweep in which something bid.
+    Market {
+        cycle: u64,
+        market: crate::research::MarketRecord,
+    },
 }
 
 impl EventBody for AmbientRecord {
@@ -251,6 +259,18 @@ impl AmbientJournal {
                 AmbientRecord::MicrostructureDelta {
                     cycle,
                     delta: delta.clone(),
+                },
+                at,
+                at,
+            )?;
+            count += 1;
+        }
+        if let Some(market) = &round.market {
+            self.append(
+                &lineage,
+                AmbientRecord::Market {
+                    cycle,
+                    market: market.clone(),
                 },
                 at,
                 at,

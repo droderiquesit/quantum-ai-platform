@@ -100,5 +100,9 @@ qip-streaming.workspace = true
 # as `qip_transport::ring`, the re-export of the one pin in `qip-tls`, and
 # `cargo deny`'s workspace-duplicate check refuses a second pin.
 
+[dev-dependencies]
+# The replay test writes a journal from sensed bars (R12-REASON-9005).
+qip-market.workspace = true
+
 [lints]
 workspace = true
