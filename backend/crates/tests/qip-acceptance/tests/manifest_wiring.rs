@@ -1500,6 +1500,11 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-edge-node",
+        "QIP_REPLAY_CONTROL_ARCHIVE",
+        THE_REPLAY_ARCHIVE_IS_NAMED_BY_THE_OPERATOR_WHO_REPLAYS,
+    ),
+    (
+        "qip-edge-node",
         "QIP_FABRIC_URL",
         NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE,
     ),
@@ -2400,6 +2405,16 @@ const NO_PRODUCER_STATES_THE_ACCEPTABLE_BUILDS_YET: &str = "Unset because the \
      fixes is consumer, then producer, then the unit that writes the identity \
      file. Set earlier, nothing narrows; unset, the cell reports no \
      `deployment` halt series at all rather than a zero.";
+
+/// The node replay's control archive (ADR 0100 §8, SLICE-39).
+const THE_REPLAY_ARCHIVE_IS_NAMED_BY_THE_OPERATOR_WHO_REPLAYS: &str = "Unset because \
+     only the `qip-edge-node replay <spool-dir>` subcommand reads it, and a \
+     deployment runs the node, never a replay: the variable names the \
+     directory holding the fabric's indexed archive of the control stream for \
+     the session an operator is replaying, which is that operator's to point \
+     at. Set on the running service it would name a directory the node never \
+     reads; unset under `replay`, a pass that consumed a control frame is \
+     reported as diverged at that frame rather than replayed without it.";
 
 /// The node-to-node coordination mesh.
 const THE_PEER_MESH_HAS_NO_DEPLOYED_PEER: &str = "The peer transport is \
