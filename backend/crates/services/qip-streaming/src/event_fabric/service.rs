@@ -69,6 +69,7 @@ use qip_transport::event_fabric::protocol::{
     GroupLagResponse, IsolationStatus, ProducerInitResponse, Refusal, Request, Response, Route,
     decode_request, encode_response,
 };
+use qip_transport::server::AdmissionClass;
 
 use super::acl::{self, Scope};
 use super::broker::Broker;
@@ -406,6 +407,61 @@ impl Service {
                     observation: seen,
                 }
             }
+        }
+    }
+
+    /// Which connection slots a caller may hold (R12-FABRIC-8089), decided
+    /// before its body is read and so from what the listener already knows:
+    /// the mutual-TLS peer name, or on a plaintext link the bearer token.
+    ///
+    /// The class is the caller's, not the request's, because the stream a
+    /// request names is inside the body and the slot has to be decided
+    /// before the body is read — a telemetry flood is a flood of bodies. An
+    /// identity holding any grant on a P0 or P1 stream is `Priority`; every
+    /// other identity, and every caller the listener cannot name, is `Bulk`
+    /// and shares the slots outside the reserve. So a telemetry-only agent
+    /// can never hold a reserved slot however many connections it opens,
+    /// and a cell or the release controller always finds one. An identity's
+    /// grants are the catalogue's, applied whole, so a producer cannot
+    /// class itself: the token names it and the catalogue says what it may
+    /// touch.
+    ///
+    /// The identity is the one [`Self::handle`] authorises the request
+    /// under: the bearer token, and the mutual-TLS peer name only for a
+    /// caller that presents no token (the admin routes, where the peer name
+    /// is the operator). Until 2026-10-25 the peer name was consulted first,
+    /// and on the deployed listener that name is a certificate SAN that no
+    /// grant identity equals, so every mTLS caller was classed `Bulk` and
+    /// the reserve protected nobody.
+    pub fn admission_class(
+        &self,
+        authorization: Option<&str>,
+        peer_identity: Option<&str>,
+    ) -> AdmissionClass {
+        let identity = match auth::verify(&self.identities, authorization) {
+            Ok(identity) => identity.as_str().to_string(),
+            Err(_) => match peer_identity.filter(|name| !name.trim().is_empty()) {
+                Some(name) => name.to_string(),
+                None => return AdmissionClass::Bulk,
+            },
+        };
+        let grants = self
+            .grants
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let classes = self.classes.read().unwrap_or_else(|e| e.into_inner());
+        let priority = grants.iter().any(|grant| {
+            grant.identity == identity
+                && matches!(
+                    classes.get(&grant.stream),
+                    Some(QosClass::P0Control | QosClass::P1Outcomes)
+                )
+        });
+        if priority {
+            AdmissionClass::Priority
+        } else {
+            AdmissionClass::Bulk
         }
     }
 

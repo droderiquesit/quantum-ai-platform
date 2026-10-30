@@ -50,7 +50,9 @@ use qip_events::event_fabric::hlc::{HlcTimestamp, PartitionClock};
 use qip_events::event_fabric::policy::{QosClass, StreamPolicy};
 use qip_events::event_fabric::schema_id::{Shape, check_compatible};
 
-use qip_transport::event_fabric::protocol::{FetchResponse, Metadata, ProduceAck, Refusal};
+use qip_transport::event_fabric::protocol::{
+    FetchResponse, Metadata, ProduceAck, ProducerCredit, Refusal,
+};
 
 use super::managed::{
     CommitOutcome, CommittedBatch, Lease, LeaseOutcome, ManagedLog, PartitionRef,
@@ -290,6 +292,25 @@ fn recover_last_batch_hash(log: &PartitionLog) -> Result<Option<ContentHash>> {
     })?;
     let encoded = last.encode()?;
     Ok(Some(ContentHash::sha256_of(&encoded)))
+}
+
+/// A batch re-appended from the managed log or the archive carries the
+/// partition the broker that first accepted it stamped (R12-FABRIC-8084);
+/// one stamped for another partition is a row or an object misfiled, and is
+/// refused rather than hydrated into a log whose key order it would change
+/// in silence. A batch with no stamp — written before format version 2 —
+/// has nothing to disagree with and is taken as the offset check took it.
+fn require_stamped_for(batch: &Batch, partition: u32, label: &str) -> Result<()> {
+    if let Some(stamped) = batch.partition
+        && stamped != partition
+    {
+        return Err(Error::invalid(format!(
+            "{label}: the batch at offset {} is stamped for partition {stamped}; refusing to \
+             hydrate it into another partition's log",
+            batch.base_offset
+        )));
+    }
+    Ok(())
 }
 
 /// A deterministic fingerprint of a batch's writer- and drain-owned content:
@@ -975,11 +996,12 @@ impl Broker {
             )));
         }
         self.refuse_when_a_group_lags(stream, partition)?;
-        if let Err(refused) = self.charge_quota(stream, &batch)? {
-            return Ok(Err(refused));
-        }
+        let credit = match self.charge_quota(stream, &batch)? {
+            Ok(credit) => credit,
+            Err(refused) => return Ok(Err(refused)),
+        };
         if self.stream_policy(stream)?.is_managed() {
-            return self.produce_managed(stream, partition, batch, principal);
+            return self.produce_managed(stream, partition, batch, principal, credit);
         }
 
         let record_count = u64::try_from(batch.records.len()).map_err(|_| {
@@ -1056,7 +1078,7 @@ impl Broker {
                     high_watermark,
                     archived_through,
                 )
-                .map(Ok)
+                .map(|ack| Ok(ack.with_credit(credit)))
             }
             Admission::Duplicate => {
                 let base_offset = self
@@ -1078,7 +1100,7 @@ impl Broker {
                     high_watermark,
                     archived_through,
                 )
-                .map(Ok)
+                .map(|ack| Ok(ack.with_credit(credit)))
             }
             refused => refused_admission(refused, &batch, &label),
         }
@@ -1108,6 +1130,7 @@ impl Broker {
         partition: u32,
         mut batch: Batch,
         principal: Option<&str>,
+        credit: ProducerCredit,
     ) -> Result<Produced> {
         let seat = self.managed.as_ref().ok_or_else(|| {
             Error::denied(format!(
@@ -1281,7 +1304,7 @@ impl Broker {
             state.log.high_water(),
             state.log.archived_through()?,
         )
-        .map(|ack| Ok(ack.with_managed_commit(lease.epoch)))
+        .map(|ack| Ok(ack.with_managed_commit(lease.epoch).with_credit(credit)))
     }
 
     /// Append to `state`'s log every row the managed log has committed past
@@ -1355,6 +1378,7 @@ impl Broker {
                         row.offset, batch.base_offset
                     )));
                 }
+                require_stamped_for(&batch, partition, &label)?;
                 let offset = state.log.append(&batch)?;
                 cursor.last_batch_hash = Some(ContentHash::sha256_of(&row.bytes));
                 cursor.active_since = if state.log.active_batches() == 0 {
@@ -1944,6 +1968,7 @@ impl Broker {
                             batch.base_offset
                         )));
                     }
+                    require_stamped_for(&batch, partition, &partition_label(&stream, partition))?;
                     let assigned = state.log.append(&batch)?;
                     if assigned != offset {
                         return Err(Error::io(format!(
@@ -2254,11 +2279,16 @@ impl Broker {
     /// that backs off as told is not penalised twice. Runs before the
     /// producer table sees the batch: a producer over quota must not be
     /// able to consume sequence numbers it was never allowed to use.
+    /// Charge `batch` to its producer's per-second window, or refuse it as
+    /// the class decides. On admission, the credit left in the window and
+    /// when the window refills (R12-FABRIC-8089): the producer's flow
+    /// control reads it off the acknowledgement, so the next batch it
+    /// cannot fund waits at the producer instead of being refused here.
     fn charge_quota(
         &self,
         stream: &str,
         batch: &Batch,
-    ) -> Result<std::result::Result<(), ProduceRefusal>> {
+    ) -> Result<std::result::Result<ProducerCredit, ProduceRefusal>> {
         let policy = self.stream_policy(stream)?;
         let messages = u64::try_from(batch.records.len())
             .map_err(|_| Error::invalid("a batch carries more records than a u64 can count"))?;
@@ -2297,7 +2327,12 @@ impl Broker {
         }
         entry.1 += bytes;
         entry.2 += messages;
-        Ok(Ok(()))
+        let refills_in_ms = u64::try_from((window_start + QUOTA_WINDOW_NS - now) / 1_000_000)
+            .map_err(|_| Error::numeric("the quota window's refill instant is before now"))?;
+        Ok(Ok(ProducerCredit {
+            bytes: policy.byte_quota_per_producer().saturating_sub(entry.1),
+            refills_in_ms,
+        }))
     }
 
     /// How many partitions `stream` was declared with.

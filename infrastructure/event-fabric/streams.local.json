@@ -164,5 +164,35 @@
       "permission": "admin",
       "key_scope": "any"
     }
+  ],
+  "spine_frames": [
+    {
+      "name": "CapitalGrantFrame",
+      "topic": "risk.approved",
+      "direction": "down",
+      "signing": "envelope_signature",
+      "durability": "durable_ordered"
+    },
+    {
+      "name": "PolicyFrame",
+      "topic": "policy.distributed",
+      "direction": "down",
+      "signing": "payload_signature",
+      "durability": "superseding"
+    },
+    {
+      "name": "HaltFrame",
+      "topic": "system.kill_switch_engaged",
+      "direction": "down",
+      "signing": "command_mac",
+      "durability": "superseding"
+    },
+    {
+      "name": "CellStateDelta",
+      "topic": "position.updated",
+      "direction": "up",
+      "signing": "session",
+      "durability": "superseding"
+    }
   ]
 }

@@ -32,7 +32,9 @@ use qip_core::{
 };
 use qip_events::AnyEvent;
 use qip_events::event_fabric::catalogue::Catalogue;
-use qip_events::event_fabric::codec::{Batch, MessageType, PayloadCodec, Record, stamp_drain};
+use qip_events::event_fabric::codec::{
+    Batch, MessageType, PayloadCodec, Provenance, Record, stamp_drain,
+};
 use qip_events::event_fabric::policy::{BATCH_SCHEMA_VERSION, QosClass, StreamPolicy};
 use qip_events::topic::Topic;
 use qip_ledgerd::config::LedgerConfig;
@@ -197,7 +199,11 @@ impl Fabric {
             PayloadCodec::CanonicalJson,
             records,
         )
-        .unwrap();
+        .unwrap()
+        // As the edge writer stamps it (ADR 0129 §2): a consumer never fills
+        // in a provenance the writer left off, so a batch without one would
+        // stall its partition here rather than book.
+        .with_provenance(Provenance::EdgeNode);
         stamp_drain(&mut batch, PRODUCER, epoch, next);
         // As the producer's authenticated session would produce it, so the
         // broker stamps the origin the ledger reads (ADR 0129).
