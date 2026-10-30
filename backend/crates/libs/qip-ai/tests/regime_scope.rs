@@ -131,7 +131,9 @@ fn bounds_on_a_feature_the_card_does_not_consume_or_an_inverted_range_are_refuse
 #[test]
 fn the_registry_lists_a_production_model_whose_skill_was_measured_elsewhere() {
     let mut registry = ModelRegistry::default();
-    registry.register(bounded());
+    registry
+        .register(bounded())
+        .expect("a registry below its cap admits a card");
     assert!(
         registry.ineligible(now()).is_empty(),
         "premise: eligible on its own terms"

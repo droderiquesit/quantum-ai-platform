@@ -29,7 +29,9 @@ fn graph_reasoner_is_registered_and_refused_from_hot_lanes() {
     .with_purpose("bitemporal graph traversal and as-of queries")
     .with_class(ModelClass::ReasonerGraph);
 
-    registry.register(graph_reasoner);
+    registry
+        .register(graph_reasoner)
+        .expect("a registry below its cap admits a card");
 
     // Verify registration
     let card = registry
@@ -70,7 +72,9 @@ fn causal_reasoner_is_registered_and_refused_from_hot_lanes() {
     .with_purpose("causal shock propagation with lag and attenuation")
     .with_class(ModelClass::ReasonerCausal);
 
-    registry.register(causal_reasoner);
+    registry
+        .register(causal_reasoner)
+        .expect("a registry below its cap admits a card");
 
     // Verify registration
     let card = registry

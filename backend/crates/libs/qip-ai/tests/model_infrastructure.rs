@@ -522,14 +522,18 @@ fn evaluated_card(at: Timestamp, passed: bool) -> ModelCard {
 #[test]
 fn a_model_needs_a_passing_evaluation_before_promotion() {
     let mut registry = ModelRegistry::new();
-    registry.register(evaluated_card(now(), false));
+    registry
+        .register(evaluated_card(now(), false))
+        .expect("a registry below its cap admits a card");
     let error = registry
         .promote("regime-classifier@2.1.0", now())
         .unwrap_err();
     assert!(error.to_string().contains("passing evaluation"));
 
     let mut registry = ModelRegistry::new();
-    registry.register(evaluated_card(now(), true));
+    registry
+        .register(evaluated_card(now(), true))
+        .expect("a registry below its cap admits a card");
     registry.promote("regime-classifier@2.1.0", now()).unwrap();
     assert_eq!(
         registry.get("regime-classifier@2.1.0").unwrap().stage,
@@ -540,7 +544,9 @@ fn a_model_needs_a_passing_evaluation_before_promotion() {
 #[test]
 fn a_production_model_can_drive_a_decision() {
     let mut registry = ModelRegistry::new();
-    registry.register(evaluated_card(now(), true));
+    registry
+        .register(evaluated_card(now(), true))
+        .expect("a registry below its cap admits a card");
     registry.promote("regime-classifier@2.1.0", now()).unwrap();
     let card = registry
         .require_for_decision("regime-classifier@2.1.0", now())
@@ -552,7 +558,9 @@ fn a_production_model_can_drive_a_decision() {
 #[test]
 fn a_retired_model_is_refused_for_decisions() {
     let mut registry = ModelRegistry::new();
-    registry.register(evaluated_card(now(), true));
+    registry
+        .register(evaluated_card(now(), true))
+        .expect("a registry below its cap admits a card");
     registry.promote("regime-classifier@2.1.0", now()).unwrap();
     registry.retire("regime-classifier@2.1.0", now()).unwrap();
 
@@ -566,7 +574,9 @@ fn a_retired_model_is_refused_for_decisions() {
 #[test]
 fn a_drifted_model_is_refused_until_it_is_re_evaluated() {
     let mut registry = ModelRegistry::new();
-    registry.register(evaluated_card(now(), true));
+    registry
+        .register(evaluated_card(now(), true))
+        .expect("a registry below its cap admits a card");
     registry.promote("regime-classifier@2.1.0", now()).unwrap();
     registry
         .record_drift("regime-classifier@2.1.0", 0.45)
@@ -582,7 +592,9 @@ fn a_drifted_model_is_refused_until_it_is_re_evaluated() {
 #[test]
 fn a_stale_evaluation_expires() {
     let mut registry = ModelRegistry::new();
-    registry.register(evaluated_card(now(), true));
+    registry
+        .register(evaluated_card(now(), true))
+        .expect("a registry below its cap admits a card");
     registry.promote("regime-classifier@2.1.0", now()).unwrap();
 
     let much_later = now().saturating_add(Duration::from_days(200));
@@ -598,7 +610,9 @@ fn a_never_evaluated_model_cannot_drive_a_decision() {
     let mut card = evaluated_card(now(), true);
     card.evaluations.clear();
     card.stage = ModelStage::Production;
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("a registry below its cap admits a card");
     let error = registry
         .require_for_decision("regime-classifier@2.1.0", now())
         .unwrap_err();
@@ -619,8 +633,12 @@ fn the_registry_finds_the_current_production_version() {
     let mut registry = ModelRegistry::new();
     let mut old = evaluated_card(now().saturating_sub(Duration::from_days(400)), true);
     old.version = "1.0.0".into();
-    registry.register(old);
-    registry.register(evaluated_card(now(), true));
+    registry
+        .register(old)
+        .expect("a registry below its cap admits a card");
+    registry
+        .register(evaluated_card(now(), true))
+        .expect("a registry below its cap admits a card");
     registry
         .promote(
             "regime-classifier@1.0.0",
@@ -807,7 +825,9 @@ fn promoting_with_an_artifact_names_it_on_the_card_and_publishes_it_under_its_di
     let mut registry = ModelRegistry::new();
     let card = evaluated_card(now(), true);
     let artifact = artifact_for(&card, 0.1);
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("a registry below its cap admits a card");
     assert!(
         registry
             .get("regime-classifier@2.1.0")
@@ -847,7 +867,9 @@ fn an_artifact_that_does_not_digest_to_its_payload_promotes_nothing() {
     let mut registry = ModelRegistry::new();
     let card = evaluated_card(now(), true);
     let mut artifact = artifact_for(&card, 0.1);
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("a registry below its cap admits a card");
     // Swap the payload after the digest was taken.
     artifact.payload["form"]["linear"]["intercept"] = json!(0.2);
     assert_ne!(
@@ -870,7 +892,9 @@ fn an_artifact_for_an_unevaluated_card_is_refused_and_no_digest_is_recorded() {
     let mut registry = ModelRegistry::new();
     let card = evaluated_card(now(), false);
     let artifact = artifact_for(&card, 0.1);
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("a registry below its cap admits a card");
     let error = registry.promote_artifact(&artifact, now()).unwrap_err();
     assert!(error.message().contains("passing evaluation"), "{error}");
     let card = registry.get("regime-classifier@2.1.0").unwrap();
@@ -898,7 +922,9 @@ fn a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference
     let first = artifact_for(&card, 0.1);
     let second = artifact_for(&card, 0.3);
     assert_ne!(first.digest, second.digest, "the premise failed");
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("a registry below its cap admits a card");
     registry.promote_artifact(&first, now()).unwrap();
 
     let error = registry.promote_artifact(&second, now()).unwrap_err();
@@ -960,13 +986,17 @@ fn a_registered_model_keeps_all_six_attributes_and_rolls_back_to_the_parent_arti
     let mut registry = ModelRegistry::new();
     let parent = successor_card("2.1.0");
     let parent_artifact = artifact_for(&parent, 0.1);
-    registry.register(parent);
+    registry
+        .register(parent)
+        .expect("a registry below its cap admits a card");
     registry.promote_artifact(&parent_artifact, now()).unwrap();
 
     let child = successor_card("2.2.0");
     let child_artifact = artifact_for(&child, 0.2);
     assert_ne!(parent_artifact.digest, child_artifact.digest, "premise");
-    registry.register(child);
+    registry
+        .register(child)
+        .expect("a registry below its cap admits a card");
     registry.promote_artifact(&child_artifact, now()).unwrap();
     registry.retire("regime-classifier@2.1.0", now()).unwrap();
     registry
@@ -1014,7 +1044,9 @@ fn a_model_with_no_recorded_parent_cannot_be_rolled_back() {
     let mut registry = ModelRegistry::new();
     let card = successor_card("2.1.0");
     let artifact = artifact_for(&card, 0.1);
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("a registry below its cap admits a card");
     registry.promote_artifact(&artifact, now()).unwrap();
 
     let error = registry
@@ -1091,7 +1123,9 @@ fn an_alias_move_names_its_mover_and_its_evidence_and_a_card_keeps_only_the_newe
     use qip_ai::registry::{ALIAS_MOVES_RETAINED, PRODUCTION_ALIAS};
     const REFERENCE: &str = "regime-classifier@2.1.0";
     let mut registry = ModelRegistry::new();
-    registry.register(evaluated_card(now(), true));
+    registry
+        .register(evaluated_card(now(), true))
+        .expect("a registry below its cap admits a card");
     // Premise: an unpromoted card holds no alias and no move, so what is
     // read below was written below.
     assert!(registry.aliases(REFERENCE).unwrap().is_empty());
@@ -1171,7 +1205,9 @@ fn a_shadow_round_is_counted_only_for_a_shadowed_model_once_per_window_with_evid
     let mut registry = ModelRegistry::new();
     let failed_card = evaluated_card(t0, false);
     let failed = failed_card.reference();
-    registry.register(failed_card);
+    registry
+        .register(failed_card)
+        .expect("a registry below its cap admits a card");
     assert!(registry.enter_shadow(&failed, t0).is_err());
     assert_eq!(
         registry.get(&failed).unwrap().stage,
@@ -1181,7 +1217,9 @@ fn a_shadow_round_is_counted_only_for_a_shadowed_model_once_per_window_with_evid
     let mut registry = ModelRegistry::new();
     let card = evaluated_card(t0, true);
     let reference = card.reference();
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("a registry below its cap admits a card");
     assert!(
         registry
             .record_shadow_round(&reference, "won", minute(1))
@@ -1241,13 +1279,17 @@ fn a_self_fitted_card_is_promoted_only_out_of_a_completed_shadow_whoever_asks() 
     let mut ordinary = ModelRegistry::new();
     let card = evaluated_card(t0, true);
     let reference = card.reference();
-    ordinary.register(card);
+    ordinary
+        .register(card)
+        .expect("a registry below its cap admits a card");
     ordinary.promote(&reference, t0).unwrap();
 
     let mut registry = ModelRegistry::new();
     let mut card = evaluated_card(t0, true);
     card.self_fitted = true;
-    registry.register(card);
+    registry
+        .register(card)
+        .expect("a registry below its cap admits a card");
     let refused = registry.promote(&reference, t0).unwrap_err();
     assert!(
         refused.to_string().contains("completed shadow stage"),
@@ -1271,4 +1313,50 @@ fn a_self_fitted_card_is_promoted_only_out_of_a_completed_shadow_whoever_asks() 
         registry.get(&reference).unwrap().stage,
         ModelStage::Production
     );
+}
+
+/// R12-MODEL-9003: the registry refuses a new card once it holds
+/// `MAX_CARDS`, and still admits a replacement of a card it holds. The
+/// deep brain registers a card for every fit and never removes one, so
+/// without the cap the registry grew for as long as the process ran.
+/// Mutation: drop the capacity check in `ModelRegistry::register` — the
+/// card past the cap is admitted and the refusal assertion fails.
+#[test]
+fn a_registry_at_its_cap_refuses_a_new_card_and_admits_a_replacement() {
+    use qip_ai::registry::MAX_CARDS;
+    let card = |n: usize| {
+        ModelCard::new(
+            ModelId::from_string(format!("m-cap-{n}")),
+            "cap-model",
+            format!("0.{n}.0"),
+            "research",
+            now(),
+        )
+    };
+    let mut registry = ModelRegistry::new();
+    for n in 0..MAX_CARDS {
+        registry
+            .register(card(n))
+            .expect("a registry below its cap admits a card");
+    }
+    assert_eq!(registry.len(), MAX_CARDS, "premise: the registry is full");
+
+    let refusal = registry
+        .register(card(MAX_CARDS))
+        .expect_err("a card past the cap was admitted");
+    assert!(
+        refusal.message().contains("its cap"),
+        "the refusal does not say why: {}",
+        refusal.message()
+    );
+    assert_eq!(registry.len(), MAX_CARDS, "the refused card was kept");
+    assert!(registry.get(&card(MAX_CARDS).reference()).is_none());
+
+    // A replacement does not grow the registry, so it is admitted.
+    let mut replacement = card(0);
+    replacement.drift_score = 0.5;
+    registry
+        .register(replacement)
+        .expect("a replacement at the cap is admitted");
+    assert_eq!(registry.len(), MAX_CARDS);
 }

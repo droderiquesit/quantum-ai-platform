@@ -100,6 +100,30 @@ impl EventBody for ModelRegistered {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// The origin a refused model registration is journaled under.
+pub const MODEL_REGISTRATION_REFUSED_ORIGIN: &str = "kernel/model-registration-refused";
+
+/// A model card the registry refused because it holds
+/// `qip_ai::registry::MAX_CARDS` cards (R12-MODEL-9003).
+///
+/// The cap refuses rather than evicts, and a refusal nobody can see is an
+/// eviction with better manners: learning stops for a subject and nothing
+/// says why. So each refusal is counted
+/// (`MODEL_PACKAGES{outcome="card_refused_at_cap"}`) and journaled here,
+/// naming what was refused: the card's reference when the card exists, or
+/// the subject whose next fit the deep brain declined to start.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelRegistrationRefused {
+    pub refused: String,
+    pub reason: String,
+    pub at: Timestamp,
+}
+
+impl EventBody for ModelRegistrationRefused {
+    const TOPIC: Topic = Topic::ModelEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 /// Whether two cards differ only in a drift reading that stays on the same
 /// side of the card's threshold. A reading that crosses it changes whether
 /// the model may inform a decision, so it is a record; one that does not is
@@ -772,6 +796,47 @@ impl Platform {
                 labels([("outcome", "cards_unjournaled")]),
             );
         }
+    }
+
+    /// Count and journal a model registration the registry refused at its
+    /// cap (see [`ModelRegistrationRefused`]).
+    pub fn refuse_model_registration(
+        &mut self,
+        refused: &str,
+        reason: &str,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.telemetry.metrics.count(
+            names::MODEL_PACKAGES,
+            labels([("outcome", "card_refused_at_cap")]),
+        );
+        self.journal_record(
+            ModelRegistrationRefused {
+                refused: refused.to_string(),
+                reason: reason.to_string(),
+                at: now,
+            },
+            MODEL_REGISTRATION_REFUSED_ORIGIN,
+            now,
+        )
+    }
+
+    /// Every model registration the log records as refused at the cap, in log
+    /// order.
+    pub fn refused_model_registrations(&self) -> Result<Vec<ModelRegistrationRefused>> {
+        let mut refused = Vec::new();
+        for record in self.event_log().records() {
+            if record.event.topic == Topic::ModelEvaluated
+                && record.event.lineage.producer == MODEL_REGISTRATION_REFUSED_ORIGIN
+            {
+                refused.push(
+                    StreamEnvelope::from_frame(&record.event)?
+                        .decode::<ModelRegistrationRefused>()?
+                        .body,
+                );
+            }
+        }
+        Ok(refused)
     }
 
     /// Every registered card the log holds, the newest record per reference,

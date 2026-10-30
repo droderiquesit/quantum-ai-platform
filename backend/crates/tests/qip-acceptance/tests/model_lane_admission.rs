@@ -49,9 +49,15 @@ fn specialist_models_are_refused_from_hot_lanes() {
     .with_purpose("liquidity depth prediction")
     .with_class(ModelClass::SpecialistLiquidity);
 
-    registry.register(generic_card);
-    registry.register(regime_card);
-    registry.register(liquidity_card);
+    registry
+        .register(generic_card)
+        .expect("a registry below its cap admits a card");
+    registry
+        .register(regime_card)
+        .expect("a registry below its cap admits a card");
+    registry
+        .register(liquidity_card)
+        .expect("a registry below its cap admits a card");
 
     // Generic model passes hot-lane admission
     assert!(
@@ -100,8 +106,12 @@ fn reasoner_models_are_refused_from_hot_lanes() {
     .with_purpose("causal shock propagation")
     .with_class(ModelClass::ReasonerCausal);
 
-    registry.register(graph_reasoner);
-    registry.register(causal_reasoner);
+    registry
+        .register(graph_reasoner)
+        .expect("a registry below its cap admits a card");
+    registry
+        .register(causal_reasoner)
+        .expect("a registry below its cap admits a card");
 
     // Both reasoners fail hot-lane admission
     assert!(
@@ -145,7 +155,9 @@ fn all_specialist_model_classes_are_refused_from_hot_lanes() {
             now,
         )
         .with_class(*class);
-        registry.register(card);
+        registry
+            .register(card)
+            .expect("a registry below its cap admits a card");
 
         let reference = format!("specialist-{name}@1.0.0");
         assert!(
