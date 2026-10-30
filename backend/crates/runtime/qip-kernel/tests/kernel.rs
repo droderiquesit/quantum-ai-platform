@@ -2136,3 +2136,172 @@ fn a_lapsed_panel_is_deferred_to_a_bounded_backlog_and_the_cycle_still_acts() ->
     }
     Ok(())
 }
+
+/// R12-REASON-3023 on the default cycle: the self-exploitation probe reads
+/// the platform's own fills, and the kernel is what puts them there —
+/// `brief_the_desk_on_executions`, before every REASON. An order filled on
+/// one cycle is on the desk when the next panel convenes, and the probe's
+/// finding counts it. Without the feed the probe would report nothing
+/// examined on every cycle of every deployment while the organisation test
+/// above, on a hand-built desk, kept passing.
+///
+/// Mutation: delete `self.brief_the_desk_on_executions();` from
+/// `stage_reason` — the probe reports no data on every cycle and the
+/// `fills_scanned` assertion fails. Verified and restored.
+#[test]
+fn a_fill_the_platform_made_is_on_the_desk_for_the_self_exploitation_probe_next_cycle() -> Result<()>
+{
+    use qip_investment_agents::ids;
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+    assert!(
+        !first
+            .stage(Stage::Reason)
+            .expect("REASON reports")
+            .detail
+            .contains("nothing in the queue"),
+        "premise: the panel convenes on this fixture"
+    );
+    let probe_findings = |platform: &Platform| -> Vec<f64> {
+        platform
+            .organisation()
+            .audit()
+            .for_agent(ids::SELF_EXPLOITATION)
+            .iter()
+            .filter_map(|run| run.finding.as_ref())
+            .filter_map(|finding| {
+                finding
+                    .facts
+                    .iter()
+                    .find(|fact| fact.label == "fills_scanned")
+                    .map(|fact| fact.value)
+            })
+            .collect()
+    };
+    // Premise: before any fill the probe examined nothing.
+    assert!(
+        probe_findings(&platform).is_empty(),
+        "the probe counted fills before the platform made any: {:?}",
+        probe_findings(&platform)
+    );
+
+    let later = start().saturating_add(Duration::from_days(1));
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-probe",
+        vec!["hyp-probe".to_string()],
+        later,
+    );
+    platform
+        .submit_order(order, later)
+        .map_err(|error| qip_core::error::Error::invalid(error.message().to_string()))?;
+    let mut counted = Vec::new();
+    for day in 1..=4i64 {
+        platform.observe(bars("AAA", 120 + day as usize));
+        platform.run_cycle(start().saturating_add(Duration::from_days(day)));
+        counted = probe_findings(&platform);
+        if counted.iter().any(|fills| *fills >= 1.0) {
+            break;
+        }
+    }
+    assert!(
+        !platform.orders().fills().is_empty(),
+        "premise: the order filled, so there is an execution to show the probe"
+    );
+    assert!(
+        counted.iter().any(|fills| *fills >= 1.0),
+        "the probe never saw the platform's own fill: {counted:?}"
+    );
+    Ok(())
+}
+
+/// R12-WORLD-3036: the self-model holds the platform's operational health and
+/// its capability boundary, fed by the kernel, beside its record of graded
+/// forecasts. A halted kernel and a degraded table (on a fresh platform the
+/// self-model row reads unavailable, since nothing has been graded) appear in
+/// the health reading after the cycle. The reading clears once the halt does.
+/// The boundary is the classes the admitted universe holds an instrument in.
+/// The shipped registry registers every class, so "unregistered" here means
+/// outside what the platform can act on: a class this universe holds nothing
+/// in, and a name that is no class at all, both read outside, and the
+/// universe's own classes read inside.
+///
+/// Mutations: skip `observe_own_health` in `run_cycle` -- there is no
+/// reading after the cycle; read `halted` as `false` -- the halted cycle
+/// reads healthy on that count; declare every `AssetClass` as the boundary,
+/// as a registry-derived one would -- no class reads outside it.
+#[test]
+fn a_halted_kernel_and_a_stale_area_appear_in_the_self_models_health_and_an_unregistered_class_lies_outside_its_boundary()
+-> Result<()> {
+    use qip_contracts::degradation::{Capability, Freshness};
+    use qip_financial::asset_class::AssetClass;
+    use qip_learning_engine::self_model::BoundaryReading;
+
+    let mut platform = platform(PlatformConfig::default())?;
+    let readings: Vec<(AssetClass, BoundaryReading)> = AssetClass::ALL
+        .into_iter()
+        .map(|class| (class, platform.self_model().boundary_of(class.as_str())))
+        .collect();
+    assert!(
+        readings
+            .iter()
+            .all(|(_, r)| *r != BoundaryReading::Undeclared),
+        "the kernel declared no boundary: {readings:?}"
+    );
+    assert!(
+        readings.iter().any(|(_, r)| *r == BoundaryReading::Inside),
+        "no registered class reads inside the boundary: {readings:?}"
+    );
+    assert!(
+        readings.iter().any(|(_, r)| *r == BoundaryReading::Outside),
+        "every class reads inside the boundary, so it bounds nothing: {readings:?}"
+    );
+    assert_eq!(
+        platform.self_model().boundary_of("not-an-asset-class"),
+        BoundaryReading::Outside
+    );
+    assert!(
+        platform.self_model().health().is_none(),
+        "premise: no reading before the first cycle"
+    );
+
+    platform.autonomy_mut().kill_switch_mut().trip_global(
+        start(),
+        "operator",
+        "a halt the self-model must see".to_string(),
+    );
+    assert!(
+        platform.autonomy().kill_switch().is_globally_tripped(),
+        "premise"
+    );
+    let halted_at = start().saturating_add(Duration::from_mins(5));
+    platform.run_cycle(halted_at);
+    let health = platform
+        .self_model()
+        .health()
+        .expect("a cycle leaves a health reading")
+        .clone();
+    assert_eq!(health.observed_at, halted_at);
+    assert!(health.halted, "the halted kernel is not in the self-model");
+    assert_eq!(
+        health.degraded.get(&Capability::SelfModel),
+        Some(&Freshness::Unavailable),
+        "a self-model with nothing graded is a stale area the reading must name: {:?}",
+        health.degraded
+    );
+    assert!(!health.is_healthy());
+
+    let cleared_at = start().saturating_add(Duration::from_mins(10));
+    platform.autonomy_mut().kill_switch_mut().clear_global(
+        &OperatorIdentity::verified("operator-a", "desk", cleared_at),
+        cleared_at,
+    )?;
+    platform.run_cycle(start().saturating_add(Duration::from_mins(15)));
+    let after = platform.self_model().health().expect("a reading");
+    assert!(!after.halted, "the reading kept a halt that has cleared");
+    Ok(())
+}

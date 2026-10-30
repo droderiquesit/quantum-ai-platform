@@ -1202,6 +1202,153 @@ mod tests {
         fatal.result.answers(&fatal.request).expect("it answers");
     }
 
+    /// R12-REASON-9032: the seam that pushes the §27 exchange is
+    /// `observe_reasoning`, and until this test nothing drove it with an
+    /// important prediction — the cycle fixtures form a hypothesis below
+    /// `IMPORTANCE_CONFIDENCE` and unapproved, so only the extracted
+    /// `challenge_exchange` helper was proven and a kernel that never called
+    /// it would have passed. An approved hypothesis with a directional claim
+    /// opens a question, is attacked by the society, and the request and the
+    /// result that answers it ride the review; the same hypothesis unapproved
+    /// and under the threshold is not attacked and leaves no exchange.
+    ///
+    /// Mutation: delete `Ok(exchange) => self.review.challenges.push(exchange)`
+    /// (replace with `Ok(_) => {}`) in `observe_reasoning` — the review holds
+    /// no exchange and the first assertion fails. Verified and restored.
+    #[test]
+    fn an_important_prediction_journals_a_challenge_exchange_on_its_tournament_review() {
+        use qip_core::ids::{EvidenceId, HypothesisId, ObjectId};
+        use qip_investment_agents::chief::OrganisationReport;
+        use qip_reasoning_engine::UncertaintyType;
+        use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet};
+        use qip_reasoning_engine::hypothesis::{
+            CausalChain, CausalStep, Claim, HypothesisDraft, HypothesisStatus,
+        };
+        use qip_world_model::causal::Mechanism;
+
+        let at = Timestamp::from_secs(1_760_000_000);
+        let evidence = |id: &str, origin: &str| {
+            Evidence::new(
+                EvidenceId::from_string(id),
+                EvidenceKind::Filing,
+                Stance::Supports,
+                format!("statement for {id}"),
+                format!("rec-{id}"),
+                origin,
+                at,
+                at,
+            )
+            .with_reliability(0.8)
+            .with_diagnosticity(0.7)
+        };
+        let hypothesis = |status: HypothesisStatus| -> Hypothesis {
+            let mut formed = Hypothesis::form(HypothesisDraft {
+                hypothesis_id: HypothesisId::from_string("hyp-important"),
+                opportunity_id: None,
+                formed_at: at,
+                as_of: at,
+                class: "funding-cost-pass-through".to_string(),
+                claim: Claim::Overvalued,
+                statement: "ACME's margin guidance does not reflect its funding".to_string(),
+                subjects: vec![ObjectId::from_string("obj-ACME")],
+                chain: CausalChain::new(vec![CausalStep::new(
+                    "funding-cost",
+                    "obj-ACME",
+                    Mechanism::CreditConditions,
+                    "gross margin compresses",
+                    Duration::from_days(20),
+                    0.8,
+                )]),
+                evidence: EvidenceSet::from_items(vec![
+                    evidence("e1", "macro-analyst"),
+                    evidence("e2", "equity-analyst"),
+                ]),
+                prior: 0.25,
+                uncertainty_type: UncertaintyType::Epistemic,
+                falsifiers: vec!["the next report shows flat gross margin".to_string()],
+                leading_alternative: "the market has priced the margin path".to_string(),
+                horizon: Duration::from_days(60),
+                contributors: Vec::new(),
+                models: Vec::new(),
+            })
+            .expect("a well-formed draft forms");
+            formed.status = status;
+            formed
+        };
+        let report = OrganisationReport {
+            as_of: at,
+            question: "is ACME overvalued".to_string(),
+            runs: Vec::new(),
+            findings: Vec::new(),
+            deferred: Vec::new(),
+            failed: Vec::new(),
+            missing_inputs: Vec::new(),
+            backlogged: Vec::new(),
+            backlog_refused: Vec::new(),
+        };
+        let closes: Vec<f64> = (0..40)
+            .map(|i| 100.0 + (i as f64 * 0.37).sin() * 2.0 + i as f64 * 0.05)
+            .collect();
+        let roster = vec!["macro-analyst".to_string(), "equity-analyst".to_string()];
+        let observe = |stage: &mut TournamentStage, hypothesis: &Hypothesis, approved: bool| {
+            stage.observe_reasoning(
+                ReasonObservation {
+                    hypothesis,
+                    report: &report,
+                    roster: &roster,
+                    regime: "calm".to_string(),
+                    closes: &closes,
+                    spread_ratio: Some(1.1),
+                    crossed_recently: Some(false),
+                    expected_move_bps: 200.0,
+                    approved,
+                    explaining: BTreeSet::new(),
+                },
+                at,
+            )
+        };
+
+        // Premise: the same hypothesis, unapproved and under the threshold,
+        // opens its question and is not attacked.
+        let quiet = hypothesis(HypothesisStatus::Draft);
+        assert!(
+            quiet.effective_confidence() < IMPORTANCE_CONFIDENCE,
+            "premise: {} is important on confidence alone",
+            quiet.effective_confidence()
+        );
+        let mut unattacked = TournamentStage::new();
+        observe(&mut unattacked, &quiet, false).expect("the question opens");
+        assert!(unattacked.review.challenges.is_empty());
+        assert!(unattacked.review.verifications.is_empty());
+
+        let important = hypothesis(HypothesisStatus::Approved);
+        let mut stage = TournamentStage::new();
+        let verdict = observe(&mut stage, &important, true).expect("the question opens");
+        assert!(
+            verdict.clause.contains("verifier society:"),
+            "the society did not attack an approved prediction: {}",
+            verdict.clause
+        );
+        assert_eq!(
+            stage.review.challenges.len(),
+            1,
+            "{:?}",
+            stage.review.refused
+        );
+        let exchange = &stage.review.challenges[0];
+        assert_eq!(exchange.request.request_id, "challenge-q-hyp-important");
+        exchange
+            .result
+            .answers(&exchange.request)
+            .expect("the result answers the request it rides with");
+        assert_eq!(stage.review.verifications.len(), 1);
+        assert_eq!(
+            matches!(exchange.result.verdict, ChallengeVerdict::Refuted { .. }),
+            stage.review.verifications[0].verdict.is_refuted(),
+            "the exchange and the verification disagree about the same attack"
+        );
+    }
+
     /// R12-CONTRACT-6112: a vote whose cost is not an amount is refused,
     /// not cast at zero — a free vote would win the cost factor it never
     /// paid — and a forecaster with no history has no standing. Mutation:

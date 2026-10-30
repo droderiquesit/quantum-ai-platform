@@ -143,7 +143,7 @@ fn print_help() {
     println!("                    refuse a saved plan changing a core resource outside");
     println!("                    the committed change window (exit 3)");
     println!("  replay --journal <path> [--config <path>]");
-    println!("                    verify a journal's hash chain and rebuild the");
+    println!("                    verify a journal's hash chain, rebuild the");
     println!("                    eligibility, registration and fabric registries from");
     println!("                    it alone, against the platform this configuration");
     println!("                    assembles");
@@ -188,7 +188,8 @@ fn print_help() {
     println!("                    without a version bump, 0 if every change only adds");
     println!();
     println!("`registrations` exits 3 while any catalogued source is still refused, and");
-    println!("`replay` exits 3 if the chain is broken or a registry disagrees. Both exit");
+    println!("`replay` exits 3 if the chain is broken, a registry disagrees or a journaled");
+    println!("symbolic derivation does not re-derive. Both exit");
     println!("1 when they could not answer at all. Neither prints a credential value:");
     println!("`registrations` prints the name a credential is read under and the command");
     println!("that puts a version behind it, which reads the value from stdin.");
