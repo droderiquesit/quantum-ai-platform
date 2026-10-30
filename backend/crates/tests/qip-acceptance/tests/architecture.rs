@@ -4212,3 +4212,75 @@ fn the_guard_suites_are_owned_by_name_in_codeowners() {
         );
     }
 }
+
+/// R12-MODEL-4002, ADR 0138: the hosted language-model adapters reach no
+/// fast, reflex or decision crate by any edge Cargo resolves.
+///
+/// `lane_placement.rs` pins the same property over a hand-read graph, and an
+/// in-lane review on 2026-10-25 showed that reader blind: a
+/// `[build-dependencies]` or `[target.'cfg(unix)'.dependencies]` entry naming
+/// `qip-language-providers` in `qip-fastbrain/Cargo.toml` compiled and left
+/// every suite green. This test reads Cargo's own resolution, so target
+/// tables and renames are edges here, and it refuses a build edge too: a
+/// build script that links the adapter is a fast crate compiling against it,
+/// whatever it emits. Mutation: either of those two entries in
+/// `qip-fastbrain/Cargo.toml` fails it.
+#[test]
+fn no_fast_reflex_or_decision_crate_reaches_the_hosted_language_providers_by_any_resolved_edge() {
+    const PROVIDERS: &str = "qip-language-providers";
+    let metadata = workspace_metadata();
+    let members = workspace_member_names(&metadata);
+    // Premise: the crate is a member, so an absent edge is about the graph.
+    assert!(
+        members.contains(PROVIDERS),
+        "{PROVIDERS} is not a workspace member"
+    );
+
+    // Every non-dev edge, build edges included, under each edge's real name.
+    let mut graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for package in packages(&metadata) {
+        let edges = dependencies_of(package)
+            .iter()
+            .filter(|dependency| {
+                dependency.get("kind").and_then(serde_json::Value::as_str) != Some("dev")
+            })
+            .map(dependency_name)
+            .filter(|name| members.contains(name))
+            .collect();
+        graph.insert(package_name(package), edges);
+    }
+
+    let linking: BTreeSet<&str> = graph
+        .iter()
+        .filter(|(_, deps)| deps.contains(PROVIDERS))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        linking,
+        BTreeSet::from(["qip-deepbrain"]),
+        "the crates with a resolved edge to {PROVIDERS} changed; ADR 0138 admits the deep brain \
+         alone"
+    );
+
+    // Premise: edges were read — the fast brain reaches the kernel.
+    assert!(
+        reachable_from(&graph, "qip-fastbrain").contains("qip-kernel"),
+        "premise: the resolved graph holds the fast brain's edges"
+    );
+    let mut roots: Vec<String> = ["qip-fastbrain", "qip-api", "qip-kernel", "qip-edge-node"]
+        .map(String::from)
+        .to_vec();
+    roots.extend(crates_under("backend/crates/edge"));
+    for root in &roots {
+        let reached = reachable_from(&graph, root);
+        assert!(
+            graph.contains_key(root),
+            "premise: {root} is a workspace member the graph holds"
+        );
+        assert!(
+            !reached.contains(PROVIDERS),
+            "{root} reaches {PROVIDERS}, so a hosted generalist model could be built on a lane \
+             that serves the order path or a deterministic check (R12-MODEL-4002)"
+        );
+    }
+}

@@ -69,6 +69,14 @@ pub const SINGLE_ORIGIN_SHARE: f64 = 0.8;
 /// specialists the question needed.
 pub const MINIMUM_COVERAGE: f64 = 0.5;
 
+/// Conviction the panel views leaning against a claim must reach between
+/// them before the lean alone falsifies it — the kernel's importance bar
+/// (`qip_kernel::model_tournament::IMPORTANCE_CONFIDENCE`), read the other
+/// way: a view not important enough to be attacked is not strong enough to
+/// refute one that is (ADR 0170 decision 4). Below it the directional critic
+/// argues from the evidence alone.
+pub const OPPOSING_CONVICTION_BAR: f64 = 0.6;
+
 /// Resolved forecasts per direction a directional-bias finding needs.
 pub const BIAS_SAMPLE: usize = 10;
 
@@ -397,8 +405,19 @@ fn directional_attack(dossier: &PredictionDossier, side: f64, name: &str) -> Cri
     if lean.is_none() && for_ + against <= 0.0 {
         return abstained("no panel view and no weighted evidence to argue from");
     }
+    // The lean is normalised, so one analyst at conviction 0.19 reads as a
+    // panel leaning -1.00; once a refutation became a veto that stopped every
+    // private-market thesis in `valuation_seam` whose evidence weighed 0.49
+    // to 0.15 for it. The opposing conviction itself must carry weight.
+    let opposing: f64 = dossier
+        .panel
+        .iter()
+        .filter(|view| view.direction * side > 0.0)
+        .map(|view| view.conviction.abs())
+        .sum();
     if let Some(lean) = lean
         && lean * side > 0.0
+        && opposing >= OPPOSING_CONVICTION_BAR
     {
         return refuted(format!(
             "the panel leans {name} ({lean:+.2}) against a claim the other way"

@@ -348,7 +348,7 @@ impl Platform {
                 let id = checked.record.id.clone();
                 let claim = ClaimKey::of(&checked.record);
                 let before = world.evidence().version();
-                let journaled = JournaledClaim {
+                let mut journaled = JournaledClaim {
                     record: checked.record.clone(),
                     document_hash: Some(checked.document_hash.clone()),
                     admitted_at: now,
@@ -356,6 +356,15 @@ impl Platform {
                 match world.absorb_evidence(checked.record, Some(&checked.document_hash), now) {
                     Ok((verdict, outcome)) => {
                         intake.admitted += 1;
+                        // The world fabric's own temporal verdict, checked
+                        // against every source's claims, is what the journal
+                        // keeps (R12-EVID-2036). Until 2026-10-25 the record
+                        // journaled was the pre-admission clone, so the log
+                        // said whatever the connector's private check had
+                        // said, or nothing, and a claim the world found
+                        // dated before its declared cause was journaled as
+                        // if no one had looked.
+                        journaled.record.temporal_consistency = Some(verdict.temporal.clone());
                         admitted_claims.push(journaled);
                         // Only an admissible claim with a checkable key moves
                         // what the fabric believes; an inadmissible one is

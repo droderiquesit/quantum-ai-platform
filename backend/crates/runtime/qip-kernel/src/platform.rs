@@ -5380,6 +5380,21 @@ impl Platform {
         // operator correcting a catalogue needs the whole list, and refusing
         // one at a time would take as many restarts as there are bad rows.
         let asset_class_registry = crate::asset_class_registry::AssetClassRegistry::shipped()?;
+        // The self-model's capability boundary (R12-WORLD-3036): the classes
+        // the admitted universe holds an instrument in. Registration says what
+        // the platform may trade, and the shipped registry registers every
+        // class, so a boundary read from it would bound nothing. The universe
+        // says what the platform has reference data, a price and a lot size
+        // for, which is what it can actually act on. It is read once here
+        // because the universe is fixed at assembly; an instrument the
+        // registry would refuse never reaches it, since `admit` below stops
+        // the process first.
+        let mut self_model = SelfModel::new();
+        self_model.declare_boundary(
+            universe
+                .iter()
+                .map(|object| object.asset_class.as_str().to_string()),
+        )?;
         let unsupported: Vec<String> = universe
             .iter()
             .filter_map(|object| asset_class_registry.admit(object).err())
@@ -5815,7 +5830,7 @@ impl Platform {
             falsification: crate::falsification::Book::new(),
             evaluations: Vec::new(),
             last_calibration: None,
-            self_model: SelfModel::new(),
+            self_model,
             // The universe's asset classes are named here, at the one place
             // they are known, so the domain members (MODEL-4009) are declared
             // by the first pass of every deployed cycle and not only in the
@@ -12026,6 +12041,43 @@ impl Platform {
     /// what the caller gets back. The refusal is not a stage failing — it is the
     /// argument being wrong — so nothing is journalled, nothing is charged and
     /// no state moves.
+    /// Hand the self-model this cycle's operational health: whether the
+    /// global kill switch is tripped, and every §6.2 row the centre reads as
+    /// other than fresh (R12-WORLD-3036). Run after LEARN on every cycle,
+    /// halted or not, since a halted platform is the case a self-model most
+    /// needs to know about. A degradation table that cannot be read is put on
+    /// the cycle's problems and recorded as no reading, never as a healthy
+    /// one.
+    fn observe_own_health(&mut self, now: Timestamp) {
+        use qip_contracts::degradation::{Capability, Freshness};
+        let degraded = match self.central_degradation(now) {
+            Ok(state) => Capability::all()
+                .into_iter()
+                .map(|row| (row, state.freshness(row)))
+                .filter(|(_, freshness)| *freshness != Freshness::Fresh)
+                .collect(),
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "the self-model's health was not observed this cycle: the degradation \
+                     table could not be read: {}",
+                    error.message()
+                ));
+                return;
+            }
+        };
+        let health = qip_learning_engine::self_model::OperationalHealth {
+            observed_at: now,
+            halted: self.autonomy.kill_switch().is_globally_tripped(),
+            degraded,
+        };
+        if let Err(error) = self.self_model.observe_health(health) {
+            self.capture_problems.push(format!(
+                "the self-model refused this cycle's health reading: {}",
+                error.message()
+            ));
+        }
+    }
+
     pub fn run_cycle(&mut self, now: Timestamp) -> CycleReport {
         if now < self.reasoned_through {
             return self.refuse_cycle_before(now);
@@ -12081,6 +12133,7 @@ impl Platform {
         self.finish_stage(&mut stages, acted, &mut mark);
         let learned = self.stage_learn(now);
         self.finish_stage(&mut stages, learned, &mut mark);
+        self.observe_own_health(now);
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next
@@ -14954,11 +15007,15 @@ impl Platform {
                     outcome = outcome.with_problem(problem);
                 }
                 // §22's attribution keys and §9.8's tournament, both read
-                // here because this is the instant the facts were true.
-                // Advisory: neither reaches DECIDE. See `crate::attribution`
-                // and `crate::model_tournament`.
-                if let Some(clause) = self.observe_hypothesis(&reasoned, &report, approved, now) {
-                    outcome.detail.push_str(&clause);
+                // here because this is the instant the facts were true. The
+                // one power that reaches DECIDE is the verifier society's
+                // veto (ADR 0125 decision 2, ADR 0170, R12-REASON-3108): a
+                // refuted important prediction forms no proposal. See
+                // `crate::attribution` and `crate::model_tournament`.
+                let mut society_refutation = None;
+                if let Some(verdict) = self.observe_hypothesis(&reasoned, &report, approved, now) {
+                    outcome.detail.push_str(&verdict.clause);
+                    society_refutation = verdict.refuted;
                 }
                 let decision = if let Some(veto) = symbolic_veto {
                     // ADR 0125 decision 2: the rule pack refused what review
@@ -14975,6 +15032,15 @@ impl Platform {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
                     DecisionTaken::RejectedOnReview
+                } else if let Some(refutation) = society_refutation {
+                    // ADR 0170: the verifier society falsified the leading
+                    // explanation review approved. Recorded under its own
+                    // words; the verification is journaled with the
+                    // tournament's review in LEARN.
+                    outcome = outcome.with_problem(format!(
+                        "approved but refuted by the verifier society: {refutation}"
+                    ));
+                    DecisionTaken::NotSizeable
                 } else {
                     // Approved on review and still not queued unless
                     // justified: a thesis whose only ground is the return it
@@ -15117,11 +15183,26 @@ impl Platform {
         report: &qip_investment_agents::OrganisationReport,
         approved: bool,
         now: Timestamp,
-    ) -> Option<String> {
+    ) -> Option<crate::model_tournament::ReasonVerdict> {
         let roster: Vec<String> = self
             .organisation
             .roster()
             .iter()
+            .map(|manifest| manifest.id.clone())
+            .collect();
+        // ADR 0170 decision 2: the society reads only the agents that
+        // explain. See `ReasonObservation::explaining`.
+        let explaining: BTreeSet<String> = self
+            .organisation
+            .roster()
+            .iter()
+            .filter(|manifest| {
+                matches!(
+                    manifest.role,
+                    qip_agents::manifest::AgentRole::Research
+                        | qip_agents::manifest::AgentRole::Adversarial
+                )
+            })
             .map(|manifest| manifest.id.clone())
             .collect();
         self.attribution_lineage
@@ -15161,6 +15242,7 @@ impl Platform {
                 crossed_recently,
                 expected_move_bps,
                 approved,
+                explaining,
             },
             now,
         )
