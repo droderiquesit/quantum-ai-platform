@@ -620,7 +620,7 @@ impl EvolutionEngine {
         cycle: u64,
         now: Timestamp,
     ) -> Result<Option<LearningRound>> {
-        if !self.learning.due(cycle) {
+        if !self.learning_due(cycle) {
             return Ok(None);
         }
         // A restarted process's registry is empty; the log is not
@@ -876,13 +876,26 @@ impl EvolutionEngine {
         self.priors = priors;
     }
 
+    /// Whether a search round is due on `cycle`. The one statement of the
+    /// cadence, read by [`Self::maybe_turn`] and by the run loop when it
+    /// holds a due round in the research backlog instead (ADR 0214): two
+    /// copies would let the loop queue a round the engine would not have run.
+    pub fn search_due(&self, cycle: u64) -> bool {
+        self.config.every_cycles != 0 && cycle.is_multiple_of(self.config.every_cycles)
+    }
+
+    /// Whether a learning round is due on `cycle`; see [`Self::search_due`].
+    pub fn learning_due(&self, cycle: u64) -> bool {
+        self.learning.due(cycle)
+    }
+
     pub fn maybe_turn(
         &mut self,
         platform: &mut Platform,
         cycle: u64,
         now: Timestamp,
     ) -> Result<Option<RoundSummary>> {
-        if self.config.every_cycles == 0 || !cycle.is_multiple_of(self.config.every_cycles) {
+        if !self.search_due(cycle) {
             return Ok(None);
         }
         let Some((subject, bars)) = self
