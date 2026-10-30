@@ -3279,10 +3279,15 @@
   },
   {
     "id": "R12-AMBIENT-1142",
-    "status": "MISSING",
-    "current": "No always-running ambient process maintains scenario branches; kernel forecasts are computed per cycle on request.",
-    "evidence": [],
-    "gap": "An ambient loop in deepbrain.",
+    "status": "PARTIAL",
+    "current": "The deep brain's ambient loop maintains scenario branches without a request: ResearchLoop::sweep_over, run on every deep-brain sweep from the node loop, calls conditional_scenarios (research.rs), which for every Risk or Assumption signal of the round turns the signal's own last move on each affected subject into a one-day FactorShock scenario, keyed on the signal's inputs so a replay yields the same digest, and journals it as AmbientRecord::Scenario caused by that signal. The schedule is the sweep cadence; nothing outside the loop asks for a scenario.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over -> self.conditional_scenarios(platform, &metrics, &mut round) (the one call, on the default sweep), fn conditional_scenarios",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:586 research.maybe_sweep on the node loop; ResearchConfig::default every_cycles 1 (research.rs:417), no committed environment sets QIP_DEEPBRAIN_RESEARCH_EVERY",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs AmbientRecord::Scenario",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (asserts the risk surprise yields a journaled scenario carrying the 30% move as a one-day shock)"
+    ],
+    "gap": "2026-10-25 (lane L2b; independent read-only skeptic REFUTED on bar parts 4 and 1): scenarios are generated afresh each sweep and overwritten (research.rs:2620 round.scenarios = generated), nothing is kept on the loop between sweeps, so no branch is updated, carried forward or retired, and the journaled Scenario is write-only (its only reader is the journal writer, ambient_journal.rs:230); and the named test calls loop_.sweep and ambient.record itself (tests/ambient_journal.rs:397-414), never maybe_sweep or the node loop, so the schedule clause (\"on a schedule without external request\") is not what the test proves. Closing it: a ScenarioBranches state on ResearchLoop that each sweep updates (re-shocks a held branch on the subject's new tape, retires one whose signal has lapsed) and journals the update, read by at least the simulation or risk path, plus a node-level test through maybe_sweep.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3292,10 +3297,10 @@
       "R12-AMBIENT-1005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-25 lane L2b (wave580): the row said MISSING while the code and its test had landed; record corrected, no code change. Mutation run as the test's own comment names: deleting the self.conditional_scenarios(..) call in sweep_over -> FAILED at ambient_journal.rs:472 \"the risk surprise yields a scenario\"; restored byte for byte (cmp), test result: ok. 1 passed. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records; held part 2 (default cadence on). Row moves MISSING -> PARTIAL: generation and journaling exist on the default path, maintenance does not."
   },
   {
     "id": "R12-AMBIENT-1143",

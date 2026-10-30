@@ -606,6 +606,54 @@ fn economic_scale_bp(value: f64) -> Result<u32> {
     basis_points(scaled)
 }
 
+/// One agent cell's stated compute budget, as the market allocated within it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentBudgetLine {
+    pub domain: String,
+    pub horizon: String,
+    pub regime: String,
+    /// Compute units the agent may take in one round.
+    pub units: Decimal,
+}
+
+/// One grant the market made, with the weight the bid was priced on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GrantLine {
+    pub work_id: String,
+    pub kind: String,
+    pub resource: String,
+    pub units: u32,
+    /// The agent cell whose record weighted the bid.
+    pub domain: String,
+    pub horizon: String,
+    pub regime: String,
+    /// The cell's reputation weight in basis points at the time of the grant
+    /// (`ReputationBook::standing(..).weight_bp()`): the ModelWeight the
+    /// price rode on.
+    pub weight_bp: u32,
+    /// Value in basis points the units were granted on.
+    pub expected_bp: f64,
+    /// What the market cleared at for this work, per compute unit of cost.
+    pub clearing_bp_per_unit_cost: f64,
+    /// Compute units charged, by resource name.
+    pub charged: BTreeMap<String, Decimal>,
+}
+
+/// The compute market of one sweep, as the ambient journal records it
+/// (R12-AMBIENT-9034). Written so that the bound every agent ran under and
+/// the weight every grant was priced on can be read back from the log;
+/// until this the sweep line carried counts (`units_granted`, `declined`)
+/// and the budgets lived only in the process's configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MarketRecord {
+    pub agent_budgets: Vec<AgentBudgetLine>,
+    pub grants: Vec<GrantLine>,
+    /// Declined bids, each with the market's reason.
+    pub declined: Vec<(String, String)>,
+    /// Compute spent, by resource name.
+    pub spent: BTreeMap<String, Decimal>,
+}
+
 /// What one sweep did, for the cycle line.
 #[derive(Debug, Clone, Default)]
 pub struct ResearchRound {
@@ -681,6 +729,13 @@ pub struct ResearchRound {
     /// assumption last challenged three sweeps ago reads as holding for
     /// three sweeps rather than as nothing.
     pub assumptions: Vec<AssumptionState>,
+    /// The compute market this sweep ran (R12-AMBIENT-9034): the agent
+    /// budgets it allocated within, every grant with the reputation weight
+    /// it was priced on, every decline with its reason, and what was spent.
+    /// `None` when no item bid. Journaled by the ambient journal so the
+    /// bound and the weights are replayable from the log, not only from the
+    /// cycle line's counts.
+    pub market: Option<MarketRecord>,
     /// Every information request this sweep launched, in the Curiosity
     /// Engine's rank order, as the scout job the node hands the discovery
     /// desk (R12-AMBIENT-9033): a launch that only recorded its cost reached
@@ -3108,8 +3163,54 @@ impl ResearchLoop {
             self.meta
                 .allocate_within(&bids, &budget, &self.config.agent_budgets, now)?;
         let mut granted: BTreeMap<String, Decimal> = BTreeMap::new();
+        // The market as the journal will carry it (R12-AMBIENT-9034), built
+        // from the same allocation the grants below are carried out from, so
+        // the record and the action cannot disagree.
+        let mut market = MarketRecord {
+            agent_budgets: self
+                .config
+                .agent_budgets
+                .iter()
+                .map(|(key, units)| AgentBudgetLine {
+                    domain: key.domain.clone(),
+                    horizon: key.horizon.clone(),
+                    regime: key.regime.clone(),
+                    units: *units,
+                })
+                .collect(),
+            grants: Vec::new(),
+            declined: allocation
+                .declined
+                .iter()
+                .map(|(work_id, decline)| (work_id.clone(), decline.as_str().to_string()))
+                .collect(),
+            spent: allocation
+                .spent
+                .iter()
+                .map(|(resource, units)| (resource_str(*resource).to_string(), *units))
+                .collect(),
+        };
         for grant in &allocation.grants {
             let question = grant.allocation.work_id().to_string();
+            if let Some((key, _)) = cells.get(&question) {
+                market.grants.push(GrantLine {
+                    work_id: question.clone(),
+                    kind: grant.kind.as_str().to_string(),
+                    resource: resource_str(grant.allocation.resource_type()).to_string(),
+                    units: grant.allocation.units(),
+                    domain: key.domain.clone(),
+                    horizon: key.horizon.clone(),
+                    regime: key.regime.clone(),
+                    weight_bp: self.meta.reputation().standing(key).weight_bp(),
+                    expected_bp: grant.expected_bp,
+                    clearing_bp_per_unit_cost: grant.clearing_bp_per_unit_cost,
+                    charged: grant
+                        .charged
+                        .iter()
+                        .map(|(resource, units)| (resource_str(*resource).to_string(), *units))
+                        .collect(),
+                });
+            }
             let total = grant
                 .charged
                 .values()
@@ -3148,6 +3249,9 @@ impl ResearchLoop {
         for (_, decline) in &allocation.declined {
             *round.declined.entry(decline.as_str()).or_default() += 1;
             metrics.count(META_BIDS_DECLINED, labels([("reason", decline.as_str())]));
+        }
+        if !bids.is_empty() {
+            round.market = Some(market);
         }
         Ok(granted)
     }

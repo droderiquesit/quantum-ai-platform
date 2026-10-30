@@ -34,7 +34,9 @@ use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
 use qip_investment_agents::coverage::Scope;
-use qip_investment_agents::desk::{BookView, ComplianceView, Desk, MarketView, RiskView};
+use qip_investment_agents::desk::{
+    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, MarketView, RiskView, TradeSide,
+};
 use qip_investment_agents::{Organisation, ids, manifests};
 use qip_market::bar::{Bar, Interval};
 use qip_market::book::{BookLevel, OrderBook};
@@ -87,7 +89,7 @@ fn brief() -> AgentBrief {
 #[test]
 fn the_declared_organisation_passes_its_own_governance() {
     let roster = manifests::roster(now());
-    assert_eq!(roster.len(), 20, "the organisation is twenty agents");
+    assert_eq!(roster.len(), 22, "the organisation is twenty-two agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -543,27 +545,55 @@ fn desk_holding_causal_claims(claims: Vec<qip_world_model::CausalEdge>) -> Arc<D
         now().saturating_sub(Duration::from_days(2)),
     ));
 
-    Arc::new(Desk::new(
-        MarketView { snapshot, universe },
-        world,
-        BookView {
-            portfolio: Portfolio::new(
-                PortfolioId::from_string("pf-1"),
-                "test",
-                Currency::USD,
-                dec!("10000000"),
-                now(),
-            ),
-            marks: BTreeMap::from([(object("ACME").as_str().to_string(), dec!("100"))]),
-        },
-        RiskView {
-            state: RiskState::default(),
-            limits: LimitSet::conservative_default(),
-        },
-        ComplianceView::default(),
-        ResearchMemory::new(),
-        library,
-    ))
+    Arc::new(
+        Desk::new(
+            MarketView { snapshot, universe },
+            world,
+            BookView {
+                portfolio: Portfolio::new(
+                    PortfolioId::from_string("pf-1"),
+                    "test",
+                    Currency::USD,
+                    dec!("10000000"),
+                    now(),
+                ),
+                marks: BTreeMap::from([(object("ACME").as_str().to_string(), dec!("100"))]),
+            },
+            RiskView {
+                state: RiskState::default(),
+                limits: LimitSet::conservative_default(),
+            },
+            ComplianceView::default(),
+            ResearchMemory::new(),
+            library,
+        )
+        .with_executions(fixture_executions()),
+    )
+}
+
+/// Four of the platform's own fills, landing on both sides of arrival with
+/// distinct sizes: a flow the self-exploitation probe examines and finds
+/// nothing in.
+fn fixture_executions() -> ExecutionView {
+    let record = |n: i64, side: TradeSide, quantity: &str, fill: &str| ExecutionRecord {
+        order_id: format!("ord-{n}"),
+        object_id: object("ACME").as_str().to_string(),
+        side,
+        quantity: Decimal::parse(quantity).unwrap(),
+        arrival_price: dec!("100"),
+        fill_price: Decimal::parse(fill).unwrap(),
+        placed_at: now().saturating_sub(Duration::from_days(5 - n)),
+        filled_at: now().saturating_sub(Duration::from_days(5 - n)),
+        venue: "XSIM".to_string(),
+    };
+    ExecutionView {
+        executions: vec![
+            record(1, TradeSide::Buy, "100", "100.02"),
+            record(2, TradeSide::Buy, "150", "99.98"),
+            record(3, TradeSide::Sell, "120", "100.03"),
+            record(4, TradeSide::Sell, "80", "99.97"),
+        ],
+    }
 }
 
 fn organisation(desk: Arc<Desk>) -> Result<Organisation> {
@@ -581,7 +611,7 @@ fn organisation(desk: Arc<Desk>) -> Result<Organisation> {
 #[test]
 fn the_organisation_assembles_and_dispatches() -> Result<()> {
     let mut org = organisation(populated_desk())?;
-    assert_eq!(org.len(), 19);
+    assert_eq!(org.len(), 21);
 
     let report = org.dispatch(&brief(), now(), &lineage());
     assert!(!report.runs.is_empty());
@@ -2630,5 +2660,64 @@ fn a_panel_agent_that_cannot_run_is_deferred_and_the_findings_are_identical_to_i
         vec![ids::MACRO.to_string()],
         "a refused deferral stopped the rest of the organisation"
     );
+    Ok(())
+}
+
+/// R12-REASON-3023. The self-exploitation probe reads the platform's own
+/// fills, and nobody else does: without it the organisation has no view of
+/// strategies that exploit the platform itself. The fixture flow lands on
+/// both sides of arrival with distinct sizes, so the probe examines four
+/// fills and finds nothing — which is still coverage: the flow was probed.
+///
+/// Mutation: rename the `self_exploitation_findings` fact in
+/// `SelfExploitationProbe::analyse` — the fact assertion on it fails first
+/// (organisation.rs, `fact_value` returns `None`), and the scope is no
+/// longer evidenced so `with.contains` would fail next. Verified and
+/// restored.
+#[test]
+fn removing_the_self_exploitation_probe_drops_self_exploitation_from_coverage() -> Result<()> {
+    let desk = populated_desk();
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::SELF_EXPLOITATION)
+        .expect("premise: the standard organisation runs the self-exploitation probe");
+    assert_eq!(fact_value(finding, "fills_scanned"), Some(4.0));
+    assert_eq!(fact_value(finding, "adverse_fill_share"), Some(0.5));
+    assert_eq!(fact_value(finding, "self_exploitation_findings"), Some(0.0));
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::SELF_EXPLOITATION)?;
+    assert!(with.contains(&Scope::SelfExploitation), "{with:?}");
+    assert!(!without.contains(&Scope::SelfExploitation), "{without:?}");
+    Ok(())
+}
+
+/// R12-REASON-3023. The regime-break probe compares each instrument's recent
+/// window against its prior, and nobody else does. The fixture tape's noise
+/// is a fixed rotation with a small drift, so the two windows agree and the
+/// probe reports one instrument compared and no break.
+///
+/// Mutation: rename the `regime_break_findings` fact in
+/// `RegimeBreakProbe::analyse` — the fact assertion on it fails first, and
+/// the scope is no longer evidenced so `with.contains` would fail next.
+/// Verified and restored.
+#[test]
+fn removing_the_regime_break_probe_drops_regime_breaks_from_coverage() -> Result<()> {
+    let desk = populated_desk();
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::REGIME_BREAK)
+        .expect("premise: the standard organisation runs the regime-break probe");
+    assert_eq!(fact_value(finding, "instruments_scanned"), Some(1.0));
+    assert_eq!(fact_value(finding, "regime_break_findings"), Some(0.0));
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::REGIME_BREAK)?;
+    assert!(with.contains(&Scope::RegimeBreak), "{with:?}");
+    assert!(!without.contains(&Scope::RegimeBreak), "{without:?}");
     Ok(())
 }

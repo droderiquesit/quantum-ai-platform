@@ -16,7 +16,7 @@ use qip_contracts::reflex_package::{
     PackageSigner, PackageVerifier, ReflexInput, SignedReflexPackage,
 };
 use qip_core::error::{Error, Result};
-use qip_core::{Context, Duration, Timestamp};
+use qip_core::{Context, Decimal, Duration, Timestamp};
 use qip_deepbrain::research::{FillObservation, META_MARGINAL_VALUE, ResearchConfig, ResearchLoop};
 use qip_expansion::desk::CloseReason;
 use qip_expansion::meta::{ReputationKey, Standing};
@@ -528,4 +528,106 @@ fn a_sweep_compiles_its_started_items_into_a_deterministic_cited_journaled_plan(
         })
         .collect();
     assert_eq!(plans, vec![plan]);
+}
+
+/// R12-AMBIENT-9034: the compute market's bound and weights reach the event
+/// log. Until this the sweep line carried `units_granted` and a count of
+/// declines, and the agent budgets lived only in the process's
+/// configuration, so neither the bound an agent ran under nor the weight its
+/// grant was priced on could be read back from the record. The journaled
+/// `Market` record carries the budgets the round allocated within, every
+/// grant with its reputation weight, every decline with the market's reason,
+/// and what was spent — and it is the same allocation the grants were carried
+/// out from.
+///
+/// Mutation: delete the `AmbientRecord::Market` append in
+/// `AmbientJournal::record` — no market record is journaled and the first
+/// assertion fails. Verified and restored.
+#[test]
+fn a_research_round_journals_the_agent_budgets_and_model_weights_it_allocated_on() {
+    use qip_deepbrain::ambient_journal::{
+        AmbientJournal, AmbientRecord, JournalDestination, records,
+    };
+
+    let platform = platform();
+    // Unbounded: the item is granted, and the grant carries its weight.
+    let mut unbounded = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).unwrap();
+    let round = unbounded
+        .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
+        .unwrap();
+    assert!(
+        round.units_granted >= 1,
+        "premise: the market granted: {round:?}"
+    );
+    let mut journal = AmbientJournal::open(&JournalDestination::InMemory).unwrap();
+    journal.record(1, &round, t0()).unwrap();
+    let markets: Vec<_> = records(journal.log())
+        .unwrap()
+        .into_iter()
+        .filter_map(|record| match record {
+            AmbientRecord::Market { cycle, market } => Some((cycle, market)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(markets.len(), 1, "one market record per sweep that bid");
+    let (cycle, market) = &markets[0];
+    assert_eq!(*cycle, 1);
+    assert!(
+        market.agent_budgets.is_empty(),
+        "no budget was stated: {market:?}"
+    );
+    assert_eq!(
+        market.grants.iter().map(|g| g.units).sum::<u32>(),
+        round.units_granted,
+        "the journaled grants are the grants the round carried out"
+    );
+    let grant = market
+        .grants
+        .iter()
+        .find(|g| g.work_id.contains(VENUE))
+        .unwrap_or_else(|| panic!("the fill-bias item's grant is on the record: {market:?}"));
+    assert!(
+        grant.weight_bp > 0,
+        "the grant names the weight it was priced on"
+    );
+    assert!(!grant.domain.is_empty() && !grant.regime.is_empty());
+    assert!(grant.expected_bp > 0.0 && !grant.charged.is_empty());
+    assert!(
+        market.spent.values().any(|units| units.is_positive()),
+        "something was spent: {market:?}"
+    );
+
+    // Bounded to zero for the item's own cell: the record carries the
+    // budget line and the decline the bound caused.
+    let domain = grant.domain.clone();
+    let regime = grant.regime.clone();
+    let raw = format!("{domain}/{}/{regime}=0", grant.horizon);
+    let config = ResearchConfig::from_lookup(&|name: &str| {
+        (name == qip_deepbrain::research::AGENT_BUDGETS_VARIABLE).then(|| raw.clone())
+    })
+    .unwrap();
+    let mut bounded = ResearchLoop::new(config, BTreeMap::new()).unwrap();
+    let round = bounded
+        .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
+        .unwrap();
+    let mut journal = AmbientJournal::open(&JournalDestination::InMemory).unwrap();
+    journal.record(1, &round, t0()).unwrap();
+    let market = records(journal.log())
+        .unwrap()
+        .into_iter()
+        .find_map(|record| match record {
+            AmbientRecord::Market { market, .. } => Some(market),
+            _ => None,
+        })
+        .expect("the bounded sweep journals its market");
+    assert_eq!(market.agent_budgets.len(), 1, "{market:?}");
+    assert_eq!(market.agent_budgets[0].domain, domain);
+    assert_eq!(market.agent_budgets[0].units, Decimal::ZERO);
+    assert!(
+        market
+            .declined
+            .iter()
+            .any(|(work, reason)| work.contains(VENUE) && reason == "over_agent_budget"),
+        "the bound's decline is on the record with its reason: {market:?}"
+    );
 }
