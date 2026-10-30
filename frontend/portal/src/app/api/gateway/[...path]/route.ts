@@ -3,6 +3,7 @@ import { declaresWrite, describeWrites } from "@/lib/api/endpoints";
 import { redactBody } from "@/lib/api/redaction";
 import { authRequired } from "@/lib/server/auth-gate";
 import { requireCsrf, sessionForRequest } from "@/lib/server/auth-http";
+import { gatewayBreakers } from "@/lib/server/breaker";
 import {
   API_VERSION_PREFIX,
   resolveUpstreamPath,
@@ -27,6 +28,14 @@ import {
  *
  * `x-qip-gateway` states who produced the response, so the client can tell "the
  * platform said no such route" from "this process could not reach the platform".
+ *
+ * Since R12-GCP-8119 it can also say `open`: the platform failed to answer
+ * enough consecutive requests that this process has stopped asking for a
+ * while, and refused this one without touching the network. See
+ * `@/lib/server/breaker` for the states and for what counts as a failure.
+ * The refusal is a 503 with the reason in the body and a `retry-after`, never
+ * a cached or invented answer — the breaker decides only whether to ask, and
+ * never what the platform would have said.
  */
 
 export const runtime = "nodejs";
@@ -130,6 +139,26 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
     );
   }
 
+  // After the headers are built, not before: a trial request admitted here and
+  // then lost to an identity-minting failure would leave the circuit half-open
+  // with no trial in flight, refusing every request forever. Past this line
+  // every path through the `try` below reports to the breaker.
+  const breakerKey = target.baseUrl;
+  const admission = gatewayBreakers.admit(breakerKey, target.breaker);
+  if (!admission.admitted) {
+    return NextResponse.json(
+      { error: admission.reason, gateway: "open", upstream: path },
+      {
+        status: 503,
+        headers: {
+          "x-qip-gateway": "open",
+          "cache-control": "no-store",
+          "retry-after": String(Math.max(1, Math.ceil(admission.retryAfterMs / 1000))),
+        },
+      },
+    );
+  }
+
   const incoming = new URL(request.url);
   const url = `${target.baseUrl}${path}${incoming.search}`;
 
@@ -151,6 +180,9 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
       redirect: "manual",
     });
     const text = await response.text();
+    // Any status is an answer. A 404 or a 503 the platform wrote is the
+    // platform working, and is passed through like any other.
+    gatewayBreakers.succeeded(breakerKey);
     // The one place a response body is allowed to change shape, and it changes
     // it visibly. `Role::Viewer` is enough to read a cell's mesh address off
     // `/mesh` and off the `mesh` block inside `/system/status`; no page here
@@ -171,6 +203,12 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
     // error body has published its own topology to anyone who can make the
     // platform time out. The path is what the operator needs to diagnose;
     // where it was sent is in this process's logs, which are not the browser.
+    //
+    // Everything that throws inside the `try` lands here, including a body
+    // that could not be read, and all of it counts against the breaker. That
+    // is the conservative direction: the alternative is a path that admitted a
+    // trial and never reported its outcome.
+    gatewayBreakers.failed(breakerKey, target.breaker);
     const aborted = controller.signal.aborted;
     const detail = aborted
       ? `the platform did not answer ${path} within ${target.timeoutMs}ms`

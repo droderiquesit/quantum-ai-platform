@@ -8,6 +8,7 @@
  * This module is imported only by route handlers, which never run in the
  * browser: the credential it reads must not cross that line.
  */
+import type { BreakerSettings } from "./breaker";
 import { identityToken } from "./google-credentials";
 import { secretFromEnvironment } from "./secret";
 
@@ -23,6 +24,47 @@ export interface Upstream {
    * — and no identity token is minted or sent.
    */
   readonly identityAudience: string | null;
+  /** When the gateway stops asking a platform that has stopped answering. */
+  readonly breaker: BreakerSettings;
+}
+
+/**
+ * `setTimeout`'s ceiling. Node stores the delay as a signed 32-bit integer and
+ * replaces anything larger with **1ms**, so a timeout of a month would abort
+ * every request at once — a value that reads as patient and behaves as zero.
+ */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * Read a positive whole number from the environment, or refuse.
+ *
+ * **Never clamped.** This replaced a reading that turned any non-numeric,
+ * zero or negative `QIP_API_TIMEOUT_MS` into the 10-second default without a
+ * word: a deployment that wrote `QIP_API_TIMEOUT_MS=1.5s` meaning a second and
+ * a half got ten, every request against a stalled platform held its socket
+ * nearly seven times longer than the operator had decided, and nothing anywhere
+ * said the setting had been ignored. A value silently corrected is a
+ * configuration bug that survives; refusing it surfaces the fault on the first
+ * request, as the gateway's `misconfigured` answer naming the variable.
+ *
+ * Unset means the default, which is a decision the code made and documents. Set
+ * means the operator decided, and a decision that cannot be honoured is refused.
+ */
+function positiveInteger(variable: string, fallback: number, ceiling: number): number {
+  const raw = process.env[variable];
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  // `Number("")` is 0 and `Number(" 12 ")` is 12; the regex refuses the first,
+  // and the forms `Number` accepts that no operator means — `0x10`, `1e3`,
+  // `Infinity` — rather than reinterpreting them.
+  const value = /^[0-9]+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
+  if (!Number.isSafeInteger(value) || value <= 0 || value > ceiling) {
+    throw new UpstreamNotConfigured(
+      `${variable} must be a whole number of at least 1 and at most ${ceiling}; ` +
+        `it is ${JSON.stringify(raw)}. Unset it to use ${fallback}.`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -93,13 +135,22 @@ export function upstream(): Upstream {
   // silently continued without its credential would report the platform
   // unreachable when the fault is entirely its own.
   const token = secretFromEnvironment(TOKEN_VARIABLE);
-  const timeout = Number(process.env.QIP_API_TIMEOUT_MS ?? 10_000);
+  const timeoutMs = positiveInteger("QIP_API_TIMEOUT_MS", 10_000, MAX_TIMER_MS);
+  // Five consecutive transport failures, then thirty seconds of refusing fast.
+  // Five so that one dropped connection during a deploy does not darken every
+  // panel; thirty because a Cloud Run revision that has stopped answering
+  // rarely recovers sooner, and the trial request is cheap if it has.
+  const breaker: BreakerSettings = {
+    threshold: positiveInteger("QIP_API_BREAKER_THRESHOLD", 5, Number.MAX_SAFE_INTEGER),
+    cooldownMs: positiveInteger("QIP_API_BREAKER_COOLDOWN_MS", 30_000, MAX_TIMER_MS),
+  };
   const audience = process.env[AUDIENCE_VARIABLE]?.trim();
   return {
     baseUrl: parsed.origin + parsed.pathname.replace(/\/$/, ""),
     token,
-    timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : 10_000,
+    timeoutMs,
     identityAudience: audience ? audience : null,
+    breaker,
   };
 }
 
