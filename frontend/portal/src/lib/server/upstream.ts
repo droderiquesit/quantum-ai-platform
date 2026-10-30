@@ -50,8 +50,15 @@ const MAX_TIMER_MS = 2_147_483_647;
  * Unset means the default, which is a decision the code made and documents. Set
  * means the operator decided, and a decision that cannot be honoured is refused.
  */
-function positiveInteger(variable: string, fallback: number, ceiling: number): number {
-  const raw = process.env[variable];
+function positiveInteger(
+  variable: string,
+  raw: string | undefined,
+  fallback: number,
+  ceiling: number,
+): number {
+  // `raw` is read by the caller under the variable's literal name, never
+  // looked up here by a computed one: browser_reach lists every variable the
+  // console reads, and a computed `process.env[variable]` is one it cannot.
   if (raw === undefined) return fallback;
   const trimmed = raw.trim();
   // `Number("")` is 0 and `Number(" 12 ")` is 12; the regex refuses the first,
@@ -135,14 +142,29 @@ export function upstream(): Upstream {
   // silently continued without its credential would report the platform
   // unreachable when the fault is entirely its own.
   const token = secretFromEnvironment(TOKEN_VARIABLE);
-  const timeoutMs = positiveInteger("QIP_API_TIMEOUT_MS", 10_000, MAX_TIMER_MS);
+  const timeoutMs = positiveInteger(
+    "QIP_API_TIMEOUT_MS",
+    process.env.QIP_API_TIMEOUT_MS,
+    10_000,
+    MAX_TIMER_MS,
+  );
   // Five consecutive transport failures, then thirty seconds of refusing fast.
   // Five so that one dropped connection during a deploy does not darken every
   // panel; thirty because a Cloud Run revision that has stopped answering
   // rarely recovers sooner, and the trial request is cheap if it has.
   const breaker: BreakerSettings = {
-    threshold: positiveInteger("QIP_API_BREAKER_THRESHOLD", 5, Number.MAX_SAFE_INTEGER),
-    cooldownMs: positiveInteger("QIP_API_BREAKER_COOLDOWN_MS", 30_000, MAX_TIMER_MS),
+    threshold: positiveInteger(
+      "QIP_API_BREAKER_THRESHOLD",
+      process.env.QIP_API_BREAKER_THRESHOLD,
+      5,
+      Number.MAX_SAFE_INTEGER,
+    ),
+    cooldownMs: positiveInteger(
+      "QIP_API_BREAKER_COOLDOWN_MS",
+      process.env.QIP_API_BREAKER_COOLDOWN_MS,
+      30_000,
+      MAX_TIMER_MS,
+    ),
   };
   const audience = process.env[AUDIENCE_VARIABLE]?.trim();
   return {
