@@ -15,6 +15,11 @@
 # same one, so the runtime cannot drift away from what the build ran on.
 
 FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
+# deploy.yml builds with `--build-arg SOURCE_DATE_EPOCH=<commit epoch>`.
+# Declaring it puts it in `npm run build`'s environment, where next.config.ts
+# turns it into the build id (R12-CICD-10117). Undeclared, the portal fell back
+# to Next's random id, and two builds of one commit were two different images.
+ARG SOURCE_DATE_EPOCH
 WORKDIR /src
 COPY . .
 RUN npm ci --no-audit --no-fund
