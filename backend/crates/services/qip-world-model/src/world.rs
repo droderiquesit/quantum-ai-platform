@@ -5,7 +5,7 @@ use crate::evidence::EvidenceRecord;
 use crate::fabric::{EvidenceFabric, EvidenceVerdict, JournaledClaim, KeyOutcome};
 use qip_ai::embedding::{Embedder, HashingEmbedder};
 use qip_ai::retrieval::{Document, RetrievalResult, SearchIndex};
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::{Context, Duration, Timestamp};
 use qip_entity_resolution::entity::{Entity, EntityKind, EntityRecord};
 use qip_entity_resolution::resolver::Resolver;
