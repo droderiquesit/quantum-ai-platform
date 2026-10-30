@@ -375,6 +375,29 @@ fn run() -> Result<()> {
         breadth_at,
     )?;
 
+    // The Cloud Monitoring push (ADR 0121, R12-OBS-9143): nothing scrapes a
+    // Cloud Run service, so this process pushes its own registry. Off unless
+    // QIP_METRICS_EXPORT_PROJECT names a project — the default everywhere,
+    // because no route to the API, no metricWriter grant and no re-pointed
+    // alert policy exist yet — and refused here, before anything is served,
+    // when it is named badly. The token is the metadata server's, the same
+    // credential path the KMS signer uses; nothing is minted in-process. The
+    // handle must outlive the serve loop: dropping it stops the thread.
+    let metrics_push = qip_telemetry_drain::cloud_monitoring::start(
+        &|name| {
+            qip_telemetry_drain::cloud_monitoring::reads(name)
+                .then(|| std::env::var(name).ok())
+                .flatten()
+        },
+        &telemetry_for_export,
+        clock.clone(),
+        &|| {
+            Arc::new(qip_storage::gcp::auth::MetadataServerTokens::new(
+                clock.clone(),
+            ))
+        },
+    )?;
+
     // The OpenObserve drain (ADR 0028): absent configuration means this
     // process's telemetry stays where it already is, on /metrics on the health
     // port bound above. Set means a thread starts that POSTs this node's
@@ -442,6 +465,14 @@ fn run() -> Result<()> {
             "  openobserve:      not draining ({} is not set); telemetry stays local to \
              /metrics on the health port",
             qip_deepbrain::openobserve::URL_VARIABLE
+        ),
+    }
+    match &metrics_push {
+        Some((config, _)) => println!("  cloud monitoring: pushing to {}", config.describe()),
+        None => println!(
+            "  cloud monitoring: not pushing ({} is not set); metrics stay on this process's \
+             /metrics",
+            qip_telemetry_drain::cloud_monitoring::PROJECT_VARIABLE
         ),
     }
 
