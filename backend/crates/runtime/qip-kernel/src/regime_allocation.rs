@@ -119,7 +119,7 @@ mod tests {
             hypothesis_id: format!("hyp-{object}"),
             object_id: ObjectId::from_string(object),
             conviction: 0.5,
-            expected_return: 0.02,
+            return_forecast: crate::thesis_fixture::return_forecast(object, 0.02),
             price: Decimal::from_int(100),
         }
     }

@@ -888,9 +888,11 @@ dependencies = [
 name = "qip-portfolio-engine"
 version = "0.1.0"
 dependencies = [
+ "qip-contracts",
  "qip-core",
  "qip-optimization-engine",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

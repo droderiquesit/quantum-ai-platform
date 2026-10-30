@@ -561,9 +561,11 @@
       "backend/crates/services/qip-world-model/src/federation.rs:362 Federation (in-process only; module doc says no composition root builds it)",
       "backend/crates/services/qip-world-model/tests/federation.rs:243 arbitration_produces_each_of_the_four_actions_with_a_reason_and_the_right_output",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation",
+      "backend/crates/apps/qip-deepbrain/src/brains.rs arbitration_spec, REQUIRED_SCOPES, BrainRegistry::require_coverage",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage"
     ],
-    "gap": "Not constructed as a specialist Brain in the production organisation; no coverage registry drops its scope when removed; decisions are recorded, never acted on.",
+    "gap": "2026-10-25 (L4, commit 4f9bdc2d, skeptic REFUTED). Closed: the deep brain registry (brains::standard) carries a World Model Arbitration Brain entry over world-model-arbitration, and require_coverage refuses start when that scope is missing. Still open: the entry is a hand-written BrainSpec describing the kernel FederationStage, not a specialist constructed in the production organisation (the qip-investment-agents roster has none); removing it stops nothing but start-up, since FederationStage::run is independent of the registry and main.rs only prints the registry; the spec is not tied to the FederationReview the stage journals; the fast brain and qip-api build the same Platform with no registry or coverage check; and under ADR 0158 decision 8 a spec enters through the Cognitive Compiler or a reviewed spec, with calibration tracked, which this literal (calibration 0.0) is not.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -574,7 +576,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-25 (L4), commit 4f9bdc2d: two mutants killed (skip the register call; require_coverage always passes), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-REASON-3026",
@@ -769,9 +771,12 @@
     "current": "qip_agents::memory::ResearchMemory holds versioned procedures. record_procedure stores the next version of a named procedure only on at least MINIMUM_PROCEDURE_SUPPORT (3) distinct held episodes resolved correct by then, refusing a blank name, no steps or a blank step. Each name keeps up to VERSIONS_PER_PROCEDURE (16) versions, and MAX_PROCEDURES bounds the names. procedure_as_of retrieves the latest version known at a date, so past decisions stay reconstructable.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/memory.rs::ResearchMemory::record_procedure, procedure_as_of",
-      "backend/crates/libs/qip-agents/tests/memory.rs::a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version"
+      "backend/crates/libs/qip-agents/tests/memory.rs::a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version",
+      "backend/crates/runtime/qip-kernel/src/platform.rs distil_procedure, procedure_name, Platform::procedures_briefed",
+      "backend/crates/libs/qip-agents/src/finding.rs AgentBrief.procedures",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::an_analysts_distilled_procedure_is_retrieved_at_its_next_convening"
     ],
-    "gap": "2026-10-24 (L4): the row said no procedure store existed. That was stale: store, versioning and retrieval exist and are tested. What is missing is the integration the requirement's test names. No production code calls record_procedure or procedure_as_of (grep finds only tests/memory.rs), so no procedure is distilled from the kernel's resolved episodes, and none is retrieved for reuse by a later run. Closing it needs LEARN to distil a procedure from an analyst's resolved-correct episodes, the next convening of that analyst to retrieve it, and a cycle-level test.",
+    "gap": "2026-10-30 (L4, commit ad473767, skeptic REFUTED). Closed: a procedure is stored and versioned on the default LEARN path (write_research_memory -> distil_procedure, once an analyst holds MINIMUM_PROCEDURE_SUPPORT correct calls, a version only when support changes) and retrieved at the next convening on the default REASON path into AgentBrief.procedures, recorded by Platform::procedures_briefed. Still open: no agent reads brief.procedures, so the procedure is delivered and not reused; its steps are past calls (question and lean), not a method anything could follow; strategy templates, data adapters, playbooks and remediation patterns are not stored at all and no ADR declines them; the test seeds memory through write_research_memory rather than driving LEARN end to end; MAX_PROCEDURES (256) has no supersede path for procedures, unreachable at today's roster size.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -782,7 +787,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agents --test memory a_procedure_is_recorded_only_after_enough_correct_episodes",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->MISSING. Unchanged. 2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed. Not promoted: there is no running path."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->MISSING. Unchanged. 2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed. Not promoted: there is no running path. 2026-10-30 (L4), commit ad473767: three mutants killed (skip distil_procedure; brief without procedures, killed once the record was read off the brief; count a repeated run twice), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-WORLD-3035",

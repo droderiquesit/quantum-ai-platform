@@ -1080,6 +1080,10 @@ pub struct Platform {
     /// LEARN now writes it where a thesis resolves; see
     /// [`Self::write_research_memory`].
     research_memory: Upstream<ResearchMemory>,
+    /// The procedures the last convening was briefed with, by name and
+    /// version (R12-WORLD-3034): the record that a distilled procedure was
+    /// retrieved for reuse, not only stored.
+    procedures_briefed: Vec<(String, u32)>,
     /// The value policy over the episodes `research_memory` holds: which
     /// resolved analyst calls were surprising enough to keep whole and which
     /// are counted into a per-analyst summary (ADR 0152 decision 8,
@@ -2819,6 +2823,61 @@ const PRECEDENT_K: usize = 5;
 /// reader asking "what was the platform's picture of this name" can hold in
 /// their head at once. It is not a threshold and nothing fires on it.
 const CAUSAL_CONTEXT_LIMIT: usize = 5;
+
+/// The most recent correct calls an analyst's procedure is distilled from.
+/// A window, not a lifetime: a way of answering that worked two years ago
+/// and has not been followed since is not the desk's procedure now.
+const PROCEDURE_WINDOW: usize = 8;
+
+/// The name an analyst's procedure is kept under in research memory.
+fn procedure_name(agent_id: &str) -> String {
+    format!("procedure:{agent_id}")
+}
+
+/// Record a new version of `agent_id`'s procedure when memory holds at least
+/// [`qip_agents::memory::MINIMUM_PROCEDURE_SUPPORT`] of its calls resolved
+/// correct by `at` and the newest of them differ from the version held
+/// (R12-WORLD-3034). Each step is one such call, the question with the lean
+/// that answered it, in the order made. `Ok(None)` where there is nothing
+/// new to record; a refusal from memory is returned for the cycle's record.
+fn distil_procedure(
+    memory: &mut qip_agents::memory::ResearchMemory,
+    agent_id: &str,
+    at: Timestamp,
+) -> Result<Option<u32>> {
+    // One call counts once however many times it was written: a run recorded
+    // twice is the same evidence, and counting it again would version the
+    // procedure on nothing new.
+    let mut seen = BTreeSet::new();
+    let correct: Vec<&qip_agents::memory::Episode> = memory
+        .episodes()
+        .iter()
+        .filter(|e| e.agent_id == agent_id)
+        .filter(|e| {
+            e.outcome
+                .as_ref()
+                .is_some_and(|o| o.correct && o.resolved_at <= at)
+        })
+        .filter(|e| seen.insert(e.run_id.clone()))
+        .collect();
+    if correct.len() < qip_agents::memory::MINIMUM_PROCEDURE_SUPPORT {
+        return Ok(None);
+    }
+    let recent = &correct[correct.len().saturating_sub(PROCEDURE_WINDOW)..];
+    let support: Vec<qip_core::ids::AgentRunId> = recent.iter().map(|e| e.run_id.clone()).collect();
+    let name = procedure_name(agent_id);
+    if memory
+        .procedure_as_of(&name, at)
+        .is_some_and(|held| held.supporting_episodes == support)
+    {
+        return Ok(None);
+    }
+    let steps: Vec<String> = recent
+        .iter()
+        .map(|e| format!("{}: lean {}", e.question, e.conclusion))
+        .collect();
+    memory.record_procedure(&name, steps, support, at).map(Some)
+}
 
 /// The precedent as the panel is briefed on it, from what REASON recalled.
 ///
@@ -6066,6 +6125,7 @@ impl Platform {
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
+            procedures_briefed: Vec::new(),
             pending_theses: Vec::new(),
             justified_hypotheses: justification::JustifiedHypotheses::default(),
             outside_priors: BTreeMap::new(),
@@ -11555,6 +11615,12 @@ impl Platform {
         }
     }
 
+    /// The procedures the last convening was briefed with, by name and
+    /// version (R12-WORLD-3034).
+    pub fn procedures_briefed(&self) -> &[(String, u32)] {
+        &self.procedures_briefed
+    }
+
     /// The most recent calibration, if any thesis has resolved informatively.
     pub fn calibration(&self) -> Option<&CalibrationReport> {
         self.last_calibration.as_ref()
@@ -15128,6 +15194,26 @@ impl Platform {
             }
         }
 
+        // Procedures: what memory has distilled for each analyst on the
+        // roster from its own correct calls, as known now (R12-WORLD-3034),
+        // handed over through the brief's typed field for the reason
+        // precedent is.
+        let procedures: Vec<qip_agents::memory::Procedure> = {
+            let memory = self.research_memory.read();
+            self.organisation
+                .roster()
+                .iter()
+                .filter_map(|m| memory.procedure_as_of(&procedure_name(&m.id), now).cloned())
+                .collect()
+        };
+        brief = brief.with_procedures(procedures);
+        // Read off the brief the panel receives, not the list it was built
+        // from, so the record cannot claim a briefing that did not happen.
+        self.procedures_briefed = brief
+            .procedures
+            .iter()
+            .map(|p| (p.name.clone(), p.version))
+            .collect();
         let report = self.organisation.dispatch(&brief, now, lineage);
         self.telemetry
             .metrics
@@ -15366,52 +15452,53 @@ impl Platform {
                             ));
                             DecisionTaken::NotSizeable
                         }
-                        Ok(justified) => match self.thesis_from(&opportunity, &reasoned, justified)
-                        {
-                            Ok(thesis) => {
-                                // What DECIDE will actually size on, read off the
-                                // thesis rather than recomputed here. Two
-                                // independent claims about one number disagree
-                                // eventually and the louder one is wrong; this is
-                                // the number, not a second opinion about it. It
-                                // sits below the admission confidence above
-                                // wherever the evidence contradicts itself, and
-                                // the gap between the two lines is the conflict
-                                // narrowing an operator can see the size of.
-                                outcome.detail.push_str(&format!(
-                                    "; sized on conviction {:.3}",
-                                    thesis.thesis().conviction.abs()
-                                ));
-                                // R12-RISK-4112: how split the panel was on
-                                // the thesis now queued, for DECIDE's
-                                // confidence governor to size against.
-                                self.governor.signals_mut().observe_dissent(
-                                    &thesis.thesis().hypothesis_id,
-                                    reasoned.dissenters.len(),
-                                    report.runs.len(),
-                                );
-                                self.pending_theses.push(thesis);
-                                // Bounded like the proposal working set: an idea
-                                // nobody sized for this many cycles is stale, and
-                                // the event log keeps the record.
-                                if self.pending_theses.len() > PROPOSAL_HISTORY {
-                                    self.pending_theses
-                                        .drain(..self.pending_theses.len() - PROPOSAL_HISTORY);
+                        Ok(justified) => {
+                            match self.thesis_from(&opportunity, &reasoned, justified, now) {
+                                Ok(thesis) => {
+                                    // What DECIDE will actually size on, read off the
+                                    // thesis rather than recomputed here. Two
+                                    // independent claims about one number disagree
+                                    // eventually and the louder one is wrong; this is
+                                    // the number, not a second opinion about it. It
+                                    // sits below the admission confidence above
+                                    // wherever the evidence contradicts itself, and
+                                    // the gap between the two lines is the conflict
+                                    // narrowing an operator can see the size of.
+                                    outcome.detail.push_str(&format!(
+                                        "; sized on conviction {:.3}",
+                                        thesis.thesis().conviction.abs()
+                                    ));
+                                    // R12-RISK-4112: how split the panel was on
+                                    // the thesis now queued, for DECIDE's
+                                    // confidence governor to size against.
+                                    self.governor.signals_mut().observe_dissent(
+                                        &thesis.thesis().hypothesis_id,
+                                        reasoned.dissenters.len(),
+                                        report.runs.len(),
+                                    );
+                                    self.pending_theses.push(thesis);
+                                    // Bounded like the proposal working set: an idea
+                                    // nobody sized for this many cycles is stale, and
+                                    // the event log keeps the record.
+                                    if self.pending_theses.len() > PROPOSAL_HISTORY {
+                                        self.pending_theses
+                                            .drain(..self.pending_theses.len() - PROPOSAL_HISTORY);
+                                    }
+                                    DecisionTaken::Approved
                                 }
-                                DecisionTaken::Approved
+                                // An approved thesis that cannot be sized is reported,
+                                // not dropped silently — the difference between "we
+                                // chose not to" and "we could not" is the difference
+                                // an operator acts on.
+                                Err(reason) => {
+                                    outcome = outcome.with_problem(format!(
+                                        "approved but not sizeable: {}",
+                                        reason.message()
+                                    ));
+                                    DecisionTaken::NotSizeable
+                                }
                             }
-                            // An approved thesis that cannot be sized is reported,
-                            // not dropped silently — the difference between "we
-                            // chose not to" and "we could not" is the difference
-                            // an operator acts on.
-                            Err(reason) => {
-                                outcome = outcome.with_problem(format!(
-                                    "approved but not sizeable: {}",
-                                    reason.message()
-                                ));
-                                DecisionTaken::NotSizeable
-                            }
-                        },
+                        }
                     }
                 };
                 // The episode this cycle is, written down with what was
@@ -16233,6 +16320,20 @@ impl Platform {
                 registry.consult(&analyst_episode);
                 memory.record_episode(analyst_episode);
             }
+            // Distil each analyst's procedure once memory holds enough of its
+            // calls that came out right (R12-WORLD-3034). The next convening
+            // reads it back through the brief.
+            let mut refused = Vec::new();
+            for stance in &episode.stances {
+                if let Err(error) = distil_procedure(memory, &stance.agent_id, now) {
+                    refused.push(format!(
+                        "{}'s procedure was not recorded: {}",
+                        stance.agent_id,
+                        error.message()
+                    ));
+                }
+            }
+            self.capture_problems.extend(refused);
         });
 
         if episode.claim.direction == 0.0 {
@@ -17364,6 +17465,7 @@ impl Platform {
         opportunity: &Opportunity,
         reasoned: &qip_reasoning_engine::engine::ReasoningOutcome,
         justification: qip_contracts::action::Justification,
+        now: Timestamp,
     ) -> Result<JustifiedThesis> {
         let object_id = opportunity
             .affected_objects
@@ -17390,9 +17492,18 @@ impl Platform {
             .anomalies
             .first()
             .ok_or_else(|| Error::invalid("the opportunity carries no anomaly to measure"))?;
+        let hypothesis_id = reasoned.hypothesis.hypothesis_id.to_string();
+        // The reversion of what was measured: the anomaly observed a
+        // displacement from expectation, and the thesis is that it closes.
+        // Bounded to the mandate-scale range construction validates, so an
+        // extreme print proposes a large-but-finite return rather than an
+        // absurd one.
+        let median = (anomaly.expected - anomaly.observed).clamp(-0.5, 0.5);
+        let return_forecast =
+            self.return_forecast(object_id, &hypothesis_id, median, opportunity.horizon, now)?;
         Ok(JustifiedThesis::new(
             qip_portfolio_engine::construction::ApprovedThesis {
-                hypothesis_id: reasoned.hypothesis.hypothesis_id.to_string(),
+                hypothesis_id,
                 object_id: object_id.clone(),
                 // The sizing number rather than the admission number. Both are
                 // the hypothesis's own confidence; this one is additionally
@@ -17403,12 +17514,7 @@ impl Platform {
                 // the same figure and were sized identically, with nothing in the
                 // record to say which had happened.
                 conviction: sign * reasoned.hypothesis.confidence_for_sizing(),
-                // The reversion of what was measured: the anomaly observed a
-                // displacement from expectation, and the thesis is that it closes.
-                // Bounded to the mandate-scale range construction validates, so an
-                // extreme print proposes a large-but-finite return rather than an
-                // absurd one.
-                expected_return: (anomaly.expected - anomaly.observed).clamp(-0.5, 0.5),
+                return_forecast,
                 price: Decimal::from_f64(price).ok_or_else(|| {
                     Error::numeric(format!(
                         "{object_id}'s last close {price} is not representable as a Decimal"
@@ -17421,6 +17527,137 @@ impl Platform {
             // approved and not a second estimate of it (R12-ASSET-4067).
             reasoned.hypothesis.horizon,
         ))
+    }
+
+    /// The forecast of `object_id`'s return over `horizon` that a thesis is
+    /// sized on (ADR 0140, R12-WORLD-10187), with its median at `median`.
+    ///
+    /// The spread is the instrument's own: the sample standard deviation of
+    /// its close-to-close returns in the price history, scaled by the square
+    /// root of the horizon in days. The 10th and 90th percentiles sit
+    /// 1.2816 of those deviations either side of the median (normal
+    /// quantiles, the assumption stated here). Aleatoric variance is that
+    /// horizon variance. Epistemic variance is the same divided by the
+    /// number of returns, which is the variance of a mean estimated from that
+    /// many draws. The tail is the probability the return comes in below
+    /// zero. The model is one model, so disagreement is zero. It has no
+    /// scored record of its own, so it says `Uncalibrated` rather than borrow
+    /// the claims' calibration. It conditions on no regime and states no
+    /// impact before construction sizes it, and says so for both. It expires
+    /// when the horizon it speaks to has passed.
+    ///
+    /// Refused, so the thesis is not sized, where the series holds fewer
+    /// than two returns or no spread at all: a forecast with no spread is a
+    /// certainty, and [`qip_contracts::forecast::Forecast`] does not hold one.
+    fn return_forecast(
+        &self,
+        object_id: &ObjectId,
+        hypothesis_id: &str,
+        median: f64,
+        horizon: Duration,
+        now: Timestamp,
+    ) -> Result<qip_contracts::forecast::Forecast> {
+        use qip_contracts::forecast::{
+            Calibration, Forecast, ForecastFields, OutcomeDistribution, QuantilePoint, Stated,
+            TailMass, TailSide, UncertaintyDecomposition,
+        };
+        use qip_contracts::validated::Contract;
+        // The 90th percentile of the standard normal.
+        const Z90: f64 = 1.281_551_565_5;
+        let series = self
+            .price_history
+            .get(object_id.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let returns: Vec<f64> = series
+            .windows(2)
+            .filter_map(|pair| match pair {
+                [a, b] if *a > 0.0 => Some(b / a - 1.0),
+                _ => None,
+            })
+            .filter(|r| r.is_finite())
+            .collect();
+        if returns.len() < 2 {
+            return Err(Error::invalid(format!(
+                "{object_id} has {} usable return(s); a return forecast needs at least two to \
+                 state a spread",
+                returns.len()
+            )));
+        }
+        let n = returns.len() as f64;
+        let mean = returns.iter().sum::<f64>() / n;
+        let daily_variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0);
+        let days = horizon.as_secs_f64() / 86_400.0;
+        let variance = daily_variance * days;
+        let deviation = variance.sqrt();
+        if !(deviation.is_finite() && deviation > 0.0 && median.is_finite()) {
+            return Err(Error::invalid(format!(
+                "{object_id}'s returns state no spread over {days:.2} day(s); a forecast with \
+                 no spread is a certainty and is not sized on"
+            )));
+        }
+        // f64 to Decimal here: the forecast contract holds exact figures so a
+        // replay reproduces it bit for bit; the arithmetic above is statistics.
+        let decimal = |value: f64, what: &str| {
+            Decimal::from_f64(value).ok_or_else(|| {
+                Error::numeric(format!(
+                    "{object_id}'s return forecast {what} {value} is not representable"
+                ))
+            })
+        };
+        let below_zero = qip_numerics::distributions::normal_cdf(-median / deviation);
+        Forecast::new(ForecastFields {
+            schema_version: ForecastFields::SCHEMA_VERSION,
+            forecast_id: format!("{hypothesis_id}/return"),
+            model: "qip-kernel anomaly reversion v1".to_string(),
+            target: format!(
+                "{}{}",
+                object_id.as_str(),
+                qip_portfolio_engine::construction::RETURN_TARGET_SUFFIX
+            ),
+            issued_at: now,
+            horizon,
+            distribution: OutcomeDistribution::Quantiles {
+                points: vec![
+                    QuantilePoint {
+                        quantile_bp: 1_000,
+                        value: decimal(median - Z90 * deviation, "10th percentile")?,
+                    },
+                    QuantilePoint {
+                        quantile_bp: qip_portfolio_engine::construction::MEDIAN_BP,
+                        value: decimal(median, "median")?,
+                    },
+                    QuantilePoint {
+                        quantile_bp: 9_000,
+                        value: decimal(median + Z90 * deviation, "90th percentile")?,
+                    },
+                ],
+            },
+            uncertainty: UncertaintyDecomposition {
+                epistemic: decimal(variance / n, "epistemic variance")?,
+                aleatoric: decimal(variance, "aleatoric variance")?,
+            },
+            tail: TailMass {
+                side: TailSide::Below,
+                threshold: Decimal::ZERO,
+                probability_bp: (below_zero * 10_000.0).round().clamp(0.0, 10_000.0) as u32,
+            },
+            models_consulted: 1,
+            model_disagreement: Decimal::ZERO,
+            regime_confidence_bp: Stated::Unmeasurable {
+                unmeasurable: "the reversion return conditions on no regime".to_string(),
+            },
+            expected_impact: Stated::Unmeasurable {
+                unmeasurable: "impact follows from the size construction gives the thesis"
+                    .to_string(),
+            },
+            calibration: Calibration::Uncalibrated,
+            evidence_lineage: vec![
+                hypothesis_id.to_string(),
+                format!("price_history:{}", object_id.as_str()),
+            ],
+            expires_at: now.saturating_add(horizon),
+        })
     }
 
     /// Turn an opportunity and the organisation's findings into a reviewed
@@ -26502,7 +26739,10 @@ mod decide_tests {
             hypothesis_id: format!("HYP-{object}"),
             object_id: qip_core::ObjectId::from_string(object),
             conviction,
-            expected_return: 0.04 * conviction.signum(),
+            return_forecast: crate::thesis_fixture::return_forecast(
+                object,
+                0.04 * conviction.signum(),
+            ),
             price: Decimal::from_int(100),
         }
     }
@@ -26564,6 +26804,211 @@ mod decide_tests {
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
+    }
+
+    /// R12-WORLD-3034: an analyst's distilled procedure is retrieved at its
+    /// next convening. Three resolved calls of one roster analyst that came
+    /// out right are written through the LEARN path, and memory then holds a
+    /// first version of that analyst's procedure, citing the three calls.
+    /// Writing nothing new records no second version. A later cycle that
+    /// convenes the panel on a sensed anomaly briefs it with that procedure,
+    /// by name and version.
+    ///
+    /// Mutations: drop the `distil_procedure` call in `write_research_memory`
+    /// (memory holds no procedure); brief the panel without procedures
+    /// (`procedures_briefed` stays empty).
+    #[test]
+    fn an_analysts_distilled_procedure_is_retrieved_at_its_next_convening() {
+        use qip_ai::memory::{
+            AnalystStance, ClaimRecord, DecisionTaken, EpisodeOutcome, FindingsSummary,
+            RegimeLabel, StanceDirection,
+        };
+        use qip_market::bar::{Bar, Interval};
+        use qip_market_ingestion::adapter::SensedRecord;
+        let start = Timestamp::from_secs(1_760_000_000);
+        let mut platform = small_book_platform();
+        let analyst = platform
+            .organisation
+            .roster()
+            .iter()
+            .next()
+            .expect("a roster")
+            .id
+            .clone();
+        let name = procedure_name(&analyst);
+        let resolved = |n: i64| Episode {
+            episode_id: format!("ep-{n}"),
+            instrument: "AAPL".to_string(),
+            regime: RegimeLabel {
+                market: "trending".to_string(),
+                volatility: "normal".to_string(),
+            },
+            state: None,
+            causal_context: Vec::new(),
+            findings: FindingsSummary {
+                runs: 1,
+                findings: 1,
+                coverage: 1.0,
+                contested: false,
+            },
+            stances: vec![AnalystStance {
+                agent_id: analyst.clone(),
+                direction: StanceDirection::Positive,
+                conviction: 0.7,
+            }],
+            claim: ClaimRecord {
+                class: "price_move".to_string(),
+                claim: "undervalued".to_string(),
+                direction: 1.0,
+                confidence: 0.6,
+            },
+            horizon: Duration::from_days(1),
+            decision: DecisionTaken::Approved,
+            outcome: Some(EpisodeOutcome {
+                resolved_at: start.saturating_sub(Duration::from_days(10 - n)),
+                realised_move_bps: 40.0,
+                realised_pnl: 0.0,
+                expected_move_bps: None,
+                fills: Vec::new(),
+            }),
+            at: start.saturating_sub(Duration::from_days(11 - n)),
+            known_at: start.saturating_sub(Duration::from_days(10 - n)),
+            model_version: None,
+            model_derived: false,
+        };
+        let learned_at = start.saturating_sub(Duration::from_days(5));
+        for n in 1..=3 {
+            platform.write_research_memory(&resolved(n), learned_at);
+        }
+        let procedure = platform
+            .research_memory()
+            .procedure_as_of(&name, learned_at)
+            .cloned()
+            .expect("three correct calls distil a procedure");
+        assert_eq!(procedure.version, 1);
+        assert_eq!(procedure.supporting_episodes.len(), 3);
+        assert_eq!(procedure.steps.len(), 3);
+        platform.write_research_memory(&resolved(3), learned_at);
+        assert_eq!(
+            platform
+                .research_memory()
+                .procedure_as_of(&name, learned_at)
+                .map(|p| p.version),
+            Some(1),
+            "the same support was recorded again as a new version"
+        );
+
+        // A sensed tape whose last bars jump convenes the panel.
+        let mut price = 100.0_f64;
+        let bars: Vec<SensedRecord> = (0..120)
+            .map(|i| {
+                let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
+                let jump = if i == 80 { 0.09 } else { 0.0 };
+                let open = price;
+                price *= 1.0 + noise + jump;
+                let px = |v: f64| Decimal::from_f64(v).expect("a price");
+                SensedRecord::Bar(Box::new(Bar {
+                    object_id: qip_core::ObjectId::from_string("AAPL"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: start.saturating_sub(Duration::from_days(120 - i)),
+                    open: px(open),
+                    high: px(open.max(price) * 1.002),
+                    low: px(open.min(price) * 0.998),
+                    close: px(price),
+                    volume: Decimal::from_int(1_000_000),
+                    trade_count: 5_000,
+                    vwap: Decimal::from_f64((open + price) / 2.0),
+                    quality: qip_financial::quality::DataQuality::default(),
+                }))
+            })
+            .collect();
+        platform.observe(bars);
+        assert!(platform.procedures_briefed().is_empty(), "premise");
+        let report = platform.run_cycle(start);
+        assert!(
+            !platform.predictions().is_empty(),
+            "premise: the panel convened and formed a claim:\n{}",
+            report.summarise()
+        );
+        assert!(
+            platform.procedures_briefed().contains(&(name.clone(), 1)),
+            "the convening was not briefed with {name}: {:?}",
+            platform.procedures_briefed()
+        );
+    }
+
+    /// R12-WORLD-10187: the return forecast a thesis is sized on is the
+    /// instrument's own. The median is the one given, and the spread is that
+    /// of its history over the horizon, so a more volatile instrument gets a
+    /// wider forecast for the same median. Lineage names the hypothesis and
+    /// the series, and the forecast expires when its horizon passes. An
+    /// instrument with no history gets no forecast, and so no thesis.
+    ///
+    /// Mutation: in `Platform::return_forecast`, scale the spread by a
+    /// constant instead of the measured deviation -- the volatile instrument's
+    /// forecast is then no wider than the calm one's.
+    #[test]
+    fn a_thesis_return_forecast_takes_its_spread_from_the_instruments_own_history() {
+        use qip_contracts::forecast::OutcomeDistribution;
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut platform = small_book_platform();
+        let calm: Vec<f64> = (0..30)
+            .map(|i| 100.0 + if i % 2 == 0 { 0.1 } else { 0.0 })
+            .collect();
+        let wild: Vec<f64> = (0..30)
+            .map(|i| 100.0 + if i % 2 == 0 { 5.0 } else { 0.0 })
+            .collect();
+        platform.price_history.insert("CALM".to_string(), calm);
+        platform.price_history.insert("WILD".to_string(), wild);
+        let horizon = Duration::from_days(5);
+        let width = |object: &str| {
+            let forecast = platform
+                .return_forecast(
+                    &ObjectId::from_string(object),
+                    &format!("HYP-{object}"),
+                    0.02,
+                    horizon,
+                    now,
+                )
+                .expect("a series with a spread has a forecast");
+            assert_eq!(forecast.target, format!("{object}/return"));
+            assert_eq!(forecast.expires_at, now.saturating_add(horizon));
+            assert!(
+                forecast
+                    .evidence_lineage
+                    .contains(&format!("price_history:{object}"))
+            );
+            let OutcomeDistribution::Quantiles { points } = &forecast.distribution else {
+                panic!("a return forecast is a quantile distribution");
+            };
+            let median = points
+                .iter()
+                .find(|p| p.quantile_bp == 5_000)
+                .expect("a median");
+            assert_eq!(
+                median.value,
+                Decimal::from_f64(0.02).expect("representable")
+            );
+            (points[2].value - points[0].value).to_f64()
+        };
+        let (calm_width, wild_width) = (width("CALM"), width("WILD"));
+        assert!(
+            wild_width > 10.0 * calm_width,
+            "the volatile instrument's forecast is not wider: {wild_width} vs {calm_width}"
+        );
+        assert!(
+            platform
+                .return_forecast(
+                    &ObjectId::from_string("NONE"),
+                    "HYP-NONE",
+                    0.02,
+                    horizon,
+                    now
+                )
+                .is_err(),
+            "an instrument with no history got a forecast"
+        );
     }
 
     /// R12-WORLD-9024: a tactical forecast past its expiry is not used and
@@ -29899,7 +30344,10 @@ mod central_sizing_tests {
             hypothesis_id: format!("HYP-{object}"),
             object_id: qip_core::ObjectId::from_string(object),
             conviction,
-            expected_return: 0.04 * conviction.signum(),
+            return_forecast: crate::thesis_fixture::return_forecast(
+                object,
+                0.04 * conviction.signum(),
+            ),
             price: Decimal::from_int(100),
         }
     }
@@ -32077,7 +32525,10 @@ mod unsizeable_thesis_tests {
             hypothesis_id: format!("HYP-{object}"),
             object_id: ObjectId::from_string(object),
             conviction,
-            expected_return: 0.04 * conviction.signum(),
+            return_forecast: crate::thesis_fixture::return_forecast(
+                object,
+                0.04 * conviction.signum(),
+            ),
             price: Decimal::from_int(100),
         }
     }
