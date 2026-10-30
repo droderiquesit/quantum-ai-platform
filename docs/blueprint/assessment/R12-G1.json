@@ -3113,12 +3113,15 @@
   },
   {
     "id": "R12-LEDGER-8137",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "Fixed processing_units = 100; no schema.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:391"
+      "infrastructure/terraform/modules/data/main.tf:391",
+      "backend/crates/apps/qip-ledgerd/src/store.rs shard_of, sharded_key, sequence_of; LedgerStore::journal orders by sequence",
+      "backend/crates/apps/qip-ledgerd/tests/operations_on_the_stream.rs consecutive_commits_never_write_sequence_keys_that_sort_in_write_order",
+      "infrastructure/terraform/modules/data/main.tf autoscaling_config with spanner_min_processing_units"
     ],
-    "gap": "autoscaling_config; key design.",
+    "gap": "2026-10-30 (lane L1-MONEY): the keys half is built. The journal and watermark keys carry a hash shard and the journal reads in sequence order, so consecutive commits never append at one key range. Remaining, and not codeable here: the plan half (\"plan shows autoscaling_config with min >= sized floor\"). modules/data declares autoscaling_config with spanner_min_processing_units, but no terraform binary is available to show a plan, and sizing the floor for peak close is a cost decision for the owner while billing is paused.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3129,7 +3132,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " 2026-10-30 lane L1-MONEY: mutations fired, restored with cp+cmp: drop the shard prefix; drop the journal sort. No skeptic was run: the row cannot be promoted while the plan half is unmet."
   },
   {
     "id": "R12-LEDGER-8138",
