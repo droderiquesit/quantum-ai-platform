@@ -534,8 +534,12 @@ fn a_journal_a_running_node_holds_is_refused_naming_the_holder_not_as_a_corrupt_
 /// `count` daily bars for the fixture instrument with a jump two thirds of
 /// the way in, as the kernel's own tests sense them, so a cycle forms a
 /// hypothesis and journals its symbolic derivation.
-fn sensed_bars(count: usize) -> Vec<qip_market_ingestion::adapter::SensedRecord> {
+fn sensed_bars(count: usize) -> Result<Vec<qip_market_ingestion::adapter::SensedRecord>> {
     use qip_market::bar::{Bar, Interval};
+    let decimal = |value: f64| {
+        qip_core::Decimal::from_f64(value)
+            .ok_or_else(|| Error::numeric(format!("{value} has no decimal form")))
+    };
     let mut price = 100.0_f64;
     (0..count)
         .map(|i| {
@@ -544,20 +548,22 @@ fn sensed_bars(count: usize) -> Vec<qip_market_ingestion::adapter::SensedRecord>
             let open = price;
             price *= 1.0 + noise + jump;
             let at = start().saturating_sub(Duration::from_days((count - i) as i64));
-            qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(Bar {
-                object_id: ObjectId::from_string(INSTRUMENT),
-                venue: "XNYS".to_string(),
-                interval: Interval::Day,
-                open_time: at,
-                open: qip_core::Decimal::from_f64(open).unwrap(),
-                high: qip_core::Decimal::from_f64(open.max(price) * 1.002).unwrap(),
-                low: qip_core::Decimal::from_f64(open.min(price) * 0.998).unwrap(),
-                close: qip_core::Decimal::from_f64(price).unwrap(),
-                volume: dec!("1000000"),
-                trade_count: 5_000,
-                vwap: qip_core::Decimal::from_f64((open + price) / 2.0),
-                quality: qip_financial::quality::DataQuality::default(),
-            }))
+            Ok(qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(
+                Bar {
+                    object_id: ObjectId::from_string(INSTRUMENT),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: at,
+                    open: decimal(open)?,
+                    high: decimal(open.max(price) * 1.002)?,
+                    low: decimal(open.min(price) * 0.998)?,
+                    close: decimal(price)?,
+                    volume: dec!("1000000"),
+                    trade_count: 5_000,
+                    vwap: qip_core::Decimal::from_f64((open + price) / 2.0),
+                    quality: qip_financial::quality::DataQuality::default(),
+                },
+            )))
         })
         .collect()
 }
@@ -575,7 +581,7 @@ fn write_journal_with_a_derivation(path: &Path) -> Result<()> {
         universe()?,
         LimitSet::conservative_default(),
     )?;
-    platform.observe(sensed_bars(120));
+    platform.observe(sensed_bars(120)?);
     platform.run_cycle(start());
     if qip_kernel::symbolic_stage::replay(&platform)?.is_empty() {
         return Err(Error::invalid(

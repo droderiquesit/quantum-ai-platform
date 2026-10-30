@@ -2129,6 +2129,9 @@ fn a_fill_the_platform_made_is_on_the_desk_for_the_self_exploitation_probe_next_
         counted.iter().any(|fills| *fills >= 1.0),
         "the probe never saw the platform's own fill: {counted:?}"
     );
+    Ok(())
+}
+
 /// R12-WORLD-3036: the self-model holds the platform's operational health and
 /// its capability boundary, fed by the kernel, beside its record of graded
 /// forecasts. A halted kernel and a degraded table (on a fresh platform the
