@@ -5318,6 +5318,21 @@ impl Platform {
         // operator correcting a catalogue needs the whole list, and refusing
         // one at a time would take as many restarts as there are bad rows.
         let asset_class_registry = crate::asset_class_registry::AssetClassRegistry::shipped()?;
+        // The self-model's capability boundary (R12-WORLD-3036): the classes
+        // the admitted universe holds an instrument in. Registration says what
+        // the platform may trade, and the shipped registry registers every
+        // class, so a boundary read from it would bound nothing. The universe
+        // says what the platform has reference data, a price and a lot size
+        // for, which is what it can actually act on. It is read once here
+        // because the universe is fixed at assembly; an instrument the
+        // registry would refuse never reaches it, since `admit` below stops
+        // the process first.
+        let mut self_model = SelfModel::new();
+        self_model.declare_boundary(
+            universe
+                .iter()
+                .map(|object| object.asset_class.as_str().to_string()),
+        )?;
         let unsupported: Vec<String> = universe
             .iter()
             .filter_map(|object| asset_class_registry.admit(object).err())
@@ -5753,7 +5768,7 @@ impl Platform {
             falsification: crate::falsification::Book::new(),
             evaluations: Vec::new(),
             last_calibration: None,
-            self_model: SelfModel::new(),
+            self_model,
             // The universe's asset classes are named here, at the one place
             // they are known, so the domain members (MODEL-4009) are declared
             // by the first pass of every deployed cycle and not only in the
@@ -11966,6 +11981,43 @@ impl Platform {
     /// what the caller gets back. The refusal is not a stage failing — it is the
     /// argument being wrong — so nothing is journalled, nothing is charged and
     /// no state moves.
+    /// Hand the self-model this cycle's operational health: whether the
+    /// global kill switch is tripped, and every §6.2 row the centre reads as
+    /// other than fresh (R12-WORLD-3036). Run after LEARN on every cycle,
+    /// halted or not, since a halted platform is the case a self-model most
+    /// needs to know about. A degradation table that cannot be read is put on
+    /// the cycle's problems and recorded as no reading, never as a healthy
+    /// one.
+    fn observe_own_health(&mut self, now: Timestamp) {
+        use qip_contracts::degradation::{Capability, Freshness};
+        let degraded = match self.central_degradation(now) {
+            Ok(state) => Capability::all()
+                .into_iter()
+                .map(|row| (row, state.freshness(row)))
+                .filter(|(_, freshness)| *freshness != Freshness::Fresh)
+                .collect(),
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "the self-model's health was not observed this cycle: the degradation \
+                     table could not be read: {}",
+                    error.message()
+                ));
+                return;
+            }
+        };
+        let health = qip_learning_engine::self_model::OperationalHealth {
+            observed_at: now,
+            halted: self.autonomy.kill_switch().is_globally_tripped(),
+            degraded,
+        };
+        if let Err(error) = self.self_model.observe_health(health) {
+            self.capture_problems.push(format!(
+                "the self-model refused this cycle's health reading: {}",
+                error.message()
+            ));
+        }
+    }
+
     pub fn run_cycle(&mut self, now: Timestamp) -> CycleReport {
         if now < self.reasoned_through {
             return self.refuse_cycle_before(now);
@@ -12021,6 +12073,7 @@ impl Platform {
         self.finish_stage(&mut stages, acted, &mut mark);
         let learned = self.stage_learn(now);
         self.finish_stage(&mut stages, learned, &mut mark);
+        self.observe_own_health(now);
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next
