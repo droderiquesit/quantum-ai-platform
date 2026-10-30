@@ -219,6 +219,11 @@ pub fn assemble_with_risk(
     // one the centre did not issue, and reading its silence as "unbounded"
     // is how a disconnected cell builds the position the bounds exist for.
     config = config.with_exposure_bounds_required();
+    // R12-REFLEX-5038: a sale beyond what the cell holds long needs the
+    // venue's stated borrow and funding. The simulated feed states neither,
+    // because the simulated exchange models no lending, so on this path such
+    // a sale is refused rather than sent on silence.
+    config = config.with_borrow_required();
     // ADR 0126 decision 2: likewise a drawdown stop. The issuer signs one at
     // the loss limit into every grant, so an envelope without it is one the
     // centre did not issue.

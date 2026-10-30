@@ -746,7 +746,7 @@
     "verification": "scheduled terraform plan showing no diff",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: the drift half is written as docs/blueprint/lanes/l9-CICD-8032.patch, not yet applied. It adds .github/workflows/drift.yml, a daily plan of dev with -lock=false -detailed-exitcode that fails the run on exit 2 and on a plan error, plus drift.yml in dispatch_refused_for_agents and qip-acceptance drift_plan.rs (5 tests, 7 mutations each fired). The signed model activation half still waits on R12-SEC-9137. PARTIAL until the patch is applied."
   },
   {
     "id": "R12-CICD-8033",
@@ -1895,9 +1895,13 @@
       "backend/crates/libs/qip-events/src/event_fabric/codec.rs Batch::origin, BrokerOrigin, stamp_broker_origin",
       "backend/crates/libs/qip-events/tests/event_fabric_codec.rs::a_broker_stamped_partition_round_trips_and_a_flipped_partition_bit_is_corruption",
       "backend/crates/libs/qip-events/tests/event_fabric_origin.rs",
-      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs::a_broker_stamps_its_region_partition_and_the_sessions_principal_and_refuses_a_producers_own"
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs::a_broker_stamps_its_region_partition_and_the_sessions_principal_and_refuses_a_producers_own",
+      "backend/crates/libs/qip-events/src/event_fabric/codec.rs Batch.partition, ORIGIN_TAG_PARTITION, stamp_broker_partition",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::stamp_origin (partition on every append), stated-partition refusal in produce_from",
+      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs a_partition_stamped_without_a_session_round_trips_and_a_flipped_bit_in_it_is_corruption, every_broker_stamped_layout_round_trips_equal_and_refuses_every_single_bit_flip",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs every_append_names_its_partition_even_without_a_session_or_a_region"
     ],
-    "gap": "2026-10-24 (parent, wave580 merge 4): lane L1 stamped the partition on every append behind a flag bit (11b4bc12, ADR 0160). Lane L5 had already landed ADR 0129's format version 2, which carries the partition inside the session-only broker origin. The two encodings cannot both be the batch header, so the merge kept version 2 and did not land ADR 0160. What remains: stamp the partition on every broker append, produce_to included, inside the version-2 header (an origin with no principal, or a separate always-written field), and re-run a skeptic. The previous promotion's HOLDS judged the flag-bit code, not this code.",
+    "gap": "2026-10-25 (lane L1-MONEY, 17300548, c885dafd, fix after it): the partition is now stamped on every broker append, produce_to and sessionless producers included, as a partition-only origin tag inside the v2 header and the batch CRC. Every-field round trip, re-encode byte identity and an exhaustive single-bit flip run over both stamped layouts, and a producer-stated partition is refused. Still PARTIAL by the two-round rule: skeptic round 1 REFUTED on evidence (since added); round 2 REFUTED because c885dafd committed a mutation through a botched restore. That line was restored in the next commit and both mutations re-fired against clean code, but no third skeptic round was run.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1905,10 +1909,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo +1.94.1 test -p qip-events --test event_fabric_codec --test event_fabric_origin && cargo +1.94.1 test -p qip-streaming --test event_fabric_broker",
+    "verification": "cargo test -p qip-events (131 passed, 0 failed); cargo test -p qip-streaming (134 passed, 0 failed); event_fabric_codec \"ok. 11 passed; 0 failed\"; event_fabric_broker \"ok. 15 passed; 0 failed\"; qip-fabricd 58/0, qip-ledgerd 51/0, qip-transport 156/0, qip-desk-ship 10/0, qip-edge-node 303/0 (on 17300548)",
     "work_item": "",
     "size": "S",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Partition field in the header (or ADR stating the route carries it). 2026-10-24 lane L1-MONEY (11b4bc12, ADR 0160): partition added under a flag bit. Mutations fired: encode omits the partition bytes ('batch CRC mismatch'), decode ignores the flag (round trip None), stamp_broker drops it (both tests fail); restored with cp+cmp. Independent code-reviewer skeptic: HOLDS against the requirement text (requirements.md:173); the ADR 0129 d4 deviation it flagged is now ADR 0160. 2026-10-24 parent session, merge 4: back to PARTIAL. L1's flag-bit partition (ADR 0160) and L5's version-2 origin collided in the codec. The version-2 format was kept; ADR 0160 was not landed. L1's flipped-bit test was re-pointed at the version-2 origin. Mutation: omitting the origin's partition from encode and decoding it as 0 fails it with left Some(0), right Some(7). Restored by copy, cmp clean, and the suite reads 'ok. 9 passed'."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Partition field in the header (or ADR stating the route carries it). 2026-10-24 lane L1-MONEY (11b4bc12, ADR 0160): partition added under a flag bit. Mutations fired: encode omits the partition bytes ('batch CRC mismatch'), decode ignores the flag (round trip None), stamp_broker drops it (both tests fail); restored with cp+cmp. Independent code-reviewer skeptic: HOLDS against the requirement text (requirements.md:173); the ADR 0129 d4 deviation it flagged is now ADR 0160. 2026-10-24 parent session, merge 4: back to PARTIAL. L1's flag-bit partition (ADR 0160) and L5's version-2 origin collided in the codec. The version-2 format was kept; ADR 0160 was not landed. L1's flipped-bit test was re-pointed at the version-2 origin. Mutation: omitting the origin's partition from encode and decoding it as 0 fails it with left Some(0), right Some(7). Restored by copy, cmp clean, and the suite reads 'ok. 9 passed'. 2026-10-25 lane L1-MONEY: mutations fired, each restored byte-for-byte: encode tag 0 for partition-only; disagreement refusal off; broker drops the partition stamp; tag-1 decode drops the partition; stated-partition refusal off. Two code-reviewer skeptic rounds, both REFUTED (evidence; then a committed mutation, since fixed). Kept PARTIAL by the owner's two-round rule."
   },
   {
     "id": "R12-FABRIC-8085",

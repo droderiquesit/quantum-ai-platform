@@ -16,6 +16,7 @@ pub mod config;
 pub mod decimal;
 pub mod deployment;
 pub mod error;
+pub mod exposure;
 pub mod hash;
 pub mod ids;
 pub mod kv;

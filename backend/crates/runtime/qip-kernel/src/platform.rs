@@ -227,6 +227,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+/// What REASON reads off one hypothesis's symbolic derivation.
+///
+/// Named fields rather than a tuple because two of them are reasons to form
+/// no proposal and they are not interchangeable: a `veto` is the rule pack's
+/// hard stop on an approved hypothesis (ADR 0125 decision 2), `infeasible`
+/// is the derivation contradicting itself (ADR 0212). Swapping two
+/// `Option<String>`s in a tuple would compile and report one as the other.
+#[derive(Debug, Default)]
+struct SymbolicReading {
+    /// The derivation as a clause for the stage's detail line.
+    detail: String,
+    /// The derivation was computed and could not be journaled.
+    problem: Option<String>,
+    veto: Option<String>,
+    infeasible: Option<String>,
+}
+
 /// The assembled platform.
 #[derive(Debug)]
 pub struct Platform {
@@ -883,6 +900,11 @@ pub struct Platform {
     /// `asset_classes`. What the symbolic rule pack prices one lot with
     /// (R12-REASON-3057).
     lot_units: BTreeMap<String, Decimal>,
+    /// The expiry of every dated contract in the universe — a future's or an
+    /// option's, from its extension — taken at assembly like `lot_units`.
+    /// What the symbolic rule pack measures a claim's horizon against
+    /// (R12-REASON-3057, contracts); an undated instrument is absent.
+    contract_expiries: BTreeMap<String, Timestamp>,
     /// COVERAGE-013: who may trade which derivative type. Empty at assembly,
     /// so every derivative order is refused until a composition root grants.
     derivative_permissions: DerivativePermissions,
@@ -1206,6 +1228,14 @@ pub struct Platform {
     /// Beliefs from outside the opportunity, by subject. REASON may only be
     /// narrowed by them (ADR 0151 decision 3); empty unless a producer sets it.
     outside_priors: BTreeMap<String, crate::fusion::OutsidePrior>,
+    /// The rule pack REASON's symbolic derivations are evaluated under:
+    /// `symbolic_stage::rule_pack()`, set at construction and by nothing
+    /// else outside this file's tests. Held rather than called so that a pack
+    /// revision whose rules collide can be driven through the default cycle
+    /// and shown to form no proposal (ADR 0212). There is no setter: a pack
+    /// swapped at run time would be one the replay could not name, and
+    /// `symbolic_stage::verify` holds every record to the build's own pack.
+    symbolic_rule_pack: qip_reasoning_engine::rules::RulePack,
     /// The reference and sized quantities of each leg ACT is about to release,
     /// by order id, taken by `submit_order` when it stamps the order. Emptied
     /// on every submission, accepted or refused, so it holds at most the order
@@ -5362,6 +5392,17 @@ impl Platform {
                 )
             })
             .collect();
+        let contract_expiries: BTreeMap<String, Timestamp> = universe
+            .iter()
+            .filter_map(|object| {
+                let expiry = match &object.extension {
+                    qip_financial::extensions::Extension::Future(future) => future.expiry,
+                    qip_financial::extensions::Extension::Option(option) => option.expiry,
+                    _ => return None,
+                };
+                Some((object.object_id.as_str().to_string(), expiry))
+            })
+            .collect();
         let derivative_types: BTreeMap<String, InstrumentType> = universe
             .iter()
             .filter(|object| object.instrument_type.is_derivative())
@@ -5930,6 +5971,7 @@ impl Platform {
             asset_classes,
             derivative_types,
             lot_units,
+            contract_expiries,
             derivative_permissions: DerivativePermissions::none(),
             derivative_desk: None,
             licensed_jurisdictions: None,
@@ -5956,6 +5998,7 @@ impl Platform {
             pending_theses: Vec::new(),
             justified_hypotheses: justification::JustifiedHypotheses::default(),
             outside_priors: BTreeMap::new(),
+            symbolic_rule_pack: crate::symbolic_stage::rule_pack(),
             leg_quantities: BTreeMap::new(),
             governor: crate::survival::SurvivalGovernor::default(),
             ledger_obligations: None,
@@ -15039,9 +15082,17 @@ impl Platform {
                 // into a prediction or handed to the tournament as approved.
                 // The derivation records the status review gave it, which is
                 // what the pack was asked about. Nothing here sizes or sends.
-                let (symbolic_detail, symbolic_problem, symbolic_veto) =
-                    self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
-                if symbolic_veto.is_some() {
+                let SymbolicReading {
+                    detail: symbolic_detail,
+                    problem: symbolic_problem,
+                    veto: symbolic_veto,
+                    infeasible: symbolic_infeasibility,
+                } = self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                // ADR 0212: a derivation that contradicts itself is a
+                // conclusion no money may rest on, whatever review said, so
+                // it is demoted here beside the veto and the decision below
+                // forms no proposal on it. Dissent does not reach this arm.
+                if symbolic_veto.is_some() || symbolic_infeasibility.is_some() {
                     reasoned.hypothesis.status =
                         qip_reasoning_engine::hypothesis::HypothesisStatus::Rejected;
                 }
@@ -15134,7 +15185,19 @@ impl Platform {
                     outcome.detail.push_str(&verdict.clause);
                     society_refutation = verdict.refuted;
                 }
-                let decision = if let Some(veto) = symbolic_veto {
+                let decision = if let Some(contradiction) = symbolic_infeasibility {
+                    // ADR 0212, R12-RES-7106: first, because a contradiction
+                    // is a finding about the reasoning itself and outranks
+                    // what review or the pack's hard stops said of it. The
+                    // derivation carrying the trace and the alternates is
+                    // already on the log under `kernel/symbolic`; nothing is
+                    // queued for DECIDE, so no proposal, size or order can
+                    // follow from it.
+                    outcome = outcome.with_problem(format!(
+                        "symbolically infeasible, no proposal formed: {contradiction}"
+                    ));
+                    DecisionTaken::NotSizeable
+                } else if let Some(veto) = symbolic_veto {
                     // ADR 0125 decision 2: the rule pack refused what review
                     // approved, so the hypothesis was rejected above. Recorded
                     // under its own words, because "vetoed by a rule" and
@@ -15411,9 +15474,11 @@ impl Platform {
     /// Gathers only; the module decides. Takes the hypothesis by shared
     /// reference and returns a clause, a problem and, under ADR 0125
     /// decision 2, the reason the rule pack vetoes an approved hypothesis (see
-    /// `SymbolicDerivation::veto`). The derivation has no path back into the
-    /// thesis, its conviction or any order: the caller may drop a proposal on
-    /// the veto and can do nothing else with it.
+    /// `SymbolicDerivation::veto`), and under ADR 0212 the reason its parts
+    /// contradict each other (`SymbolicDerivation::infeasibility`). The
+    /// derivation has no path back into the thesis, its conviction or any
+    /// order: the caller may drop a proposal on either and can do nothing
+    /// else with them.
     /// What one lot of `subject` leaves of the position budget and of cash,
     /// in whole currency units, for the symbolic rule pack (REASON-3057).
     ///
@@ -15465,13 +15530,13 @@ impl Platform {
         reasoned: &ReasoningOutcome,
         contested: bool,
         now: Timestamp,
-    ) -> (String, Option<String>, Option<String>) {
+    ) -> SymbolicReading {
         use crate::symbolic_stage::{AnomalyFacts, SymbolicInput};
         let (Some(anomaly), Some(subject)) = (
             opportunity.anomalies.first(),
             opportunity.affected_objects.first(),
         ) else {
-            return (String::new(), None, None);
+            return SymbolicReading::default();
         };
         let hypothesis = &reasoned.hypothesis;
         let moves: BTreeMap<String, f64> = self
@@ -15526,13 +15591,30 @@ impl Platform {
                 .map(|class| class.as_str().to_string()),
             lot_headroom,
             cash_headroom,
+            // Whole days from the claim's deadline to the contract's expiry,
+            // floored: an expiry an hour short of the deadline is minus one.
+            contract_expiry_margin_days: self.contract_expiries.get(subject.as_str()).map(
+                |expiry| {
+                    let deadline = hypothesis.formed_at.saturating_add(hypothesis.horizon);
+                    expiry
+                        .since(deadline)
+                        .as_nanos()
+                        .div_euclid(Duration::from_days(1).as_nanos())
+                },
+            ),
         };
         let derivation = {
             let world = self.world.read();
-            crate::symbolic_stage::derive(input, world.causal(), now)
+            crate::symbolic_stage::derive_under(
+                &self.symbolic_rule_pack,
+                input,
+                world.causal(),
+                now,
+            )
         };
         let detail = derivation.detail();
         let veto = derivation.veto();
+        let infeasible = derivation.infeasibility();
         let problem = self
             .journal_record(derivation, "kernel/symbolic", now)
             .err()
@@ -15542,7 +15624,12 @@ impl Platform {
                     error.message()
                 )
             });
-        (detail, problem, veto)
+        SymbolicReading {
+            detail,
+            problem,
+            veto,
+            infeasible,
+        }
     }
 
     /// The regime in force for `subject`, as the labels memory encodes.
@@ -35618,5 +35705,372 @@ mod lattice_journal_tests {
         );
         assert!(platform.lattice().calibrator().frozen());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+#[cfg(test)]
+mod symbolic_contradiction_tests {
+    //! ADR 0212, R12-RES-7106: a symbolic contradiction blocks money
+    //! movement on the default cycle; dissent does not. A unit test because
+    //! the only way to make the shipped rule pack contradict itself is to
+    //! revise it, and the pack the platform holds is private on purpose.
+
+    use super::*;
+    use crate::cycle::Stage;
+    use crate::symbolic_stage::{Feasibility, SymbolicDerivation};
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::costs::LiquidityProfile;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_reasoning_engine::rules::{Cond, Conflict, Op, Rule, RulePack, Value};
+    use qip_risk::limits::{Limit, LimitKind, LimitSet};
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    /// The tape `tests/valuation_seam.rs` drives: quiet, then a nine
+    /// percent drop on the last bar. Its panel contests the thesis and
+    /// review still approves it, which is the dissent case these tests need.
+    fn tape() -> Vec<qip_market_ingestion::adapter::SensedRecord> {
+        use qip_market::bar::{Bar, Interval};
+        const TAPE: usize = 120;
+        let mut price = 100.0_f64;
+        (0..TAPE)
+            .map(|i| {
+                let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
+                let drop = if i == TAPE - 1 { -0.09 } else { 0.0 };
+                let open = price;
+                price *= 1.0 + noise + drop;
+                let at = start().saturating_sub(Duration::from_days((TAPE - i) as i64));
+                qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(Bar {
+                    object_id: ObjectId::from_string("obj-AAA"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: at,
+                    open: Decimal::from_f64(open).expect("a price"),
+                    high: Decimal::from_f64(open.max(price) * 1.002).expect("a price"),
+                    low: Decimal::from_f64(open.min(price) * 0.998).expect("a price"),
+                    close: Decimal::from_f64(price).expect("a price"),
+                    volume: Decimal::from_int(1_000_000),
+                    trade_count: 5_000,
+                    vwap: Decimal::from_f64((open + price) / 2.0),
+                    quality: qip_financial::quality::DataQuality::default(),
+                }))
+            })
+            .collect()
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig {
+            initial_equity: Decimal::from_int(1_000_000),
+            review: qip_reasoning_engine::redteam::ReviewPolicy {
+                minimum_surviving_confidence: 0.10,
+                ..qip_reasoning_engine::redteam::ReviewPolicy::default()
+            },
+            ..PlatformConfig::default()
+        };
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    ObjectId::from_string("obj-AAA"),
+                    "AAA",
+                    InstrumentType::CommonStock,
+                    LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+                )
+                .venue("XNYS")
+                .geography("US")
+                .sector(Sector::InformationTechnology)
+                .price(Decimal::from_int(100))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
+            )
+            .expect("insertable");
+        let limits = LimitSet::new("kernel-test").with(
+            Limit::new("max-leverage", LimitKind::MaxLeverage { limit: 2.0 })
+                .with_rationale("gross exposure is capped at 2x equity"),
+        );
+        Platform::new(config, context, Telemetry::silent(), universe, limits)
+            .expect("the platform assembles")
+    }
+
+    /// The shipped pack plus a revision of two rules that conclude opposite
+    /// values of one fact from the same premise, an approved review. Both
+    /// fire on every approved hypothesis, contested or not, so the pack
+    /// derives `second_reviewer` one way and then refuses the step that
+    /// would set it the other. A premise that `r10-eligible` must hold would
+    /// not do: this tape's thesis is contested, so `r10` never fires, which
+    /// is how the first draft of this test passed a pack it meant to break.
+    fn self_contradicting_pack() -> RulePack {
+        let mut pack = crate::symbolic_stage::rule_pack();
+        let approved = || Cond::Cmp {
+            fact: "status".into(),
+            op: Op::Eq,
+            value: Value::Text("approved".into()),
+        };
+        for (id, value) in [
+            ("r05-revision-asks-a-second-reviewer", true),
+            ("r06-revision-waives-the-second-reviewer", false),
+        ] {
+            pack.rules.push(Rule {
+                id: id.into(),
+                when: approved(),
+                fact: "second_reviewer".into(),
+                value: Value::Bool(value),
+            });
+        }
+        pack
+    }
+
+    /// Every derivation on the log, decoded but not re-verified: a record
+    /// written under a pack this build does not ship is refused by
+    /// `symbolic_stage::replay` by design, and what this test reads is
+    /// whether the trace was kept, not whether it is the build's proof.
+    fn journaled(platform: &Platform) -> Vec<SymbolicDerivation> {
+        platform
+            .replay_journal(
+                &qip_events::EventFilter::new().topic(<SymbolicDerivation as EventBody>::TOPIC),
+            )
+            .expect("the journal replays")
+            .into_iter()
+            .filter(|e| {
+                e.idempotency_key()
+                    .contains(crate::symbolic_stage::IDEMPOTENCY_PREFIX)
+            })
+            .map(|e| e.decode::<SymbolicDerivation>().expect("a derivation").body)
+            .collect()
+    }
+
+    /// R12-RES-7106's check: a contradictory derivation yields infeasible
+    /// with its trace, and blocks money movement — on the default cycle,
+    /// from REASON through ACT, not at an accessor beside it.
+    ///
+    /// The failure prevented: ADR 0150 decision 14 withdrew the blocking
+    /// clause for *dissent*, and with it the platform had no answer at all
+    /// for a derivation whose own rules collide. Such a derivation's verdict
+    /// is `Step::Refused`, which `SymbolicDerivation::veto` reads as "not a
+    /// rule firing", so before ADR 0212 the hypothesis review approved went
+    /// on to be sized and sent with a self-contradicting proof on the log.
+    ///
+    /// The control is the same tape under the shipped pack, which proposes a
+    /// leg and opens a position, so a legless book on the other side is the
+    /// contradiction's doing. Mutations: skip the `symbolic_infeasibility`
+    /// arm in `stage_reason` (the thesis is queued and the position opens);
+    /// record `contradictions` without the pack's words and `alternates` as
+    /// empty in `feasibility_of` (the trace assertions fail).
+    #[test]
+    fn a_contradictory_derivation_yields_infeasible_with_its_trace_and_blocks_money_movement() {
+        let mut control = platform();
+        control.observe(tape());
+        let report = control.run_cycle(start());
+        let reason = report.stage(Stage::Reason).expect("reason ran");
+        assert!(
+            reason.detail.contains("hypothesis approved at confidence "),
+            "premise: review approves this tape's hypothesis: {}",
+            reason.detail
+        );
+        assert!(
+            reason.detail.contains("; sized on conviction"),
+            "premise: under the shipped pack the thesis is queued: {}",
+            reason.detail
+        );
+        assert!(
+            control.proposals().iter().any(|p| !p.legs.is_empty()),
+            "premise: the control proposes a leg"
+        );
+        assert!(
+            !control.positions_at_cost().is_empty(),
+            "premise: the control's cycle opens a position"
+        );
+        let shipped = journaled(&control);
+        assert_eq!(shipped.len(), 1, "premise: one derivation is journaled");
+        assert_eq!(shipped[0].feasibility, Some(Feasibility::Feasible));
+
+        let mut revised = platform();
+        revised.symbolic_rule_pack = self_contradicting_pack();
+        revised.observe(tape());
+        let report = revised.run_cycle(start());
+        let reason = report.stage(Stage::Reason).expect("reason ran");
+
+        // Infeasible, with its trace: the record is on the log, says which
+        // parts collided, keeps the pack's own words and the alternates its
+        // contradiction search offers.
+        let derivations = journaled(&revised);
+        assert_eq!(
+            derivations.len(),
+            1,
+            "the infeasible derivation was not journaled"
+        );
+        let derivation = &derivations[0];
+        assert!(
+            derivation
+                .rules
+                .inputs
+                .iter()
+                .any(|(n, v)| n == "status" && *v == Value::Text("approved".into())),
+            "premise: review approved this hypothesis and the pack was asked about it: {:?}",
+            derivation.rules.inputs
+        );
+        assert_eq!(
+            derivation.veto(),
+            None,
+            "premise: the hard-stop veto does not fire, so the block below is ADR 0212's"
+        );
+        let Some(Feasibility::Infeasible {
+            contradictions,
+            alternates,
+        }) = &derivation.feasibility
+        else {
+            panic!(
+                "a self-contradicting derivation was not marked infeasible: {:?}",
+                derivation.feasibility
+            );
+        };
+        assert!(
+            contradictions.iter().any(|c| c.starts_with("rules: ")
+                && c.contains("r06-revision-waives-the-second-reviewer")
+                && c.contains("the pack contradicts itself")),
+            "the contradiction's own words were not kept: {contradictions:?}"
+        );
+        let tasks = alternates.derived().expect("the revision search ran");
+        assert!(
+            tasks.iter().any(|t| t.conflict
+                == Conflict::RuleAgainstRule {
+                    rule: "r05-revision-asks-a-second-reviewer".into(),
+                    other: "r06-revision-waives-the-second-reviewer".into(),
+                }),
+            "the alternates do not name the two colliding rules: {tasks:?}"
+        );
+        assert!(
+            derivation
+                .violated_assumptions
+                .iter()
+                .any(|v| v.starts_with("rules: ")),
+            "the rule pack's refusal left the trace: {:?}",
+            derivation.violated_assumptions
+        );
+        assert!(
+            reason.detail.contains(", infeasible (1 contradiction(s))"),
+            "the stage detail does not say the derivation is infeasible: {}",
+            reason.detail
+        );
+
+        // Blocks money movement: nothing is queued, no leg is proposed, no
+        // position opens, and the reason is reported in its own words.
+        assert!(
+            reason.detail.contains("hypothesis rejected at confidence "),
+            "an infeasible conclusion was still reported approved: {}",
+            reason.detail
+        );
+        assert!(
+            !reason.detail.contains("; sized on conviction"),
+            "an infeasible thesis was queued for sizing: {}",
+            reason.detail
+        );
+        assert!(
+            reason
+                .problems
+                .iter()
+                .any(|p| p.starts_with("symbolically infeasible, no proposal formed: ")),
+            "the refusal was not reported: {:?}",
+            reason.problems
+        );
+        assert!(revised.pending_theses.is_empty());
+        assert!(
+            revised.proposals().iter().all(|p| p.legs.is_empty()),
+            "an infeasible conclusion produced a proposed leg: {:?}",
+            revised.proposals()
+        );
+        assert!(
+            revised.positions_at_cost().is_empty(),
+            "an infeasible conclusion moved money: {:?}",
+            revised.positions_at_cost()
+        );
+        for platform in [&control, &revised] {
+            assert!(!platform.orders().has_live_fills());
+            assert!(!platform.is_live_capable());
+        }
+    }
+
+    /// ADR 0150 decision 14, preserved by ADR 0212: a merely contested
+    /// thesis is not a contradiction. Its derivation is feasible, it is
+    /// queued, it is sized on a conviction narrower than the confidence it
+    /// was admitted on, and its proposal carries a leg.
+    ///
+    /// The failure prevented: widening "contradiction" to cover an
+    /// unsatisfiable acting problem — which every contested thesis has,
+    /// because `r10-eligible` requires an uncontested panel — would refuse
+    /// every contested thesis review approved and stop the platform learning
+    /// about exactly the questions it was least sure of. Mutation: in
+    /// `contradictions`, list an unsatisfiable acting problem whatever the
+    /// verdict (drop the `eligible &&`) — this thesis is marked infeasible
+    /// and the feasibility assertion fails.
+    #[test]
+    fn a_contested_thesis_is_not_a_contradiction_and_still_forms_a_proposal_sized_small() {
+        let mut platform = platform();
+        platform.observe(tape());
+        let report = platform.run_cycle(start());
+        let reason = report.stage(Stage::Reason).expect("reason ran");
+        assert!(
+            reason.detail.contains(", contested"),
+            "premise: the panel contests this thesis: {}",
+            reason.detail
+        );
+        let derivations = crate::symbolic_stage::replay(&platform).expect("the log replays");
+        assert_eq!(derivations.len(), 1, "premise: one derivation is journaled");
+        assert!(
+            matches!(
+                derivations[0].acting,
+                crate::symbolic_stage::Step::Derived(
+                    qip_reasoning_engine::constraint::Answer::Unsatisfiable { .. }
+                )
+            ),
+            "premise: a contested thesis's acting problem is unsatisfiable, which is the case \
+             a careless reading of 'unsatisfied constraints' would block: {:?}",
+            derivations[0].acting
+        );
+        assert_eq!(
+            derivations[0].feasibility,
+            Some(Feasibility::Feasible),
+            "dissent was marked as a contradiction"
+        );
+        assert!(
+            reason.detail.contains("hypothesis approved at confidence "),
+            "a contested thesis was not approved: {}",
+            reason.detail
+        );
+        let admitted = number_after(&reason.detail, "hypothesis approved at confidence ");
+        let sized_on = number_after(&reason.detail, "; sized on conviction ");
+        assert!(
+            sized_on < admitted - 0.005,
+            "a contested thesis was sized on {sized_on}, not below the {admitted} it was \
+             admitted on: {}",
+            reason.detail
+        );
+        assert!(
+            platform.proposals().iter().any(|p| !p.legs.is_empty()),
+            "a contested thesis formed no proposal: {:?}",
+            platform.proposals()
+        );
+        assert!(
+            reason.problems.iter().all(|p| !p.contains("infeasible")),
+            "{:?}",
+            reason.problems
+        );
+    }
+
+    fn number_after(detail: &str, marker: &str) -> f64 {
+        let (_, rest) = detail
+            .split_once(marker)
+            .unwrap_or_else(|| panic!("no `{marker}` in: {detail}"));
+        let digits: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        digits.parse().expect("a number")
     }
 }

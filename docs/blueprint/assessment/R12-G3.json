@@ -1398,16 +1398,19 @@
   },
   {
     "id": "R12-AGENCY-10063",
-    "status": "PARTIAL",
-    "current": "The edge node has no compile-time dependency on cognitive crates and a node test shows identical orders when the centre stops answering; no managed agent runtime and no backlog queue. On the deepbrain node, the agency door's backlog is Intake::Deferred with bounded retry (a_full_outbox_defers_drafts_and_never_stops_the_node), and an agency refusal in every cycle (drafting tool revoked) is counted, never raised, and leaves the platform's event log identical to a run with no agency attached.",
+    "status": "COMPLETE",
+    "current": "The in-process agent runtime is the managed runtime this platform has (owner decisions 2026-10-25 nos. 5 and 6 decline billed and hosted services, and the requirement names Vertex only 'where suitable'). When it cannot run an agent — a manifest past its review interval (AgentHost::run refuses), or a budget it cannot fund (Escalated) — Organisation::dispatch defers the run onto the organisation's bounded AgentBacklog (qip-agents runtime.rs: capacity two per agent, three attempts per agent and question, refused at capacity or past the bound, never an error) and continues to the next agent; a later successful run retires the entry; the report lists what was backlogged and what the backlog refused. dispatch returns a plain OrganisationReport, so no refusal can propagate out of the cycle, and stage_act never reads the organisation, so execution never waits on it. On the default cycle path (run_cycle -> stage_reason -> reason_about_the_queue -> dispatch, in qip-api, qip-fastbrain and qip-deepbrain) a lapsed roster degrades to one backlog entry per refused agent, all eight stages run, and an order is still accepted. The edge node links neither qip-agents nor qip-investment-agents (qip-acceptance lane_placement) and trades identically when the centre stops answering (qip-edge-node reasoning_outage).",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11 reflex_edge_node_has_no_compile_time_dependency_on_cognitive_crates",
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342 a_node_works_the_same_..._when_the_centre_stops_answering",
-      "backend/crates/libs/qip-agents/src/runtime.rs agent runtime with BudgetLedger",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_revoked_drafting_tool_withholds_every_draft_and_leaves_the_platform_log_identical",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_full_outbox_defers_drafts_and_never_stops_the_node"
+      "backend/crates/libs/qip-agents/src/runtime.rs AgentBacklog::defer / retire, DeferredRun, Deferral",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs Organisation::dispatch Refused/Escalated arms defer onto the backlog; OrganisationReport.backlogged / backlog_refused",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs a_panel_agent_that_cannot_run_is_deferred_and_the_findings_are_identical_to_its_absence",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs a_lapsed_panel_is_deferred_to_a_bounded_backlog_and_the_cycle_still_acts",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs the lane register and closure check: qip-edge-node's closure holds neither qip-agents nor qip-investment-agents",
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs nothing_the_edge_node_links_directly_or_transitively_is_a_cognitive_crate (whole-name manifest parser, not substring)",
+      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs a node works the same when the centre stops answering",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs a_full_outbox_defers_drafts_and_never_stops_the_node"
     ],
-    "gap": "The in-process qip-agents runtime (runtime.rs) has no backlog queue; backlog and refusal-isolation are proven for the agency door on the deepbrain node and for the edge node's reflex loop, not for that runtime. 2026-10-25 (lane L2-INTEL): the row's subject is a managed agent runtime (Vertex Agent Engine), new billed infrastructure that owner decision 5 (docs/blueprint/owner-decisions-2026-10-25.md) declines for now; no managed runtime exists to fail over to backlog. The in-process qip-agents runtime (runtime.rs AgentRuntime::run) is synchronous inside the cycle and returns a failed AgentRun record rather than raising. A backlog for it would be a queue for a dependency that does not exist. Reopens with an ADR admitting a managed runtime with a measured need and a monthly ceiling.",
+    "gap": "None for the requirement; not deployed. Residual, not disqualifying: REASON runs before ACT on one thread, so a slow language-model call delays ACT by up to the model chain's timeout; a deferred run is held and reported, not re-dispatched by the backlog itself (the next cycle's dispatch re-asks the agent).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1415,10 +1418,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test reasoning_outage; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-investment-agents --test organisation a_panel_agent_that_cannot_run && cargo +1.94.1 test -p qip-kernel --test kernel a_lapsed_panel_is_deferred && cargo +1.94.1 test -p qip-acceptance --test lane_placement --test arch_001_independent_reflex",
     "work_item": "",
     "size": "M",
-    "notes": "arch_001 uses substring contains() on Cargo.toml, the trap the testing rules warn about. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). arch_001 is not changed by this lane."
+    "notes": "arch_001 uses substring contains() on Cargo.toml, the trap the testing rules warn about. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). arch_001 is not changed by this lane. 2026-10-25 lane L2b (wave580): backlog built in qip-agents and wired into Organisation::dispatch. Mutation fired on both tests: deleting the defer arm for RunStatus::Refused in dispatch -> organisation test \"left: [] right: [\\\"macro-analyst\\\"]\", kernel test \"left: 0 right: 19\"; restored byte for byte (cmp), both ok. Skeptic (code-reviewer, read-only, default REFUTED): HOLDS; its record corrections applied here: arch_001's COGNITIVE list names neither agent crate, the guard that does is lane_placement.rs (now cited); the earlier note that arch_001 used substring contains() was stale, the parser compares whole names. Its design note is kept in the gap. Not re-run by the skeptic: part 1 rests on the lane's mutation report. Merge note 2026-10-25: lane L2-intel (commit 409b0e2e, before this lane's triage) wrote into this row's gap that the requirement's subject is a managed runtime declined by owner decision 5 and that a backlog for the in-process runtime \"would be a queue for a dependency that does not exist\"; this lane's reading, which the skeptic held under bar part 4, is that the text names Vertex only where suitable and makes the backlog a property of whatever runtime hosts the agents, so the in-process runtime is in scope and the backlog is real. The two readings disagree and the parent decides; L2-intel's sentence is kept here rather than in the gap because the gap records what is unmet and this lane found nothing unmet."
   },
   {
     "id": "R12-MODEL-10064",
@@ -2521,14 +2524,20 @@
   {
     "id": "R12-MESH-10112",
     "status": "PARTIAL",
-    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
       "backend/crates/services/qip-mesh/tests/peer.rs:88",
       "backend/crates/services/qip-mesh/tests/peer.rs:246",
       "backend/crates/services/qip-mesh/tests/peer_guarantees.rs",
-      "backend/crates/edge/qip-edge/src/reservation.rs"
+      "backend/crates/edge/qip-edge/src/reservation.rs",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Default-on peer link; reservation under cell risk gate on real capital.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2538,21 +2547,27 @@
       "R12-MESH-10075"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh",
+    "verification": "cargo test -p qip-mesh; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-MESH-10113",
     "status": "PARTIAL",
-    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Cell-level decomposition stops whole-cycle desks on short legs.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Cell-level decomposition stops whole-cycle desks on short legs. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
       "backend/crates/edge/qip-edge/tests/decomposition.rs:557 a_desk_that_will_only_carry_a_whole_cycle_stops_on_any_short_leg_at_all",
       "backend/crates/edge/qip-edge/tests/cross_region.rs:1537",
-      "backend/crates/edge/qip-edge/src/cell.rs:73-89 Saga (doc enum)"
+      "backend/crates/edge/qip-edge/src/cell.rs:73-89 Saga (doc enum)",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Default-on peer saga; cell reroute/executed unwind.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2562,10 +2577,10 @@
       "R12-MESH-10112"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test decomposition",
+    "verification": "cargo test -p qip-edge --test decomposition; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-LEDGER-10114",
@@ -2663,7 +2678,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: no code change; gap corrected from 'proof missing' to what run 284 proves and what it does not. Stays PARTIAL."
+    "notes": "2026-10-24 lane L6: no code change; gap corrected from 'proof missing' to what run 284 proves and what it does not. Stays PARTIAL. 2026-10-25 lane L9: the protected half was not written. Running deploy.yml's second-build check for qip-portal before frontend/portal/next.config.ts pins generateBuildId, and before a double build is measured identical, would fail every portal build and leave the console undeployable. The code half comes first (lane L6), then the deploy.yml condition and a named replay job in ci.yml."
   },
   {
     "id": "R12-CICD-10118",

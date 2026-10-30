@@ -1318,6 +1318,8 @@ mod tests {
             deferred: Vec::new(),
             failed: Vec::new(),
             missing_inputs: Vec::new(),
+            backlogged: Vec::new(),
+            backlog_refused: Vec::new(),
         };
         let closes: Vec<f64> = (0..30).map(|i| 100.0 + f64::from(i % 3)).collect();
         let roster: Vec<String> = Vec::new();

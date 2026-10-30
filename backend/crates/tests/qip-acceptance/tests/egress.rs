@@ -1793,7 +1793,23 @@ fn no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy() {
         "[lookup(local.zone_cidr, each.value.to, \"192.0.2.0/32\")]",
         "[each.value.cidr]",
         "var.central_plane_ranges",
+        // The peer mesh (ADR 0116): the other execution nodes, each at the
+        // /32 the operator declared. Admitted only because the module
+        // refuses a non-private address at plan — asserted below — so the
+        // shape cannot name anything outside the platform's own network.
+        "distinct([for peer in values(var.peer_mesh.peers) : \"${peer.address}/32\"])",
     ];
+    let node_variables = without_comments(&read(
+        "infrastructure/terraform/modules/execution-node/variables.tf",
+    ));
+    assert!(
+        node_variables.contains(
+            "can(regex(\"^(10\\\\.|192\\\\.168\\\\.|172\\\\.(1[6-9]|2[0-9]|3[01])\\\\.)\", peer.address))"
+        ),
+        "the execution-node module no longer refuses a public peer address at plan, so the \
+         peer-mesh egress rule's destination shape is no longer bounded to the private \
+         network and must come out of the permitted list"
+    );
     let mut allows = 0usize;
     for path in [TRUST_ZONES_MODULE, NODE_MODULE] {
         let module = without_comments(&read(path));

@@ -84,13 +84,6 @@ use qip_core::time::Duration;
 use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
 
-/// Expectation of the absolute value of a standard normal, `sqrt(2/pi)`.
-///
-/// The factor that turns a volatility into an expected move. Without it the
-/// latency deduction is a one-standard-deviation figure, which overstates the
-/// typical case by about a quarter and makes every path look worse than it is.
-const EXPECTED_ABSOLUTE_NORMAL: f64 = 0.797_884_560_802_865_4;
-
 fn zero_duration() -> Duration {
     Duration::from_nanos(0)
 }
@@ -406,12 +399,16 @@ impl NetEdgeCalculator {
         })
     }
 
+    /// The expected adverse move over the venue round trip plus the
+    /// cross-region coordination latency, on `size`. The formula is
+    /// `qip_core::exposure`'s, shared with the peer saga's origination so the
+    /// two pricers cannot drift apart.
     fn latency_deduction(&self, size: Decimal) -> Result<Decimal> {
         let exposed = self.assumptions.round_trip + self.assumptions.coordination_latency;
-        let years_f64 = exposed.as_years_f64().max(0.0);
-        let move_f64 = self.assumptions.volatility_annual_f64.max(0.0)
-            * years_f64.sqrt()
-            * EXPECTED_ABSOLUTE_NORMAL;
+        let move_f64 = qip_core::exposure::expected_absolute_move_fraction(
+            self.assumptions.volatility_annual_f64,
+            exposed,
+        );
         let fraction = from_statistic(move_f64, "expected adverse move")?;
         mul(size, fraction.max(Decimal::ZERO), "latency deduction")
     }
