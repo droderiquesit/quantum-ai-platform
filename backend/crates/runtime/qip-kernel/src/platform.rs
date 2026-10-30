@@ -1327,6 +1327,13 @@ pub struct Platform {
     /// hypotheses carry none records nothing here, and the position's record
     /// then refuses rather than stating a horizon nobody approved.
     position_horizons: BTreeMap<String, (String, Duration)>,
+    /// The exit plan each object was last sized with, by object id, written
+    /// by `construct_from` on the same terms as [`Self::position_horizons`]
+    /// (R12-ASSET-4069, ADR 0183): only once the proposal's capital is held,
+    /// bounded by the universe, not rebuilt on a restart. A proposal any leg
+    /// of which has no admissible plan is refused before it holds capital,
+    /// so nothing reaches ACT without one.
+    position_exit_plans: BTreeMap<String, qip_financial::position_record::ExitPlan>,
 }
 
 /// How many announced-but-not-yet-due corporate actions the platform holds.
@@ -6115,6 +6122,7 @@ impl Platform {
             asset_book: asset_book_opened(initial_equity, now),
             position_mandates: BTreeMap::new(),
             position_horizons: BTreeMap::new(),
+            position_exit_plans: BTreeMap::new(),
         };
         platform.describe_metrics();
         // Every rule reads as not dormant from assembly, so the series exists
@@ -16997,6 +17005,22 @@ impl Platform {
             );
         }
 
+        // An exit plan for every leg, or no proposal (R12-ASSET-4069, ADR
+        // 0183). Dated here, after the solve and before any capital is held,
+        // because this is the first moment the legs exist and the last before
+        // a refusal would have to release a hold. A leg whose hypotheses carry
+        // no horizon, or whose horizon ends inside the instrument's declared
+        // lockup, is a position opened with no exit the platform can honour:
+        // the construction is refused naming the leg, as every other refusal
+        // here is, rather than the leg sized on an invented date.
+        let mut exit_plans = Vec::with_capacity(outcome.proposal.legs.len());
+        for leg in &outcome.proposal.legs {
+            exit_plans.push((
+                leg.object_id.as_str().to_string(),
+                self.exit_plan_for(leg, now)?,
+            ));
+        }
+
         // Hold what the proposal was sized for, keyed by its id, until the
         // act stage commits or releases it. A proposal whose capital cannot
         // be held must not enter the pipeline: refusing here is the control
@@ -17019,6 +17043,7 @@ impl Platform {
         // written only now that the proposal's capital is held: a refused
         // hold returned above, and a target the platform never committed
         // capital to is not the target of anything it holds.
+        self.position_exit_plans.extend(exit_plans);
         let mandate = self.user_ledger.desk().as_str().to_string();
         for leg in &outcome.proposal.legs {
             // Removed rather than left standing where this leg's hypotheses
@@ -17044,6 +17069,98 @@ impl Platform {
             );
         }
         Ok((outcome, unsizeable, capped))
+    }
+
+    /// The exit plan for one proposal leg: dated at `now` plus the horizon
+    /// of the hypothesis the leg expresses, routed as a sale, and checked
+    /// against the instrument's declared lockup by [`ExitPlan::new`]
+    /// (R12-ASSET-4069, ADR 0183).
+    ///
+    /// Every input is a record, and a missing one refuses. The horizon is
+    /// the one REASON approved, looked up through the leg's hypothesis ids;
+    /// a leg expressing no hypothesis DECIDE registered has none and is
+    /// refused rather than given a default. The route is `Sale` because the
+    /// only way out this platform can carry out is an order to a venue. The
+    /// lockup is the catalogue's — a private asset's vintage origin plus its
+    /// stated lockup term — refused with the record named if either cannot
+    /// be read, because a lockup read as absent is a plan dated inside a term
+    /// the fund forbids.
+    ///
+    /// [`ExitPlan::new`]: qip_financial::position_record::ExitPlan::new
+    fn exit_plan_for(
+        &self,
+        leg: &qip_portfolio_engine::proposal::ProposalLeg,
+        now: Timestamp,
+    ) -> Result<qip_financial::position_record::ExitPlan> {
+        let object = leg.object_id.as_str();
+        let (hypothesis, horizon) = self
+            .justified_hypotheses
+            .horizon(&leg.hypotheses)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "the leg in {object} expresses hypotheses {:?} and none carries a horizon \
+                     DECIDE registered, so the position would open with no exit plan; size it \
+                     only from a thesis REASON approved",
+                    leg.hypotheses
+                ))
+            })?;
+        let exit_at = now
+            .as_nanos()
+            .checked_add(horizon.as_nanos())
+            .map(Timestamp::from_nanos)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "the leg in {object} has a horizon from {} no timestamp can represent; the \
+                 position would open with no exit plan",
+                    now.to_rfc3339()
+                ))
+            })?;
+        let lockup = {
+            let market = self.market.read();
+            match market
+                .universe
+                .get(&leg.object_id)
+                .map(|record| &record.extension)
+            {
+                Some(qip_financial::extensions::Extension::PrivateAsset(details)) => {
+                    let origin = private_asset_origin(details)?;
+                    let term = details.lockup()?;
+                    Some(origin
+                        .as_nanos()
+                        .checked_add(term.as_nanos())
+                        .map(Timestamp::from_nanos)
+                        .ok_or_else(|| {
+                        Error::numeric(format!(
+                            "{object}'s lockup ends at an instant no timestamp can represent; \
+                             correct the reference record"
+                        ))
+                    })?)
+                }
+                _ => None,
+            }
+        };
+        qip_financial::position_record::ExitPlan::new(
+            exit_at,
+            qip_financial::position_record::ExitRoute::Sale,
+            lockup,
+        )
+        .map_err(|refusal| {
+            Error::invalid(format!(
+                "the leg in {object}, sized on hypothesis {hypothesis}, has no exit plan its \
+                 instrument's terms admit: {}",
+                refusal.message()
+            ))
+        })
+    }
+
+    /// The exit plan the last construction that sized `object_id` dated for
+    /// it, or `None` where no construction this process ran has
+    /// (R12-ASSET-4069).
+    pub fn position_exit_plan(
+        &self,
+        object_id: &str,
+    ) -> Option<&qip_financial::position_record::ExitPlan> {
+        self.position_exit_plans.get(object_id)
     }
 
     /// Each held position's hedge relationships, pending corporate actions
@@ -31992,7 +32109,10 @@ mod unsizeable_thesis_tests {
             distributed_capital: Decimal::ZERO,
             residual_value: dec!("500000"),
             stage: "buyout".to_string(),
-            lockup_years: 7.0,
+            // Expired before the test's instant: these tests are about the mark,
+            // and a fund inside its lockup cannot be sized on a short thesis
+            // (ADR 0183).
+            lockup_years: 1.0,
             capital_call_notice_days: 10,
             call_schedule: None,
         }))
