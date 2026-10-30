@@ -17,7 +17,7 @@ use crate::curriculum::{
     Bounds, Budget, Candidate, Criteria, Need, ResearchQueue, State, TaskKind,
 };
 use crate::gap::{GapTrigger, RaisedGap};
-use crate::plan::{AcquisitionAction, Derivation, ResearchPlan};
+use crate::plan::{AcquisitionAction, Derivation, Environment, ResearchPlan};
 use crate::promotion::{EvaluationRecord, ResearchCampaign, promote};
 use qip_agents::research::{ResearchRegistry, Verdict};
 use qip_agents::tools::{ToolName, ToolPermission, ToolRegistry};
@@ -546,7 +546,13 @@ impl ExpansionDesk {
             }
             Err(refusal) => {
                 let failed = evaluation.failed();
-                if !failed.is_empty() && campaign.is_complete() {
+                // A campaign that ran through shadow has been judged: either
+                // it ran paper too and failed there, or shadow did not clear
+                // and the candidate was never installed, so there is no
+                // paper stage to wait for (ADR 0142 d2). Requiring all four
+                // stages here left a never-installed candidate started
+                // forever, waiting on a window that could not open.
+                if !failed.is_empty() && campaign.ran(Environment::Shadow) {
                     self.queue.close(&question)?;
                     self.forget(&question);
                     self.research.record_concluded(

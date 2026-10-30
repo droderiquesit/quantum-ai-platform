@@ -214,12 +214,19 @@ fn a_concluded_null_cites_the_campaigns_own_experiment_references() {
     .unwrap()
     .expect("premise: the campaign ran");
     let refs = result.campaign.experiment_refs().unwrap();
-    assert_eq!(refs.len(), 4, "premise: all four stages ran: {refs:?}");
+    // ADR 0142 d2: a bias shadow refused was never installed, so it has no
+    // paper stage; three stages ran and the null cites those three.
+    assert_eq!(
+        refs.len(),
+        3,
+        "premise: shadow ran, paper did not: {refs:?}"
+    );
+    assert!(result.installation.is_none(), "{result:?}");
     assert!(desk.conclude(&result.campaign, &result.evaluation).is_err());
 
     let held = desk.research().history(&question);
     assert_eq!(held.len(), 1);
-    assert_eq!(held[0].experiments.len(), 4);
+    assert_eq!(held[0].experiments.len(), 3);
     let id = result.campaign.id().unwrap();
     assert!(
         held[0]
