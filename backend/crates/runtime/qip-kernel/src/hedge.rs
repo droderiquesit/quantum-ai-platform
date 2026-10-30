@@ -791,6 +791,8 @@ mod tests {
                     detail: String::new(),
                 })
                 .collect(),
+            advisory_worlds: Vec::new(),
+            advisory_reserve: None,
         }
     }
 

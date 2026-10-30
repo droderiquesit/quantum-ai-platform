@@ -1240,6 +1240,13 @@ pub struct Platform {
     /// question — how much the platform may stand behind now — and two would
     /// be two answers to it.
     governor: crate::survival::SurvivalGovernor,
+    /// Whether the generated joint tail world ([`crate::tail::joint_world`])
+    /// is applied — read by the survival reserve and hedge selection — or
+    /// only reported as advisory. Off unless set: applying it raises the
+    /// capital the survival governor withholds, which is a change to a
+    /// financial risk control, and that needs the owner's authorisation
+    /// (R12-RISK-4116, decision pending). No composition root sets it.
+    apply_joint_tail_reserve: bool,
     /// The ledger of record's margin, collateral and unsettled cash, as last
     /// observed (R12-CAPITAL-4087). `None` until a reading arrives; see
     /// [`Self::observe_ledger_obligations`].
@@ -1915,9 +1922,64 @@ pub struct StressReport {
     /// book is held at failing, and the model the book was built on failing —
     /// computed off the book directly. See [`crate::tail`].
     pub tail_worlds: Vec<crate::tail::TailWorld>,
+    /// Generated worlds computed and reported but **not applied**: neither the
+    /// survival reserve nor hedge selection reads them. Today the joint tail
+    /// world (R12-RISK-4116), until the owner authorises applying it.
+    /// Absent from a report recorded before the field existed.
+    #[serde(default)]
+    pub advisory_worlds: Vec<crate::tail::TailWorld>,
+    /// The survival reserve the stress would demand if the advisory worlds
+    /// were applied, beside the one it does demand. `None` when nothing is
+    /// advisory, or when that reserve could not be computed.
+    #[serde(default)]
+    pub advisory_reserve: Option<Decimal>,
 }
 
 impl StressReport {
+    /// `report` carrying `advisory` as reported-only worlds, with the reserve
+    /// they would demand if applied: the report with them moved into
+    /// `tail_worlds`, priced by the same `survival::tail_response` the
+    /// governor uses, so the two reserves differ by the advisory worlds and
+    /// nothing else.
+    fn with_advisory(
+        mut report: StressReport,
+        advisory: Vec<crate::tail::TailWorld>,
+        equity: Decimal,
+    ) -> StressReport {
+        if !advisory.is_empty() {
+            let mut applied = report.clone();
+            applied.tail_worlds.extend(advisory.iter().cloned());
+            report.advisory_reserve =
+                crate::survival::tail_response(Some(&applied), equity, STRESS_LOSS_TOLERANCE)
+                    .ok()
+                    .flatten()
+                    .map(|response| response.reserve);
+        }
+        report.advisory_worlds = advisory;
+        report
+    }
+
+    /// The advisory worlds, named as not applied, with the reserve they would
+    /// demand. Empty when nothing is advisory.
+    fn summarise_advisory(&self) -> String {
+        if self.advisory_worlds.is_empty() {
+            return String::new();
+        }
+        let worlds: Vec<String> = self
+            .advisory_worlds
+            .iter()
+            .map(|world| format!("{} {:.1}%", world.scenario, world.loss_fraction * 100.0))
+            .collect();
+        let reserve = self.advisory_reserve.map_or_else(
+            || "a reserve that could not be computed".to_string(),
+            |r| format!("a reserve of {r}"),
+        );
+        format!(
+            "; advisory, not applied (owner authorisation pending): {} would demand {reserve}",
+            worlds.join(", ")
+        )
+    }
+
     /// The scenario that cost the most.
     pub fn worst(&self) -> Option<&ScenarioResult> {
         self.scenarios.first()
@@ -1964,10 +2026,11 @@ impl StressReport {
             ),
         };
         format!(
-            "{} scenario(s) applied, {} position(s) modelled and {} unmodelled; worst {worst}{breadth}{adversarial}{causal}",
+            "{} scenario(s) applied, {} position(s) modelled and {} unmodelled; worst {worst}{breadth}{adversarial}{causal}{advisory}",
             self.scenarios.len(),
             self.modelled_positions,
-            self.unmodelled_positions
+            self.unmodelled_positions,
+            advisory = self.summarise_advisory()
         )
     }
 }
@@ -5971,6 +6034,7 @@ impl Platform {
             symbolic_rule_pack: crate::symbolic_stage::rule_pack(),
             leg_quantities: BTreeMap::new(),
             governor: crate::survival::SurvivalGovernor::default(),
+            apply_joint_tail_reserve: false,
             ledger_obligations: None,
             unsettled_sales: Vec::new(),
             episodes: EpisodicMemory::default(),
@@ -11166,6 +11230,28 @@ impl Platform {
         self.governor = crate::survival::SurvivalGovernor::with_policy(policy);
         *self.governor.signals_mut() = signals;
         self.seed_survival_ceiling(self.context.now());
+    }
+
+    /// Apply the generated joint tail world to the survival reserve and hedge
+    /// selection, or report it as advisory only (the default). See the field
+    /// of the same purpose: turning this on needs the owner's authorisation,
+    /// and no composition root does.
+    pub fn set_joint_tail_reserve_applied(&mut self, applied: bool) {
+        self.apply_joint_tail_reserve = applied;
+    }
+
+    /// The stressed-liquidity reserve the current stress demands at the
+    /// current equity: `survival::tail_response` over the applied worlds and
+    /// the platform's own tolerance, the figure DECIDE's survival governor
+    /// withholds. Advisory worlds are not in it; see
+    /// [`StressReport::advisory_reserve`] for the reserve they would demand.
+    pub fn applied_stress_reserve(&self) -> Result<Option<Decimal>> {
+        Ok(crate::survival::tail_response(
+            self.stress.as_ref(),
+            self.equity(),
+            STRESS_LOSS_TOLERANCE,
+        )?
+        .map(|response| response.reserve))
     }
 
     /// The survival policy every construction withholds under.
@@ -17638,8 +17724,9 @@ impl Platform {
                         worst.loss_fraction,
                     );
                 }
-                // The generated tail worlds, under their own constant names.
-                for world in &report.tail_worlds {
+                // The generated tail worlds, under their own constant names,
+                // the advisory ones included: reported is the point of them.
+                for world in report.tail_worlds.iter().chain(&report.advisory_worlds) {
                     self.telemetry.metrics.gauge(
                         names::SIMULATION_STRESS_LOSS_FRACTION,
                         labels([("scenario", world.scenario.as_str())]),
@@ -17674,6 +17761,7 @@ impl Platform {
                         + usize::from(r.adversarial.is_some())
                         + r.causal.len()
                         + r.tail_worlds.len()
+                        + r.advisory_worlds.len()
                 })
                 .unwrap_or(0);
         self.stress = report;
@@ -17930,15 +18018,25 @@ impl Platform {
                 days_to_liquidate: days_to_liquidate.get(object).copied(),
             })
             .collect();
-        tail_worlds.extend(crate::tail::survival_worlds(
-            &crate::tail::TailBook {
-                positions: &positions,
-                price_history: &self.price_history,
-                equity: equity.to_f64(),
-                seed: self.cycle,
-            },
-            now,
-        ));
+        let tail_book = crate::tail::TailBook {
+            positions: &positions,
+            price_history: &self.price_history,
+            equity: equity.to_f64(),
+            seed: self.cycle,
+        };
+        tail_worlds.extend(crate::tail::survival_worlds(&tail_book, now));
+        // R12-RISK-4116's generated joint world: applied only where a
+        // composition root has set `apply_joint_tail_reserve`, which none
+        // does; otherwise reported as advisory, with the reserve it would
+        // demand, and read by nothing that sizes or hedges.
+        let mut advisory_worlds = Vec::new();
+        if let Some(joint) = crate::tail::joint_world(&tail_book, now) {
+            if self.apply_joint_tail_reserve {
+                tail_worlds.push(joint);
+            } else {
+                advisory_worlds.push(joint);
+            }
+        }
         for world in &tail_worlds {
             if world.breaches(STRESS_LOSS_TOLERANCE) {
                 problems.push(format!(
@@ -17953,18 +18051,24 @@ impl Platform {
 
         let decomposition = self.decompose_risk(&market, &assets, &betas, &specific, &mut problems);
         (
-            Some(StressReport {
-                at: now,
-                scenarios: results,
-                modelled_positions: assets.len(),
-                unmodelled_positions: unmodelled,
-                decomposition,
-                adversarial,
-                causal,
-                causal_drivers,
-                causal_drivers_unconnected,
-                tail_worlds,
-            }),
+            Some(StressReport::with_advisory(
+                StressReport {
+                    at: now,
+                    scenarios: results,
+                    modelled_positions: assets.len(),
+                    unmodelled_positions: unmodelled,
+                    decomposition,
+                    adversarial,
+                    causal,
+                    causal_drivers,
+                    causal_drivers_unconnected,
+                    tail_worlds,
+                    advisory_worlds: Vec::new(),
+                    advisory_reserve: None,
+                },
+                advisory_worlds,
+                equity,
+            )),
             problems,
         )
     }
