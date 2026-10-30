@@ -139,7 +139,22 @@ pub struct FabricContext {
 /// stamp — the consumer-fabricated region this decision exists to stop — and
 /// a batch with no stamp opened by a reader that states no region of its
 /// own: that is a consumer, and a consumer has no region to give it.
+///
+/// The partition check runs before the origin arms and independently of
+/// them, because the broker stamps the partition on every append
+/// (R12-FABRIC-8084) while it stamps an origin only for an authenticated
+/// session: a batch produced in-process carries a partition and no origin,
+/// and a reader of it as another partition is still refused.
 fn origin_facts(batch: &Batch, context: &FabricContext) -> Result<(String, String)> {
+    if let Some(partition) = batch.partition
+        && partition != context.partition
+    {
+        return Err(Error::denied(format!(
+            "the batch at offset {} was appended to partition {partition} and is being read as \
+             partition {}; the broker's stamp and the read disagree",
+            batch.base_offset, context.partition
+        )));
+    }
     match (&batch.origin, &context.region) {
         (Some(origin), claimed) => {
             if let Some(claimed) = claimed
@@ -150,13 +165,6 @@ fn origin_facts(batch: &Batch, context: &FabricContext) -> Result<(String, Strin
                      accepted it, and its reader claims {claimed}; a reader does not name the \
                      region a record was produced in",
                     batch.base_offset, origin.region
-                )));
-            }
-            if origin.partition != context.partition {
-                return Err(Error::denied(format!(
-                    "the batch at offset {} was appended to partition {} and is being read as \
-                     partition {}; the broker's stamp and the read disagree",
-                    batch.base_offset, origin.partition, context.partition
                 )));
             }
             Ok((origin.region.clone(), origin.principal.clone()))
@@ -318,10 +326,24 @@ impl FabricEnvelope {
             )));
         }
         let (region, auth_context) = origin_facts(batch, context)?;
-        let provenance = batch.provenance.map_or_else(
-            || context.provenance.clone(),
-            |provenance| provenance.as_str().to_string(),
-        );
+        // The writer's provenance, by the same rule as the region (ADR 0129
+        // decision 3): a producer's own preflight — the reader that states
+        // a region — may name its own, and a consumer may not. Until
+        // 2026-10-25 every reader fell back to its own string, so a session
+        // batch that carried no provenance reached the ledger labelled with
+        // whatever the ledger chose to call it.
+        let provenance = match (batch.provenance, &context.region) {
+            (Some(provenance), _) => provenance.as_str().to_string(),
+            (None, Some(_)) => context.provenance.clone(),
+            (None, None) => {
+                return Err(Error::denied(format!(
+                    "the batch at offset {} carries no writer-stamped provenance (format \
+                     version 1, or a writer that stamped none), and its reader is a consumer; \
+                     the provenance is not filled in by whoever reads it",
+                    batch.base_offset
+                )));
+            }
+        };
         let index_u64 = u64::try_from(index)
             .map_err(|_| Error::numeric(format!("record index {index} does not fit a u64")))?;
         let producer_sequence = batch.base_sequence.checked_add(index_u64).ok_or_else(|| {

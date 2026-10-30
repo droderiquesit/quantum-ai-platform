@@ -179,6 +179,20 @@ pub struct Producer {
     /// to wait exactly as long as the broker asked reads it here instead of
     /// parsing a message.
     quota_wait: Option<Duration>,
+    /// The credit window the broker granted with the last acknowledgement
+    /// (R12-FABRIC-8089), or `None` before the first ack and from a broker
+    /// that grants none. Read before every send: a batch the window cannot
+    /// fund waits here for the refill instead of being sent to be refused.
+    credit: Option<CreditWindow>,
+    clock: Arc<dyn Clock>,
+}
+
+/// A broker's credit grant as the producer keeps it: the bytes it may still
+/// send and the instant the window refills, on the producer's own clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CreditWindow {
+    pub bytes: u64,
+    pub refills_at: qip_core::Timestamp,
 }
 
 impl fmt::Debug for Producer {
@@ -229,6 +243,7 @@ impl Producer {
         config.retry_policy.validate()?;
         config.breaker_policy.validate()?;
         let peer_key = format!("{}#{}", config.stream, config.partition);
+        let clock = Arc::clone(&config.clock);
         let breaker =
             CircuitBreaker::new(config.breaker_policy, config.clock, config.breaker_seed, 1)?;
         Ok(Self {
@@ -248,7 +263,14 @@ impl Producer {
             next_sequence: 0,
             archived_through: None,
             quota_wait: None,
+            credit: None,
+            clock,
         })
+    }
+
+    /// The credit window the last acknowledgement granted, if any.
+    pub fn credit_window(&self) -> Option<CreditWindow> {
+        self.credit
     }
 
     pub fn stream(&self) -> &str {
@@ -357,6 +379,39 @@ impl Producer {
             Error::invalid("a batch carries more records than a u64 sequence can count")
         })?;
         stamp_drain(&mut batch, &self.producer_id, epoch, sequence);
+        // Flow control before the wire (R12-FABRIC-8089): the broker charges
+        // a batch's payload bytes to a per-second window and granted, with
+        // the last ack, what is left of it. A batch the credit cannot fund is
+        // not sent to be refused; the wait is the broker's refill instant,
+        // read from `quota_wait` like a refusal's. Once the window has
+        // refilled the credit is unknown again — the broker never said how
+        // much a fresh window holds — and the send goes to the broker, which
+        // answers with the next grant.
+        let payload_bytes = batch
+            .records
+            .iter()
+            .try_fold(0u64, |sum, record| {
+                sum.checked_add(record.payload.len() as u64)
+            })
+            .ok_or_else(|| Error::numeric("a batch's payload bytes overflow a u64"))?;
+        if let Some(window) = self.credit {
+            let now = self.clock.now();
+            if now < window.refills_at && payload_bytes > window.bytes {
+                let wait_ns = window.refills_at.as_nanos().saturating_sub(now.as_nanos());
+                let wait = Duration::from_nanos(u64::try_from(wait_ns).unwrap_or(0));
+                self.quota_wait = Some(wait);
+                return Err(Error::guard(format!(
+                    "producer {} on {}:{} holds {} bytes of credit and this batch carries \
+                     {payload_bytes}; the credit window refills in {} ms, so wait that long \
+                     rather than send a batch the broker would refuse",
+                    self.producer_id,
+                    self.stream,
+                    self.partition,
+                    window.bytes,
+                    wait.as_millis()
+                )));
+            }
+        }
         let encoded = batch.encode()?;
         let request = Request::Produce(ProduceRequest::new(
             self.stream.clone(),
@@ -368,6 +423,16 @@ impl Producer {
         match response {
             Response::Produce(ack) => {
                 self.quota_wait = None;
+                self.credit = ack.credit().map(|credit| CreditWindow {
+                    bytes: credit.bytes,
+                    refills_at: qip_core::Timestamp::from_nanos(
+                        self.clock.now().as_nanos().saturating_add(
+                            i64::try_from(credit.refills_in_ms)
+                                .unwrap_or(i64::MAX)
+                                .saturating_mul(1_000_000),
+                        ),
+                    ),
+                });
                 self.next_sequence = sequence.checked_add(records).ok_or_else(|| {
                     Error::invalid(format!(
                         "the producer sequence for {}:{} would overflow past {sequence}; this \
@@ -715,6 +780,10 @@ mod tests {
     }
 
     fn producer(script: Vec<Response>) -> Producer {
+        producer_on(script, Arc::new(ManualClock::new(Timestamp::from_secs(0))))
+    }
+
+    fn producer_on(script: Vec<Response>, clock: Arc<ManualClock>) -> Producer {
         let config = ProducerConfig {
             transport: Box::new(ScriptedTransport::new(script)),
             stream: "orders".to_string(),
@@ -730,13 +799,87 @@ mod tests {
                 ..RetryPolicy::default()
             },
             breaker_policy: BreakerPolicy::default(),
-            clock: Arc::new(ManualClock::new(Timestamp::from_secs(0))),
+            clock,
             sleeper: Arc::new(RecordingSleeper::new()),
             retry_seed: 7,
             breaker_seed: 7,
             timeouts: Timeouts::default(),
         };
         Producer::new(config).expect("a well-formed config builds a producer")
+    }
+
+    /// R12-FABRIC-8089's producer-side window: the credit an ack grants
+    /// holds the next batch the window cannot fund at the producer, with the
+    /// broker's own refill as the wait, and the transport is not called;
+    /// once the window has refilled the send goes to the broker.
+    ///
+    /// The script holds exactly one acknowledgement for the send after the
+    /// grant, so a send that reached the transport while the credit was
+    /// short would consume it and the test would see an `Ok` where it
+    /// asserts an `Err`.
+    ///
+    /// Mutation: skip the `payload_bytes > window.bytes` check (or never set
+    /// `self.credit` from the ack) and the short send is acknowledged.
+    #[test]
+    fn a_batch_the_credit_window_cannot_fund_waits_at_the_producer_until_the_refill() {
+        use super::super::protocol::ProducerCredit;
+        let clock = Arc::new(ManualClock::new(Timestamp::from_secs(100)));
+        let granted = ProduceAck::new("orders", 0, 0, 1, 1)
+            .expect("a coherent produce ack")
+            .with_credit(ProducerCredit {
+                bytes: 10,
+                refills_in_ms: 700,
+            });
+        let later = ProduceAck::new("orders", 0, 1, 2, 2).expect("a coherent produce ack");
+        let mut producer = producer_on(
+            vec![
+                Response::ProducerInit(super::super::protocol::ProducerInitResponse {
+                    producer_epoch: 1,
+                    next_sequence: 0,
+                }),
+                Response::Produce(granted),
+                Response::Produce(later),
+            ],
+            clock.clone(),
+        );
+        producer.init().expect("init succeeds");
+        assert_eq!(producer.credit_window(), None, "premise: no grant yet");
+
+        let batch = one_record_batch();
+        let payload_bytes: usize = batch.records.iter().map(|r| r.payload.len()).sum();
+        assert!(
+            payload_bytes > 10,
+            "premise: the batch outweighs the credit"
+        );
+        producer
+            .send(batch.clone())
+            .expect("the first send is acknowledged");
+        assert_eq!(
+            producer.credit_window(),
+            Some(CreditWindow {
+                bytes: 10,
+                refills_at: Timestamp::from_nanos(
+                    Timestamp::from_secs(100).as_nanos() + 700_000_000
+                ),
+            }),
+            "the ack's grant was not kept"
+        );
+
+        let refused = producer
+            .send(batch.clone())
+            .expect_err("a batch the credit cannot fund was sent");
+        assert!(refused.message().contains("credit"), "{refused:?}");
+        assert_eq!(
+            producer.quota_wait(),
+            Some(Duration::from_millis(700)),
+            "the wait is the broker's refill"
+        );
+
+        clock.advance(qip_core::Duration::from_millis(700));
+        producer
+            .send(batch)
+            .expect("after the refill the send reaches the broker and is acknowledged");
+        assert_eq!(producer.quota_wait(), None);
     }
 
     /// Asserts its own premise (the ack the mock answers with is genuinely

@@ -117,6 +117,38 @@ pub struct ServerLimits {
     pub refused_request_bytes: usize,
     /// How long that read may take in all, for the same reason.
     pub refused_request_deadline: StdDuration,
+    /// Connections, out of [`Self::max_concurrent`], that only a request the
+    /// handler classes [`AdmissionClass::Priority`] may hold (R12-FABRIC-8089).
+    ///
+    /// The connection cap alone is class-blind: a flood of bulk producers —
+    /// telemetry, research — can hold every slot while every stream quota is
+    /// honoured, and a control or outcome producer is answered `503` at the
+    /// accept loop without any quota having been exceeded. With a reserve, a
+    /// connection the handler classes [`AdmissionClass::Bulk`] is admitted
+    /// only while fewer than `max_concurrent - reserved_for_priority` bulk
+    /// connections are being served, and is otherwise answered `503` as soon
+    /// as its request head has been read, before its body is, so the slot it
+    /// took at accept is given back within one head read rather than held for
+    /// a whole body. Zero — the default — keeps the cap class-blind, which is
+    /// right for a server whose handler does not classify. [`Server::bind`]
+    /// refuses a reserve that leaves no slot for bulk traffic at all.
+    pub reserved_for_priority: usize,
+}
+
+/// How a server shares its connection slots between the requests it serves
+/// (R12-FABRIC-8089): decided by [`Handler::admission_class`] from the request
+/// head alone — the path, the headers and the authenticated peer — because the
+/// slot has to be decided before the body is read, and the body is where a
+/// bulk producer's megabyte is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdmissionClass {
+    /// May use every slot, the reserved ones included: control and outcome
+    /// traffic that must not be starved.
+    Priority,
+    /// May use only the slots outside the reserve: telemetry, research and
+    /// anything the handler does not recognise. The default, so a handler
+    /// that classifies nothing reserves nothing for anyone by accident.
+    Bulk,
 }
 
 impl Default for ServerLimits {
@@ -138,6 +170,7 @@ impl Default for ServerLimits {
             max_handshaking: 16,
             refused_request_bytes: 4 * 1024,
             refused_request_deadline: StdDuration::from_secs(2),
+            reserved_for_priority: 0,
         }
     }
 }
@@ -227,6 +260,17 @@ impl Deadlined for rustls::StreamOwned<rustls::ServerConnection, Budgeted> {
 struct HandshakeSlot(Arc<std::sync::atomic::AtomicUsize>);
 
 impl Drop for HandshakeSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// One of the slots a bulk connection may hold (every slot outside
+/// [`ServerLimits::reserved_for_priority`]), released when dropped for the
+/// same reason as [`HandshakeSlot`].
+struct BulkSlot(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for BulkSlot {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
     }
@@ -450,6 +494,16 @@ impl Response {
 pub trait Handler: Send + Sync {
     fn handle(&self, request: &Request) -> Response;
 
+    /// Which slots `request` may hold (R12-FABRIC-8089), decided from its
+    /// head: `request.body` is empty here because the body has not been read
+    /// yet — that is the point. The peer identity header, when the listener
+    /// is mutual TLS, is already in place and is the server's own. The
+    /// default classes everything [`AdmissionClass::Bulk`], so a handler that
+    /// does not override this grants nobody the reserve.
+    fn admission_class(&self, _request: &Request) -> AdmissionClass {
+        AdmissionClass::Bulk
+    }
+
     /// Answer `request` with a live stream instead of a buffered response.
     ///
     /// [`StreamDecision::NotAStream`] — the default, and the answer for every
@@ -484,6 +538,10 @@ pub trait Handler: Send + Sync {
 impl<H: Handler + ?Sized> Handler for std::sync::Arc<H> {
     fn handle(&self, request: &Request) -> Response {
         (**self).handle(request)
+    }
+
+    fn admission_class(&self, request: &Request) -> AdmissionClass {
+        (**self).admission_class(request)
     }
 
     fn stream(&self, request: &Request) -> StreamDecision {
@@ -656,6 +714,10 @@ pub struct Server {
     /// handshake (or, plaintext, the request read) — the count
     /// [`ServerLimits::max_handshaking`] caps.
     handshaking: Arc<std::sync::atomic::AtomicUsize>,
+    /// Connections past their request head whose handler classed them
+    /// [`AdmissionClass::Bulk`] and that are still being served — the count
+    /// held under `max_concurrent - reserved_for_priority`.
+    bulk: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl std::fmt::Debug for Server {
@@ -670,6 +732,17 @@ impl std::fmt::Debug for Server {
 impl Server {
     /// Bind to an address.
     pub fn bind(address: &str, handler: Arc<dyn Handler>, limits: ServerLimits) -> Result<Self> {
+        if limits.reserved_for_priority >= limits.max_concurrent {
+            // Refused rather than clamped: a reserve that swallows the whole
+            // cap would answer every bulk request 503 for ever, and a server
+            // that quietly lowered it would be one whose configuration says
+            // one thing and whose behaviour is another.
+            return Err(Error::invalid(format!(
+                "reserved_for_priority ({}) must leave at least one of the {} connection slots \
+                 for bulk traffic",
+                limits.reserved_for_priority, limits.max_concurrent
+            )));
+        }
         let listener = TcpListener::bind(address)
             .map_err(|e| Error::io(format!("cannot bind {address}: {e}")))?;
         Ok(Self {
@@ -680,6 +753,7 @@ impl Server {
             shutdown: Arc::new(AtomicBool::new(false)),
             requests: Arc::new(AtomicU64::new(0)),
             handshaking: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            bulk: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
@@ -729,6 +803,12 @@ impl Server {
         Arc::clone(&self.handshaking)
     }
 
+    /// Connections classed [`AdmissionClass::Bulk`] that are being served
+    /// right now, out of `max_concurrent - reserved_for_priority`.
+    pub fn bulk_connections(&self) -> usize {
+        self.bulk.load(Ordering::Relaxed)
+    }
+
     /// Serve until the shutdown handle is set.
     ///
     /// One thread per connection, capped by the limits. A thread pool would be
@@ -773,8 +853,16 @@ impl Server {
             // has started.
             self.handshaking.fetch_add(1, Ordering::Relaxed);
             let slot = HandshakeSlot(Arc::clone(&self.handshaking));
+            let bulk = Arc::clone(&self.bulk);
             std::thread::spawn(move || {
-                accept_connection(stream, handler.as_ref(), limits, tls.as_ref(), Some(slot));
+                accept_connection(
+                    stream,
+                    handler.as_ref(),
+                    limits,
+                    tls.as_ref(),
+                    Some(slot),
+                    &bulk,
+                );
                 requests.fetch_add(1, Ordering::Relaxed);
                 live_count.fetch_sub(1, Ordering::Relaxed);
             });
@@ -794,6 +882,7 @@ impl Server {
             self.limits,
             self.tls.as_ref(),
             None,
+            &self.bulk,
         );
         self.requests.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -808,6 +897,7 @@ fn accept_connection(
     limits: ServerLimits,
     tls: Option<&TlsServer>,
     slot: Option<HandshakeSlot>,
+    bulk: &Arc<std::sync::atomic::AtomicUsize>,
 ) {
     let _ = stream.set_read_timeout(Some(limits.read_timeout));
     let _ = stream.set_write_timeout(Some(limits.write_timeout));
@@ -820,9 +910,9 @@ fn accept_connection(
     match tls {
         None => {
             let mut socket = socket;
-            serve_connection(&mut socket, &peer, None, handler, limits, slot);
+            serve_connection(&mut socket, &peer, None, handler, limits, slot, bulk);
         }
-        Some(tls) => serve_tls_connection(socket, &peer, handler, limits, tls, slot),
+        Some(tls) => serve_tls_connection(socket, &peer, handler, limits, tls, slot, bulk),
     }
 }
 
@@ -840,6 +930,7 @@ fn serve_tls_connection(
     limits: ServerLimits,
     tls: &TlsServer,
     slot: Option<HandshakeSlot>,
+    bulk: &Arc<std::sync::atomic::AtomicUsize>,
 ) {
     let Ok(mut session) = rustls::ServerConnection::new(Arc::clone(&tls.config)) else {
         return;
@@ -865,6 +956,7 @@ fn serve_tls_connection(
             handler,
             limits,
             None,
+            bulk,
         ),
         // Unreachable with a verifier that requires a certificate, and
         // refused rather than assumed: a session with no peer certificate is
@@ -916,22 +1008,68 @@ fn serve_connection<S: Deadlined>(
     handler: &dyn Handler,
     limits: ServerLimits,
     slot: Option<HandshakeSlot>,
+    bulk: &Arc<std::sync::atomic::AtomicUsize>,
 ) {
-    let read = read_request(&mut *stream, peer, limits);
-    // A plaintext peer is unknown until its request is read, so this is
-    // where it leaves the handshake slots; and the request is in, so the
-    // deadline that bounded getting it ends — a handler's work and a
-    // streamed response are bounded by the write timeout, not by it.
+    // The head first and the body second, with the admission class decided
+    // between them (R12-FABRIC-8089): a bulk connection the server has no
+    // slot for is answered before its body is read, so the slot it took at
+    // accept is held for one head read and not for a megabyte.
+    let mut reader = BufReader::new(&mut *stream);
+    let mut slot = slot;
+    let read = read_head(&mut reader, peer, limits).and_then(|(mut request, declared)| {
+        // The identity header is the server's to write and nobody else's,
+        // and it is in place before the handler classes the request, so the
+        // class is decided on the authenticated peer and not on a header
+        // the client chose to send.
+        request.headers.remove(PEER_IDENTITY_HEADER);
+        if let Some(identity) = identity {
+            request
+                .headers
+                .insert(PEER_IDENTITY_HEADER.to_string(), identity.to_string());
+        }
+        // A plaintext peer is known once its head is in — the credential is
+        // a header — so this is where it leaves the handshake slots, which
+        // bound hosts the server cannot yet tell apart. Its body is bounded
+        // below by its class's share of the pool and by the connection
+        // deadline, as a TLS peer's already is past its handshake; until
+        // 2026-10-25 the slot was held through the body too, so sixteen
+        // stalled bodies closed the listener to every new peer at once.
+        slot.take();
+        let bulk_slot = match handler.admission_class(&request) {
+            AdmissionClass::Priority => None,
+            AdmissionClass::Bulk => {
+                let bulk_cap = limits
+                    .max_concurrent
+                    .saturating_sub(limits.reserved_for_priority);
+                // Taken before it is compared, so two bulk connections racing
+                // for the last slot cannot both read it as free; the one
+                // over the cap gives it straight back.
+                if bulk.fetch_add(1, Ordering::Relaxed) >= bulk_cap {
+                    bulk.fetch_sub(1, Ordering::Relaxed);
+                    return Err(503);
+                }
+                Some(BulkSlot(Arc::clone(bulk)))
+            }
+        };
+        request.body = read_body(&mut reader, declared)?;
+        Ok((request, bulk_slot))
+    });
+    drop(reader);
+    // The request is in (or refused), so the deadline that bounded getting
+    // it ends — a handler's work and a streamed response are bounded by the
+    // write timeout, not by it. A head that could not be read gives its
+    // handshake slot back here.
     drop(slot);
     stream.lift_deadline();
-    let request = match read {
-        Ok(request) => request,
+    let (request, _bulk_slot) = match read {
+        Ok(read) => read,
         Err(status) => {
             let response = Response::json(
                 status,
                 format!(
                     r#"{{"error":"{}"}}"#,
                     match status {
+                        503 => "the server is at its connection limit for bulk traffic",
                         413 => "the request exceeds a server limit",
                         408 => "the request timed out",
                         _ => "the request could not be parsed",
@@ -944,14 +1082,6 @@ fn serve_connection<S: Deadlined>(
             return;
         }
     };
-    // The identity header is the server's to write and nobody else's.
-    let mut request = request;
-    request.headers.remove(PEER_IDENTITY_HEADER);
-    if let Some(identity) = identity {
-        request
-            .headers
-            .insert(PEER_IDENTITY_HEADER.to_string(), identity.to_string());
-    }
 
     // A live stream takes the connection over, because its response has no
     // length and is written for as long as the client stays. Offered before
@@ -989,7 +1119,21 @@ fn read_request<R: Read>(
     limits: ServerLimits,
 ) -> std::result::Result<Request, u16> {
     let mut reader = BufReader::new(stream);
+    let (mut request, declared) = read_head(&mut reader, peer, limits)?;
+    request.body = read_body(&mut reader, declared)?;
+    Ok(request)
+}
 
+/// Read and parse a request's line and headers, or the status to refuse it
+/// with: the [`Request`] with an empty body, and the body length it declared,
+/// already checked against [`ServerLimits::max_body`] so [`read_body`] never
+/// allocates past it. Split from [`read_body`] so the server can class a
+/// request (R12-FABRIC-8089) between the two.
+fn read_head<R: Read>(
+    reader: &mut BufReader<R>,
+    peer: &str,
+    limits: ServerLimits,
+) -> std::result::Result<(Request, usize), u16> {
     // The request line, size-capped while reading.
     let mut line = String::new();
     let read = reader
@@ -1057,19 +1201,31 @@ fn read_request<R: Read>(
     if declared > limits.max_body {
         return Err(413);
     }
+
+    Ok((
+        Request {
+            method,
+            path,
+            query,
+            headers,
+            body: Vec::new(),
+            peer: peer.to_string(),
+        },
+        declared,
+    ))
+}
+
+/// Read exactly the body [`read_head`] declared, or the status to refuse the
+/// request with.
+fn read_body<R: Read>(
+    reader: &mut BufReader<R>,
+    declared: usize,
+) -> std::result::Result<Vec<u8>, u16> {
     let mut body = vec![0u8; declared];
     if declared > 0 {
         reader.read_exact(&mut body).map_err(|_| 400u16)?;
     }
-
-    Ok(Request {
-        method,
-        path,
-        query,
-        headers,
-        body,
-        peer: peer.to_string(),
-    })
+    Ok(body)
 }
 
 /// Percent-decode and normalise a path, refusing anything that escapes.

@@ -71,6 +71,7 @@ fn over_the_wire(records: Vec<Record>) -> Batch {
     )
     .unwrap();
     stamp_drain(&mut batch, "cell-a", 5, 40);
+    qip_events::event_fabric::codec::stamp_broker_partition(&mut batch, 3);
     stamp_broker(
         &mut batch,
         17,
@@ -390,7 +391,16 @@ fn a_redelivered_envelope_has_the_same_identity_and_a_different_one_does_not() {
     );
     let mut other_partition = ctx.clone();
     other_partition.partition += 1;
-    let other = FabricEnvelope::open(&first, 0, &other_partition, reflex()).unwrap();
+    // The broker stamps the partition it appended to (R12-FABRIC-8084), so
+    // the same bytes read as another partition are a refusal, not a new
+    // identity; a batch the broker appended to that partition is.
+    assert!(
+        FabricEnvelope::open(&first, 0, &other_partition, reflex()).is_err(),
+        "a batch stamped for one partition opened as another"
+    );
+    let mut appended_elsewhere = first.clone();
+    appended_elsewhere.partition = Some(other_partition.partition);
+    let other = FabricEnvelope::open(&appended_elsewhere, 0, &other_partition, reflex()).unwrap();
     assert!(
         seen.insert(other.identity()),
         "another partition is a new identity"

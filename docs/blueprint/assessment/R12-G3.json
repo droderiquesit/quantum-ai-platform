@@ -1704,12 +1704,14 @@
   {
     "id": "R12-FABRIC-10077",
     "status": "PARTIAL",
-    "current": "Capital envelopes and policy frames travel over qip-mesh spine (HTTP/1.1 publish/poll) from qip-api, signed and verified at the cell; not over Fabric.",
+    "current": "Capital envelopes, policy payloads and halt commands travel down the qip-mesh spine signed and verified at the cell, and cell deltas travel up it; ADR 0128 decision 2 names the spine the control half of the Rust Event & Control Fabric for this row, and decision 5 requires each spine frame catalogued beside the fabric's streams. Since 2026-10-25 both committed catalogues carry a `spine_frames` section — CapitalGrantFrame (down, envelope_signature, durable_ordered), PolicyFrame (down, payload_signature, superseding), HaltFrame (down, command_mac, superseding), CellStateDelta (up, session, superseding) — parsed by `Catalogue::parse` into closed enums, and `qip-acceptance` holds every `pub struct *Frame` in `qip_mesh::spine` plus the delta to an entry whose topic is the frame's own `EventBody::TOPIC`.",
     "evidence": [
-      "backend/crates/apps/qip-api/src/mesh.rs:73-74 spine wiring",
-      "backend/crates/edge/qip-edge/src/mesh.rs:1-20 signed downlink verification"
+      "infrastructure/event-fabric/streams.local.json and streams.managed.json: spine_frames",
+      "backend/crates/libs/qip-events/src/event_fabric/catalogue.rs SpineFrame, FrameDirection, FrameSigning, FrameDurability, Catalogue::spine_frames",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_catalogue.rs::every_qip_mesh_spine_frame_type_is_catalogued_beside_the_fabric_streams",
+      "backend/crates/apps/qip-api/src/mesh.rs:73-74 spine wiring; backend/crates/edge/qip-edge/src/mesh.rs signed downlink verification"
     ],
-    "gap": "Decided by ADR 0128 (accepted 2026-10-18): The qip-mesh spine is the platform's control fabric for signed downward frames and cell deltas; the event fabric carries outcomes and records; an acceptance scan admits no third cross-process path. Code left: catalogue CapitalGrantFrame, PolicyFrame, HaltFrame and the delta frame beside the fabric's streams.",
+    "gap": "Skeptic REFUTED 2026-10-25 on bar part 4: the requirement's own proof is 'a policy/envelope publish lands on a Fabric P0 stream and a cell consumes it from there', and that clause is met only by ADR 0128 decision 2's reading ('met by naming'), which is an ADR withdrawing a clause — the owner decides whether the requirement changes. In the tree no shipped cell consumes `control.local`: `ControlConsumer` (qip-edge-node/src/event_fabric/control.rs) is constructed only in its tests, and the only producer to the P0 stream is qip-cli's `grant`, an operator command. Also noted: CellStateDelta is catalogued `superseding` but its incremental half is lost when a delta is lost; the catalogue test ties names and topics to code and only copies direction, signing and durability from the JSON.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1719,10 +1721,10 @@
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "integration test via qip-fabricd",
+    "verification": "cargo +1.94.1 test -p qip-acceptance --test event_fabric_catalogue",
     "work_item": "",
-    "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D04; gap before it: Fabric P0 control streams."
+    "size": "S",
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D04. 2026-10-25 lane L1b-fabric: catalogue rows landed. Bar part 4 caveat kept in the open: the requirement's verification sentence says 'lands on a Fabric P0 stream'; ADR 0128 decision 2 reads the row as met by the spine by naming, and that reading is the accepted ADR's, not this lane's. Mutations fired 2026-10-25 and restored (cp+cmp): the HaltFrame entry deleted from streams.local.json (`spine frame HaltFrame is not catalogued`); its topic changed to policy.distributed (fails at `travels under`). Independent skeptic: REFUTED (bar part 4; gap). The catalogue rows and the test stay: they are decision 5's code, and the row waits on the owner's reading of decision 2."
   },
   {
     "id": "R12-FABRIC-10078",
@@ -4073,16 +4075,16 @@
   {
     "id": "R12-FABRIC-10177",
     "status": "PARTIAL",
-    "current": "The Fabric SDK, catalogue and broker exist, but the deployed-path contracts (cell↔centre deltas, envelopes, policy) travel over the qip-mesh HTTP spine, and ledgerd's consumer is a placeholder.",
+    "current": "Every cross-process asynchronous path is one of ADR 0128's three — the qip-mesh spine, the fabric producer and the peer link — with request/response through `qip_transport`'s HTTP client the synchronous fourth, and since 2026-10-25 `qip-acceptance` scans every app crate's production source (test modules stripped) and refuses a socket the crate opens itself or the mesh's raw publisher, with the two self-pokes (a process connecting to its own listener to unblock `accept` on shutdown) as the whole allow-list. The admitted seams are enumerated by symbol and the scan asserts each is live in the apps, so the list cannot go stale silently.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/catalogue.rs",
-      "backend/crates/services/qip-mesh/src/spine.rs",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:59-65"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_architecture.rs::no_app_crate_sends_across_a_process_except_through_the_spine_the_fabric_producer_the_peer_link_or_a_named_synchronous_route",
+      "backend/crates/libs/qip-events/src/event_fabric/catalogue.rs (the spine frames beside the streams, R12-FABRIC-10077)",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs (the ledger consumer, no longer a placeholder)"
     ],
-    "gap": "Decided by ADR 0128 (accepted 2026-10-18): The qip-mesh spine is the platform's control fabric for signed downward frames and cell deltas; the event fabric carries outcomes and records; an acceptance scan admits no third cross-process path. Code left: a qip-acceptance transport scan refusing any cross-process send outside the spine, the fabric producer, the peer link and named synchronous routes.",
+    "gap": "Skeptic REFUTED 2026-10-25: bar part 4 as 10077's (the spine is admitted only by ADR 0128's naming, and spine frames in a catalogue section are not declared Fabric streams); and the scan is narrower than the invariant — it covers `apps/` only (a service or runtime crate that sends, such as qip-mesh, qip-streaming's mesh publisher wrapper or qip-kernel's desk fabric, is unchecked), misses `TcpStream::connect_timeout`, an aliased `TcpStream`, `tokio::net::TcpSocket`, a spawned `curl` and `qip_streaming::mesh::MeshTransport`, admits `HttpClient` wholesale without checking the route, and `production_text` can over-strip past a brace in a string literal. Closes with a workspace-wide scan whose allow-list is the three ADR 0128 seams by crate and symbol, and the owner's reading of decision 2.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -4091,10 +4093,10 @@
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "acceptance scan of transports",
+    "verification": "cargo +1.94.1 test -p qip-acceptance --test event_fabric_architecture",
     "work_item": "",
-    "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D04; gap before it: Move spine contracts onto Fabric streams or record the spine as a Fabric-equivalent in an ADR."
+    "size": "M",
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D04. 2026-10-25 lane L1b-fabric: the scan landed. Limits stated: a token scan over `src/` with `#[cfg(test)]` stripped sees names, not behaviour; `ToSocketAddrs` is deliberately not a refused token because qip-cli resolves `--peer` with it and resolution is not a send; the HTTP client is admitted as a seam and the scan does not check which route a request names. Bar part 4 caveat as 10077's. Mutation fired 2026-10-25 and restored (cp+cmp): `let _ = std::net::TcpStream::connect(\"127.0.0.1:1\");` as the first line of qip-api main — the scan names `apps/qip-api/src/main.rs` and `TcpStream::connect`. Earlier run found the scan blind to its own allow-list (the walked path carries an `apps/` prefix); fixed before the mutation. Independent skeptic: REFUTED (gap). The scan stays as the first guard; its holes are named in the gap rather than papered."
   },
   {
     "id": "R12-FABRIC-10178",
