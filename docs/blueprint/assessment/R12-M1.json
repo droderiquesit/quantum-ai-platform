@@ -3677,9 +3677,14 @@
     "current": "qip-evolution generate/mutate/promotion and qip-lifecycle demotion run from deepbrain; scale of thousands not measured.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/evolution.rs:36",
-      "backend/crates/services/qip-lifecycle/src/demotion.rs"
+      "backend/crates/services/qip-lifecycle/src/demotion.rs",
+      "backend/crates/services/qip-lifecycle/src/ledger.rs MAX_LIVE_STRATEGIES = 4_096 (ADR 0149 decision 15); retired ids compact to tombstones",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs::a_thousand_strategies_promote_and_retire_through_the_ledger_with_the_live_set_bounded_and_a_retired_id_still_refused",
+      "backend/crates/runtime/qip-kernel/src/central/factory.rs StrategyFactory::register live-count refusal",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_full_desk_refuses_a_new_candidate_until_one_retires_and_a_retired_id_stays_refused",
+      "backend/crates/services/qip-evolution/tests/evolution.rs:413 the_same_challenger_wins_a_small_search_and_loses_a_large_one (5,000 generated and counted)"
     ],
-    "gap": "Scale of thousands is measured for generation and trial counting only (evolution.rs the_same_challenger_wins_a_small_search_and_loses_a_large_one generates 5,000 candidates and counts 5,000 trials); promotion and demotion of 1,000+ strategies through the lifecycle ledger, and a bound on that ledger's working set (LifecycleLedger keeps every strategy's entries in a BTreeMap with no cap), are unmeasured.",
+    "gap": "2026-10-30 (lane L2-INTEL): the in-lane skeptic REFUTED it. Of the eight scope items, generate and backtest are reached from qip-deepbrain's EvolutionEngine, but simulate has no step of its own and stress has no code. Paper trade is unreachable: PaperEvidence has no production constructor, so no strategy reaches GateStage::Paper. Decay and retire are reachable only after a promotion past Paper, so they fire on nothing on the default path. The 1,000-strategy measure drives the ledger directly, not the factory from a root. The bounded live set (MAX_LIVE_STRATEGIES, mutation-verified at central.rs) holds.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3690,7 +3695,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: not attempted; a scale test over an unbounded ledger would measure growth, not a bounded working set. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: not attempted; a scale test over an unbounded ledger would measure growth, not a bounded working set. Kept PARTIAL. 2026-10-30 L2-INTEL: mutation live >= usize::MAX in central/factory.rs fails a_full_desk_refuses_a_new_candidate_until_one_retires_and_a_retired_id_stays_refused; restored by copy + cmp."
   },
   {
     "id": "R12-ASSET-1160",

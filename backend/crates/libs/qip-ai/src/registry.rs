@@ -181,6 +181,24 @@ pub struct EvaluationRecord {
 /// a second pointer beside it, so the alias and the stage cannot disagree.
 pub const PRODUCTION_ALIAS: &str = "production";
 
+/// Whether a `market/volatility` regime label names a stressed regime
+/// (ADR 0149 decision 10, R12-MODEL-6074): a market component of `crisis` or
+/// `illiquid`, or a volatility component of `high` or `extreme`, as
+/// `Platform::regime_context` writes them.
+///
+/// A label that is not two components separated by `/` is read as stressed.
+/// The rule this feeds refuses a comparative claim, and a label nobody can
+/// read is the case where refusing is the safe direction.
+pub fn is_stressed_regime(regime: &str) -> bool {
+    let Some((market, volatility)) = regime.split_once('/') else {
+        return true;
+    };
+    if volatility.contains('/') {
+        return true;
+    }
+    matches!(market, "crisis" | "illiquid") || matches!(volatility, "high" | "extreme")
+}
+
 /// How many model cards one registry holds before it refuses a new one.
 ///
 /// The deep brain registers a card for every fit of every subject and never
