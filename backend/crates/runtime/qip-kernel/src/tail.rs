@@ -631,7 +631,14 @@ pub fn survival_worlds(book: &TailBook<'_>, at: Timestamp) -> Vec<TailWorld> {
     out
 }
 
-/// See [`SYNTHETIC_JOINT`]. Statistics, so `f64`. The generator is seeded
+/// See [`SYNTHETIC_JOINT`]. Statistics, so `f64`. The pairwise
+/// correlations are drawn independently, so together they need not form a
+/// valid correlation matrix: the world is a conservative bound on a joint
+/// move, not a coherent market, and every pair term is added as a loss.
+/// Like every survival world it is skipped where SIMULATE skips the stress
+/// (too little history for the factor model, no equity, no position).
+///
+/// The generator is seeded
 /// from the cycle as the other generated worlds are, but on its own stream,
 /// so adding this world did not move the draws behind theirs.
 fn synthetic_joint(
@@ -675,10 +682,14 @@ fn synthetic_joint(
             variance += 2.0 * magnitude * a * b;
         }
     }
-    let loss = if variance.is_finite() && variance > 0.0 {
-        variance.sqrt()
+    // Fail closed: a variance that overflowed, or that a non-finite input
+    // poisoned, is a world too large to measure, not one that costs nothing.
+    // It reads as infinite, which `survival::worst_world` treats as the worst
+    // world, rather than vanishing from the reserve as zero would.
+    let loss = if variance.is_finite() {
+        variance.max(0.0).sqrt()
     } else {
-        0.0
+        f64::INFINITY
     };
     world(
         SYNTHETIC_JOINT,
@@ -1429,6 +1440,26 @@ mod tests {
                 "seed {seed}: the joint world {joint} is below its documented floor {bound}"
             );
         }
+    }
+
+    /// A book so large its joint variance overflows reads as an infinite
+    /// loss, the worst world, rather than a free one.
+    ///
+    /// Mutation: return `0.0` for a non-finite variance and the world reads
+    /// as costing nothing.
+    #[test]
+    fn a_joint_variance_that_overflows_is_an_infinite_loss_not_a_free_world() {
+        let history = BTreeMap::from([
+            ("obj-AAA".to_string(), series(100.0, &[0.03, -0.02, 0.025])),
+            ("obj-BBB".to_string(), series(100.0, &[-0.02, 0.03, -0.025])),
+        ]);
+        let positions = [held("obj-AAA", -1.0e200), held("obj-BBB", -1.0e200)];
+        let joint = world(&book_of(&positions, &history, 5), SYNTHETIC_JOINT).clone();
+        assert!(
+            joint.loss.is_infinite() && joint.loss > 0.0,
+            "an overflowed joint world read as {}",
+            joint.loss
+        );
     }
 
     /// R12-RISK-3103: the composed scenario shocks a factor set the library
