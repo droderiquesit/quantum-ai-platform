@@ -520,6 +520,59 @@ pub fn matched_control(
     })
 }
 
+/// R12-MODEL-4013: an effect estimated by back-door adjustment, or an
+/// abstention when the design does not identify it.
+///
+/// `covariates` names the adjustment set: each name a variable of `model`,
+/// each column observed on the same units as `treatment` and `outcome`. The
+/// design is checked against the model's graph first
+/// ([`StructuralModel::backdoor_open_path`]); a set that leaves a back-door
+/// path open, or adjusts for a descendant of the treatment, is refused with
+/// the reason and no number, because an effect estimated from it is the
+/// association with a causal label. Identified, the effect is
+/// [`bayesian_causal`]'s on those columns, labelled with the adjustment set
+/// and the model it was checked against rather than "assuming no
+/// unmeasured confounder".
+pub fn backdoor_adjusted(
+    model: &StructuralModel,
+    treatment_variable: &str,
+    outcome_variable: &str,
+    covariates: &BTreeMap<String, Vec<f64>>,
+    treatment: &[f64],
+    outcome: &[f64],
+    prior_sd: f64,
+) -> Result<Estimate, Error> {
+    let adjustment: BTreeSet<String> = covariates.keys().cloned().collect();
+    if let Some(open) =
+        model.backdoor_open_path(treatment_variable, outcome_variable, &adjustment)?
+    {
+        return Err(Error::denied(format!(
+            "abstains: the effect of `{treatment_variable}` on `{outcome_variable}` is not \
+             identified by this design: {open}"
+        )));
+    }
+    let n = outcome.len();
+    if covariates.values().any(|column| column.len() != n) {
+        return Err(Error::invalid(
+            "every covariate column must be observed on the same units as the outcome",
+        ));
+    }
+    let rows: Vec<Vec<f64>> = (0..n)
+        .map(|i| covariates.values().map(|column| column[i]).collect())
+        .collect();
+    let estimate = bayesian_causal(treatment, &rows, outcome, prior_sd)?;
+    let set = adjustment.iter().cloned().collect::<Vec<_>>().join(", ");
+    Ok(Estimate {
+        identification: Identification::Observational {
+            strategy: format!(
+                "back-door adjustment for {{{set}}}, checked against the graph of the declared \
+                 structural model"
+            ),
+        },
+        ..estimate
+    })
+}
+
 /// A Bayesian linear causal model, `y = a + tau d + beta x + noise`, with an
 /// independent `Normal(0, prior_sd^2)` prior on `tau` and on every `beta`
 /// and a flat prior on the intercept. The effect is the posterior mean of
