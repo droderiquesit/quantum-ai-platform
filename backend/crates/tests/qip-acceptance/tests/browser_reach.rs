@@ -112,7 +112,7 @@ const CREDENTIALS: [(&str, &str); 2] = [
 ];
 
 /// Every other environment value the console reads.
-const SETTINGS: [(&str, &str); 11] = [
+const SETTINGS: [(&str, &str); 13] = [
     ("QIP_API_BASE_URL", "destination: the platform's API"),
     (
         "ALGORIK_IAP_JWKS_URL",
@@ -123,6 +123,14 @@ const SETTINGS: [(&str, &str); 11] = [
         "the Cloud Run audience; a URL, not a secret",
     ),
     ("QIP_API_TIMEOUT_MS", "a timeout"),
+    (
+        "QIP_API_BREAKER_THRESHOLD",
+        "how many consecutive transport failures open the gateway's breaker",
+    ),
+    (
+        "QIP_API_BREAKER_COOLDOWN_MS",
+        "how long an open gateway breaker refuses before one trial",
+    ),
     (
         "ALGORIK_IAP_AUDIENCE",
         "the audience an IAP assertion must name",
