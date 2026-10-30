@@ -2031,7 +2031,7 @@
     "verification": "inspection of ci.yml",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-25 lane L9: the protected half is already on the branch: ci.yml's test job, acceptance partition, uploads the replay-bench artifact, and pipeline_scripts.rs pins it. What remains is code, not a protected path: a committed baseline and a test that diffs against it. That half stays with lane L6."
+    "notes": "2026-10-25 lane L9: the protected half is already on the branch: ci.yml's test job, acceptance partition, uploads the replay-bench artifact, and pipeline_scripts.rs pins it. What remains is code, not a protected path: a committed baseline and a test that diffs against it. That half stays with lane L6. 2026-10-25 lane L9, later the same day: L6 confirmed it holds this row, so the code half was examined here and no code was added. The replay delta already has a committed baseline: tick_replay.rs's RECORDED_DIGEST (2610f37b…). The replay test recomputes it from the recorded bytes on every host and fails when it moves, and its comment makes any move a stated decision. The benchmark half has no machine-independent absolute baseline to commit. performance.rs compares per-operation cost at two input sizes within one run against committed tolerances (2.0x), which is the load-invariant form of a baseline, and the replay-bench artifact keeps the absolute numbers for 90 days. A committed file of absolute timings diffed by a test would fail on a slower runner, and nothing could decide whether that was a regression. Whether the digest plus the ratio tolerances close 'replay and benchmark delta jobs', or a non-failing delta report is still wanted, is for the parent to rule. Stays PARTIAL."
   },
   {
     "id": "R12-GCP-9086",
