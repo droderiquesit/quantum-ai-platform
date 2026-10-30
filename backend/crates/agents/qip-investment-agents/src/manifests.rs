@@ -49,6 +49,7 @@ pub mod ids {
     pub const LEARNING: &str = "learning-attribution";
     pub const COMPLIANCE: &str = "compliance-control";
     pub const POISONING: &str = "poisoning-detector";
+    pub const PORTFOLIO_ASSET: &str = "portfolio-asset-brain";
 }
 
 /// Owning teams. Used by the governance rules to check independence, so these
@@ -146,6 +147,26 @@ pub fn poisoning_detector(reviewed_at: Timestamp) -> AgentManifest {
     .with_limitations(vec![
         "sees only claims the evidence fabric holds; a source nothing forwards is invisible".into(),
         "verifies no signature: a signed claim is weighed as unsigned".into(),
+    ])
+}
+
+pub fn portfolio_asset_brain(reviewed_at: Timestamp) -> AgentManifest {
+    research(
+        ids::PORTFOLIO_ASSET,
+        "Portfolio/Asset Brain",
+        "reads the held book to say what it is exposed to, which positions are held with no mandate on record and which are being divested",
+        owners::PORTFOLIO,
+        reviewed_at,
+        &[Capability::ReadPortfolio],
+    )
+    .with_competencies(vec![
+        "the book's gross exposure against its equity".into(),
+        "positions the lifecycle register flagged for want of a mandate, or marked unwinding"
+            .into(),
+    ])
+    .with_limitations(vec![
+        "reads the book as the kernel last wrote it; it forms no view on any instrument".into(),
+        "states no horizon or hedge: those live in the kernel's position records".into(),
     ])
 }
 
@@ -587,6 +608,7 @@ pub fn roster(reviewed_at: Timestamp) -> Roster {
         learning_attribution(reviewed_at),
         compliance_control(reviewed_at),
         poisoning_detector(reviewed_at),
+        portfolio_asset_brain(reviewed_at),
     ])
 }
 

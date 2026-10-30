@@ -87,7 +87,8 @@ fn brief() -> AgentBrief {
 #[test]
 fn the_declared_organisation_passes_its_own_governance() {
     let roster = manifests::roster(now());
-    assert_eq!(roster.len(), 20, "the organisation is twenty agents");
+    // Twenty-one since the Portfolio/Asset Brain joined (R12-ASSET-3019).
+    assert_eq!(roster.len(), 21, "the organisation is twenty-one agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -405,6 +406,16 @@ fn populated_desk() -> Arc<Desk> {
 /// graph. With none, the causal analyst has nothing to trace on any desk in
 /// this file.
 fn desk_holding_causal_claims(claims: Vec<qip_world_model::CausalEdge>) -> Arc<Desk> {
+    desk_with(claims, false)
+}
+
+/// [`populated_desk`] whose book holds 1,000 ACME, flagged by the lifecycle
+/// register as held with no mandate on record (R12-ASSET-3019).
+fn desk_holding_an_unmandated_position() -> Arc<Desk> {
+    desk_with(Vec::new(), true)
+}
+
+fn desk_with(claims: Vec<qip_world_model::CausalEdge>, holding: bool) -> Arc<Desk> {
     let mut universe = Universe::new();
     universe.insert(equity("ACME", "100")).unwrap();
     universe.insert(commodity("WTI", "80")).unwrap();
@@ -547,13 +558,23 @@ fn desk_holding_causal_claims(claims: Vec<qip_world_model::CausalEdge>) -> Arc<D
         MarketView { snapshot, universe },
         world,
         BookView {
-            portfolio: Portfolio::new(
-                PortfolioId::from_string("pf-1"),
-                "test",
-                Currency::USD,
-                dec!("10000000"),
-                now(),
-            ),
+            portfolio: {
+                let mut portfolio = Portfolio::new(
+                    PortfolioId::from_string("pf-1"),
+                    "test",
+                    Currency::USD,
+                    dec!("10000000"),
+                    now(),
+                );
+                if holding {
+                    let acme = equity("ACME", "100");
+                    portfolio
+                        .apply_fill(&acme, dec!("1000"), dec!("100"), Decimal::ZERO, now(), None)
+                        .unwrap();
+                    portfolio.flag_position(&object("ACME")).unwrap();
+                }
+                portfolio
+            },
             marks: BTreeMap::from([(object("ACME").as_str().to_string(), dec!("100"))]),
         },
         RiskView {
@@ -581,7 +602,8 @@ fn organisation(desk: Arc<Desk>) -> Result<Organisation> {
 #[test]
 fn the_organisation_assembles_and_dispatches() -> Result<()> {
     let mut org = organisation(populated_desk())?;
-    assert_eq!(org.len(), 19);
+    // Twenty since the Portfolio/Asset Brain joined (R12-ASSET-3019).
+    assert_eq!(org.len(), 20);
 
     let report = org.dispatch(&brief(), now(), &lineage());
     assert!(!report.runs.is_empty());
@@ -2418,5 +2440,66 @@ fn removing_the_risk_control_drops_forecast_stress_and_recommendation_from_cover
             "{scope:?} covered without: {without:?}"
         );
     }
+    Ok(())
+}
+
+/// R12-ASSET-3019. The Portfolio/Asset Brain reads the held book, and nobody
+/// else reports it: a position the lifecycle register flagged for want of a
+/// mandate reaches the chief only through it. The figures are checked
+/// against the fixture — 1,000 ACME at 100 against ten million of equity is
+/// a gross of one hundredth — so a ratio over the wrong base fails here.
+///
+/// Mutation: drop the `PortfolioAssetAnalyst` from `standard_agents` — the
+/// premise finding is missing; or count `Held` instead of `Flagged` — the
+/// flagged count reads zero.
+#[test]
+fn removing_the_portfolio_asset_brain_drops_portfolio_asset_from_coverage() -> Result<()> {
+    let desk = desk_holding_an_unmandated_position();
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::PORTFOLIO_ASSET)
+        .expect("premise: the Portfolio/Asset Brain reported on the held book");
+    assert_eq!(fact_value(finding, "positions_held"), Some(1.0));
+    assert_eq!(
+        fact_value(finding, "positions_flagged_without_mandate"),
+        Some(1.0),
+        "the register flagged ACME and the brain did not say so"
+    );
+    assert_eq!(fact_value(finding, "positions_unwinding"), Some(0.0));
+    let ratio = fact_value(finding, "book_gross_exposure_ratio").expect("equity is positive");
+    assert!(
+        (ratio - 0.01).abs() < 1e-3,
+        "gross {ratio} is not 100,000 against about ten million of equity"
+    );
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::PORTFOLIO_ASSET)?;
+    assert!(with.contains(&Scope::PortfolioAsset), "{with:?}");
+    assert!(!without.contains(&Scope::PortfolioAsset), "{without:?}");
+    Ok(())
+}
+
+/// An empty book is reported as no data, never as a clean one.
+#[test]
+fn the_portfolio_asset_brain_reports_an_empty_book_as_no_data() -> Result<()> {
+    let mut org = organisation(populated_desk())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::PORTFOLIO_ASSET)
+        .expect("premise: the brain answered the brief");
+    assert_eq!(
+        finding.status,
+        qip_agents::finding::FindingStatus::NoView,
+        "an empty book is no view, not a clean book"
+    );
+    assert!(
+        fact_value(finding, "positions_held").is_none(),
+        "an empty book reported a position count as if it had read one"
+    );
+    assert!(!report.covered_scopes().contains(&Scope::PortfolioAsset));
     Ok(())
 }

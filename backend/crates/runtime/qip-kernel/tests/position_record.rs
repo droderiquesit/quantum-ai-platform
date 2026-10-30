@@ -618,3 +618,48 @@ fn a_short_thesis_on_a_fund_inside_its_lockup_is_refused_with_the_lockup_named_a
     );
     Ok(())
 }
+
+/// R12-ASSET-3019: the desk's book slot — the one the Portfolio/Asset Brain
+/// and construction read through `read_portfolio` — holds the position the
+/// cycle opened, marked at its latest close, once the next REASON has run.
+/// Before this the desk held the empty portfolio it was assembled with for
+/// the life of the process, so the brain would have read an empty book in
+/// every running binary.
+///
+/// Mutation: delete `self.brief_the_desk_on_book();` from REASON — the desk
+/// still reads an empty book after the second cycle.
+#[test]
+fn the_desk_reads_the_book_the_cycle_opened_marked_at_its_latest_close() -> Result<()> {
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("desk-book"), start())?;
+    platform.observe(tape("AAA"));
+    assert_eq!(
+        platform.desk_book_view().portfolio.positions().count(),
+        0,
+        "premise: the desk's book starts empty"
+    );
+    let first = platform.run_cycle(start());
+    assert!(first.traversed_every_stage(), "{}", first.summarise());
+    assert!(
+        platform.positions_at_cost().contains_key(aaa.as_str()),
+        "premise: the cycle opened a position in obj-AAA: {}",
+        first.summarise()
+    );
+    let second = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(second.traversed_every_stage(), "{}", second.summarise());
+    let view = platform.desk_book_view();
+    let held: Vec<&str> = view
+        .portfolio
+        .positions()
+        .map(|position| position.object_id.as_str())
+        .collect();
+    assert_eq!(held, vec![aaa.as_str()], "the desk reads the held book");
+    assert!(
+        view.marks
+            .get(aaa.as_str())
+            .is_some_and(|mark| mark.is_positive()),
+        "the held instrument is marked at its latest close: {:?}",
+        view.marks
+    );
+    Ok(())
+}

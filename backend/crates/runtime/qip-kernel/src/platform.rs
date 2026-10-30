@@ -1035,6 +1035,13 @@ pub struct Platform {
     /// [`Platform::risk_state`] here before the panel is convened; see
     /// [`Self::brief_the_desk_on_risk`].
     risk: Upstream<RiskView>,
+    /// The book the desk's `read_portfolio` gate reads (R12-ASSET-3019),
+    /// written from the position lifecycle register before the panel is
+    /// convened. Until it existed the desk held the empty portfolio it was
+    /// assembled with for the life of the process, so the Portfolio/Asset
+    /// Brain would have read an empty book in every running binary and
+    /// construction priced its turnover against nothing.
+    book: Upstream<BookView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -5606,6 +5613,11 @@ impl Platform {
         desk.world = world.gate(desk.world.required(), desk.world.label());
         desk.market = market.gate(desk.market.required(), desk.market.label());
         desk.risk = risk.gate(desk.risk.required(), desk.risk.label());
+        let book = Upstream::new(BookView {
+            portfolio: asset_book_opened(initial_equity, now),
+            marks: BTreeMap::new(),
+        });
+        desk.book = book.gate(desk.book.required(), desk.book.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -6015,6 +6027,7 @@ impl Platform {
             world,
             market,
             risk,
+            book,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -10819,6 +10832,7 @@ impl Platform {
         self.world.feeds(&self.desk.world)
             && self.market.feeds(&self.desk.market)
             && self.risk.feeds(&self.desk.risk)
+            && self.book.feeds(&self.desk.book)
     }
 
     /// The risk view the desk's risk control reads through its
@@ -10849,6 +10863,37 @@ impl Platform {
             view.state = state;
             view.limits = limits;
         });
+    }
+
+    /// Write the position lifecycle register and the latest close of every
+    /// instrument it holds into the slot the desk's `read_portfolio` gate
+    /// reads (R12-ASSET-3019), before the panel is convened. The register is
+    /// the book a flag for want of a mandate is raised on (R12-ASSET-4066),
+    /// so the Portfolio/Asset Brain reads that flag rather than inferring
+    /// one. An instrument with no close is left unmarked, and the brain says
+    /// how many, rather than marked at a price nobody observed.
+    fn brief_the_desk_on_book(&self) {
+        let portfolio = self.asset_book.clone();
+        let marks: BTreeMap<String, Decimal> = portfolio
+            .positions()
+            .filter_map(|position| {
+                let object = position.object_id.as_str();
+                self.bar_history
+                    .get(object)
+                    .and_then(|bars| bars.last())
+                    .map(|bar| (object.to_string(), bar.close))
+            })
+            .collect();
+        self.book.update(|view| {
+            view.portfolio = portfolio;
+            view.marks = marks;
+        });
+    }
+
+    /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
+    /// it.
+    pub fn desk_book_view(&self) -> Reading<'_, BookView> {
+        self.book.read()
     }
 
     /// Where liquidity lives, per instrument across venues, as fed from the
@@ -14653,6 +14698,7 @@ impl Platform {
             expired.len() as f64,
         );
         self.brief_the_desk_on_risk();
+        self.brief_the_desk_on_book();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
             return outcome;

@@ -414,9 +414,14 @@
     "evidence": [
       "backend/crates/agents/qip-investment-agents/src/construction.rs:75 PortfolioConstruction reads approved_conviction from the feature store and reports no data without it",
       "grep -rn '\"approved_conviction\"' over runtime, apps and services finds no writer outside tests",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed",
+      "backend/crates/agents/qip-investment-agents/src/portfolio_brain.rs (PortfolioAssetAnalyst)",
+      "backend/crates/agents/qip-investment-agents/src/coverage.rs (Scope::PortfolioAsset)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (brief_the_desk_on_book, desk_book_view)",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs removing_the_portfolio_asset_brain_drops_portfolio_asset_from_coverage",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs the_desk_reads_the_book_the_cycle_opened_marked_at_its_latest_close"
     ],
-    "gap": "Two prerequisites, neither done: the kernel feeding BookView as an Upstream (see R12-CAPITAL-3020), and a kernel writer for the approved_conviction feature PortfolioConstruction sizes from (nothing outside tests writes it; REASON approves a thesis and the conviction is not recorded on the world model). Then divestment and causal-driver findings in the agent.",
+    "gap": "2026-10-30: skeptic REFUTED on part 4: the Portfolio/Asset Brain runs in the standard organisation on the default cycle and reads the held book the kernel now writes into the desk every REASON, covering mandates (positions flagged with none) and exposure, but it states no horizon, hedge or factor/causal-driver allocation, and its divestment count is always zero because nothing on a shipped path calls Portfolio::begin_unwind; remaining step is findings for those three from the kernel's position records and a default-path unwind seam.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -424,10 +429,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "cargo test -p qip-investment-agents --test organisation; cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The previous text called the agent \"in production\"; it is constructed there and has never produced a finding. Gap sharpened 2026-10-18 (lane L01); no code changed."
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The previous text called the agent \"in production\"; it is constructed there and has never produced a finding. Gap sharpened 2026-10-18 (lane L01); no code changed. 2026-10-30: the desk's book slot is an Upstream the kernel writes from the position lifecycle register and latest closes every REASON (it had been the empty assembly portfolio for the life of the process); a new PortfolioAssetAnalyst in standard_agents reports positions held, flagged without mandate, unwinding, unmarked and gross exposure over equity; Scope::PortfolioAsset. Mutations: drop brief_the_desk_on_book (kernel test fails); count Held for Flagged (organisation test fails). Roster and documented agent count move to twenty-one. Skeptic (code-reviewer) REFUTED as in the gap."
   },
   {
     "id": "R12-CAPITAL-3020",
