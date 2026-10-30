@@ -925,9 +925,12 @@
     "status": "MISSING",
     "current": "No hypothesis-space exploration path exists (JobClass::HypothesisSearch is a label).",
     "evidence": [
-      "backend/crates/libs/qip-quantum/src/foundry.rs:192-210"
+      "backend/crates/libs/qip-quantum/src/foundry.rs:192-210",
+      "backend/crates/services/qip-reasoning-engine/src/evidence.rs EvidenceKind::QuantumExploration",
+      "backend/crates/services/qip-reasoning-engine/src/redteam.rs ResearchOnlySupport",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::a_hypothesis_whose_only_support_is_a_quantum_exploration_result_is_rejected_by_adversarial_review"
     ],
-    "gap": "Everything.",
+    "gap": "2026-10-30 (L4, commit 8d4f0bb1, skeptic REFUTED). Closed: EvidenceKind::QuantumExploration exists (not primary, ceiling no higher than a rumour) and RedTeam::review raises a Fatal ResearchOnlySupport challenge when every supporting item is one. Still open: the guard is on one path only, since Hypothesis.status is a pub field any holder can set to Approved; a quantum result reaching an agent finding is typed Computation by engine.rs evidence_from_finding, so the all-exploration check never sees it and NoPrimarySource is only Serious within the default tolerance; one trivial primary item beside exploration clears the check, however much weight exploration carries; qip-expansion validated paths are unaudited; no producer exists (ADR 0150 A2), so the guard has run only in its test.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -938,7 +941,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-30 (L4), commit 8d4f0bb1: mutant (disable the check) killed at the challenge-kind assertion, restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-QUANT-4043",
@@ -970,9 +973,11 @@
     "current": "WorldModel::claim_causal (qip-world-model world.rs) refuses, with 'no quantum result is treated as causal proof', a causal edge any of whose evidence ids starts with `quantum:`. tests/quantum_causal_refusal.rs proves both the refusal and the acceptance of classical evidence. No quantum branch-selection path exists to produce such a citation.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/world.rs::WorldModel::claim_causal",
-      "backend/crates/services/qip-world-model/tests/quantum_causal_refusal.rs::world_model_claim_causal_refuses_edges_with_quantum_sourced_evidence"
+      "backend/crates/services/qip-world-model/tests/quantum_causal_refusal.rs::world_model_claim_causal_refuses_edges_with_quantum_sourced_evidence",
+      "backend/crates/services/qip-world-model/src/causal.rs refuse_quantum_evidence, CausalGraph::refused",
+      "backend/crates/services/qip-world-model/tests/quantum_causal_refusal.rs::a_causal_edge_citing_quantum_evidence_is_refused_on_every_insertion_path"
     ],
-    "gap": "2026-10-24 (L4): the row said MISSING; a guard exists. It is not structural and not on the only path. (1) It matches a `quantum:` id prefix, so a quantum result cited under any other id passes. Evidence ids carry no typed provenance. (2) CausalGraph::add (causal.rs) is public, performs no such check, and is called directly (qip-kernel shared_cause.rs and causal_review.rs build graphs with CausalGraph::new and add). Closing it: typed evidence provenance on CausalEdge, refused inside CausalGraph::add or CausalEdge::validate, so no path inserts an edge citing a quantum result. The branch-selection producer itself is blocked by ADR 0150 A2, like the other quantum families.",
+    "gap": "2026-10-30 (L4, commit 954b55b4, skeptic REFUTED). Closed: the quantum-citation refusal sits on every insertion path into the causal graph (CausalEdge::validate, CausalGraph::add, reestimate; edges is private with no mutable accessor), not only claim_causal. Still open: the guard keys on the string prefix quantum:, a convention no producer is bound to (no quantum branch-selection producer exists), so a relabelled id passes; evidence needs a typed origin owned by the producer; CausalGraph::refused has no production reader, and the kernel folds claim_causal denials into one undifferentiated refused count.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -983,7 +988,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test quantum_causal_refusal",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed."
+    "notes": "2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed. 2026-10-30 (L4), commit 954b55b4: three mutants killed (remove the check in reestimate, add and validate), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-QUANT-4045",
