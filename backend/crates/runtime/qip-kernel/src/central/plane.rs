@@ -788,6 +788,12 @@ pub struct CentralPlane {
     /// since filled — what a fill is matched against before it is billed.
     /// Bounded per cell; see [`SentOrders`].
     sent: BTreeMap<String, SentOrders>,
+    /// Per venue, how many orders cells reported sent there and how many of
+    /// those have since filled at all — the measurement ADR 0154 decision 3
+    /// lowers a stated fill probability by. Counted only for venues the
+    /// arbitrage policy names ([`Self::measures_fills_at`]), so its keys are
+    /// bounded by the operator's file and never by what a report claims.
+    venue_fills: BTreeMap<String, FillTally>,
     /// Per cell, the reports already settled, by instant and digest, so a
     /// replay settles nothing. Bounded per cell; see [`SettledReports`].
     settled_reports: BTreeMap<String, SettledReports>,
@@ -997,6 +1003,7 @@ impl CentralPlane {
             books: BTreeMap::new(),
             attributor: Attributor::new(),
             sent: BTreeMap::new(),
+            venue_fills: BTreeMap::new(),
             incidents_raised: 0,
             realised: BTreeMap::new(),
             withdrawn_venues: BTreeSet::new(),
@@ -1068,6 +1075,18 @@ impl CentralPlane {
         whitelist
             .conversions
             .retain(|conversion| !self.withdrawn_venues.contains(conversion.venue.as_str()));
+        // ADR 0154 decision 3: where the venue's own fills measure lower than
+        // the operator stated, the measurement governs; never the other way.
+        // `min`, so a venue filling better than stated leaves the stated
+        // figure in place rather than raising the edge.
+        for conversion in &mut whitelist.conversions {
+            if let (Some(costs), Some(bound)) = (
+                conversion.costs.as_mut(),
+                self.measured_fill_bound(&conversion.venue),
+            ) {
+                costs.fill_probability = costs.fill_probability.min(bound);
+            }
+        }
         let outcome = if whitelist.conversions.is_empty() && !withdrawn.is_empty() {
             WhitelistOutcome::AllWithdrawn { venues: withdrawn }
         } else {
@@ -1083,6 +1102,46 @@ impl CentralPlane {
             outcome,
             whitelist,
         })
+    }
+
+    /// Whether orders at `venue` are tallied: only a venue the arbitrage
+    /// policy names, because the venue on a report is a string off the wire
+    /// and a map keyed by it would grow with whatever a cell sent.
+    fn measures_fills_at(&self, venue: &str) -> bool {
+        self.config
+            .arbitrage
+            .as_ref()
+            .is_some_and(|policy| policy.venues.contains_key(venue))
+    }
+
+    /// The lower confidence bound of `venue`'s measured fill rate — the share
+    /// of orders cells reported sent there that have filled at all — or
+    /// `None` below [`MIN_FILL_SAMPLE`] orders, where the stated figure
+    /// stands (ADR 0154 decision 3).
+    ///
+    /// Conservative twice over, both times in the direction that only lowers
+    /// an edge: an order still resting counts as unfilled, and the bound is
+    /// the Wilson score interval's lower end at [`FILL_BOUND_Z`], not the
+    /// observed rate. A bound of zero is never returned, because a fill
+    /// probability must stay positive for the cell to take the whitelist; a
+    /// venue that has filled nothing is floored at the smallest positive
+    /// step rather than read as permission.
+    pub fn measured_fill_bound(&self, venue: &str) -> Option<Decimal> {
+        let tally = self.venue_fills.get(venue)?;
+        if tally.sent < MIN_FILL_SAMPLE {
+            return None;
+        }
+        // Statistics in f64 and back to Decimal at the end: the bound is a
+        // probability, not money, and it is only ever compared by `min`
+        // against the operator's stated Decimal.
+        let n = tally.sent as f64;
+        let p = (tally.filled.min(tally.sent) as f64) / n;
+        let z = FILL_BOUND_Z;
+        let centre = p + z * z / (2.0 * n);
+        let margin = z * (p * (1.0 - p) / n + z * z / (4.0 * n * n)).sqrt();
+        let lower = (centre - margin) / (1.0 + z * z / n);
+        let floor = Decimal::from_f64(0.0001)?;
+        Some(Decimal::from_f64(lower.clamp(0.0, 1.0))?.max(floor))
     }
 
     /// Omit `venue` from every whitelist this plane issues until it is
@@ -2599,11 +2658,22 @@ impl CentralPlane {
                 continue;
             }
             let sent = self.sent.entry(report.cell.clone()).or_default();
-            if let Err(reason) = sent.register(&order.order_id, order.quantity, order.price) {
+            if let Err(reason) = sent.register(
+                &order.order_id,
+                order.venue.as_str(),
+                order.quantity,
+                order.price,
+            ) {
                 self.refuse_settlement(&mut settlement, "order", reason);
                 continue;
             }
             settlement.orders_sent += 1;
+            if self.measures_fills_at(order.venue.as_str()) {
+                self.venue_fills
+                    .entry(order.venue.as_str().to_string())
+                    .or_default()
+                    .sent += 1;
+            }
             if let Some(metrics) = &self.metrics {
                 metrics.count(names::CENTRAL_ORDERS_SENT, labels([]));
             }
@@ -2623,7 +2693,14 @@ impl CentralPlane {
             }
             let sent = self.sent.entry(report.cell.clone()).or_default();
             let reference = match sent.fill(&fill.order_id, fill.quantity) {
-                Ok(reference) => reference,
+                Ok((reference, first_fill_at)) => {
+                    if let Some(venue) = first_fill_at
+                        && self.measures_fills_at(&venue)
+                    {
+                        self.venue_fills.entry(venue).or_default().filled += 1;
+                    }
+                    reference
+                }
                 Err(detail) => {
                     // Not refused: refused is for a record the books cannot take
                     // without guessing. This is a record the platform has no order
@@ -2997,11 +3074,30 @@ impl CentralPlane {
 /// than a register that grows with every order a cell ever sent.
 const MAX_SENT_ORDERS_PER_CELL: usize = 4_096;
 
+/// Orders a venue must have been sent before its measured fill rate may
+/// lower a stated fill probability (ADR 0154 decision 3). Below it the
+/// interval is too wide to say anything the operator did not.
+pub const MIN_FILL_SAMPLE: u64 = 30;
+
+/// The normal quantile of the one-sided bound: 95 per cent confidence that
+/// the venue's true fill rate is at least the bound.
+pub const FILL_BOUND_Z: f64 = 1.645;
+
+/// Orders sent to one venue and how many of them filled at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FillTally {
+    sent: u64,
+    filled: u64,
+}
+
 /// One order the centre saw a cell send, and how much of it has filled.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct SentOrder {
     quantity: Decimal,
     filled: Decimal,
+    /// The venue the order was sent to, so its first fill is counted where
+    /// it was sent (ADR 0154 decision 3).
+    venue: String,
     /// The price the cell sent the order at, kept as the reference every
     /// fill on it is costed against.
     ///
@@ -3034,6 +3130,7 @@ impl SentOrders {
     fn register(
         &mut self,
         order_id: &str,
+        venue: &str,
         quantity: Decimal,
         price: Decimal,
     ) -> std::result::Result<(), String> {
@@ -3048,6 +3145,7 @@ impl SentOrders {
             SentOrder {
                 quantity,
                 filled: Decimal::ZERO,
+                venue: venue.to_string(),
                 price,
             },
         );
@@ -3066,7 +3164,14 @@ impl SentOrders {
     /// An order whose fills now sum to its quantity leaves the register, so
     /// a fill after that is an unsent fill like any other — the venue
     /// reporting more than the platform asked for.
-    fn fill(&mut self, order_id: &str, quantity: Decimal) -> std::result::Result<Decimal, String> {
+    ///
+    /// Returns the order's reference price and, on the order's first fill,
+    /// the venue it was sent to — what the per-venue fill rate counts.
+    fn fill(
+        &mut self,
+        order_id: &str,
+        quantity: Decimal,
+    ) -> std::result::Result<(Decimal, Option<String>), String> {
         let Some(order) = self.by_id.get_mut(order_id) else {
             return Err(format!(
                 "the cell reports a fill of {quantity} on order {order_id} and the centre never \
@@ -3081,6 +3186,7 @@ impl SentOrders {
                 order.quantity
             ));
         }
+        let first_fill_at = order.filled.is_zero().then(|| order.venue.clone());
         order.filled += quantity;
         let reference = order.price;
         if order.filled >= order.quantity {
@@ -3090,7 +3196,7 @@ impl SentOrders {
         // order is gone from the register on the fill that completes it and a
         // second lookup would find nothing exactly on the fills that matter
         // most — the ones that closed an order out.
-        Ok(reference)
+        Ok((reference, first_fill_at))
     }
 }
 
@@ -3255,6 +3361,7 @@ mod tests {
         let venue = |cost| WhitelistedVenue {
             class: VenueClass::Exchange,
             taker_cost: cost,
+            simulated: true,
         };
         let market = |venue: &str| WhitelistedMarket {
             venue: venue.to_string(),
@@ -3436,6 +3543,7 @@ mod tests {
         let venue = |class, cost| WhitelistedVenue {
             class,
             taker_cost: cost,
+            simulated: true,
         };
         let market = |venue: &str| WhitelistedMarket {
             venue: venue.to_string(),

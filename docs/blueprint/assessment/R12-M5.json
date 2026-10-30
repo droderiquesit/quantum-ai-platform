@@ -1336,9 +1336,14 @@
     "evidence": [
       "backend/crates/edge/qip-arbitrage/src/netedge.rs:73",
       "backend/crates/apps/qip-edge-node/src/arbitrage.rs set_costs from conversion.costs",
-      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs:606 costs: None"
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs:606 costs: None",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs::measured_fill_bound",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs::ArbitragePolicy::validate (costs required at a venue not stated simulated)",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_measured_fill_rate_lowers_a_stated_fill_probability_and_never_raises_it",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_market_at_a_venue_not_stated_simulated_must_state_its_costs",
+      "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs (the net edge falls by exactly each named cost; predates this lane)"
     ],
-    "gap": "The centre's whitelist builder must state per-conversion costs: settlement_risk_fraction from the venue's settlement terms and fill_probability from the venue's measured fill record, both of which the centre holds per venue. The node already prices them; nothing in qip-edge-node needs to change.",
+    "gap": "2026-10-30 (lane L5-EDGE, skeptic REFUTED on the docs example and an unbounded tally, both fixed; remaining PARTIAL): ADR 0154 decision 3 is built in code but runs only when QIP_ARBITRAGE_POLICY_PATH names a policy, which no committed environment sets, and the `simulated` flag that waives the costs requirement is the operator's own statement, tied to no feed or venue class.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1346,10 +1351,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-arbitrage",
+    "verification": "cargo test -p qip-kernel --test central -- fill_probability costs; cargo test -p qip-api the_operator_pages_example_policy_is_one_the_plane_accepts",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: the triage closure proposed deriving the costs on the node, but the node does not hold the evidence for a fill probability (its fill-time measurement is a latency, not a probability) and the settlement terms are the centre's; the producer belongs in qip-kernel central/whitelist.rs, outside this lane."
+    "notes": "Corrected 2026-10-18 by lane L09: the triage closure proposed deriving the costs on the node, but the node does not hold the evidence for a fill probability (its fill-time measurement is a latency, not a probability) and the settlement terms are the centre's; the producer belongs in qip-kernel central/whitelist.rs, outside this lane. 2026-10-30 lane L5-EDGE: WhitelistedVenue gains `simulated` (false when absent) and validate refuses costs None at a venue not stated simulated; CentralPlane tallies per policy venue the orders sent and those that filled at all, and cycle_whitelist_for lowers each stated fill_probability to min(stated, Wilson lower bound at z 1.645) past MIN_FILL_SAMPLE 30 orders, floored above zero; settlement risk stays stated. The tally is in memory and has no window. Mutations fired (5): use stated; max instead of min; no minimum sample; validate admits no costs; tally every venue a report names. The operator page's example now states `simulated`."
   },
   {
     "id": "R12-MESH-5058",
