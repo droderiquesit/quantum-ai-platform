@@ -235,16 +235,17 @@
   {
     "id": "R12-EXPAND-6011",
     "status": "PARTIAL",
-    "current": "backend/crates/apps/qip-deepbrain/src/research.rs:449 sweep runs low_confidence, incompetent_specialists, contradictions, unexplained_residuals, coverage, anomaly_clusters, repeated_vetoes, refusal_clusters",
+    "current": "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over runs, on the shipped default cadence (ResearchConfig::from_lookup over an empty environment), the six detectors the requirement names over platform state: low_confidence, incompetent_specialists, unexplained_residuals_priced, coverage, and since 2026-10-25 contested_evidence and missing_causal_links, beside anomaly_clusters, repeated_vetoes_priced, refusal_clusters and contradictions. Contradictory evidence is now the world fabric's own unresolved contests, read by Platform::contested_claims and joined to the knowledge deltas that recorded each conflict; a missing causal link is a contested subject the causal graph holds no live incoming claim into, read by Platform::causally_explained (incoming(subject, now), the same read Platform::causal_views makes). The two raise gaps of different classes (Data, Causal).",
     "evidence": [
-      "backend/crates/services/qip-expansion/tests/loop.rs:78 unexplained residual",
-      "backend/crates/services/qip-expansion/tests/loop.rs:49 low confidence",
-      "backend/crates/services/qip-expansion/tests/loop.rs:104 contradictions read as a missing causal link",
-      "backend/crates/services/qip-expansion/tests/loop.rs:131 unsupported asset class",
-      "backend/crates/services/qip-expansion/tests/loop.rs:69 no competent specialist",
-      "backend/crates/apps/qip-deepbrain/src/node.rs:450 ResearchLoop::maybe_sweep in the deep brain run loop (backend/crates/apps/qip-deepbrain/src/main.rs:662)"
+      "backend/crates/services/qip-expansion/src/detectors.rs::contested_evidence and ::missing_causal_links",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::contested_claims, ::knowledge_deltas, ::causally_explained",
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over, the contested-evidence block after the poisoning scan (grep -n 'contested_evidence(&contested)')",
+      "backend/crates/services/qip-expansion/tests/loop.rs::a_contested_claim_raises_a_contradiction_gap_distinct_from_a_missing_causal_link",
+      "backend/crates/apps/qip-deepbrain/tests/evidence_gaps.rs::a_contest_in_the_world_fabric_raises_a_data_gap_and_an_unexplained_subject_a_causal_gap_beside_it",
+      "backend/crates/services/qip-expansion/tests/loop.rs:78 unexplained residual; :49 low confidence; :69 no competent specialist; unsupported asset class (an_asset_class_with_no_history_is_raised_as_unsupported_and_a_covered_one_is_not)",
+      "docs/adr/0151 amendment 2026-10-25 (decision 12 re-read: incoming(subject) is keyed by the subject id, no map is guessed)"
     ],
-    "gap": "Contradictory evidence and missing causal links share one detector over price-direction readings. Neither replacement has an input the deep brain can read: the kernel's evidence intake (qip-kernel evidence_intake.rs EvidenceIntake) retains only a count of contested claims, not the KnowledgeDelta.contested ClaimKeys, and Platform::world().causal().edges() names causal variables, not the subject ids the sweep's detectors key on, so a missing-link detector would have to guess the mapping. Closing it needs the kernel to retain a bounded list of contested keys and a stated variable-to-subject map first.",
+    "gap": "Refuted by the in-lane skeptic 2026-10-25: the two new detectors run on the default sweep but their only input, the world fabric, is fed solely by ConnectorArm::poll behind QIP_CONNECTOR_SOURCE (config.rs connector_feed returns None when unset; deepbrain_connector is null in dev, test, stage and prod), so on every committed default path `contested` is empty and neither detector can fire. Closing needs a committed environment with a connector on, or the owner's call on the requirement.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -252,10 +253,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-expansion --test loop; cargo test -p qip-deepbrain --test evidence_gaps",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: gap corrected after reading evidence_intake.rs and the world model's causal edges; no detector added, because one with no honest input would read as coverage."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: gap corrected after reading evidence_intake.rs and the world model's causal edges; no detector added, because one with no honest input would read as coverage. 2026-10-25 lane L4b (wave580): contested_evidence and missing_causal_links added and wired into sweep_over on the default path; ADR 0151 d12 amended (the causal graph is keyed by subject id, so no variable-to-subject map is guessed). Mutations fired on qip-deepbrain --test evidence_gaps: deleting the contested_evidence call failed both tests (data.len() 0, expected 2); deleting the missing_causal_links call failed the contest test at unexplained_subjects (0, expected 1); each restored byte-for-byte (sha256 checked) and both passed again. The kernel keeps no second copy of contested keys: Platform::contested_claims reads EvidenceFabric::contests, bounded by the fabric's capacity. Skeptic REFUTED COMPLETE on bar part 2 (input env-gated); kept PARTIAL, code retained."
   },
   {
     "id": "R12-REFLEX-6012",
@@ -867,12 +868,14 @@
   {
     "id": "R12-EXPAND-6039",
     "status": "PARTIAL",
-    "current": "Platform::absorb_evidence (called by the connector composition roots) now leaves one validated qip_contracts::KnowledgeDelta per admissible, keyed claim, version-stepped by the fabric version, citing the claim and its document hash, naming contradicted claims as conflicts under a review-required merge, journalled on world_model.updated under origin kernel/knowledge-delta.",
+    "current": "Platform::absorb_evidence (called through admit_world_records by every connector composition root) leaves one validated qip_contracts::KnowledgeDelta per admissible, keyed claim, version-stepped by the fabric version, citing the claim and its document hash, naming contradicted claims as conflicts under a review-required merge, journalled on world_model.updated under origin kernel/knowledge-delta. Since 2026-10-25 the deep brain's ResearchLoop::sweep_over decodes those records back off the platform log (Platform::knowledge_deltas, filtered by the knowledge-delta idempotency prefix because the topic carries lattice, federation and NOW records too), counts them on the round (knowledge_deltas, knowledge_conflicts) and feeds each delta's conflicts into the contested-evidence gap as lineage (evidence `delta:kd-<claim>`), so the typed artifact is produced by one component and consumed by another through the record rather than shared state.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::knowledge_delta_for",
-      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys"
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::knowledge_delta_for (producer), ::Platform::knowledge_deltas (reader), ::Platform::contested_claims (the join)",
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over, `let deltas = platform.knowledge_deltas()?`",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys",
+      "backend/crates/apps/qip-deepbrain/tests/evidence_gaps.rs::a_knowledge_delta_absorb_evidence_journals_reaches_the_deep_brain_sweep"
     ],
-    "gap": "No SharedEpisode producer; the delta is journalled locally and no brain publishes or consumes it, so it does not yet cross a brain boundary.",
+    "gap": "Refuted by the in-lane skeptic 2026-10-25: the consumer reads deltas from its own process's log, the same Platform that produced them; qip-fastbrain's and qip-api's deltas live in other processes' logs that the deep brain never reads, no crate under edge/ names KnowledgeDelta, and the producer in the deep brain is itself behind QIP_CONNECTOR_SOURCE (null in every environment), so 'components and regional nodes share' is unmet; ADR 0151 d4 recasts the in-process read as cross-brain, and under bar part 4 the owner decides whether the requirement text changes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -880,10 +883,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test evidence_intake",
+    "verification": "cargo test -p qip-kernel --test evidence_intake; cargo test -p qip-deepbrain --test evidence_gaps",
     "work_item": "",
     "size": "L",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: KnowledgeDelta producer landed; mutation (journalling loop removed) failed the new test at the knowledge_deltas == 2 assertion. Kept PARTIAL for SharedEpisode and for the cross-brain hop."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: KnowledgeDelta producer landed; mutation (journalling loop removed) failed the new test at the knowledge_deltas == 2 assertion. Kept PARTIAL for SharedEpisode and for the cross-brain hop. 2026-10-25 lane L4b (wave580): the deep-brain consumer landed. SharedEpisode is not built, per ADR 0151 d4 and the requirement's own text (\"KnowledgeDelta / SharedEpisode\": either artifact), so no clause is withdrawn. Mutation fired: Platform::knowledge_deltas returning an empty vector (decode skipped) failed a_knowledge_delta_absorb_evidence_journals_reaches_the_deep_brain_sweep at knowledge_deltas (0, expected 2); restored byte-for-byte (sha256 checked), passed again. The hop is within one process: the deep brain reads the kernel's log, which is the same record a second brain would read from the fabric; no second brain is deployed to read it. Skeptic REFUTED COMPLETE on bar parts 2 and 4; kept PARTIAL, consumer code retained."
   },
   {
     "id": "R12-EXPAND-6040",

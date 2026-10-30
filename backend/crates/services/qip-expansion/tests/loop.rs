@@ -13,9 +13,10 @@ use qip_expansion::campaigns::{self, TickCampaignDetector, TickCampaignTrigger};
 use qip_expansion::curriculum::{Budget, State, TaskKind};
 use qip_expansion::desk::{Admission, CloseReason, DeskConfig, ExpansionDesk, question_for};
 use qip_expansion::detectors::{
-    Decline, Origin, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
-    contradictions, coverage, incompetent_specialists, low_confidence, model_drift,
-    refusal_clusters, repeated_vetoes, split_by_wanting, unexplained_residuals,
+    ContestedKey, Decline, Origin, PersistenceTracker, Reading, Refusal, Residual,
+    anomaly_clusters, contested_evidence, contradictions, coverage, incompetent_specialists,
+    low_confidence, missing_causal_links, model_drift, refusal_clusters, repeated_vetoes,
+    split_by_wanting, unexplained_residuals,
 };
 use qip_expansion::gap::{GapTrigger, Observation, Wanting, classify, raise};
 use qip_expansion::plan::{AcquisitionAction, Environment, ResearchPlan, Step};
@@ -125,6 +126,98 @@ fn two_sources_reading_one_subject_in_opposite_directions_is_a_missing_causal_li
     assert_eq!(class_of(&raised[0]), GapClass::Causal);
     // An even split is the strongest contradiction.
     assert!((raised[0].severity - 1.0).abs() < 1e-12);
+}
+
+/// Until 2026-10-25 the sweep read "contradictory evidence" and "missing
+/// causal link" off one split of price-direction readings, and a
+/// disagreement between two *sources* about a *fact* raised nothing. The two
+/// are now two detectors over the fabric's contests (R12-EXPAND-6011): a
+/// contest is a data gap whichever subject it is on, and the causal gap is
+/// raised only for a subject the causal graph holds no live claim into.
+/// Mutation: make `missing_causal_links` ignore `explained` — the graph-
+/// explained subject is then raised too and the `len() == 1` assertion fails;
+/// or make `contested_evidence` want a `CausalLink` — the two classes
+/// collapse and the class assertions fail.
+#[test]
+fn a_contested_claim_raises_a_contradiction_gap_distinct_from_a_missing_causal_link() {
+    let key = |subject: &str, values: &[(&str, &[&str])], deltas: &[&str]| ContestedKey {
+        subject: subject.into(),
+        attribute: "rate".into(),
+        hypotheses: values
+            .iter()
+            .map(|(value, claims)| ((*value).to_string(), set(claims)))
+            .collect(),
+        deltas: deltas.iter().map(|d| (*d).to_string()).collect(),
+    };
+    // EURUSD: an even split, one claim each; obj-A: nine against one.
+    let contested = vec![
+        key(
+            "EURUSD",
+            &[("1.10", &["a1"]), ("1.20", &["b1"])],
+            &["kd-b1"],
+        ),
+        key(
+            "obj-A",
+            &[
+                (
+                    "100",
+                    &["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9"],
+                ),
+                ("90", &["d1"]),
+            ],
+            &[],
+        ),
+    ];
+    assert!(
+        contested.iter().all(|k| k.hypotheses.len() == 2),
+        "premise: both keys are contested"
+    );
+
+    let data = contested_evidence(&contested);
+    assert_eq!(data.len(), 2, "one data gap per contested key: {data:?}");
+    for observation in &data {
+        assert_eq!(observation.trigger, GapTrigger::Contradiction);
+        assert_eq!(class_of(observation), GapClass::Data);
+        assert_eq!(observation.evidence[0], Origin::ContestedEvidence.as_str());
+    }
+    assert!(
+        (data[0].severity - 1.0).abs() < 1e-12,
+        "an even split: {data:?}"
+    );
+    assert!(
+        (data[1].severity - 0.2).abs() < 1e-12,
+        "one against nine: {data:?}"
+    );
+    assert!(
+        data[0].evidence.iter().any(|e| e == "delta:kd-b1"),
+        "the knowledge delta that recorded the conflict is cited: {:?}",
+        data[0].evidence
+    );
+    assert!(
+        data[0].evidence.iter().any(|e| e == "claim:b1=1.20"),
+        "each asserting claim is cited with its value: {:?}",
+        data[0].evidence
+    );
+
+    // The causal graph explains obj-A and not EURUSD.
+    let causal = missing_causal_links(&contested, &set(&["obj-A"]));
+    assert_eq!(causal.len(), 1, "only the unexplained subject: {causal:?}");
+    assert_eq!(causal[0].trigger, GapTrigger::Contradiction);
+    assert_eq!(class_of(&causal[0]), GapClass::Causal);
+    assert_eq!(causal[0].evidence[0], Origin::MissingCausalLink.as_str());
+    assert!(causal[0].observation.contains("`EURUSD`"), "{causal:?}");
+    assert!(
+        (causal[0].severity - 0.5).abs() < 1e-12,
+        "one of two contested keys: {causal:?}"
+    );
+    assert_ne!(
+        class_of(&data[0]),
+        class_of(&causal[0]),
+        "the two gaps go to different desks"
+    );
+    // Nothing contested raises nothing, whatever the graph holds.
+    assert!(missing_causal_links(&[], &set(&[])).is_empty());
+    assert!(contested_evidence(&[]).is_empty());
 }
 
 #[test]
