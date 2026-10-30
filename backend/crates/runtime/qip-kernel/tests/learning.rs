@@ -989,6 +989,117 @@ fn the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue() -
     Ok(())
 }
 
+/// R12-TICK-10103: the LEARN score compares the twin's predicted fill,
+/// slippage and outcome with what happened. The tape opens its last bar
+/// before the fill at 90 against an arrival of 100, so the twin predicts an
+/// entry ten percent below the arrival while the venue fills a buy at the
+/// arrival plus its cost; the bars after the fill print 100, which is the
+/// price at the twin's exit instant.
+///
+/// The outcome is per unit and net of what each side paid to get in, both
+/// marked at that printed exit: the twin's from its entry less its cost
+/// model's entry charge, the venue's from its fill less the costs the venue
+/// actually charged. An independent review found the first version of this
+/// residual marked two gross returns at one close, which is the entry error
+/// rescaled: it read zero whenever the twin's entry matched the fill,
+/// whatever the costs did. So the realised figure is checked against the
+/// order manager's own fills and costs, worked here by hand, and the
+/// predicted figure must sit strictly under the twin's gross return.
+///
+/// Mutations, each fails here: record `outcome_error_bps` as `None`; drop
+/// `paid / filled` from the realised outcome (the hand-worked figure
+/// disagrees); drop the twin's entry costs from the predicted outcome (it
+/// equals the gross return).
+#[test]
+fn a_filled_orders_learn_score_records_predicted_and_realised_slippage_and_the_outcome_residual()
+-> Result<()> {
+    let mut platform = platform()?;
+    let mut tape = quiet_bars("AAA", 90);
+    let last = tape.pop().expect("ninety bars");
+    let last_at = match &last {
+        SensedRecord::Bar(bar) => bar.open_time,
+        _ => unreachable!("quiet_bars produces bars"),
+    };
+    tape.push(bar("AAA", last_at, 90.0, 90.0));
+    platform.observe(tape);
+    fill_one(&mut platform, "prop-residuals", start())?;
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+    let scores = platform.fill_scores();
+    assert_eq!(scores.len(), 1, "premise: the fill was priced");
+    let score = &scores[0];
+    let realised = score
+        .realised_slippage_bps
+        .expect("the desk's fill has an arrival price to slip against");
+    assert!(
+        realised >= 0.0,
+        "a buy filled at the arrival plus cost slipped {realised} bps"
+    );
+    let predicted = score
+        .predicted_slippage_bps
+        .expect("the twin's entry has a slippage too");
+    assert!(
+        predicted < -500.0,
+        "the twin predicted an entry ten percent under the arrival: {predicted} bps"
+    );
+    let fills: Vec<_> = platform
+        .orders()
+        .fills()
+        .into_iter()
+        .filter(|fill| fill.order_id == score.order_id)
+        .collect();
+    assert!(
+        !fills.is_empty(),
+        "premise: the order manager holds the fill"
+    );
+    let filled: f64 = fills.iter().map(|fill| fill.quantity.to_f64()).sum();
+    let paid: f64 = fills.iter().map(|fill| fill.costs.to_f64()).sum();
+    let fill_price = fills[0].price.to_f64();
+    assert!(
+        paid > 0.0,
+        "premise: the venue charged costs, so leaving them out would move the figure"
+    );
+    let exit = 100.0;
+    let realised_outcome = score
+        .realised_outcome_bps
+        .expect("the venue's fill has an outcome at the twin's exit");
+    let worked = ((exit - fill_price) - paid / filled) / fill_price * 10_000.0;
+    assert!(
+        (realised_outcome - worked).abs() < 1e-6,
+        "the realised outcome is the fill marked at {exit} net of the venue's costs: \
+         {realised_outcome} against {worked} bps"
+    );
+    let arrival = platform
+        .orders()
+        .order(&score.order_id)
+        .expect("the order manager holds the order")
+        .arrival_price
+        .to_f64();
+    let twin_entry = arrival * (1.0 + predicted / 10_000.0);
+    let twin_gross = (exit - twin_entry) / fill_price * 10_000.0;
+    let predicted_outcome = score
+        .predicted_outcome_bps
+        .expect("the twin traded, so it predicted an outcome");
+    assert!(
+        predicted_outcome > 0.0 && predicted_outcome < twin_gross - 1e-6,
+        "the twin's outcome from {twin_entry} to {exit} is net of its entry costs: \
+         {predicted_outcome} against a gross {twin_gross} bps"
+    );
+    let residual = score
+        .outcome_error_bps
+        .expect("the horizon closed, so the outcome residual exists");
+    assert!(
+        (residual - (predicted_outcome - realised_outcome)).abs() < 1e-9,
+        "the residual is predicted less realised: {residual}"
+    );
+    assert!(
+        residual > 500.0,
+        "the twin's outcome from 90 beats the realised one from the fill: {residual} bps"
+    );
+    Ok(())
+}
+
 /// R12-TICK-2080: the twin is recalibrated from the fills it mispriced, and
 /// the calibration is what its next pricing on that venue uses.
 ///

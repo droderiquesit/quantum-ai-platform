@@ -845,6 +845,133 @@ variable "cross_region_mirror_path" {
   }
 }
 
+variable "peer_mesh" {
+  description = <<-EOT
+    The peer Reflex Mesh this node joins (ADR 0116), written into `node.env`
+    as `QIP_PEER_MESH_LISTEN`, `QIP_PEER_MESH_PEERS` and, when stated,
+    `QIP_PEER_MESH_CLOCK_BOUND_MS`.
+
+    Null is the default and the same as unset: the binary announces that it
+    coordinates with no other cell directly, a cross-region cycle reaches it
+    only through the centre, and the peer saga (origination, reservation,
+    FIRE, fill and unwind — R12-MESH-5063, 5065, 5070, 10112) runs on no
+    deployed node. Null rather than an empty map, because `qip-peer-link`
+    refuses a mesh naming no peer and a map that renders the variables empty
+    would stop the node at start rather than leave the mesh off.
+
+    Set, `peers` names every other node this one coordinates with, each by
+    the DNS name its workload certificate carries (ADR 0112: the link is
+    mutual TLS off-host, and the binary refuses a plaintext mesh anywhere
+    but loopback in a `local` deployment) and by a **stable** internal
+    address and port. Stable is the word that keeps this null today: a
+    managed instance group's machine has no fixed address — the update
+    policy surges a replacement beside the old machine, so a reserved
+    `network_ip` on the template would refuse the surge — and this module
+    creates nothing that fronts a node with one. A deployment that joins two
+    nodes states here the address of whatever fronts each peer, and that is
+    billed infrastructure the owner declined for now (decision 5 of
+    2026-10-25). The module opens the firewall both ways for exactly the
+    peers named and nothing else.
+
+    `listen_port` is the port this node accepts peers on, bound on every
+    interface — the node has no external address, so "every interface" is
+    its own subnet. `clock_bound_ms` is the widest clock disagreement at
+    which the node joins an epoch with a peer, offset plus half the measured
+    round trip; null leaves the binary's own default, which is tight enough
+    for one metro and refuses a cross-region pair until a wider bound is
+    stated out loud here.
+  EOT
+
+  type = object({
+    listen_port    = number
+    clock_bound_ms = optional(number)
+    peers = map(object({
+      address = string
+      port    = number
+    }))
+  })
+
+  default = null
+
+  # Every condition below is a conditional and not `null || ...`: Terraform's
+  # `||` evaluates both operands, so the attribute read on the right would
+  # fail on the null default before the left could excuse it.
+  validation {
+    # Between one and qip_peer::MAX_EDGE_PEERS (64) peers, as the binary's
+    # own `PeerSettings::validate` demands; refused here so that a mesh the
+    # node would refuse at start is refused at plan.
+    condition     = var.peer_mesh == null ? true : (length(var.peer_mesh.peers) >= 1 && length(var.peer_mesh.peers) <= 64)
+    error_message = "peer_mesh.peers must name between one and 64 peers; a mesh naming none coordinates nothing and the node refuses it at start. Leave peer_mesh null for a node with no peers."
+  }
+
+  validation {
+    # A node is not its own peer. The binary refuses the entry; this moves
+    # the refusal to plan time, where the map is written.
+    condition     = var.peer_mesh == null ? true : !contains(keys(var.peer_mesh.peers), var.node_id)
+    error_message = "peer_mesh.peers names this node (node_id) as its own peer. A node is not its own peer; name the other nodes only."
+  }
+
+  validation {
+    # Under mutual TLS each peer name is the DNS name its certificate
+    # carries (qip_peer_link::PeerSettings::validate), and every value here
+    # is interpolated unquoted into node.env, so the character class is the
+    # control against a second line or a command substitution as root.
+    condition = var.peer_mesh == null ? true : alltrue([
+      for name in keys(var.peer_mesh.peers) :
+      can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$", name))
+    ])
+    error_message = "Each peer_mesh.peers key must be a DNS name a workload certificate can carry: lower-case letters, digits and dashes in labels joined by dots, no label starting or ending with a dash."
+  }
+
+  validation {
+    # The binary parses `host:port` as an ip:port socket address and
+    # refuses a hostname, so the module refuses one too rather than
+    # rendering a line the node cannot read.
+    condition = var.peer_mesh == null ? true : alltrue([
+      for peer in values(var.peer_mesh.peers) :
+      can(cidrnetmask("${peer.address}/32")) && peer.port >= 1 && peer.port <= 65535 && floor(peer.port) == peer.port
+    ])
+    error_message = "Each peer_mesh.peers entry needs an IPv4 address literal and a port in 1..65535; the binary reads the peer as ip:port and refuses a hostname."
+  }
+
+  validation {
+    # A peer is another execution node in this platform's own network, so
+    # its address is private (RFC 1918) by construction, and the module
+    # refuses any other. This is what keeps the egress rule the mesh opens
+    # inside the proxy's control: a public peer address would be a route to
+    # the internet that bypasses the proxy, which `qip-acceptance`'s egress
+    # suite forbids every node rule — and the suite admits the mesh rule's
+    # destination shape on the strength of this check.
+    condition = var.peer_mesh == null ? true : alltrue([
+      for peer in values(var.peer_mesh.peers) :
+      can(regex("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)", peer.address))
+    ])
+    error_message = "Each peer_mesh.peers address must be a private IPv4 address (10/8, 172.16/12 or 192.168/16): a peer is another execution node in this network, and a public address would open an egress route around the proxy."
+  }
+
+  validation {
+    condition     = var.peer_mesh == null ? true : (var.peer_mesh.listen_port >= 1 && var.peer_mesh.listen_port <= 65535 && floor(var.peer_mesh.listen_port) == var.peer_mesh.listen_port)
+    error_message = "peer_mesh.listen_port must be a whole number in 1..65535."
+  }
+
+  validation {
+    # SEC-019: the mesh opens its listen port inbound and the peers' ports
+    # outbound, and neither may be a remote-administration port. The
+    # acceptance suite reads every allow rule for 22 and 3389; a mesh on one
+    # of them would be a shell port open to a peer address.
+    condition     = var.peer_mesh == null ? true : (!contains([22, 3389], var.peer_mesh.listen_port) && alltrue([for peer in values(var.peer_mesh.peers) : !contains([22, 3389], peer.port)]))
+    error_message = "peer_mesh may not use port 22 or 3389 for the listen port or a peer: those are remote-administration ports, and the mesh is not an administration path."
+  }
+
+  validation {
+    # The binary's own bounds (qip_peer_link::MAX_CLOCK_BOUND): zero joins
+    # nothing and a bound past a second lets two regions disagree about
+    # whether an epoch is live for a material fraction of it.
+    condition     = var.peer_mesh == null ? true : var.peer_mesh.clock_bound_ms == null ? true : (var.peer_mesh.clock_bound_ms >= 1 && var.peer_mesh.clock_bound_ms <= 1000 && floor(var.peer_mesh.clock_bound_ms) == var.peer_mesh.clock_bound_ms)
+    error_message = "peer_mesh.clock_bound_ms must be a whole number of milliseconds in 1..1000, or null for the binary's default; the node refuses anything else at start."
+  }
+}
+
 variable "region_allocation" {
   description = <<-EOT
     The ceiling on the capital this node may hold in reservation across all

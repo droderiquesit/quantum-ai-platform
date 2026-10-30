@@ -1,0 +1,388 @@
+diff --git a/scripts/agent-policy.json b/scripts/agent-policy.json
+--- a/scripts/agent-policy.json
++++ b/scripts/agent-policy.json
+@@ -47,7 +47,7 @@
+ 
+   "dispatch_refused_for_agents": {
+     "comment": "Workflows an agent identity may never start: each deploys, applies infrastructure or reaches a cloud credential. A planner may read and plan; no agent merges or deploys (GOV-9067). Enforced by the guard step at the top of each workflow, before anything authenticates.",
+-    "workflows": ["deploy.yml", "infra.yml", "fleet.yml", "image.yml", "vendor.yml", "branch-cleanup.yml"]
++    "workflows": ["deploy.yml", "infra.yml", "fleet.yml", "image.yml", "vendor.yml", "branch-cleanup.yml", "drift.yml"]
+   },
+   "deploy_range_advisory": {
+     "comment": "ADR 0124 §3 (the owner accepted this on 2026-10-12 citing ADR 0123, whose record was never written; 0123 is the ledger-operations ADR, and 0124 records this decision under its own number). dev reads the agent-boundary range verdict as advice: refusals are printed, the deploy proceeds. The guard admits only dev whatever this list says.",
+diff --git a/.github/workflows/drift.yml b/.github/workflows/drift.yml
+new file mode 100644
+--- /dev/null
++++ b/.github/workflows/drift.yml
+@@ -0,0 +1,153 @@
++# Drift: does dev still match the configuration on main? (R12-CICD-8032,
++# R12-GCP-9086.)
++#
++# Nothing compared the two before this. infra.yml plans only when a person
++# dispatches it, so a change made by hand in the console, by a Config
++# Connector reconcile or by a workflow that died half way stays invisible
++# until the next person-dispatched plan, and that person reads it as their
++# own change. Security Command Center custom modules would find some of it,
++# but they need the organisation on SCC Premium, which is paid, and owner
++# decision 5 of 2026-10-25 declined new billed infrastructure.
++#
++# Once a day, and on demand, this plans dev with `-detailed-exitcode` and
++# fails on exit 2. A failed scheduled run emails whoever GitHub notifies for
++# this workflow, which is the alert. "Drift" here means "dev differs from
++# main", and a commit merged but not yet applied is that too: the failure
++# names the plan, and reading it says which.
++#
++# What it never does, by construction:
++#   * Change anything. `plan` only, `-lock=false` so it cannot hold the state
++#     lock infra.yml needs, no `-out` file, no apply, import, state or
++#     destroy subcommand. It grants nothing to itself; infra.yml's self-grant
++#     step is not copied here. If a grant is missing the plan 403s, and that
++#     failure is a finding too.
++#   * Plan an environment it was not told to. The environment is the literal
++#     `dev` below, not an input. test, stage and prod are `unprovisioned`, and
++#     prod is never touched from a workflow.
++#   * Run for an agent. The same guard as infra.yml refuses an agent actor,
++#     and this file is listed in scripts/agent-policy.json's
++#     `dispatch_refused_for_agents`. A scheduled run's actor is whoever last
++#     edited the cron, so an agent-authored schedule cannot start it either.
++#
++# It authenticates as qip-infra-dev, the identity infra.yml plans with. A
++# narrower plan-only identity is R12-CICD-9103's.
++name: drift
++
++on:
++  schedule:
++    # 07:23 UTC daily, off the hour so it does not queue behind every other
++    # repository's midnight and top-of-hour cron.
++    - cron: '23 7 * * *'
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++concurrency:
++  # infra.yml's group for dev, so a drift plan waits for an apply to finish
++  # rather than reading state mid-apply, and never cancels one.
++  group: infra-dev
++  cancel-in-progress: false
++
++jobs:
++  plan:
++    name: drift plan dev
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    permissions:
++      contents: read
++      id-token: write
++    env:
++      ENVIRONMENT: dev
++    steps:
++      - name: no development agent starts this workflow
++        uses: actions/checkout@v4
++        with:
++          ref: ${{ github.event.repository.default_branch }}
++          path: .agent-guard
++          sparse-checkout: scripts
++          persist-credentials: false
++      - name: refuse an agent actor
++        env:
++          ACTOR: ${{ github.actor }}
++          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
++        run: |
++          set -euo pipefail
++          for who in "$ACTOR" "$TRIGGERING_ACTOR"; do
++            node .agent-guard/scripts/agent-guard.mjs dispatch \
++              --policy .agent-guard/scripts/agent-policy.json \
++              --actor "$who" --workflow drift.yml
++          done
++          rm -rf .agent-guard
++
++      - uses: actions/checkout@v4
++
++      # The identity is derived from the committed tfvars, as infra.yml
++      # derives it and for the same reason: a repository variable set from a
++      # broken shell once carried an apt advisory into the audience.
++      - name: derive the identity from the tfvars
++        id: identity
++        run: |
++          set -euo pipefail
++          tfvars="infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
++          project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
++          number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
++          [ -n "$project" ] && [ -n "$number" ] && [ "$number" != "0" ] || {
++            echo "$tfvars carries no usable project_id/project_number; nothing to plan." >&2
++            exit 1
++          }
++          case "$project" in
++            unprovisioned|*[!a-z0-9-]*)
++              echo "$tfvars names '$project', which is unprovisioned or not a project id; nothing to plan." >&2
++              exit 1
++              ;;
++          esac
++          {
++            echo "project=$project"
++            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${ENVIRONMENT}/providers/github"
++            echo "account=qip-infra-${ENVIRONMENT}@$project.iam.gserviceaccount.com"
++          } >> "$GITHUB_OUTPUT"
++
++      - uses: google-github-actions/auth@v2
++        with:
++          workload_identity_provider: ${{ steps.identity.outputs.provider }}
++          service_account: ${{ steps.identity.outputs.account }}
++
++      - uses: hashicorp/setup-terraform@v3
++        with:
++          terraform_version: "1.9.8"
++          # The wrapper rewrites how the exit status reaches the shell, and
++          # this job's whole verdict is that status.
++          terraform_wrapper: false
++
++      - name: terraform init
++        env:
++          PROJECT: ${{ steps.identity.outputs.project }}
++        run: |
++          set -euo pipefail
++          terraform -chdir=infrastructure/terraform init -input=false \
++            -backend-config="bucket=${PROJECT}-qip-tfstate"
++
++      # 0: dev matches main. 2: it does not, and this run fails so somebody
++      # is told. Anything else: the plan itself failed, which is a failure
++      # too, because a drift check that cannot plan is not checking.
++      - name: plan, and fail on drift
++        run: |
++          set -uo pipefail
++          terraform -chdir=infrastructure/terraform plan -input=false \
++            -lock=false -detailed-exitcode \
++            -var-file="../environments/${ENVIRONMENT}/terraform.tfvars"
++          status=$?
++          case "$status" in
++            0)
++              echo "no drift: ${ENVIRONMENT} matches the configuration on this commit."
++              ;;
++            2)
++              echo "::error title=drift in ${ENVIRONMENT}::the plan above is non-empty: ${ENVIRONMENT} differs from this commit's configuration. Read it, then either apply through infra.yml or revert the change that was made by hand."
++              exit 1
++              ;;
++            *)
++              echo "::error title=drift check failed::terraform plan exited ${status}; the check did not complete, so drift is unknown."
++              exit 1
++              ;;
++          esac
+diff --git a/backend/crates/tests/qip-acceptance/tests/drift_plan.rs b/backend/crates/tests/qip-acceptance/tests/drift_plan.rs
+new file mode 100644
+--- /dev/null
++++ b/backend/crates/tests/qip-acceptance/tests/drift_plan.rs
+@@ -0,0 +1,213 @@
++//! The scheduled drift plan (R12-CICD-8032, R12-GCP-9086).
++//!
++//! `infra.yml` plans only when a person dispatches it, so nothing compared
++//! dev with main between dispatches, and a change made by hand stayed
++//! invisible until somebody read it as their own. `drift.yml` plans dev once
++//! a day and fails on a non-empty plan. These tests pin what makes it a check
++//! and not a second path to change dev: it runs on a schedule, it can only
++//! plan, it plans dev and nothing else, no agent starts it, and its verdict
++//! step turns Terraform's exit 2 into a failure. The last is driven under
++//! bash with `terraform` stubbed, because a test matching the spelling of a
++//! `case` arm pins the spelling and not what the arm does.
++
++// The workspace denies `panic_in_result_fn` for production code. In a test
++// the assertion is the deliverable.
++#![allow(clippy::panic_in_result_fn)]
++#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
++
++use qip_acceptance::read;
++use std::process::Command;
++
++const DRIFT: &str = ".github/workflows/drift.yml";
++const POLICY: &str = "scripts/agent-policy.json";
++
++/// The workflow with its comment lines removed.
++fn code() -> String {
++    read(DRIFT)
++        .lines()
++        .filter(|line| !line.trim_start().starts_with('#'))
++        .collect::<Vec<_>>()
++        .join("\n")
++}
++
++/// The `run: |` body of the step with this name, dedented to its own margin.
++fn run_body(step: &str) -> String {
++    let text = read(DRIFT);
++    let mut lines = text
++        .lines()
++        .skip_while(|line| line.trim() != format!("- name: {step}"));
++    assert!(lines.next().is_some(), "{DRIFT} has no step named `{step}`");
++    let mut lines = lines.skip_while(|line| line.trim() != "run: |");
++    let opening = lines
++        .next()
++        .unwrap_or_else(|| panic!("`{step}` has no `run: |` body"));
++    let margin = opening.len() - opening.trim_start().len() + 2;
++    lines
++        .take_while(|line| line.trim().is_empty() || line.len() - line.trim_start().len() >= margin)
++        .map(|line| line.get(margin..).unwrap_or(""))
++        .collect::<Vec<_>>()
++        .join("\n")
++}
++
++#[test]
++fn drift_is_planned_on_a_schedule_and_on_demand() {
++    let code = code();
++    let triggers: Vec<&str> = code
++        .lines()
++        .skip_while(|line| *line != "on:")
++        .skip(1)
++        .take_while(|line| line.is_empty() || line.starts_with(' '))
++        .collect();
++    assert!(
++        triggers.iter().any(|line| line.trim() == "schedule:"),
++        "{DRIFT} has no schedule, so it compares dev with main only when someone remembers to"
++    );
++    assert!(
++        triggers
++            .iter()
++            .any(|line| line.trim().starts_with("- cron: '")),
++        "{DRIFT}'s schedule names no cron"
++    );
++    // A push or pull_request trigger would plan on every merge, with the
++    // infra identity, for code nobody asked to compare.
++    for refused in [
++        "push:",
++        "pull_request:",
++        "pull_request_target:",
++        "workflow_run:",
++    ] {
++        assert!(
++            !triggers.iter().any(|line| line.trim() == refused),
++            "{DRIFT} runs on `{refused}`; a drift check runs on a clock, not on a change"
++        );
++    }
++}
++
++#[test]
++fn the_drift_workflow_can_only_plan() {
++    let code = code();
++    // Premise: it does plan, with the exit code that distinguishes drift.
++    assert!(
++        code.contains("plan -input=false") && code.contains("-detailed-exitcode"),
++        "{DRIFT} does not run `terraform plan -detailed-exitcode`; it cannot tell a clean plan \
++         from a drifted one"
++    );
++    assert!(
++        code.contains("-lock=false"),
++        "{DRIFT} plans with the state lock, so a daily read could hold the lock an apply needs"
++    );
++    for verb in [
++        " apply",
++        " destroy",
++        " import",
++        " state ",
++        " taint",
++        " untaint",
++        "force-unlock",
++        " -out",
++        "gcloud ",
++        "kubectl ",
++    ] {
++        assert!(
++            !code
++                .lines()
++                .filter(|line| line.contains("terraform") || line.trim_start().starts_with('-'))
++                .any(|line| line.contains(verb)),
++            "{DRIFT} contains `{}`; a drift check reads and changes nothing",
++            verb.trim()
++        );
++    }
++    // No self-grant: infra.yml's `add-iam-policy-binding` loop is a write.
++    assert!(
++        !code.contains("add-iam-policy-binding"),
++        "{DRIFT} grants itself a role; a drift check must not change IAM to see IAM"
++    );
++}
++
++#[test]
++fn the_drift_workflow_plans_dev_and_nothing_else() {
++    let code = code();
++    assert!(
++        code.lines().any(|line| line.trim() == "ENVIRONMENT: dev"),
++        "{DRIFT} does not fix its environment to the literal `dev`"
++    );
++    // The environment is never an input, so no dispatch can point it at prod.
++    for open in ["inputs.", "workflow_dispatch:\n    inputs"] {
++        assert!(
++            !code.contains(open),
++            "{DRIFT} reads `{open}`; the environment it plans must not be chosen at dispatch"
++        );
++    }
++    assert!(
++        !code.contains("prod"),
++        "{DRIFT} names prod; prod is never touched from a workflow"
++    );
++    // It queues behind infra.yml's dev operations rather than racing them.
++    assert!(
++        code.lines().any(|line| line.trim() == "group: infra-dev")
++            && code
++                .lines()
++                .any(|line| line.trim() == "cancel-in-progress: false"),
++        "{DRIFT} does not share infra.yml's dev concurrency group, so it can plan mid-apply"
++    );
++}
++
++#[test]
++fn no_agent_starts_the_drift_workflow() {
++    let code = code();
++    assert!(
++        code.contains("agent-guard.mjs dispatch") && code.contains("--workflow drift.yml"),
++        "{DRIFT} does not run the agent guard for itself"
++    );
++    let policy: serde_json::Value = serde_json::from_str(&read(POLICY)).expect("policy is JSON");
++    let refused: Vec<&str> = policy["dispatch_refused_for_agents"]["workflows"]
++        .as_array()
++        .expect("dispatch_refused_for_agents.workflows is a list")
++        .iter()
++        .filter_map(serde_json::Value::as_str)
++        .collect();
++    // Premise: the list is the one infra.yml relies on.
++    assert!(
++        refused.contains(&"infra.yml"),
++        "premise: {POLICY} no longer lists infra.yml"
++    );
++    assert!(
++        refused.contains(&"drift.yml"),
++        "{POLICY} does not list drift.yml, so its guard step admits an agent: the guard refuses \
++         only the workflows the list names"
++    );
++}
++
++/// The verdict step's exit status when `terraform plan` exits `status`.
++fn verdict_for(status: i32) -> i32 {
++    let body = run_body("plan, and fail on drift");
++    let script = format!("terraform() {{ return {status}; }}\nENVIRONMENT=dev\n{body}\n");
++    Command::new("bash")
++        .arg("-c")
++        .arg(&script)
++        .output()
++        .expect("bash runs")
++        .status
++        .code()
++        .expect("an exit code")
++}
++
++#[test]
++fn a_non_empty_plan_fails_the_run_and_a_clean_one_passes() {
++    // Premise: the body was found and calls terraform at all.
++    assert!(
++        run_body("plan, and fail on drift").contains("terraform -chdir"),
++        "the verdict step does not run terraform"
++    );
++    assert_eq!(verdict_for(0), 0, "a clean plan failed the drift check");
++    assert_ne!(
++        verdict_for(2),
++        0,
++        "terraform's exit 2 (the plan has changes) passed the drift check, so drift alerts nobody"
++    );
++    assert_ne!(
++        verdict_for(1),
++        0,
++        "a plan that errored passed the drift check, so a check that cannot plan reads as clean"
++    );
++}

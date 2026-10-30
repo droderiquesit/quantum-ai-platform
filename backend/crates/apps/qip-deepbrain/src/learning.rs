@@ -1143,7 +1143,15 @@ impl LearningDesk {
                 };
                 if record.reference == reference {
                     card.artifact_digest = Some(record.artifact_digest.clone());
-                    if first_promotion && card.rollback_parent.is_none() {
+                    // The parent the registry chose live, when the record
+                    // carries it: the most recently deployed of the
+                    // displaced, which differs from the first of them when a
+                    // promotion displaces two production cards. A record
+                    // written before the field existed falls back to the
+                    // first displaced reference, as before.
+                    if let (Some(parent), false) = (&record.rollback_parent, rollback) {
+                        card.rollback_parent = Some(parent.clone());
+                    } else if first_promotion && card.rollback_parent.is_none() {
                         card.rollback_parent = record.displaced.first().cloned();
                     }
                     first_promotion = false;
@@ -3023,6 +3031,114 @@ mod tests {
     /// so the model the log says is in production is not read as retired.
     /// Mutation: keep `retired_at` when the log forces a card to Production —
     /// the card reads as retired and the assertion fails.
+    /// R12-MODEL-9003: a crash just after a promotion that displaced two
+    /// production cards restores the rollback parent the live registry
+    /// chose — the more recently deployed of the two — not the first
+    /// displaced reference. The card on the log is the one written before the
+    /// move, with no parent, so the restored parent can only come from the
+    /// record. Mutation: replay `displaced.first()` in `restore_registry`
+    /// regardless of the record's parent — the restored card names v1.
+    #[test]
+    fn a_crash_after_a_promotion_displacing_two_production_cards_restores_the_parent_chosen_live()
+    -> Result<()> {
+        let directory = std::env::temp_dir().join(format!(
+            "qip-deepbrain-two-parents-{}-{}",
+            std::process::id(),
+            at().as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let file_platform = || -> Result<Platform> {
+            let config = qip_kernel::PlatformConfig::default().with_event_log_file(&path);
+            let (context, _clock) = qip_core::Context::deterministic(at(), config.seed);
+            Platform::new_serving(
+                config,
+                context,
+                qip_observability::Telemetry::silent(),
+                qip_financial::universe::Universe::new(),
+                qip_risk::limits::LimitSet::conservative_default(),
+                Box::new(InTreeProvider),
+            )
+        };
+        let (v1, v2, v3) = {
+            let mut platform = file_platform()?;
+            platform.name_model_desk("two-parents/model-desk")?;
+            let mut desk = learning_desk();
+            let bars = super::tests_support::learnable(400);
+            let fit = |desk: &mut LearningDesk, round: u64| -> Result<(String, ModelArtifact)> {
+                let reference = desk
+                    .maybe_learn(&subject(), &bars, REGIME, round, at())?
+                    .ok_or_else(|| Error::not_found("a learning round"))?
+                    .registration
+                    .ok_or_else(|| Error::not_found("a registration"))?
+                    .reference;
+                let artifact = InTreeProvider::pack(
+                    &desk
+                        .candidate
+                        .as_ref()
+                        .ok_or_else(|| Error::not_found("a candidate"))?
+                        .teacher,
+                )?;
+                completed_shadow(&mut desk.registry, &reference)?;
+                Ok((reference, artifact))
+            };
+            let (v1, a1) = fit(&mut desk, 1)?;
+            let (v2, a2) = fit(&mut desk, 2)?;
+            let (v3, a3) = fit(&mut desk, 3)?;
+            let minute = |n| at().saturating_add(qip_core::Duration::from_mins(n));
+            platform.promote_model(&mut desk.registry, &a1, None, &[], minute(1))?;
+            platform.promote_model(&mut desk.registry, &a2, None, &[], minute(2))?;
+            // Older first, so the first displaced reference is not the
+            // registry's choice.
+            platform.promote_model(
+                &mut desk.registry,
+                &a3,
+                None,
+                &[v1.clone(), v2.clone()],
+                minute(3),
+            )?;
+            assert_eq!(
+                desk.registry
+                    .get(&v3)
+                    .and_then(|card| card.rollback_parent.as_deref()),
+                Some(v2.as_str()),
+                "premise: live, the parent is the more recently deployed card"
+            );
+            (v1, v2, v3)
+        };
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| Error::io(format!("read the log: {e}")))?;
+        let lines: Vec<&str> = text.lines().collect();
+        let record = lines
+            .iter()
+            .rposition(|line| line.contains(qip_kernel::model_serving::MODEL_PROMOTION_ORIGIN))
+            .ok_or_else(|| Error::not_found("the third promotion's record"))?;
+        std::fs::write(&path, lines[..=record].join("\n") + "\n")
+            .map_err(|e| Error::io(format!("truncate the log: {e}")))?;
+
+        let platform = file_platform()?;
+        assert!(
+            platform
+                .registered_model_cards()
+                .any(|card| card.reference() == v3 && card.rollback_parent.is_none()),
+            "premise: v3's card on the log is the one written before the move"
+        );
+        let mut restarted = learning_desk();
+        restarted.restore_registry(&platform);
+        let restored = restarted
+            .registry()
+            .get(&v3)
+            .ok_or_else(|| Error::not_found("v3"))?;
+        assert_eq!(
+            restored.rollback_parent.as_deref(),
+            Some(v2.as_str()),
+            "restored {v3} names {:?} as its parent; live it named {v2}, not {v1}",
+            restored.rollback_parent
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
+    }
+
     #[test]
     fn a_crash_just_after_a_rollback_restores_the_reactivated_model_not_as_retired() -> Result<()> {
         let directory = std::env::temp_dir().join(format!(

@@ -405,6 +405,11 @@ pub struct SimulatedOutcome {
     fill: SimulatedFill,
     pnl: Simulated<Decimal>,
     costs: Simulated<Decimal>,
+    /// The entry leg's share of `costs`: what the plan's cost model charged
+    /// to get in, before any exit. A record written before this field
+    /// existed reads zero, which is what an outcome with no entry carries.
+    #[serde(default)]
+    entry_costs: Simulated<Decimal>,
     entry_at: Timestamp,
     exit_at: Timestamp,
     fixed_as_of: Timestamp,
@@ -434,6 +439,13 @@ impl SimulatedOutcome {
     /// What it would have cost.
     pub const fn simulated_costs(&self) -> Simulated<Decimal> {
         self.costs
+    }
+
+    /// What the entry alone would have cost, the part of
+    /// [`Self::simulated_costs`] a venue's fill can be held against before
+    /// the position has been exited.
+    pub const fn simulated_entry_costs(&self) -> Simulated<Decimal> {
+        self.entry_costs
     }
 
     /// The price the alternative would have entered at, where it traded.
@@ -702,6 +714,7 @@ impl CounterfactualEngine {
                 fill: SimulatedFill::NotTraded,
                 pnl: Simulated::ZERO,
                 costs: Simulated::ZERO,
+                entry_costs: Simulated::ZERO,
                 entry_at,
                 exit_at,
                 fixed_as_of: plan.fixed_as_of,
@@ -747,6 +760,7 @@ impl CounterfactualEngine {
                     },
                     pnl: Simulated::ZERO,
                     costs: Simulated::ZERO,
+                    entry_costs: Simulated::ZERO,
                     entry_at,
                     exit_at,
                     fixed_as_of: plan.fixed_as_of,
@@ -770,6 +784,7 @@ impl CounterfactualEngine {
                     },
                     pnl: Simulated::ZERO,
                     costs: Simulated::ZERO,
+                    entry_costs: Simulated::ZERO,
                     entry_at,
                     exit_at,
                     fixed_as_of: plan.fixed_as_of,
@@ -792,6 +807,7 @@ impl CounterfactualEngine {
                     },
                     pnl: Simulated::ZERO,
                     costs: Simulated::ZERO,
+                    entry_costs: Simulated::ZERO,
                     entry_at,
                     exit_at,
                     fixed_as_of: plan.fixed_as_of,
@@ -806,6 +822,7 @@ impl CounterfactualEngine {
             .and_then(|value| value.checked_mul(direction))
             .ok_or_else(|| Error::numeric("the counterfactual's gross profit overflowed"))?;
 
+        let entry_costs = to_decimal(entry_cost.total())?;
         let mut costs = to_decimal(entry_cost.total() + exit_cost.total())?;
         let mut hedge_gross = Decimal::ZERO;
         if let (Some((instrument, ratio)), Some(liquidity)) = (&plan.hedge, plan.hedge_liquidity) {
@@ -851,6 +868,7 @@ impl CounterfactualEngine {
             },
             pnl: Simulated::of(gross + hedge_gross - costs),
             costs: Simulated::of(costs),
+            entry_costs: Simulated::of(entry_costs),
             entry_at,
             exit_at,
             fixed_as_of: plan.fixed_as_of,

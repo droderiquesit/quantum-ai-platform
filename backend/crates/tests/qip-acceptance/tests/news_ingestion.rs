@@ -19,6 +19,12 @@ fn test_config(endpoint: &str) -> NarrativeFeedConfig {
         window: Duration::from_secs(3600),
         max_records: 100,
         max_document_bytes: 8192,
+        entitlement: Some(qip_contracts::governance::Entitlement::Granted {
+            dataset: "test-news-feed".into(),
+            usage: qip_contracts::governance::Usage::Research,
+            expires_at: qip_core::Timestamp::from_millis(1_893_456_000_000),
+        }),
+        freshness: Duration::from_hours(6),
         http: Default::default(),
     }
 }

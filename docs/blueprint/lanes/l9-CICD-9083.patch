@@ -1,0 +1,107 @@
+diff --git a/scripts/agent-guard.mjs b/scripts/agent-guard.mjs
+index e37ca67c..d0d34535 100644
+--- a/scripts/agent-guard.mjs
++++ b/scripts/agent-guard.mjs
+@@ -342,6 +342,38 @@ export function judgeChange({ policy, headRef, headSha, files, commits, reviews,
+     if (outside.length > 0) refusals.push(`the ${id} lane does not own: ${outside.join(", ")}`);
+   }
+ 
++  // 1c. A lane nobody declares (CICD-9083). 1b holds a commit that names its
++  //     lane, and so a commit naming none was held to no lane at all: the
++  //     cheapest way past a lane boundary was to leave the trailer off.
++  //     Once the policy names a `trailer_required_after` instant, every agent
++  //     commit committed at or after it must carry `Agent-Lane`. Earlier
++  //     commits are not judged, so history from before the switch still
++  //     passes. A commit whose committer date cannot be read is judged as
++  //     after the instant, and an instant that cannot be parsed refuses
++  //     everything, because a gate whose switch cannot be read is not off.
++  //     Merge commits are exempt, as in the unmarked rule above: GitHub's
++  //     merge button writes them.
++  const requiredAfter = policy.lane_manifest?.trailer_required_after;
++  if (requiredAfter !== undefined && requiredAfter !== null) {
++    const cutoff = Date.parse(requiredAfter);
++    if (Number.isNaN(cutoff)) {
++      refusals.push(`scripts/agent-policy.json's lane_manifest.trailer_required_after is ${JSON.stringify(requiredAfter)}, which is not a date`);
++    } else {
++      const committedAt = (c) => Date.parse((c?.commit ?? c)?.committer?.date ?? c?.committer_date ?? "");
++      const isMerge = (c) => (c?.parents?.length ?? 0) >= 2;
++      const unlaned = agentCommits.filter((c) => {
++        if (isMerge(c) || laneOf(c)) return false;
++        const at = committedAt(c);
++        return Number.isNaN(at) || at >= cutoff;
++      });
++      if (unlaned.length > 0) {
++        refusals.push(
++          `${unlaned.length} agent commit(s) committed at or after ${requiredAfter} carry no Agent-Lane trailer, so no lane's territory holds them`,
++        );
++      }
++    }
++  }
++
+   // 2. Protected paths need a person's approval of the head commit. A
+   //    signature does not stand in for it here: an agent's commit signed by
+   //    its user's key is still an agent's commit. ADR 0124 §1 exempts the
+diff --git a/scripts/agent-guard.test.mjs b/scripts/agent-guard.test.mjs
+index 0427e844..2fe7c04e 100644
+--- a/scripts/agent-guard.test.mjs
++++ b/scripts/agent-guard.test.mjs
+@@ -760,3 +760,43 @@ test("a reviewer role commit must name a different model from the coder role com
+   assert.equal(unnamed.length, 1);
+   assert.match(unnamed[0], /carry no Agent-Model trailer/);
+ });
++
++// CICD-9083. An agent commit with no Agent-Lane trailer was held to no lane.
++// Mutation: drop the 1c check in judgeChange (an unlaned commit after the
++// instant is admitted), or compare with `>` against the commit date while a
++// commit at exactly the instant is refused (the boundary moves), or treat an
++// unreadable instant as off.
++test("after the policy's trailer instant, an agent commit with no lane trailer is refused", () => {
++  const at = (date, lane) => ({
++    commit: {
++      author: { name: "Claude", email: "noreply@anthropic.com" },
++      committer: { name: "Claude", email: "noreply@anthropic.com", date },
++      message: `Do a thing\n\n${lane ? `Agent-Lane: ${lane}\n` : ""}Co-Authored-By: Claude <noreply@anthropic.com>\n`,
++    },
++  });
++  const policy = (instant) => ({ ...POLICY, lane_manifest: { ...POLICY.lane_manifest, trailer_required_after: instant } });
++  const judge = (instant, commits) =>
++    judgeChange({
++      policy: policy(instant), permissions: PERMS, lanes: LANES, headRef: "x", headSha: HEAD,
++      files: ["backend/crates/services/qip-risk-engine/src/pretrade.rs"], commits, reviews: [],
++    }).refusals;
++  // Premise: the committed policy leaves the switch off, and off judges nothing.
++  assert.equal(POLICY.lane_manifest.trailer_required_after, null);
++  assert.deepEqual(judge(null, [at("2026-11-01T00:00:00Z")]), []);
++
++  const instant = "2026-11-01T00:00:00Z";
++  // Before the instant: history passes.
++  assert.deepEqual(judge(instant, [at("2026-10-31T23:59:59Z")]), []);
++  // At and after it, with no trailer: refused.
++  for (const date of [instant, "2026-11-02T00:00:00Z", undefined]) {
++    const refusals = judge(instant, [at(date)]);
++    assert.equal(refusals.length, 1, `a commit dated ${date} with no lane trailer was admitted`);
++    assert.match(refusals[0], /carry no Agent-Lane trailer/);
++  }
++  // After it, carrying a lane the manifest defines and owns the file: admitted.
++  assert.deepEqual(judge(instant, [at("2026-11-02T00:00:00Z", "r3-capital-code")]), []);
++  // A merge commit is the merge button's, not a lane's.
++  assert.deepEqual(judge(instant, [{ ...at("2026-11-02T00:00:00Z"), parents: [{}, {}] }]), []);
++  // A switch nobody can read is not off.
++  assert.match(judge("soon", [at("2026-10-01T00:00:00Z", "r3-capital-code")])[0], /is not a date/);
++});
+diff --git a/scripts/agent-policy.json b/scripts/agent-policy.json
+index b0208362..b866dd6a 100644
+--- a/scripts/agent-policy.json
++++ b/scripts/agent-policy.json
+@@ -75,8 +75,9 @@
+   },
+ 
+   "lane_manifest": {
+-    "comment": "The current round's lane plan, a path relative to the repository root. An agent commit carrying `Agent-Lane: <id>` is held to that lane's `owns` by agent-guard.mjs, on the pull request and at deploy; a trailer naming no lane in this file is refused. Point it at the next round's manifest in the same protected change that commits it.",
+-    "path": "scripts/lanes/round-3.json"
++    "comment": "The current round's lane plan, a path relative to the repository root. An agent commit carrying `Agent-Lane: <id>` is held to that lane's `owns` by agent-guard.mjs, on the pull request and at deploy; a trailer naming no lane in this file is refused. Point it at the next round's manifest in the same protected change that commits it. `trailer_required_after` (CICD-9083): when set to an ISO 8601 instant, every agent commit committed at or after it must carry an Agent-Lane trailer naming a lane in the manifest above; earlier commits are not judged. Unset (null) on purpose when this was written: round-3.json names no lane of the round now running, so turning it on before that round's manifest is committed would refuse every lane's commits. Set it in the same protected change that points `path` at the running round's manifest.",
++    "path": "scripts/lanes/round-3.json",
++    "trailer_required_after": null
+   },
+ 
+   "lane_limits": {

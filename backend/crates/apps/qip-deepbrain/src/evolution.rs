@@ -2308,6 +2308,165 @@ mod tests {
         Ok(())
     }
 
+    /// R12-REASON-3003. The Cognitive Core's research campaign, as the
+    /// shipped synthetic arm runs it (`main.rs` builds this engine through
+    /// `EvolutionEngine::over_synthetic` and calls `maybe_learn` on the node
+    /// loop): a learning round fetches the window into the campaign's TTL
+    /// cache, verifies it on the ledger, backtests the fit over it, and
+    /// emits results and a manifest — and the cache does not survive the
+    /// campaign. The seam is `campaign::assemble`, the one caller of
+    /// `FetchCampaign` outside tests.
+    ///
+    /// Three facts, each one a way this has failed or could: the manifest is
+    /// on the log (a campaign closed in memory and never journaled is a fit
+    /// nobody can be shown the inputs of); the manifest carries the fetch
+    /// and the sketched result, not only an id; and the journaled record
+    /// holds none of the window's bytes — the cache was deleted at close and
+    /// what persists is the manifest. The requirement names its own
+    /// mutation: removing the manifest emission. Mutated by replacing
+    /// `platform.journal_campaign(closed, now)?` in `campaign::assemble`
+    /// with `true` — the round still fits, the log holds no record, and
+    /// this fails on the count; restored byte for byte.
+    #[test]
+    fn a_learning_round_emits_a_campaign_manifest_and_deletes_its_ttl_cache() -> Result<()> {
+        use qip_events::Topic;
+        use qip_kernel::references::ResearchCampaignClosed;
+        use qip_streaming::envelope::StreamEnvelope;
+
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        for _ in 0..((engine.config.minimum_bars as i64 + 30) * 6) {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        // Premise: no campaign has closed before the round runs.
+        assert!(
+            platform
+                .event_log()
+                .by_topic(Topic::ResearchCampaignClosed)
+                .is_empty(),
+            "a campaign closed before any learning round ran"
+        );
+
+        let mut round = None;
+        for cycle in 1..=16u64 {
+            if let Some(produced) = engine.maybe_learn(&mut platform, cycle, now)? {
+                round = Some(produced);
+                break;
+            }
+        }
+        let round = round.ok_or_else(|| {
+            Error::not_found("a learning round within sixteen cycles of the default cadence")
+        })?;
+        let summary = round
+            .campaign
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the campaign the round was assembled through"))?;
+        assert!(
+            summary.bars >= engine.learning.minimum_bars(),
+            "{}",
+            summary.bars
+        );
+
+        // The manifest is emitted: one closed record on the log, under the
+        // campaign's own id, carrying the fetch and the result.
+        let frames = platform.event_log().by_topic(Topic::ResearchCampaignClosed);
+        assert_eq!(
+            frames.len(),
+            1,
+            "one campaign closed, one manifest journaled"
+        );
+        let closed: ResearchCampaignClosed = StreamEnvelope::from_frame(frames[0])?
+            .decode::<ResearchCampaignClosed>()?
+            .body;
+        assert_eq!(closed.campaign_id, summary.id);
+        assert_eq!(closed.subject, round.subject);
+        let entries = closed.manifest.entries();
+        assert_eq!(entries.len(), 1, "the one fetch the campaign made");
+        let history = engine
+            .history
+            .get(round.subject.as_str())
+            .ok_or_else(|| Error::not_found("the subject's history"))?;
+        let interval = history
+            .first()
+            .ok_or_else(|| Error::not_found("a bar in the subject's history"))?
+            .interval;
+        assert_eq!(
+            entries[0].reference().locator(),
+            crate::campaign::locator_for(
+                &summary.source_id,
+                &ObjectId::from_string(&round.subject),
+                interval
+            ),
+            "the manifest entry names the extent the round fitted on"
+        );
+        assert_eq!(
+            closed.manifest.statistics().len(),
+            1,
+            "the campaign's result — the sketched bar count — rides the manifest"
+        );
+        assert_eq!(
+            closed.manifest.statistics()[0].estimate(),
+            summary.bars as u64
+        );
+
+        // The backtest: the fit was scored out of sample on the held-out tail
+        // of the window read back from the cache, against the classical
+        // baseline, and that result is on the card the round registered —
+        // the research result the campaign exists to produce. A round that
+        // fetched, verified and journaled but fitted nothing would pass the
+        // manifest assertions above and fail here.
+        let registration = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the model the round fitted on the window"))?;
+        let card = engine
+            .learning
+            .registry()
+            .get(&registration.reference)
+            .ok_or_else(|| Error::not_found("the registered card"))?;
+        assert_eq!(
+            card.campaign_id.as_deref(),
+            Some(summary.id.as_str()),
+            "the fit was not scored on this campaign's window"
+        );
+        let evaluation = card
+            .evaluations
+            .last()
+            .ok_or_else(|| Error::not_found("the holdout evaluation on the card"))?;
+        let holdout_rows = evaluation
+            .metrics
+            .get("holdout_observations")
+            .copied()
+            .ok_or_else(|| Error::not_found("holdout_observations on the evaluation"))?;
+        assert!(
+            holdout_rows >= 1.0 && evaluation.metrics.contains_key("holdout_rmse"),
+            "the out-of-sample result is missing from the evaluation: {:?}",
+            evaluation.metrics
+        );
+        assert_eq!(evaluation.passed, registration.passed);
+
+        // The TTL cache is deleted: the record that persists is the manifest,
+        // and it holds none of the window the cache held. A record carrying
+        // the extract would be a second history beside the event log.
+        let persisted = serde_json::to_value(&closed)?;
+        assert!(
+            persisted.get("cache").is_none() && persisted["manifest"].get("cache").is_none(),
+            "the closed record must not carry the campaign's cache: {persisted}"
+        );
+        let persisted_bytes = serde_json::to_vec(&closed)?;
+        let window_bytes = serde_json::to_vec(history)?;
+        assert!(
+            persisted_bytes.len() < window_bytes.len() / 4,
+            "the manifest ({} bytes) is the size of the window it describes ({} bytes); the \
+             cache survived the campaign",
+            persisted_bytes.len(),
+            window_bytes.len()
+        );
+        Ok(())
+    }
+
     /// R12-MODEL-9003. Every card a round registers — promoted or not, with
     /// its evaluations — is on the log, and a restarted deep brain, whose
     /// registry starts empty, gets it back from the log before its first

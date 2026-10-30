@@ -374,6 +374,69 @@ fn refusals_under<'a>(report: &'a WorkReport, gate: &str) -> Vec<&'a str> {
 }
 
 #[test]
+fn a_committed_cycle_journals_an_opportunity_token_whose_legs_equal_the_legs_sent() -> Result<()> {
+    // R12-CONTRACT-7068, ADR 0154 decision 7: the token is the origin desk's
+    // own record of the opportunity it acted on. No code constructed one, so
+    // the contract described a record nothing wrote. It is built from what
+    // went out, not from the plan: a leg is the venue, instrument, side and
+    // quantity the venue was asked for.
+    let (mut cell, _) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    let mut gateway = RecordingGateway::default();
+    cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        gateway.placed.len(),
+        3,
+        "premise: the triangle's three legs went out"
+    );
+    let token = cell
+        .journal()
+        .entries()
+        .iter()
+        .find_map(|entry| match &entry.decision {
+            qip_edge::journal::Decision::CycleCommitted { token, .. } => token.clone(),
+            _ => None,
+        })
+        .expect("the committed cycle journaled no opportunity token");
+    let validated: &qip_contracts::opportunity_token::OpportunityToken = &token;
+    let token: &qip_contracts::opportunity_token::OpportunityTokenFields = validated;
+    let sent: Vec<(String, BookSide, Decimal)> = gateway
+        .placed
+        .iter()
+        .map(|(_, object, side, quantity, _)| (object.as_str().to_string(), *side, *quantity))
+        .collect();
+    let described: Vec<(String, BookSide, Decimal)> = token
+        .legs
+        .iter()
+        .map(|leg| {
+            // The book a leg takes from: a buy lifts the ask.
+            let side = match leg.side {
+                qip_contracts::opportunity_token::LegSide::Buy => BookSide::Ask,
+                qip_contracts::opportunity_token::LegSide::Sell => BookSide::Bid,
+            };
+            (leg.instrument.clone(), side, leg.quantity)
+        })
+        .collect();
+    assert_eq!(
+        described, sent,
+        "the token's legs are not the legs the venue was sent"
+    );
+    assert!(token.edge_bp > 0, "the token states no edge: {token:?}");
+    assert!(token.expires_at > token.issued_at, "{token:?}");
+    // The cell offsets a broken cycle at the touch and enforces no loss
+    // bound, so the token states none rather than one nothing keeps.
+    assert_eq!(
+        token.unwind,
+        qip_contracts::opportunity_token::UnwindPolicy::FlattenAtMarket
+    );
+    // The round trip the contract's unit clause names, on the token the cell
+    // actually wrote.
+    let back: qip_contracts::opportunity_token::OpportunityToken =
+        serde_json::from_str(&serde_json::to_string(validated)?)?;
+    assert_eq!(&back, validated);
+    Ok(())
+}
+
+#[test]
 fn a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass() -> Result<()> {
     // The failure this closes: a scanner constructed by no composition root
     // and a cell that consulted no graph, so every cycle in the tree was
@@ -446,6 +509,7 @@ fn a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass() -> Re
                 cycle_id,
                 orders,
                 net,
+                ..
             } => Some((cycle_id.clone(), orders.clone(), net.clone())),
             _ => None,
         })

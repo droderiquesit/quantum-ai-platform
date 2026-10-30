@@ -75,9 +75,11 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs learning::tests::a_crash_just_after_a_rollback_restores_the_reactivated_model_not_as_retired",
       "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_drift_reading_that_crosses_the_threshold_is_journaled",
       "backend/crates/apps/qip-deepbrain/src/learning.rs LearningDesk::restore_registry seventh pass: every promotion record is replayed onto the restored cards (artifact_digest, rollback_parent on first promotion, assigned/unassigned alias moves de-duplicated and trimmed to ALIAS_MOVES_RETAINED, deployed_at from the record when the log forces Production)",
-      "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_version_taken_out_of_production_returns_only_through_a_rollback (promote_model_from refuses a reference the log took out of production; a version still in production is still re-published)"
+      "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_version_taken_out_of_production_returns_only_through_a_rollback (promote_model_from refuses a reference the log took out of production; a version still in production is still re-published)",
+      "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_promotion_displacing_two_production_cards_records_the_parent_the_registry_chose",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs learning::tests::a_crash_after_a_promotion_displacing_two_production_cards_restores_the_parent_chosen_live"
     ],
-    "gap": "2026-10-25 (lane L2-INTEL): eighth skeptic REFUTED 5cb8b620, low severity, off the shipped path. Through the public API a displaced version could be promoted again: live it stood in production with its retirement on the card, and a restarted desk replayed the record as a rollback, giving a different alias wording, rollback_parent and retired_at. Fixed in the ninth pass: promote_model_from refuses a reference the log has taken out of production (only rollback_model returns it), so a re-promoted reference in the log is a rollback by construction. Remaining known limits, all unreachable on the shipped path, where the desk promotes fresh versions and displaces only production cards: (1) a first promotion displacing two or more production cards on one subject: the replay takes rollback_parent from the first displaced reference where the live path takes the most recently deployed; (2) re-publishing a version still in production with a non-empty displaced list would be replayed as a rollback; (3) a displaced card that was never production is retired live but restored in Validation. A drift reading that stays on one side of the threshold is re-measured, not journaled; the registry is unbounded. Ninth skeptic REFUTED 57a718b4 on bar part 1 only: no test guarded the displaced and reactivated cards' retired_at, deployed_at or rollback_parent (three replay lines mutable with every test green); assertions added at both crash cuts in the tenth pass. Promotion awaits a tenth skeptic.",
+    "gap": "2026-10-25 (lane L2-INTEL): the multi-displacement limit is closed. ModelPromotion carries the rollback_parent the registry chose, and restore_registry takes it from the record. Remaining known limits: (1) re-publishing a version still in production with a non-empty displaced list would be replayed as a rollback (unreachable on the shipped path, where the desk promotes fresh versions); (2) a displaced card that was never production is retired live but restored in Validation (unreachable: the desk displaces only production cards); (3) the registry is unbounded. A refusal at capacity would eventually stop a long-running deep brain from learning, so the honest bound is eviction of retired, non-parent cards with restore_registry applying the same cap, which is not built. A drift reading that stays on one side of the threshold is re-measured, not journaled. Awaiting a skeptic.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -88,7 +90,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-ai --test model_infrastructure && cargo +1.94.1 test -p qip-deepbrain --lib -- a_restarted a_crash_around && cargo +1.94.1 test -p qip-kernel --test promotion_durability",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap narrowed. Promoted versions with evaluation evidence, mover and displacement now proven durable; mutation: journal the promotion with evidence None -> 'came back without the evaluation it was promoted on'; restored and passing. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the journal_model_registry call in maybe_learn deleted; the restore_registry call deleted; the fit-count continuation in restore_registry disabled (a restarted fit reused a restored version and replaced its card). qip-kernel, qip-deepbrain and qip-ai: 88 test binaries ok, none failed. 2026-10-24 L2-INTEL second pass: mutations fired, each restored by copy and cmp: restoring production cards (stage condition dropped) fails a_restarted_desk_restores_its_unpromoted_cards_and_still_promotes_a_better_candidate; whole-card comparison instead of same_but_drift fails a_card_is_journaled_when_registered_and_on_a_kept_change_but_not_on_drift_alone. qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 test binaries ok. 2026-10-24 L2-INTEL third pass: mutations fired, each restored by copy and cmp: production cards left out of restore_registry (the equal candidate is promoted unopposed); the promoted set skipped in restore_artifacts (the better candidate is refused for want of an artifact). Second skeptic (security-engineer) REFUTED 9c61a602 for the unopposed promotion; its reproduction is the equal-candidate half of the new test. 2026-10-24 L2-INTEL fourth pass: mutations fired, each restored by copy and cmp: stage reconciliation disabled (v1 restored Production); orphan check disabled (candidate promoted unopposed); promoted-version scan disabled (next fit reuses v2's version); the kernel's journal call in promote_model_from removed (both restart tests fail). qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 binaries ok. 2026-10-24 L2-INTEL fifth pass: mutations fired, each restored by copy and cmp: cards journaled after the record in promote_model_from (the cut after the record loses v2's card); stage reconciliation off (v2 restored in production beside v1); the artifact store write disabled (the restarted desk cannot rescore its incumbent). qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 binaries ok. 2026-10-24 L2-INTEL sixth pass: mutations fired, each restored by copy and cmp: the moved cards journaled before the record (the cut-before-record test sees v2 read as promoted); journal_moved_cards removed (both restart tests fail); retired_at kept when the log forces Production (the rollback-crash test reads the reactivated model as retired); drift compared without the threshold side (the crossing is not journaled). Gate: clippy -p qip-kernel -p qip-deepbrain clean; cargo test -p qip-kernel -p qip-deepbrain -p qip-learning-engine -p qip-training -p qip-fastbrain -p qip-api -p qip-acceptance --no-fail-fast: 169 binaries ok, qip-acceptance documentation failing only the_blueprint_views_are_what_their_sources_render_to (the matrix is re-rendered at merge) and, before ADR 0170 gained its cost section, every_decision_record_states_what_it_costs. 2026-10-24 L2-INTEL seventh pass: mutations fired and restored by cmp: dropping the artifact_digest replay fails a_crash_around at the digest assertion; dropping the displaced (unassigned) alias move fails it at the displacement assertion; dropping the assigned move fails it at the assigned assertion. qip-deepbrain lib 212 passed 0 failed. 2026-10-25 L2-INTEL eighth pass: mutations fired and restored by cmp: wording every displaced move bare fails a_crash_around (left: bare evaluation, right: 'displaced by ...'); treating a rollback record as a promotion fails a_crash_just_after_a_rollback (left: 'displaced by ...', right: the bare rollback reading). 2026-10-25 L2-INTEL ninth pass: mutation: delete the out-of-production refusal in promote_model_from; a_version_taken_out_of_production_returns_only_through_a_rollback panics at promotion_durability.rs:386 ('went back into production without a rollback'); restored by cp+cmp; passes. 2026-10-25 L2-INTEL tenth pass: the ninth skeptic's three mutations each fire and are restored by cp+cmp. retired_at not filled from the log: both crash tests fail (left None, right the record instant). deployed_at not taken from the record: both fail (a_crash_around left None; rollback test left t1, right t_rb). rollback_parent set to None: a_crash_around fails (left None, right v1)."
+    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap narrowed. Promoted versions with evaluation evidence, mover and displacement now proven durable; mutation: journal the promotion with evidence None -> 'came back without the evaluation it was promoted on'; restored and passing. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the journal_model_registry call in maybe_learn deleted; the restore_registry call deleted; the fit-count continuation in restore_registry disabled (a restarted fit reused a restored version and replaced its card). qip-kernel, qip-deepbrain and qip-ai: 88 test binaries ok, none failed. 2026-10-24 L2-INTEL second pass: mutations fired, each restored by copy and cmp: restoring production cards (stage condition dropped) fails a_restarted_desk_restores_its_unpromoted_cards_and_still_promotes_a_better_candidate; whole-card comparison instead of same_but_drift fails a_card_is_journaled_when_registered_and_on_a_kept_change_but_not_on_drift_alone. qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 test binaries ok. 2026-10-24 L2-INTEL third pass: mutations fired, each restored by copy and cmp: production cards left out of restore_registry (the equal candidate is promoted unopposed); the promoted set skipped in restore_artifacts (the better candidate is refused for want of an artifact). Second skeptic (security-engineer) REFUTED 9c61a602 for the unopposed promotion; its reproduction is the equal-candidate half of the new test. 2026-10-24 L2-INTEL fourth pass: mutations fired, each restored by copy and cmp: stage reconciliation disabled (v1 restored Production); orphan check disabled (candidate promoted unopposed); promoted-version scan disabled (next fit reuses v2's version); the kernel's journal call in promote_model_from removed (both restart tests fail). qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 binaries ok. 2026-10-24 L2-INTEL fifth pass: mutations fired, each restored by copy and cmp: cards journaled after the record in promote_model_from (the cut after the record loses v2's card); stage reconciliation off (v2 restored in production beside v1); the artifact store write disabled (the restarted desk cannot rescore its incumbent). qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 binaries ok. 2026-10-24 L2-INTEL sixth pass: mutations fired, each restored by copy and cmp: the moved cards journaled before the record (the cut-before-record test sees v2 read as promoted); journal_moved_cards removed (both restart tests fail); retired_at kept when the log forces Production (the rollback-crash test reads the reactivated model as retired); drift compared without the threshold side (the crossing is not journaled). Gate: clippy -p qip-kernel -p qip-deepbrain clean; cargo test -p qip-kernel -p qip-deepbrain -p qip-learning-engine -p qip-training -p qip-fastbrain -p qip-api -p qip-acceptance --no-fail-fast: 169 binaries ok, qip-acceptance documentation failing only the_blueprint_views_are_what_their_sources_render_to (the matrix is re-rendered at merge) and, before ADR 0170 gained its cost section, every_decision_record_states_what_it_costs. 2026-10-24 L2-INTEL seventh pass: mutations fired and restored by cmp: dropping the artifact_digest replay fails a_crash_around at the digest assertion; dropping the displaced (unassigned) alias move fails it at the displacement assertion; dropping the assigned move fails it at the assigned assertion. qip-deepbrain lib 212 passed 0 failed. 2026-10-25 L2-INTEL eighth pass: mutations fired and restored by cmp: wording every displaced move bare fails a_crash_around (left: bare evaluation, right: 'displaced by ...'); treating a rollback record as a promotion fails a_crash_just_after_a_rollback (left: 'displaced by ...', right: the bare rollback reading). 2026-10-25 L2-INTEL ninth pass: mutation: delete the out-of-production refusal in promote_model_from; a_version_taken_out_of_production_returns_only_through_a_rollback panics at promotion_durability.rs:386 ('went back into production without a rollback'); restored by cp+cmp; passes. 2026-10-25 L2-INTEL tenth pass: the ninth skeptic's three mutations each fire and are restored by cp+cmp. retired_at not filled from the log: both crash tests fail (left None, right the record instant). deployed_at not taken from the record: both fail (a_crash_around left None; rollback test left t1, right t_rb). rollback_parent set to None: a_crash_around fails (left None, right v1). 2026-10-25 L2-INTEL: mutations: record displaced.first() as the record's rollback_parent (fails both new tests); ignore the record's parent in the replay (fails the deepbrain crash test); restored by copy + cmp."
   },
   {
     "id": "R12-WORLD-9004",
@@ -146,9 +148,12 @@
       "backend/crates/services/qip-simulation-engine/src/backtest.rs",
       "backend/crates/services/qip-simulation-engine/tests/simulation.rs",
       "backend/crates/tests/qip-acceptance/tests/tick_replay.rs",
-      "backend/crates/apps/qip-cli/src/replay.rs"
+      "backend/crates/apps/qip-cli/src/replay.rs",
+      "backend/crates/apps/qip-edge-node/src/feed.rs (ReplayFeed)",
+      "backend/crates/apps/qip-edge-node/src/pass.rs (run_replay_pass)",
+      "backend/crates/apps/qip-edge-node/tests/lake_replay.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Partly met: the no-action baseline refusal is in qip-agency plan.rs (tested in qip-agency tests/agency.rs) and intervention simulation is wired to agency plans through qip-cli agency.rs TwinScenarios (qip-cli tests/agency.rs). Missing: retained history (edge lake in memory by default, enable_cloud_storage=false everywhere, execution_nodes_enabled=false) and any test that replaying retained history yields the same decisions (tick_replay.rs reproduces events, books and fills, not decisions). Sharding comes from the row's KUBERNETES tag, not the requirement text. Needs tfvar flips plus a decision-replay test.",
+    "gap": "2026-10-25: skeptic REFUTED: ReplayFeed and run_replay_pass (4768c327) reproduce a fresh cell's decisions over lake history, but no shipped binary calls them and the lake defaults to a memory store, so no retained history exists to replay; remaining step is a qip-cli path that replays a durable lake through run_replay_pass.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -156,10 +161,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test tick_replay && cargo test -p qip-simulation-engine",
+    "verification": "cargo test -p qip-edge-node --test lake_replay",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'tick replay (qip-cli replay, qip-edge-node replay)' is stale: qip-cli replay verifies the event-log hash chain and registries, and qip-edge-node src/replay.rs is a doc stub; the tick replay engine is qip_simulation_engine::tick_replay::ReplaySession, reached only from qip-deepbrain tick_desk."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'tick replay (qip-cli replay, qip-edge-node replay)' is stale: qip-cli replay verifies the event-log hash chain and registries, and qip-edge-node src/replay.rs is a doc stub; the tick replay engine is qip_simulation_engine::tick_replay::ReplaySession, reached only from qip-deepbrain tick_desk. 2026-10-25: 4768c327 adds ReplayFeed and run_replay_pass sharing decide_act_reconcile; replaying_retained_lake_history_through_a_fresh_cell_yields_the_same_decisions compares every WorkReport, journal entry and chain tail. Skeptic (code-reviewer) REFUTED on default path."
   },
   {
     "id": "R12-QUANT-9007",
@@ -867,9 +872,11 @@
       "backend/crates/services/qip-simulation-engine/src/venue.rs",
       "backend/crates/services/qip-simulation-engine/src/agents.rs",
       "backend/crates/services/qip-simulation-engine/tests/agents.rs",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled",
+      "backend/crates/apps/qip-cli/src/simulate.rs",
+      "backend/crates/apps/qip-cli/tests/simulate.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Queue modelling is evidenced (qip-simulation-engine tests/tick_replay.rs a_resting_limit_order_waits_behind_the_size_already_queued_at_its_price documents the mutation dropping queue_ahead). What remains is running the twin as sharded replay/simulation jobs: infrastructure/gitops holds no Job, CronJob or indexed-job manifest for simulation (the replay gate is a Kargo promotion gate), and ReplaySession is reached only from the off-by-default tick_desk. Needs a job entrypoint, manifests and a deployment, likely an ADR or workload-register entry.",
+    "gap": "2026-10-25: requirement clause unmet: qip simulate --set <path> --shard k/n (f2f3d6c4) runs sharded queue-position replay from a shipped CLI, but participant behaviour is replayed prints, not simulated participants, and no committed sharded job exists; remaining step is a participant model on the replay path (or an owner restatement) — the in-lane skeptic graded it HOLDS weakly and the lane kept it PARTIAL on that clause under bar part 4.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -877,10 +884,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-simulation-engine",
+    "verification": "cargo test -p qip-simulation-engine --test tick_replay; cargo test -p qip-cli --test simulate",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: f2f3d6c4 adds qip simulate with SHA-256 instrument-bucket sharding; union of shards equals the unsharded run, coupled sets and malformed k/n are refused (mutations in the commit). Skeptic (security-engineer): HOLDS weakly; lane held back on the participant clause."
   },
   {
     "id": "R12-WORLD-9037",
@@ -1976,7 +1983,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (run only on dispatch, none committed) was stale. Nothing implemented; no protected path touched."
+    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (run only on dispatch, none committed) was stale. Nothing implemented; no protected path touched. 2026-10-25 lane L9: written as docs/blueprint/lanes/l9-CICD-9083.patch, not yet applied. agent-guard.mjs step 1c refuses an agent commit committed at or after lane_manifest.trailer_required_after with no Agent-Lane trailer, judges an unreadable date as after the instant, refuses an unparseable instant and exempts merge commits. One node test; 4 mutations each fired. The switch is committed as null because round-3.json names no lane of the running round. Turning it on is the owner's change, made together with that round's manifest. PARTIAL until then."
   },
   {
     "id": "R12-SEC-9084",
@@ -2024,7 +2031,7 @@
     "verification": "inspection of ci.yml",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: the protected half is already on the branch: ci.yml's test job, acceptance partition, uploads the replay-bench artifact, and pipeline_scripts.rs pins it. What remains is code, not a protected path: a committed baseline and a test that diffs against it. That half stays with lane L6."
   },
   {
     "id": "R12-GCP-9086",
@@ -2046,7 +2053,7 @@
     "verification": "cargo test -p qip-acceptance --test cicd_governance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: taken by the drift route, docs/blueprint/lanes/l9-CICD-8032.patch (shared with R12-CICD-8032), a scheduled plan of dev that fails on drift. The SCC Premium route is paid and was not taken (owner decision 5 of 2026-10-25). PARTIAL until the patch is applied and a scheduled run is seen."
   },
   {
     "id": "R12-RES-9087",
@@ -2232,7 +2239,7 @@
     "verification": "gh api repos/{owner}/{repo}/branches/main/protection",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: written as docs/blueprint/lanes/l9-CICD-9095.patch, not yet applied. It holds .github/rulesets/main-integrity.json (no deletion, no force-push, seven required checks, no bypass actor), .github/rulesets/main-review.json (code-owner review; the admin role may bypass only through a pull request, because the one code owner also authors the pull requests and GitHub refuses self-approval; dropping that bypass is the owner's call), .github/workflows/rules.yml (a daily read of GET /repos/{o}/{r}/rules/branches/main that fails when a rule is missing) and qip-acceptance branch_rules.rs (4 tests, 5 mutations each fired). A repository admin must also POST the two rulesets. PARTIAL until both are done."
   },
   {
     "id": "R12-SEC-9096",
@@ -2410,7 +2417,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: no patch. The GitHub provider's attribute_condition in modules/cicd admits only refs/heads/* (`attribute.ref.startsWith('refs/heads/')`), and a pull_request run presents refs/pull/<n>/merge, so a ci.yml plan job on pull requests cannot authenticate unless that condition is widened. Widening it weakens a gate, which decision 3 does not cover. This is an owner decision: widen it for a plan-only identity, or plan on push to work branches instead."
   },
   {
     "id": "R12-CICD-9104",
@@ -2531,7 +2538,7 @@
     "verification": "gcloud artifacts docker images describe --show-sbom-references",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-25 lane L9: no patch, for the reason docs/blueprint/lanes/L02-protected-patches.md gives. Whether `gcloud artifacts sbom load` accepts this repository's CycloneDX output is unconfirmed, and an unverified step in deploy.yml could fail every deployment. It needs a confirmed format, then a re-spec, and that waits on a reachable registry."
   },
   {
     "id": "R12-SEC-9109",

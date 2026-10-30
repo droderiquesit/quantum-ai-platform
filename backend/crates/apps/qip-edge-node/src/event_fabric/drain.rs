@@ -75,7 +75,7 @@ use qip_events::event_fabric::bindings::MARKET_EVENT_APPLIED;
 use qip_events::event_fabric::codec::Batch;
 use qip_events::event_fabric::envelope::{FabricContext, FabricEnvelope};
 use qip_events::event_fabric::policy::QosClass;
-use qip_sequencing::{CaptureStream, DisciplineSettings};
+use qip_sequencing::{CaptureStream, DisciplineSettings, Order, Placed, align};
 use qip_storage::BlobStore;
 use qip_storage::lake::{Entitlement, Lake, Partition, RecordClass};
 use qip_storage::lake_codec::SegmentCodec;
@@ -684,6 +684,35 @@ pub fn parse_retention(text: Option<&str>) -> Result<BTreeMap<String, RetentionR
     Ok(policy)
 }
 
+/// The most partitions [`LakeSink`] aligns each line against. A cell's feeds
+/// carry a few venues and at most `MAX_FEED_INSTRUMENTS` instruments each, so
+/// hundreds means the key is wrong. Past the bound the partition whose latest
+/// tick arrived longest ago is dropped from the working set, so a line is
+/// never aligned against more than this many and the sink's memory does not
+/// grow with the session. A dropped partition is left out of later lines'
+/// stamps. It is not reported with a stale position as if it were current.
+pub const MAX_ALIGNED_PARTITIONS: usize = 256;
+
+/// Half the resolution a `Timestamp` keeps across the spool. A tick reaches
+/// [`LakeSink`] as RFC 3339 at millisecond resolution, so each instant it
+/// aligns is the true one floored by up to a millisecond, and the lag
+/// between two of them is off by less than one millisecond either way.
+/// Each side's uncertainty is widened by half that before aligning, so the
+/// combined bound covers the truncation: without it, instants 0.999 ms and
+/// 1.000 ms on clocks known to 50 µs floor to 0 and 1 ms, read 1 ms apart
+/// against a 0.1 ms bound, and are stamped `before` when the clocks cannot
+/// order them at all — the false order the alignment exists to refuse.
+const SPOOL_TRUNCATION_HALF_WIDTH: qip_core::time::Duration =
+    qip_core::time::Duration::from_micros(500);
+
+/// The last tick [`LakeSink`] wrote for one partition, placed on the
+/// reference timeline.
+#[derive(Clone, Copy, Debug)]
+struct LatestTick {
+    placed: Placed,
+    sequence: u64,
+}
+
 /// Delivers the market events in P2 batches to the tick lake, one sealed
 /// segment per spool offset per partition. Every other record is not the
 /// lake's: a journal entry is the platform's own record and reaches the lake
@@ -699,6 +728,17 @@ pub fn parse_retention(text: Option<&str>) -> Result<BTreeMap<String, RetentionR
 pub struct LakeSink {
     store: Arc<dyn BlobStore>,
     cell: String,
+    /// The region the cell runs in, stamped on every line (R12-TICK-2048):
+    /// two regions' captures of one instrument are two clocks, and a reader
+    /// that cannot tell which region stamped a line cannot tell which clock
+    /// error it carries.
+    region: String,
+    /// The latest tick written per partition (`venue/feed/partition/
+    /// instrument`), so each new line can be aligned against every other
+    /// partition (R12-TICK-2048). One entry per partition, at most
+    /// [`MAX_ALIGNED_PARTITIONS`] of them: a bounded working set, never a
+    /// history.
+    latest: BTreeMap<String, LatestTick>,
     retention: BTreeMap<String, RetentionRight>,
     codec: SegmentCodec,
     withheld: u64,
@@ -714,35 +754,50 @@ pub struct LakeSink {
 }
 
 impl LakeSink {
-    /// A lake sink for `cell`, keeping what `retention` permits and sealing
-    /// with `codec`. Refuses a cell id the lake cannot put in a segment id —
-    /// refused here at start, rather than as a sink that refuses every batch
-    /// and lets the spool fill until the cell halts.
+    /// A lake sink for `cell` in `region`, keeping what `retention` permits
+    /// and sealing with `codec`. Refuses a cell id the lake cannot put in a
+    /// segment id. The check runs here at start. Otherwise the sink would
+    /// refuse every batch and the spool would fill until the cell halted.
+    /// Refuses an empty or unprintable region for the same reason. A line
+    /// whose region field is blank cannot be placed against another region's
+    /// clock, and that is the reason the field exists (R12-TICK-2048).
     ///
-    /// The policy and codec are arguments rather than defaults so that no
-    /// caller can build a sink without having stated what it keeps; a
+    /// The region, policy and codec are arguments, not defaults. No caller
+    /// can build a sink without stating where it runs and what it keeps. A
     /// caller with nothing configured passes [`default_retention`] and
     /// [`SegmentCodec::Identity`] and says so.
     pub fn new(
         store: Arc<dyn BlobStore>,
         cell: impl Into<String>,
+        region: impl Into<String>,
         retention: BTreeMap<String, RetentionRight>,
         codec: SegmentCodec,
     ) -> Result<Self> {
         let cell = cell.into();
-        if cell.is_empty()
-            || !cell
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-        {
+        let region = region.into();
+        let nameable = |name: &str| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        };
+        if !nameable(&cell) {
             return Err(Error::invalid(format!(
                 "cell id {cell:?} cannot name a lake segment: use letters, digits, '.', '_' or \
                  '-'"
             )));
         }
+        if !nameable(&region) {
+            return Err(Error::invalid(format!(
+                "region {region:?} cannot be stamped on a lake line: name the cell's region \
+                 (QIP_CELL_REGION) in letters, digits, '.', '_' or '-'"
+            )));
+        }
         Ok(Self {
             store,
             cell,
+            region,
+            latest: BTreeMap::new(),
             retention,
             codec,
             withheld: 0,
@@ -766,6 +821,83 @@ impl LakeSink {
     /// be re-encoded to the bytes the venue published.
     pub const fn raw_unverified(&self) -> u64 {
         self.raw_unverified
+    }
+
+    /// Partitions the cross-partition alignment currently holds a latest
+    /// tick for; never more than [`MAX_ALIGNED_PARTITIONS`].
+    pub fn aligned_partitions(&self) -> usize {
+        self.latest.len()
+    }
+
+    /// Align the tick about to be written for `partition` against the
+    /// latest tick of every other partition, then record it as that
+    /// partition's latest (R12-TICK-2048).
+    ///
+    /// The stamp is `qip_sequencing::align` and nothing else. An order is
+    /// stated only when the two stamps are further apart than both
+    /// uncertainties together, and is `unordered` otherwise. Before this,
+    /// a lake line's `arrival_order` compared a tick only with the previous
+    /// tick of its own stream. Any cross-venue or cross-instrument order a
+    /// reader wanted had to come from sorting on a timestamp column, and
+    /// that sort claims an order two independent clocks cannot support. A
+    /// lead/lag model trained on it learns clock error as a reaction.
+    ///
+    /// A tick the discipline could not place has no position on the
+    /// reference timeline. Its stamp is the refusal, it is aligned against
+    /// nothing, and it does not become its partition's latest.
+    fn align_across(
+        &mut self,
+        partition: String,
+        sequence: u64,
+        placed: &Result<Placed>,
+    ) -> serde_json::Value {
+        let placed = match placed {
+            Ok(placed) => *placed,
+            Err(error) => return serde_json::json!({ "refused": error.message() }),
+        };
+        let others: Vec<serde_json::Value> = self
+            .latest
+            .iter()
+            .filter(|(other, _)| **other != partition)
+            .map(|(other, latest)| {
+                let alignment = align(&latest.placed, &placed);
+                serde_json::json!({
+                    "partition": other,
+                    "sequence": latest.sequence,
+                    // The other partition's tick relative to this one:
+                    // `before` means it happened first by more than both
+                    // clocks' error.
+                    "order_of_other": match alignment.order {
+                        Order::Before => "before",
+                        Order::After => "after",
+                        Order::Unordered => "unordered",
+                    },
+                    "lag_ns": alignment.lag.as_nanos(),
+                    "lag_uncertainty_ns": alignment.lag_uncertainty.as_nanos(),
+                    "other_known_at_arrival": alignment.first_known_when_second_arrived,
+                })
+            })
+            .collect();
+        if !self.latest.contains_key(&partition) && self.latest.len() >= MAX_ALIGNED_PARTITIONS {
+            // The partition silent longest leaves; ties broken by name so a
+            // replay of the same spool drops the same one.
+            let oldest = self
+                .latest
+                .iter()
+                .min_by(|a, b| {
+                    a.1.placed
+                        .arrival()
+                        .cmp(&b.1.placed.arrival())
+                        .then_with(|| a.0.cmp(b.0))
+                })
+                .map(|(name, _)| name.clone());
+            if let Some(oldest) = oldest {
+                self.latest.remove(&oldest);
+            }
+        }
+        self.latest
+            .insert(partition, LatestTick { placed, sequence });
+        serde_json::Value::Array(others)
     }
 }
 
@@ -811,7 +943,39 @@ impl Sink for LakeSink {
                 self.withheld = self.withheld.saturating_add(1);
                 continue;
             }
-            let line = tick_line(&tick, &captured)?;
+            // Placed exactly as the capture stream placed it for its own
+            // stream's arrival order: the normalized instant, the published
+            // uncertainty, and the capture instant on the cell's clock.
+            let placed = match &captured {
+                Ok(captured) => Placed::new(
+                    captured.normalized_time,
+                    captured.uncertainty + SPOOL_TRUNCATION_HALF_WIDTH,
+                    captured.receive_time,
+                ),
+                Err(error) => Err(Error::invalid(format!(
+                    "the clock discipline refused this tick, so it has no place on the \
+                     reference timeline to align from: {}",
+                    error.message()
+                ))),
+            };
+            let origin = tick.origin();
+            let partition = format!(
+                "{}/{}/{}/{}",
+                origin.venue,
+                origin.feed,
+                origin.partition,
+                tick.payload().object_id
+            );
+            let cross = self.align_across(partition, origin.sequence, &placed);
+            let line = tick_line(
+                &tick,
+                &captured,
+                Provenance {
+                    region: &self.region,
+                    cell: &self.cell,
+                },
+                cross,
+            )?;
             let key = (
                 tick.origin().venue.as_str().to_string(),
                 tick.event_time().to_date_string(),
@@ -889,7 +1053,18 @@ impl Sink for LakeSink {
 /// instants would leave every reader to re-derive the discipline, and two
 /// readers that did it differently would disagree about the order of the
 /// same two ticks.
-fn tick_line(tick: &MarketEvent, captured: &Result<CapturedMarketEvent>) -> Result<String> {
+///
+/// And the synchronisation metadata a cross-venue, cross-instrument or
+/// cross-region reader needs (R12-TICK-2048): the region and cell that
+/// captured the tick, the clock its normalized instant was taken from
+/// ([`clock_source`]), and `cross_partition`, the tick aligned against the
+/// latest tick of every other partition ([`LakeSink`]'s `align_across`).
+fn tick_line(
+    tick: &MarketEvent,
+    captured: &Result<CapturedMarketEvent>,
+    provenance: Provenance<'_>,
+    cross_partition: serde_json::Value,
+) -> Result<String> {
     let origin = tick.origin();
     let clock = match captured {
         Ok(captured) => serde_json::json!({
@@ -904,10 +1079,52 @@ fn tick_line(tick: &MarketEvent, captured: &Result<CapturedMarketEvent>) -> Resu
         "exchange_time_ns": tick.event_time().as_nanos(),
         "capture_time_ns": tick.receive_time().as_nanos(),
         "clock": clock,
+        "clock_source": clock_source(captured),
+        "region": provenance.region,
+        "cell": provenance.cell,
+        "cross_partition": cross_partition,
         "feed": origin.feed,
         "partition": origin.partition,
         "sequence": origin.sequence,
         "event": serde_json::to_value(tick)?,
     });
     Ok(qip_core::canonical::canonical_json(&value))
+}
+
+/// Who captured a tick, as [`tick_line`] stamps it.
+#[derive(Clone, Copy, Debug)]
+struct Provenance<'a> {
+    region: &'a str,
+    cell: &'a str,
+}
+
+/// Which clock a lake line's normalized instant and uncertainty come from
+/// (R12-TICK-2048), named so a reader does not infer it from the shape of
+/// the `corrections` list:
+///
+/// - `offset_estimate`: the venue's stamp moved onto the cell's reference
+///   clock by the discipline's measured offset, with that estimate's
+///   uncertainty;
+/// - `venue_stated`: the venue's own stamp, before the estimate is trusted,
+///   with the uncertainty the tick stated for itself;
+/// - `unplaced`: the discipline refused the tick, so it has no normalized
+///   instant at all.
+///
+/// Two lines carrying the same `uncertainty_ns` can come from different
+/// clocks. A reader that pooled a venue's self-stated figure with a measured
+/// estimate would weight an unmeasured clock as though someone had measured
+/// it.
+fn clock_source(captured: &Result<CapturedMarketEvent>) -> &'static str {
+    match captured {
+        Ok(captured)
+            if captured
+                .corrections
+                .iter()
+                .any(|correction| correction.kind == "offset_estimate") =>
+        {
+            "offset_estimate"
+        }
+        Ok(_) => "venue_stated",
+        Err(_) => "unplaced",
+    }
 }

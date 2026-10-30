@@ -43,7 +43,7 @@
     "verification": "terraform plan with execution_nodes naming one region",
     "work_item": "",
     "size": "S",
-    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL. 2026-10-24 lane L6: a conflict for the owner, not a code gap: modules/execution-node/variables.tf's machine_type validation admits only c4-highcpu-8/16 and c4d-highcpu-8/16 and refuses C3 and C3D, following R12-REFLEX-8002 (GCP v3.0 §1, 'a C3 or N2 shape must be refused at plan'), while this row's check asks that 'a non-C3 machine_type is refused'. The requirement's own text allows 'C3/C3D-class (or equivalent)', which C4/C4D can be read to meet; the check's literal wording cannot be met without breaking REFLEX-8002. Recorded, not changed. 2026-10-24 lane L6: ADR 0211 (Accepted under the owner's 2026-10-24 delegation) resolves the C3-versus-C4 conflict: the check reads as refusing every shape outside the C4/C4D high-CPU class, which variables.tf already does. The row stays PARTIAL only on the deploy gap: no node declared, protected tfvars, no real plan (billing paused)."
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL. 2026-10-24 lane L6: a conflict for the owner, not a code gap: modules/execution-node/variables.tf's machine_type validation admits only c4-highcpu-8/16 and c4d-highcpu-8/16 and refuses C3 and C3D, following R12-REFLEX-8002 (GCP v3.0 §1, 'a C3 or N2 shape must be refused at plan'), while this row's check asks that 'a non-C3 machine_type is refused'. The requirement's own text allows 'C3/C3D-class (or equivalent)', which C4/C4D can be read to meet; the check's literal wording cannot be met without breaking REFLEX-8002. Recorded, not changed. 2026-10-24 lane L6: ADR 0211 (Accepted under the owner's 2026-10-24 delegation) resolves the C3-versus-C4 conflict: the check reads as refusing every shape outside the C4/C4D high-CPU class, which variables.tf already does. The row stays PARTIAL only on the deploy gap: no node declared, protected tfvars, no real plan (billing paused). 2026-10-25 lane L9: no patch. The closure turns on execution_nodes_enabled for a billed C4 node, and owner decision 5 of 2026-10-25 declined new billed infrastructure. It stays PARTIAL until that decision changes."
   },
   {
     "id": "R12-REFLEX-7003",
@@ -1551,9 +1551,11 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/opportunity_token.rs:91 type",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:319 an_opportunity_token_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:337 an_opportunity_token_refuses_each_broken_invariant"
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:337 an_opportunity_token_refuses_each_broken_invariant",
+      "backend/crates/edge/qip-edge/src/cell.rs::opportunity_token, journaled on Decision::CycleCommitted.token at both commit sites (whole-out AllOrNone, rested Sequential)",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs::a_committed_cycle_journals_an_opportunity_token_whose_legs_equal_the_legs_sent"
     ],
-    "gap": "The Lane 1 frame carries an epoch by decision (ADR 0154 d7, accepted): qip_peer::PeerMessage::Token stays an OpportunityEpoch and the receiver re-derives legs from its own whitelist; the contract OpportunityToken is the origin desk's own record. Not built: the desk-side construction of that record from legs, size, edge and reservations in qip-arbitrage / qip-edge-node. Restated 2026-10-24.",
+    "gap": "2026-10-25 (lane L5-EDGE; independent skeptic REFUTED): (1) no committed path installs a desk or commits a cycle: qip-edge-node needs QIP_ARBITRAGE_STRATEGY, a fresh signed CycleWhitelist and a strategy envelope, which arrive only over the mesh (QIP_MESH_PEER) or the control handoff, and no committed environment enables an execution node; (2) 'between brains': the token sits only in the cell's journal, and ADR 0154 decision 7 keeps the peer wire an epoch, which declines the requirement's text (bar part 4), so this needs an owner decision; (3) a committed cycle whose edge is below one basis point journals no token, because the contract refuses a zero edge and the record is made after the legs are out.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1561,10 +1563,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh",
+    "verification": "cargo test -p qip-mesh; cargo +1.94.1 test -p qip-edge --test arbitrage a_committed_cycle",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure placed construction in qip-mesh, which does not hold the fields. Lane T1-EDGE 2026-10-24: wire change dropped by ADR 0154 d7; no code changed, kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure placed construction in qip-mesh, which does not hold the fields. Lane T1-EDGE 2026-10-24: wire change dropped by ADR 0154 d7; no code changed, kept PARTIAL. 2026-10-25 lane L5-EDGE: the cell now constructs and journals an OpportunityToken when it commits a cycle: the legs as sent (venue, instrument, side, sent quantity), size (the legs' notional), edge (net over the priced quantity, whole bp), TTL (the earliest leg validity), the region hold as reservation when committed, execution AllOrNone or Sequential (rested), unwind FlattenAtMarket (a contract variant added for an unwind with no stated loss bound), lineage Original v1. Mutations fired: one leg dropped from the token; token not journaled. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED on parts 2 and 4. It also found the first unwind (Flatten bounded by the plan's residual exposure) dishonest: that is an exposure, possibly summed across currencies, and nothing enforces it. Replaced by UnwindPolicy::FlattenAtMarket."
   },
   {
     "id": "R12-CONTRACT-7069",
@@ -2454,9 +2456,14 @@
       "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs::Hypothesis::confidence_for_sizing",
       "backend/crates/runtime/qip-kernel/src/platform.rs conviction: sign * reasoned.hypothesis.confidence_for_sizing()",
       "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on",
-      "backend/crates/runtime/qip-kernel/tests/kernel.rs::the_reason_stage_names_the_evidence_posture_so_a_small_size_can_be_told_from_an_absent_one"
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs::the_reason_stage_names_the_evidence_posture_so_a_small_size_can_be_told_from_an_absent_one",
+      "docs/adr/0212-a-derivation-that-contradicts-itself-is-infeasible-keeps-its-trace-and-moves-no-money-and-dissent-is-not-a-contradiction.md",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs contradictions, Feasibility, feasibility_of",
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_reason (infeasible derivation never reaches pending_theses)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::symbolic_contradiction_tests::a_contradictory_derivation_yields_infeasible_with_its_trace_and_blocks_money_movement",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::symbolic_contradiction_tests::a_contested_thesis_is_not_a_contradiction_and_still_forms_a_proposal_sized_small"
     ],
-    "gap": "2026-10-24: requirement is a contradictory derivation yielding infeasible/unresolved with the trace kept and money movement blocked (fail closed); the row withdraws the blocking clause by ADR 0150 d14, a contradicted thesis is still sized (only smaller) and nothing marks it infeasible, so the named tests prove narrowing, not the requirement",
+    "gap": "2026-10-25 (lane L6): ADR 0212 (Accepted under the owner's delegation) scopes ADR 0150 d14 to dissent; a derivation that contradicts itself is journaled Infeasible with its words and RulePack alternates kept, and stage_reason never queues it to pending_theses, the only road to sizing, a leg and an order. An independent skeptic judged the COMPLETE claim REFUTED on bar part 4: the requirement marks a conclusion infeasible or unresolved on 'unsatisfied constraints', and ADR 0212 decision 1 declines that for dissent, so a contested thesis whose acting problem the platform's own constraint check answers Unsatisfiable is marked Feasible, queued and sized (the dissent test asserts exactly that). Closing it needs either the owner to scope the requirement's clause to self-contradiction, or an Unresolved mark that blocks money when the acting problem is unsatisfiable, which reverses ADR 0150 d14 and ADR 0212 d1 for dissent. Caveat: the shipped rule pack's invariants are theorems of its rules, so no real input trips it today; the test drives a revised pack through the default cycle. Earlier: 2026-10-24: requirement is a contradictory derivation yielding infeasible/unresolved with the trace kept and money movement blocked (fail closed); the row withdraws the blocking clause by ADR 0150 d14, a contradicted thesis is still sized (only smaller) and nothing marks it infeasible, so the named tests prove narrowing, not the requirement",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2466,10 +2473,10 @@
       "R12-CONTRACT-7077"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoning contradiction_only_ever; cargo test -p qip-kernel --test kernel the_reason_stage_names",
+    "verification": "cd backend && cargo test -p qip-kernel --lib symbolic_contradiction_tests",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed by ADR 0150 d14: the closure clause that an unresolved contradiction blocks a proposal is withdrawn; a ContradictionResolution trace is advisory and waits for a named consumer. Mutation fired: confidence_for_sizing multiplying by (2.0 - dissent) instead of dissent failed contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on at reasoning.rs:1086; restored, it passed. AUDIT-2 2026-10-24: regraded, requirement is a contradictory derivation yielding infeasible/unresolved with the trace kept and money movement blocked (fail closed); the row withdraws the blocking clause by ADR 0150 d14, a contradicted thesis is still sized (only smaller) and nothing marks it infeasible, so the named tests prove narrowing, not the requirement"
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed by ADR 0150 d14: the closure clause that an unresolved contradiction blocks a proposal is withdrawn; a ContradictionResolution trace is advisory and waits for a named consumer. Mutation fired: confidence_for_sizing multiplying by (2.0 - dissent) instead of dissent failed contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on at reasoning.rs:1086; restored, it passed. AUDIT-2 2026-10-24: regraded, requirement is a contradictory derivation yielding infeasible/unresolved with the trace kept and money movement blocked (fail closed); the row withdraws the blocking clause by ADR 0150 d14, a contradicted thesis is still sized (only smaller) and nothing marks it infeasible, so the named tests prove narrowing, not the requirement 2026-10-25 lane L6 (delegated agent, cherry-picked as 066ef182): mutations: skipping the refusal failed the contradiction test at 'an infeasible conclusion was still reported approved'; dropping the trace failed it at 'the contradiction's own words were not kept'; emptying alternates at 'the alternates do not name the two colliding rules'; counting dissent as a contradiction failed the dissent test at 'dissent was marked as a contradiction'. Agent's gate: qip-kernel passed 1088, failed 0; compliance_proof 8, paper_boundary 5, security 29 passed; clippy -D warnings clean. Paper boundary intact (no layer touched). 2026-10-25 skeptic (read-only, independent): REFUTED on part 4 (ADR 0212 d1 withdraws the unsatisfied-constraints clause for dissent); parts 1-3 hold for the self-contradiction class (one production push site to pending_theses; a record with no mark fails closed). Lane gate on 091703ec: qip-kernel passed 1088, failed 0; qip-acceptance passed 1610, failed 1 (blueprint view); clippy --workspace exit 0."
   },
   {
     "id": "R12-RES-7107",
