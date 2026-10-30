@@ -41,6 +41,23 @@ pub const ATTENTION_ROUTING: &str = "attention-routing";
 /// The scope the causal agency brain covers, as a competency domain.
 pub const INTERVENTION_PLANNING: &str = "intervention-planning";
 
+/// The kernel's world-model federation stage, which `Platform::run_cycle`
+/// runs every cycle: it scores competing members, keeps every view, records
+/// contradictions and decides branch, merge, abstain or ask (R12-WORLD-3025).
+pub const WORLD_MODEL_ARBITRATION_BRAIN: &str = "kernel/world-model-arbitration";
+
+/// The scope the arbitration brain covers, as a competency domain.
+pub const WORLD_MODEL_ARBITRATION: &str = "world-model-arbitration";
+
+/// Scopes this node refuses to start without. Each names a brain that runs
+/// on the default path, so a registry missing one is a node whose record
+/// of what it can answer leaves out something it actually does.
+pub const REQUIRED_SCOPES: [&str; 3] = [
+    ATTENTION_ROUTING,
+    INTERVENTION_PLANNING,
+    WORLD_MODEL_ARBITRATION,
+];
+
 /// Validated brain specs keyed by id.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BrainRegistry {
@@ -91,6 +108,25 @@ impl BrainRegistry {
             .values()
             .flat_map(|spec| spec.competency_domains.iter().map(String::as_str))
             .collect()
+    }
+
+    /// Refuse a registry that leaves out a [`REQUIRED_SCOPES`] entry, naming
+    /// every missing one.
+    pub fn require_coverage(&self) -> Result<()> {
+        let scopes = self.scopes();
+        let missing: Vec<&str> = REQUIRED_SCOPES
+            .iter()
+            .copied()
+            .filter(|scope| !scopes.contains(scope))
+            .collect();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::invalid(format!(
+                "no registered brain covers {missing:?}; a node whose brain registry leaves out \
+                 a scope it runs is refused, so register the brain that covers it"
+            )))
+        }
     }
 
     /// Without the brain `id`, for the test that removing a brain drops its
@@ -191,9 +227,41 @@ pub fn ambient_specs() -> Vec<BrainSpec> {
     ]
 }
 
+/// The kernel's world-model arbitration brain (R12-WORLD-3025, §9.1).
+pub fn arbitration_spec() -> BrainSpec {
+    BrainSpec {
+        id: WORLD_MODEL_ARBITRATION_BRAIN.to_string(),
+        name: "World Model Arbitration Brain".to_string(),
+        competency_domains: vec![
+            WORLD_MODEL_ARBITRATION.to_string(),
+            "disagreement-preservation".to_string(),
+            "calibration-tracking".to_string(),
+        ],
+        tools: vec!["qip-kernel::federation_stage::FederationStage".to_string()],
+        source_permissions: vec!["world-model-federation:read".to_string()],
+        memory_scope: "federation: live members, bounded branches, pending forecasts".to_string(),
+        model_stack: vec!["in-tree arbitration rules; no model consulted".to_string()],
+        evaluations: vec![
+            "qip-kernel tests/symbolic_federation.rs: every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_its_arbitrations"
+                .to_string(),
+        ],
+        abstention_rules: vec![
+            "abstains when the views' mean uncertainty is too high to say anything".to_string(),
+            "asks for more information while a member has no resolved forecast".to_string(),
+        ],
+        authority_envelope:
+            "advisory_only: records arbitrations and research requests; sizes and sends nothing"
+                .to_string(),
+        calibration: 0.0,
+        version: 1,
+        parent_version_id: None,
+    }
+}
+
 /// The registry this node starts on: every agent on the organisation's
-/// roster, the NOW specialists and the ambient brains. Refuses to build if
-/// any entry is missing a declared field or two share an id.
+/// roster, the NOW specialists, the ambient brains and the world-model
+/// arbitration brain. Refuses to build if any entry is missing a declared
+/// field, two share an id, or a [`REQUIRED_SCOPES`] entry is uncovered.
 pub fn standard(organisation: &Roster) -> Result<BrainRegistry> {
     let mut registry = BrainRegistry::new();
     for manifest in organisation.iter() {
@@ -213,5 +281,7 @@ pub fn standard(organisation: &Roster) -> Result<BrainRegistry> {
     for spec in ambient_specs() {
         registry.register(spec)?;
     }
+    registry.register(arbitration_spec())?;
+    registry.require_coverage()?;
     Ok(registry)
 }
