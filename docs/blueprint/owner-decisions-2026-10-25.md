@@ -158,6 +158,13 @@ The agents cannot carry these out, whatever the delegation says.
   on the shipped default path the world runs and its would-be reserve is
   journaled and reported but not applied. Saying "apply it" turns it on;
   until then the row stays PARTIAL.
+- Decide R12-SEC-10056's route (lane L6, 2026-10-30). Sensitive Data
+  Protection cannot scan Cloud Logging, and OBS-020's `manifest_wiring`
+  guard forbids any log sink outside Cloud Logging, so the SDP sink L6
+  built was reverted in `7ed4be03`. Either an ADR admits exactly one SDP
+  sink as a named exception to OBS-020, or the row takes another route;
+  the agents do not pick between a logging boundary and a scanning
+  requirement.
 - When ready to deploy, follow `docs/ops/runbooks/dev-redeploy-readiness.md`
   §4: enable billing, raise the budget alert (decision 10), then dispatch
   `infra.yml` and `deploy.yml` in the order given.
