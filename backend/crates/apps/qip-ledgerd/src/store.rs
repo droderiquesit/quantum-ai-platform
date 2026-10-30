@@ -128,6 +128,46 @@ const PREFIX_WATERMARK: &str = "watermark/";
 const PREFIX_OPERATION: &str = "operation/";
 const PREFIX_LOT: &str = "lot/";
 const KEY_PROBE: &str = "meta/probe";
+
+/// How many key ranges a monotonic key family is spread over
+/// (R12-LEDGER-8137). The journal counter and the watermark timestamp only
+/// grow, so written as `journal/<sequence>` every commit lands at the end of
+/// one key range: on Spanner that is one split taking every write, the
+/// hotspot its schema guidance names. Each key is prefixed with a shard
+/// derived from the sequence itself, so consecutive writes land in different
+/// ranges and a reader recovers the order from the sequence, never from key
+/// order.
+const KEY_SHARDS: u64 = 16;
+
+/// The shard a sequence's key is written under: a fixed bit mix of the
+/// sequence, so the same sequence always lands in the same shard and a
+/// replay writes the same keys, and neighbouring sequences do not share one.
+fn shard_of(sequence: u64) -> u64 {
+    // splitmix64's finaliser: every input bit moves every output bit.
+    let mut z = sequence.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31)) % KEY_SHARDS
+}
+
+/// `prefix` + the sequence's shard + the zero-padded sequence.
+fn sharded_key(prefix: &str, sequence: u64) -> String {
+    format!("{prefix}{:02x}/{sequence:020}", shard_of(sequence))
+}
+
+/// The sequence a sharded key, or a key written before sharding
+/// (`journal/<sequence>`), names: its last path segment. A key whose last
+/// segment is not a sequence is refused rather than sorted somewhere.
+fn sequence_of(key: &str) -> Result<u64> {
+    key.rsplit('/')
+        .next()
+        .and_then(|segment| segment.parse().ok())
+        .ok_or_else(|| {
+            Error::schema(format!(
+                "ledger key {key} does not end in a sequence; the journal cannot be ordered past it"
+            ))
+        })
+}
 const KEY_JOURNAL_NEXT: &str = "meta/journal_next";
 const KEY_CURRENT_WATERMARK: &str = "meta/current_watermark";
 
@@ -1136,13 +1176,18 @@ impl LedgerStore {
         Ok(parks)
     }
 
-    /// Every journal note, oldest first.
+    /// Every journal note, oldest first: ordered by the sequence each key
+    /// names, across every shard and the unsharded keys written before
+    /// R12-LEDGER-8137, never by key order.
     pub fn journal(&self) -> Result<Vec<JournalNote>> {
-        self.store
+        let mut notes = self
+            .store
             .scan_prefix(PREFIX_JOURNAL)?
             .into_iter()
-            .map(|(_, value)| decode(value))
-            .collect()
+            .map(|(key, value)| Ok((sequence_of(&key)?, decode(value)?)))
+            .collect::<Result<Vec<(u64, JournalNote)>>>()?;
+        notes.sort_by_key(|(sequence, _)| *sequence);
+        Ok(notes.into_iter().map(|(_, note)| note).collect())
     }
 
     /// An operator releases a cell held by an integrity break, a refused
@@ -1386,7 +1431,7 @@ impl LedgerStore {
 
         let batch = LedgerBatch::new()
             .put_as(KEY_CURRENT_WATERMARK, &watermark)?
-            .put_as(format!("{PREFIX_WATERMARK}{:020}", timestamp), &watermark)?;
+            .put_as(sharded_key(PREFIX_WATERMARK, timestamp), &watermark)?;
 
         self.store.commit(batch)?;
         Ok(())
@@ -1462,7 +1507,7 @@ impl LedgerStore {
             .checked_add(1)
             .ok_or_else(|| Error::numeric("the ledger journal counter would wrap"))?;
         batch
-            .put_as(format!("{PREFIX_JOURNAL}{next:020}"), &note)?
+            .put_as(sharded_key(PREFIX_JOURNAL, next), &note)?
             .put_as(KEY_JOURNAL_NEXT, &after)
     }
 
