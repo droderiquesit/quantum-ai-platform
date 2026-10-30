@@ -405,6 +405,10 @@ pub struct AttributionPass {
     /// Each stamped order's held move split by the stage that set its size.
     /// An order with no stamped quantities is absent, not zero.
     pub held_moves: BTreeMap<String, HeldMoveSplit>,
+    /// Each order's gross notional over its fills, `quantity × price`
+    /// unsigned: the capital the order deployed, for
+    /// [`capital_by_forecaster`].
+    pub deployed: BTreeMap<String, Decimal>,
 }
 
 /// Build one position per fill. See the module doc for the arithmetic.
@@ -546,6 +550,12 @@ pub fn run(
         entry.1 -= Decimal::from_int(fill.side) * fill.quantity * (fill.price - fill.arrival)
             + fill.commission;
     }
+    let mut deployed: BTreeMap<String, Decimal> = BTreeMap::new();
+    for fill in fills {
+        *deployed
+            .entry(fill.order_id.clone())
+            .or_insert(Decimal::ZERO) += (fill.quantity * fill.price).abs();
+    }
     let mut held_moves = BTreeMap::new();
     for (order_id, (quantity, execution, fill)) in filled {
         if let Some(quantities) = lineage.release_quantities(order_id) {
@@ -568,6 +578,7 @@ pub fn run(
         unmarked,
         book_total: book,
         held_moves,
+        deployed,
     })
 }
 
@@ -585,6 +596,13 @@ pub struct AttributionRecorded {
     pub by_source: BTreeMap<String, Decimal>,
     /// Every §22 dimension's exact grouping.
     pub by_dimension: BTreeMap<String, BTreeMap<String, Decimal>>,
+    /// The capital each forecaster's forecasts informed: each order's
+    /// deployed notional split across the models it was stamped with, in the
+    /// same equal shares as its P&L (R12-MODEL-6021). Sums to the pass's
+    /// total deployed notional. Absent from records written before the field
+    /// existed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub capital_by_forecaster: BTreeMap<String, Decimal>,
 }
 
 /// What every attribution record's idempotency key starts with.
@@ -592,7 +610,10 @@ pub const IDEMPOTENCY_PREFIX: &str = "attribution:";
 
 impl EventBody for AttributionRecorded {
     const TOPIC: Topic = Topic::OutcomeObserved;
-    const SCHEMA_VERSION: u32 = 1;
+    // 2 since R12-MODEL-6021 added `capital_by_forecaster`: an additive,
+    // defaulted field, so a version-1 record still decodes, with the map
+    // empty.
+    const SCHEMA_VERSION: u32 = 2;
 
     fn idempotency_key(&self) -> Option<String> {
         Some(format!("{IDEMPOTENCY_PREFIX}{}", self.cycle))
@@ -629,6 +650,7 @@ impl AttributionRecorded {
             unkeyed: pass.keyed.unkeyed(),
             by_source: pass.attribution.by_source.clone(),
             by_dimension,
+            capital_by_forecaster: capital_by_forecaster(pass)?,
         }))
     }
 }
@@ -636,6 +658,50 @@ impl AttributionRecorded {
 /// The per-forecaster figure R12-MODEL-6021 asks for.
 pub fn by_forecaster(pass: &AttributionPass) -> Result<BTreeMap<String, Decimal>> {
     pass.keyed.by(Dimension::Model)
+}
+
+/// The downstream capital impact R12-MODEL-6021 asks for beside the P&L:
+/// each order's deployed notional, split across the forecasters (the
+/// `Model` keys) stamped on it at release, in the equal shares
+/// [`KeyedAttribution::by`] splits its P&L in.
+///
+/// Keyed by order, once each, whatever number of positions the order's
+/// fills made: the deployed figure is already the order's total, and
+/// splitting it per position would count an order with two fills twice. An
+/// order with no stamped keys falls to the unattributed stand-in exactly as
+/// its P&L does. The grouping is refused if it does not sum to the total
+/// deployed notional, for the reason a P&L grouping is: a split that does
+/// not close credits somebody with capital nobody deployed.
+pub fn capital_by_forecaster(pass: &AttributionPass) -> Result<BTreeMap<String, Decimal>> {
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut totals: BTreeMap<String, Decimal> = BTreeMap::new();
+    for position in &pass.keyed.positions {
+        if !seen.insert(position.object_id.as_str()) {
+            continue;
+        }
+        let Some(deployed) = pass.deployed.get(&position.object_id) else {
+            continue;
+        };
+        let values = position.keys.values(Dimension::Model);
+        let weights = vec![Decimal::from_int(1); values.len()];
+        let shares = qip_learning_engine::attribution::split_pro_rata(*deployed, &weights)?;
+        for (value, share) in values.into_iter().zip(shares) {
+            *totals.entry(value.to_string()).or_insert(Decimal::ZERO) += share;
+        }
+    }
+    let keyed_total: Decimal = seen
+        .iter()
+        .filter_map(|order| pass.deployed.get(*order))
+        .copied()
+        .sum();
+    let sum: Decimal = totals.values().copied().sum();
+    if sum != keyed_total {
+        return Err(Error::numeric(format!(
+            "the capital by forecaster sums to {sum} against {keyed_total} deployed; a split \
+             that does not close credits somebody with capital nobody deployed"
+        )));
+    }
+    Ok(totals)
 }
 
 #[cfg(test)]

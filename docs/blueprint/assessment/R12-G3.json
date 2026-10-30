@@ -2159,7 +2159,7 @@
       "backend/crates/services/qip-lifecycle/src/demotion.rs",
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:595"
     ],
-    "gap": "VerificationResult contract driving demotion/retirement and solver policy weights.",
+    "gap": "2026-10-30 (lane L2-INTEL): a per-round re-verification that rolled back refuted production models was built and reverted unpushed, because its skeptic showed it would demote healthy models. RegimeShiftCritic::attack_model refutes any card whose evaluation predates the latest regime crossing, and Platform::latest_regime_crossing is the maximum over every subject. Card evaluations are written once at registration, so after any subject crossed, every production model would be refuted and rolled back round after round. The remaining step is per-subject regime crossings and a renewed evaluation before re-verifying, then demotion on refutation. The VerificationResult contract exists (qip-contracts challenge.rs) and the row's earlier text saying otherwise is stale.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4714,7 +4714,7 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:595-680",
       "backend/crates/services/qip-lifecycle/src/gates.rs"
     ],
-    "gap": "Replay and envelope-compatibility gates. No replay-evidence record or envelope-compatibility result is produced anywhere upstream of Platform::promote_model: qip-deepbrain rescoring held-out rows is a fit check, not a replay of journalled cycles, and no model output feeds RiskLimits, so there is no envelope for a candidate to be incompatible with. A kernel gate requiring either would refuse every promotion; the producers (a replay harness over the log and a risk-envelope probe) come first.",
+    "gap": "Replay and envelope-compatibility gates. No replay-evidence record or envelope-compatibility result is produced anywhere upstream of Platform::promote_model: qip-deepbrain rescoring held-out rows is a fit check, not a replay of journalled cycles, and no model output feeds RiskLimits, so there is no envelope for a candidate to be incompatible with. A kernel gate requiring either would refuse every promotion; the producers (a replay harness over the log and a risk-envelope probe) come first. 2026-10-30 (lane L2-INTEL), one sentence: still not built; a kernel gate requiring replay and envelope evidence would refuse every promotion until its producers exist (a replay of the candidate over the journaled tape, and an envelope-compatibility record), and no model output feeds a risk limit today, so the envelope check has no consumer to be compatible with.",
     "implemented": true,
     "tested": true,
     "integrated": true,
