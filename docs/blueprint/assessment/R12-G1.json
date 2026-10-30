@@ -3132,12 +3132,13 @@
   },
   {
     "id": "R12-LEDGER-8138",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "No change streams exist; nothing to assess.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf (no change stream)"
+      "infrastructure/terraform/modules/data/main.tf (no change stream)",
+      "backend/crates/tests/qip-acceptance/tests/derived_copies.rs no_decision_path_reads_a_balance_from_a_derived_copy (9fb4ebe3)"
     ],
-    "gap": "Not applicable until Spanner is used.",
+    "gap": "2026-10-30 (lane L1-MONEY, 9fb4ebe3): a guard pins the warehouse seam. Outside qip-mesh only the deep brain's insert-only outcome sink names BigQueryWarehouse; it never queries; no production source names a change-stream reader. Skeptic REFUTED it as one seam, not the property. Remaining:\n- qip-mesh is exempt, so a wrapper around BigQueryWarehouse::query would bypass the guard;\n- raw HTTP to bigquery.googleapis.com and Spanner change-stream reads (READ_<stream> SQL) are not detected;\n- the change-stream premise is vacuous;\n- the kernel's copy of ledger balances (observe_ledger_obligations, read by the survival gate) has no freshness bound or single named source;\n- the sink premise (.insert() also matches a set insert.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3147,10 +3148,10 @@
       "R12-LEDGER-8007"
     ],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cargo test -p qip-acceptance --test derived_copies (\"ok. 1 passed; 0 failed\")",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " 2026-10-30 lane L1-MONEY: three mutations fired, each restored with cp+cmp: a new warehouse caller after node.rs's test module; a query in the sink; a change-stream reader in tail.rs. One code-reviewer skeptic round REFUTED (see gap). Kept PARTIAL."
   },
   {
     "id": "R12-LEDGER-8139",
