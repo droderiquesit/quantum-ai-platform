@@ -2808,7 +2808,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs Platform::agent_of, Platform::keyed_by_agent, CalibrationJournal::of",
       "backend/crates/runtime/qip-kernel/src/platform.rs self_model_tests::ten_graded_theses_argued_by_one_analyst_score_that_analyst_not_its_runs"
     ],
-    "gap": "2026-10-25 (lane L2-INTEL): agents are scored on the default LEARN path and journaled. Hedges are not. A hedge is surveyed only under a declared hedge policy, no composition root declares one, and a default policy would be a target exposure, which owner decision 7 (no new risk budgets) holds. So a hedge score would never run on a default path. Awaiting a skeptic for the agent half.",
+    "gap": "2026-10-30 (lane L2-INTEL): the in-lane skeptic REFUTED 7bce976f on bar part 1. The default-path write in calibrate_resolved can drop hit_rate_by_agent with every qip-kernel test green, because the unit test calls CalibrationJournal::of directly and never drives stage_learn, calibrate_resolved or journal_cycle. Not re-reviewed (no third round). Behaviour change named by the skeptic: qip-deepbrain research.rs incompetent_specialists reads hit_rate_by_agent and can now fire; it was dead while every key was a run id. Hedges stay unscored: no composition root declares a hedge policy, and owner decision 7 holds one.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2816,7 +2816,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib self_model_tests",
     "work_item": "",
     "size": "M",
     "notes": " 2026-10-25 L2-INTEL: mutations, each fired, restored by copy + cmp: the feedback engine handed unkeyed evaluations; CalibrationJournal::of leaving hit_rate_by_agent empty; agent_of matching no contributor. Each fails ten_graded_theses_argued_by_one_analyst_score_that_analyst_not_its_runs."

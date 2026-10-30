@@ -30913,7 +30913,9 @@ mod central_sizing_tests {
         card.drift_threshold = 0.2;
         card.drift_score = 0.1;
         let mut registry = ModelRegistry::new();
-        registry.register(card);
+        registry
+            .register(card)
+            .expect("an empty registry admits a card");
         platform.observe_model_drift(&registry);
         assert!(platform.drifted_models().is_empty());
         assert_eq!(

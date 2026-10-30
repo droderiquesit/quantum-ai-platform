@@ -181,6 +181,17 @@ pub struct EvaluationRecord {
 /// a second pointer beside it, so the alias and the stage cannot disagree.
 pub const PRODUCTION_ALIAS: &str = "production";
 
+/// How many model cards one registry holds before it refuses a new one.
+///
+/// The deep brain registers a card for every fit of every subject and never
+/// removes one, so without a cap the registry grows for as long as the
+/// process runs. 4,096 is far above any working set this platform has run
+/// (a subject fitted every learning round for a year is a few hundred cards)
+/// and small enough that the restore's full replay of registrations stays
+/// cheap. Refused at the cap rather than evicted (R12-MODEL-9003): see
+/// [`ModelRegistry::register`].
+pub const MAX_CARDS: usize = 4_096;
+
 /// How many alias moves a card retains, newest last. A model that flaps
 /// between rollback and reactivation would otherwise grow its card without
 /// bound; whoever journals the move holds the full history.
@@ -783,8 +794,24 @@ impl ModelRegistry {
         Self::default()
     }
 
-    pub fn register(&mut self, card: ModelCard) {
-        self.cards.insert(card.reference(), card);
+    /// Register `card`, or replace the card already held under its reference.
+    ///
+    /// Refuses a new reference once the registry holds [`MAX_CARDS`] cards
+    /// (R12-MODEL-9003). A replacement is always admitted: it does not grow
+    /// the registry. Refused rather than evicted, because a card the event log
+    /// still names and the registry silently dropped is a replay that cannot
+    /// find it; the refusal is the visible control, and the caller counts and
+    /// journals it.
+    pub fn register(&mut self, card: ModelCard) -> Result<()> {
+        let reference = card.reference();
+        if !self.cards.contains_key(&reference) && self.cards.len() >= MAX_CARDS {
+            return Err(Error::denied(format!(
+                "{reference} is not registered: the registry holds {MAX_CARDS} model cards, its \
+                 cap; retire and archive cards from the event log before registering more"
+            )));
+        }
+        self.cards.insert(reference, card);
+        Ok(())
     }
 
     pub fn len(&self) -> usize {

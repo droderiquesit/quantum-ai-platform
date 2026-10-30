@@ -626,6 +626,9 @@ impl EvolutionEngine {
         // A restarted process's registry is empty; the log is not
         // (R12-MODEL-9003). Refilled once, before anything reads it.
         self.learning.restore_registry(platform);
+        for (refused, reason) in self.learning.take_cap_refusals() {
+            platform.refuse_model_registration(&refused, &reason, now)?;
+        }
         // The standing gate, re-asked at this round's instant and copied
         // into the platform before the door is resolved — and asked before
         // a subject is chosen, so a licence that has lapsed is withdrawn
@@ -668,6 +671,17 @@ impl EvolutionEngine {
                 &subject,
                 refusal.message(),
             )));
+        }
+        // A full registry would refuse the fit's card after the fit had run,
+        // so the round is refused before it starts, visibly (R12-MODEL-9003).
+        if self.learning.registry_full() {
+            let reason = format!(
+                "the model registry holds {} cards, its cap; no fit for {} is started",
+                qip_ai::registry::MAX_CARDS,
+                subject.as_str()
+            );
+            platform.refuse_model_registration(subject.as_str(), &reason, now)?;
+            return Ok(Some(LearningRound::refused_at_door(&subject, reason)));
         }
         // The regime the platform classified for this subject, read once and
         // handed to the desk: the key its model-class board scores under.
@@ -2247,6 +2261,66 @@ mod tests {
             error.message().contains("mutated a different parent"),
             "the refusal does not name the cause: {}",
             error.message()
+        );
+        Ok(())
+    }
+
+    /// R12-MODEL-9003: a desk whose registry is at its cap starts no fit,
+    /// and the refusal is counted and journaled naming the subject, so
+    /// learning that stopped says why on the log. Mutation: drop the
+    /// `registry_full` check in `maybe_learn` — the round fits, the
+    /// registry refuses the card after the fit has run, and the round
+    /// fails instead of being refused; the journaled-refusal assertion fails.
+    #[test]
+    fn a_full_registry_refuses_the_round_and_journals_why() -> Result<()> {
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        for _ in 0..((engine.config.minimum_bars as i64 + 30) * 6) {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        for n in 0..qip_ai::registry::MAX_CARDS {
+            engine
+                .learning
+                .registry_mut()
+                .register(qip_ai::registry::ModelCard::new(
+                    qip_core::ModelId::from_string(format!("m-full-{n}")),
+                    "filler",
+                    format!("9.{n}.0"),
+                    "research",
+                    start(),
+                ))?;
+        }
+        assert!(
+            engine.learning.registry_full(),
+            "premise: the registry is full"
+        );
+
+        let mut refused = None;
+        for cycle in 1..=16u64 {
+            if let Some(round) = engine.maybe_learn(&mut platform, cycle, now)? {
+                refused = Some(round);
+                break;
+            }
+            now = now.saturating_add(Duration::from_mins(1));
+        }
+        let round = refused.ok_or_else(|| Error::not_found("a learning round"))?;
+        let reason = round
+            .refused_by_door
+            .as_deref()
+            .ok_or_else(|| Error::invalid("a full registry started a fit"))?;
+        assert!(reason.contains("its cap"), "{reason}");
+        assert!(
+            round.registration.is_none(),
+            "a card was registered past the cap"
+        );
+        let journaled = platform.refused_model_registrations()?;
+        assert!(
+            journaled
+                .iter()
+                .any(|record| record.refused == round.subject && record.reason == reason),
+            "the refusal is not on the log: {journaled:?}"
         );
         Ok(())
     }

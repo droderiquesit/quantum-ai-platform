@@ -676,7 +676,7 @@ fn production_model(registry: &mut ModelRegistry, name: &str, at: Timestamp) -> 
     );
     card.stage = qip_ai::registry::ModelStage::Validation;
     let reference = card.reference();
-    registry.register(card);
+    registry.register(card)?;
     registry.record_evaluation(
         &reference,
         EvaluationRecord {
@@ -1251,7 +1251,7 @@ fn a_card_with_no_name_or_no_version_cannot_mint_a_judgement_the_replay_would_re
         nameless_reference, "@1.0",
         "a card with no name must produce exactly the reference the mint has to refuse"
     );
-    registry.register(nameless);
+    registry.register(nameless)?;
     registry.record_evaluation(
         &nameless_reference,
         EvaluationRecord {
