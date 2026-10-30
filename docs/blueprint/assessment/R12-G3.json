@@ -2798,13 +2798,15 @@
   {
     "id": "R12-MODEL-10123",
     "status": "PARTIAL",
-    "current": "LEARN calls calibrate_resolved/learn_from, score_declined/evaluate_alternatives and score_filled; cost-router keeps reputation. Hedges and agents not scored.",
+    "current": "LEARN calls calibrate_resolved/learn_from, score_declined/evaluate_alternatives and score_filled; cost-router keeps reputation. Hedges and agents not scored. Since 2026-10-25 LEARN scores each panel agent from the theses it argued, keyed by agent: Platform::keyed_by_agent maps each contributor run id to its roster agent before FeedbackEngine::process, and the cycle journal's CalibrationJournal carries hit_rate_by_agent. Before this, contributors were run ids, unique per run, so every agent rate was withheld below the ten-episode sample and agents were never scored. The same key had let the lesson bar's two distinct contributors be met by one agent run twice.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:8901 learn_from",
       "backend/crates/runtime/qip-kernel/src/platform.rs:17136 evaluate_alternatives",
-      "backend/crates/services/qip-cost-router/src/reputation.rs"
+      "backend/crates/services/qip-cost-router/src/reputation.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::agent_of, Platform::keyed_by_agent, CalibrationJournal::of",
+      "backend/crates/runtime/qip-kernel/src/platform.rs self_model_tests::ten_graded_theses_argued_by_one_analyst_score_that_analyst_not_its_runs"
     ],
-    "gap": "Agent and hedge scoring.",
+    "gap": "2026-10-25 (lane L2-INTEL): agents are scored on the default LEARN path and journaled. Hedges are not. A hedge is surveyed only under a declared hedge policy, no composition root declares one, and a default policy would be a target exposure, which owner decision 7 (no new risk budgets) holds. So a hedge score would never run on a default path. Awaiting a skeptic for the agent half.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2815,7 +2817,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " 2026-10-25 L2-INTEL: mutations, each fired, restored by copy + cmp: the feedback engine handed unkeyed evaluations; CalibrationJournal::of leaving hit_rate_by_agent empty; agent_of matching no contributor. Each fails ten_graded_theses_argued_by_one_analyst_score_that_analyst_not_its_runs."
   },
   {
     "id": "R12-RES-10124",
