@@ -819,6 +819,10 @@ impl EvidenceFabric {
                 record.id, record.source_identity
             )));
         }
+        // The statement is public and mutable after construction, so the
+        // bound is held here too: this is the only door into the fabric and,
+        // through it, into the journal (R12-DATA-1041).
+        crate::evidence::check_statement_length(&record.id, &record.statement)?;
         if self.get(&record.id).is_some() {
             return Err(Error::invalid(format!(
                 "evidence `{}` is already held; a claim admitted twice would corroborate itself",

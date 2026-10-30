@@ -340,6 +340,12 @@ pub struct EvolutionEngine {
     /// equity curve -- which the gate then reads as a strategy with no
     /// volatility rather than as a strategy that never traded.
     universe: Universe,
+    /// The platform's universe history as it stood when the current round
+    /// began (R12-TICK-2090), snapshotted in [`Self::maybe_turn`] so every
+    /// candidate of one round is backtested against the same membership,
+    /// delistings and outages, and a round never reads a delisting a later
+    /// round learned of.
+    universe_history: qip_financial::history::UniverseHistory,
     history: BTreeMap<String, Vec<Bar>>,
     foundries: BTreeMap<String, StrategyFoundry>,
     /// Fused posterior per instrument, as the tick desk last stated it
@@ -408,6 +414,7 @@ impl EvolutionEngine {
             adapter,
             seed,
             universe,
+            universe_history: qip_financial::history::UniverseHistory::new(),
             history: BTreeMap::new(),
             foundries: BTreeMap::new(),
             priors: BTreeMap::new(),
@@ -908,6 +915,7 @@ impl EvolutionEngine {
             return Ok(None);
         };
 
+        self.universe_history = platform.universe_history().clone();
         let summary = self.turn(platform, &subject, bars, now)?;
         self.stats.rounds += 1;
         self.stats.registered += summary.registered as u64;
@@ -1385,7 +1393,12 @@ impl EvolutionEngine {
             initial_capital: tradeable_capital(bars, self.config.max_weight)?,
             ..BacktestConfig::default()
         };
-        let result = Backtester::new(config)?.run(&mut harness, &mut clock, &self.universe)?;
+        let result = Backtester::new(config)?.run_with_history(
+            &mut harness,
+            &mut clock,
+            &self.universe,
+            &self.universe_history,
+        )?;
 
         // A run that never traded is not a strategy with no volatility; it is
         // no evidence at all. Refusing here is what stops a flat line reaching

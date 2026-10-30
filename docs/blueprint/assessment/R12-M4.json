@@ -1538,9 +1538,12 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:15507 attribution periods",
       "backend/crates/services/qip-learning-engine/src/attribution.rs:142-155 residual/reconciles",
-      "backend/crates/libs/qip-financial/src/position_record.rs:65 ExitPlan"
+      "backend/crates/libs/qip-financial/src/position_record.rs:65 ExitPlan",
+      "docs/adr/0183-a-position-is-opened-only-with-an-exit-plan-its-instruments-stated-terms-admit.md",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::exit_plan_for, position_exit_plan)",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs a_short_thesis_on_a_fund_inside_its_lockup_is_refused_with_the_lockup_named_and_nothing_is_held"
     ],
-    "gap": "2026-10-25: owner decision needed: refusing to open a position without an exit plan breaks four private-fund lockup tests, because a short-horizon thesis on a locked-up asset has no admissible exit unless a secondary sale escapes the lockup; the owner must say whether such a thesis is refused or the secondary exit counts as its plan (attempted diff kept outside the tree).",
+    "gap": "2026-10-30: skeptic REFUTED: construct_from now dates an exit plan for every leg and refuses any leg whose plan falls inside a declared lockup (ADR 0183), but Platform::submit_order is public and checks no plan, resumed positions carry none, and the attribution half has no per-position reconciliation test; remaining step is the plan check inside submit_order, plans rebuilt on resume, and a per-position attribution test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1548,10 +1551,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution. 2026-10-25: attempted in the asset lane and not committed: the exit-plan refusal fails four lockup tests in qip-kernel; the conflict is a product decision, not a code defect."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution. 2026-10-25: attempted in the asset lane and not committed: the exit-plan refusal fails four lockup tests in qip-kernel; the conflict is a product decision, not a code defect. 2026-10-30: ADR 0183 decides the owner question under the 2026-10-24 delegation: a declared lockup is a term the exit plan respects, so a thesis shorter than a running lockup is refused at construction. Mutation: pass None for the lockup in exit_plan_for; the locked-up fund is sized and the test fails. Five mark-focused fixtures' lockups shortened to an expired one year; the ASSET-4067 held-record assertion moved from the lockup's dated return to the catalogue exit for an expired lockup (the running-lockup return stays tested in valuation_plane.rs); the skeptic counts that restatement as lost held-record coverage. Skeptic (security-engineer) REFUTED as in the gap."
   },
   {
     "id": "R12-ASSET-4070",
@@ -1581,9 +1584,13 @@
     "current": "LifeStage implements the nine stages with only legal edges and tests; it has no caller outside its crate. The kernel tracks PositionLifecycle (Opened/Held/Flagged/Unwinding/Closed) instead.",
     "evidence": [
       "backend/crates/libs/qip-portfolio/src/life_stage.rs:15-27 LifeStage",
-      "backend/crates/libs/qip-portfolio/src/life_stage.rs:120-159 tests (exit_cannot_reach_attribute_without_settling_first)"
+      "backend/crates/libs/qip-portfolio/src/life_stage.rs:120-159 tests (exit_cannot_reach_attribute_without_settling_first)",
+      "backend/crates/runtime/qip-kernel/src/position_life.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::book_desk_fill, register_settlement, stage_learn settle_and_attribute)",
+      "backend/crates/runtime/qip-kernel/tests/position_life.rs an_exited_unsettled_position_is_not_attributed",
+      "backend/crates/libs/qip-portfolio/src/life_stage.rs exit_cannot_reach_attribute_without_settling_first"
     ],
-    "gap": "2026-10-24 (re-read against the tree): qip_portfolio::LifeStage is named outside its crate only as a display string (qip-kernel asset_class_registry.rs LifeStage::Discover.as_str()); no kernel position moves through it. The kernel's Portfolio tracks PositionLifecycle instead and never calls flag_position or begin_unwind. Missing caller: the kernel cycle advancing a per-position LifeStage with its checked transitions - acquire/resize/exit on fills, settle from SettlementBook (register_settlement), attribute only in LEARN after settle - with a kernel test that an exited, unsettled position is not attributed. Plain code.",
+    "gap": "2026-10-25: skeptic REFUTED on part 2: the kernel walks every desk position discover to attribute through LifeStage::transition and attributes only settled lives, but on the default simulated broker no position reaches Exit (immediate_fill_fraction 0.6 never takes a sale to flat, and a flip needs a borrow reading observe_borrow has no production caller for), so Exit/Settle/Attribute run only in a test; remaining step is a default-path way to exit in full (a fill rule that can reach flat or a production borrow source).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1591,10 +1598,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test position_life; cargo test -p qip-portfolio life_stage",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: 8cbcf65a (merged in 1c07e5c0): fills advance a per-position LifeStage from the lot's signed quantity (open, resize via Monitor, exit, flip), settlement is scheduled from the venue calendar, LEARN settles due exits and attributes only lives at Settle; bounded (1024 exited, 64 attributed kept). Seven mutations each failed (LEARN attributing Exit, Settle disabled, calendar ignored, settle_and_attribute uncalled, flip suppressed, no-calendar read as settled, resize inventing a life). Skeptic (code-reviewer): unit proof and single writer hold; REFUTED on default path."
   },
   {
     "id": "R12-ASSET-4072",
