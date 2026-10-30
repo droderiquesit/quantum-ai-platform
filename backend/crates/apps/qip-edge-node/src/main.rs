@@ -163,6 +163,23 @@ const POLL_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 const MESH_CAPACITY: usize = 16;
 
 fn main() {
+    // The one subcommand, read before any configuration: it reads a spool
+    // and serves nothing, so it must not need the variables a node does.
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.first().map(String::as_str) == Some("replay-manifests") {
+        match qip_edge_node::replay::run(&arguments[1..]) {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+                return;
+            }
+            Err(error) => {
+                eprintln!("qip-edge-node: {}", error.message());
+                std::process::exit(EX_CONFIG);
+            }
+        }
+    }
     match run() {
         Ok(()) => {}
         Err(error) if error.message().starts_with("configuration:") => {
@@ -584,6 +601,9 @@ fn run() -> Result<()> {
     // Recorded on every pass marker, so a replay can refuse to call a pass
     // reproduced under a configuration it was not run under.
     let config_digest = qip_core::sha256_hex(format!("{cell_config:?}").as_bytes());
+    // Printed before widening: it is what `replay-manifests --cell-digest`
+    // takes, and the replay widens it with the gateway settings it assumes.
+    println!("qip-edge-node: cell configuration digest {config_digest}");
     for line in config.quote_limits.banner_lines() {
         println!("{line}");
     }

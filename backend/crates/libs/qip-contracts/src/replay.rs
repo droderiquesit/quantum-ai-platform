@@ -143,19 +143,58 @@ pub struct PassMarker {
 /// hand-picked subset of its fields: a hand-picked list is exactly the shape
 /// of bug that leaves one field — `gateway_seed`, say — silently free to vary
 /// between two passes a caller believes were "reproduced".
+///
+/// A manifest crossing between brains is read only through
+/// [`StatedManifest`]: one that arrives without its assumptions or its model
+/// versions is refused on deserialisation (R12-CONTRACT-7073). Until
+/// 2026-10-25 both fields were `#[serde(default)]`, so a manifest stripped of
+/// them in transit was read back as one that had never stated them and
+/// verified under the marker-only hash — a replay "reproduced" under a fill
+/// model nobody could name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "StatedManifest")]
 pub struct ReplayManifest {
     marker: PassMarker,
     /// What the run assumed about the world it simulated against. Absent
-    /// (not blank) on a manifest that never stated them, which hashes as it
-    /// always did.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// only on a manifest built in memory by [`ReplayManifest::new`], which
+    /// never deserialises.
+    #[serde(skip_serializing_if = "Option::is_none")]
     assumptions: Option<ReplayAssumptions>,
     /// The model versions the run used, by component: the fill model, the
-    /// impact model, the latency model. Empty when none were stated.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// impact model, the latency model.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     model_versions: BTreeMap<String, String>,
     reproducibility_hash: String,
+}
+
+/// The wire form of a [`ReplayManifest`]: every field required, so serde
+/// itself refuses a manifest missing one and names it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatedManifest {
+    marker: PassMarker,
+    assumptions: ReplayAssumptions,
+    model_versions: BTreeMap<String, String>,
+    reproducibility_hash: String,
+}
+
+impl TryFrom<StatedManifest> for ReplayManifest {
+    type Error = Error;
+
+    /// Refuses a blank assumption or a missing or blank model version, as
+    /// [`ReplayManifest::with_assumptions`] does. The hash is carried as
+    /// read, not recomputed, so a tampered one still surfaces through
+    /// [`ReplayManifest::is_consistent`] rather than being silently healed.
+    fn try_from(stated: StatedManifest) -> Result<Self> {
+        stated.assumptions.check()?;
+        Self::check_versions(&stated.model_versions)?;
+        Ok(Self {
+            marker: stated.marker,
+            assumptions: Some(stated.assumptions),
+            model_versions: stated.model_versions,
+            reproducibility_hash: stated.reproducibility_hash,
+        })
+    }
 }
 
 /// What a simulated run assumed about clock, latency, queue position, fills

@@ -1660,14 +1660,20 @@
   {
     "id": "R12-CONTRACT-7073",
     "status": "PARTIAL",
-    "current": "SimulatedGateway::replay_assumptions renders ReplayAssumptions from the ExchangeSettings the venue was built with (qip-edge-node/src/gateway.rs assumptions_of: latency and jitter, rejection probability, fees, with none stated where a setting is zero), and SimulatedGateway::default_settings is the one function new() and the node digest both read. main.rs widens the pass marker config_digest to cover those settings (widen_config_digest) on the simulated path, so a node under other gateway settings records a different digest. ReplayManifest::with_assumptions accepts the rendered text and model versions. The PassMarker topic and schema lock are untouched and no topic is added.",
+    "current": "SimulatedGateway::replay_assumptions renders ReplayAssumptions from the ExchangeSettings the venue was built with (qip-edge-node/src/gateway.rs assumptions_of: latency and jitter, rejection probability, fees, with none stated where a setting is zero), and SimulatedGateway::default_settings is the one function new() and the node digest both read. main.rs widens the pass marker config_digest to cover those settings (widen_config_digest) on the simulated path, so a node under other gateway settings records a different digest. ReplayManifest::with_assumptions accepts the rendered text and model versions. The PassMarker topic and schema lock are untouched and no topic is added. 2026-10-30 lane L5-EDGE: ReplayManifest deserialises only through StatedManifest, every field required and deny_unknown_fields, a blank assumption or missing model version refused as with_assumptions refuses it. qip_edge_node::replay builds one manifest per PassMarked record a node spooled, under the simulated gateway's default assumptions and model versions, refusing a marker whose config_digest is not the cell digest widened with those settings and refusing an empty spool; it reads a copy of the spool so recovery never truncates a running node's journal. `qip-edge-node replay-manifests --spool <dir> --cell-digest <hex>` runs it, and the node prints its cell configuration digest at start-up.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/gateway.rs::assumptions_of",
       "backend/crates/apps/qip-edge-node/src/gateway.rs::widen_config_digest",
       "backend/crates/apps/qip-edge-node/src/main.rs (config_digest widened after the venue choice)",
-      "backend/crates/apps/qip-edge-node/tests/gateway.rs::a_replay_manifest_built_from_the_gateways_settings_names_them_and_a_gateway_with_other_settings_yields_other_assumptions_and_a_different_config_digest"
+      "backend/crates/apps/qip-edge-node/tests/gateway.rs::a_replay_manifest_built_from_the_gateways_settings_names_them_and_a_gateway_with_other_settings_yields_other_assumptions_and_a_different_config_digest",
+      "backend/crates/libs/qip-contracts/src/replay.rs::StatedManifest",
+      "backend/crates/apps/qip-edge-node/src/replay.rs::manifest_for",
+      "backend/crates/apps/qip-edge-node/src/main.rs (replay-manifests subcommand)",
+      "backend/crates/apps/qip-edge-node/tests/replay.rs::a_node_journal_replayed_under_different_gateway_settings_is_refused_on_the_marker_digest",
+      "backend/crates/apps/qip-edge-node/tests/replay.rs::replaying_a_spool_with_a_torn_tail_leaves_the_spool_byte_for_byte_as_it_was",
+      "backend/crates/libs/qip-contracts/tests/replay_manifest.rs::a_manifest_read_off_the_wire_missing_any_field_is_refused_and_a_complete_one_round_trips_every_field"
     ],
-    "gap": "No replayer exists (2026-10-24): grep -rln ReplayManifest backend/crates finds only qip-contracts, so nothing constructs a manifest from a recorded marker and replay_assumptions at replay time; the manifest is built only in tests. The digest widening runs in the node binary, the assumptions rendering is exercised by the test only. Closing needs a replay tool that reads recorded markers and the run gateway settings, which is not designed.",
+    "gap": "2026-10-30 (lane L5-EDGE, skeptic HOLDS-AS-PARTIAL): the manifest carries no universe, no time window (one pass instant and tape offsets) and dataset partitions only for control streams; ReplayManifest::new still builds one without assumptions, nested AppliedReadings options are not refused when absent, and nothing carries a manifest between brains — the replay is an operator subcommand with markers only under QIP_VENUE_FEED=simulated.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1675,10 +1681,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test gateway",
+    "verification": "cargo test -p qip-contracts --test replay_manifest; cargo test -p qip-edge-node --test replay --test gateway",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 section 16: built, PARTIAL kept because the consumer of the manifest does not exist. Mutation fired: hard-coding the no-refusal text in assumptions_of made two gateways with different rejection probabilities yield equal assumptions and the test failed (premise: both gateways build and the default matches new())."
+    "notes": "2026-10-24 ADR 0155 section 16: built, PARTIAL kept because the consumer of the manifest does not exist. Mutation fired: hard-coding the no-refusal text in assumptions_of made two gateways with different rejection probabilities yield equal assumptions and the test failed (premise: both gateways build and the default matches new()). 2026-10-30 lane L5-EDGE: mutations fired (5): skip the config_digest comparison; let an empty spool agree; put a serde default back on the wire form's assumptions; skip the assumption check on deserialise; open the spool in place instead of the copy. The widened digest is taken from SimulatedGateway::default_settings, the settings NodeGateway::open builds the simulator with; release tolerance and listing permissions are not ExchangeSettings and are not in the digest, and neither has a production caller."
   },
   {
     "id": "R12-CONTRACT-7074",
