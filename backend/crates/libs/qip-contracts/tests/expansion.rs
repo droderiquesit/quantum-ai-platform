@@ -5,7 +5,7 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_contracts::expansion::{
-    CurriculumItem, EffectAttribution, GapSignal, GoalSpec, InterventionPlan,
+    CurriculumItem, EffectAttribution, GapSignal, GoalSpec, InterventionPlan, OntologyPatch,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -61,6 +61,14 @@ fn gap() -> Value {
     })
 }
 
+fn patch() -> Value {
+    json!({
+        "family": "event", "name": "candidate-macro", "version": 1,
+        "schema": "{\"type\":\"object\"}", "cited_observations": ["ambient-1"],
+        "rationale": "CPI printed four sigma from typical and no event type names it"
+    })
+}
+
 fn item() -> Value {
     json!({
         "research_question": "does CPI lead rates", "expected_information_value": 1.5,
@@ -76,6 +84,7 @@ fn decoders() -> Vec<(&'static str, Value, Decode)> {
         ("goal", goal(), |b| GoalSpec::decode(b).map(|_| ())),
         ("plan", plan(), |b| InterventionPlan::decode(b).map(|_| ())),
         ("gap", gap(), |b| GapSignal::decode(b).map(|_| ())),
+        ("patch", patch(), |b| OntologyPatch::decode(b).map(|_| ())),
         ("item", item(), |b| CurriculumItem::decode(b).map(|_| ())),
         ("attribution", attribution(), |b| {
             serde_json::from_slice::<EffectAttribution>(b)
@@ -196,6 +205,7 @@ fn a_blank_or_empty_listed_field_is_refused_naming_the_field() {
                 "identification",
                 "gap_class",
                 "reversibility",
+                "family",
             ]
             .contains(&key.as_str())
             {

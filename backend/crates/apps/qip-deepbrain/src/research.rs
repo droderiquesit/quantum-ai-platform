@@ -51,15 +51,15 @@
 //!   only through an installed `PackageSigner` (ADR 0110); without one it is
 //!   held unsigned and nothing is written.
 
-use qip_agents::registries::OntologyRegistry;
+use qip_agents::registries::{CapabilityRegistry, OntologyRegistry};
 use qip_contracts::ambient::{
     AcquisitionCriteria, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
     AuthorityBoundary, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
     Pathway, RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
 };
 use qip_contracts::expansion::{
-    CapabilityEntry, GapClass, OntologyTypeFamily, OntologyTypeSpec, SyntheticEpisode,
-    SyntheticGenerator,
+    CapabilityEntry, GapClass, OntologyPatch, OntologyTypeFamily, OntologyTypeSpec,
+    SyntheticEpisode, SyntheticGenerator,
 };
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
@@ -83,6 +83,7 @@ use qip_expansion::meta::{
     DomainResidual, MarginalValue, MetaIntelligence, MetaPolicy, ReputationKey, WorkBid, WorkKind,
     resource_str,
 };
+use qip_expansion::plan::AcquisitionAction;
 use qip_kernel::Platform;
 use qip_kernel::evidence_intake::{PoisoningClass, PoisoningFinding, PoisoningThresholds};
 use qip_observability::metrics::{Metrics, labels, names};
@@ -104,6 +105,9 @@ use crate::now::NowEstimator;
 /// windows; handing them a whole session's history costs a copy per cycle
 /// and buys nothing.
 pub const SWEEP_PRICES: usize = 256;
+/// The kernel's feature-store prefix for a numeric reference-data field
+/// (`Platform::observe`, `SensedRecord::ReferenceData`).
+const REFERENCE_FEATURE_PREFIX: &str = "reference/";
 /// Resolved predictions before a hit rate is read as a finding.
 pub const MIN_EVALUATED: usize = 20;
 /// The hit rate below which a class or agent is a gap: worse than a coin.
@@ -181,7 +185,7 @@ pub const REFLEX_PACKAGES_NAMESPACE: &str = qip_storage::classes::REFLEX_PACKAGE
 /// `AcquisitionAction` names) and `outcome` (`gathered`, `not_executable`).
 pub const RESEARCH_ACQUISITIONS: &str = "qip_research_acquisitions_total";
 /// Research campaigns judged, by `outcome` (`promoted`, `null_recorded`,
-/// `refused`, `waiting`).
+/// `refused`, `waiting`, and ADR 0142 d5's `installed` and `withdrawn`).
 pub const EXPANSION_CAMPAIGNS: &str = "qip_expansion_campaigns_total";
 /// Compute units the market granted, by `resource`.
 pub const META_UNITS_GRANTED: &str = "qip_meta_units_granted_total";
@@ -659,6 +663,20 @@ pub struct ResearchRound {
     pub acquisitions: BTreeMap<&'static str, usize>,
     /// Campaigns judged, by outcome.
     pub campaigns: BTreeMap<&'static str, usize>,
+    /// Promotions the Capability Registry refused to record, with why
+    /// (R12-EXPAND-6062): the campaign concluded and the verb did not move.
+    pub capabilities_refused: Vec<String>,
+    /// One validated ontology patch per ontology gap this sweep raised
+    /// (R12-EXPAND-6029), each registered as a candidate type citing the gap
+    /// (R12-EXPAND-1021), in signal order.
+    pub ontology_patches: Vec<OntologyPatch>,
+    /// Patches the ontology registry refused, with why: a candidate the
+    /// registry already holds at that version, or one the contract refused.
+    pub ontology_patches_refused: Vec<String>,
+    /// Simulations constructed for started items asking for one
+    /// (R12-EXPAND-6049): the scenario and the episode saying it was
+    /// generated, by question.
+    pub constructed: Vec<ConstructedSimulation>,
     /// Reflex packages, by outcome.
     pub packages: BTreeMap<&'static str, usize>,
     /// Every ambient signal this sweep routed, in routing order, for the
@@ -866,6 +884,115 @@ pub struct ScoutRequest {
     pub entities: Vec<String>,
 }
 
+/// A simulation constructed for a started research item whose acquisition
+/// is `ConstructSimulation` (R12-EXPAND-6049): the scenario, built from the
+/// latest measured move of every subject the item's evidence names, and the
+/// episode saying it was generated from that tape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConstructedSimulation {
+    pub question: String,
+    pub scenario: Scenario,
+    pub episode: SyntheticEpisode,
+}
+
+/// Construct the simulation a started item asks for, over the subjects its
+/// derivation's evidence names (`subject:<id>` from the anomaly mapper,
+/// `contested:<id>/<attribute>` from the contested-evidence detectors), each
+/// shocked by the latest measured move on its tape. Gathered with the digest
+/// of those inputs as their bits; not executable, and said so, when the
+/// evidence names no subject the platform holds a tape for — a simulation
+/// over a subject nobody priced would test the missing link against nothing.
+fn construct_simulation(
+    platform: &Platform,
+    question: &str,
+    lineage: &qip_expansion::desk::Lineage,
+    now: Timestamp,
+) -> Result<(AcquisitionRecord, Option<ConstructedSimulation>)> {
+    let history = platform.price_history();
+    let mut subjects: BTreeSet<String> = BTreeSet::new();
+    for item in &lineage.derivation.evidence {
+        if let Some(subject) = item.strip_prefix("subject:") {
+            subjects.insert(subject.to_string());
+        } else if let Some(rest) = item.strip_prefix("contested:")
+            && let Some((subject, _)) = rest.split_once('/')
+        {
+            subjects.insert(subject.to_string());
+        }
+    }
+    let mut inputs = question.to_string();
+    let mut shocks: Vec<FactorShock> = Vec::new();
+    for subject in &subjects {
+        let Some(prices) = history.get(subject) else {
+            continue;
+        };
+        let [.., previous, last] = prices.as_slice() else {
+            continue;
+        };
+        let moved = last / previous - 1.0;
+        if !moved.is_finite() || moved == 0.0 {
+            continue;
+        }
+        inputs.push_str(&format!(
+            "|{subject}|{}|{}",
+            previous.to_bits(),
+            last.to_bits()
+        ));
+        shocks.push(FactorShock::new(format!("price:{subject}"), moved, 1.0));
+    }
+    let record = |outcome| AcquisitionRecord {
+        question: question.to_string(),
+        action: lineage.action,
+        effect: qip_expansion::executor::AcquisitionEffect::ResearchOnly,
+        outcome,
+        at: now,
+    };
+    if shocks.is_empty() {
+        return Ok((
+            record(AcquisitionOutcome::NotExecutable {
+                reason: format!(
+                    "`{question}` names {} subject(s) ({:?}) and the platform holds a moving \
+                     tape for none of them; a simulation needs a measured move to shock",
+                    subjects.len(),
+                    subjects
+                ),
+            }),
+            None,
+        ));
+    }
+    let scenario = Scenario {
+        name: format!("constructed:{question}"),
+        description: format!(
+            "hypothetical, constructed for the research item `{question}` ({:?}): the latest \
+             measured move of each subject its evidence names, repeated over one day",
+            lineage.class
+        ),
+        shocks,
+        stressed_correlation: None,
+        liquidity_multiplier: 1.0,
+        historical: false,
+    };
+    scenario.validate()?;
+    let digest = qip_core::hash::sha256_hex(inputs.as_bytes());
+    let episode = SyntheticEpisode::new(
+        scenario.name.clone(),
+        SyntheticGenerator::Conditional,
+        digest.clone(),
+        None,
+    )?;
+    let records = scenario.shocks.len();
+    Ok((
+        record(AcquisitionOutcome::Gathered {
+            dataset_digest: digest,
+            records,
+        }),
+        Some(ConstructedSimulation {
+            question: question.to_string(),
+            scenario,
+            episode,
+        }),
+    ))
+}
+
 /// A stress scenario conditioned on one signal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConditionalScenario {
@@ -930,8 +1057,10 @@ impl ResearchRound {
              halted, {} outranked; {} tick campaign(s) opened; {} NOW surprise(s) woke {:?}; \
              evidence: {} claim(s) held, poisoning {:?}; market: {} unit(s) granted, declined \
              {:?}, {} window(s) measured, {} retired, {} specialist population(s) proposed; \
-             acquisitions {:?}; campaigns {:?}; reflex packages {:?}; outputs advisory, none \
-             promoted; capabilities are paper and shadow only",
+             acquisitions {:?}; campaigns {:?}; capability register refused {:?}; reflex \
+             packages {:?}; contested claims {} ({} unexplained), knowledge deltas {} ({} \
+             conflicts); outputs advisory, none promoted; capabilities are paper and shadow \
+             only",
             self.anomalies,
             self.raised,
             self.unclassified,
@@ -955,7 +1084,12 @@ impl ResearchRound {
             self.specialists_proposed,
             self.acquisitions,
             self.campaigns,
+            self.capabilities_refused,
             self.packages,
+            self.contested_claims,
+            self.unexplained_subjects,
+            self.knowledge_deltas,
+            self.knowledge_conflicts,
         )
     }
 }
@@ -1029,6 +1163,11 @@ pub struct ResearchLoop {
     last_window: BTreeMap<String, (u32, f64)>,
     acquisitions: VecDeque<AcquisitionRecord>,
     capabilities: VecDeque<CapabilityEntry>,
+    /// Every promoted capability by verb (R12-EXPAND-6062, ADR 0158 d15):
+    /// the deque above is the recent history, this is the register a
+    /// consumer looks a verb up in, and it refuses the same implementation
+    /// twice where the deque would hold it twice.
+    capability_registry: CapabilityRegistry,
     packages: VecDeque<CompiledReflex>,
     /// The Brain Registry entry of every specialist a NOW surprise can wake,
     /// by specialist (R12-CONTRACT-7086). Checked complete at construction.
@@ -1234,6 +1373,7 @@ impl ResearchLoop {
             last_window: BTreeMap::new(),
             acquisitions: VecDeque::new(),
             capabilities: VecDeque::new(),
+            capability_registry: CapabilityRegistry::new(),
             packages: VecDeque::new(),
             brains,
             drifted_models: Vec::new(),
@@ -1292,6 +1432,54 @@ impl ResearchLoop {
             }
         }
         Ok(())
+    }
+
+    /// Propose the type an ontology gap wants and register it as a candidate
+    /// (R12-EXPAND-6029, R12-EXPAND-1021). The name is the gap's first
+    /// affected domain, the family is Event — the type-wanting observations
+    /// the mapper raises are fundamental and macro surprises, which are
+    /// events the schema has no type for — and the version is one above the
+    /// latest the registry holds under that name, so a second sweep raising
+    /// the same gap proposes the next version rather than colliding. The
+    /// schema is the object shell a candidate starts from; a reviewed
+    /// extension (`extend_ontology`) replaces it on a passing evaluation.
+    fn propose_type(&mut self, raised: &RaisedGap, signal_id: &str) -> Result<OntologyPatch> {
+        let family = OntologyTypeFamily::Event;
+        // Named for the subject the observation was about where the mapper
+        // recorded one, else for the domain: one candidate per thing the
+        // schema could not explain, not one per sweep.
+        let subject = raised
+            .signal
+            .evidence
+            .iter()
+            .find_map(|e| e.strip_prefix("subject:"))
+            .map(str::to_string)
+            .or_else(|| raised.signal.affected_domains.first().cloned())
+            .unwrap_or_else(|| "market".to_string());
+        let name = format!(
+            "candidate-{}",
+            subject.replace(|c: char| !c.is_ascii_alphanumeric(), "-")
+        );
+        let version = self
+            .ontology
+            .get_latest(family, &name)
+            .map_or(1, |spec| spec.version.saturating_add(1));
+        let mut cited = vec![signal_id.to_string()];
+        cited.extend(raised.signal.evidence.iter().cloned());
+        let patch = OntologyPatch {
+            family,
+            name,
+            version,
+            schema: r#"{"type":"object","candidate":true}"#.to_string(),
+            cited_observations: cited,
+            rationale: format!(
+                "{} ({:?} gap raised by {:?}); no registered type explains it",
+                raised.signal.observation, raised.signal.gap_class, raised.trigger
+            ),
+        };
+        patch.validate()?;
+        self.ontology.register(patch.as_type_spec())?;
+        Ok(patch)
     }
 
     /// The ontology registry the sweep runs against.
@@ -1363,6 +1551,11 @@ impl ResearchLoop {
 
     pub fn capabilities(&self) -> impl Iterator<Item = &CapabilityEntry> {
         self.capabilities.iter()
+    }
+
+    /// The Capability Registry every promotion is recorded in, by verb.
+    pub fn capability_registry(&self) -> &CapabilityRegistry {
+        &self.capability_registry
     }
 
     pub fn packages(&self) -> impl Iterator<Item = &CompiledReflex> {
@@ -1468,6 +1661,34 @@ impl ResearchLoop {
         for (subject, prices) in platform.price_history() {
             let from = prices.len().saturating_sub(SWEEP_PRICES);
             context = context.with_prices(subject.clone(), prices[from..].to_vec());
+        }
+        // Reference-data fields the world model holds as numeric features
+        // (`reference/<field>`, recorded by the kernel from every reference
+        // update it observes), as the named observations the fundamental
+        // surprise detector reads (R12-EXPAND-6029). Until 2026-10-25 the
+        // context carried prices alone, so that detector ran over nothing
+        // and no observation ever wanted a type.
+        {
+            let world = platform.world();
+            let features = world.features();
+            let reference: Vec<String> = features
+                .definitions()
+                .filter(|f| f.name.starts_with(REFERENCE_FEATURE_PREFIX))
+                .map(|f| f.name.clone())
+                .collect();
+            for feature in reference {
+                let field = &feature[REFERENCE_FEATURE_PREFIX.len()..];
+                for subject in features.subjects_with(&feature, now, now) {
+                    let values: Vec<f64> = features
+                        .history(&feature, &subject, now)
+                        .iter()
+                        .map(|v| v.value)
+                        .collect();
+                    let from = values.len().saturating_sub(SWEEP_PRICES);
+                    context = context
+                        .with_observations(format!("{subject}/{field}"), values[from..].to_vec());
+                }
+            }
         }
         let anomalies = self.detectors.detect_all(&context);
         round.anomalies = anomalies.len();
@@ -1886,6 +2107,22 @@ impl ResearchLoop {
         self.hold_assumptions(&challenged, now, &metrics, &mut round);
         for raised in raised_now {
             let signal = self.emit(&raised, now)?;
+            // An ontology gap is a type the schema lacks (R12-EXPAND-6029):
+            // the sweep proposes it as a validated patch citing the signal
+            // and registers the candidate, versioned above what the registry
+            // holds (R12-EXPAND-1021), so the registry grows from a gap on
+            // the record rather than staying the catalogue it started with.
+            // A refusal is counted, not fatal: the gap is still routed.
+            if raised.signal.gap_class == GapClass::Ontology {
+                match self.propose_type(&raised, signal.id()) {
+                    Ok(patch) => round.ontology_patches.push(patch),
+                    Err(error) => round.ontology_patches_refused.push(format!(
+                        "{}: {}",
+                        signal.id(),
+                        error.message()
+                    )),
+                }
+            }
             routable.push((Some(raised), signal));
         }
         for (raised, signal) in routable {
@@ -2092,6 +2329,7 @@ impl ResearchLoop {
 
         // --- research carried out: acquisitions, campaigns, compilation ----
         self.carry_out(
+            platform,
             &allowed,
             &residuals,
             now,
@@ -3213,6 +3451,7 @@ impl ResearchLoop {
     /// handed to the Cognitive Compiler.
     fn carry_out(
         &mut self,
+        platform: &Platform,
         granted: &BTreeSet<String>,
         residuals: &[FillResidual],
         now: Timestamp,
@@ -3229,7 +3468,21 @@ impl ResearchLoop {
             .collect();
         let jurisdiction_eligible = eligible_jurisdictions.contains(&self.config.jurisdiction);
         for (question, lineage) in started {
-            let record = acquire(&question, &lineage, residuals, now)?;
+            // The app-level executor for a simulation the item asks for
+            // (R12-EXPAND-6049): the service layer may not reach the
+            // platform's tape, so the deep brain constructs the scenario
+            // here and hands the record down. Every other action still goes
+            // through `acquire`, which gathers fills or says not executable.
+            let record = if lineage.action == AcquisitionAction::ConstructSimulation {
+                let (record, constructed) =
+                    construct_simulation(platform, &question, &lineage, now)?;
+                if let Some(constructed) = constructed {
+                    round.constructed.push(constructed);
+                }
+                record
+            } else {
+                acquire(&question, &lineage, residuals, now)?
+            };
             let action = record.action.as_str();
             let outcome = record.outcome.as_str();
             *round.acquisitions.entry(outcome).or_default() += 1;
@@ -3278,10 +3531,32 @@ impl ResearchLoop {
                 metrics.count(EXPANSION_CAMPAIGNS, labels([("outcome", "waiting")]));
                 continue;
             };
+            // ADR 0142 d5's two phases, on the round beside the verdict: an
+            // installation is the moment the correction started acting in
+            // the paper window, a withdrawal the moment paper refused it.
+            if result.installation.is_some() {
+                *round.campaigns.entry("installed").or_default() += 1;
+                metrics.count(EXPANSION_CAMPAIGNS, labels([("outcome", "installed")]));
+            }
+            if result.withdrawal.is_some() {
+                *round.campaigns.entry("withdrawn").or_default() += 1;
+                metrics.count(EXPANSION_CAMPAIGNS, labels([("outcome", "withdrawn")]));
+            }
             let outcome = match self.desk.conclude(&result.campaign, &result.evaluation) {
                 Ok(capability) => {
                     if self.capabilities.len() == RETAINED {
                         self.capabilities.pop_front();
+                    }
+                    // The register, keyed by verb, beside the recent history:
+                    // a refusal here (the same implementation promoted
+                    // twice, or an eligibility the verb does not carry) is
+                    // counted on the round rather than failing the sweep,
+                    // because the campaign did conclude and its null or
+                    // package is already recorded.
+                    if let Err(error) = self.capability_registry.promote(capability.clone()) {
+                        round
+                            .capabilities_refused
+                            .push(format!("{question}: {}", error.message()));
                     }
                     self.capabilities.push_back(capability);
                     self.distil(&question, &result, now, metrics, round)?;

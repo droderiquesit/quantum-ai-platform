@@ -1853,6 +1853,91 @@ pub struct StressReport {
     /// book is held at failing, and the model the book was built on failing —
     /// computed off the book directly. See [`crate::tail`].
     pub tail_worlds: Vec<crate::tail::TailWorld>,
+    /// One record per scenario this pass generated and applied, in the order
+    /// applied (R12-EXPAND-6033, ADR 0149 decision 18): every library entry
+    /// and the composed event under `Library`, and both signs of every
+    /// causal driver's shock under `Conditional`, each with the digest of the
+    /// book and the shock it was made from and no seed, because neither
+    /// generator draws. The stage journals each, so a scenario the book was
+    /// stressed against is on the record as generated rather than observed.
+    /// The tail worlds are not here: they are not `Scenario`s and their
+    /// generated pair is seeded by the cycle, which is recorded on them.
+    pub episodes: Vec<qip_contracts::expansion::SyntheticEpisode>,
+}
+
+/// One synthetic episode as the log holds it (R12-EXPAND-6033): the contract
+/// record, which a reader re-admits through its `TryFrom` and so cannot read
+/// as a seedless Monte Carlo path or a seeded library entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyntheticEpisodeRecord {
+    pub episode: qip_contracts::expansion::SyntheticEpisode,
+    /// The cycle whose SIMULATE pass applied it.
+    pub cycle: u64,
+}
+
+impl EventBody for SyntheticEpisodeRecord {
+    const TOPIC: Topic = Topic::ScenarioEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn idempotency_key(&self) -> Option<String> {
+        // Per cycle, scenario and input digest: the same scenario applied to
+        // the same book in a later cycle is a new run and a new record, and
+        // the two signs of one driver's shock differ in their digest.
+        Some(format!(
+            "{SYNTHETIC_EPISODE_PREFIX}{}/{}/{}",
+            self.cycle,
+            self.episode.scenario(),
+            self.episode.input_digest()
+        ))
+    }
+}
+
+/// Origin of a journaled [`SyntheticEpisodeRecord`].
+pub const SYNTHETIC_EPISODE_ORIGIN: &str = "kernel/synthetic-episode";
+const SYNTHETIC_EPISODE_PREFIX: &str = "synthetic-episode/";
+
+/// The SHA-256 of a scenario and the book it is applied to, as their bits:
+/// the scenario's name, every shock's factor, magnitude and horizon, its
+/// stressed correlation and liquidity multiplier, then every exposure's
+/// object, notional and betas, then the equity. A rounded figure would let
+/// two different books share a digest; the bits cannot.
+fn scenario_input_digest(
+    scenario: &qip_simulation_engine::Scenario,
+    exposures: &[FactorExposure],
+    equity: f64,
+) -> String {
+    // Free-text fields are length-prefixed: a name or factor containing the
+    // separator would otherwise let two different inputs digest alike.
+    let text = |value: &str| format!("{}:{value}", value.len());
+    let mut canonical = text(&scenario.name);
+    for shock in &scenario.shocks {
+        canonical.push_str(&format!(
+            "|shock|{}|{}|{}",
+            text(&shock.factor),
+            shock.magnitude.to_bits(),
+            shock.over_days.to_bits()
+        ));
+    }
+    canonical.push_str(&format!(
+        "|corr|{}|liq|{}",
+        scenario
+            .stressed_correlation
+            .map(|c: f64| c.to_bits().to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        scenario.liquidity_multiplier.to_bits()
+    ));
+    for exposure in exposures {
+        canonical.push_str(&format!(
+            "|book|{}|{}",
+            text(&exposure.object_id),
+            exposure.notional
+        ));
+        for (factor, beta) in &exposure.betas {
+            canonical.push_str(&format!("|beta|{}|{}", text(factor), beta.to_bits()));
+        }
+    }
+    canonical.push_str(&format!("|equity|{}", equity.to_bits()));
+    qip_core::sha256_hex(canonical.as_bytes())
 }
 
 impl StressReport {
@@ -15734,6 +15819,60 @@ impl Platform {
                 // compression is a summary beside the episode, never a drop,
                 // so `hit_rate` counts every resolved call.
                 registry.consult(&analyst_episode);
+                // The same call as a typed memory entry with its policies
+                // declared (R12-EXPAND-6057): an episode when the analyst
+                // was right, a failure when not, valued at its calibration
+                // surprise under the registry's own threshold. Built from
+                // validated fields, so a refusal here is a kernel defect;
+                // the registry counts it (`MemoryRegistry::refused`), and
+                // that count has no production reader yet, which the row's
+                // gap records. An episode with no outcome has no surprise
+                // and is stored unvalued rather than valued at a guess.
+                let Some(surprise) = MemoryRegistry::importance(&analyst_episode) else {
+                    memory.record_episode(analyst_episode);
+                    continue;
+                };
+                let entry = qip_contracts::expansion::MemoryEntry {
+                    id: analyst_episode.run_id.to_string(),
+                    kind: if correct {
+                        qip_contracts::expansion::MemoryKind::Episodic
+                    } else {
+                        qip_contracts::expansion::MemoryKind::Failure
+                    },
+                    content: format!(
+                        "{}: concluded {}; {}",
+                        analyst_episode.question,
+                        analyst_episode.conclusion,
+                        analyst_episode
+                            .outcome
+                            .as_ref()
+                            .map(|o| o.explanation.as_str())
+                            .unwrap_or("unresolved")
+                    ),
+                    retention_policy: qip_contracts::expansion::RetentionPolicy {
+                        max_age_ms: ANALYST_EPISODE_RETENTION_MS,
+                        description: "one year: a call made under a regime a year gone no \
+                                      longer scores the analyst who made it"
+                            .to_string(),
+                    },
+                    value_policy: qip_contracts::expansion::ValuePolicy {
+                        importance_threshold: registry.importance_threshold(),
+                        rationale: "calibration surprise |outcome - conviction|; below the \
+                                    registry's threshold the call is summarised, not kept whole"
+                            .to_string(),
+                    },
+                    // Milliseconds since the epoch. A clock at or before the
+                    // epoch converts to zero, which `validate` refuses: not
+                    // clamped to a stamp nobody's clock produced.
+                    created_at_ms: u64::try_from(now.as_millis()).unwrap_or(0),
+                    importance: surprise,
+                    tags: vec![
+                        episode.claim.class.clone(),
+                        stance.agent_id.clone(),
+                        episode.instrument.clone(),
+                    ],
+                };
+                let _ = registry.admit(entry);
                 memory.record_episode(analyst_episode);
             }
         });
@@ -17064,6 +17203,29 @@ impl Platform {
                         world.loss_fraction,
                     );
                 }
+                // Every scenario applied, on the log as generated
+                // (R12-EXPAND-6033). A record the log refuses is a problem
+                // the stage carries, not a stress that did not run: the
+                // results above already stand, and the gap is in the record.
+                let cycle = self.cycle;
+                let mut refused = 0usize;
+                for episode in report.episodes.clone() {
+                    if self
+                        .journal_record(
+                            SyntheticEpisodeRecord { episode, cycle },
+                            SYNTHETIC_EPISODE_ORIGIN,
+                            now,
+                        )
+                        .is_err()
+                    {
+                        refused += 1;
+                    }
+                }
+                if refused > 0 {
+                    detail.push_str(&format!(
+                        "; {refused} synthetic episode record(s) refused by the log"
+                    ));
+                }
             }
             // Not "nothing to stress": the word is what a reader greps for,
             // and a book with no open position has no scenario to apply, which
@@ -17259,6 +17421,26 @@ impl Platform {
                 return (None, problems);
             }
         };
+        // Every scenario applied is on the record as generated, not observed
+        // (R12-EXPAND-6033): the library and the composed event are named
+        // scenarios, and neither draws, so no seed. A record the contract
+        // refuses is a problem on the stage rather than a silent omission.
+        let mut episodes: Vec<qip_contracts::expansion::SyntheticEpisode> = Vec::new();
+        for scenario in &applied {
+            match qip_contracts::expansion::SyntheticEpisode::new(
+                scenario.name.clone(),
+                qip_contracts::expansion::SyntheticGenerator::Library,
+                scenario_input_digest(scenario, &exposures, equity.to_f64()),
+                None,
+            ) {
+                Ok(episode) => episodes.push(episode),
+                Err(error) => problems.push(format!(
+                    "synthetic episode for {} refused: {}",
+                    scenario.name,
+                    error.message()
+                )),
+            }
+        }
 
         // A scenario that would take more than the tolerance out of the book
         // is the stage's problem, not a line in a report nobody reads. This is
@@ -17308,8 +17490,14 @@ impl Platform {
             ));
         }
 
-        let (causal, causal_drivers, causal_drivers_unconnected) =
-            self.stress_through_the_graph(&tester, &exposures, equity.to_f64(), now, &mut problems);
+        let (causal, causal_drivers, causal_drivers_unconnected) = self.stress_through_the_graph(
+            &tester,
+            &exposures,
+            equity.to_f64(),
+            now,
+            &mut problems,
+            &mut episodes,
+        );
         for result in &causal {
             if result.breaches(STRESS_LOSS_TOLERANCE) {
                 problems.push(format!(
@@ -17382,6 +17570,7 @@ impl Platform {
                 causal_drivers,
                 causal_drivers_unconnected,
                 tail_worlds,
+                episodes,
             }),
             problems,
         )
@@ -17412,6 +17601,7 @@ impl Platform {
         equity: f64,
         now: Timestamp,
         problems: &mut Vec<String>,
+        episodes: &mut Vec<qip_contracts::expansion::SyntheticEpisode>,
     ) -> (Vec<ScenarioResult>, usize, usize) {
         let self_loaded = causal_exposures(exposures);
         let reading = self.world.read();
@@ -17469,6 +17659,24 @@ impl Platform {
                     };
                 match tester.apply(&scenario, &self_loaded, equity, now) {
                     Ok(result) => {
+                        // Generated from the graph's propagation of one shock
+                        // over the book, deterministically, and applied
+                        // (R12-EXPAND-6033): recorded only once the tester
+                        // ran it, so a scenario the tester refused is a
+                        // problem above and not an episode that never ran.
+                        match qip_contracts::expansion::SyntheticEpisode::new(
+                            scenario.name.clone(),
+                            qip_contracts::expansion::SyntheticGenerator::Conditional,
+                            scenario_input_digest(&scenario, &self_loaded, equity),
+                            None,
+                        ) {
+                            Ok(episode) => episodes.push(episode),
+                            Err(error) => problems.push(format!(
+                                "synthetic episode for {} refused: {}",
+                                scenario.name,
+                                error.message()
+                            )),
+                        }
                         if worst
                             .as_ref()
                             .is_none_or(|kept| result.loss_fraction > kept.loss_fraction)
@@ -25079,6 +25287,15 @@ pub(crate) const EPISODE_ID_PREFIX: &str = "ep-";
 /// Resolutions per claim class a lesson about that class is built from.
 const LESSON_WINDOW: usize = 64;
 
+/// How long an analyst's resolved call is declared worth keeping as a memory
+/// entry (R12-EXPAND-6057): one year, in milliseconds. The hit rate is read
+/// over every episode the research memory holds, so this is not an eviction
+/// the registry performs; it is the retention the entry declares, and a
+/// reader that honours it stops scoring an analyst on calls made under a
+/// regime a year gone. Stated once here rather than defaulted in the
+/// contract, which refuses an entry that declares none.
+const ANALYST_EPISODE_RETENTION_MS: u64 = 365 * 24 * 60 * 60 * 1_000;
+
 /// The recent resolutions of one claim class, split by whether the claim
 /// held, and where its lesson stands.
 #[derive(Debug, Default)]
@@ -27917,6 +28134,153 @@ mod simulate_tests {
              computation {expected}; a beta silently dropped to zero would read {} instead",
             (liquidation_cost / equity).max(0.0)
         );
+    }
+
+    /// R12-EXPAND-6033 (ADR 0149 decision 18): every scenario SIMULATE
+    /// applies is on the log as generated rather than observed, one
+    /// `SyntheticEpisodeRecord` each, naming the scenario, the deterministic
+    /// generator, no seed, and the digest of the book and shock it was made
+    /// from. The digest is checked two ways: it differs between two books of
+    /// equal equity held as one name and as two, so it is a digest of the
+    /// exposures and not of the name or the equity, and it holds across two
+    /// runs on the same book, so a replay reproduces it.
+    ///
+    /// Mutations: delete the `journal_record(SyntheticEpisodeRecord ..)` loop
+    /// in `stage_simulate` — no record is on the log and the count assertion
+    /// fails; make `scenario_input_digest` skip `exposures` — the two books
+    /// digest alike and the inequality fails.
+    #[test]
+    fn every_scenario_simulate_runs_leaves_a_synthetic_episode_naming_its_input_digest() {
+        use qip_contracts::expansion::SyntheticGenerator;
+
+        let run = |book: &[(&str, i64)]| -> (StressReport, Vec<SyntheticEpisodeRecord>) {
+            let mut platform = platform();
+            for (object, quantity) in book {
+                feed_history(&mut platform, object, 80);
+                platform.capital.positions.insert(
+                    (*object).to_string(),
+                    PositionLot {
+                        quantity: Decimal::from_int(*quantity),
+                        average_price: Decimal::from_int(100),
+                    },
+                );
+            }
+            assert!(
+                platform
+                    .event_log()
+                    .by_topic(Topic::ScenarioEvaluated)
+                    .is_empty(),
+                "premise: nothing journaled before the stage ran"
+            );
+            let outcome = platform.stage_simulate(start());
+            assert!(
+                outcome.detail.contains("stress"),
+                "premise: the open position was not stress-tested: {}",
+                outcome.detail
+            );
+            let report = platform
+                .stress
+                .clone()
+                .expect("the stage kept its stress report");
+            let records: Vec<SyntheticEpisodeRecord> = platform
+                .event_log()
+                .by_topic(Topic::ScenarioEvaluated)
+                .into_iter()
+                .filter(|frame| {
+                    frame
+                        .idempotency_key
+                        .as_deref()
+                        .is_some_and(|key| key.starts_with(SYNTHETIC_EPISODE_PREFIX))
+                })
+                .map(|frame| {
+                    StreamEnvelope::from_frame(frame)
+                        .and_then(|envelope| envelope.decode::<SyntheticEpisodeRecord>())
+                        .expect("a synthetic episode record decodes")
+                        .body
+                })
+                .collect();
+            (report, records)
+        };
+
+        let one_name = [("AAPL", 100)];
+        // The same notional and the same equity held as two names: only the
+        // exposures differ, so a digest that ignored the book would digest
+        // these two books alike while the equity could not tell them apart.
+        let two_names = [("AAPL", 50), ("MSFT", 50)];
+        let (report, records) = run(&one_name);
+        assert!(
+            !report.scenarios.is_empty(),
+            "premise: the library was applied"
+        );
+        assert!(
+            report.episodes.len() >= report.scenarios.len(),
+            "one episode per scenario applied: {} episodes, {} results",
+            report.episodes.len(),
+            report.scenarios.len()
+        );
+        assert_eq!(
+            records.len(),
+            report.episodes.len(),
+            "every episode the pass generated is on the log"
+        );
+        for result in &report.scenarios {
+            assert!(
+                records
+                    .iter()
+                    .any(|record| record.episode.scenario() == result.scenario),
+                "scenario {} ran and left no episode",
+                result.scenario
+            );
+        }
+        for record in &records {
+            assert_eq!(record.cycle, 0, "{record:?}");
+            assert_eq!(record.episode.generator(), SyntheticGenerator::Library);
+            assert_eq!(record.episode.seed(), None, "a library entry draws nothing");
+            let digest = record.episode.input_digest();
+            assert_eq!(digest.len(), 64, "{digest}");
+            assert!(
+                digest
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "{digest}"
+            );
+        }
+
+        let digests = |records: &[SyntheticEpisodeRecord]| -> Vec<(String, String)> {
+            records
+                .iter()
+                .map(|r| {
+                    (
+                        r.episode.scenario().to_string(),
+                        r.episode.input_digest().to_string(),
+                    )
+                })
+                .collect()
+        };
+        let same_book = digests(&run(&one_name).1);
+        assert_eq!(
+            digests(&records),
+            same_book,
+            "the same book replays to the same digests"
+        );
+        let (other_report, other_records) = run(&two_names);
+        assert_eq!(
+            other_report.scenarios.first().map(|r| r.equity_before),
+            report.scenarios.first().map(|r| r.equity_before),
+            "premise: the two books hold the same equity, so only the exposures can differ"
+        );
+        let split_book = digests(&other_records);
+        assert_eq!(
+            split_book.len(),
+            same_book.len(),
+            "the same scenarios run against the split book"
+        );
+        for ((scenario, digest), (_, other)) in same_book.iter().zip(&split_book) {
+            assert_ne!(
+                digest, other,
+                "the book is in the digest: {scenario} digests alike held as one name and as two"
+            );
+        }
     }
 
     /// Seat one claim in the world model's graph, as the UNDERSTAND stage's
@@ -32988,6 +33352,73 @@ mod episodic_slot_tests {
                 .iter()
                 .any(|e| e.run_id == AgentRunId::from_string("ep-1:analyst-a".to_string())),
             "a compressed call is still held"
+        );
+    }
+
+    /// R12-EXPAND-6057 on the shipped path: every resolved call LEARN scores
+    /// is also admitted to the Memory Registry as a typed entry — Episodic
+    /// when the analyst was right, Failure when not — with its retention and
+    /// value policies declared, so the registry holds what the requirement
+    /// names rather than two counters. Mutation: delete the
+    /// `registry.admit(entry)` call in `write_research_memory` — both
+    /// `admitted` counts read 0 and the first assertion fails.
+    #[test]
+    fn learn_writes_each_resolved_call_as_a_typed_memory_entry_with_declared_policies() {
+        use qip_ai::memory::{AnalystStance, StanceDirection};
+        use qip_contracts::expansion::MemoryKind;
+        let mut platform = platform();
+        assert_eq!(
+            platform.memory_registry().entries().count(),
+            0,
+            "premise: nothing admitted yet"
+        );
+        let calls = [
+            ("ep-1", 12.0),
+            ("ep-2", 12.0),
+            ("ep-3", 12.0),
+            ("ep-4", -12.0),
+        ];
+        for (n, (id, moved)) in calls.into_iter().enumerate() {
+            let at = start().saturating_add(Duration::from_hours(n as i64 + 1));
+            let mut episode = resolved(id, at);
+            episode.stances = vec![AnalystStance {
+                agent_id: "analyst-a".to_string(),
+                direction: StanceDirection::Positive,
+                conviction: 0.95,
+            }];
+            if let Some(outcome) = episode.outcome.as_mut() {
+                outcome.realised_move_bps = moved;
+            }
+            platform.write_research_memory(&episode, at);
+        }
+        let registry = platform.memory_registry();
+        assert_eq!(
+            registry.admitted(MemoryKind::Episodic),
+            3,
+            "three calls came off"
+        );
+        assert_eq!(registry.admitted(MemoryKind::Failure), 1, "one missed");
+        assert_eq!(
+            registry.refused(),
+            0,
+            "every entry LEARN built was well-formed"
+        );
+        let entries: Vec<_> = registry.entries().collect();
+        assert_eq!(entries.len(), 4);
+        for entry in &entries {
+            entry.validate().expect("an admitted entry validates");
+            assert!(entry.retention_policy.max_age_ms > 0);
+            assert!(entry.tags.iter().any(|t| t == "analyst-a"), "{entry:?}");
+            assert!(entry.id.ends_with(":analyst-a"), "{entry:?}");
+        }
+        let failure = entries
+            .iter()
+            .find(|e| e.kind == MemoryKind::Failure)
+            .expect("the miss");
+        assert!(failure.id.starts_with("ep-4:"), "{failure:?}");
+        assert!(
+            (failure.importance - 0.95).abs() < 1e-12,
+            "a confident miss is the most surprising call: {failure:?}"
         );
     }
 

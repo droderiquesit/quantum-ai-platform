@@ -20,6 +20,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic_in_result_fn)] // integration tests may unwrap: a panic is the failure report
 
 use qip_agents::tools::{ToolKind, ToolName, ToolPermission};
+use qip_contracts::expansion::OntologyTypeFamily;
 use qip_core::{Context, Decimal, Duration, ObjectId, Timestamp};
 use qip_deepbrain::discovery::{DiscoveryConfig, DiscoveryDesk};
 use qip_deepbrain::research::{FillObservation, ResearchConfig, ResearchLoop, registered_tools};
@@ -768,7 +769,8 @@ fn a_research_campaign_runs_four_environments_in_order_with_provenance_and_repla
     };
 
     let first = run();
-    let order = ["Historical", "Simulated", "Paper", "Shadow"];
+    // ADR 0142 d3: shadow before paper.
+    let order = ["Historical", "Simulated", "Shadow", "Paper"];
     assert_eq!(first.len(), 4, "{first:?}");
     for (statement, environment) in first.iter().zip(order) {
         let prefix = format!("the {environment} stage ran on dataset ");
@@ -784,6 +786,190 @@ fn a_research_campaign_runs_four_environments_in_order_with_provenance_and_repla
         first,
         run(),
         "the same fills replayed to different datasets"
+    );
+}
+
+/// R12-EXPAND-6062 on the shipped path (ADR 0158 decision 15): a promoted
+/// fill-bias correction is recorded in the loop's Capability Registry under
+/// the verb `promotion::verb_for` gives its class, with the eligibility the
+/// promotion declares, and the recent-history deque and the register agree.
+/// Until this change the entry went into the deque and no register, so a
+/// consumer asking "what can this platform simulate" had nothing to read.
+/// Mutation: delete the `capability_registry.promote(..)` call in the
+/// conclude arm — `capability_count()` stays 0 and the first assertion fails.
+#[test]
+fn a_promoted_fill_bias_correction_is_recorded_in_the_capability_registry_with_paper_and_shadow_eligibility()
+ {
+    let mut research = deployed(BTreeMap::new());
+    assert_eq!(
+        research.capability_registry().capability_count(),
+        0,
+        "premise: nothing promoted yet"
+    );
+    let round = two_sweeps(&mut research, &fills(40.0, 0, 0.0), &fills(40.0, 8, 40.0));
+    assert_eq!(
+        round.campaigns.get("promoted"),
+        Some(&1),
+        "premise: one promotion"
+    );
+    assert!(round.capabilities_refused.is_empty(), "{round:?}");
+
+    let registry = research.capability_registry();
+    assert_eq!(registry.capability_count(), 1, "one verb recorded");
+    let promoted: Vec<_> = research.capabilities().collect();
+    assert_eq!(promoted.len(), 1, "premise: the deque holds the promotion");
+    let recorded = registry
+        .get_capability(promoted[0].verb)
+        .unwrap_or_else(|| panic!("the promoted verb {:?} is not registered", promoted[0].verb));
+    assert_eq!(recorded.implementations, promoted[0].implementations);
+    assert!(
+        recorded.eligibility.contains("paper") && recorded.eligibility.contains("shadow"),
+        "{recorded:?}"
+    );
+    assert!(
+        !recorded.eligibility.contains("live"),
+        "no capability is ever eligible live: {recorded:?}"
+    );
+    assert_eq!(registry.all_verbs(), vec![promoted[0].verb]);
+}
+
+/// A platform that observed thirteen reference-data updates to obj-A's
+/// `shares_outstanding`, twelve near a thousand and the last at five
+/// thousand: a fundamental surprise no registered type explains.
+fn reference_surprised() -> Platform {
+    use qip_financial::intelligence::ReferenceDataUpdate;
+    let mut platform = platform_over(Universe::new());
+    let updates: Vec<SensedRecord> = (0..13)
+        .map(|i| {
+            let at = t0().saturating_sub(Duration::from_hours(13 - i));
+            let value = if i == 12 {
+                5_000.0
+            } else {
+                1_000.0 + if i % 2 == 0 { 5.0 } else { -5.0 }
+            };
+            SensedRecord::ReferenceData(Box::new(ReferenceDataUpdate {
+                object_id: "obj-A".to_string(),
+                field: "shares_outstanding".to_string(),
+                previous_value: None,
+                new_value: format!("{value}"),
+                effective_from: at,
+                provenance: Provenance::new("reference-test", at, at),
+                evidence_unretrievable: false,
+            }))
+        })
+        .collect();
+    assert_eq!(
+        platform.observe(updates),
+        13,
+        "premise: every update absorbed"
+    );
+    platform
+}
+
+/// R12-EXPAND-6029 and R12-EXPAND-1021 on the shipped path. A reference
+/// field the world model holds is read by the sweep as a named observation;
+/// a surprise in it the schema cannot explain is a type-wanting observation,
+/// so an ontology gap; and the gap leaves one validated `OntologyPatch`
+/// citing the signal that raised it and the subject it was about, registered
+/// in the loop's ontology as a candidate type whose description cites the
+/// gap. A second sweep over the same surprise proposes the next version
+/// rather than colliding with the first. Until this change the detector
+/// context carried prices alone, so no observation ever wanted a type and
+/// the ontology registry only ever held what it started with.
+///
+/// Mutations: delete the `round.ontology_patches.push(patch)` arm — the
+/// first patch assertion fails; delete `self.ontology.register(..)` in
+/// `propose_type` — `get_latest` is `None`; delete the `with_observations`
+/// feed in `sweep_over` — no anomaly, no gap, no patch.
+#[test]
+fn an_observation_wanting_a_type_leaves_a_validated_ontology_patch_citing_it_and_registers_the_candidate()
+ {
+    let platform = reference_surprised();
+    let mut research = deployed(BTreeMap::new());
+    let (licensed, eligible) = deployed_bounds();
+    let name = "candidate-obj-A-shares-outstanding";
+    assert!(
+        research
+            .ontology()
+            .get_latest(OntologyTypeFamily::Event, name)
+            .is_none(),
+        "premise: no candidate registered before the sweep"
+    );
+
+    let round = research
+        .sweep(&platform, t0(), &licensed, &eligible)
+        .unwrap();
+    assert!(
+        round.anomalies >= 1,
+        "premise: the surprise was detected: {round:?}"
+    );
+    assert!(round.raised >= 1, "premise: a gap was raised: {round:?}");
+    assert!(
+        round.ontology_patches_refused.is_empty(),
+        "{:?}",
+        round.ontology_patches_refused
+    );
+    assert_eq!(
+        round.ontology_patches.len(),
+        1,
+        "{:?}",
+        round.ontology_patches
+    );
+    let patch = &round.ontology_patches[0];
+    patch.validate().expect("the patch validates");
+    assert_eq!(patch.family, OntologyTypeFamily::Event);
+    assert_eq!(patch.name, name);
+    assert_eq!(patch.version, 1);
+    let signal_id = patch
+        .cited_observations
+        .iter()
+        .find(|c| c.starts_with("ambient-"))
+        .unwrap_or_else(|| panic!("the patch cites the signal that raised it: {patch:?}"));
+    assert!(
+        round.signals.iter().any(|s| s.id() == signal_id),
+        "the cited signal is one this sweep emitted"
+    );
+    assert!(
+        patch
+            .cited_observations
+            .iter()
+            .any(|c| c == "subject:obj-A/shares_outstanding"),
+        "{patch:?}"
+    );
+    let registered = research
+        .ontology()
+        .get_latest(OntologyTypeFamily::Event, name)
+        .expect("the candidate is registered");
+    assert_eq!(registered.version, 1);
+    assert!(
+        registered.description.contains(signal_id),
+        "the registered type cites the gap: {registered:?}"
+    );
+
+    let again = research
+        .sweep(
+            &platform,
+            t0().saturating_add(Duration::from_hours(1)),
+            &licensed,
+            &eligible,
+        )
+        .unwrap();
+    assert_eq!(
+        again.ontology_patches.len(),
+        1,
+        "{:?}",
+        again.ontology_patches
+    );
+    assert_eq!(
+        again.ontology_patches[0].version, 2,
+        "the next version, not a collision"
+    );
+    assert_eq!(
+        research
+            .ontology()
+            .get_latest(OntologyTypeFamily::Event, name)
+            .map(|t| t.version),
+        Some(2)
     );
 }
 

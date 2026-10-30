@@ -246,3 +246,120 @@ fn a_knowledge_delta_absorb_evidence_journals_reaches_the_deep_brain_sweep() {
         data.signal.evidence
     );
 }
+
+/// A bar on `symbol`'s tape, as the synthetic feed would have produced it.
+fn bar(symbol: &str, at: Timestamp, close: f64) -> qip_market_ingestion::adapter::SensedRecord {
+    use qip_financial::quality::DataQuality;
+    use qip_market::bar::{Bar, Interval};
+    let price = |v: f64| qip_core::Decimal::from_f64(v).expect("a finite price");
+    qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(Bar {
+        object_id: qip_core::ObjectId::from_string(symbol.to_string()),
+        venue: "XSIM".to_string(),
+        interval: Interval::Day,
+        open_time: at,
+        open: price(close),
+        high: price(close * 1.001),
+        low: price(close * 0.999),
+        close: price(close),
+        volume: qip_core::Decimal::from_int(1_000_000),
+        trade_count: 5_000,
+        vwap: None,
+        quality: DataQuality::default(),
+    }))
+}
+
+/// R12-EXPAND-6049: a started item whose acquisition is `ConstructSimulation`
+/// — the causal gap a contested, unexplained subject raises — is carried out
+/// by the deep brain, not recorded as not executable: a scenario shocking
+/// the subject by its latest measured move is constructed from the
+/// platform's own tape, the acquisition is gathered with the digest of those
+/// inputs, and the scenario's episode says it was generated. Mutation: route
+/// `ConstructSimulation` through `acquire` like every other action (delete
+/// the `if lineage.action == ConstructSimulation` arm) — the record reads
+/// `not_executable` and the gathered assertion fails.
+#[test]
+fn a_started_simulation_item_is_gathered_with_a_dataset_digest() {
+    use qip_expansion::executor::AcquisitionOutcome;
+    use qip_expansion::plan::AcquisitionAction;
+    let mut platform = platform();
+    // A tape for EURUSD whose last move is not zero, so there is a shock.
+    let bars: Vec<_> = (0..8)
+        .map(|i| {
+            bar(
+                "EURUSD",
+                at(-3_600 * (8 - i)),
+                1.10 + if i == 7 { 0.02 } else { 0.0 },
+            )
+        })
+        .collect();
+    assert_eq!(platform.observe(bars), 8, "premise: the tape was absorbed");
+    let intake = platform.absorb_evidence(contest("EURUSD", ("a1", "b1"), ('a', 'b')), at(30));
+    assert_eq!(
+        intake.contested, 1,
+        "premise: a contest the graph does not explain"
+    );
+
+    let mut loop_ = deployed();
+    let (sources, jurisdictions) = deployed_bounds();
+    let round = loop_
+        .sweep(&platform, at(60), &sources, &jurisdictions)
+        .unwrap();
+    assert_eq!(
+        round.unexplained_subjects, 1,
+        "premise: the causal gap was raised: {round:?}"
+    );
+    assert!(
+        !round.desk.started.is_empty(),
+        "premise: an item started this sweep: {:?}",
+        round.desk
+    );
+
+    let simulation: Vec<_> = loop_
+        .acquisitions()
+        .filter(|r| r.action == AcquisitionAction::ConstructSimulation)
+        .collect();
+    assert_eq!(
+        simulation.len(),
+        1,
+        "one started item asked for a simulation: {simulation:?}"
+    );
+    match &simulation[0].outcome {
+        AcquisitionOutcome::Gathered {
+            dataset_digest,
+            records,
+        } => {
+            assert_eq!(dataset_digest.len(), 64, "{dataset_digest}");
+            assert!(dataset_digest.bytes().all(|b| b.is_ascii_hexdigit()));
+            assert_eq!(*records, 1, "one subject shocked");
+        }
+        other => panic!("the simulation was not constructed: {other:?}"),
+    }
+    assert_eq!(
+        round.acquisitions.get("gathered"),
+        Some(&1),
+        "{:?}",
+        round.acquisitions
+    );
+    assert_eq!(round.constructed.len(), 1, "{:?}", round.constructed);
+    let constructed = &round.constructed[0];
+    assert_eq!(constructed.question, simulation[0].question);
+    assert_eq!(
+        constructed.episode.generator(),
+        qip_contracts::expansion::SyntheticGenerator::Conditional
+    );
+    assert!(
+        constructed
+            .scenario
+            .shocks
+            .iter()
+            .any(|s| s.factor == "price:EURUSD"),
+        "{:?}",
+        constructed.scenario
+    );
+    match &simulation[0].outcome {
+        AcquisitionOutcome::Gathered { dataset_digest, .. } => {
+            assert_eq!(dataset_digest, constructed.episode.input_digest())
+        }
+        _ => unreachable!(),
+    }
+}

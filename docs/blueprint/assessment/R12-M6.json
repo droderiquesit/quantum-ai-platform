@@ -653,23 +653,26 @@
   {
     "id": "R12-EXPAND-6029",
     "status": "PARTIAL",
-    "current": "OntologyRegistry (versioned types) exists in qip-agents, library-only; no OntologyPatch/GraphSchema.",
+    "current": "qip_contracts::expansion::OntologyPatch (family, name, version, schema, cited_observations, rationale) with validate and decode, refused on any blank or missing field (the contract decoder test covers it). Since 2026-10-30 the deep brain's sweep feeds the world model's reference-data features (reference/<field>, recorded by the kernel from every ReferenceDataUpdate it observes) to the fundamental-surprise detector as named observations, so a surprise the schema cannot explain is a type-wanting observation and an Ontology gap; ResearchLoop::propose_type produces one validated OntologyPatch per ontology gap, citing the signal that raised it and the subject it was about, and registers it in the loop's OntologyRegistry as candidate version n+1 (R12-EXPAND-1021).",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/registries.rs:21 OntologyRegistry",
-      "backend/crates/libs/qip-contracts/src/expansion.rs:367 OntologyTypeSpec"
+      "backend/crates/libs/qip-contracts/src/expansion.rs::OntologyPatch",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::propose_type and the reference-feature feed in sweep_over (REFERENCE_FEATURE_PREFIX)",
+      "backend/crates/apps/qip-deepbrain/src/signal_mapper.rs (evidence carries subject:<id>)",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs::an_observation_wanting_a_type_leaves_a_validated_ontology_patch_citing_it_and_registers_the_candidate",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs decoders() (patch)"
     ],
-    "gap": "Patch artifact and a trigger from unexplained observations.",
+    "gap": "Reference-data updates reach the kernel only through connectors (SensedRecord::ReferenceData), which every committed environment leaves off, so on the default path the detector's observations are empty and no patch is proposed; the candidate type's schema is the object shell, not a schema derived from the observation; no GraphSchema artifact exists. No skeptic round ran (the lane was parked), so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing OntologyPatch / GraphSchema)",
+    "verification": "cargo test -p qip-deepbrain --test expansion_rows an_observation_wanting; cargo test -p qip-contracts --test expansion",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " 2026-10-30 lane L4b: OntologyPatch contract and producer landed. Mutations fired: dropping the patch push failed the test at ontology_patches.len() (0, expected 1); dropping the register call failed at get_latest (None); feeding no observations failed at the anomalies premise; each restored byte-for-byte (sha256 checked). Kept PARTIAL: no skeptic round; input env-gated."
   },
   {
     "id": "R12-EXPAND-6030",
@@ -738,12 +741,14 @@
   {
     "id": "R12-EXPAND-6033",
     "status": "PARTIAL",
-    "current": "Twin counterfactuals priced in LEARN; simulation engine exists; no ScenarioPack/SyntheticEpisode artifact.",
+    "current": "Platform::stage_simulate, on every cycle with sixty observations and an open position (the default cycle of qip-api, qip-fastbrain and qip-deepbrain), journals one SyntheticEpisodeRecord on scenario.evaluated under origin kernel/synthetic-episode for every Scenario the stress tester applied: each standard-library entry and the composed event as SyntheticGenerator::Library, and both signs of every causal driver's propagated shock as SyntheticGenerator::Conditional, each with the SHA-256 of the scenario's shocks and the book's exposures and equity as their bits, and no seed because neither generator draws. The research loop already records the Conditional episode of each ambient-signal scenario (research.rs ConditionalScenario). Not recorded as episodes: the tail worlds (TailWorld is not a Scenario; the two generated beyond history draw from the cycle seed, which appears only in the world's free-text detail and reaches no record), the capacity probe's seeded agent simulation (with_agents), and LEARN's twin counterfactuals (the contract says never by a backtester, and the twin replays recorded bars).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17136 evaluate_alternatives",
-      "backend/crates/tests/qip-acceptance/tests/arch_056_simulation_engine.rs:33"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::SyntheticEpisodeRecord, ::scenario_input_digest, StressReport::episodes, the journal loop in stage_simulate (grep -n 'SYNTHETIC_EPISODE_ORIGIN')",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::simulate_tests::every_scenario_simulate_runs_leaves_a_synthetic_episode_naming_its_input_digest",
+      "backend/crates/apps/qip-deepbrain/src/research.rs ConditionalScenario.episode (the ambient-signal producer, earlier lane)",
+      "backend/crates/libs/qip-contracts/src/expansion.rs::SyntheticEpisode (ADR 0149 d18)"
     ],
-    "gap": "Scenario/synthetic-episode generation for rare regimes, with a SyntheticEpisode record (scenario id, seed, dataset digest). Not producible where the grader put it: qip-deepbrain evolution.rs runs the Backtester over recorded bars, so a record made there would label a historical replay as synthetic. Scenarios are generated in research.rs (ConditionalScenario, from an ambient signal) and in the simulation engine (scenario.rs standard_library, montecarlo.rs); the record belongs where a scenario is generated or run on the default path. research.rs is lane L03c's file this session, so the contract (qip-contracts) plus the producing call there is left for that lane or the next.",
+    "gap": "Refuted by the in-lane skeptic 2026-10-25 on bar part 4: the requirement names digital twins, agent simulations and counterfactual worlds beside scenario generation, and three generated things leave no SyntheticEpisode: the capacity probe's seeded MarketSimulator::synthetic agent run, the two tail worlds drawn beyond history from the cycle seed (SyntheticGenerator::MonteCarlo therefore has no producer, and the seed field ADR 0149 d18 built has no writer), and LEARN's counterfactual twin scores. On part 1 the Conditional arm (both signs of each causal driver's shock) has no test that fails when its push is deleted: the kernel test's fixture holds no causal graph. Closing needs MonteCarlo episodes with seeds from the probe and the generated tail worlds, a decision on counterfactuals, and a Conditional test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -751,10 +756,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing ScenarioPack / SyntheticEpisode)",
+    "verification": "cargo test -p qip-kernel --lib every_scenario_simulate_runs",
     "work_item": "",
     "size": "L",
-    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed. 2026-10-25 lane L4b (wave580): producer landed in stage_simulate. Mutations fired: deleting the journal_record loop failed the test at records.len() (0, expected the report's episode count); dropping the exposures from scenario_input_digest failed at the assert_ne over two books of equal equity held as one name and as two (the equity alone had masked an earlier version of this mutation, so the test was strengthened to hold equity equal); each restored byte-for-byte (sha256 checked), passing again. Skeptic REFUTED COMPLETE (part 4 omissions, Conditional untested); kept PARTIAL, producer retained; the Conditional push moved after a successful apply and the digest's free-text fields length-prefixed on its findings."
   },
   {
     "id": "R12-EXPAND-6034",
@@ -1105,13 +1110,15 @@
   {
     "id": "R12-EXPAND-6049",
     "status": "PARTIAL",
-    "current": "qip_expansion::executor::acquire produces an AcquisitionRecord for every started item (executor.rs:140-170), called from ResearchLoop::carry_out (research.rs:1551) and counted. Only SelectModel and ReplayTicks with a fill venue are 'Gathered', and gathering is a digest over fill residuals already in memory (executor.rs:147-153); every other action is NotExecutable (executor.rs:154-161). Nothing discovers lawful data, builds a connector, instantiates a specialist (MetaIntelligence::propose_specialists only emits observations, research.rs:868-880) or constructs a simulation.",
+    "current": "qip_expansion::executor::acquire produces an AcquisitionRecord for every started item (executor.rs:140-170), called from ResearchLoop::carry_out (research.rs:1551) and counted. Only SelectModel and ReplayTicks with a fill venue are 'Gathered', and gathering is a digest over fill residuals already in memory (executor.rs:147-153); every other action is NotExecutable (executor.rs:154-161). Nothing discovers lawful data, builds a connector, instantiates a specialist (MetaIntelligence::propose_specialists only emits observations, research.rs:868-880) or constructs a simulation. Since 2026-10-30 the deep brain's carry_out executes ConstructSimulation itself (construct_simulation in research.rs): a Scenario shocking every subject the item's evidence names (subject:<id>, contested:<id>/<attr>) by its latest measured move on the platform's tape, gathered with the digest of those inputs and a Conditional SyntheticEpisode on the round (round.constructed); an item naming no subject with a moving tape is recorded not executable with the reason.",
     "evidence": [
       "backend/crates/services/qip-expansion/src/executor.rs:140-170",
       "backend/crates/apps/qip-deepbrain/src/research.rs:1551",
-      "qip-deepbrain/tests/research_market.rs::research_that_realises_nothing_is_retired_by_the_market_and_stays_retired"
+      "qip-deepbrain/tests/research_market.rs::research_that_realises_nothing_is_retired_by_the_market_and_stays_retired",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::construct_simulation and the ConstructSimulation arm of carry_out",
+      "backend/crates/apps/qip-deepbrain/tests/evidence_gaps.rs::a_started_simulation_item_is_gathered_with_a_dataset_digest"
     ],
-    "gap": "Executors for data discovery, connector creation, specialist instantiation and simulation construction.",
+    "gap": "Executors for data discovery (DiscoverLawfulData stays not executable from the loop; discovery runs from the node's DiscoveryDesk on its own env-gated cadence), connector creation and specialist instantiation (ADR 0157, ADR 0158 d8: gap-only). The constructed scenario is recorded and digested but not applied to a book by the loop. No skeptic round ran (the lane was parked), so the row stays PARTIAL.",
     "implemented": false,
     "tested": true,
     "integrated": true,
@@ -1119,19 +1126,24 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-expansion; cargo test -p qip-deepbrain --test evidence_gaps a_started_simulation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Queue records only."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Queue records only. 2026-10-30 lane L4b: ConstructSimulation executor landed in the deep brain. Mutation fired: routing ConstructSimulation through acquire failed the test at the gathered match (not_executable); restored byte-for-byte (sha256 checked). Kept PARTIAL."
   },
   {
     "id": "R12-EXPAND-6050",
     "status": "PARTIAL",
-    "current": "The deployed sweep runs fill-bias campaigns (executor::run_fill_bias_campaign) through Historical, Simulated, Paper and Shadow stages, with dataset digests, reproducibly; a campaign missing a stage is not promoted.",
+    "current": "ADR 0142 implemented 2026-10-30 (lane L4b): Environment::ORDER is Historical, Simulated, Shadow, Paper and ResearchCampaign::record refuses a paper stage before shadow; run_fill_bias_campaign scores the earlier half of the post-start fills as shadow, refuses a campaign whose shadow and paper windows share an instant (disjoint_windows), installs the correction only when shadow clears the policy's bar (an Installation record naming both windows, paper opening after shadow closed), records Paper only for an installed correction, and withdraws it with a Withdrawal record when paper does not clear; a candidate shadow refused has three stages and no paper window, and ExpansionDesk::conclude records its null on three stages rather than leaving it started. The deep brain's loop counts installations and withdrawals on the round and the campaigns metric. The reflex derivation trace and the executor test's null now read the new order.",
     "evidence": [
-      "backend/crates/services/qip-expansion/tests/loop.rs:475 a_campaign_refuses_a_stage_out_of_order_and_one_with_no_provenance"
+      "backend/crates/services/qip-expansion/src/plan.rs Environment::ORDER",
+      "backend/crates/services/qip-expansion/src/executor.rs::disjoint_windows, ::Installation, ::Withdrawal, run_fill_bias_campaign's two phases",
+      "backend/crates/services/qip-expansion/src/desk.rs conclude (null on a campaign that ran shadow)",
+      "backend/crates/services/qip-expansion/tests/loop.rs::shadow_is_scored_before_paper_and_a_paper_stage_recorded_first_is_refused",
+      "backend/crates/services/qip-expansion/tests/loop.rs::a_campaign_whose_paper_window_overlaps_its_shadow_window_is_refused",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs::a_research_campaign_runs_four_environments_in_order_with_provenance_and_replays_to_the_same_digests (order Historical, Simulated, Shadow, Paper)"
     ],
-    "gap": "Decided by ADR 0142 (accepted 2026-10-18): Shadow is a forward window where the candidate is scored and provably not installed; paper is a later disjoint window where it is installed and acts; ORDER becomes Historical, Simulated, Shadow, Paper. Code left: the reordered Environment::ORDER, the disjoint-window check, the two-phase fill-bias campaign with installation and withdrawal records, and a loop.rs test.",
+    "gap": "The installation is a record on the campaign result and the round, not an act on the paper fill model: the deep brain reads the platform (&Platform) and installs nothing in the twin, so 'installed in the paper fill model' is recorded as the moment the paper window opened rather than performed; the paper window's fills are the platform's own fills, not fills produced under the correction. No skeptic round ran (the lane was parked), so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1139,10 +1151,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-expansion --test loop --test executor; cargo test -p qip-deepbrain --test expansion_rows",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Record type exists; not integrated. Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D18; gap before it: No shadow environment: Shadow is the second half of the post-start paper fills, and Simulated is a bootstrap of the historical fills. ADR lane 2026-10-18: gap re-graded against ADR 0142; gap before it: Delegable decision D18 (design-decisions-2026-10-18.json), ADR not yet written: Define the shadow environment for a paper platform as a candidate run beside the paper book without acting. Needs that ADR, then the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Record type exists; not integrated. Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D18; gap before it: No shadow environment: Shadow is the second half of the post-start paper fills, and Simulated is a bootstrap of the historical fills. ADR lane 2026-10-18: gap re-graded against ADR 0142; gap before it: Delegable decision D18 (design-decisions-2026-10-18.json), ADR not yet written: Define the shadow environment for a paper platform as a candidate run beside the paper book without acting. Needs that ADR, then the code. 2026-10-30 lane L4b: ADR 0142 code landed. Mutations fired: deleting the disjoint_windows call failed the overlap test at expect_err; installing unconditionally failed it at the never-installed candidate's is_complete; each restored byte-for-byte (sha256 checked). Kept PARTIAL: no skeptic round, and the installation is a record rather than an act on the twin."
   },
   {
     "id": "R12-EXPAND-6051",
@@ -1280,25 +1292,27 @@
   {
     "id": "R12-EXPAND-6057",
     "status": "PARTIAL",
-    "current": "qip-agents MemoryRegistry values every resolved analyst episode by calibration surprise |outcome - conviction| against a positive threshold (refused at 0, negative, >1, non-finite): below it the episode is counted into a per-analyst CompressedSummary, never dropped. Platform::write_research_memory consults it for every stance LEARN charges and still records the episode in ResearchMemory, so hit_rate is computed over all resolved episodes (ADR 0152 d8).",
+    "current": "qip-agents MemoryRegistry values every resolved analyst episode by calibration surprise against a positive threshold (compressing below it, never dropping) and, since 2026-10-25, admits typed qip_contracts::expansion::MemoryEntry records through MemoryRegistry::admit: validate refuses an entry missing or out of range on any declared field (blank id or content, a retention policy keeping nothing, a value threshold or importance outside [0, 1], a zero creation instant, no tags), counts the refusal on the registry, and keeps per-kind counts plus the last 256 entries. Platform::write_research_memory, on LEARN's default path, admits one entry per stance it charges: Episodic when the analyst was right, Failure when not, with a one-year retention policy and the registry's own importance threshold as the value policy, tagged by claim class, analyst and instrument.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/memory.rs::MemoryRegistry",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::write_research_memory",
+      "backend/crates/libs/qip-agents/src/memory.rs::MemoryRegistry::admit, ::admitted, ::refused, ::entries",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::write_research_memory (the MemoryEntry it builds; ANALYST_EPISODE_RETENTION_MS)",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs::memory_registry::a_memory_entry_without_a_retention_policy_is_refused_by_the_registry_learn_writes_through",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::learn_writes_each_resolved_call_as_a_typed_memory_entry_with_declared_policies",
       "backend/crates/libs/qip-agents/tests/expansion_registries.rs::memory_registry::a_below_threshold_episode_is_kept_compressed_and_still_counts_in_the_hit_rate",
       "backend/crates/runtime/qip-kernel/src/platform.rs::an_unsurprising_call_is_compressed_by_the_registry_and_still_counts_in_the_analysts_hit_rate"
     ],
-    "gap": "2026-10-24: requirement is a registry recording semantic knowledge, episodes, procedures, failures, simulations and abstractions with declared fields, refusing an entry that misses one; MemoryRegistry holds per-analyst retained and compressed episode counts only, has no entry type with declared fields to refuse, and does not classify procedures, simulations or abstractions",
+    "gap": "Refuted by the in-lane skeptic 2026-10-25 on bar parts 3 and 4: of the six kinds the requirement names, LEARN produces Episodic and Failure entries only (ResearchMemory::record_procedure has no kernel caller; the SIMULATE stage's SyntheticEpisode is journaled on the log and not admitted as a Simulation memory; the compressed per-analyst summary is a count, not a CompressedAbstraction entry; nothing produces Semantic); nothing reads the registry's entries, counts or refusals on a running path (consult's disposition and admit's result are discarded, and MemoryRegistry::refused has no production reader); the declared retention and value policies are recorded but never fire, because eviction is first-in-first-out at 256 entries; and the registry is in memory only, not journaled or rebuilt on restart.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-kernel --lib an_unsurprising_call",
+    "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-kernel --lib learn_writes_each_resolved_call",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d8. Mutations fired: recording only Retained episodes in write_research_memory fails the kernel test (compression drops nothing: left 1, right 4); inverting the registry threshold comparison fails the qip-agents test (retained 9, expected 1). Default threshold 0.3 is DEFAULT_IMPORTANCE_THRESHOLD; the registry is not yet persisted or journaled, only counted in memory. AUDIT-2 2026-10-24: regraded, requirement is a registry recording semantic knowledge, episodes, procedures, failures, simulations and abstractions with declared fields, refusing an entry that misses one; MemoryRegistry holds per-analyst retained and compressed episode counts only, has no entry type with declared fields to refuse, and does not classify procedures, simulations or abstractions"
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d8. Mutations fired: recording only Retained episodes in write_research_memory fails the kernel test (compression drops nothing: left 1, right 4); inverting the registry threshold comparison fails the qip-agents test (retained 9, expected 1). Default threshold 0.3 is DEFAULT_IMPORTANCE_THRESHOLD; the registry is not yet persisted or journaled, only counted in memory. AUDIT-2 2026-10-24: regraded, requirement is a registry recording semantic knowledge, episodes, procedures, failures, simulations and abstractions with declared fields, refusing an entry that misses one; MemoryRegistry holds per-analyst retained and compressed episode counts only, has no entry type with declared fields to refuse, and does not classify procedures, simulations or abstractions 2026-10-25 lane L4b (wave580): MemoryRegistry::admit with declared fields landed and LEARN writes Episodic and Failure entries through it. Mutations fired: admit skipping validate failed the qip-agents test at admitted(Failure) (1, expected 0); deleting the admit call in write_research_memory failed the kernel test at admitted(Episodic) (0, expected 3); each restored byte-for-byte (sha256 checked), passing again. Skeptic REFUTED COMPLETE (parts 3 and 4); kept PARTIAL, admit path retained; on its findings the created_at clamp was removed (a pre-epoch clock now converts to zero and is refused) and an unresolved episode is stored unvalued rather than valued at zero."
   },
   {
     "id": "R12-EXPAND-6058",
@@ -1399,23 +1413,26 @@
   {
     "id": "R12-EXPAND-6062",
     "status": "PARTIAL",
-    "current": "qip-agents CapabilityRegistry with versioned CapabilityEntry (confidence, eligibility); library-only.",
+    "current": "qip-agents CapabilityRegistry with versioned CapabilityEntry (confidence, eligibility). Since 2026-10-25 qip-deepbrain's ResearchLoop holds one and records every promoted capability through CapabilityRegistry::promote in the conclude arm of carry_out: a second implementation under a verb is merged at the lower confidence and the same eligibility, the same implementation promoted twice is refused, an eligibility naming `live` as a word is refused by the registry itself, and a refusal is counted on the round and printed in its describe line. Populated only by promotion::verb_for, which yields Sense, Reason, Simulate and Operate.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/registries.rs:115",
-      "backend/crates/libs/qip-contracts/src/expansion.rs:416 CapabilityEntry"
+      "backend/crates/libs/qip-agents/src/registries.rs::CapabilityRegistry::promote",
+      "backend/crates/apps/qip-deepbrain/src/research.rs carry_out conclude arm (grep -n 'capability_registry.promote')",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs::a_second_promotion_under_one_verb_merges_its_implementation_and_a_repeat_is_refused",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs::a_promoted_fill_bias_correction_is_recorded_in_the_capability_registry_with_paper_and_shadow_eligibility",
+      "backend/crates/libs/qip-contracts/src/expansion.rs:725 CapabilityEntry (deny_unknown_fields, validate)"
     ],
-    "gap": "2026-10-24 (ADR 0158 decision 15): none to close in code. CapabilityRegistry is consulted against nothing and stays empty: the sweep's coverage detector (qip-expansion detectors.rs coverage) keys on asset class, venue and geography and never a verb, and populating the ten verbs would assert Trade, Purchase and Transfer capabilities the paper platform does not have. It is populated when a promoted capability declares its verb at registration, with eligibility stated as shadow or simulated.",
+    "gap": "Refuted by the in-lane skeptic 2026-10-25 on bar part 4: the requirement enumerates ten verbs and the only populator, promotion::verb_for, can yield four (Sense, Reason, Simulate, Operate); Trade, Settle, Hedge, Transfer, Purchase and Create are unreachable by construction because ADR 0158 d15 declines populating them on a paper platform, so the owner decides whether the requirement text changes. Also on part 3 strictly read: the register's only production reader is promote's own duplicate and eligibility guard; nothing decides from what it holds, and it is in memory only, not journaled or rebuilt on restart.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-deepbrain --test expansion_rows a_promoted_fill_bias",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed. Kept PARTIAL: library-only type with no production caller, by decision."
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed. Kept PARTIAL: library-only type with no production caller, by decision. 2026-10-25 lane L4b (wave580): registry populated on promotion (decision 15's one legitimate consumer). Mutations fired: deleting the promote call in the conclude arm failed the expansion_rows test at capability_count (0, expected 1); promote without the merge failed the registry test at implementations; deleting the duplicate check failed at is_err; deleting the live refusal failed at capability_count (1, expected 0); each restored byte-for-byte. Skeptic REFUTED COMPLETE (six verbs unreachable per ADR 0158 d15; no non-writer reader); kept PARTIAL, code retained."
   },
   {
     "id": "R12-EXPAND-6063",
