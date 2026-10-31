@@ -161,6 +161,56 @@ pub enum SensedRecord {
     ReferenceData(Box<ReferenceDataUpdate>),
 }
 
+impl qip_contracts::admission::Admissible for SensedRecord {
+    /// The instants a sensed record states about itself (ADR 0132). A tick,
+    /// quote or trade carries both the instant it happened and the instant
+    /// it was captured; a bar's event instant is its close and it carries no
+    /// capture instant; a news item carries the instant it was published; a
+    /// corporate action the instant it was announced. A record that states
+    /// neither is admitted on its header alone.
+    fn own_times(&self) -> qip_contracts::admission::OwnTimes {
+        use qip_contracts::admission::OwnTimes;
+        match self {
+            Self::Tick(tick) => OwnTimes {
+                event_time: Some(tick.at),
+                receive_time: Some(tick.capture_time),
+            },
+            Self::Quote(quote) => OwnTimes {
+                event_time: Some(quote.at),
+                receive_time: Some(quote.capture_time),
+            },
+            Self::Trade(trade) => OwnTimes {
+                event_time: Some(trade.at),
+                receive_time: Some(trade.capture_time),
+            },
+            Self::Book(book) => OwnTimes {
+                event_time: Some(book.at),
+                receive_time: None,
+            },
+            Self::Bar(bar) => OwnTimes {
+                event_time: Some(bar.close_time()),
+                receive_time: None,
+            },
+            Self::CorporateAction(action) => OwnTimes {
+                event_time: Some(action.announced_at),
+                receive_time: None,
+            },
+            Self::News(news) => OwnTimes {
+                event_time: Some(news.published_at),
+                receive_time: None,
+            },
+            // A macro observation carries the period it describes, which is
+            // not the instant it happened or was released; a fundamental, an
+            // alternative-data point and a reference update likewise state no
+            // instant of their own. Admitted on their header alone.
+            Self::Macro(_)
+            | Self::Fundamental(_)
+            | Self::AlternativeData(_)
+            | Self::ReferenceData(_) => OwnTimes::default(),
+        }
+    }
+}
+
 impl SensedRecord {
     /// The topic this record publishes on.
     pub fn topic(&self) -> Topic {

@@ -195,6 +195,11 @@ pub struct Config {
     /// (ADR 0129). `None` only in a `local` deployment, whose broker stamps
     /// no origin and whose consumers therefore refuse what it serves.
     pub region: Option<String>,
+    /// Which deployment this broker runs in, as parsed and checked against
+    /// the host's markers. Kept on the configuration so the composition root
+    /// can decide what only a `local` broker may do (ADR 0215) from the same
+    /// fact that chose its link and its key.
+    pub deployment: Deployment,
 }
 
 /// The proxy endpoint and the one lasting credential a Google API is reached
@@ -617,6 +622,7 @@ impl Config {
             listener_tls,
             admitted_peers,
             region,
+            deployment,
         })
     }
 }
@@ -793,6 +799,31 @@ mod tests {
     /// A deployed broker with a certificate and the peer list, as
     /// `a_broker_serves_plaintext_only_where_a_local_deployment_chose_it`
     /// builds it.
+    /// ADR 0215: the configuration carries the deployment it was parsed
+    /// under, and the composition root's mapping closes a topic-less stream
+    /// everywhere but `local`. Mutation: make `topicless_streams` answer
+    /// `AdmitAll` for every deployment — the second assertion fails.
+    #[test]
+    fn a_deployed_configuration_closes_topic_less_streams_and_a_local_one_does_not() {
+        use qip_streaming::event_fabric::service::TopiclessStreams;
+        let local = Config::parse(&complete()).expect("the complete local configuration parses");
+        assert_eq!(local.deployment, Deployment::Local);
+        assert_eq!(
+            crate::topicless_streams(local.deployment),
+            TopiclessStreams::AdmitAll
+        );
+        let deployed = Config::parse(&deployed_tls()).expect("the deployed configuration parses");
+        assert_ne!(
+            deployed.deployment,
+            Deployment::Local,
+            "premise: a deployed broker"
+        );
+        assert_eq!(
+            crate::topicless_streams(deployed.deployment),
+            TopiclessStreams::AdmitNone
+        );
+    }
+
     fn deployed_tls() -> BTreeMap<String, String> {
         let mut tls = complete();
         tls.remove(TLS_MODE_VARIABLE);

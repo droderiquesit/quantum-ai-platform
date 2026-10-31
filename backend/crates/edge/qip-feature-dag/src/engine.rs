@@ -114,7 +114,15 @@ impl FeatureEngine {
     /// touch, so it cannot dirty a spread; a quote on one instrument cannot
     /// dirty a feature of another.
     pub fn ingest(&mut self, message: &MarketMessage) -> Result<()> {
-        self.state.apply(message)?;
+        self.ingest_placed(message, Duration::ZERO)
+    }
+
+    /// Ingest `message` with the clock discipline's doubt about its venue
+    /// stamp (R12-TICK-2062). The cell passes the bound it holds for the
+    /// venue; a feature that compares two instruments' samples refuses to
+    /// order a pair the combined doubt covers.
+    pub fn ingest_placed(&mut self, message: &MarketMessage, uncertainty: Duration) -> Result<()> {
+        self.state.apply_placed(message, uncertainty)?;
         let reads = MarketReads::of_message(&message.body);
         if reads.is_empty() {
             return Ok(());

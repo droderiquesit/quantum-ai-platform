@@ -72,6 +72,7 @@ fn spooled(label: &str, markers: Vec<PassMarker>) -> PathBuf {
         let offered = sender.offer(Handoff::Pass(Box::new(PassInputs {
             marker,
             applied: Vec::new(),
+            digest: None,
         })));
         assert!(matches!(offered, Offer::Accepted));
     }

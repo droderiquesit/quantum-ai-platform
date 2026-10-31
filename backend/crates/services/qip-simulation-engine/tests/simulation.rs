@@ -1502,3 +1502,172 @@ fn an_order_replaced_before_it_came_due_is_counted_rather_than_dropped_in_silenc
     );
     Ok(())
 }
+
+// --- the historical universe (R12-TICK-2090) --------------------------------
+
+/// A strategy that moves between two weightings every step, so every step
+/// places an order and the run has an order to refuse inside an outage.
+struct Alternating {
+    step: usize,
+}
+
+impl BacktestStrategy for Alternating {
+    fn name(&self) -> &str {
+        "alternating"
+    }
+    fn target_weights(&mut self, _view: &PointInTimeView<'_>) -> BTreeMap<String, f64> {
+        self.step += 1;
+        let (aaa, bbb) = if self.step.is_multiple_of(2) {
+            (0.6, 0.2)
+        } else {
+            (0.2, 0.6)
+        };
+        BTreeMap::from([
+            (object("AAA").as_str().to_string(), aaa),
+            (object("BBB").as_str().to_string(), bbb),
+        ])
+    }
+}
+
+fn two_name_tape(days: usize) -> Vec<Bar> {
+    let mut bars = v_shaped("AAA", days);
+    bars.extend(v_shaped("BBB", days));
+    bars.sort_by(|a, b| {
+        a.open_time
+            .cmp(&b.open_time)
+            .then_with(|| a.object_id.as_str().cmp(b.object_id.as_str()))
+    });
+    bars
+}
+
+/// R12-TICK-2090: a backtest judges a strategy against the universe that
+/// existed at each instant, not the survivors the present one holds. Given
+/// the historical universe, a name delisted after the span still trades
+/// inside it; a venue outage inside the span is reported and nothing fills
+/// through it; a name delisted inside the span stops at its ex-date with the
+/// refusal naming the delisting — and the same tape run against the present
+/// universe alone keeps filling the delisted name, which is the survivorship
+/// the history ends.
+///
+/// Mutations: drop the membership check in `Backtester::rebalance` and the
+/// early-delisted run fills BBB after its ex-date; drop the outage report and
+/// `result.outages` is empty; drop the outage refusal and a fill lands inside
+/// the window.
+#[test]
+fn a_backtest_over_a_past_date_includes_an_instrument_delisted_later_and_reports_the_outage()
+-> Result<()> {
+    use qip_financial::history::{UniverseHistory, VenueOutage};
+    let day = |n: i64| start().saturating_add(Duration::from_days(n));
+    let outage = VenueOutage {
+        venue: "XNYS".to_string(),
+        from: day(5),
+        until: day(8),
+        reason: "matching engine halt".to_string(),
+    };
+    let mut history = UniverseHistory::new();
+    history.list(object("AAA"), "AAA", day(-30))?;
+    history.list(object("BBB"), "BBB", day(-30))?;
+    // Delisted after the span: a survivor-only universe would not hold it.
+    history.delist(&object("BBB"), day(60))?;
+    history.record_outage(outage.clone())?;
+    let universe = universe_of(&["AAA", "BBB"]);
+    let tape = two_name_tape(20);
+
+    let mut clock = SimulationClock::new(tape.clone(), ExecutionAssumptions::next_bar())?;
+    let result = Backtester::new(BacktestConfig::default())?.run_with_history(
+        &mut Alternating { step: 0 },
+        &mut clock,
+        &universe,
+        &history,
+    )?;
+    let bbb_fills = result
+        .fills
+        .iter()
+        .filter(|fill| fill.object_id == object("BBB").as_str())
+        .count();
+    assert!(
+        bbb_fills >= 1,
+        "a name delisted after the span did not trade inside it: {:?}",
+        result.rejected
+    );
+    assert_eq!(
+        result.outages,
+        vec![outage.clone()],
+        "the run did not report the outage inside its span"
+    );
+    let filled_in_outage: Vec<&SimulatedFill> = result
+        .fills
+        .iter()
+        .filter(|fill| fill.at >= outage.from && fill.at < outage.until)
+        .collect();
+    assert!(
+        filled_in_outage.is_empty(),
+        "fills landed inside the venue outage: {filled_in_outage:?}"
+    );
+    let refused_in_outage = result
+        .rejected
+        .iter()
+        .filter(|rejected| {
+            rejected.at >= outage.from
+                && rejected.at < outage.until
+                && rejected.reason.contains("was out from")
+        })
+        .count();
+    assert!(
+        refused_in_outage >= 1,
+        "no order inside the outage was refused naming it: {:?}",
+        result.rejected
+    );
+
+    // The same tape with BBB delisted inside the span.
+    let mut early = UniverseHistory::new();
+    early.list(object("AAA"), "AAA", day(-30))?;
+    early.list(object("BBB"), "BBB", day(-30))?;
+    early.delist(&object("BBB"), day(10))?;
+    let mut clock = SimulationClock::new(tape.clone(), ExecutionAssumptions::next_bar())?;
+    let result = Backtester::new(BacktestConfig::default())?.run_with_history(
+        &mut Alternating { step: 0 },
+        &mut clock,
+        &universe,
+        &early,
+    )?;
+    let bbb_before: Vec<&SimulatedFill> = result
+        .fills
+        .iter()
+        .filter(|fill| fill.object_id == object("BBB").as_str())
+        .collect();
+    assert!(
+        !bbb_before.is_empty() && bbb_before.iter().all(|fill| fill.at < day(10)),
+        "a name delisted at day 10 filled after its ex-date, or never before it: {bbb_before:?}"
+    );
+    assert!(
+        result.rejected.iter().any(|rejected| {
+            rejected.object_id == object("BBB").as_str()
+                && rejected.at >= day(10)
+                && rejected.reason.contains("was not listed at")
+        }),
+        "an order after the delisting was not refused naming it: {:?}",
+        result.rejected
+    );
+    assert!(
+        result.outages.is_empty(),
+        "no outage was recorded in this history"
+    );
+
+    // The present universe alone: the survivorship the history ends.
+    let mut clock = SimulationClock::new(tape, ExecutionAssumptions::next_bar())?;
+    let unguarded = Backtester::new(BacktestConfig::default())?.run(
+        &mut Alternating { step: 0 },
+        &mut clock,
+        &universe,
+    )?;
+    assert!(
+        unguarded
+            .fills
+            .iter()
+            .any(|fill| fill.object_id == object("BBB").as_str() && fill.at >= day(10)),
+        "the premise failed: without the history the delisted name should keep filling"
+    );
+    assert!(unguarded.outages.is_empty());
+    Ok(())
+}

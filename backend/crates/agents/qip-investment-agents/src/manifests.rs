@@ -52,6 +52,8 @@ pub mod ids {
     pub const PORTFOLIO_ASSET: &str = "portfolio-asset-brain";
     pub const SELF_EXPLOITATION: &str = "self-exploitation-probe";
     pub const REGIME_BREAK: &str = "regime-break-probe";
+    pub const MANIPULATION: &str = "manipulation-probe";
+    pub const MODEL_FAILURE: &str = "model-failure-probe";
 }
 
 /// Owning teams. Used by the governance rules to check independence, so these
@@ -223,6 +225,60 @@ pub fn regime_break_probe(reviewed_at: Timestamp) -> AgentManifest {
     ])
 }
 
+/// R12-REASON-3023: the adversary that asks whether the tape or the book is
+/// being worked — a crossed or layered book, volume that moves no price.
+pub fn manipulation_probe(reviewed_at: Timestamp) -> AgentManifest {
+    AgentManifest::research(
+        ids::MANIPULATION,
+        "Manipulation Probe",
+        "reads each instrument's book and bars for a layered or crossed book and for volume with no price, the shapes spoofing, layering and wash trading leave",
+        reviewed_at,
+    )
+    .with_role(AgentRole::Adversarial)
+    .with_capabilities(analyst_reads().with(Capability::ChallengeHypothesis))
+    .with_owner(owners::REVIEW)
+    .escalating_to(ids::CHIEF)
+    .with_competencies(vec![
+        "depth stacked behind a thin touch on one side".into(),
+        "a crossed book".into(),
+        "a volume spike on a flat close".into(),
+    ])
+    .with_limitations(vec![
+        "names the shape, not the actor; one book snapshot cannot show an order being pulled".into(),
+        "needs a book or eleven bars per instrument; a thinner tape is reported as unexamined".into(),
+    ])
+}
+
+/// R12-REASON-3023: the adversary that asks whether the models behind a
+/// claim are failing — scored forecasters the meta-model expects to fail or
+/// that score worse than chance, and production models past their drift
+/// threshold.
+pub fn model_failure_probe(reviewed_at: Timestamp) -> AgentManifest {
+    AgentManifest::research(
+        ids::MODEL_FAILURE,
+        "Model Failure Probe",
+        "reads the tournament's forecaster records and the deep brain's drift report for models that are failing or have drifted",
+        reviewed_at,
+    )
+    .with_role(AgentRole::Adversarial)
+    .with_capabilities(
+        analyst_reads()
+            .with(Capability::ReadModelRegistry)
+            .with(Capability::ChallengeHypothesis),
+    )
+    .with_owner(owners::REVIEW)
+    .escalating_to(ids::CHIEF)
+    .with_competencies(vec![
+        "a forecaster's mean Brier score against chance".into(),
+        "the meta-model's predicted failure in the current regime".into(),
+        "a production model past its drift threshold".into(),
+    ])
+    .with_limitations(vec![
+        "sees only forecasters the tournament has a question from and models the deep brain last reported".into(),
+        "says a model is failing, not why".into(),
+    ])
+}
+
 pub fn macro_analyst(reviewed_at: Timestamp) -> AgentManifest {
     research(
         ids::MACRO,
@@ -236,6 +292,7 @@ pub fn macro_analyst(reviewed_at: Timestamp) -> AgentManifest {
         "policy rate path and its transmission".into(),
         "inflation and growth surprises against expectations".into(),
         "cross-asset regime identification".into(),
+        "geopolitical exposure from the world model's trade, sanctions and regulatory claims".into(),
     ])
     .with_limitations(vec![
         "no view on single-name idiosyncratic risk".into(),
@@ -664,6 +721,8 @@ pub fn roster(reviewed_at: Timestamp) -> Roster {
         portfolio_asset_brain(reviewed_at),
         self_exploitation_probe(reviewed_at),
         regime_break_probe(reviewed_at),
+        manipulation_probe(reviewed_at),
+        model_failure_probe(reviewed_at),
     ])
 }
 

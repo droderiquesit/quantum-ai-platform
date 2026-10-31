@@ -100,7 +100,10 @@ fn market_of(bars: Vec<Bar>) -> Result<TwinMarket> {
 fn a_buy(object_id: &ObjectId) -> Result<ActualTrade> {
     ActualTrade::new(
         object_id.clone(),
-        BookSide::Bid,
+        // A buy consumes the ask. This said `Bid` while `direction` read
+        // `Bid` as long, so the fixture and the engine agreed with each other
+        // and with nothing that produces a trade in production.
+        BookSide::Ask,
         dec!("10000"),
         VenueId::new("XTST"),
         "us",
@@ -495,6 +498,57 @@ fn standing_aside_shows_positive_regret_on_a_loss_and_negative_on_a_win() -> Res
         stood_aside.difference
     );
     assert!(!stood_aside.favours_the_alternative());
+    Ok(())
+}
+
+#[test]
+fn a_trade_against_the_ask_is_the_long_and_one_against_the_bid_is_the_short() -> Result<()> {
+    // The failure this guards, and it was in the tree: `direction` read `Bid`
+    // as long. Every producer of an `ActualTrade` — the kernel's `book_side`,
+    // the cells' fill reports (`qip_contracts::wire`) — records a buy against
+    // the ask, the side of the book a buy consumes, so every trade handed in
+    // was settled as the opposite position; the kernel's refused buys on a
+    // rising tape scored as losses. No test here pinned the sign, and the
+    // `do_not_trade` tests above cannot: standing aside earns zero whichever
+    // way the trade pointed.
+    let subject = object("obj-alpha");
+
+    // Premise first: the plain `trade` alternative on `rising` exits above
+    // where it entered, so the sign of its P&L is the sign of the direction.
+    let bought = evaluate(rising(&subject), dec!("95000"), 5, "dec-buy")?;
+    let traded = bought.by_kind("trade").expect("the trade alternative");
+    let SimulatedFill::Filled {
+        entry_price,
+        exit_price,
+        ..
+    } = traded.counterfactual_outcome.fill()
+    else {
+        panic!("the premise failed: the plain trade alternative did not fill");
+    };
+    assert!(
+        exit_price > entry_price,
+        "the premise failed: the tape did not rise between {entry_price} and {exit_price}"
+    );
+    assert!(
+        traded.counterfactual_outcome.simulated_pnl().is_positive(),
+        "a buy on a rising tape was settled as a short: {}",
+        traded.counterfactual_outcome.simulated_pnl()
+    );
+
+    // The same tape, the same size, against the bid: the short pays the rise.
+    let mut market = market_of(rising(&subject))?;
+    let engine = engine(5)?;
+    let decision = a_decision("dec-sell", &subject);
+    let mut sold = a_buy(&subject)?;
+    sold.side = BookSide::Bid;
+    let outcome = RealisedOutcome::realised(day(10), dec!("-95000"), dec!("4500"), dec!("10000"));
+    let set = engine.evaluate(&mut market, &decision, &sold, &outcome)?;
+    let traded = set.by_kind("trade").expect("the trade alternative");
+    assert!(
+        traded.counterfactual_outcome.simulated_pnl().is_negative(),
+        "a sell on a rising tape was settled as a long: {}",
+        traded.counterfactual_outcome.simulated_pnl()
+    );
     Ok(())
 }
 

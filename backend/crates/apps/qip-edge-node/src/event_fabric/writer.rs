@@ -65,15 +65,15 @@ use qip_contracts::market_event::MarketEvent;
 use qip_contracts::reflex::{
     ChainSpan, Decision, Gap, JournalEntry, OutcomeRecord, chain_correlation,
 };
-use qip_contracts::replay::PassMarker;
+use qip_contracts::replay::{FeatureDigest, PassMarker};
 use qip_core::canonical::canonical_json;
 use qip_core::error::{Error, Result};
 use qip_core::{CorrelationId, EventId, Lineage, Timestamp, sha256_hex};
 use qip_edge::journal::{Journal, MirrorBatch};
 use qip_events::AnyEvent;
 use qip_events::event_fabric::bindings::{
-    EVENT_FABRIC_GAP, MARKET_EVENT_APPLIED, REFLEX_CHAIN_SPAN, REFLEX_JOURNAL_RECORDED,
-    REFLEX_OUTCOME_RECORDED, REFLEX_PASS_MARKED, TopicBinding,
+    EVENT_FABRIC_GAP, MARKET_EVENT_APPLIED, REFLEX_CHAIN_SPAN, REFLEX_FEATURE_DIGESTED,
+    REFLEX_JOURNAL_RECORDED, REFLEX_OUTCOME_RECORDED, REFLEX_PASS_MARKED, TopicBinding,
 };
 use qip_events::event_fabric::codec::{Batch, MAX_BATCH_LEN, MessageType, PayloadCodec, Record};
 use qip_events::event_fabric::policy::QosClass;
@@ -126,6 +126,9 @@ pub enum Handoff {
 pub struct PassInputs {
     pub marker: PassMarker,
     pub applied: Vec<MarketEvent>,
+    /// What the pass sized against (ADR 0132 decision 4), one bounded record;
+    /// `None` on a turn that ran no pass, which then marks and digests nothing.
+    pub digest: Option<FeatureDigest>,
 }
 
 /// Passes `from_pass..=to_pass` whose inputs the backlog could not hold.
@@ -291,6 +294,7 @@ pub enum RecordKind {
     OutcomeRecorded,
     ChainSpan,
     PassMarked,
+    FeatureDigested,
     MarketEventApplied,
     /// A gap, on P2 where the missing records would have been.
     GapP2,
@@ -307,6 +311,7 @@ impl RecordKind {
             Self::OutcomeRecorded => "p1.outcome_recorded",
             Self::ChainSpan => "p1.chain_span",
             Self::PassMarked => "p2.pass_marked",
+            Self::FeatureDigested => "p2.feature_digested",
             Self::MarketEventApplied => "p2.market_event_applied",
             Self::GapP2 => "p2.gap",
             Self::GapP1 => "p1.gap",
@@ -319,6 +324,7 @@ impl RecordKind {
             Self::OutcomeRecorded => REFLEX_OUTCOME_RECORDED,
             Self::ChainSpan => REFLEX_CHAIN_SPAN,
             Self::PassMarked => REFLEX_PASS_MARKED,
+            Self::FeatureDigested => REFLEX_FEATURE_DIGESTED,
             Self::MarketEventApplied => MARKET_EVENT_APPLIED,
             Self::GapP2 | Self::GapP1 => EVENT_FABRIC_GAP,
         }
@@ -328,9 +334,11 @@ impl RecordKind {
     /// gap's P2 copy, which sits on the stream whose records went missing.
     pub const fn stream(self) -> QosClass {
         match self {
-            Self::JournalRecorded | Self::PassMarked | Self::MarketEventApplied | Self::GapP2 => {
-                QosClass::P2MarketJournal
-            }
+            Self::JournalRecorded
+            | Self::PassMarked
+            | Self::FeatureDigested
+            | Self::MarketEventApplied
+            | Self::GapP2 => QosClass::P2MarketJournal,
             Self::OutcomeRecorded | Self::ChainSpan | Self::GapP1 => QosClass::P1Outcomes,
         }
     }
@@ -852,6 +860,13 @@ impl<S: Spool> SpoolWriter<S> {
             at,
             &inputs.marker,
         )?);
+        // One digest per pass, after its marker and before the tape it
+        // applied, so a reader walking P2 sees what the pass read and then
+        // what it sized against (ADR 0132 decision 4). The ticks inside are
+        // a count and a hash; nothing here writes a record per tick.
+        if let Some(digest) = &inputs.digest {
+            p2.push(self.record(RecordKind::FeatureDigested, &pass.to_string(), at, digest)?);
+        }
         for (index, event) in inputs.applied.iter().enumerate() {
             p2.push(self.record_at(
                 RecordKind::MarketEventApplied,
@@ -1083,6 +1098,11 @@ pub fn gap(event: &AnyEvent) -> Result<Gap> {
 /// The marker a P2 `ReflexPassMarked` record carries.
 pub fn pass_marker(event: &AnyEvent) -> Result<PassMarker> {
     decode_as(event, REFLEX_PASS_MARKED)
+}
+
+/// The digest a P2 `ReflexFeatureDigested` record carries.
+pub fn feature_digest(event: &AnyEvent) -> Result<FeatureDigest> {
+    decode_as(event, REFLEX_FEATURE_DIGESTED)
 }
 
 /// The tape event a P2 `MarketEventApplied` record carries.

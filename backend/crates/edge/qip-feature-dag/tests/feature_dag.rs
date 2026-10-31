@@ -1181,3 +1181,79 @@ fn a_quarantined_instrument_withholds_every_feature_computed_from_it_and_nothing
     assert!(engine.quarantined_features().is_empty());
     assert_eq!(lifted.get(&echo_key), clean.get(&echo_key));
 }
+
+/// R12-TICK-2062: a lead/lag correlation asserts that one instrument's move
+/// preceded another's. Where the two venues' clocks are doubted by more than
+/// the gap between the samples, that order is one the clocks cannot support,
+/// and the feature is undefined rather than computed off the bucket grid.
+/// The same tape under a doubt smaller than the gap computes as before.
+///
+/// Mutation: make the order test in `LeadLagCorrelation::compute` accept
+/// every pair (treat every alignment as `Before`) — the doubted engine
+/// computes a correlation and the first assertion fails.
+#[test]
+fn cross_instrument_samples_within_combined_clock_uncertainty_yield_no_aligned_pair() {
+    let follower = object("FOLU");
+    let leader = object("LEDU");
+    let bids = [
+        "100.00", "101.00", "99.00", "102.00", "100.00", "103.00", "98.00", "101.00", "104.00",
+        "100.50",
+    ];
+    let start = Timestamp::from_secs(1_700_000_000);
+    let ask_of = |bid: &str| {
+        (Decimal::parse(bid).unwrap_or(Decimal::ZERO)
+            + Decimal::parse("0.02").unwrap_or(Decimal::ZERO))
+        .to_string()
+    };
+    // The tape is a follower that copies the leader one step (100 ms) late.
+    let run = |uncertainty: Duration| {
+        let mut engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(30));
+        engine
+            .register(Box::new(LeadLagCorrelation::new(
+                follower.clone(),
+                leader.clone(),
+                5,
+                1,
+            )))
+            .unwrap();
+        let mut sequence = 0;
+        for (step, bid) in bids.iter().enumerate() {
+            let at = start.saturating_add(Duration::from_millis(100 * step as i64));
+            let previous = if step == 0 { bid } else { &bids[step - 1] };
+            sequence += 1;
+            engine
+                .ingest_placed(
+                    &quote(&leader, bid, &ask_of(bid), 10, at, sequence),
+                    uncertainty,
+                )
+                .unwrap();
+            sequence += 1;
+            engine
+                .ingest_placed(
+                    &quote(&follower, previous, &ask_of(previous), 10, at, sequence),
+                    uncertainty,
+                )
+                .unwrap();
+        }
+        let last = start.saturating_add(Duration::from_millis(100 * (bids.len() as i64 - 1)));
+        let vector = engine.evaluate(last).unwrap();
+        vector.get(&LeadLagCorrelation::key(&follower, &leader, 5, 1))
+    };
+
+    // Each venue's stamp doubted by 60 ms: the 100 ms lead is inside the
+    // 120 ms combined doubt, so no pair is ordered and nothing is asserted.
+    let doubted = run(Duration::from_millis(60));
+    assert!(
+        matches!(
+            doubted,
+            Some(qip_contracts::feature::FeatureValue::Undefined)
+        ),
+        "a lead/lag correlation was asserted across samples the clocks cannot order, or the \
+         feature was not evaluated at all: {doubted:?}"
+    );
+
+    // Doubted by 10 ms each: the lead stands clear of the 20 ms combined
+    // doubt, and the feature computes the correlation the tape carries.
+    let clear = run(Duration::from_millis(10)).expect("the feature is defined");
+    close(clear, 1.0, "lead/lag correlation under a small clock doubt");
+}
