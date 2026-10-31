@@ -262,6 +262,42 @@ fn every_fabric_socket_write_carries_bytes_from_the_versioned_encoders() {
         );
     }
 
+    // The mirror role that drives that logic between two brokers (ADR 0119
+    // §3, R12-OBS-9148) is pinned the same way. It too builds no bytes: a
+    // copy reaches the target as the source batch decoded by the codec and
+    // handed to the target broker's `produce_to`, the one place a batch's
+    // broker fields are stamped, so the role adds no send path of its own.
+    //
+    // Mutation: add `let _ = batch.encode()?;` before the produce in
+    // `qip-fabricd/src/mirror.rs`'s `copy` — the loop below fails naming
+    // `.encode(`.
+    const PINNED_MIRROR_ROLE: &str = "backend/crates/apps/qip-fabricd/src/mirror.rs";
+    let role = code_at(PINNED_MIRROR_ROLE);
+    assert!(
+        role.contains("Batch::decode(&copied.bytes)?")
+            && role.contains("self.produce_to(stream, partition, batch)?"),
+        "the mirror role hands the target the source batch, decoded by the codec, through the \
+         broker's produce"
+    );
+    for native in [
+        "TcpStream",
+        "TcpListener",
+        "write_all",
+        ".write(",
+        "to_ne_bytes",
+        "to_le_bytes",
+        "to_be_bytes",
+        "transmute",
+        ".encode(",
+        "into_bytes()",
+    ] {
+        assert!(
+            !role.contains(native),
+            "the mirror role writes or builds bytes with `{native}`; a copy must reach the \
+             target as the source batch and nothing else (FABRIC-038)"
+        );
+    }
+
     // Replication and mirroring: every other such path is unpinned, so there
     // is no further send path.
     for directory in [
@@ -271,7 +307,7 @@ fn every_fabric_socket_write_carries_bytes_from_the_versioned_encoders() {
     ] {
         for path in files_with_extension(directory, "rs") {
             let name = relative(&path);
-            if name == PINNED_MIRROR {
+            if name == PINNED_MIRROR || name == PINNED_MIRROR_ROLE {
                 continue;
             }
             assert!(

@@ -309,12 +309,14 @@
   },
   {
     "id": "R12-DATA-8014",
-    "status": "MISSING",
-    "current": "Manifests exist only embedded in NewsItem events; no registry type or store. Spanner/AlloyDB adapters are refused.",
+    "status": "PARTIAL",
+    "current": "qip_storage::gcp::manifest_registry::SourceManifestRegistry holds SourceManifest records over SpannerKv (ADR 0113), keyed by canonical URI (source length, source, locator) under a source-manifest/ prefix: register (idempotent for the same manifest, refusing a changed original naming both hashes, in one read-write transaction), lookup by canonical URI, and listing by source.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/provider.rs:379 Spanner/AlloyDB refused"
+      "backend/crates/libs/qip-storage/src/gcp/manifest_registry.rs",
+      "backend/crates/libs/qip-storage/tests/manifest_registry.rs (a_registry_write_and_lookup_by_canonical_uri_round_trip_through_spanner; a_changed_original_is_refused_naming_both_hashes_and_the_first_manifest_stands)",
+      "backend/crates/libs/qip-storage/tests/support/spanner_double.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No Source Manifest Registry type or store exists: qip_financial::manifest::SourceManifest lives only inside NewsItem/intelligence records, and nothing writes or looks it up by canonical URI or provider ID. ADR 0113 unblocks Spanner and qip_storage::gcp::spanner::SpannerKv (proven in qip-ledgerd/tests/spanner.rs against an in-process double) could back it, so the code needs no ADR or crate. It does not meet the bar alone: enable_spanner=false in every env, so it also needs a tfvar flip, a deploy, and a shipped binary writing the registry on its default path.",
+    "gap": "2026-10-31 (owner-delegated ruling of 2026-10-31, decision 10): the registry round-trips by canonical URI through SpannerKv against the in-process REST double. It is not on a default path: enable_spanner is false in every environment until the ledger's Spanner is funded (decision 5), no shipped binary constructs the registry, and the double does not prove Google answers the same way. Remaining: wire a binary that registers the manifests it ingests once enable_spanner is flipped (protected, billed), and run the round-trip against a real instance.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -324,10 +326,10 @@
       "R12-DATA-8013"
     ],
     "blocked_by": "",
-    "verification": "integration test of the registry against an emulator",
+    "verification": "integration: qip-storage tests/manifest_registry.rs over SpannerKv against an in-process Spanner REST double; mutations: keying register by manifest.sha256() fails the round-trip (store not keyed by canonical URI); treating any held row as idempotent fails the changed-original refusal; both restored with cp and cmp.",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Spanner/AlloyDB adapters are refused' is partly stale: StorageProvider still refuses Spanner/AlloyDB as general targets (qip-storage/src/provider.rs), but SpannerKv exists in qip-storage/src/gcp/spanner.rs and is used by qip-ledgerd (ADR 0113). Owner ruling 2026-10-31 (IMPLEMENT): Build the Source Manifest Registry on the store ADR 0113 already admitted. It is a registry over SpannerKv, keyed by canonical URI, proven now against the in-process double. enable_spanner stays false until the ledger's Spanner is funded (decision 5), so the row stays PARTIAL. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Spanner/AlloyDB adapters are refused' is partly stale: StorageProvider still refuses Spanner/AlloyDB as general targets (qip-storage/src/provider.rs), but SpannerKv exists in qip-storage/src/gcp/spanner.rs and is used by qip-ledgerd (ADR 0113). Owner ruling 2026-10-31 (IMPLEMENT): Build the Source Manifest Registry on the store ADR 0113 already admitted. It is a registry over SpannerKv, keyed by canonical URI, proven now against the in-process double. enable_spanner stays false until the ledger's Spanner is funded (decision 5), so the row stays PARTIAL. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. | 2026-10-31 lane L3-DATA: built the registry the ruling named (decision 10); status PARTIAL by the ruling, pending enable_spanner."
   },
   {
     "id": "R12-DATA-8015",
@@ -1348,24 +1350,26 @@
   {
     "id": "R12-GCP-8060",
     "status": "PARTIAL",
-    "current": "Restricted-VIP private DNS zones on the networks; subnets set private_ip_google_access; PSC endpoint for Google APIs exists but gated off.",
+    "current": "Private Google Access is the private route (owner ruling 2026-10-31): every subnet sets private_ip_google_access, and every googleapis.com zone (the shared VPC's, the Data VPC's and the Engineering VPC's) sends *.googleapis.com to restricted.googleapis.com at the restricted VIP 199.36.153.4/30, the one range the egress firewalls admit. The PSC endpoint for Google APIs exists and stays gated off.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf:213-241 restricted VIP zone",
-      "infrastructure/terraform/modules/execution-node/main.tf:122 subnet",
-      "infrastructure/terraform/modules/connectivity/main.tf:133-149 PSC google_apis"
+      "infrastructure/terraform/modules/network/main.tf google_dns_record_set.restricted_vip, data_restricted_vip, engineering_restricted_vip and the three *_googleapis_wildcard records",
+      "infrastructure/terraform/modules/network/tests/data-and-engineering-vpcs.tftest.hcl::every_googleapis_zone_resolves_to_the_restricted_vip",
+      "infrastructure/terraform/modules/trust-zones/tests/zone-model.tftest.hcl::every_zone_subnet_has_private_google_access",
+      "infrastructure/terraform/modules/execution-node/main.tf google_compute_subnetwork.node",
+      "infrastructure/terraform/modules/connectivity/main.tf PSC google_apis (gated off)"
     ],
-    "gap": "Enable PSC; prove archiver/fabric reach GCS privately once wired.",
+    "gap": "2026-10-31 lane L6-platform, regraded under the owner's ruling: the PSC endpoint is needed only once an interconnect exists (decision 4 declined the hubs), so 'Enable PSC' is no longer a gap. What remains: no dev plan has been recorded showing every subnet with private_ip_google_access and the googleapis zones resolving to restricted.googleapis.com. Billing is paused and no lane may plan against a real project, so the owner dispatches infra.yml (action plan, environment dev) or drift.yml for dev and the row cites that run. Archiver and fabric GCS calls reaching 199.36.153.4/30 are proven only once those are wired and deployed. Previous gap: Enable PSC; prove archiver/fabric reach GCS privately once wired.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "terraform test in modules/network and modules/trust-zones (mocked provider, scratch copy); then an owner-dispatched dev plan",
     "work_item": "",
     "size": "S",
-    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): Private Google Access, with googleapis.com resolved to the restricted VIP, is the private route, and it meets 'where supported'. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "2026-10-31 lane L6-platform: fixed a defect found while asserting the route. The Data and Engineering VPC zones answered restricted.googleapis.com with 199.36.153.8-11, the private VIP, which no egress firewall admits, so a workload there would have resolved Google APIs to addresses it could not reach. They now answer 199.36.153.4-7. Mutation-verified in a scratch copy: putting the Data record back on the private VIP fails every_googleapis_zone_resolves_to_the_restricted_vip; pointing a wildcard at private.googleapis.com fails it; setting private_ip_google_access = false on the zone subnet fails every_zone_subnet_has_private_google_access. Status unchanged: PARTIAL.Owner ruling 2026-10-31 (IMPLEMENT): Private Google Access, with googleapis.com resolved to the restricted VIP, is the private route, and it meets 'where supported'. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-GCP-8061",
@@ -2475,9 +2479,11 @@
     "current": "Source quality/legal/freshness scoring lives in qip-data-finder and kernel source_lifecycle in-process; no Spanner Graph/BigQuery backing.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/freshness.rs",
-      "backend/crates/runtime/qip-kernel/src/source_lifecycle.rs"
+      "backend/crates/runtime/qip-kernel/src/source_lifecycle.rs",
+      "backend/crates/runtime/qip-kernel/src/source_alpha_record.rs (SourceAlphaScored, Platform::journal_source_alpha_round, source_alpha_rounds)",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs (EvolutionEngine::maybe_score_sources journals each round that scored a pair; test the_deep_brain_scores_every_connector_on_its_cadence_and_a_replay_of_the_log_reproduces_the_round)"
     ],
-    "gap": "Continuous scoring as a scheduled stage of qip-deepbrain on Cloud Run; derived state reproducible from the event log and snapshotted to the archive, no Spanner Graph/BigQuery (ADR 0113, ADR 0114 Amendment 1).",
+    "gap": "2026-10-31 (after the owner-delegated ruling of 2026-10-31 decision 10, read with D4 of 2026-10-11 and ADR 0114 Amendment 1): scoring runs by default every cycle (R12-EXPAND-6027) and each round that scored a pair is journaled under Topic::SourceAlphaScored. Three steps remain, from an independent skeptic's REFUTED: (1) no committed environment attaches a connector arm (deepbrain_connector is null or commented out in every tfvars), so on the default path every round scores nothing; a default-sensed source must be scorable or an arm attached by default; (2) nothing reads source_alpha_rounds back on start, so the desk is not rebuilt from the log after a restart, and nothing snapshots it to the archive; (3) 'handle contradictions' has no code and no ruling withdrawing it.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2485,10 +2491,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection of catalogue.tf and the binary's composition",
+    "verification": "unit: evolution.rs test drives the engine main.rs builds with the cadence read from an unset variable and asserts the log holds exactly the scored round and no empty round; mutations: unset cadence returning 0 (no round), dropping the journal call (log empty, left: []), dropping the empty-round filter (arm-less round journaled).",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (IMPLEMENT): The requirement is read the way decision D4 of 2026-10-11 and ADR 0114 Amendment 1 already restated it. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (IMPLEMENT): The requirement is read the way decision D4 of 2026-10-11 and ADR 0114 Amendment 1 already restated it. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. | 2026-10-31 lane L3-DATA: implemented the ruling's closure (default cadence already on via R12-EXPAND-6027; rounds journaled; named test). Skeptic REFUTED promotion on the three steps in the gap; it also found an empty round journaled every cycle, now fixed by journaling only rounds that scored a pair."
   },
   {
     "id": "R12-FABRIC-8109",

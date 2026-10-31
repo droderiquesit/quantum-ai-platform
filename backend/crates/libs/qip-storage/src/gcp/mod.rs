@@ -74,6 +74,8 @@
 //! when the pod was rescheduled.
 
 pub mod auth;
+/// The Source Manifest Registry over [`spanner::SpannerKv`] (R12-DATA-8014).
+pub mod manifest_registry;
 /// Cloud Spanner over its REST API (ADR 0113 §2): the key-value shim
 /// `qip-ledgerd` commits each delivery through. Spanner also speaks gRPC;
 /// this module uses the JSON surface Google publishes beside it, which is

@@ -448,3 +448,39 @@ that narrows a security scanner, whatever the owner has delegated.
     so the deletion stays a finding the scan would have raised. ADR 0128 is
     not edited: a lane never edits an existing ADR, and nothing in it becomes
     false by the deletion.
+
+12. **R12-QUANT-4018 keeps the skeptic's gaps, and decision 10's proposed
+    gap text is not applied** (lane L4, decided 06:20 UTC). Decision 10
+    ruled the row IMPLEMENT and proposed regrading its gap to "none open;
+    producer optional and unbuilt by ADR 0150 d5" once the promotion-seam
+    guard landed. The guard landed, and the lane's skeptic then found two
+    defects the ruling did not know about: the promotion seam checks that a
+    calibrated baseline card exists and never compares the candidate against
+    it, and a promotion restored from the log skips
+    `require_eligible_workload`. A ruling written before a finding does not
+    outrank the finding, so the row stays PARTIAL with the skeptic's gaps.
+    Both defects are refusals that are missing, so closing them is a
+    tightening and is handed back to lane L4: the seam refuses a candidate
+    that does not beat its baseline card, and a restored promotion passes the
+    same eligibility check a live one does, each with a test that fails when
+    the check is removed. The ruling's text is kept in the row's notes as the
+    record of what was decided and why it was superseded.
+
+13. **The commerce dev mount waits on its own ADR** (lane L1, decided
+    06:50 UTC; R12-COMMERCE-1087 to 1094, R12-COMMERCE-5094 and the rest of
+    R12-ASSET-4073). Decision 10 ruled that the commerce-only paper breadth
+    plan ships on through dev's committed configuration. Building it showed
+    that the mount is a change to how `modules/cloudrun` lays out a
+    workload's config files, not wiring. Every file shares one directory
+    named by a hash of all of them, and dev now projects that directory from
+    a single-payload secret. So a second file either changes the module's
+    layout or moves the universe file's path, which `deepbrain.yaml` names.
+    Each committed file also needs a seed entry in `infra.yml`, a protected
+    path. Committing the manifest's volume before dev's tfvars sets the
+    variable fails `manifest_wiring`'s parity test, and changing that test's
+    expectation to match would weaken a guard. So lane L1 writes an ADR for a
+    per-file mount first, then one patch that carries the protected parts
+    (`variables.tf`, dev's tfvars, `infra.yml`'s seed list) beside the
+    unprotected ones, and CI's terraform job validates it. The parity test
+    is not touched. The plan file itself is committed and a kernel test runs
+    it through the cycle. The rows stay PARTIAL until the mount lands.

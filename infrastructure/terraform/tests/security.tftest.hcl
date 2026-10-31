@@ -323,3 +323,24 @@ run "optional_mfa_is_refused_at_the_root" {
 
   expect_failures = [var.identity_mfa_state]
 }
+
+# R12-GOV-10005: the asset change feed plans both content types, each
+# publishing to the change topic. The feed lived in audit-logs.tf unasserted;
+# a content type dropped from its map would stop half the changes being
+# published and no plan would have said so.
+run "the_asset_change_feed_plans_resource_and_iam_policy_changes_to_the_change_topic" {
+  command = plan
+
+  assert {
+    condition     = toset([for feed in values(google_cloud_asset_project_feed.changes) : feed.content_type]) == toset(["RESOURCE", "IAM_POLICY"])
+    error_message = "the asset change feed must plan exactly a RESOURCE and an IAM_POLICY feed"
+  }
+
+  # The topic's id is computed and unknown at plan, so the feed-to-topic
+  # link is held on the configuration by qip-acceptance's
+  # infrastructure::every_asset_change_feed_publishes_to_the_change_topic.
+  assert {
+    condition     = google_pubsub_topic.asset_changes.name == "qip-dev-asset-changes"
+    error_message = "the asset change topic must plan under its environment's name"
+  }
+}

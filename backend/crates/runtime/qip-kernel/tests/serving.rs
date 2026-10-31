@@ -503,6 +503,27 @@ fn over_generated_publish_sequences_a_version_always_resolves_to_the_digest_firs
 
 // --- rollback to the last known-good (MODEL-045) -----------------------------
 
+/// A fit of `name` on another model's dataset, so two cards are measured on
+/// the same data and can be compared (R12-QUANT-4018). A larger `ridge` fits
+/// worse.
+fn teacher_on(name: &str, version: &str, data_name: &str, ridge: f64) -> Result<TrainedTeacher> {
+    let data = dataset(data_name)?;
+    let spec = TrainingSpec::new(
+        name,
+        version,
+        "serving-tests",
+        data.name(),
+        ModelFamily::Linear { ridge },
+    )
+    .with_holdout(0.25);
+    LocalTrainer::new().fit(&spec, &data, start())
+}
+
+/// The ridge that makes a baseline fit measurably worse than the
+/// near-unregularised candidate on the same data, while still clearing the
+/// skill bar.
+const WORSE_RIDGE: f64 = 30.0;
+
 fn teacher_with_ridge(name: &str, version: &str, ridge: f64) -> Result<TrainedTeacher> {
     let data = dataset(&format!("{name}-data"))?;
     let spec = TrainingSpec::new(
@@ -721,7 +742,9 @@ fn a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_at
     let reference = registered(&mut registry, &candidate)?;
     let artifact = InTreeProvider::pack(&candidate)?;
 
-    let baseline = teacher("bar-baseline", "0.1.0")?;
+    // Fitted on the candidate's own data, and worse, so the comparison the
+    // seam now makes has something to compare and the candidate wins it.
+    let baseline = teacher_on("bar-baseline", "0.1.0", "bar-linear-qi-data", WORSE_RIDGE)?;
     let baseline_reference = baseline.reference();
     let informed = || ModelProducer::QuantumInformed {
         baseline: baseline_reference.clone(),
@@ -778,7 +801,12 @@ fn a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundr
     let candidate = teacher("bar-linear-wl", "0.1.0")?;
     let reference = registered(&mut registry, &candidate)?;
     let artifact = InTreeProvider::pack(&candidate)?;
-    let baseline = teacher("bar-baseline-wl", "0.1.0")?;
+    let baseline = teacher_on(
+        "bar-baseline-wl",
+        "0.1.0",
+        "bar-linear-wl-data",
+        WORSE_RIDGE,
+    )?;
     let baseline_reference = baseline.reference();
     let data = dataset("bar-baseline-wl-data")?;
     let (fit_set, _) = data.split_at_fraction(0.25)?;
@@ -819,6 +847,79 @@ fn a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundr
         start(),
     )?;
     assert!(platform.model_promotions().contains_key(&reference));
+    Ok(())
+}
+
+/// R12-QUANT-4018: a calibrated baseline on record is not a comparison. The
+/// seam used to check only that the card existed, so a quantum-informed
+/// candidate that lost to its classical baseline was promoted all the same.
+/// Here the baseline is fitted on the candidate's data, calibrated, and
+/// better: the candidate is refused naming the comparison. Swapped, the
+/// winner is admitted, which keeps the gate from refusing everything.
+///
+/// Mutation: delete the `require_beats_baseline` call in
+/// `promote_model_from` — the losing candidate is admitted.
+#[test]
+fn a_quantum_informed_candidate_that_does_not_beat_its_baseline_is_refused_by_the_comparison()
+-> Result<()> {
+    use qip_kernel::ModelProducer;
+    let mut platform = platform_serving(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let data_name = "bar-loser-data";
+    let loser = teacher_on("bar-loser", "0.1.0", data_name, WORSE_RIDGE)?;
+    let loser_reference = registered(&mut registry, &loser)?;
+    let loser_artifact = InTreeProvider::pack(&loser)?;
+    let (fit_set, _) = dataset(data_name)?.split_at_fraction(0.25)?;
+    let baseline =
+        teacher_on("bar-strong-baseline", "0.1.0", data_name, 1e-6)?.calibrated_on(&fit_set)?;
+    let baseline_reference = registered(&mut registry, &baseline)?;
+    let rmse = |reference: &str| {
+        registry
+            .get(reference)
+            .and_then(|card| card.latest_evaluation())
+            .and_then(|e| e.metrics.get("holdout_rmse").copied())
+            .expect("a measured error")
+    };
+    // Premise: the baseline really is better on the same data.
+    assert!(
+        rmse(&baseline_reference) < rmse(&loser_reference),
+        "premise: {} vs {}",
+        rmse(&baseline_reference),
+        rmse(&loser_reference)
+    );
+    let informed = |baseline: &str| ModelProducer::QuantumInformed {
+        baseline: baseline.to_string(),
+        workload: Some("PortfolioAllocation".to_string()),
+    };
+    let refused = platform
+        .promote_model_from(
+            informed(&baseline_reference),
+            &mut registry,
+            &loser_artifact,
+            None,
+            &[],
+            start(),
+        )
+        .unwrap_err();
+    assert!(refused.message().contains("does not beat"), "{refused}");
+    assert_eq!(promotion_records(&platform), 0, "a refusal reached the log");
+
+    // The winner against the loser, now calibrated as the baseline: admitted.
+    let winner = teacher_on("bar-winner", "0.1.0", data_name, 1e-6)?;
+    let winner_reference = registered(&mut registry, &winner)?;
+    let winner_artifact = InTreeProvider::pack(&winner)?;
+    let weak_baseline = teacher_on("bar-weak-baseline", "0.1.0", data_name, WORSE_RIDGE)?
+        .calibrated_on(&fit_set)?;
+    let weak_reference = registered(&mut registry, &weak_baseline)?;
+    platform.promote_model_from(
+        informed(&weak_reference),
+        &mut registry,
+        &winner_artifact,
+        None,
+        &[],
+        start(),
+    )?;
+    assert!(platform.model_promotions().contains_key(&winner_reference));
     Ok(())
 }
 

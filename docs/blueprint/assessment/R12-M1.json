@@ -1029,7 +1029,7 @@
     "verification": "cargo test -p qip-risk --test limit_fixtures; cargo test -p qip-edge; cargo test -p qip-capital-fabric",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed. 2026-10-31 lane L1-MONEY, triage regrade check: disabling the per-transfer cap (gate.rs, `if amount > caps.max_per_transfer()` in TransferGate::assess) fails qip-api tests/fabric.rs for_generated_declared_transfers_every_one_over_a_cap_is_vetoed_whole_and_every_one_under_all_of_them_is_admitted_at_the_amount_asked; restored with cp+cmp. No model is in the path. Independent security-engineer skeptic REFUTED the COMPLETE regrade. Bar 2: capital_fabric_file is null in every tfvars, so on every default root no TransferIntent is built and the gate never runs; \"the unset file is not a bypass\" is true and is not a default path. Bar 3 is unproven: the gate covers only the declared-command path, and paper orders and capital grants are bounded by other controls. Kept PARTIAL."
   },
   {
     "id": "R12-RISK-1044",
@@ -2088,7 +2088,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1088",
@@ -2112,7 +2112,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1089",
@@ -2136,7 +2136,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1090",
@@ -2160,7 +2160,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1091",
@@ -2184,7 +2184,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1092",
@@ -2233,7 +2233,7 @@
     "verification": "cargo test -p qip-deepbrain --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: the ledger half is closed by a_received_units_cost_basis_carries_its_duty_and_purchase_tax (mutation: self.duty dropped from LandedCost::total; the basis rose over the duty-free assessment by the tax alone, 36.824 vs 55.236; restored). Kept PARTIAL with its siblings 1090/1091/1094 because the plane runs only under the owner switch QIP_DEEPBRAIN_BREADTH_PLAN."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: the ledger half is closed by a_received_units_cost_basis_carries_its_duty_and_purchase_tax (mutation: self.duty dropped from LandedCost::total; the basis rose over the duty-free assessment by the tax alone, 36.824 vs 55.236; restored). Kept PARTIAL with its siblings 1090/1091/1094 because the plane runs only under the owner switch QIP_DEEPBRAIN_BREADTH_PLAN. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1094",
@@ -2257,7 +2257,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-CAPITAL-1095",
@@ -2786,9 +2786,9 @@
   {
     "id": "R12-EXPAND-1119",
     "status": "MISSING",
-    "current": "No collective-intelligence exchange of episodes/residuals/lessons across brains and cells exists.",
+    "current": "Cross-brain exchange is the KnowledgeDeltaRecord the kernel journals on world_model.updated and the deep brain's sweep decodes (R12-EXPAND-6039), plus the journaled records the deep brain now writes for its own findings (SourceScore, ExperimentPack, TheoryDelta on the kernel log). No episode, residual or lesson exchange across brains and cells exists.",
     "evidence": [],
-    "gap": "Integrate collective intelligence in deepbrain with a named test.",
+    "gap": "ADR 0199 (2026-10-31) confirms ADR 0151 decision 4 and ADR 0158 decision 8: the episode, residual and lesson exchange of R12-EXPAND-1174 is not built and no new brain or cross-process path is minted, so this umbrella cannot close; it is graded against the one exchange record that exists.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2799,7 +2799,7 @@
     "verification": "cargo test -p qip-expansion -p qip-evolution; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-31 L4b-expand: DEPENDS on R12-EXPAND-1174, which ADR 0199 declines; re-read against the delta record, stays MISSING."
   },
   {
     "id": "R12-EXPAND-1120",
@@ -3093,12 +3093,15 @@
     "status": "PARTIAL",
     "current": "REASON runs symbolic_stage::derive for each hypothesis; the timeline orders anomaly before hypothesis and is journaled with the instants it was built from (TemporalInputs); symbolic_stage::verify rebuilds the timeline by the same construction at the record's instant and refuses a mismatch.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:153 TemporalInputs",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:494 timeline_of",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:654 a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refused_on_replay"
+      "backend/crates/apps/qip-cli/tests/replay.rs::a_journal_with_a_derivation_whose_timeline_cannot_be_rebuilt_fails_qip_replay",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs TemporalInputs",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs timeline_of",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs verify",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refused_on_replay",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_derivation_with_no_timeline_inputs_is_refused_on_replay_by_name",
+      "docs/adr/0150-solver-scope-is-the-portfolio-qubo-and-the-bounded-in-tree-constraint-solver-no-other-quantum-family-without-a-measured-benefit-no-neural-coupling-no-solver-crate.md"
     ],
-    "gap": "Not coupled to a neural model: none exists in the tree. Recorded-and-reproducible is closed; a record written before TemporalInputs existed decodes with inputs None and its timeline is not rebuilt.",
+    "gap": "Declined clause, by decision: coupling to neural models is out of scope under ADR 0150 decision 7 (a neural output cannot be re-derived step by step), so the row stays PARTIAL on the requirement's 'coupled to neural models'. Recorded-and-reproducible is closed, and since 2026-10-31 (lane L2-INTEL, owner-delegated ruling of decision 10) a derivation whose timeline cannot be rebuilt is refused by name: symbolic_stage::verify returns Error::invalid naming the hypothesis when temporal.inputs is None (qip-kernel tests/symbolic_federation.rs::a_derivation_with_no_timeline_inputs_is_refused_on_replay_by_name), and `qip replay` prints REFUSED and exits DIFFERS on such a journal (qip-cli tests/replay.rs::a_journal_with_a_derivation_whose_timeline_cannot_be_rebuilt_fails_qip_replay); restoring the old skip fails both.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4024,11 +4027,11 @@
   {
     "id": "R12-EXPAND-1173",
     "status": "PARTIAL",
-    "current": "qip-expansion now runs in deepbrain ResearchLoop (gaps, curriculum, campaigns).",
+    "current": "qip-expansion runs in the deep brain's ResearchLoop (gaps, curriculum, campaigns). Ontology expansion from a gap proposes and registers a candidate type's version one (R12-EXPAND-1021/6029, OntologyPatch); tool expansion stays a registry nothing creates into at runtime; memory consolidation exists as EpisodeAbstraction and LEARN admits typed MemoryEntry records (R12-EXPAND-6057); experiment packs, theory deltas and cross-domain hypotheses are produced (R12-EXPAND-6035, 6044, 6031).",
     "evidence": [
       "backend/crates/services/qip-expansion/src/gap.rs:17"
     ],
-    "gap": "Ontology/memory/brains/tools expansion items absent.",
+    "gap": "Brains: ADR 0199 (2026-10-31) confirms ADR 0158 decision 8, no brain is minted from a gap. Sandboxed creation (R12-EXPAND-7147) is not built. Each scope item that exists is PARTIAL on its own row, so the umbrella is PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4039,7 +4042,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 L4b-expand: re-read against 1021 (PARTIAL), 6030 (declined by ADR 0199) and 7147 (PARTIAL)."
   },
   {
     "id": "R12-EXPAND-1174",

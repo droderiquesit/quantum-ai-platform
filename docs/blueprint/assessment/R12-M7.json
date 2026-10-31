@@ -1699,9 +1699,11 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/microstructure_delta.rs:67 type",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:429 a_microstructure_delta_round_trips_and_its_residual_is_signed",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:438 a_microstructure_delta_refuses_each_broken_invariant"
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:438 a_microstructure_delta_refuses_each_broken_invariant",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_concluded_tick_campaigns_delta_keeps_the_venues_divergence_hold",
+      "docs/adr/0226-a-concluded-microstructure-delta-is-read-by-the-centres-divergence-hold-a-residual-may-keep-a-venues-hold-but-never-lift-one-or-size-anything.md"
     ],
-    "gap": "No production seam constructs or consumes MicrostructureDelta (grep of MicrostructureDeltaFields outside qip-contracts finds nothing). No residual records are emitted.",
+    "gap": "2026-10-31 (lane L2-INTEL, ADR 0226 under decision 10 of the 2026-10-31 owner rulings): the producer is the deep brain's tick campaigns, which conclude MicrostructureDeltas into its ambient journal (AmbientRecord::MicrostructureDelta). The receiver is built: Platform::admit_microstructure_delta re-admits each through MicrostructureDelta::new and refuses a venue no registered strategy trades at, and keeps the latest per venue and cell; review_replay_divergence keeps a venue's divergence hold past a re-promotion while any cell's latest delta there has a slippage or impact |observed - modelled| past REPLAY_DIVERGENCE_THRESHOLD_BPS on at least REPLAY_DIVERGENCE_MIN_SAMPLE samples, or states no such residual at all; a residual never lifts a hold or sizes anything (qip-kernel tests/central.rs::a_concluded_tick_campaigns_delta_keeps_the_venues_divergence_hold; dropping the lookup, keying by venue alone, passing a silent delta and skipping the venue check each fail it). Open: no transport carries a delta from the deep brain's process to qip-api's Platform — EventLog::open takes an exclusive lock on the journal and the two run as separate Cloud Run services; the shared blob store (LAKE_NAMESPACE) both open is the nearest candidate transport, and choosing it needs its own record — so admit_microstructure_delta has no production caller and the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1716,15 +1718,18 @@
   },
   {
     "id": "R12-CONTRACT-7075",
-    "status": "PARTIAL",
-    "current": "NowStage::run (every cycle, default path) calls NowBrain::world_model_state for each partition a pass moved a belief in and journals the validated WorldModelStateFields in NowReview.world_states on world_model.updated; each re-admits through WorldModelState::new and is stamped with the pass clock.",
+    "status": "COMPLETE",
+    "current": "NowStage::run (every cycle, default path) calls NowBrain::world_model_state for each partition a pass moved a belief in and journals the validated WorldModelStateFields in NowReview.world_states on world_model.updated; each re-admits through WorldModelState::new and is stamped with the pass clock. The receiver is the deep brain's default sweep (ADR 0227): ResearchLoop::expired_world_states reads each NOW review through qip_kernel::now_stage::reviews by log sequence, re-admits each state through WorldModelState::new, keeps the newest per partition, and raises one GapTrigger::ModelDrift gap for a partition whose newest state expired with no successor; it moves no size.",
     "evidence": [
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_newer_world_state_clears_the_expiry_of_the_one_it_replaced",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_partition_whose_world_state_expired_queues_a_model_drift_gap",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs a_world_model_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::run world_states",
       "backend/crates/runtime/qip-kernel/tests/now_state.rs::a_pass_that_moves_a_belief_journals_the_world_model_state_of_the_partition_it_moved",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:513 a_world_model_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/services/qip-world-model/src/now.rs::world_model_state"
+      "backend/crates/services/qip-world-model/src/now.rs::world_model_state",
+      "docs/adr/0227-world-model-states-receiver-is-the-deep-brains-gap-detector-an-expired-partition-queues-re-estimation-and-moves-no-size.md"
     ],
-    "gap": "Produced and journalled, but no brain consumes or decodes WorldModelState: nothing reads NowReview.world_states back as the contract, so the seam between brains has an emitter and no receiver.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1732,10 +1737,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test now_state",
+    "verification": "cargo test -p qip-contracts --test section27_contracts; cargo test -p qip-deepbrain --test research world_state",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding WorldModelState exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: producer landed; mutation (projection result dropped instead of pushed) failed the new test with an empty world_states. Kept PARTIAL for the receiving side. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The receiver is the deep brain's gap detector. If a partition's WorldModelState passes its expiry with no successor, the deep brain raises a model-drift gap and queues re-estimation. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: WorldModelState's receiver is the deep brain's gap detector: an expired partition queues re-estimation and moves no size."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding WorldModelState exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: producer landed; mutation (projection result dropped instead of pushed) failed the new test with an empty world_states. Kept PARTIAL for the receiving side. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The receiver is the deep brain's gap detector. If a partition's WorldModelState passes its expiry with no successor, the deep brain raises a model-drift gap and queues re-estimation. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: WorldModelState's receiver is the deep brain's gap detector: an expired partition queues re-estimation and moves no size. 2026-10-31 lane L2-INTEL: PARTIAL -> COMPLETE under ADR 0227 (decision 10 of the 2026-10-31 owner rulings). Bar part 1: #[serde(default)] on WorldModelStateFields.causal_structure fails section27_contracts::a_world_model_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field ('WorldModelState without `causal_structure` was admitted'), restored by cmp; the same mutation on `assumptions` survives because the contract's at-least-one check refuses the defaulted value. Part 2: producer NowStage::run and receiver ResearchLoop::sweep_over both on default paths (qip-deepbrain main.rs research: Some, run_with -> research_pass -> sweep). Part 3: n/a. Part 4: nothing withdrawn. The in-lane skeptic said COMPLETE once verification was corrected and that mutation run, and found a restart bug (a cycle-keyed cursor skips a restarted platform's reviews), fixed by keying on log sequence, plus a successor-state test it said was missing, added (mutation: never replace a held state fails it)."
   },
   {
     "id": "R12-CONTRACT-7076",
@@ -3461,13 +3466,13 @@
   {
     "id": "R12-EXPAND-7147",
     "status": "PARTIAL",
-    "current": "qip-expansion, registries (brain/memory) exist.",
+    "current": "qip-expansion and the registries (ontology, capability, memory, model, tool, brain) exist and the deep brain runs them; a candidate type is registered from a gap (R12-EXPAND-1021); memory consolidation exists (EpisodeAbstraction) and LEARN admits typed memory entries (R12-EXPAND-6057).",
     "evidence": [
       "backend/crates/services/qip-expansion",
       "backend/crates/libs/qip-contracts/tests/brain_registry.rs",
       "backend/crates/libs/qip-contracts/tests/memory_registry.rs"
     ],
-    "gap": "Sandboxed creation, active learning, consolidation.",
+    "gap": "Sandboxed creation of tools or agents at runtime is not built, and spawning a brain is declined by ADR 0199 confirming ADR 0158 decision 8 (R12-EXPAND-6030). Active learning has no row and no code. Closes only as the umbrella over R12-EXPAND-1021, 6030 and 1173, all PARTIAL or declined.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3478,7 +3483,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-31 L4b-expand: re-read against its three dependencies; stays PARTIAL."
   },
   {
     "id": "R12-AGENCY-7148",

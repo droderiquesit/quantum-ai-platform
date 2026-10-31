@@ -164,3 +164,45 @@ run "a_console_egress_value_that_is_not_a_range_is_refused" {
 
   expect_failures = [var.console_egress_cidr]
 }
+
+# R12-GCP-8060: Private Google Access is the private route, so every
+# googleapis zone must resolve to the restricted VIP the egress firewalls
+# admit. The run above asserts only that the records exist. Until 2026-10-31
+# the Data and Engineering zones answered restricted.googleapis.com with
+# 199.36.153.8/30, the private VIP, which no egress rule admits: a workload
+# there would resolve storage.googleapis.com, be denied, and read the denial
+# as Google being down.
+run "every_googleapis_zone_resolves_to_the_restricted_vip" {
+  command = plan
+
+  variables {
+    console_egress_cidr = "10.0.16.0/26"
+  }
+
+  assert {
+    condition = alltrue([
+      for record in [
+        google_dns_record_set.restricted_vip,
+        google_dns_record_set.data_restricted_vip,
+        google_dns_record_set.engineering_restricted_vip,
+      ] : record.name == "restricted.googleapis.com." && toset(record.rrdatas) == toset(["199.36.153.4", "199.36.153.5", "199.36.153.6", "199.36.153.7"])
+    ])
+    error_message = "every restricted.googleapis.com record must be exactly the restricted VIP, 199.36.153.4/30"
+  }
+
+  assert {
+    condition = alltrue([
+      for record in [
+        google_dns_record_set.googleapis_wildcard,
+        google_dns_record_set.data_googleapis_wildcard,
+        google_dns_record_set.engineering_googleapis_wildcard,
+      ] : record.name == "*.googleapis.com." && record.type == "CNAME" && record.rrdatas == tolist(["restricted.googleapis.com."])
+    ])
+    error_message = "every *.googleapis.com record must be a CNAME to restricted.googleapis.com"
+  }
+
+  assert {
+    condition     = google_compute_subnetwork.console_egress[0].private_ip_google_access == true
+    error_message = "the console egress subnet must have Private Google Access"
+  }
+}

@@ -304,9 +304,11 @@ pub struct TemporalDerivation {
     pub deadline: Timestamp,
     pub deadline_passed: bool,
     /// What the timeline was built from. Absent only on a record written
-    /// before the field existed, which decodes and replays its rule verdict
-    /// but whose timeline cannot be rebuilt — there is nothing to rebuild it
-    /// from, and inventing the instants would make the check pass vacuously.
+    /// before the field existed. Such a record still decodes, but
+    /// [`verify`] refuses it by name: its timeline cannot be rebuilt, and a
+    /// derivation whose ordering nobody can re-check is not a proof. Inventing
+    /// the instants would make the check pass vacuously, and so did skipping
+    /// it, which reported the record as identical.
     #[serde(default)]
     pub inputs: Option<TemporalInputs>,
 }
@@ -1337,14 +1339,21 @@ pub fn verify(derivation: &SymbolicDerivation, causal: &CausalGraph) -> Result<(
         }
         pack.verify(&derivation.rules.inputs, verdict)?;
     }
-    if let Some(inputs) = &derivation.temporal.inputs {
-        let again = timeline_of(id, inputs.clone(), derivation.at);
-        if again != derivation.temporal {
-            return Err(Error::invalid(format!(
-                "derivation for {id}: the timeline rebuilt from its recorded instants does not \
-                 match the journaled one; the temporal derivation is not reproducible"
-            )));
-        }
+    // A timeline with no recorded instants is not a proof (R12-REASON-1133):
+    // passing over it reported such a record as identical when nothing about
+    // its ordering had been checked, so it is refused by name instead.
+    let Some(inputs) = &derivation.temporal.inputs else {
+        return Err(Error::invalid(format!(
+            "derivation for {id}: the record carries no instants to rebuild its timeline from, \
+             so the temporal derivation is not reproducible"
+        )));
+    };
+    let again = timeline_of(id, inputs.clone(), derivation.at);
+    if again != derivation.temporal {
+        return Err(Error::invalid(format!(
+            "derivation for {id}: the timeline rebuilt from its recorded instants does not \
+             match the journaled one; the temporal derivation is not reproducible"
+        )));
     }
     let fact = |name: &str| {
         derivation

@@ -546,3 +546,22 @@ run "a_zone_named_with_no_identity_in_it_is_admitted_even_if_undeclared" {
     error_message = "a zone named with an empty identity list stopped the plan; the root sends exactly this shape in every environment without OpenObserve"
   }
 }
+
+# R12-GCP-8060: every zone subnet has Private Google Access, the private route
+# to Google APIs for a workload with no external address.
+run "every_zone_subnet_has_private_google_access" {
+  command = plan
+
+  variables {
+    zones = {
+      "cognition"      = { region = "us-east4", subnet_cidr = "10.90.3.0/24" }
+      "control-fabric" = { region = "us-east4", subnet_cidr = "10.90.7.0/24" }
+      "execution"      = { region = "us-east4", subnet_cidr = "10.90.8.0/24" }
+    }
+  }
+
+  assert {
+    condition     = length(google_compute_subnetwork.zone) > 0 && alltrue([for subnet in values(google_compute_subnetwork.zone) : subnet.private_ip_google_access == true])
+    error_message = "every trust-zone subnet must have Private Google Access"
+  }
+}

@@ -701,3 +701,93 @@ fn a_journal_with_a_corrupted_symbolic_derivation_fails_qip_replay() -> Result<(
     std::fs::remove_file(&path).ok();
     Ok(())
 }
+
+/// R12-REASON-1133: `qip replay` refuses a derivation whose timeline cannot
+/// be rebuilt and exits [`DIFFERS`], rather than reporting it identical.
+///
+/// A properly chained derivation is appended with its `TemporalInputs`
+/// stripped — the shape a record written before the field existed decodes
+/// to. The kernel's checker used to pass over the timeline when there was
+/// nothing to rebuild it from, so the command printed IDENTICAL over a
+/// derivation whose ordering nobody had checked. Mutation: restore
+/// `if let Some(inputs)` around the timeline comparison in
+/// `symbolic_stage::verify` — the run exits 0 and the last assertions fail.
+#[test]
+fn a_journal_with_a_derivation_whose_timeline_cannot_be_rebuilt_fails_qip_replay() -> Result<()> {
+    use qip_core::ids::EventKind;
+    use qip_core::lineage::{CorrelationKind, Lineage};
+    use qip_events::EventBody;
+    use qip_events::log::EventLog;
+    use qip_kernel::symbolic_stage::SymbolicDerivation;
+    use qip_streaming::envelope::{EventFacts, StreamEnvelope};
+    use qip_streaming::provenance::{Region, SourceId, SourceIdentity, SourceType, Subject};
+
+    let path = journal_path("symbolic-untimed")?;
+    write_journal_with_a_derivation(&path)?;
+    let (printed, stderr, code) = run(&["replay", "--journal", &path.display().to_string()])?;
+    assert_eq!(
+        verdict(&printed, "symbolic").as_deref(),
+        Some(IDENTICAL),
+        "premise: a journal nothing touched re-derives:\n{printed}{stderr}"
+    );
+    assert_eq!(code, i32::from(AGREES), "{printed}{stderr}");
+
+    {
+        let _gate = gate();
+        let mut log = EventLog::open(&path)?;
+        let mut stripped: SymbolicDerivation = log
+            .by_topic(<SymbolicDerivation as EventBody>::TOPIC)
+            .into_iter()
+            .filter_map(|frame| StreamEnvelope::from_frame(frame).ok())
+            .filter_map(|envelope| envelope.decode::<SymbolicDerivation>().ok())
+            .map(|decoded| decoded.body)
+            .next()
+            .ok_or_else(|| Error::not_found("the derivation the cycle journaled"))?;
+        assert!(
+            stripped.temporal.inputs.is_some(),
+            "premise: the recorded derivation carries timeline inputs to strip"
+        );
+        stripped.temporal.inputs = None;
+        let (context, _clock) = Context::deterministic(start(), 13);
+        let facts = EventFacts::derived(
+            SourceIdentity::new(
+                SourceId::new("qip-kernel"),
+                SourceType::Internal,
+                Region::new("home"),
+            ),
+            Subject::unattributed(),
+            <SymbolicDerivation as EventBody>::TOPIC,
+        );
+        let envelope = StreamEnvelope::seal(
+            context.ids().generate::<EventKind>(start()),
+            Lineage::root(
+                context.ids().generate::<CorrelationKind>(start()),
+                "kernel/symbolic",
+            ),
+            stripped,
+            start(),
+            start(),
+            facts,
+        )?;
+        log.append(&envelope.to_frame()?)?;
+    }
+
+    let (printed, stderr, code) = run(&["replay", "--journal", &path.display().to_string()])?;
+    assert_eq!(
+        verdict(&printed, "chain").as_deref(),
+        Some("intact"),
+        "the appended record broke the chain:\n{printed}{stderr}"
+    );
+    let symbolic = verdict(&printed, "symbolic").unwrap_or_default();
+    assert!(
+        symbolic.starts_with("REFUSED") && symbolic.contains("no instants to rebuild its timeline"),
+        "a derivation with no timeline inputs was not refused by name:\n{printed}{stderr}"
+    );
+    assert_eq!(
+        code,
+        i32::from(DIFFERS),
+        "a journal whose derivation cannot be rebuilt exited {code}:\n{printed}{stderr}"
+    );
+    std::fs::remove_file(&path).ok();
+    Ok(())
+}

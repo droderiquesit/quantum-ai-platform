@@ -157,6 +157,36 @@ impl EventBody for NowReview {
     }
 }
 
+/// Every NOW review `log` carries, in log order, each with the log sequence
+/// of the record that carried it (ADR 0227). A reader keeping a cursor keys
+/// it on the sequence, never on `NowReview::cycle`: a platform restarted
+/// over an inherited log numbers its cycles from zero again, so a cycle
+/// cursor would skip every review the new run writes until it caught up.
+///
+/// The platform journals a review as a sealed stream envelope, so a review
+/// is read out of the envelope, not off the log record: decoding the record
+/// as the review reads the wire's fields as the review's and fails. That is
+/// how a reader outside the kernel would silently see no review at all, so
+/// the one way to read them is here. A record that does not decode is
+/// skipped: it is not a review this build can read, and the caller treats a
+/// missing review as no state rather than as a stale one.
+pub fn reviews(log: &qip_events::log::EventLog) -> Vec<(u64, NowReview)> {
+    log.by_topic(Topic::WorldModelUpdated)
+        .into_iter()
+        .filter(|e| {
+            e.idempotency_key
+                .as_deref()
+                .is_some_and(|k| k.starts_with(IDEMPOTENCY_PREFIX))
+        })
+        .filter_map(|e| {
+            qip_streaming::envelope::StreamEnvelope::from_frame(e)
+                .and_then(|envelope| envelope.decode::<NowReview>())
+                .ok()
+                .map(|decoded| (e.sequence, decoded.body))
+        })
+        .collect()
+}
+
 impl NowReview {
     /// A short clause for the stage line.
     pub fn detail(&self) -> String {

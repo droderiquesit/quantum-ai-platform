@@ -205,6 +205,12 @@ pub enum Topic {
     /// after the pass that stopped it, and the registry holds only the
     /// present.
     SourceLifecycleChanged,
+    /// The deep brain scored each connector it senses on incremental
+    /// information gain and realised contribution (R12-EVID-8108). Filed
+    /// beside the lifecycle change it informs and kept as long: a source
+    /// promoted or retired on its score is explained by a round the log
+    /// still holds, and a replay that reads the round reproduces it.
+    SourceAlphaScored,
     /// A research campaign closed and its manifest is on the record — what
     /// a fit used, retained for as long as the log is. Its own topic rather
     /// than `LearningCompleted`, whose every frame the kernel decodes as a
@@ -324,7 +330,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 91] = [
+    pub const ALL: [Self; 92] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -395,6 +401,7 @@ impl Topic {
         Self::WorldModelSnapshot,
         Self::SourceRevisionDetected,
         Self::SourceLifecycleChanged,
+        Self::SourceAlphaScored,
         Self::ResearchCampaignClosed,
         Self::ResearchCampaignFlagged,
         Self::RiskRuleDefended,
@@ -492,6 +499,7 @@ impl Topic {
             Self::WorldModelSnapshot => "world_model.snapshot",
             Self::SourceRevisionDetected => "learning.source_revised",
             Self::SourceLifecycleChanged => "learning.source_lifecycle",
+            Self::SourceAlphaScored => "learning.source_alpha_scored",
             Self::ResearchCampaignClosed => "learning.campaign_closed",
             Self::ResearchCampaignFlagged => "learning.campaign_flagged",
             Self::RiskRuleDefended => "risk.rule_defended",
@@ -600,6 +608,7 @@ impl Topic {
             | Self::WorldModelSnapshot
             | Self::SourceRevisionDetected
             | Self::SourceLifecycleChanged
+            | Self::SourceAlphaScored
             | Self::ResearchCampaignClosed
             | Self::ResearchCampaignFlagged
             | Self::RiskRuleDefended
@@ -745,6 +754,7 @@ impl Topic {
             | Self::WorldModelSnapshot
             | Self::SourceRevisionDetected
             | Self::SourceLifecycleChanged
+            | Self::SourceAlphaScored
             | Self::ResearchCampaignClosed
             | Self::ResearchCampaignFlagged
             | Self::RiskRuleDefended

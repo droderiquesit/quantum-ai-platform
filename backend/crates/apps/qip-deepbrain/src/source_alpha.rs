@@ -34,6 +34,7 @@
 use qip_core::Timestamp;
 use qip_core::error::Result;
 use qip_data_finder::source_alpha::{MIN_OBSERVATIONS, SourceAlpha, SourceAlphaHistory};
+use qip_kernel::source_alpha_record::{ScoredSource, SourceAlphaScored};
 use qip_market_ingestion::adapter::SensedRecord;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -128,6 +129,25 @@ pub struct SourceAlphaRound {
 }
 
 impl SourceAlphaRound {
+    /// The round as the event log keeps it, so a replay reads back exactly
+    /// the scores this round produced (R12-EVID-8108).
+    pub fn record(&self, cycle: u64, at: Timestamp) -> SourceAlphaScored {
+        SourceAlphaScored {
+            cycle,
+            at,
+            scores: self
+                .scores
+                .iter()
+                .map(|score| ScoredSource {
+                    source: score.source.clone(),
+                    subject: score.subject.clone(),
+                    samples: score.samples,
+                    outcome: score.outcome.clone(),
+                })
+                .collect(),
+        }
+    }
+
     pub fn describe(&self) -> String {
         let scored = self.scores.iter().filter(|s| s.outcome.is_ok()).count();
         format!(

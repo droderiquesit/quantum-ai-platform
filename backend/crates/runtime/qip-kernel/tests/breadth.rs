@@ -826,6 +826,26 @@ fn a_reported_event_is_proposed_until_its_dispute_window_closes_and_only_then_fi
             .map(|resolution| resolution.state().as_str().to_string())
     };
     assert_eq!(state(&platform).as_deref(), Some("proposed"));
+    // Since ADR 0151 decision 10 a report is proposed only when the market's
+    // criteria, over what its named source published, agree with it — so the
+    // proposal above stands on observations the plane holds, not on the
+    // oracle's word.
+    {
+        let plane = platform.event_markets().expect("installed");
+        let market = plane.markets().next().expect("listed");
+        let observations = plane
+            .observations(&market.market_id)
+            .expect("the proposal stands on the source's observations");
+        let Some(ResolutionState::Proposed { report, .. }) =
+            plane.resolution(&market.market_id).map(|r| r.state())
+        else {
+            panic!("proposed, as asserted above");
+        };
+        assert_eq!(
+            market.evaluate(observations),
+            qip_prediction::MarketVerdict::Resolved(report.outcome.clone())
+        );
+    }
     platform.run_cycle(resolves.saturating_add(Duration::from_hours(3)));
     assert_eq!(state(&platform).as_deref(), Some("final"));
     let plane = platform.event_markets().expect("installed");
@@ -1518,5 +1538,174 @@ fn a_revoked_event_permission_withdraws_the_market_at_the_next_cycle() -> Result
             withdrawn[0]
         );
     }
+    Ok(())
+}
+
+/// R12-ASSET-4073: each unit the simulated merchant delivers becomes a
+/// RealAsset position record carrying the purchase's landed cost and the
+/// unit's state as the inventory ledger holds it, and the record stays in
+/// the commerce research output: the desk's book holds none of it.
+///
+/// Mutation: in `CommerceResearch::position_record`, set the inventory
+/// state from a literal `UnitState::Sold` instead of the ledger read, and
+/// the state assertion fails.
+#[test]
+fn a_received_paper_unit_is_a_real_asset_position_carrying_landed_cost_and_ledger_inventory_and_the_book_is_unchanged()
+-> Result<()> {
+    use qip_financial::asset_class::AssetClass;
+    use qip_financial::commerce::UnitState;
+    let mut platform = platform()?;
+    let book_before = platform.positions_at_cost();
+    platform.install_breadth(
+        &BreadthPlan {
+            commerce: Some(commerce_plan()?),
+            ..BreadthPlan::default()
+        },
+        start(),
+    )?;
+    let mut at = start();
+    for _ in 0..6 {
+        platform.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    let mut runs = Vec::new();
+    for event in platform.event_log().by_topic(Topic::ScenarioEvaluated) {
+        if let Ok(decoded) = StreamEnvelope::from_frame(event)?.decode::<CommerceSimulated>() {
+            runs.push(decoded.body);
+        }
+    }
+    let received: Vec<String> = runs
+        .iter()
+        .flat_map(|run| run.purchases.iter())
+        .flat_map(|purchase| purchase.units.iter().cloned())
+        .collect();
+    assert!(
+        !received.is_empty(),
+        "premise: a unit was received: {runs:?}"
+    );
+    let positions: Vec<&qip_financial::position_record::PositionRecord> =
+        runs.iter().flat_map(|run| run.positions.iter()).collect();
+    assert_eq!(
+        positions
+            .iter()
+            .map(|p| p.asset().to_string())
+            .collect::<Vec<_>>(),
+        received,
+        "one position record per received unit"
+    );
+    // The journal carries each assessment's duty apart (R12-COMMERCE-1093),
+    // so a record's landed cost is matched to its purchase by that figure.
+    let duties: Vec<qip_core::Decimal> = runs
+        .iter()
+        .flat_map(|run| run.assessed.iter())
+        .filter(|assessed| assessed.viable)
+        .map(|assessed| assessed.duty)
+        .collect();
+    for record in &positions {
+        assert_eq!(record.class(), AssetClass::RealAsset);
+        let economics = record
+            .product_economics()
+            .expect("a physical unit carries its landed cost");
+        assert!(
+            economics.goods.is_positive() && duties.contains(&economics.duty),
+            "the landed cost is not the purchase's own: {economics:?} against duties {duties:?}"
+        );
+        assert_eq!(
+            record.inventory_state(),
+            Some(&UnitState::Held),
+            "a unit is held in the ledger at receipt"
+        );
+    }
+    assert_eq!(
+        platform.positions_at_cost(),
+        book_before,
+        "a commerce research unit reached the desk's book"
+    );
+    assert!(
+        platform
+            .positions_at_cost()
+            .keys()
+            .all(|instrument| !received.contains(instrument)),
+        "a received unit is a book position"
+    );
+    Ok(())
+}
+
+/// The committed paper commerce plan (`data/breadth/dev-commerce-paper.json`,
+/// R12-COMMERCE-1087..1094, ruling decision 10 of 2026-10-31) parses under
+/// the plan's own unknown-field refusal and, run through the cycle,
+/// discovers, buys, receives, lists and sells on paper, with its customs
+/// duty and purchase tax journaled on every viable assessment.
+///
+/// This is the plan dev's committed deep-brain configuration is to mount.
+/// Until that mount lands (a protected root variable and tfvars value, and a
+/// config-file secret per file in `modules/cloudrun`), this test proves the
+/// file and not a deployment.
+///
+/// Mutation: set `duty_rate` to `"0"` in the committed plan and the test
+/// fails on its premise that the plan states a duty and a tax.
+#[test]
+fn the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax()
+-> Result<()> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../../data/breadth/dev-commerce-paper.json"
+    );
+    let text = std::fs::read_to_string(path).expect("the committed plan is readable");
+    let plan = BreadthPlan::from_json(&text)?;
+    let commerce = plan
+        .commerce
+        .clone()
+        .expect("the plan carries a commerce section");
+    assert!(
+        commerce.terms.customs.duty_rate.is_positive() && commerce.purchase_tax_rate.is_positive(),
+        "premise: the committed plan states a customs duty and a purchase tax"
+    );
+    assert!(
+        plan.market_factory.is_none() && plan.event_markets.is_none(),
+        "commerce only"
+    );
+    let mut platform = platform()?;
+    platform.install_breadth(&plan, start())?;
+    let mut at = start();
+    for _ in 0..6 {
+        platform.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    let mut runs = Vec::new();
+    for event in platform.event_log().by_topic(Topic::ScenarioEvaluated) {
+        if let Ok(decoded) = StreamEnvelope::from_frame(event)?.decode::<CommerceSimulated>() {
+            runs.push(decoded.body);
+        }
+    }
+    let research = platform.commerce_research().expect("installed");
+    assert!(
+        runs.iter().any(|run| !run.purchases.is_empty()),
+        "no paper purchase journaled"
+    );
+    assert!(
+        !research.ledger().units().is_empty(),
+        "the inventory ledger holds no unit"
+    );
+    assert!(
+        runs.iter().any(|run| !run.listed.is_empty()),
+        "nothing listed"
+    );
+    assert!(!research.cycles().is_empty(), "nothing sold");
+    let viable: Vec<_> = runs
+        .iter()
+        .flat_map(|run| run.assessed.iter())
+        .filter(|assessed| assessed.viable)
+        .collect();
+    assert!(
+        !viable.is_empty(),
+        "premise: a viable candidate was assessed"
+    );
+    assert!(
+        viable
+            .iter()
+            .all(|assessed| assessed.duty.is_positive() && assessed.purchase_tax.is_positive()),
+        "a viable assessment journaled no duty or tax: {viable:?}"
+    );
     Ok(())
 }
