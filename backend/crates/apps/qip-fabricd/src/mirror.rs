@@ -138,7 +138,16 @@ impl MirrorSource for Broker {
 }
 
 impl MirrorTarget for Broker {
-    fn produce_copy(&self, stream: &str, partition: u32, batch: Batch) -> Result<u64> {
+    fn produce_copy(&self, stream: &str, partition: u32, mut batch: Batch) -> Result<u64> {
+        // A committed source batch carries the source broker's stamps:
+        // the partition it was appended to and, under a session, its region
+        // and principal. The target broker refuses either from a producer
+        // (ADR 0129 §1, R12-FABRIC-8084), because they are the accepting
+        // broker's to write. The mirror is a producer here, so it hands the
+        // records over unstamped. The source region is not lost: it is the
+        // first label of the region-qualified stream the copy lands in.
+        batch.partition = None;
+        batch.origin = None;
         match self.produce_to(stream, partition, batch)? {
             Ok(ack) => Ok(ack.base_offset()),
             Err(refused) => Err(refused.error),
