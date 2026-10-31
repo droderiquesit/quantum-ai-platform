@@ -1,0 +1,604 @@
+diff --git a/.github/reproducibility/compare-image-trees.sh b/.github/reproducibility/compare-image-trees.sh
+new file mode 100755
+index 00000000..6277e0d3
+--- /dev/null
++++ b/.github/reproducibility/compare-image-trees.sh
+@@ -0,0 +1,130 @@
++#!/usr/bin/env bash
++# compare-image-trees.sh EXCEPTIONS FIRST SECOND
++#
++# Compares two exported image filesystems file by file (R12-CICD-10117) and
++# exits 0 only when they agree everywhere outside the paths EXCEPTIONS names.
++# deploy.yml runs this on the portal's two builds; the acceptance suite
++# (qip-acceptance/tests/deploy_provenance.rs) runs this same file on trees it
++# builds, so the logic the pipeline trusts is the logic that was tested.
++#
++# EXCEPTIONS holds one absolute image path per line; blank lines and lines
++# starting with `#` are ignored. FIRST and SECOND are directories holding the
++# two images' root filesystems.
++#
++# Refused, each one named on stderr:
++#   - a path in one tree and not the other (added or missing);
++#   - a path whose type, permission bits, symlink target or bytes differ;
++#   - a listed exception that is not a regular file in both trees. A listed
++#     file gone means the image changed shape under the list, and the list
++#     would go on excusing a path that no longer holds what it was excused
++#     for;
++#   - an exceptions file with a malformed or repeated line.
++# Ownership and times are not compared: times are clamped to the commit's
++# epoch by the build, and ownership depends on who extracted the archive.
++set -euo pipefail
++export LC_ALL=C
++
++if [ "$#" -ne 3 ]; then
++  echo "usage: $0 EXCEPTIONS FIRST SECOND" >&2
++  exit 2
++fi
++exceptions_file=$1
++first=$2
++second=$3
++for dir in "$first" "$second"; do
++  if [ ! -d "$dir" ]; then
++    echo "$dir is not a directory; there is no image filesystem to compare." >&2
++    exit 2
++  fi
++done
++if [ ! -f "$exceptions_file" ]; then
++  echo "the exceptions list $exceptions_file does not exist." >&2
++  exit 2
++fi
++
++declare -A excepted=()
++while IFS= read -r line || [ -n "$line" ]; do
++  # Trim surrounding whitespace; only whole-line comments are comments.
++  line="${line#"${line%%[![:space:]]*}"}"
++  line="${line%"${line##*[![:space:]]}"}"
++  case "$line" in
++    '' | '#'*) continue ;;
++    /*) ;;
++    *)
++      echo "$exceptions_file: '$line' is not an absolute image path." >&2
++      exit 2
++      ;;
++  esac
++  case "$line/" in
++    */../* | */./* | *//*)
++      echo "$exceptions_file: '$line' is not a plain path." >&2
++      exit 2
++      ;;
++  esac
++  if [ -n "${excepted[$line]:-}" ]; then
++    echo "$exceptions_file: '$line' is listed twice." >&2
++    exit 2
++  fi
++  excepted[$line]=1
++done < "$exceptions_file"
++
++problems=()
++
++for path in "${!excepted[@]}"; do
++  for which in first second; do
++    root=$first
++    [ "$which" = first ] || root=$second
++    if [ -L "$root$path" ] || [ ! -f "$root$path" ]; then
++      problems+=("listed exception $path is not a file in the $which build")
++    fi
++  done
++done
++
++listing() {
++  (cd "$1" && find . -mindepth 1 -printf '/%P\0' | sort -z)
++}
++scratch="$(mktemp -d)"
++trap 'rm -rf "$scratch"' EXIT
++listing "$first" > "$scratch/first"
++listing "$second" > "$scratch/second"
++comm -z -23 "$scratch/first" "$scratch/second" > "$scratch/only-first"
++comm -z -13 "$scratch/first" "$scratch/second" > "$scratch/only-second"
++comm -z -12 "$scratch/first" "$scratch/second" > "$scratch/both"
++
++while IFS= read -r -d '' path; do
++  [ -n "${excepted[$path]:-}" ] || problems+=("$path is in the first build and missing from the second")
++done < "$scratch/only-first"
++while IFS= read -r -d '' path; do
++  [ -n "${excepted[$path]:-}" ] || problems+=("$path is in the second build and missing from the first")
++done < "$scratch/only-second"
++
++compared=0
++while IFS= read -r -d '' path; do
++  [ -z "${excepted[$path]:-}" ] || continue
++  compared=$((compared + 1))
++  a="$(stat -c '%F %a' "$first$path")"
++  b="$(stat -c '%F %a' "$second$path")"
++  if [ "$a" != "$b" ]; then
++    problems+=("$path differs in type or mode: $a against $b")
++  elif [ -L "$first$path" ]; then
++    if [ "$(readlink "$first$path")" != "$(readlink "$second$path")" ]; then
++      problems+=("$path is a symlink to two different targets")
++    fi
++  elif [ -f "$first$path" ] && ! cmp -s "$first$path" "$second$path"; then
++    problems+=("$path differs between the two builds")
++  fi
++done < "$scratch/both"
++
++# Two empty trees agree about everything. An export that produced nothing is
++# a broken comparison, not a reproducible build.
++if [ "$compared" -eq 0 ]; then
++  problems+=("no path outside the exceptions is in both builds; the comparison compared nothing")
++fi
++
++if [ "${#problems[@]}" -ne 0 ]; then
++  printf '%s\n' "${problems[@]}" | sort >&2
++  echo "the two builds differ outside the ${#excepted[@]} paths $exceptions_file excuses (${#problems[@]} finding(s)); nothing is pushed." >&2
++  echo "Find what moved. Lengthening the list is a person's decision, made in review, never a way to clear this." >&2
++  exit 1
++fi
++echo "the two builds agree file by file: ${compared} paths compared, the ${#excepted[@]} paths $exceptions_file excuses left out."
+diff --git a/.github/reproducibility/portal-exceptions.txt b/.github/reproducibility/portal-exceptions.txt
+new file mode 100644
+index 00000000..73c48dae
+--- /dev/null
++++ b/.github/reproducibility/portal-exceptions.txt
+@@ -0,0 +1,26 @@
++# Files of the qip-portal image allowed to differ between two builds of one
++# commit (R12-CICD-10117, owner decision 13: exclude, not inject).
++#
++# deploy.yml builds the portal twice, the second time with --no-cache and the
++# same SOURCE_DATE_EPOCH, exports both images' filesystems and compares them
++# file by file with .github/reproducibility/compare-image-trees.sh. Every
++# other difference, every added or missing file, and a listed file missing
++# from either build stops the line before anything is pushed.
++#
++# Each line below is a path inside the image, and each file holds a secret
++# Next.js generates afresh on every `next build`. Making two builds agree
++# would mean fixing that secret in this public repository, which publishes
++# it, so the files are excluded instead. Two `next build`s of one tree with
++# one epoch differed in exactly these four files of 2,921.
++#
++# This list lives under .github/ so that only a person can lengthen it:
++# agents may not change .github/**, and CODEOWNERS requires the owner's
++# review. A fifth line excuses a difference nobody has explained. Do not add
++# one to make the check pass; find out what moved.
++#
++# The preview-mode keys:
++/app/portal/.next/prerender-manifest.json
++/app/portal/.next/server/preview-props.json
++# The Server Actions encryption key, in both of the forms Next writes it:
++/app/portal/.next/server/server-reference-manifest.js
++/app/portal/.next/server/server-reference-manifest.json
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index 3c02f45c..6927e569 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -935,15 +935,12 @@ jobs:
+       # layer's content; the label and the tag are identical by
+       # construction and do not hide a difference.
+       #
+-      # The workspace binaries only, and the exception is stated rather than
+-      # hidden: `qip-portal` is a Next.js build, and Next stamps every build
+-      # with a random build id unless `generateBuildId` is pinned, which
+-      # `frontend/portal` does not do. Running this against it would fail
+-      # every portal build for a known reason and make the console
+-      # undeployable; skipping it silently would claim a property nobody
+-      # measured. So the portal is built with the commit's epoch like
+-      # everything else and its reproducibility is recorded as open work in
+-      # infrastructure/gitops/kargo/README.md.
++      # The workspace binaries only. `qip-portal` is measured by the next
++      # step instead, file by file rather than by image id: its
++      # `generateBuildId` follows the commit's epoch, but every `next build`
++      # still writes four fresh per-build secrets, so two builds of one
++      # commit can never share an id and this comparison would fail every
++      # portal build for a known reason.
+       - name: a second build of the commit is the same image
+         id: reproducibility
+         # Not after a pool build: the pool ran this same rebuild and
+@@ -1006,6 +1003,69 @@ jobs:
+           fi
+           echo "two builds of ${DEPLOY_SHA} are the same image: ${first}"
+ 
++      # The portal's second build, compared file by file (R12-CICD-10117).
++      #
++      # Two `next build`s of one tree with one epoch differ in exactly four
++      # files, and each holds a secret Next generates afresh on every build:
++      # the preview-mode keys in prerender-manifest.json and
++      # server/preview-props.json, and the Server Actions key in
++      # server/server-reference-manifest.{js,json}. Pinning them would
++      # publish them, so they are excluded rather than injected (owner
++      # decision 13). The four image paths are listed in
++      # .github/reproducibility/portal-exceptions.txt, under .github/ so that
++      # only a person can lengthen the list.
++      #
++      # The second build is the first one's recipe with `--no-cache`: same
++      # Dockerfile, same context, same `SOURCE_DATE_EPOCH`, same labels. Both
++      # images' filesystems are exported and handed to
++      # .github/reproducibility/compare-image-trees.sh, the same file the
++      # acceptance suite executes (deploy_provenance.rs). It refuses any
++      # other differing, added or missing file, and refuses a listed path
++      # missing from either image, naming each. Extraction and comparison run
++      # as root because the image holds root-owned files the runner's user
++      # cannot read, and an unreadable file must not read as an equal one.
++      # The trees stay off the artifact the step after this uploads: the
++      # findings are named in the log, and a root-owned filesystem is not
++      # something upload-artifact can read.
++      #
++      # The rest of the row's clauses are met elsewhere and not repeated
++      # here: replay runs in ci.yml's `test` job, step "replay and benchmark
++      # output" (`--test tick_replay --test performance`), and this job needs
++      # `simulation-gate` ("simulation engine and twin acceptance") on the
++      # commit being deployed.
++      #
++      # Runner builds only, like the step above. The private pool builds the
++      # portal with `_REPRODUCIBLE=false` and does not run this comparison;
++      # the build environment's tfvars do not select the pool today.
++      - name: a second build of the portal differs only in its per-build secrets
++        id: portal-reproducibility
++        if: steps.build.outcome == 'success' && matrix.binary == 'qip-portal' && steps.build.outputs.where == 'runner'
++        run: |
++          set -euo pipefail
++          prefix="${{ steps.identity.outputs.registry }}"
++          docker buildx build \
++            --no-cache \
++            --build-arg "SOURCE_DATE_EPOCH=${{ steps.build.outputs.epoch }}" \
++            --file "${{ matrix.dockerfile }}" \
++            --output "type=docker,dest=${RUNNER_TEMP}/${{ matrix.binary }}-rebuild.tar,rewrite-timestamp=true" \
++            --label "org.opencontainers.image.revision=${DEPLOY_SHA}" \
++            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
++            --tag "qip-reproducibility/${{ matrix.binary }}:${DEPLOY_SHA}" \
++            "${{ matrix.context }}"
++          docker load --input "${RUNNER_TEMP}/${{ matrix.binary }}-rebuild.tar"
++          trees="$RUNNER_TEMP/portal-trees"
++          for which in first second; do
++            ref="${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}"
++            [ "$which" = first ] || ref="qip-reproducibility/${{ matrix.binary }}:${DEPLOY_SHA}"
++            mkdir -p "$trees/$which"
++            container="$(docker create "$ref")"
++            docker export "$container" | sudo tar --extract --same-permissions --directory "$trees/$which" --file -
++            docker rm "$container" >/dev/null
++          done
++          sudo bash .github/reproducibility/compare-image-trees.sh \
++            .github/reproducibility/portal-exceptions.txt \
++            "$trees/first" "$trees/second"
++
+       # The two builds, kept for a week when they differ, so the bytes can
+       # be compared off the runner with tools the runner does not have.
+       - name: keep both builds when they differ
+diff --git a/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs b/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
+index 3425f5bf..7dbf1e13 100644
+--- a/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
++++ b/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
+@@ -621,3 +621,279 @@ fn the_portal_build_id_follows_the_commit_epoch_deploy_passes_and_is_never_a_con
+          id has nothing to follow"
+     );
+ }
++
++// --- R12-CICD-10117: the portal's second build, compared file by file ------
++//
++// Two `next build`s of one tree with one epoch differ in four files, each a
++// per-build secret Next generates afresh. Owner decision 13: exclude them,
++// do not inject a shared secret. deploy.yml rebuilds the portal uncached,
++// exports both filesystems and runs `compare-image-trees.sh` over them with
++// the committed exceptions list. The tests below execute that same script on
++// trees they build, because a comparison that reads correctly and exits 0 on
++// every input is the failure only running it can show.
++
++const COMPARE_SCRIPT: &str = ".github/reproducibility/compare-image-trees.sh";
++const PORTAL_EXCEPTIONS: &str = ".github/reproducibility/portal-exceptions.txt";
++const PORTAL_DOCKERFILE: &str = "infrastructure/docker/portal.Dockerfile";
++
++/// The four image paths decision 13 excuses, and nothing else.
++const PER_BUILD_SECRETS: [&str; 4] = [
++    "/app/portal/.next/prerender-manifest.json",
++    "/app/portal/.next/server/preview-props.json",
++    "/app/portal/.next/server/server-reference-manifest.js",
++    "/app/portal/.next/server/server-reference-manifest.json",
++];
++
++/// The exceptions file's paths: every line that is neither blank nor a
++/// comment, trimmed, in file order.
++fn listed_exceptions() -> Vec<String> {
++    read(PORTAL_EXCEPTIONS)
++        .lines()
++        .map(str::trim)
++        .filter(|line| !line.is_empty() && !line.starts_with('#'))
++        .map(str::to_owned)
++        .collect()
++}
++
++/// A fresh, empty scratch directory for one test.
++fn scratch_dir(name: &str) -> std::path::PathBuf {
++    let path = std::env::temp_dir().join(format!(
++        "qip-portal-reproducibility-{}-{name}",
++        std::process::id()
++    ));
++    let _ = std::fs::remove_dir_all(&path);
++    std::fs::create_dir_all(&path)
++        .unwrap_or_else(|error| panic!("cannot create {}: {error}", path.display()));
++    path
++}
++
++/// Write `contents` at the image path `path` under `root`.
++fn put(root: &std::path::Path, path: &str, contents: &str) {
++    let file = root.join(path.trim_start_matches('/'));
++    if let Some(parent) = file.parent() {
++        std::fs::create_dir_all(parent)
++            .unwrap_or_else(|error| panic!("cannot create {}: {error}", parent.display()));
++    }
++    std::fs::write(&file, contents)
++        .unwrap_or_else(|error| panic!("cannot write {}: {error}", file.display()));
++}
++
++/// One build's filesystem: an ordinary part every build shares, a symlink,
++/// and the four secret files carrying a value unique to `build`.
++fn portal_tree(root: &std::path::Path, build: &str) {
++    put(
++        root,
++        "/app/portal/server.js",
++        "require('./.next/server');\n",
++    );
++    put(root, "/app/portal/.next/BUILD_ID", "qip-1761868800");
++    put(
++        root,
++        "/app/portal/.next/static/qip-1761868800/_buildManifest.js",
++        "self.__BUILD_MANIFEST={};\n",
++    );
++    put(root, "/etc/alpine-release", "3.22.2\n");
++    for secret in PER_BUILD_SECRETS {
++        put(root, secret, &format!("{{\"key\":\"{build}-{secret}\"}}"));
++    }
++    let link = root.join("usr/bin/node-link");
++    if let Some(parent) = link.parent() {
++        std::fs::create_dir_all(parent)
++            .unwrap_or_else(|error| panic!("cannot create {}: {error}", parent.display()));
++    }
++    std::os::unix::fs::symlink("/usr/local/bin/node", &link)
++        .unwrap_or_else(|error| panic!("cannot link {}: {error}", link.display()));
++}
++
++/// Two builds of one commit as the measurement found them: identical except
++/// for the four per-build secrets. The premise every case below starts from,
++/// asserted rather than assumed, so a fixture that wrote the same secret
++/// twice cannot make the admitting case pass for the wrong reason.
++fn two_builds(name: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
++    let scratch = scratch_dir(name);
++    let first = scratch.join("first");
++    let second = scratch.join("second");
++    portal_tree(&first, "first");
++    portal_tree(&second, "second");
++    for secret in PER_BUILD_SECRETS {
++        let relative = secret.trim_start_matches('/');
++        let a = std::fs::read(first.join(relative)).unwrap_or_default();
++        let b = std::fs::read(second.join(relative)).unwrap_or_default();
++        assert!(
++            !a.is_empty() && a != b,
++            "premise: the fixture's two builds must differ in {secret}, or the admitting case \
++             proves nothing about the exceptions"
++        );
++    }
++    (scratch, first, second)
++}
++
++/// Run the committed comparison over `first` and `second` with the
++/// committed exceptions list; its exit code and its stderr.
++fn compare(first: &std::path::Path, second: &std::path::Path) -> (i32, String) {
++    let root = qip_acceptance::repository_root();
++    let script = root.join(COMPARE_SCRIPT);
++    assert!(
++        script.is_file(),
++        "{COMPARE_SCRIPT} does not exist; deploy.yml's portal comparison has nothing to run"
++    );
++    let output = Command::new("bash")
++        .arg(&script)
++        .arg(root.join(PORTAL_EXCEPTIONS))
++        .arg(first)
++        .arg(second)
++        .env_clear()
++        .env("PATH", "/usr/bin:/bin")
++        .output()
++        .unwrap_or_else(|error| panic!("cannot run bash: {error}"));
++    (
++        output.status.code().unwrap_or(-1),
++        String::from_utf8_lossy(&output.stderr).into_owned(),
++    )
++}
++
++#[test]
++fn the_portal_exceptions_list_names_exactly_the_four_per_build_secret_files() {
++    // The list is what makes the check a check. A fifth line excuses a
++    // difference nobody has explained; a list that lost one of the four
++    // fails every portal build for a known reason and invites somebody to
++    // switch the step off.
++    let listed = listed_exceptions();
++    assert_eq!(
++        listed.len(),
++        4,
++        "{PORTAL_EXCEPTIONS} lists {} paths, {listed:?}; decision 13 excuses exactly four",
++        listed.len()
++    );
++    let mut sorted = listed.clone();
++    sorted.sort();
++    let mut expected: Vec<String> = PER_BUILD_SECRETS.iter().map(|p| (*p).to_owned()).collect();
++    expected.sort();
++    assert_eq!(
++        sorted, expected,
++        "{PORTAL_EXCEPTIONS} does not name exactly the four per-build secret files"
++    );
++}
++
++#[test]
++fn deploy_rebuilds_the_portal_uncached_and_compares_it_with_the_committed_script_and_list() {
++    // The script's tests prove nothing about a step that does not run it,
++    // or runs it on a build that is not the portal's recipe.
++    let workflow = read(DEPLOY);
++    let step = step_text(
++        &workflow,
++        "a second build of the portal differs only in its per-build secrets",
++    );
++    for needle in [
++        "if: steps.build.outcome == 'success' && matrix.binary == 'qip-portal' && steps.build.outputs.where == 'runner'",
++        "--no-cache",
++        "--build-arg \"SOURCE_DATE_EPOCH=${{ steps.build.outputs.epoch }}\"",
++        "--file \"${{ matrix.dockerfile }}\"",
++        "\"${{ matrix.context }}\"",
++        "docker export \"$container\"",
++        "sudo bash .github/reproducibility/compare-image-trees.sh",
++        ".github/reproducibility/portal-exceptions.txt",
++        "\"$trees/first\" \"$trees/second\"",
++    ] {
++        assert!(
++            step.contains(needle),
++            "deploy.yml's portal comparison step no longer carries `{needle}`"
++        );
++    }
++    // The existing step no longer claims the portal is unmeasured.
++    assert!(
++        !workflow.contains("its reproducibility is recorded as open work"),
++        "deploy.yml still says the portal's reproducibility is unmeasured"
++    );
++    // And the epoch reaches `next build` inside the image, or the build id
++    // is random and the comparison fails on every page that names it.
++    let dockerfile = read(PORTAL_DOCKERFILE);
++    let declared = dockerfile
++        .find("\nARG SOURCE_DATE_EPOCH\n")
++        .unwrap_or_else(|| panic!("{PORTAL_DOCKERFILE} does not declare SOURCE_DATE_EPOCH"));
++    let builds = dockerfile
++        .find("\nRUN npm run build\n")
++        .unwrap_or_else(|| panic!("{PORTAL_DOCKERFILE} no longer runs `npm run build`"));
++    assert!(
++        declared < builds,
++        "{PORTAL_DOCKERFILE} declares SOURCE_DATE_EPOCH after `next build` has run"
++    );
++}
++
++#[test]
++fn two_portal_builds_differing_only_in_the_four_listed_secrets_are_admitted() {
++    let (scratch, first, second) = two_builds("admitted");
++    let (code, stderr) = compare(&first, &second);
++    assert_eq!(
++        code, 0,
++        "two builds differing only in the listed secrets were refused, so the check refuses \
++         every portal build: {stderr}"
++    );
++    let _ = std::fs::remove_dir_all(&scratch);
++}
++
++#[test]
++fn a_portal_build_differing_in_an_unlisted_file_is_refused_and_the_file_is_named() {
++    let (scratch, first, second) = two_builds("unlisted");
++    put(
++        &second,
++        "/app/portal/server.js",
++        "require('./.next/elsewhere');\n",
++    );
++    let (code, stderr) = compare(&first, &second);
++    assert_eq!(
++        code, 1,
++        "a build differing in server.js was not refused: {stderr}"
++    );
++    assert!(
++        stderr.contains("/app/portal/server.js differs between the two builds"),
++        "the refusal does not name the file that differed: {stderr}"
++    );
++    let _ = std::fs::remove_dir_all(&scratch);
++}
++
++#[test]
++fn a_listed_secret_file_missing_from_either_build_is_refused() {
++    for (which, missing) in [
++        ("first", "/app/portal/.next/server/preview-props.json"),
++        (
++            "second",
++            "/app/portal/.next/server/server-reference-manifest.js",
++        ),
++    ] {
++        let (scratch, first, second) = two_builds(&format!("missing-{which}"));
++        let tree = if which == "first" { &first } else { &second };
++        std::fs::remove_file(tree.join(missing.trim_start_matches('/')))
++            .unwrap_or_else(|error| panic!("cannot remove {missing}: {error}"));
++        let (code, stderr) = compare(&first, &second);
++        assert_eq!(
++            code, 1,
++            "{missing} gone from the {which} build was not refused: {stderr}"
++        );
++        assert!(
++            stderr.contains(&format!(
++                "listed exception {missing} is not a file in the {which} build"
++            )),
++            "the refusal does not name the listed file gone from the {which} build: {stderr}"
++        );
++        let _ = std::fs::remove_dir_all(&scratch);
++    }
++}
++
++#[test]
++fn a_file_present_in_only_one_portal_build_is_refused_and_named() {
++    let (scratch, first, second) = two_builds("extra");
++    put(&second, "/app/portal/.next/server/extra-chunk.js", "0\n");
++    let (code, stderr) = compare(&first, &second);
++    assert_eq!(
++        code, 1,
++        "a file only the second build holds was not refused: {stderr}"
++    );
++    assert!(
++        stderr.contains(
++            "/app/portal/.next/server/extra-chunk.js is in the second build and missing from the first"
++        ),
++        "the refusal does not name the extra file: {stderr}"
++    );
++    let _ = std::fs::remove_dir_all(&scratch);
++}
+diff --git a/backend/crates/tests/qip-acceptance/tests/infrastructure.rs b/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
+index b1b437c9..a6326324 100644
+--- a/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
++++ b/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
+@@ -13594,18 +13594,22 @@ fn the_build_epoch_is_the_commit_time_and_never_the_clock() {
+     // no `dest`, the runner's graphdriver daemon commits the layers itself
+     // and ignores `rewrite-timestamp` — deploy run 266 had byte-identical
+     // binaries, configs and histories and two sets of layer digests.
++    //
++    // Three builds, not two, since R12-CICD-10117: the first build, the
++    // workspace binaries' uncached rebuild, and the portal's uncached
++    // rebuild that is compared file by file. All three go the same way.
+     assert_eq!(
+         deploy.matches(".tar,rewrite-timestamp=true\"").count(),
+-        2,
+-        "deploy.yml's two builds do not both export through the tarball exporter with \
++        3,
++        "deploy.yml's three builds do not all export through the tarball exporter with \
+          rewrite-timestamp; the daemon's own image store ignores it"
+     );
+     assert_eq!(
+         deploy
+             .matches("docker load --input \"${RUNNER_TEMP}/${{ matrix.binary }}")
+             .count(),
+-        2,
+-        "deploy.yml's two builds are not both loaded from their tarball"
++        3,
++        "deploy.yml's three builds are not all loaded from their tarball"
+     );
+     // And on a daemon that can do either: the hosted runner's graphdriver
+     // daemon ignores `rewrite-timestamp` and refuses the tarball exporter, so
+diff --git a/infrastructure/gitops/kargo/README.md b/infrastructure/gitops/kargo/README.md
+index e3c05882..d5394510 100644
+--- a/infrastructure/gitops/kargo/README.md
++++ b/infrastructure/gitops/kargo/README.md
+@@ -57,11 +57,15 @@ The build's `SOURCE_DATE_EPOCH` is the commit's timestamp
+ `rewrite-timestamp=true` clamps every layer's file times to it; the
+ Dockerfile refuses a build without it. For the four workspace binaries,
+ `deploy.yml` builds the commit a second time with no cache and refuses to
+-push unless both builds are the same image id. `qip-portal` is built with
+-the same epoch but is **not** checked: Next.js stamps each build with a
+-random build id unless `generateBuildId` is pinned, which `frontend/portal`
+-does not do, so the check would fail every portal build for a known reason.
+-That is open work, not a pass. The builds still run on GitHub-hosted
++push unless both builds are the same image id. `qip-portal` cannot pass
++that check: its `generateBuildId` follows the epoch, but every `next build`
++writes four fresh per-build secrets (the preview-mode keys and the Server
++Actions key). So `deploy.yml` rebuilds it with no cache, exports both
++images' filesystems and compares them file by file, excluding only the four
++paths `.github/reproducibility/portal-exceptions.txt` names, and refuses any
++other difference or a listed file gone (R12-CICD-10117). That runs on the
++runner path only; the private pool does not compare the portal. The
++builds still run on GitHub-hosted
+ runners; a Cloud Build private pool (the other half of CICD-9097) is not
+ built here.
+ 
