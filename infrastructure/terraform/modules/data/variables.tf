@@ -216,6 +216,15 @@ variable "archive_retention_days" {
   description = "How long the event-log archive is retained and locked against deletion."
   type        = number
   default     = 2557 # seven years
+
+  # A floor, not a target: the lock makes the window permanent once applied,
+  # so a shorter value reviewed by mistake would be a record that can never be
+  # kept longer, and a cost-response change that lowered it would be the
+  # deletion the lock exists to prevent (R12-DATA-8125).
+  validation {
+    condition     = var.archive_retention_days >= 2555
+    error_message = "archive_retention_days must be at least 2555 (seven years of 365 days): the event archive's locked retention may be lengthened, never shortened."
+  }
 }
 
 variable "writer_service_accounts" {

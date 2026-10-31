@@ -60,3 +60,22 @@ run "no_archive_is_planned_while_storage_is_off" {
     error_message = "The archive's seven-year lock cannot be undone; storage must stay off until the change that lands its first writer"
   }
 }
+
+# The refusing half: the locked window may be lengthened and never shortened.
+run "a_retention_shorter_than_seven_years_is_refused_at_plan" {
+  command = plan
+
+  variables {
+    project_id             = "test-project"
+    region                 = "us-central1"
+    environment            = "test"
+    labels                 = { env = "test" }
+    key_ring_id            = "projects/p/locations/l/keyRings/kr"
+    network_id             = "projects/p/global/networks/n"
+    enable_cloud_storage   = true
+    bucket_location        = "US"
+    archive_retention_days = 2554
+  }
+
+  expect_failures = [var.archive_retention_days]
+}
