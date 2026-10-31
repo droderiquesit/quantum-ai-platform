@@ -901,24 +901,24 @@
   {
     "id": "R12-WORLD-9037",
     "status": "PARTIAL",
-    "current": "FutureTree propagates a world driver to instruments as second-order moves over a compact twin state.",
+    "current": "FutureTree propagates a world driver to instruments as second-order moves over a compact twin state. qip_twin::business::BusinessTwin holds supply links (a customer's input share from a supplier) and macro links (an entity's elasticity to a driver), each naming its source; shock_entity and shock_macro carry a fractional change to dependants as a bounded fixed point, every effect naming the sources it passed through, with manifest() listing all of them. It refuses bad links, a change past -100% and a hop count outside 1..8. Platform::business_twin builds one from the world graph's Supplies facts known at a point in time.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/causal.rs",
-      "backend/crates/services/qip-world-model/tests/second_order.rs",
-      "backend/crates/services/qip-twin/src/futures.rs::FutureTree::grow"
+      "backend/crates/services/qip-twin/src/business.rs::BusinessTwin",
+      "backend/crates/services/qip-twin/tests/business.rs::a_shock_to_an_upstream_supplier_propagates_through_the_twin_to_its_customers and three more (mutants: share omitted, one hop, source omitted, elasticity ignored, share-sum check, share lower bound, per-round -100% check, truncated, 0 hops; all killed)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::business_twin, the_platforms_company_twin_carries_a_suppliers_shock_to_its_customers_from_the_graph (mutants: Supplies filter, no facts, facts not yet known, zero-weight supply kept; all killed)"
     ],
-    "gap": "No macro or company twin with business/supply-chain dynamics; off-by-default tick desk only.",
+    "gap": "Skeptic 2026-10-31 PARTIAL: nothing on a shipped binary builds or shocks the twin (business_twin has no caller outside tests), so bar part 2 fails. Bar part 4 fails too: the platform twin has no macro links, because the graph holds no elasticities, and there are no business dynamics (no revenue, margin, inventory, time or lag), only static linear supply-share propagation. The graph's one Supplies weight is read as the customer's input share, while the inverse Customer edge copies it as the supplier's revenue share; confidence is ignored, and only the latest statement of each pair is kept in the manifest.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "cargo test -p qip-twin --test business; cargo test -p qip-kernel --lib the_platforms_company_twin",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 L4-quant: built (3a5613a3; its message claimed clippy clean and was not, corrected in 5ec41b90), then corrected on the skeptic's findings (caf5fcef): changes past -100% and non-attenuating full-share cycles were accepted, truncated was wrong at both edges, a zero-weight Supplies fact made the twin refuse. Skeptic verdict PARTIAL."
   },
   {
     "id": "R12-TICK-9038",
