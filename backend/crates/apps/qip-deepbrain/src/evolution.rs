@@ -45,6 +45,7 @@ use qip_evolution::cost_model::NetReturns;
 use qip_evolution::generate::Candidate;
 use qip_evolution::grammar::Grammar;
 use qip_evolution::palette::FeaturePalette;
+use qip_financial::history::UniverseHistory;
 use qip_financial::universe::Universe;
 use qip_kernel::central::factory::AlphaFamily;
 use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry, recorded_manifest};
@@ -340,6 +341,12 @@ pub struct EvolutionEngine {
     /// equity curve -- which the gate then reads as a strategy with no
     /// volatility rather than as a strategy that never traded.
     universe: Universe,
+    /// The platform's historical universe as of the last round
+    /// (R12-TICK-2090): membership by instant and venue outages, taken from
+    /// the platform at the start of every `turn`, so a backtest over a past
+    /// window judges a candidate against the names and venues that existed
+    /// then rather than the survivors the present universe holds.
+    universe_history: UniverseHistory,
     history: BTreeMap<String, Vec<Bar>>,
     foundries: BTreeMap<String, StrategyFoundry>,
     /// Fused posterior per instrument, as the tick desk last stated it
@@ -408,6 +415,7 @@ impl EvolutionEngine {
             adapter,
             seed,
             universe,
+            universe_history: UniverseHistory::new(),
             history: BTreeMap::new(),
             foundries: BTreeMap::new(),
             priors: BTreeMap::new(),
@@ -773,6 +781,12 @@ impl EvolutionEngine {
 
     /// Whether the adapter owns time — a tape — so the loop takes each
     /// cycle's instant from [`Self::advance`] rather than the wall clock.
+    /// The platform's historical universe as the last round judged against
+    /// it; empty before the first round.
+    pub fn universe_history(&self) -> &UniverseHistory {
+        &self.universe_history
+    }
+
     pub fn owns_time(&self) -> bool {
         self.adapter.owns_time()
     }
@@ -923,6 +937,10 @@ impl EvolutionEngine {
         now: Timestamp,
     ) -> Result<RoundSummary> {
         let object = ObjectId::from_string(subject);
+        // The universe as the platform's history has it, taken once per
+        // round before any candidate is judged, so every backtest in the
+        // round reads one account of what was listed and which venue was out.
+        self.universe_history = platform.universe_history().clone();
         // §22.3's table, and §56.3's rule 31: "a data class with only one
         // viable source is a concentration risk, and a universe with fewer
         // than two cannot be promoted past validation." The verdict is taken
@@ -1385,7 +1403,12 @@ impl EvolutionEngine {
             initial_capital: tradeable_capital(bars, self.config.max_weight)?,
             ..BacktestConfig::default()
         };
-        let result = Backtester::new(config)?.run(&mut harness, &mut clock, &self.universe)?;
+        let result = Backtester::new(config)?.run_with_history(
+            &mut harness,
+            &mut clock,
+            &self.universe,
+            Some(&self.universe_history),
+        )?;
 
         // A run that never traded is not a strategy with no volatility; it is
         // no evidence at all. Refusing here is what stops a flat line reaching

@@ -146,6 +146,7 @@ use qip_financial::asset_class::{AssetClass, InstrumentType};
 use qip_financial::constraints::Jurisdiction;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
 use qip_financial::derivative_permissions::DerivativePermissions;
+use qip_financial::history::UniverseHistory;
 use qip_financial::intelligence::MacroObservation;
 use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
@@ -896,6 +897,16 @@ pub struct Platform {
     /// platform was assembled from. Kept so the overview can say it without
     /// decoding the log; the log is the record.
     universe_assembled: UniverseAssembled,
+    /// The historical universe (R12-TICK-2090): every instrument this
+    /// platform was assembled to trade, listed from the assembly instant,
+    /// with the delistings and renamings the corporate-action tape announced
+    /// (effective at their ex-dates) and the venue outages the platform
+    /// itself caused by withdrawing a venue on feasibility evidence. A
+    /// backtest reads membership and outages as of its own instants from
+    /// here, so a name delisted later stays in the universe it is judged
+    /// against and a venue that was out is not filled through. The present
+    /// `Universe` behind the desk drops a delisted name; this does not.
+    universe_history: UniverseHistory,
     /// The last log sequence this platform inherited rather than wrote. See
     /// `inherited_through`.
     inherited_through: u64,
@@ -5812,6 +5823,14 @@ impl Platform {
         // the journal both exist — but before this function returns, so no
         // cycle can precede it.
         let members: Vec<String> = universe.ids().map(|id| id.as_str().to_string()).collect();
+        // The historical universe starts as the assembled one, every member
+        // listed from this instant: the earliest this process can say it
+        // knew the name. A listing date the catalogue does not carry is not
+        // invented here.
+        let mut universe_history = UniverseHistory::new();
+        for object in universe.iter() {
+            universe_history.list(object.object_id.clone(), object.symbol.clone(), now)?;
+        }
         let universe_assembled = UniverseAssembled {
             catalogue: universe.origin().cloned(),
             instruments: universe.len(),
@@ -6195,6 +6214,7 @@ impl Platform {
             private_forecasts,
             credit,
             universe_assembled,
+            universe_history,
             inherited_through,
             asset_classes,
             derivative_types,
@@ -6344,6 +6364,18 @@ impl Platform {
         // a platform running cycles whose log never says what universe they
         // ran over — is the state this record exists to end.
         platform.record_universe_assembled(now)?;
+        // A venue the log says was withdrawn before this process started is
+        // out from this instant in the historical universe: the withdrawal's
+        // own instant is on the log, but the earliest this process can speak
+        // for is now, and a backtest that filled through a venue the desk
+        // refuses would be the survivorship the history exists to end.
+        for venue in platform.withdrawn_venues.clone() {
+            platform.universe_history.open_outage(
+                venue,
+                now,
+                "withdrawn on feasibility evidence before this process started (resumed from the log)",
+            )?;
+        }
         // The committed eligibility decisions, after the universe record and
         // after every mandate is enrolled, through the same journaled path
         // an operator's runtime decision takes. A decision the registry
@@ -12981,6 +13013,38 @@ impl Platform {
                 action.ex_date.to_rfc3339()
             ));
             return;
+        }
+        // The historical universe takes the membership facts now, at the
+        // announcement, effective at the ex-date: a delisting ends the
+        // listing there and a renaming opens a new symbol era there. Recorded
+        // here, after the duplicate checks, so a tape re-fed to a restarted
+        // process does not end a listing twice. A refusal is a tape fault
+        // (a delisting before the listing began, an unknown name) and is
+        // captured as one rather than aborting the observation.
+        // Terminal actions — a delisting, a merger that takes the name away
+        // — end the listing; `CorporateAction::is_terminal` is the one
+        // place that says which kinds those are, so a kind added there ends
+        // a listing here without a second list to keep in step.
+        let membership = match &action.kind {
+            CorporateActionKind::Renamed { new_symbol } => Some(self.universe_history.rename(
+                &action.object_id,
+                new_symbol.clone(),
+                action.ex_date,
+            )),
+            _ if action.is_terminal() => Some(
+                self.universe_history
+                    .delist(&action.object_id, action.ex_date),
+            ),
+            _ => None,
+        };
+        if let Some(Err(error)) = membership {
+            self.capture_problems.push(format!(
+                "a corporate action on {} ex {} was queued but the historical universe refused \
+                 it: {}",
+                action.object_id,
+                action.ex_date.to_rfc3339(),
+                error.message()
+            ));
         }
         self.corporate_actions_pending.insert(key, action);
     }
@@ -24802,6 +24866,15 @@ impl Platform {
         &self.withdrawn_venues
     }
 
+    /// The historical universe (R12-TICK-2090): membership as of any instant,
+    /// delistings and renamings effective at their ex-dates, and the venue
+    /// outages this platform's withdrawals caused. What a backtest judges a
+    /// strategy against, so a name delisted later is still in the universe
+    /// it traded in.
+    pub fn universe_history(&self) -> &UniverseHistory {
+        &self.universe_history
+    }
+
     /// Every withdrawal record this kernel's review has written, oldest
     /// first, with the evidence each was made on.
     ///
@@ -25172,7 +25245,7 @@ impl Platform {
         let record = VenueWithdrawal::of(&cluster, self.cycle, now);
         match self.journal_once(record, VENUE_REVIEW_ORIGIN, now) {
             Ok(_) => {
-                self.withdraw_venue(&cluster.venue);
+                self.withdraw_venue(&cluster.venue, now);
                 (
                     Some(format!(
                         "venue {} withdrawn on feasibility evidence ({} of {} recent refusals, \
@@ -25199,10 +25272,23 @@ impl Platform {
     /// Withdraw `venue` at both seams. The one writer of the withdrawn set,
     /// called only after the record is in the log; the order manager
     /// refuses and the plane omits from the next call on.
-    fn withdraw_venue(&mut self, venue: &str) {
+    fn withdraw_venue(&mut self, venue: &str, now: Timestamp) {
         self.withdrawn_venues.insert(venue.to_string());
         self.orders.withdraw_venue(venue);
         self.central.withdraw_venue(venue);
+        // And the historical universe: the venue is out from now until a
+        // reinstatement says otherwise, so a backtest over this window does
+        // not fill through a venue the desk refused.
+        if let Err(error) = self.universe_history.open_outage(
+            venue,
+            now,
+            "withdrawn on feasibility evidence (venue review)",
+        ) {
+            self.capture_problems.push(format!(
+                "{venue} was withdrawn but the historical universe refused the outage: {}",
+                error.message()
+            ));
+        }
     }
 
     /// Sign a withdrawn venue's reinstatement, and put it back at both seams
@@ -25332,7 +25418,7 @@ impl Platform {
                 // by the next assembly.
                 self.journal_record(entry.clone(), VENUE_REINSTATEMENT_ORIGIN, now)?;
                 approval?;
-                self.reinstate_venue_at_seams(venue);
+                self.reinstate_venue_at_seams(venue, now);
                 Ok(entry)
             }
         }
@@ -25365,8 +25451,15 @@ impl Platform {
     /// is never resumed from the log — so the pardon there is a no-op, and
     /// the two callers are kept on one path rather than on two that could
     /// drift.
-    fn reinstate_venue_at_seams(&mut self, venue: &str) {
+    fn reinstate_venue_at_seams(&mut self, venue: &str, now: Timestamp) {
         self.withdrawn_venues.remove(venue);
+        if let Err(error) = self.universe_history.close_outage(venue, now) {
+            self.capture_problems.push(format!(
+                "{venue} was reinstated but the historical universe refused to close its \
+                 outage: {}",
+                error.message()
+            ));
+        }
         crate::venue_review::pardon(&mut self.feasibility_refusals, venue);
         self.orders.reinstate_venue(venue);
         self.central.reinstate_venue(venue);

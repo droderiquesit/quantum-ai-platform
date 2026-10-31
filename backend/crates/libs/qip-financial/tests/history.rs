@@ -32,6 +32,45 @@ fn history() -> Result<UniverseHistory> {
     Ok(h)
 }
 
+/// A running platform learns an outage in two halves — the venue went out
+/// now, and came back later — so the history takes an open outage that
+/// overlaps every later window until it is closed. Mutation: make
+/// `open_outage` write `from` as `until`; the open outage overlaps nothing and
+/// the first assertion fails.
+#[test]
+fn an_open_outage_overlaps_every_later_window_until_it_is_closed() -> Result<()> {
+    let mut h = history()?;
+    h.open_outage("XLON", day(20), "withdrawn on feasibility evidence")?;
+    assert_eq!(
+        h.outages_overlapping("XLON", day(400), day(401)).len(),
+        1,
+        "an open outage must overlap a window long after it began"
+    );
+    assert!(
+        h.outages_overlapping("XLON", day(19), day(20)).is_empty(),
+        "an outage does not reach back before it began"
+    );
+    assert!(
+        h.open_outage("XLON", day(21), "twice").is_err(),
+        "one venue is out once at a time"
+    );
+    assert!(
+        h.close_outage("XLON", day(20)).is_err(),
+        "a venue cannot come back before it went"
+    );
+    assert!(
+        h.close_outage("XLON", day(25))?,
+        "the open outage was closed"
+    );
+    assert!(!h.close_outage("XLON", day(26))?, "nothing was left open");
+    assert!(
+        h.outages_overlapping("XLON", day(400), day(401)).is_empty(),
+        "a closed outage no longer overlaps later windows"
+    );
+    assert_eq!(h.outages_overlapping("XLON", day(22), day(23)).len(), 1);
+    Ok(())
+}
+
 #[test]
 fn a_universe_as_of_a_past_date_includes_an_instrument_delisted_afterwards() -> Result<()> {
     let h = history()?;

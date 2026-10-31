@@ -159,6 +159,67 @@ impl UniverseHistory {
         Ok(())
     }
 
+    /// Open an outage at `venue` from `from` whose end is not yet known:
+    /// the venue is out until [`Self::close_outage`] says when it came back,
+    /// and until then the outage overlaps every later window
+    /// (`until` is [`Timestamp::MAX`]). For the fact as a running platform
+    /// learns it — a venue withdrawn now, reinstated at some later instant —
+    /// where [`Self::record_outage`] is for an outage known whole. A second
+    /// open outage at the same venue is refused: one venue is out once at a
+    /// time, and a second record would be a second account of the same fact.
+    pub fn open_outage(
+        &mut self,
+        venue: impl Into<String>,
+        from: Timestamp,
+        reason: impl Into<String>,
+    ) -> Result<()> {
+        let venue = venue.into();
+        if self.open_outage_index(&venue).is_some() {
+            return Err(Error::invalid(format!(
+                "{venue} already has an open outage; close it before opening another"
+            )));
+        }
+        if from == Timestamp::MAX {
+            return Err(Error::invalid(format!(
+                "an outage at {venue} cannot open at the end of time"
+            )));
+        }
+        self.record_outage(VenueOutage {
+            venue,
+            from,
+            until: Timestamp::MAX,
+            reason: reason.into(),
+        })
+    }
+
+    /// Close the open outage at `venue` at `until`, returning whether one was
+    /// open. An `until` at or before the outage began is refused: the venue
+    /// cannot have come back before it went.
+    pub fn close_outage(&mut self, venue: &str, until: Timestamp) -> Result<bool> {
+        let Some(index) = self.open_outage_index(venue) else {
+            return Ok(false);
+        };
+        if until <= self.outages[index].from {
+            return Err(Error::invalid(format!(
+                "the outage at {venue} began at {}, so it cannot end at {until}",
+                self.outages[index].from
+            )));
+        }
+        self.outages[index].until = until;
+        Ok(true)
+    }
+
+    /// Every outage recorded, open ones included, by start then venue.
+    pub fn outages(&self) -> &[VenueOutage] {
+        &self.outages
+    }
+
+    fn open_outage_index(&self, venue: &str) -> Option<usize> {
+        self.outages
+            .iter()
+            .position(|outage| outage.venue == venue && outage.until == Timestamp::MAX)
+    }
+
     /// Record a venue outage. An empty or inverted window is refused.
     pub fn record_outage(&mut self, outage: VenueOutage) -> Result<()> {
         if outage.until <= outage.from {
@@ -171,6 +232,12 @@ impl UniverseHistory {
         self.outages
             .sort_by(|a, b| (a.from, &a.venue).cmp(&(b.from, &b.venue)));
         Ok(())
+    }
+
+    /// The listing the history holds for `object_id`, whether or not it is
+    /// a member now; `None` for a name the history was never told about.
+    pub fn listing(&self, object_id: &ObjectId) -> Option<&Listing> {
+        self.listings.get(object_id.as_str())
     }
 
     /// Every instrument that was listed at `at`, including any delisted later.
