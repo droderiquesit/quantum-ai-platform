@@ -75,7 +75,7 @@ jobs:
       # branch cannot loosen it; the actor and whoever re-ran the run are
       # both judged. First, before anything authenticates.
       - name: no development agent starts this workflow
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: .agent-guard
@@ -117,7 +117,7 @@ jobs:
             *) echo "action must be plan or apply." >&2; exit 1 ;;
           esac
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Same derivation as infra.yml's step of this name, narrowed to what the
       # fleet needs. Deliberately nothing from repository variables.
@@ -180,12 +180,12 @@ jobs:
             exit 1
           fi
 
-      - uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ steps.identity.outputs.provider }}
           service_account: ${{ steps.identity.outputs.account }}
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: "1.9.8"
 
@@ -207,7 +207,7 @@ jobs:
           terraform -chdir=infrastructure/fleet plan -input=false -out=tfplan
           terraform -chdir=infrastructure/fleet show -no-color tfplan | tee "$RUNNER_TEMP/fleet-plan.txt"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fleet-plan
           path: ${{ runner.temp }}/fleet-plan.txt

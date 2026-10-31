@@ -1127,21 +1127,26 @@
   },
   {
     "id": "R12-WORLD-3049",
-    "status": "MISSING",
-    "current": "No counterparty contagion model found.",
-    "evidence": [],
-    "gap": "Build.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "status": "PARTIAL",
+    "current": "Federation member network.counterparty.global (domain counterparty/network) forecasts counterparty:<venue>:refuses-next-pass on every shipped cycle for the desk broker and every venue the feasibility window names, from the venue's share of the window's Evidence refusals (echoes and pardoned entries excluded); the next pass resolves it on Evidence refusals stamped at or after the forecast beyond those already held then. It only reads the window (record_feasibility_refusal stays its one writer) and reaches no decision: narrowings_of reads instrument propositions only. counterparty/network is in REQUIRED_FAMILIES.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::COUNTERPARTY, CounterpartyView, Pending::Counterparty",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::a_venue_whose_refusals_rose_gives_the_counterparty_member_a_view_resolved_next_pass (mutants: share term dropped, `already` ignored, member unfed, family dropped; all killed)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::counterparty_views, the_counterparty_views_count_only_a_venues_own_refusals_and_always_name_the_desk_broker (mutant: every standing counted, killed)",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs (counterparty member never silent on the platform cycle; mutant counterparties: Vec::new() killed)"
+    ],
+    "gap": "Skeptic 2026-10-31 PARTIAL: brokers and exchanges are covered; bridges, custodians, settlement dependencies and contagion paths are not, because the member has no dependency graph between venues and is a per-venue rate prior, so bar part 4 fails. Resolver limits: a cell report stamped before the forecast but ingested after it is never counted; when the window is full, echo and pardoned arrivals are unseated and eviction (insertion order) can remove entries counted in `already`, each resolving false; and refusals from the forecasting cycle's own DECIDE, stamped at the forecast instant, resolve the next-pass proposition.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model",
+    "verification": "cargo test -p qip-kernel --lib federation; cargo test -p qip-kernel --lib the_counterparty_views_count_only; cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-31 L4-quant: built (ba96cd00), then echoes and pardoned entries excluded on the skeptic's finding; skeptic verdict PARTIAL."
   },
   {
     "id": "R12-WORLD-3050",

@@ -45,10 +45,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
         with:
           languages: ${{ matrix.language }}
           # Optional: specify queries to customize CodeQL's analysis
@@ -68,7 +68,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
 
       # The repository's own CodeQL model pack, for the Rust analysis only
       # (ADR 0117 Amendment 3; `.github/codeql/qip-models/README.md` holds
@@ -104,7 +104,7 @@ jobs:
       # step can read what the analysis found rather than only whether it
       # ran.
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
         with:
           category: "/language:${{ matrix.language }}"
           output: sarif-results
@@ -121,7 +121,7 @@ jobs:
       # The threshold has no input and no override here: lowering it is an
       # edit to that file, reviewed like any other. `deploy.yml` needs no
       # change to honour it — it already reads these jobs by name.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 

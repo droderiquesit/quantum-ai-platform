@@ -136,6 +136,12 @@ pub const COMPANY: &str = "company.fundamental.global";
 /// The capital member (R12-WORLD-3048, ADR 0194): will the next pass find the
 /// paper book's cash lower than this one did — a funding draw?
 pub const CAPITAL: &str = "portfolio.capital.global";
+/// The counterparty member (R12-WORLD-3049): will the next pass record a
+/// feasibility refusal at this venue?
+pub const COUNTERPARTY: &str = "network.counterparty.global";
+/// The most venues one pass forecasts for; a bound on the propositions the
+/// member opens, not a forecast about which venues matter.
+pub const COUNTERPARTY_MAX_VENUES: usize = 32;
 /// How sharply a fundamental surprise leans the company member's view: a
 /// five per cent beat reads at `logistic(1.0)`, about 0.73. A chosen
 /// constant, stated so a reader can see the mapping is a slope and not a
@@ -306,6 +312,27 @@ pub struct CapitalView {
     pub pending_theses: usize,
 }
 
+/// What the counterparty member reads about one venue (R12-WORLD-3049): the
+/// feasibility refusals the platform's window holds at it, read and never
+/// written. The window is the evidence a venue is withdrawn on; this member
+/// forecasts from it and decides nothing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CounterpartyView {
+    pub venue: String,
+    /// The instant of each refusal at this venue the window holds, oldest
+    /// first.
+    pub refused_at: Vec<Timestamp>,
+    /// This venue's share of every refusal in the window; zero when the
+    /// window is empty.
+    pub share: f64,
+}
+
+impl CounterpartyView {
+    fn refused_since(&self, since: Timestamp) -> usize {
+        self.refused_at.iter().filter(|at| **at >= since).count()
+    }
+}
+
 /// Everything one pass reads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FederationInputs {
@@ -322,6 +349,9 @@ pub struct FederationInputs {
     pub macros: Vec<MacroView>,
     /// The latest currency fixing per series readable this pass (ADR 0256).
     pub currencies: Vec<CurrencyView>,
+    /// The venues the platform routes to, for the counterparty member: the
+    /// desk's broker and every venue the refusal window names.
+    pub counterparties: Vec<CounterpartyView>,
 }
 
 /// One member as the population check read it.
@@ -559,6 +589,17 @@ enum Pending {
         cycle: u64,
         since: Timestamp,
     },
+    Counterparty {
+        venue: String,
+        /// The forecasting pass's instant.
+        since: Timestamp,
+        /// Refusals at the venue stamped at or after `since` that the window
+        /// already held when the forecast was made: the desk refuses during
+        /// DECIDE at the cycle's own instant, so a strict "after" would miss
+        /// the refusals that matter, and these are not new.
+        already: usize,
+        cycle: u64,
+    },
 }
 
 impl Pending {
@@ -568,6 +609,7 @@ impl Pending {
             | Self::Halted { cycle }
             | Self::Chain { cycle, .. }
             | Self::Funding { cycle, .. }
+            | Self::Counterparty { cycle, .. }
             | Self::Macro { cycle, .. }
             | Self::Currency { cycle, .. } => *cycle,
         }
@@ -770,7 +812,7 @@ fn residual_fit(r: &[f64], member: usize) -> f64 {
 /// The scope families the population must cover (WORLD-3037, -3050, -3051,
 /// -3052 and ASSET-3017's federation half). A family with no live,
 /// unexpired member is named in [`FederationReview::uncovered`].
-pub const REQUIRED_FAMILIES: [&str; 7] = [
+pub const REQUIRED_FAMILIES: [&str; 8] = [
     "regional",
     "scenario",
     "counterfactual",
@@ -778,6 +820,7 @@ pub const REQUIRED_FAMILIES: [&str; 7] = [
     "crypto/on-chain",
     "company/fundamental",
     "portfolio/capital",
+    "counterparty/network",
 ];
 
 /// Whether a member's scope covers `family`, for a process serving `region`.
@@ -792,6 +835,7 @@ pub fn covers(family: &str, scope: &Scope, region: &str) -> bool {
         "crypto/on-chain" => scope.domain == "crypto/on-chain",
         "company/fundamental" => scope.domain == "company/fundamental",
         "portfolio/capital" => scope.domain == "portfolio/capital",
+        "counterparty/network" => scope.domain == "counterparty/network",
         // Not in `REQUIRED_FAMILIES`: a domain member exists only once the
         // composition root has named an asset class, so requiring one would
         // report a process with no classes named as uncovered every cycle.
@@ -953,6 +997,12 @@ pub fn instrument_proposition(subject: &str, cycle: u64) -> String {
 /// The proposition the next pass's kill-switch state answers.
 pub fn halted_proposition(cycle: u64) -> String {
     format!("self:halted-next-pass@{cycle}")
+}
+
+/// The proposition the next pass's feasibility window answers for one venue
+/// (R12-WORLD-3049).
+pub fn counterparty_proposition(venue: &str, cycle: u64) -> String {
+    format!("counterparty:{venue}:refuses-next-pass@{cycle}")
 }
 
 /// The proposition the next pass's book cash answers (ADR 0194).
@@ -1246,6 +1296,17 @@ impl FederationStage {
                 "surprise-persistence",
                 ModelKind::Observational,
                 &[MACRO_SOURCE],
+                0.25,
+            ),
+            declare(
+                COUNTERPARTY.into(),
+                "counterparty/network",
+                "global",
+                1,
+                Abstraction::Meso,
+                "venue-refusal",
+                ModelKind::Observational,
+                &["kernel:feasibility-window", "kernel:desk-broker"],
                 0.25,
             ),
             declare(
@@ -1549,6 +1610,42 @@ impl FederationStage {
                 },
             );
             propositions.push(proposition);
+        }
+
+        // The counterparty member (R12-WORLD-3049): will this venue refuse
+        // again before the next pass? A venue that carries a large share of
+        // the window's refusals is likelier to; the prior is stated, and
+        // calibration scores every miss.
+        for view in inputs.counterparties.iter().take(COUNTERPARTY_MAX_VENUES) {
+            let probability = 0.05 + 0.85 * view.share;
+            let proposition = counterparty_proposition(&view.venue, inputs.cycle);
+            if feed(
+                &mut self.federation,
+                COUNTERPARTY,
+                Assessment {
+                    proposition: proposition.clone(),
+                    probability,
+                    evidence_fit: if view.refused_at.is_empty() { 0.3 } else { 0.6 },
+                    causal_coherence: 0.4,
+                    uncertainty: 0.5,
+                    at: now,
+                },
+                &mut fed,
+                &mut refused,
+                &mut self.views,
+                &self.branches,
+            ) {
+                self.pending.insert(
+                    proposition.clone(),
+                    Pending::Counterparty {
+                        venue: view.venue.clone(),
+                        since: now,
+                        already: view.refused_since(now),
+                        cycle: inputs.cycle,
+                    },
+                );
+                propositions.push(proposition);
+            }
         }
 
         // The capital member (ADR 0194): will the next pass find less cash?
@@ -2056,6 +2153,21 @@ impl FederationStage {
                     .iter()
                     .find(|v| &v.series == series && v.valid_at > *valid_at)
                     .map(|v| Some((v.level > *level) == *up && (v.level - *level).abs() > 0.0)),
+                Pending::Counterparty {
+                    venue,
+                    since,
+                    already,
+                    cycle,
+                } if *cycle < inputs.cycle => Some(Some(
+                    inputs
+                        .counterparties
+                        .iter()
+                        .find(|v| &v.venue == venue)
+                        // A venue the window no longer names holds no refusal
+                        // at all, so none arrived since.
+                        .is_some_and(|v| v.refused_since(*since) > *already),
+                )),
+                Pending::Counterparty { .. } => None,
             };
             match answer {
                 Some(Some(outcome)) => {
@@ -2177,6 +2289,7 @@ mod tests {
             capital: None,
             macros: Vec::new(),
             currencies: Vec::new(),
+            counterparties: Vec::new(),
         }
     }
 
@@ -2189,6 +2302,15 @@ mod tests {
             leverage: 1.0 - cash / 1_000.0,
             net_share: 1.0 - cash / 1_000.0,
             pending_theses: waiting,
+        }
+    }
+
+    /// A venue holding refusals at `refused_at`, with `share` of the window.
+    fn venue(name: &str, refused_at: &[Timestamp], share: f64) -> CounterpartyView {
+        CounterpartyView {
+            venue: name.to_string(),
+            refused_at: refused_at.to_vec(),
+            share,
         }
     }
 
@@ -2217,6 +2339,9 @@ mod tests {
         // The capital member produces state only for a book with positive
         // equity, so this one has one (R12-WORLD-3048).
         fed_inputs.capital = Some(book(1_000.0, 0));
+        // The counterparty member forecasts for each venue it is handed
+        // (R12-WORLD-3049); this desk routes to one.
+        fed_inputs.counterparties = vec![venue("DESK", &[], 0.0)];
         // The macro member produces state only for a release that surprised
         // its consensus (ADR 0256), so this pass reads one.
         fed_inputs.currencies = Vec::new();
@@ -2228,7 +2353,7 @@ mod tests {
         }];
         let review = stage.run(&fed_inputs, day(0));
         // Premise: the population exists and nothing was refused.
-        assert_eq!(review.population.len(), 14, "{review:?}");
+        assert_eq!(review.population.len(), 15, "{review:?}");
         assert!(review.refused.is_empty(), "{:?}", review.refused);
         let spanned = stage.federation().spanned();
         assert!(spanned.domains.len() >= 3);
@@ -2240,8 +2365,8 @@ mod tests {
         assert!(review.silent.is_empty(), "{:?}", review.silent);
         // One instrument proposition with ten views (seven tape members, the
         // company member, the order-flow member and the causal model), plus
-        // self, capital, macro and chain.
-        assert_eq!(review.arbitrations.len(), 5);
+        // self, capital, macro, one venue and chain.
+        assert_eq!(review.arbitrations.len(), 6);
         let instrument = &review.arbitrations[0];
         assert_eq!(instrument.disagreement.views.len(), 10);
         // WORLD-3051 and -3042: the rare-regime, alternate-future and causal
@@ -2618,10 +2743,10 @@ mod tests {
     fn a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage() {
         let mut stage = FederationStage::new();
         let first = stage.run(&rising(1, 100.0, day(0)), day(0));
-        // Premise: fourteen members (the order-flow member, ADR 0255, and the
-        // macro member, ADR 0256, among them), no branch, and nothing scored
-        // yet to decide on.
-        assert_eq!(first.population.len(), 14);
+        // Premise: fifteen members (the counterparty member, R12-WORLD-3049,
+        // the order-flow member, ADR 0255, and the macro member, ADR 0256,
+        // among them), no branch, and nothing scored yet to decide on.
+        assert_eq!(first.population.len(), 15);
         assert!(branch_ids(&stage, day(0)).is_empty());
         let second = stage.run(&rising(2, 101.0, day(1)), day(1));
         let instrument = &second.arbitrations[0];
@@ -2629,7 +2754,7 @@ mod tests {
         assert_eq!(instrument.decision, Decision::Branch, "{instrument:?}");
         let branches = branch_ids(&stage, day(1));
         assert_eq!(branches.len(), 1, "{branches:?}");
-        assert_eq!(second.population.len(), 15);
+        assert_eq!(second.population.len(), 16);
         let lineage = stage.federation().lineage(&branches[0]).expect("lineage");
         assert_eq!(lineage.parents.len(), 1);
         assert!(branches[0].starts_with(&lineage.parents[0]));
@@ -2732,7 +2857,7 @@ mod tests {
             expired: Vec::new(),
             research: None,
         };
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 16);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 17);
         let (mut fed, mut refused) = (BTreeSet::new(), Vec::new());
         stage.act_on_decisions(
             std::slice::from_ref(&arbitration),
@@ -2741,20 +2866,20 @@ mod tests {
             &mut refused,
         );
         assert!(refused.is_empty(), "{refused:?}");
-        // 16 live, two branches merged away, one result: 15, every root kept.
+        // 17 live, two branches merged away, one result: 16, every root kept.
         let live: Vec<String> = stage
             .federation()
             .live_specs(day(0))
             .iter()
             .map(|s| s.id().to_string())
             .collect();
-        assert_eq!(live.len(), 15, "{live:?}");
+        assert_eq!(live.len(), 16, "{live:?}");
         assert!(roots.iter().all(|r| live.contains(r)));
         assert_eq!(stage.branches.len(), 1);
         // Replaying the same decision has no live pair left to fold.
         stage.act_on_decisions(&[arbitration], day(0), &mut fed, &mut refused);
         assert!(refused.is_empty(), "{refused:?}");
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 15);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 16);
     }
 
     /// ADR 0256: a macro forecast waits for its series' next release in
@@ -2887,14 +3012,16 @@ mod tests {
         assert!(first.uncovered.is_empty(), "{:?}", first.uncovered);
         // No chain for longer than the lease, and no issuer surprise either,
         // so the company member lapses too (R12-WORLD-3044); and no book
-        // view, so the capital member does (R12-WORLD-3048).
+        // view, so the capital member does (R12-WORLD-3048); and no venue, so
+        // the counterparty member does (R12-WORLD-3049).
         let later = stage.run(&inputs(2, 101.0, day(8), None), day(8));
         assert_eq!(
             later.uncovered,
             vec![
                 "crypto/on-chain".to_string(),
                 "company/fundamental".to_string(),
-                "portfolio/capital".to_string()
+                "portfolio/capital".to_string(),
+                "counterparty/network".to_string()
             ]
         );
         assert!(!later.population.iter().any(|m| m.id == COMPANY));
@@ -3096,6 +3223,99 @@ mod tests {
             fourth.silent.contains(&CAPITAL.to_string()),
             "{:?}",
             fourth.silent
+        );
+    }
+
+    /// R12-WORLD-3049: the counterparty member forecasts, per venue, whether
+    /// the next pass records a refusal there. A venue carrying more of the
+    /// window's refusals is forecast likelier to; a refusal arriving after
+    /// the forecast resolves it true; and a refusal the window already held
+    /// at the forecast instant (the desk refuses in DECIDE, stamped at the
+    /// cycle's own instant) is not counted as new.
+    ///
+    /// Mutations: drop the share term from the prior; count every refusal
+    /// at or after the forecast instant as new (ignore `already`); feed the
+    /// member nothing.
+    #[test]
+    fn a_venue_whose_refusals_rose_gives_the_counterparty_member_a_view_resolved_next_pass() {
+        let view_of = |review: &FederationReview, name: &str, cycle: u64| {
+            review
+                .arbitrations
+                .iter()
+                .find(|a| a.proposition == counterparty_proposition(name, cycle))
+                .and_then(|a| {
+                    a.disagreement
+                        .views
+                        .iter()
+                        .find(|v| v.model == COUNTERPARTY)
+                })
+                .map(|v| v.probability)
+        };
+        let resolved = |review: &FederationReview, name: &str, cycle: u64| {
+            review
+                .resolved
+                .iter()
+                .find(|r| r.proposition == counterparty_proposition(name, cycle))
+                .map(|r| r.outcome)
+        };
+        let with_venues = |cycle: u64, close: f64, at: Timestamp, venues: Vec<CounterpartyView>| {
+            let mut fed = inputs(cycle, close, at, Some(1));
+            fed.counterparties = venues;
+            fed
+        };
+        let noisy_old = [day(0).saturating_sub(Duration::from_hours(3))];
+        let mut stage = FederationStage::new();
+        let first = stage.run(
+            &with_venues(
+                1,
+                100.0,
+                day(0),
+                vec![venue("NOISY", &noisy_old, 0.9), venue("QUIET", &[], 0.0)],
+            ),
+            day(0),
+        );
+        let noisy = view_of(&first, "NOISY", 1).expect("a view on the noisy venue");
+        let quiet = view_of(&first, "QUIET", 1).expect("a view on the quiet venue");
+        assert!(
+            noisy > quiet + 0.5,
+            "a venue with most of the window's refusals was not forecast likelier ({noisy} vs {quiet})"
+        );
+        assert!(!first.silent.contains(&COUNTERPARTY.to_string()));
+
+        // The noisy venue refuses again after the forecast; the quiet one
+        // does not.
+        let fresh = day(0).saturating_add(Duration::from_hours(5));
+        let second = stage.run(
+            &with_venues(
+                2,
+                101.0,
+                day(1),
+                vec![
+                    venue("NOISY", &[noisy_old[0], fresh], 0.9),
+                    venue("QUIET", &[], 0.0),
+                ],
+            ),
+            day(1),
+        );
+        assert_eq!(resolved(&second, "NOISY", 1), Some(true));
+        assert_eq!(resolved(&second, "QUIET", 1), Some(false));
+
+        // A refusal stamped at the forecasting pass's own instant was
+        // already in the window: the next pass holding only it is no new
+        // refusal.
+        let mut same = FederationStage::new();
+        same.run(
+            &with_venues(1, 100.0, day(0), vec![venue("DESK", &[day(0)], 1.0)]),
+            day(0),
+        );
+        let later = same.run(
+            &with_venues(2, 101.0, day(1), vec![venue("DESK", &[day(0)], 1.0)]),
+            day(1),
+        );
+        assert_eq!(
+            resolved(&later, "DESK", 1),
+            Some(false),
+            "a refusal the window held at the forecast was counted as new"
         );
     }
 }
