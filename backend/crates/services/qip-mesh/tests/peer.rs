@@ -668,3 +668,74 @@ fn a_hollow_epoch_is_refused_naming_its_field_whether_a_peer_sends_it_or_a_node_
         assert!(origin.epoch("opp-1").is_none(), "{field}: opened anyway");
     }
 }
+
+// ---- MESH-1010: the leg bound, at both ends ---------------------------------
+
+/// `n` legs, each on its own node, the first on this endpoint's node.
+fn legs(n: usize) -> Vec<EpochLeg> {
+    (0..n)
+        .map(|index| {
+            let node = if index == 0 {
+                "americas".to_string()
+            } else {
+                format!("node-{index}")
+            };
+            leg(&format!("leg-{index}"), &node, 1)
+        })
+        .collect()
+}
+
+/// A distributed cycle has two to twenty legs (`MIN_LEGS..=MAX_LEGS`). Only
+/// the middle of that range was ever exercised, so a bound widened by one at
+/// either end — a one-leg "cycle" that is a single-venue order with no
+/// counterparty, or a twenty-one-leg one past what a token may fan out —
+/// would have been admitted with every test green. Both ends are held here,
+/// on the builder and on a peer's Token frame.
+///
+/// Mutation: widen the range in `OpportunityEpoch::validate` to `1..=21`,
+/// and the one- and twenty-one-leg epochs are admitted; this fails.
+#[test]
+fn an_epoch_of_one_leg_or_twenty_one_legs_is_refused_and_one_of_two_or_twenty_is_admitted() {
+    for (count, admitted) in [(1, false), (2, true), (20, true), (21, false)] {
+        let built = EpochDraft {
+            legs: Some(legs(count)),
+            ..draft()
+        }
+        .build(ceiling());
+        assert_eq!(built.is_ok(), admitted, "{count} legs built: {built:?}");
+        if !admitted {
+            let message = built
+                .err()
+                .map(|e| e.message().to_string())
+                .unwrap_or_default();
+            assert!(
+                message.contains("`legs`") && message.contains(&format!("holds {count} legs")),
+                "{count} legs: {message}"
+            );
+        }
+
+        // The same epoch from a peer, built by hand past the builder. A
+        // frame large enough for twenty-one legs needs a larger bound than
+        // the fixture's, so the frame limit is not what refuses it.
+        let hand = OpportunityEpoch {
+            legs: legs(count),
+            ..epoch()
+        };
+        let frame = encode(&PeerMessage::Token { epoch: hand }, 1 << 16).unwrap();
+        let mut peer = PeerEndpoint::new(
+            "americas",
+            PeerLimits {
+                max_frame: 1 << 16,
+                ..limits()
+            },
+        );
+        peer.observe_clock_offset(0);
+        let received = peer.receive(&frame, at(0));
+        assert_eq!(
+            received.is_ok(),
+            admitted,
+            "{count} legs from a peer: {received:?}"
+        );
+        assert_eq!(peer.epoch("opp-1").is_some(), admitted, "{count} legs held");
+    }
+}

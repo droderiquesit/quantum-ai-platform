@@ -216,14 +216,16 @@
   {
     "id": "R12-MESH-1010",
     "status": "PARTIAL",
-    "current": "qip_mesh::peer defines OpportunityEpoch with MIN_LEGS..=MAX_LEGS (20) validation, PeerMessage and ReservationBook, but the peer protocol has no transport and qip-edge-node does not depend on qip-mesh; the only deployed-shape mesh is cell<->centre.",
+    "current": "qip_peer::OpportunityEpoch::validate holds a cycle to MIN_LEGS..=MAX_LEGS (2 to 20) legs, and PeerEndpoint::install calls it on every epoch, from a peer's token or opened locally. Both ends of the bound are tested on the builder and on a peer's Token frame. At the node, two qip_peer_link::spawn sessions fed only what a cell publishes through ReflexPort find a crossing; each reserves its own leg, and the coordinator fires once it holds the participant's reservation. A hand-written 21-leg token sent to the participant's socket is refused there and reaches no gate. qip-edge-node spawns the mesh only when the peer environment is set.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs:57 MAX_LEGS = 20",
-      "backend/crates/services/qip-mesh/src/peer.rs:218 leg-count refusal",
-      "backend/crates/services/qip-mesh/src/peer.rs:1148 ReservationBook",
-      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:20 peer protocol has no transport (test header)"
+      "backend/crates/libs/qip-peer/src/lib.rs::MAX_LEGS",
+      "backend/crates/libs/qip-peer/src/lib.rs::OpportunityEpoch::validate (leg-count refusal)",
+      "backend/crates/libs/qip-peer/src/lib.rs::PeerEndpoint::install",
+      "backend/crates/services/qip-mesh/tests/peer.rs::an_epoch_of_one_leg_or_twenty_one_legs_is_refused_and_one_of_two_or_twenty_is_admitted",
+      "backend/crates/apps/qip-edge-node/tests/peer_link.rs::two_nodes_each_reserve_their_own_leg_of_one_epoch_over_the_peer_socket_and_a_twenty_one_leg_token_opens_nothing",
+      "backend/crates/edge/qip-peer-link/tests/peer_mesh.rs::two_nodes_carry_a_cycle_through_token_reserved_fire_fill_and_unwind_over_the_socket"
     ],
-    "gap": "2026-10-24: register was stale. qip-edge-node depends on qip-peer-link (Cargo.toml:80) and spawns the peer mesh in main.rs; a two-node socket test is qip-peer-link/tests/peer_mesh.rs::two_nodes_carry_a_cycle_through_token_reserved_fire_fill_and_unwind_over_the_socket. Remaining: the mesh runs only when the peer env vars are set, no committed deployment sets them, and no qip-edge-node-level two-node test exists.",
+    "gap": "2026-10-31 (lane L5-EDGE, owner ruling decision 14): the leg bound and the two-cell exchange are proven at the node. The row stays PARTIAL until a funded second node lets a committed environment set peer_mesh on both nodes, which decision 5 does not buy before dev runs.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -231,10 +233,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh; new qip-edge-node two-node test",
+    "verification": "cargo test -p qip-mesh --test peer an_epoch_of_one_leg; cargo test -p qip-edge-node --test peer_link",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner ruling 2026-10-31, second pass (IMPLEMENT): The leg bound is proven where it is enforced, and the two-cell exchange is proven at the node, now. Handed to lane L5b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Owner ruling 2026-10-31, second pass (IMPLEMENT): The leg bound is proven where it is enforced, and the two-cell exchange is proven at the node, now. Handed to lane L5b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L5-EDGE (taken over from L5b): both tests added. Mutations, each restored byte-for-byte (cmp): widen the leg range in validate to 1..=21, which fails the qip-mesh test at peer.rs:705; skip the Reserved send in the saga's record_outcome, after which the coordinator never fires and the node test times out (peer_link.rs:177); skip validate in PeerEndpoint::install, after which the 21-leg token is never refused (peer_link.rs:181). Every leg of the hand-written token names one of the two linked nodes, because a leg on a node tokyo holds no clock for is refused by the clock bound before the leg bound is read; the first draft did that and survived the validate mutation."
   },
   {
     "id": "R12-QUANT-1011",
