@@ -885,3 +885,77 @@ fn a_campaign_whose_venue_is_remeasured_is_concluded_into_a_journaled_delta() {
         "a concluded campaign is not concluded twice"
     );
 }
+
+/// R12-EXPAND-6027: the source scores a cycle produces reach the ambient
+/// journal as records, one per scored pair, carrying the validated contract
+/// with its window and digest, so a score printed on a cycle line is also a
+/// record a reviewer can open. Mutation: delete the `self.append(..)` in
+/// `AmbientJournal::record_source_scores` — the count is 0 and the first
+/// assertion fails.
+#[test]
+fn a_cycles_source_scores_are_journaled_as_records_citing_their_window() {
+    use qip_deepbrain::source_alpha::SourceAlphaDesk;
+    use qip_market::quote::Tick;
+    let tick = |subject: &str, price: f64| {
+        let at = start();
+        SensedRecord::Tick(Tick {
+            object_id: ObjectId::from_string(subject),
+            venue: "TEST".to_string(),
+            at,
+            capture_time: at,
+            sequence: None,
+            price: Decimal::from_f64(price).unwrap_or_default(),
+            volume: Decimal::ZERO,
+            quality: DataQuality::default(),
+        })
+    };
+    // A deterministic walk the "leading" arm prints one step ahead of.
+    let mut level = 100.0_f64;
+    let mut state = 7_u64;
+    let own: Vec<f64> = (0..41)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            level += ((state >> 33) % 200) as f64 / 100.0 - 1.0;
+            level
+        })
+        .collect();
+    let mut desk = SourceAlphaDesk::new(1);
+    for i in 0..40 {
+        desk.observe_own(&[tick("S", own[i])]);
+        desk.observe_source("leading", &[tick("S", own[i + 1])]);
+        desk.end_sense();
+    }
+    let round = desk
+        .maybe_score(1, start())
+        .unwrap_or_else(|| panic!("the desk scores on its cadence"));
+    assert_eq!(
+        round.records.len(),
+        1,
+        "premise: one scored pair: {round:?}"
+    );
+
+    let mut journal = AmbientJournal::open(&JournalDestination::InMemory).unwrap();
+    assert!(
+        records(journal.log()).unwrap().is_empty(),
+        "premise: an empty journal"
+    );
+    let written = journal.record_source_scores(1, &round, start()).unwrap();
+    assert_eq!(written, 1);
+    let held = records(journal.log()).unwrap();
+    let scores: Vec<_> = held
+        .iter()
+        .filter_map(|r| match r {
+            AmbientRecord::SourceScore { cycle, score } => Some((*cycle, score)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(scores.len(), 1, "{held:?}");
+    assert_eq!(scores[0].0, 1);
+    assert_eq!(scores[0].1, &round.records[0]);
+    scores[0]
+        .1
+        .validate()
+        .expect("the journaled record validates");
+}

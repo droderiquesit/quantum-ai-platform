@@ -3148,7 +3148,7 @@
       "backend/crates/tests/qip-acceptance/tests/phase_register.rs::every_named_switch_exists_in_the_tree",
       "docs/adr/0143-phases-are-gated-by-a-committed-phase-register-whose-exit-evidence-an-acceptance-test-checks-not-by-runtime-feature-flags.md"
     ],
-    "gap": "2026-10-24 (lane L6): the register and its test landed. Still PARTIAL on the requirement's own text: 'later-phase features stay disabled until it passes' is withdrawn by ADR 0143 decision 3 (record, do not switch off), and the register itself shows the cost: phase 0 has not exited, yet every later phase carries capabilities in the tree, many with switch 'none' (the cycle, the agents, the warm Cloud Run services deployed to dev, the GitOps control plane turned on in dev). Bar part 4: an ADR-declined clause leaves the row PARTIAL until the owner changes the requirement or real switches are added. Phase 0's own exit is open (PAM, NCC, CA, SCC off; R12-ARCH-10159).",
+    "gap": "2026-10-31 (lane L6): not decided under the delegation. Ten of the register's twenty ahead-of-phase capabilities carry switch 'none', among them the supply chain the dev deploy needs before phase 0 exits, so giving each a real off-switch would stop the platform deploying at all, and narrowing the requirement's 'later-phase features stay disabled' to ADR 0143's record-only rule is not a lane's to do under bar part 4. The owner chooses: amend the requirement to the recorded register, or name which of the ten must gain a switch. Earlier: 2026-10-24 (lane L6): the register and its test landed. Still PARTIAL on the requirement's own text: 'later-phase features stay disabled until it passes' is withdrawn by ADR 0143 decision 3 (record, do not switch off), and the register itself shows the cost: phase 0 has not exited, yet every later phase carries capabilities in the tree, many with switch 'none' (the cycle, the agents, the warm Cloud Run services deployed to dev, the GitOps control plane turned on in dev). Bar part 4: an ADR-declined clause leaves the row PARTIAL until the owner changes the requirement or real switches are added. Phase 0's own exit is open (PAM, NCC, CA, SCC off; R12-ARCH-10159).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3350,13 +3350,17 @@
   {
     "id": "R12-MESH-7143",
     "status": "PARTIAL",
-    "current": "qip-routing path graph, edge quoting, reservations, decomposition exist.",
+    "current": "qip-routing path graph, edge quoting, reservations and decomposition exist. Since 2026-10-31 the cross-class hedge map steers the Hedge Brain: HedgeBrainInputs carries the AssetClassRegistry and kernel hedge.rs `plan` admits a resolved candidate to the search only if its asset class is one the registry's hedge map names for a class the book holds, naming every excluded candidate in the journaled `unresolved`; `Platform` passes its shipped registry on the DECIDE path. Saga recovery exists in pieces (Cell::unwind_cycle, the peer saga's unwind) with no end-to-end test.",
     "evidence": [
       "backend/crates/edge/qip-routing/src/path.rs",
       "backend/crates/edge/qip-edge/src/quoting.rs",
-      "backend/crates/edge/qip-edge/src/reservation.rs"
+      "backend/crates/edge/qip-edge/src/reservation.rs",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs HedgeBrainInputs::hedge_map, permitted_hedge_classes, candidates.retain in plan",
+      "backend/crates/runtime/qip-kernel/src/platform.rs hedge_map: &self.asset_class_registry at the hedge::plan call",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::tests::a_hedge_is_drawn_only_from_a_class_the_hedge_map_names",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs check_hedge_map, AssetClassRecord::hedge_classes"
     ],
-    "gap": "Saga recovery and cross-class hedge map end to end.",
+    "gap": "2026-10-31 (lane L5b, one slice of an XL row): the hedge-map half is on the DECIDE path and mutation-proven; the saga-recovery half — a broken cycle unwound and hedged end to end (a_broken_cycle_is_unwound_and_hedged_end_to_end over Cell::unwind_cycle, the peer saga's unwind and a hedge drawn through the map) — is not written, LegGroup is still an unused import in cell.rs, and the cycle paths it would exercise run only on an undeployed node behind the peer-mesh switch (decision 5 of 2026-10-25). Read further the same day: the end-to-end half cannot be written on the shipped path yet, because a cell's positions do not ride the mesh delta (CellStateDelta carries utilisation, orders, fills, crosses, refusals, breaks and episodes; qip-api's report_from sets no positions), so a cell's leftover leg after a break never reaches the kernel's risk state that the Hedge Brain plans against; carrying positions on the wire is its own decision and ADR.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3364,10 +3368,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cargo test -p qip-kernel --lib hedge::; cargo test -p qip-kernel --test catalogue_hedge_candidates --test hedge --test asset_classes",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " Lane L5b 2026-10-31: hedge-map slice landed. Mutation: `plan` admitting every resolved candidate whatever its class fails a_hedge_is_drawn_only_from_a_class_the_hedge_map_names at 'a bond was planned as the hedge of an equity book' (restored byte for byte, sha256 bdf5b7ca8475de33). Kept PARTIAL; remaining slices in the gap. The positions-on-the-wire gap is named so the next slice starts there."
   },
   {
     "id": "R12-QUANT-7144",
@@ -4562,10 +4566,11 @@
     "current": "Tournament (cap 4,096, temporaries with expiry) and ForecastMarket run every cycle: REASON opens a question the detector and analysts answer; LEARN resolves and scores. A library test scores 1,000 forecasters.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/central/foundry.rs:70",
-      "backend/crates/services/qip-learning-engine/src/tournament.rs::MAX_FORECASTERS",
-      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage"
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::a_subject_the_population_missed_spawns_a_temporary_specialist_that_competes_until_it_expires",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::MAX_FORECASTERS"
     ],
-    "gap": "Production admits only the detector and panel analysts; no path spawns specialist or temporary models. WorldModelSpawner proposes a federation branch (a hypothesis record, parent id, trigger residual) when a residual exceeds a threshold; it does not produce a forecaster, so admitting ForecasterKind::Temporary entrants from it would submit forecasts no model made. A temporary specialist needs a forecasting function per spawned entity (a fitted or rule-based model that answers the tournament question) and a residual signal that reaches the kernel; neither exists, and the live entrants stay the detector class and the panel analysts.",
+    "gap": "2026-10-31 (lane L2-INTEL): temporary specialists now spawn on the default cycle. TournamentStage::learn proposes a WorldModelSpawner branch when the aggregate's residual on a resolved question exceeds SPAWN_RESIDUAL (0.6), and admits a Laplace-smoothed outcome-frequency model on that subject as ForecasterKind::Temporary for 14 days (TournamentReview.spawned records the branch). REASON and LEARN reach the stage from run_cycle in qip-fastbrain and qip-deepbrain. The in-lane skeptic REFUTED it on bar part 4: production spawns at most one temporary per subject the platform asks questions on, so the population is the detector, the analysts and one entrant per subject, and 'thousands' rests on MAX_FORECASTERS and a library test, not on anything a composition root does. Also open: no test drives a Platform cycle through to a spawn, and the refused-admission arm (a full tournament drops the temporary rather than holding it live) is untested. A scored temporary can contribute to a verifier-society refutation (subtract-only, ADR 0125 decision 2).",
     "implemented": true,
     "tested": false,
     "integrated": false,

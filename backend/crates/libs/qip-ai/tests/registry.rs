@@ -2,7 +2,10 @@
 //! reflex models are recorded with class-specific decision eligibility
 //! (R12-EXPAND-6060).
 
-use qip_ai::registry::{EvaluationRecord, ModelCard, ModelClass, ModelStage, ResourceBudget};
+use qip_ai::registry::{
+    EvaluationRecord, MIN_SHADOW_ROUNDS, ModelCard, ModelClass, ModelRegistry, ModelStage,
+    ResourceBudget, ShadowRecord,
+};
 use qip_core::{ModelId, Timestamp};
 use std::collections::BTreeMap;
 
@@ -93,5 +96,64 @@ fn foundation_models_never_decide_and_policies_and_ensembles_need_a_named_benchm
         ["foundation", "policy", "ensemble", "reflex"]
             .iter()
             .all(|n| names.contains(n))
+    );
+}
+
+/// ADR 0198, R12-EXPAND-6070: `ModelRegistry::promote` is the one door into
+/// production for a model the platform fitted for itself, and `register`
+/// honours the same rule, so a card built at `Production` cannot walk around
+/// the shadow stage. The restore path registers journaled cards, which
+/// carry the completed shadow they were promoted out of, and those are
+/// admitted. Mutation: delete the `self_fitted && stage == Production` check
+/// in `register` — the unshadowed card is registered and the first `is_err`
+/// fails.
+#[test]
+fn a_self_fitted_card_registered_at_production_without_a_completed_shadow_is_refused() {
+    let mut card = eligible(ModelClass::Generic);
+    card.self_fitted = true;
+    assert_eq!(
+        card.stage,
+        ModelStage::Production,
+        "premise: built at production"
+    );
+    assert!(card.shadow.is_none(), "premise: no shadow stage");
+    let mut registry = ModelRegistry::new();
+    assert!(registry.register(card.clone()).is_err());
+    assert_eq!(registry.len(), 0, "nothing was registered");
+
+    let mut short = card.clone();
+    short.shadow = Some(ShadowRecord {
+        since: now(),
+        rounds_won: MIN_SHADOW_ROUNDS - 1,
+        last_round: now(),
+        evidence: vec!["round".to_string()],
+    });
+    assert!(
+        registry.register(short).is_err(),
+        "an unfinished shadow is not a completed one"
+    );
+
+    let mut completed = card.clone();
+    completed.shadow = Some(ShadowRecord {
+        since: now(),
+        rounds_won: MIN_SHADOW_ROUNDS,
+        last_round: now(),
+        evidence: vec!["round".to_string(); MIN_SHADOW_ROUNDS as usize],
+    });
+    registry.register(completed).unwrap();
+    assert_eq!(
+        registry.len(),
+        1,
+        "a restored, shadow-completed card is admitted"
+    );
+
+    let mut pipeline = eligible(ModelClass::Generic);
+    pipeline.self_fitted = false;
+    pipeline.version = "1.0.1".to_string();
+    registry.register(pipeline).unwrap();
+    assert_eq!(
+        registry.len(),
+        2,
+        "a pipeline-trained card is governed elsewhere"
     );
 }

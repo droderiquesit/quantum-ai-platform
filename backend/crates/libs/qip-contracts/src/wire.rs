@@ -59,6 +59,16 @@ pub struct CrossRecord {
 /// is never told it missed is the failure mode this pairing exists to prevent.
 pub const MAX_CROSSES_PER_DELTA: usize = 64;
 
+/// How many regional episodes one delta carries before it starts counting
+/// instead (ADR 0207, R12-REFLEX-6012).
+///
+/// A delta is a view of the cell's retained episodes — the newest ones, so
+/// a centre that reads any delta reads what the cell most recently saw — and
+/// the ring the cell keeps is four times this. The counter beside the list
+/// says how many older episodes the cell still held and did not send, which
+/// is a different fact from "nothing happened".
+pub const MAX_EPISODES_PER_DELTA: usize = 32;
+
 /// One strategy's share of a venue fill, as the cell attributed it.
 ///
 /// A named pair rather than a tuple because a tuple serialises as a
@@ -109,6 +119,33 @@ pub struct FillRecord {
     pub at: Timestamp,
     pub shares: Vec<FillShare>,
 }
+
+/// One leg of a cycle a cell refused, as the cell would have sent it
+/// (R12-MESH-5068, blueprint §17.2).
+///
+/// A refusal on the wire used to carry only its gate and reason, so the
+/// centre could count a declined cycle and never price it: re-pricing a
+/// path needs the instrument, the side and the size that were proposed.
+/// The leg is what was proposed, not what was sent; nothing about it is
+/// an order, and the centre never books it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefusedLeg {
+    pub object_id: ObjectId,
+    pub venue: VenueId,
+    /// `Ask` would have bought, `Bid` would have sold — the convention
+    /// [`FillRecord::side`] uses.
+    pub side: BookSide,
+    /// Positive: the size of the leg, its direction being `side`.
+    pub quantity: Decimal,
+    /// The price the leg was priced at when the cycle was refused.
+    pub reference_price: Decimal,
+}
+
+/// Legs one refusal carries. A cycle has two to twenty
+/// (`qip-edge-node`'s leg bound); a refusal past this carries none, and the
+/// centre counts it unpriced rather than pricing a cycle cut short.
+pub const MAX_REFUSED_LEGS: usize = 20;
 
 /// How many fills one delta carries before it starts counting instead.
 ///
