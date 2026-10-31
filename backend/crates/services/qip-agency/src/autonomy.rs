@@ -27,7 +27,7 @@
 use crate::affordance::Method;
 use crate::attribution::EffectAttribution;
 use crate::plan::ActingIdentity;
-use qip_core::{Decimal, Error, Timestamp};
+use qip_core::{Decimal, Duration, Error, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -213,6 +213,12 @@ pub struct WideningEvidence<'a> {
     pub compensations: Vec<(Method, Drill)>,
     /// The kill path returning every class to shadow at once, and its drill.
     pub kill_path: Option<Drill>,
+    /// The instant the request is judged at. Every drill is read against it:
+    /// one dated after it has not run yet, and one dated before the clean
+    /// period began rehearsed a policy state that has since changed. A
+    /// default (epoch) instant judges every dated drill as not yet run, so a
+    /// caller that states no instant can widen nothing that needs a drill.
+    pub as_of: Timestamp,
 }
 
 /// A rollback that was rehearsed, not merely named (R12-EXPAND-6071). ADR
@@ -235,13 +241,25 @@ pub struct Drill {
 
 impl Drill {
     /// Why this drill is not evidence of a working rollback, if it is not.
-    fn shortfall(&self) -> Option<&'static str> {
+    ///
+    /// `as_of` is the instant the request is judged at and `clean_days` the
+    /// row's clean period. A drill dated after `as_of` has not run; one dated
+    /// before the clean period began (when the row has one) rehearsed the
+    /// policy before the state it now holds, and a rollback proven against a
+    /// different state is a rollback proven against nothing.
+    fn shortfall(&self, as_of: Timestamp, clean_days: u32) -> Option<&'static str> {
         if self.step.trim().is_empty() {
             Some("names no step")
         } else if self.record.trim().is_empty() {
             Some("left no record")
         } else if !self.restored {
             Some("did not restore the prior state")
+        } else if self.ran_at > as_of {
+            Some("is dated after the request, so it has not run")
+        } else if clean_days > 0
+            && self.ran_at < as_of.saturating_sub(Duration::from_days(i64::from(clean_days)))
+        {
+            Some("ran before the clean period began, against a policy state since changed")
         } else {
             None
         }
@@ -255,6 +273,14 @@ impl<'a> WideningEvidence<'a> {
             attributions: vec![evidence],
             ..Self::default()
         }
+    }
+
+    /// The instant the request is judged at, which every drill is read
+    /// against. Stated by the caller that knows the clock, never defaulted
+    /// to it here: the policy reads no clock.
+    pub fn judged_at(mut self, at: Timestamp) -> Self {
+        self.as_of = at;
+        self
     }
 }
 
@@ -387,7 +413,10 @@ impl ActionPolicy {
                          and named; none is"
                     )));
                 }
-                if let Some(why) = drills.iter().find_map(|d| d.shortfall()) {
+                if let Some(why) = drills
+                    .iter()
+                    .find_map(|d| d.shortfall(evidence.as_of, row.clean_days))
+                {
                     return Err(Error::denied(format!(
                         "{target:?} needs a compensating step for {class:?} tested in a drill; \
                          the drill offered {why}"
@@ -401,7 +430,7 @@ impl ActionPolicy {
                     "{target:?} needs a kill path that returns every class to shadow at once"
                 )));
             };
-            if let Some(why) = drill.shortfall() {
+            if let Some(why) = drill.shortfall(evidence.as_of, row.clean_days) {
                 return Err(Error::denied(format!(
                     "{target:?} needs a kill path that returns every class to shadow at once, \
                      tested in a drill; the drill offered {why}"
