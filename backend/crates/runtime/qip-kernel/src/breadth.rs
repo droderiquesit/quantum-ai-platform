@@ -704,6 +704,17 @@ impl Platform {
                     .problems
                     .push(format!("commerce: {}", error.message())),
             }
+            // Whatever the pass moved, booked at the desk ledger, including
+            // the receipts of a pass that then failed: those units are in the
+            // commerce ledger either way (R12-COMMERCE-5096).
+            let moves = self
+                .breadth
+                .commerce
+                .as_mut()
+                .map(crate::commerce_research::CommerceResearch::take_inventory_moves)
+                .unwrap_or_default();
+            let problems = self.queue_inventory_moves(moves, now);
+            outcome.problems.extend(problems);
         }
         if self.breadth.factory.is_some() {
             let marks = self
