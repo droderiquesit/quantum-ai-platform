@@ -337,9 +337,12 @@
     "current": "Every AssetClassRecord in the shipped registry carries a LifecycleEngine derived from its class by an exhaustive match (PortfolioStages = qip_portfolio::LifeStage for listed/event/tokenized/cash/fund classes, PrivateStages = PrivateStage for PrivateMarket and RealAsset, CommerceLedger = qip_financial::commerce::Ledger for PhysicalProduct). AssetClassRegistry::lifecycle_of resolves it and refuses a class with no record; a new AssetClass variant does not compile until it names an engine. The registry is built by Platform::new on every start.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs LifecycleEngine::for_class, AssetClassRecord::lifecycle, AssetClassRegistry::lifecycle_of",
-      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs every_asset_class_resolves_its_lifecycle_engine_and_an_unregistered_class_is_refused"
+      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs every_asset_class_resolves_its_lifecycle_engine_and_an_unregistered_class_is_refused",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs (ClassAdapter, AssetClassRegistry::booking_of)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (book_desk_fill position_bookings, position_booking)",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs a_position_is_booked_through_the_lifecycle_engine_and_adapter_its_asset_class_names"
     ],
-    "gap": "2026-10-24: The requirement maps each class to an adapter AND a lifecycle engine; the row's own notes withdraw the consumer ('does not claim a runtime path drives a position through the engine'), no record carries an adapter (grep adapter in asset_class_registry.rs finds none), and lifecycle_of has no production caller. Closing: an adapter per class in AssetClassRecord plus a production consumer that resolves the lifecycle engine/adapter (e.g. position booking or order routing by class) with a test that fails when that call is removed.",
+    "gap": "2026-10-31: skeptic REFUTED on parts 2 and 4: the registry now maps every class to one of six adapters (venue order book, event contract, illiquid mark, private commitment, tokenized ledger, physical shipment) and its lifecycle engine, refuses an unregistered class, and the kernel resolves the pair at every desk fill, but the pair is a recorded label: no fill, mark or stage transition branches on it, and the default desk books equities only; remaining step is a booking path that behaves per adapter (private and commerce lifecycles run, a non-venue adapter changes fill or mark handling) with a test showing a non-equity class take it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -347,10 +350,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test asset_class_registry",
+    "verification": "cargo test -p qip-kernel --lib each_product_kind; cargo test -p qip-kernel --test position_record a_position_is_booked",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE on the clause as written (the registry maps each class to an engine). It does not claim a runtime path drives a position through the engine the registry names: that consumer is a separate item. Mutation fired: mapping PrivateMarket/RealAsset to PortfolioStages -> the three-engines premise assertion fails ({PortfolioStages, CommerceLedger}). AUDIT-4: 2026-10-24 regraded, no class record carries an adapter, lifecycle_of and AssetClassRecord::lifecycle have no caller outside tests, and the row's own notes withdraw the runtime consumer; the requirement asks for adapters and lifecycle engines per class."
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE on the clause as written (the registry maps each class to an engine). It does not claim a runtime path drives a position through the engine the registry names: that consumer is a separate item. Mutation fired: mapping PrivateMarket/RealAsset to PortfolioStages -> the three-engines premise assertion fails ({PortfolioStages, CommerceLedger}). AUDIT-4: 2026-10-24 regraded, no class record carries an adapter, lifecycle_of and AssetClassRecord::lifecycle have no caller outside tests, and the row's own notes withdraw the runtime consumer; the requirement asks for adapters and lifecycle engines per class. 2026-10-31: mutations, each failing: drop the kernel's booking insert; map PrivateMarket to VenueOrderBook. Skeptic (code-reviewer) REFUTED as in the gap."
   },
   {
     "id": "R12-WORLD-1016",

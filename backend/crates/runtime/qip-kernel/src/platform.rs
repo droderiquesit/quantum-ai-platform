@@ -1370,6 +1370,17 @@ pub struct Platform {
     /// runs behind it, so a simulated execution arrives as late as this
     /// platform's own decisions do rather than at the instant it decided.
     decision_latencies: std::collections::VecDeque<Duration>,
+    /// The adapter and lifecycle engine each desk position was booked
+    /// through, by object id, resolved from the asset class registry at the
+    /// fill (R12-ASSET-1015). Bounded by the universe: one entry per
+    /// instrument the desk has held.
+    position_bookings: BTreeMap<
+        String,
+        (
+            crate::asset_class_registry::ClassAdapter,
+            crate::asset_class_registry::LifecycleEngine,
+        ),
+    >,
 }
 
 /// How many cycles of decision latency the platform keeps: enough for a
@@ -6371,6 +6382,7 @@ impl Platform {
             position_exit_plans: BTreeMap::new(),
             universe_history: qip_financial::history::UniverseHistory::new(),
             decision_latencies: std::collections::VecDeque::new(),
+            position_bookings: BTreeMap::new(),
         };
         platform.describe_metrics();
         // Every rule reads as not dormant from assembly, so the series exists
@@ -11239,6 +11251,19 @@ impl Platform {
     /// on a past date.
     pub fn universe_history(&self) -> &qip_financial::history::UniverseHistory {
         &self.universe_history
+    }
+
+    /// The adapter and lifecycle engine `object_id`'s desk position was
+    /// booked through, or `None` where the desk has never held it
+    /// (R12-ASSET-1015).
+    pub fn position_booking(
+        &self,
+        object_id: &str,
+    ) -> Option<(
+        crate::asset_class_registry::ClassAdapter,
+        crate::asset_class_registry::LifecycleEngine,
+    )> {
+        self.position_bookings.get(object_id).copied()
     }
 
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
@@ -22914,6 +22939,22 @@ impl Platform {
             .universe
             .get(&ObjectId::from_string(object_id))
             .cloned();
+        // Booked through the adapter and lifecycle engine its class names
+        // (R12-ASSET-1015). A class the registry refuses was refused at
+        // assembly too, so a refusal here is the registry and the universe
+        // disagreeing, said on the cycle rather than booked under a guess.
+        if let Some(object) = &object {
+            match self.asset_class_registry.booking_of(object.asset_class) {
+                Ok(booking) => {
+                    self.position_bookings
+                        .insert(object_id.to_string(), booking);
+                }
+                Err(error) => self.capture_problems.push(format!(
+                    "a desk fill in {object_id} has no adapter or lifecycle engine: {}",
+                    error.message()
+                )),
+            }
+        }
         let mirrored = match object {
             Some(object) => self
                 .asset_book
