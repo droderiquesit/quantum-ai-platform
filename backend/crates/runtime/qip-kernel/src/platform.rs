@@ -15038,7 +15038,7 @@ impl Platform {
     /// positive or any figure is not finite — a share of nothing is not a
     /// number, and the member is silent rather than reading that book as one
     /// that draws nothing.
-    fn capital_view(&self) -> Option<crate::federation_stage::CapitalView> {
+    fn capital_view(&self, now: Timestamp) -> Option<crate::federation_stage::CapitalView> {
         let equity = self.equity().to_f64();
         if !equity.is_finite() || equity <= 0.0 {
             return None;
@@ -15056,6 +15056,22 @@ impl Platform {
             leverage: gross / equity,
             net_share: net / equity,
             pending_theses: self.pending_theses.len(),
+            // ADR 0257: equity above the NAV floor the survival waterfall
+            // withholds — the emergency-reserve fraction of the same policy
+            // DECIDE sizes under, applied to this pass's equity — and what is
+            // still settling now. Neither reaches DECIDE through the member.
+            floor_headroom: {
+                let equity = self.equity();
+                equity
+                    .checked_mul(self.survival_policy().emergency_reserve_fraction())
+                    .and_then(|floor| equity.checked_sub(floor))
+                    .map(|headroom| headroom.to_f64())
+            },
+            // A total that overflowed is not zero: NaN keeps the settlement
+            // member silent rather than reading it as nothing outstanding.
+            unsettled: self
+                .unsettled_sale_proceeds(now)
+                .map_or(f64::NAN, |total| total.to_f64()),
         };
         [view.cash, view.cash_share, view.leverage, view.net_share]
             .iter()
@@ -15243,7 +15259,7 @@ impl Platform {
             chain: self.confirmed_chain().ok().map(|view| ChainView {
                 confirmed_trades: view.state().trades(),
             }),
-            capital: self.capital_view(),
+            capital: self.capital_view(now),
             macros: self.macro_views(now),
             currencies: self.currency_views(now),
             counterparties: self.counterparty_views(),
