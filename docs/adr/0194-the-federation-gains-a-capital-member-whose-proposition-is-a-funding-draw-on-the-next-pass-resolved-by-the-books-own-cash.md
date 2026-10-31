@@ -98,8 +98,26 @@ vocabulary, and nobody had chosen it.
     cannot narrow anything.
 - The member cannot move money and cannot place an order. It reads the
   paper book and forecasts that book's own cash.
-- Making this wrong:
-  - a capital-mobility or collateral record, once the platform has one. That
-    needs a proposition of its own, not a widening of this one.
-  - a measured calibration showing the prior is worse than a constant. Then
-    the formula should change, and this ADR should be amended to say so.
+
+## What it costs
+
+- One more member in every pass: one view, one pending proposition and one
+  resolution per cycle, bounded by the same `FEDERATION_PENDING_CYCLES`
+  window as every other proposition. No new store, service or dependency.
+- One more required family. A composition that does not hand the stage a
+  book view now reports `portfolio/capital` as uncovered once the member's
+  lease lapses. That report is the point, but it is a new finding an
+  operator will see.
+- A forecast that looks like capital modelling and is narrower than the
+  requirement. The ADR names what is unmet so that nobody reads the member
+  as covering collateral, optionality, capital mobility or liquidity.
+
+## What would make this wrong
+
+- A capital-mobility or collateral record, once the platform has one. That
+  needs a proposition of its own, not a widening of this one.
+- A measured calibration showing the prior is worse than a constant. Then
+  the formula should change, and this ADR should be amended to say so.
+- Theses that persist across passes. The waiting-thesis term would then
+  start to act, and its weight should be argued from a measurement rather
+  than kept from this prior.

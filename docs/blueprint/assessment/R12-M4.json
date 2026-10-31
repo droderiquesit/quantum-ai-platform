@@ -393,23 +393,24 @@
   {
     "id": "R12-QUANT-4018",
     "status": "PARTIAL",
-    "current": "Platform::promote_model_from refuses a ModelProducer::QuantumInformed candidate unless it names a workload family (qip_quantum::foundry::FamilyKind variant) that Foundry::platform() holds as Registered; a NotBuilt, unnamed or unknown family is refused with the foundry reason before anything is journalled.",
+    "current": "Platform::promote_model_from refuses a ModelProducer::QuantumInformed candidate unless it names a workload family Foundry::platform() holds as Registered and a calibrated classical baseline card exists. ADR 0150 decision 5 keeps the producer unbuilt; qip-acceptance arch_033 no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candidate fails on any production mention of the variant or its serde tag quantum_informed outside the seam's declaration and match arm, reading every src/ tree and build.rs with only #[cfg(test)] mod blocks skipped.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/model_serving.rs::require_eligible_workload",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs::a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built"
+      "backend/crates/runtime/qip-kernel/tests/serving.rs::a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built",
+      "backend/crates/tests/qip-acceptance/tests/arch_033_quantum_path.rs::no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candidate (mutants killed: construction in qip-deepbrain main.rs; construction at learning.rs promote_model_from; quantum_informed JSON literal in main.rs; token blinded; old truncating read)"
     ],
-    "gap": "The seam refuses ineligible workloads, but no production caller produces a QuantumInformed candidate (qip-deepbrain promotes only ModelProducer::TrainingPipeline through promote_model), so the check runs only when a test or a future desk names the producer.",
+    "gap": "Skeptic 2026-10-31 REFUTED (COMPLETE refused): the seam checks that a calibrated baseline card exists but never compares the candidate against it, though the requirement asks for evaluation against the calibrated classical baseline; ADR 0150 decision 5 declines building the variant, so under bar part 4 the clause stays unmet. Promotions restored from the log (resume_model_promotions, rollback) skip require_eligible_workload. The scan cannot see a ModelProducer deserialized from JSON assembled at runtime, nor benches/ or macro-generated code. The first scan stopped at each file's first #[cfg(test)] and missed qip-deepbrain/src/learning.rs past line 1016; fixed in the follow-up commit.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test serving",
+    "verification": "cargo test -p qip-kernel --test serving; cargo test -p qip-acceptance --test arch_033_quantum_path",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate."
+    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate. 2026-10-31 L4-quant: guard landed per decision 10 hand-off (29a04235, then the scan fix); skeptic verdict REFUTED, so the row stays PARTIAL rather than the ruling's regrade to none open."
   },
   {
     "id": "R12-MODEL-4019",
