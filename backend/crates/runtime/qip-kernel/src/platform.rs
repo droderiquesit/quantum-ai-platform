@@ -1119,6 +1119,15 @@ pub struct Platform {
     /// The contradictions recent reactions found against held causal edges,
     /// newest last and bounded by [`REACTION_CONTRADICTION_HISTORY`].
     reaction_contradictions: Vec<qip_world_model::granger::ReactionContradiction>,
+    /// The synthetic future tree grown from the held world events and the
+    /// bars they land on (R12-WORLD-9035), observed against each later bar.
+    future_tree: Option<qip_twin::futures::FutureTree>,
+    /// The event ids `future_tree` was last grown on, or last tried; the tree
+    /// is regrown only when they change, so a refused grow is recorded once
+    /// per driver set rather than every cycle.
+    future_drivers: BTreeSet<String>,
+    /// The bar close instant `future_tree` was last observed at.
+    future_observed_at: Option<Timestamp>,
     /// The value policy over the episodes `research_memory` holds: which
     /// resolved analyst calls were surprising enough to keep whole and which
     /// are counted into a per-analyst summary (ADR 0152 decision 8,
@@ -2996,6 +3005,16 @@ const CAUSAL_CONTEXT_LIMIT: usize = 5;
 /// (R12-WORLD-6015). A cap, not a forecast: the record of what each did is on
 /// the edges themselves, which cite the reaction that weakened them.
 const REACTION_CONTRADICTION_HISTORY: usize = 256;
+
+/// The newest world events the future tree explores (R12-WORLD-9035). With
+/// the grid below each driver grows twelve branches, so 32 drivers and the
+/// baseline hold 385, inside [`FUTURE_MAX_BRANCHES`] with room for splits; a
+/// grid that outgrew the bound would be refused by the tree rather than
+/// trimmed.
+const FUTURE_DRIVERS: usize = 32;
+
+/// The bound on the future tree's branches, splits included.
+const FUTURE_MAX_BRANCHES: usize = 512;
 
 /// The most recent correct calls an analyst's procedure is distilled from.
 /// A window, not a lifetime: a way of answering that worked two years ago
@@ -6399,6 +6418,9 @@ impl Platform {
             procedures_briefed: Vec::new(),
             reactions_applied: BTreeSet::new(),
             reaction_contradictions: Vec::new(),
+            future_tree: None,
+            future_drivers: BTreeSet::new(),
+            future_observed_at: None,
             pending_theses: Vec::new(),
             justified_hypotheses: justification::JustifiedHypotheses::default(),
             outside_priors: BTreeMap::new(),
@@ -13063,6 +13085,145 @@ impl Platform {
         self.capture_problems.extend(problems);
     }
 
+    /// Grow, observe and prune the synthetic future tree (R12-WORLD-9035).
+    ///
+    /// Each held world event with a direction, knowable by `now` and landing
+    /// on an instrument with bars, is a driver whose scenario family is the
+    /// event's class, so two guidance events are weighed as alternatives of
+    /// one scenario and not against a rate decision. The tree is observed
+    /// first, against the newest bar closes after its fork, and regrown only
+    /// when the driver set changes — a regrow starts the weights again from
+    /// the prior, which is why it is not done every cycle. A grow the tree
+    /// refuses (too few bars, an event with no class) is a capture problem,
+    /// recorded once for that driver set, and leaves no tree rather than an
+    /// old one standing for events it never saw.
+    ///
+    /// Bar closes cross into the twin as `f64` here: the tree is statistics
+    /// about moves, and no money amount comes back out of it.
+    fn tend_futures(&mut self, now: Timestamp) {
+        use qip_twin::futures::{FutureTree, ObservedMoves, TreeConfig, TwinState, WorldDriver};
+        let mut problems = Vec::new();
+        if let Some(tree) = self.future_tree.as_mut() {
+            let mut moves = BTreeMap::new();
+            let mut at = None;
+            for (instrument, dynamics) in &tree.state().instruments {
+                let Some(bar) = self.bar_history.get(instrument).and_then(|bars| {
+                    bars.iter()
+                        .rev()
+                        .find(|bar| bar.close_time() <= now && bar.close_time() > tree.grown_at)
+                }) else {
+                    continue;
+                };
+                if dynamics.last_mid > 0.0 {
+                    moves.insert(
+                        instrument.clone(),
+                        (bar.close.to_f64() / dynamics.last_mid - 1.0) * 10_000.0,
+                    );
+                    at = at.max(Some(bar.close_time()));
+                }
+            }
+            if let Some(at) = at
+                && self.future_observed_at.is_none_or(|seen| at > seen)
+            {
+                match tree.observe(&ObservedMoves {
+                    at,
+                    moves_bps: moves,
+                }) {
+                    Ok(_) => self.future_observed_at = Some(at),
+                    Err(error) => problems.push(format!(
+                        "the future tree was not observed at {at}: {}",
+                        error.message()
+                    )),
+                }
+            }
+        }
+        let mut events: Vec<&MarketEvent> = self
+            .market_events
+            .iter()
+            .filter(|e| {
+                e.direction != 0.0
+                    && e.known_at() <= now
+                    && self.bar_history.contains_key(&e.subject)
+            })
+            .collect();
+        let skip = events.len().saturating_sub(FUTURE_DRIVERS);
+        events.drain(..skip);
+        let ids: BTreeSet<String> = events.iter().map(|e| e.event_id.clone()).collect();
+        if ids.is_empty() {
+            // Every event the tree explored has aged out: a tree standing for
+            // events the platform no longer holds is not kept.
+            self.future_tree = None;
+            self.future_drivers.clear();
+            self.future_observed_at = None;
+        } else if ids != self.future_drivers {
+            let drivers: Vec<WorldDriver> = events
+                .iter()
+                .map(|e| WorldDriver {
+                    id: e.event_id.clone(),
+                    family: Some(e.class.clone()),
+                    sensitivities: BTreeMap::from([(e.subject.clone(), e.direction)]),
+                    evidence: vec![e.event_id.clone()],
+                })
+                .collect();
+            let series: BTreeMap<String, Vec<(Timestamp, f64)>> = drivers
+                .iter()
+                .flat_map(|d| d.sensitivities.keys())
+                .filter_map(|instrument| {
+                    self.bar_history.get(instrument).map(|bars| {
+                        (
+                            instrument.clone(),
+                            bars.iter()
+                                .map(|bar| (bar.close_time(), bar.close.to_f64()))
+                                .collect(),
+                        )
+                    })
+                })
+                .collect();
+            let grown = TwinState::fit(&series, now).and_then(|state| {
+                FutureTree::grow(
+                    &state,
+                    &drivers,
+                    TreeConfig {
+                        horizon: Duration::from_days(1),
+                        shock_sigmas: vec![1.0, 2.0, 4.0],
+                        propagation: vec![0.0, 0.5],
+                        prune_below: 0.001,
+                        split_beyond_sigmas: 3.0,
+                        max_branches: FUTURE_MAX_BRANCHES,
+                    },
+                )
+            });
+            self.future_drivers = ids;
+            self.future_observed_at = None;
+            match grown {
+                Ok(tree) => self.future_tree = Some(tree),
+                Err(error) => {
+                    self.future_tree = None;
+                    problems.push(format!(
+                        "no future tree was grown from {} world event(s): {}",
+                        drivers.len(),
+                        error.message()
+                    ));
+                }
+            }
+        }
+        self.capture_problems.extend(problems);
+    }
+
+    /// The synthetic future tree the cycle tends (R12-WORLD-9035), if the
+    /// held world events have grown one.
+    pub const fn future_tree(&self) -> Option<&qip_twin::futures::FutureTree> {
+        self.future_tree.as_ref()
+    }
+
+    /// The future tree's live branches as compact `WorldBranch` records,
+    /// partitioned by scenario family (R12-WORLD-9035).
+    pub fn world_branches_by_family(&self) -> Option<qip_twin::futures::FamilyBranches> {
+        self.future_tree
+            .as_ref()
+            .map(qip_twin::futures::FutureTree::world_branches_by_family)
+    }
+
     /// The contradictions recent world-event reactions found against held
     /// causal edges, newest last (R12-WORLD-6015).
     pub fn reaction_contradictions(&self) -> &[qip_world_model::granger::ReactionContradiction] {
@@ -13168,6 +13329,7 @@ impl Platform {
         self.finish_stage(&mut stages, learned, &mut mark);
         self.observe_own_health(now);
         self.react_to_world_events(now);
+        self.tend_futures(now);
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next
@@ -28366,6 +28528,100 @@ mod decide_tests {
             3,
             "a reaction was applied twice or not at all"
         );
+    }
+
+    /// R12-WORLD-9035: the cycle grows a future tree from the held world
+    /// events, partitioned by each event's class, and the next cycle's bars
+    /// reweight and prune it while every family stays a distribution and the
+    /// tree stays within its bound.
+    ///
+    /// Mutations: drop the `tend_futures` call from `run_cycle` (no tree);
+    /// give each driver no family (the families are the event ids); skip the
+    /// observation (the tree is never scored).
+    #[test]
+    fn the_cycle_grows_a_future_tree_partitioned_by_event_class_and_the_next_bars_prune_it() {
+        use qip_market::bar::{Bar, Interval};
+        use qip_opportunity_engine::catalyst::MarketEvent;
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let mut platform = small_book_platform();
+        // Thirty daily bars wiggling around 100, then a jump of eight percent
+        // from day 31: reality the tree's one-sigma worlds did not hold.
+        let bars: Vec<Bar> = (0..40)
+            .map(|day| {
+                let wiggle = ((day * 7919) % 13) as f64 / 13.0 - 0.5;
+                let close = if day <= 30 { 100.0 + wiggle } else { 108.0 };
+                let px = |v: f64| Decimal::from_f64(v).expect("a price");
+                Bar {
+                    object_id: qip_core::ObjectId::from_string("AAPL"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: t0.saturating_add(Duration::from_days(day)),
+                    open: px(close),
+                    high: px(close),
+                    low: px(close),
+                    close: px(close),
+                    volume: Decimal::from_int(1_000),
+                    vwap: None,
+                    trade_count: 1,
+                    quality: qip_financial::quality::DataQuality::default(),
+                }
+            })
+            .collect();
+        platform.bar_history.insert("AAPL".to_string(), bars);
+        let event = |id: &str, class: &str, direction: f64| {
+            let at = t0.saturating_add(Duration::from_days(28));
+            MarketEvent::new(id, "AAPL", class, at, at)
+                .with_direction(direction)
+                .with_weight(0.8)
+        };
+        platform
+            .market_events
+            .push(event("ev-guide-up", "guidance", 1.0));
+        platform
+            .market_events
+            .push(event("ev-guide-cut", "guidance", -1.0));
+        platform
+            .market_events
+            .push(event("ev-rates", "monetary_policy", -0.5));
+        let sums_to_one = |platform: &Platform| {
+            let tree = platform.future_tree().expect("the cycle grew a tree");
+            let families = tree.families().expect("live mass");
+            let mass: f64 = families.values().map(|f| f.mass).sum();
+            assert!((mass - 1.0).abs() < 1e-9, "family masses sum to {mass}");
+            for (family, partition) in &families {
+                let within: f64 = partition.weights.values().sum();
+                assert!((within - 1.0).abs() < 1e-9, "{family} sums to {within}");
+            }
+            assert!(tree.branches.len() <= FUTURE_MAX_BRANCHES);
+            families
+        };
+        let grown_at = t0.saturating_add(Duration::from_days(30) + Duration::from_hours(1));
+        platform.run_cycle(grown_at);
+        let families = sums_to_one(&platform);
+        assert_eq!(
+            families.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["baseline", "guidance", "monetary_policy"],
+            "the two guidance events are one family"
+        );
+        let records = platform.world_branches_by_family().expect("a tree");
+        assert_eq!(records.records["guidance"].len(), 24);
+        assert!(records.unrecorded.contains_key("baseline"));
+        let live_before = platform.future_tree().map_or(0, |t| t.live().count());
+
+        platform.run_cycle(t0.saturating_add(Duration::from_days(33)));
+        let tree = platform.future_tree().expect("the tree is kept");
+        assert_eq!(tree.observations, 1, "the next bars did not score the tree");
+        assert_eq!(
+            tree.grown_at, grown_at,
+            "the same driver set regrew the tree"
+        );
+        assert!(
+            tree.branches
+                .values()
+                .any(|b| b.status != qip_twin::futures::BranchStatus::Live),
+            "reality eight percent away pruned nothing (live before {live_before})"
+        );
+        sums_to_one(&platform);
     }
 
     /// R12-WORLD-3034: an analyst's distilled procedure is retrieved at its
