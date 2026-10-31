@@ -509,3 +509,224 @@ fn a_plan_with_a_return_rate_takes_buyer_returns_into_the_ledger_and_adjusts_the
     }
     Ok(())
 }
+
+// ------------------------------------------------- the committed dev plan
+
+/// The plan dev's deep brain is to mount (ADR 0245; the mount itself is a
+/// protected patch). These tests install the committed file through the
+/// deep brain's own `breadth::install`, so they prove the file and the
+/// binary's path, not a deployment.
+fn committed_plan_path() -> String {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../../data/breadth/dev-commerce-paper.json"
+    )
+    .to_string()
+}
+
+fn install_plan_file(path: &str, cycles: usize) -> Result<Platform> {
+    let environment = BTreeMap::from([(PLAN_VARIABLE.to_string(), path.to_string())]);
+    let mut platform = platform()?;
+    install(
+        &mut platform,
+        &|name| environment.get(name).cloned(),
+        start(),
+    )?
+    .expect("a plan was set");
+    let mut at = start();
+    for _ in 0..cycles {
+        platform.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    Ok(platform)
+}
+
+/// R12-COMMERCE-5091. The committed dev plan, installed the way `main`
+/// installs it, puts a commerce plane in the platform whose Product Scout
+/// emits candidates on the first cycles.
+///
+/// Mutation: drop the commerce section from the committed plan and the
+/// install refuses a plan with no section, so the test fails.
+#[test]
+fn the_committed_dev_plan_installs_a_commerce_plane_whose_scout_emits_candidates() -> Result<()> {
+    let platform = install_plan_file(&committed_plan_path(), 3)?;
+    assert!(
+        platform.commerce_research().is_some(),
+        "the committed plan installed no commerce plane"
+    );
+    let found = discovered(&platform)?;
+    assert!(!found.is_empty(), "premise: DISCOVER journaled nothing");
+    assert!(
+        found.iter().any(|run| !run.candidates.is_empty()),
+        "the scout emitted no candidate under the committed plan: {found:?}"
+    );
+    Ok(())
+}
+
+/// R12-COMMERCE-5092. Under the committed plan's own counterfeit registry,
+/// the synthetic feed's listings of one product at different merchants
+/// resolve to one identity, and both kinds of counterfeit are refused: the
+/// GTIN on the registry and the seller on it. The resolver is the plane's,
+/// built from the plan the deep brain loads; the cycle half shows the
+/// refusals reach DISCOVER's journal rather than only the library.
+///
+/// Mutation: empty `counterfeit_gtins` in the committed plan and the test
+/// fails on the GTIN refusal.
+#[test]
+fn the_committed_dev_plan_maps_its_equivalent_listings_to_one_identity_and_refuses_both_counterfeits()
+-> Result<()> {
+    use qip_financial::commerce::Resolver;
+    use qip_kernel::commerce_research::CommerceFeed;
+    let path = committed_plan_path();
+    let environment = BTreeMap::from([(PLAN_VARIABLE.to_string(), path.clone())]);
+    let plan = qip_deepbrain::breadth::load(&|name| environment.get(name).cloned())?
+        .expect("the committed plan loads")
+        .commerce
+        .expect("the committed plan carries a commerce section");
+    let gtin = plan
+        .counterfeit_gtins
+        .iter()
+        .next()
+        .cloned()
+        .expect("the committed plan names a counterfeit GTIN");
+    let resolver = Resolver::new(
+        plan.counterfeit_gtins.clone(),
+        plan.counterfeit_sellers.clone(),
+    );
+
+    let mut feed = SyntheticCommerceFeed::new(7, start());
+    let mut at = start();
+    let mut gtin_refused = false;
+    let mut seller_refused = false;
+    let mut merged = false;
+    for _ in 0..24 {
+        let batch = feed.poll(at)?;
+        at = at.saturating_add(Duration::from_hours(1));
+        let identities = resolver.resolve(&batch.listings)?;
+        let mut by_identity: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for listing in &batch.listings {
+            let identity = identities.get(&listing.id).expect("every listing resolves");
+            match &identity.counterfeit_finding {
+                Some(finding) => {
+                    if listing.gtin.as_deref() == Some(gtin.as_str()) {
+                        assert!(finding.contains(&gtin), "{finding}");
+                        gtin_refused = true;
+                    } else if listing.seller == SYNTHETIC_COUNTERFEIT_SELLER {
+                        assert!(finding.contains(SYNTHETIC_COUNTERFEIT_SELLER), "{finding}");
+                        seller_refused = true;
+                    }
+                }
+                None => {
+                    assert_ne!(
+                        listing.gtin.as_deref(),
+                        Some(gtin.as_str()),
+                        "a listing under the registry's GTIN resolved as genuine"
+                    );
+                    by_identity
+                        .entry(identity.id.clone())
+                        .or_default()
+                        .insert(listing.seller.clone());
+                }
+            }
+        }
+        if by_identity.values().any(|sellers| sellers.len() >= 2) {
+            merged = true;
+        }
+    }
+    assert!(
+        merged,
+        "no product's listings at two different merchants resolved to one identity"
+    );
+    assert!(
+        gtin_refused,
+        "no listing under the counterfeit GTIN {gtin} was refused"
+    );
+    assert!(
+        seller_refused,
+        "no listing from the counterfeit seller was refused"
+    );
+
+    // Through the cycle: DISCOVER journals the GTIN refusal by name.
+    let platform = install_plan_file(&path, 12)?;
+    let refusals: Vec<String> = discovered(&platform)?
+        .into_iter()
+        .flat_map(|run| run.counterfeit)
+        .collect();
+    assert!(
+        refusals
+            .iter()
+            .any(|refusal| refusal.contains(&format!("GTIN {gtin}"))),
+        "DISCOVER journaled no counterfeit-GTIN refusal under the committed plan: {refusals:?}"
+    );
+    Ok(())
+}
+
+/// R12-COMMERCE-5093. A cycle under the committed plan journals, for every
+/// candidate it assesses, the six figures feasibility owes: all-in cost,
+/// expected resale, inventory carry, capital lockup, time to sale and return
+/// risk. A copy of the plan with one logistics input removed is refused: the
+/// plane never assesses without it. The refusal lands at load, because the
+/// plan's fields are required; `need()` inside `FeasibilityInput::assess` is
+/// a second guard that a plan cannot reach, since the plane builds every
+/// input from the plan as `Some`. The test accepts a refusal from either.
+///
+/// Mutation: give `LogisticsTerms::storage_days` a serde default and the
+/// incomplete copy loads, so the refusal case fails.
+#[test]
+fn a_cycle_under_the_committed_dev_plan_journals_a_commerce_simulated_assessment_with_all_six_figures()
+-> Result<()> {
+    let platform = install_plan_file(&committed_plan_path(), 6)?;
+    let assessed: Vec<_> = simulated(&platform)?
+        .into_iter()
+        .flat_map(|run| run.assessed)
+        .collect();
+    assert!(!assessed.is_empty(), "premise: nothing was assessed");
+    for figure in &assessed {
+        assert!(
+            figure.all_in_cost.is_positive()
+                && figure.expected_resale.is_positive()
+                && figure.capital_lockup.is_positive()
+                && figure.time_to_sale_days > 0
+                && !figure.inventory_carry.is_negative()
+                && !figure.return_risk.is_negative(),
+            "an assessment is missing one of the six figures: {figure:?}"
+        );
+    }
+
+    // One logistics input removed from a copy of the committed plan.
+    let text = std::fs::read_to_string(committed_plan_path()).expect("the committed plan reads");
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("the plan is JSON");
+    let removed = value["commerce"]["terms"]
+        .as_object_mut()
+        .expect("the plan states logistics terms")
+        .remove("storage_days");
+    assert!(
+        removed.is_some(),
+        "premise: the committed plan states storage_days"
+    );
+    let path = std::env::temp_dir().join(format!(
+        "qip-deepbrain-commerce-{}-no-storage-days.json",
+        std::process::id()
+    ));
+    std::fs::write(&path, value.to_string()).expect("the copy is writable");
+    let refusal = match install_plan_file(&path.to_string_lossy(), 6) {
+        Ok(platform) => {
+            let assessed: usize = simulated(&platform)?
+                .iter()
+                .map(|run| run.assessed.len())
+                .sum();
+            panic!(
+                "a plan with no storage_days was installed and assessed {assessed} candidate(s) \
+                 rather than refused"
+            )
+        }
+        Err(refusal) => refusal,
+    };
+    assert!(
+        refusal.message().contains("storage_days")
+            || refusal.message().contains("feasibility needs"),
+        "refused for a reason other than the missing input: {}",
+        refusal.message()
+    );
+    Ok(())
+}

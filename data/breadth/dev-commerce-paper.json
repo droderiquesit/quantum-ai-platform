@@ -54,7 +54,9 @@
     },
     "total_ceiling": "100000",
     "fraud_merchants": [],
-    "counterfeit_gtins": [],
+    "counterfeit_gtins": [
+      "0000000000031"
+    ],
     "counterfeit_sellers": [
       "synthetic-counterfeit-seller"
     ],
