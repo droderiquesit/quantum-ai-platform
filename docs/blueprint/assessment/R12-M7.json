@@ -3360,7 +3360,7 @@
       "backend/crates/runtime/qip-kernel/src/hedge.rs::tests::a_hedge_is_drawn_only_from_a_class_the_hedge_map_names",
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs check_hedge_map, AssetClassRecord::hedge_classes"
     ],
-    "gap": "2026-10-31 (lane L5b, one slice of an XL row): the hedge-map half is on the DECIDE path and mutation-proven; the saga-recovery half — a broken cycle unwound and hedged end to end (a_broken_cycle_is_unwound_and_hedged_end_to_end over Cell::unwind_cycle, the peer saga's unwind and a hedge drawn through the map) — is not written, LegGroup is still an unused import in cell.rs, and the cycle paths it would exercise run only on an undeployed node behind the peer-mesh switch (decision 5 of 2026-10-25).",
+    "gap": "2026-10-31 (lane L5b, one slice of an XL row): the hedge-map half is on the DECIDE path and mutation-proven; the saga-recovery half — a broken cycle unwound and hedged end to end (a_broken_cycle_is_unwound_and_hedged_end_to_end over Cell::unwind_cycle, the peer saga's unwind and a hedge drawn through the map) — is not written, LegGroup is still an unused import in cell.rs, and the cycle paths it would exercise run only on an undeployed node behind the peer-mesh switch (decision 5 of 2026-10-25). Read further the same day: the end-to-end half cannot be written on the shipped path yet, because a cell's positions do not ride the mesh delta (CellStateDelta carries utilisation, orders, fills, crosses, refusals, breaks and episodes; qip-api's report_from sets no positions), so a cell's leftover leg after a break never reaches the kernel's risk state that the Hedge Brain plans against; carrying positions on the wire is its own decision and ADR.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3371,7 +3371,7 @@
     "verification": "cargo test -p qip-kernel --lib hedge::; cargo test -p qip-kernel --test catalogue_hedge_candidates --test hedge --test asset_classes",
     "work_item": "",
     "size": "XL",
-    "notes": " Lane L5b 2026-10-31: hedge-map slice landed. Mutation: `plan` admitting every resolved candidate whatever its class fails a_hedge_is_drawn_only_from_a_class_the_hedge_map_names at 'a bond was planned as the hedge of an equity book' (restored byte for byte, sha256 bdf5b7ca8475de33). Kept PARTIAL; remaining slices in the gap."
+    "notes": " Lane L5b 2026-10-31: hedge-map slice landed. Mutation: `plan` admitting every resolved candidate whatever its class fails a_hedge_is_drawn_only_from_a_class_the_hedge_map_names at 'a bond was planned as the hedge of an equity book' (restored byte for byte, sha256 bdf5b7ca8475de33). Kept PARTIAL; remaining slices in the gap. The positions-on-the-wire gap is named so the next slice starts there."
   },
   {
     "id": "R12-QUANT-7144",
