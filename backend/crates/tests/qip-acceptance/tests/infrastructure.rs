@@ -15125,6 +15125,59 @@ fn every_asset_change_feed_publishes_to_the_change_topic() {
     );
 }
 
+/// ADR 0240: the catalogue hands the deep brain the research dataset's name,
+/// its staging bucket and its location by computing them the way
+/// `modules/data` does, because reading that module's outputs would be a
+/// cycle (it grants the deep brain's service account). Nothing probes the
+/// names at start-up, so this holds the two spellings equal: a drift would
+/// otherwise surface only as the first failed upload or load.
+///
+/// Mutation: change `local.deepbrain_warehouse.staging_bucket` to
+/// `qip-${var.environment}-staging-${var.region}` — the catalogue no longer
+/// spells the module's segment bucket and this fails.
+#[test]
+fn the_catalogue_names_the_warehouse_dataset_bucket_and_location_as_the_data_module_creates_them() {
+    let catalogue = without_comments(&read("infrastructure/terraform/catalogue.tf"));
+    let data = without_comments(&read("infrastructure/terraform/modules/data/main.tf"));
+    // The module's spellings, with its prefix expanded.
+    assert!(
+        data.contains(r#"prefix = "qip-${var.environment}""#),
+        "premise: modules/data prefixes every name with qip-<environment>"
+    );
+    assert!(
+        data.contains(r#"dataset_id = replace("${local.prefix}_research", "-", "_")"#),
+        "premise: the research dataset's name"
+    );
+    assert!(
+        data.contains(r#"name     = "${local.prefix}-segments-${var.region}""#),
+        "premise: the segment bucket's name"
+    );
+    let dataset = data
+        .split(r#"resource "google_bigquery_dataset" "research""#)
+        .nth(1)
+        .expect("the research dataset is declared");
+    assert!(
+        dataset[..dataset.find("\n}").unwrap_or(dataset.len())].contains("location   = var.region"),
+        "premise: the research dataset is regional, in var.region"
+    );
+    // The catalogue's, which must be the same strings.
+    for wanted in [
+        r#"deepbrain_warehouse = var.enable_bigquery && var.enable_cloud_storage ? {"#,
+        r#"dataset        = replace("qip-${var.environment}_research", "-", "_")"#,
+        r#"staging_bucket = "qip-${var.environment}-segments-${var.region}""#,
+        r#"location       = var.region"#,
+        r#"QIP_BIGQUERY_DATASET        = local.deepbrain_warehouse.dataset"#,
+        r#"QIP_BIGQUERY_STAGING_BUCKET = local.deepbrain_warehouse.staging_bucket"#,
+        r#"QIP_BIGQUERY_LOCATION       = local.deepbrain_warehouse.location"#,
+    ] {
+        assert!(
+            catalogue.contains(wanted),
+            "the catalogue does not hand the deep brain `{wanted}`, so its warehouse target \
+             would drift from what modules/data creates"
+        );
+    }
+}
+
 /// R12-RES-9177: the secondary image repository is wired from the root and
 /// off in every committed environment.
 ///
