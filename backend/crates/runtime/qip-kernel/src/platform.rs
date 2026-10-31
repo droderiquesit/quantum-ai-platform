@@ -15057,6 +15057,48 @@ impl Platform {
             .then_some(view)
     }
 
+    /// Each venue the platform routes to, as the counterparty member reads it
+    /// (R12-WORLD-3049): the desk's broker, which is always a counterparty,
+    /// and every venue the feasibility window names, with the refusals the
+    /// window holds at each. The window is only read here; its one writer
+    /// stays `record_feasibility_refusal`.
+    ///
+    /// Only [`RefusalStanding::Evidence`] entries count. An echo is a
+    /// withdrawn venue refusing because it is withdrawn, and a pardoned entry
+    /// is one two operators signed away; neither is the venue refusing, and
+    /// counting them inflated a withdrawn or reinstated venue's forecast and
+    /// resolved its proposition on refusals that were not its own.
+    fn counterparty_views(&self) -> Vec<crate::federation_stage::CounterpartyView> {
+        let mut by_venue: BTreeMap<String, Vec<Timestamp>> = BTreeMap::new();
+        by_venue.insert(self.broker.name().to_string(), Vec::new());
+        let evidence: Vec<&FeasibilityRefusal> = self
+            .feasibility_refusals
+            .iter()
+            .filter(|refusal| refusal.standing == RefusalStanding::Evidence)
+            .collect();
+        for refusal in &evidence {
+            by_venue
+                .entry(refusal.venue.clone())
+                .or_default()
+                .push(refusal.at);
+        }
+        let total = evidence.len();
+        by_venue
+            .into_iter()
+            .map(
+                |(venue, refused_at)| crate::federation_stage::CounterpartyView {
+                    share: if total == 0 {
+                        0.0
+                    } else {
+                        refused_at.len() as f64 / total as f64
+                    },
+                    venue,
+                    refused_at,
+                },
+            )
+            .collect()
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -15110,6 +15152,7 @@ impl Platform {
                 confirmed_trades: view.state().trades(),
             }),
             capital: self.capital_view(),
+            counterparties: self.counterparty_views(),
         };
         // State what rides on each instrument before the pass (AMBIENT-10093),
         // so a material disagreement on a held name issues the contract
@@ -28966,6 +29009,62 @@ mod decide_tests {
             3,
             "a reaction was applied twice or not at all"
         );
+    }
+
+    /// R12-WORLD-3049: the counterparty member reads only the venue's own
+    /// refusals. An echo is a withdrawn venue refusing because it is
+    /// withdrawn and a pardoned entry was signed away by two operators;
+    /// counting either inflated that venue's share and resolved its
+    /// proposition on refusals that were not its own. The desk's broker is
+    /// always a counterparty, with no refusals.
+    ///
+    /// Mutation: count every standing in `counterparty_views`.
+    #[test]
+    fn the_counterparty_views_count_only_a_venues_own_refusals_and_always_name_the_desk_broker() {
+        use crate::venue_review::{FeasibilityRefusal, FeasibilitySeam, RefusalStanding};
+        let mut platform = small_book_platform();
+        let at = Timestamp::from_secs(1_760_000_000);
+        let refusal = |venue: &str, standing: RefusalStanding| FeasibilityRefusal {
+            venue: venue.to_string(),
+            constraint: "feasibility_lot_size".to_string(),
+            seam: FeasibilitySeam::Edge,
+            cell: Some("cell-a".to_string()),
+            at,
+            standing,
+        };
+        platform.feasibility_refusals = vec![
+            refusal("XWITHDRAWN", RefusalStanding::Evidence),
+            refusal("XWITHDRAWN", RefusalStanding::Echo),
+            refusal("XWITHDRAWN", RefusalStanding::Echo),
+            refusal("XWITHDRAWN", RefusalStanding::Echo),
+            refusal("XWITHDRAWN", RefusalStanding::Pardoned),
+            refusal("XWITHDRAWN", RefusalStanding::Pardoned),
+            refusal("YVENUE", RefusalStanding::Evidence),
+            refusal("YVENUE", RefusalStanding::Evidence),
+        ];
+        let views = platform.counterparty_views();
+        let of = |name: &str| {
+            views
+                .iter()
+                .find(|v| v.venue == name)
+                .unwrap_or_else(|| panic!("no view of {name}: {views:?}"))
+        };
+        let broker = platform.broker.name().to_string();
+        assert!(
+            of(&broker).refused_at.is_empty(),
+            "the desk broker is named"
+        );
+        assert_eq!(
+            of("XWITHDRAWN").refused_at.len(),
+            1,
+            "echoes or pardons counted"
+        );
+        assert_eq!(of("YVENUE").refused_at.len(), 2);
+        assert!(
+            (of("XWITHDRAWN").share - 1.0 / 3.0).abs() < 1e-12,
+            "{views:?}"
+        );
+        assert!((of("YVENUE").share - 2.0 / 3.0).abs() < 1e-12, "{views:?}");
     }
 
     /// R12-QUANT-4018: a promotion restored from the log passes the workload

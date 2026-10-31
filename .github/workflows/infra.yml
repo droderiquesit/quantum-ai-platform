@@ -201,7 +201,7 @@ jobs:
       # whoever re-ran the run are both judged. First, before anything
       # authenticates.
       - name: no development agent starts this workflow
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: .agent-guard
@@ -301,7 +301,7 @@ jobs:
           fi
           echo "ci succeeded for ${THIS_SHA}"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Everything this workflow needs to authenticate is derived from the
       # environment's tfvars, and deliberately not from repository variables.
@@ -404,12 +404,12 @@ jobs:
             echo "account=qip-infra-${ENVIRONMENT}@$project.iam.gserviceaccount.com"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ steps.identity.outputs.provider }}
           service_account: ${{ steps.identity.outputs.account }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
         with:
           # The bootstrap's kubectl authenticates to GKE through this plugin;
           # gcloud no longer embeds the credential in the kubeconfig itself.
@@ -558,7 +558,7 @@ jobs:
             fi
           done
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: "1.9.8"
 
@@ -638,7 +638,7 @@ jobs:
 
       - name: upload plan artifact
         if: inputs.action == 'plan'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: terraform-plan-${{ inputs.environment }}
           path: infrastructure/terraform/tfplan
@@ -1188,7 +1188,7 @@ jobs:
 
       - name: keep the applied plan
         if: inputs.action == 'up'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: terraform-applied-plan-${{ inputs.environment }}
           path: infrastructure/terraform/tfplan
