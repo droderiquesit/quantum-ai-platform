@@ -2425,3 +2425,76 @@ fn a_newer_world_state_clears_the_expiry_of_the_one_it_replaced() {
         .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(names(&after), 1, "the successor's own expiry raised no gap");
 }
+
+/// ADR 0346 (R12-EXPAND-6067): a persistent belief discrepancy queues
+/// exactly one item naming its origin. The federation forecast `rates` up
+/// three cycles running and the market resolved each against it; the third
+/// sweep raises one specialist item whose evidence names the detector and
+/// every resolved proposition, and a fourth sweep against it raises nothing
+/// more. A subject the federation called right (`fx`) and one where it took
+/// no side (`vol`, at one half) raise nothing, so the item is about the
+/// belief and not about a resolution existing. No belief price level is
+/// read: the watch sees only the arbitrated probability and the outcome.
+///
+/// Mutation: feed the tracker every resolved subject rather than those
+/// resolved against the federation.
+#[test]
+fn a_persistent_belief_discrepancy_queues_exactly_one_item_naming_its_origin() {
+    use qip_deepbrain::research::{BeliefWatch, PERSIST_SWEEPS};
+    use qip_expansion::gap::raise;
+    use qip_kernel::federation_stage::Resolution;
+
+    let resolved = |proposition: String, ensemble: f64, outcome: bool| Resolution {
+        proposition,
+        outcome,
+        closed: Vec::new(),
+        forecasts: Default::default(),
+        ensemble: Some(ensemble),
+    };
+    let cycle = |n: u64| {
+        vec![
+            resolved(format!("macro:rates:move-persists@{n}"), 0.8, false),
+            resolved(format!("macro:fx:move-persists@{n}"), 0.7, true),
+            resolved(format!("macro:vol:move-persists@{n}"), 0.5, false),
+        ]
+    };
+    let mut watch = BeliefWatch::new().unwrap();
+    let mut log: Vec<(u64, Vec<Resolution>)> = Vec::new();
+    let mut raised = Vec::new();
+    for n in 1..=u64::from(PERSIST_SWEEPS) + 1 {
+        log.push((n, cycle(n)));
+        let read: Vec<(u64, &[Resolution])> = log.iter().map(|(c, r)| (*c, r.as_slice())).collect();
+        let out = watch.feed(&read);
+        if n < u64::from(PERSIST_SWEEPS) {
+            assert!(
+                out.is_empty(),
+                "raised before persisting: sweep {n}: {out:?}"
+            );
+        }
+        raised.push(out);
+    }
+    let items: Vec<_> = raised.into_iter().flatten().collect();
+    assert_eq!(items.len(), 1, "{items:#?}");
+    let item = &items[0];
+    assert_eq!(
+        item.evidence,
+        [
+            "belief-discrepancy",
+            "detector:persistent_discrepancy",
+            "persistent:macro:rates:move-persists",
+            "resolved:macro:rates:move-persists@1",
+            "resolved:macro:rates:move-persists@2",
+            "resolved:macro:rates:move-persists@3",
+        ]
+        .map(String::from)
+    );
+    assert!(
+        item.observation.contains("`macro:rates:move-persists`"),
+        "{}",
+        item.observation
+    );
+    // It is a research item the desk can queue: one class, a specialist's.
+    let gap = raise(item.clone()).unwrap();
+    assert_eq!(gap.signal.evidence, item.evidence);
+    assert_eq!(watch.tracked(), 1, "only the discrepant subject is tracked");
+}

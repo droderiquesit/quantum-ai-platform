@@ -70,10 +70,10 @@ use qip_expansion::desk::{
 };
 use qip_expansion::detectors::{
     ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
-    contested_evidence, contradictions, coverage, cross_domain_links, incompetent_specialists,
-    low_confidence, missing_causal_links, model_drift, model_error_rate, refusal_clusters,
-    repeated_vetoes_priced, split_by_wanting, theory_contradictions, unexplained_residuals_priced,
-    world_state_expired,
+    causal_driver_universe, contested_evidence, contradictions, coverage, cross_domain_links,
+    incompetent_specialists, low_confidence, missing_causal_links, model_drift, model_error_rate,
+    refusal_clusters, repeated_vetoes_priced, split_by_wanting, theory_contradictions,
+    unexplained_residuals_priced, world_state_expired,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -87,6 +87,7 @@ use qip_expansion::meta::{
 use qip_expansion::plan::AcquisitionAction;
 use qip_kernel::Platform;
 use qip_kernel::evidence_intake::{PoisoningClass, PoisoningFinding, PoisoningThresholds};
+use qip_kernel::federation_stage::{self, Resolution};
 use qip_observability::metrics::{Metrics, labels, names};
 use qip_opportunity_engine::detector::{DetectionContext, DetectorRegistry};
 use qip_reasoning_engine::compiler::{
@@ -124,6 +125,143 @@ pub const RESIDUAL_BPS: f64 = 25.0;
 pub const CLUSTER_SUBJECTS: usize = 3;
 /// Consecutive sweeps a subject's discrepancy must persist.
 pub const PERSIST_SWEEPS: u32 = 3;
+/// Resolved propositions a belief-discrepancy run keeps to cite: the newest,
+/// because a run that lasts is one question and its evidence is bounded.
+const BELIEF_RUN_CITATIONS: usize = 16;
+
+/// The subject a federation proposition is about: the proposition without
+/// its trailing `@<cycle>`, so the question asked afresh each cycle is one
+/// subject and not one per cycle (ADR 0346).
+pub fn proposition_subject(proposition: &str) -> &str {
+    match proposition.rsplit_once('@') {
+        Some((head, cycle)) if !cycle.is_empty() && cycle.bytes().all(|b| b.is_ascii_digit()) => {
+            head
+        }
+        _ => proposition,
+    }
+}
+
+/// The subjects whose latest resolution among `resolutions` went against the
+/// federation's arbitrated probability, each with the propositions that
+/// did, in order (ADR 0346). Against means the federation put the
+/// proposition above one half and it resolved false, or below one half and
+/// it resolved true. A resolution with no arbitrated number, or one at
+/// exactly one half, took no side and says nothing; a later resolution on
+/// the federation's side clears the subject.
+pub fn belief_discrepancies<'a>(
+    resolutions: impl IntoIterator<Item = &'a Resolution>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut latest: BTreeMap<String, (bool, Vec<String>)> = BTreeMap::new();
+    for resolution in resolutions {
+        let Some(p) = resolution
+            .ensemble
+            .filter(|p| p.is_finite() && p.total_cmp(&0.5).is_ne())
+        else {
+            continue;
+        };
+        let against = (p > 0.5) != resolution.outcome;
+        let entry = latest
+            .entry(proposition_subject(&resolution.proposition).to_string())
+            .or_default();
+        if against {
+            if !entry.0 {
+                entry.1.clear();
+            }
+            entry.1.push(resolution.proposition.clone());
+        } else {
+            entry.1.clear();
+        }
+        entry.0 = against;
+    }
+    latest
+        .into_iter()
+        .filter(|(_, (against, _))| *against)
+        .map(|(subject, (_, propositions))| (subject, propositions))
+        .collect()
+}
+
+/// The price/belief discrepancy detector (ADR 0346, R12-EXPAND-6067): the
+/// second [`PersistenceTracker`], fed from the federation's resolutions
+/// rather than from the price detectors. A subject is flagged in a sweep
+/// when a resolution new since the last sweep went against the federation
+/// and none after it went its way; flagged on [`PERSIST_SWEEPS`]
+/// consecutive sweeps, it raises one research item citing the resolved
+/// propositions. It moves nothing: the item asks a specialist whether the
+/// federation is wrong about that subject.
+#[derive(Debug, Clone)]
+pub struct BeliefWatch {
+    tracker: PersistenceTracker,
+    /// The newest review cycle already read.
+    seen: Option<u64>,
+    /// The propositions resolved against the federation during each
+    /// flagged subject's current run, newest kept.
+    runs: BTreeMap<String, Vec<String>>,
+}
+
+impl BeliefWatch {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            tracker: PersistenceTracker::new(PERSIST_SWEEPS)?,
+            seen: None,
+            runs: BTreeMap::new(),
+        })
+    }
+
+    /// One sweep over every review the log holds, as `(cycle, resolved)`:
+    /// only reviews after the newest cycle already read are new.
+    pub fn feed(&mut self, reviews: &[(u64, &[Resolution])]) -> Vec<Observation> {
+        let seen = self.seen;
+        let fresh = reviews
+            .iter()
+            .filter(|(cycle, _)| seen.is_none_or(|last| *cycle > last))
+            .flat_map(|(_, resolved)| resolved.iter());
+        let against = belief_discrepancies(fresh);
+        if let Some(newest) = reviews.iter().map(|(cycle, _)| *cycle).max() {
+            self.seen = Some(seen.map_or(newest, |cycle| cycle.max(newest)));
+        }
+        self.runs.retain(|subject, _| against.contains_key(subject));
+        for (subject, propositions) in &against {
+            let run = self.runs.entry(subject.clone()).or_default();
+            run.extend(propositions.iter().cloned());
+            let excess = run.len().saturating_sub(BELIEF_RUN_CITATIONS);
+            run.drain(..excess);
+        }
+        let flagged: BTreeSet<String> = against.into_keys().collect();
+        self.tracker
+            .observe(&flagged)
+            .into_iter()
+            .map(|mut observation| {
+                let subject = observation
+                    .evidence
+                    .iter()
+                    .find_map(|e| e.strip_prefix("persistent:"))
+                    .unwrap_or_default()
+                    .to_string();
+                observation.observation = format!(
+                    "the federation's forecast on `{subject}` was resolved against on \
+                     {PERSIST_SWEEPS} consecutive sweeps"
+                );
+                observation.evidence = ["belief-discrepancy".to_string()]
+                    .into_iter()
+                    .chain(observation.evidence)
+                    .chain(
+                        self.runs
+                            .get(&subject)
+                            .into_iter()
+                            .flatten()
+                            .map(|proposition| format!("resolved:{proposition}")),
+                    )
+                    .collect();
+                observation
+            })
+            .collect()
+    }
+
+    /// Subjects being tracked; bounded by those flagged in the last sweep.
+    pub fn tracked(&self) -> usize {
+        self.tracker.tracked()
+    }
+}
 /// Hosted-model replies counted before their error rate is judged, and the
 /// share refused or malformed past which one surprise is raised. One in five
 /// is far above a provider's ordinary failure rate and below the point where
@@ -801,6 +939,10 @@ pub struct ResearchRound {
     /// promotion that reaches the end of its arm without one fails the
     /// sweep.
     pub lanes: BTreeMap<String, PromotionLane>,
+    /// Belief discrepancies raised this sweep (ADR 0346), and why the
+    /// federation's reviews could not be read, where they could not.
+    pub belief_discrepancies: usize,
+    pub belief_reviews_refused: Option<String>,
     /// Every ambient signal this sweep routed, in routing order, for the
     /// ambient journal (`ambient_journal.rs`): a count on a cycle line is
     /// not a record anybody can replay.
@@ -1272,6 +1414,9 @@ pub struct ResearchLoop {
     router: AttentionRouter,
     detectors: DetectorRegistry,
     persistence: PersistenceTracker,
+    /// The second persistence detector, over the federation's resolutions
+    /// (ADR 0346).
+    beliefs: BeliefWatch,
     ticks: TickCampaignDetector,
     now_estimate: NowEstimator,
     coverage: BTreeMap<String, BTreeSet<String>>,
@@ -1529,6 +1674,7 @@ impl ResearchLoop {
             router: AttentionRouter::new(policy),
             detectors: DetectorRegistry::standard(),
             persistence: PersistenceTracker::new(PERSIST_SWEEPS)?,
+            beliefs: BeliefWatch::new()?,
             ticks: TickCampaignDetector::new()?,
             now_estimate: NowEstimator::new(0.001, 0.01)?,
             coverage,
@@ -1966,6 +2112,21 @@ impl ResearchLoop {
         observations.extend(members.into_iter().map(|(_, o)| o));
         observations.extend(contradictions(&readings));
         observations.extend(self.persistence.observe(&flagged));
+        // The price/belief discrepancy (ADR 0346): the federation's
+        // resolutions, off the log. A review the replay refuses is reported
+        // and the watch is not fed, so a refused read does not reset a run.
+        match federation_stage::replay(platform) {
+            Ok(reviews) => {
+                let read: Vec<(u64, &[Resolution])> = reviews
+                    .iter()
+                    .map(|review| (review.cycle, review.resolved.as_slice()))
+                    .collect();
+                let raised = self.beliefs.feed(&read);
+                round.belief_discrepancies = raised.len();
+                observations.extend(raised);
+            }
+            Err(error) => round.belief_reviews_refused = Some(error.message().to_string()),
+        }
 
         // --- calibration, declines, refusals, fills, coverage -------------
         if let Some(calibration) = platform.calibration() {
@@ -2109,7 +2270,24 @@ impl ResearchLoop {
         // raised, not a dozen duplicates the desk would refuse.
         observations.extend(campaigns::observations(&opened_campaigns)?);
         let covered: BTreeSet<String> = platform.price_history().keys().cloned().collect();
-        observations.extend(coverage(&self.coverage, &covered, COVERAGE_FLOOR)?);
+        // The causal drivers the graph holds now, beside the catalogue's
+        // static dimensions (ADR 0345): read each sweep because the graph
+        // grows between sweeps and the catalogue does not.
+        let instruments: BTreeSet<String> = self.coverage.values().flatten().cloned().collect();
+        let mut measured = self.coverage.clone();
+        {
+            let world = platform.world();
+            measured.extend(causal_driver_universe(
+                world
+                    .causal()
+                    .edges()
+                    .iter()
+                    .filter(|edge| edge.recorded_at <= now && !edge.retired_by(now))
+                    .map(|edge| (edge.cause.as_str(), edge.effect.as_str())),
+                &instruments,
+            ));
+        }
+        observations.extend(coverage(&measured, &covered, COVERAGE_FLOOR)?);
 
         // --- evidence: the world fabric the connectors feed ---------------
         round.evidence_held = platform.evidence_held();
