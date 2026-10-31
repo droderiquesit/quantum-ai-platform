@@ -2889,7 +2889,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "plan: terraform test in modules/data (mock provider), 23 passed across the module's harnesses; mutations: is_locked = false fails the lock assertion, versioning enabled = false fails the versioning assertion; both restored with cp and cmp. terraform fmt -check and validate clean.",
+    "verification": "plan: terraform test in modules/data (mock provider), 23 passed across the module's harnesses; mutations: is_locked = false fails the lock assertion, versioning enabled = false fails the versioning assertion; both restored with cp and cmp. terraform fmt -check and validate clean. 2026-10-31 correction: the harness as first pushed (09338aa4) only admitted, which qip-acceptance's terraform_plan::every_plan_harness_proves_a_refusal_and_an_admission refuses and the pre-push gate did not run; it now also refuses an archive_retention_days below 2555 at plan time (a new variable validation: the locked window may be lengthened, never shortened), mutation-verified by relaxing the validation.",
     "work_item": "",
     "size": "S",
     "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (IMPLEMENT): No transfer service is bought for the archive. Object lifecycle cannot move objects between buckets, so the landing clause is restated: the archive receives each sealed segment from fabricd's own archive path, never from a landing bucket. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. | 2026-10-31 lane L3-DATA: added the ruling's plan run (enable_cloud_storage = true asserts locked retention and versioning on the archive) and recorded the restated landing clause; stays PARTIAL until the protected, billed enable_cloud_storage flip and a real plan."
@@ -2922,11 +2922,19 @@
   {
     "id": "R12-DATA-8127",
     "status": "PARTIAL",
-    "current": "Edge crates cannot reach the BigQuery adapter (tested); no fabric sink or batch load.",
+    "current": "Under ADR 0240 (owner-delegated ruling of 2026-10-31, decision 10) the warehouse is fed by batch load from Cloud Storage: qip-deepbrain's OutcomeSink stages newline-delimited JSON under warehouse-staging/ in the regional segment bucket and loads it with BigQueryWarehouse::load (qip-mesh), with a job id derived from the batch and recorded pending before the request, read back in the dataset's location, counted shipped only when done, released on a never-created job and quarantined after three failed loads. No shipped source streams rows (qip-acceptance derived_copies). catalogue.tf hands the deep brain project, dataset, staging bucket, location, proxy endpoint and metadata credential only when enable_bigquery and enable_cloud_storage are both true; modules/data expires the prefix at seven days and grants the writer bigquery.jobUser and prefix-conditioned object create/view on the segment bucket under the same condition.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:967"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:967",
+      "docs/adr/0240-the-warehouse-is-fed-by-batch-load-from-cloud-storage-and-no-shipped-path-streams-rows.md",
+      "backend/crates/services/qip-mesh/src/bigquery.rs (BigQueryWarehouse::load, load_state, LoadState)",
+      "backend/crates/apps/qip-deepbrain/src/warehouse.rs (OutcomeSink::ship)",
+      "backend/crates/apps/qip-deepbrain/tests/warehouse.rs",
+      "backend/crates/services/qip-mesh/tests/bigquery.rs",
+      "backend/crates/tests/qip-acceptance/tests/derived_copies.rs (no_shipped_path_streams_rows_into_the_warehouse)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs (the_catalogue_names_the_warehouse_dataset_bucket_and_location_as_the_data_module_creates_them)",
+      "infrastructure/terraform/modules/data/tests/warehouse_staging.tftest.hcl"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Isolation holds (architecture.rs no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store, no_crate_on_the_reflex_path_can_reach_the_bigquery_client). No fabric-sink-bigquery and no GCS-to-BigQuery load job exist (qip-mesh/src/bigquery.rs has insertAll only, no /jobs load); the one writer, qip-deepbrain warehouse::OutcomeSink, streams rows directly, which is neither a fabric sink nor a GCS batch load, so 'loads come from the fabric/GCS' fails once enabled (off today: no Terraform sets QIP_BIGQUERY_*). Needs a fabric-consuming sink or GCS load job (code), a running fabricd (event_fabric_broker null everywhere), env wiring in catalogue.tf, and a deploy.",
+    "gap": "2026-10-31: the batch-load path is built and the streaming path is gone, but it is not on any default path: the catalogue wires it only when enable_bigquery and enable_cloud_storage are both true, and enable_cloud_storage is false in every environment, so OutcomeSink::from_lookup returns None by default (ADR 0240 Consequences). Remaining: flip both switches in dev (protected, billed), plan and apply, and see a real load of resolved_outcomes complete; the double-backed tests do not prove BigQuery and Cloud Storage answer the same way.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2936,10 +2944,10 @@
       "R12-FABRIC-8080"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test architecture",
+    "verification": "unit/integration: qip-mesh tests/bigquery.rs (load shape, 409 retry read in location, failed-not-done, no-location refused) and qip-deepbrain tests/warehouse.rs (staged and counted only when done, failed batch released, lost answer found by id and never loaded twice, never-created job restaged under the same id, quarantine after three failures, configuration refusals); acceptance: derived_copies no-streaming guard, infrastructure name-equality guard; plan: modules/data warehouse_staging.tftest.hcl (prefix expiry, load grants confined to the prefix, none while a store is off). Each mutation-verified and restored with cp and cmp.",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence architecture.rs:967 is stale (test now named no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store); qip-deepbrain/src/warehouse.rs OutcomeSink writes BigQuery directly, bypassing fabric/GCS. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): BigQuery is fed by batch load from Cloud Storage, not by a fabric sink. fabricd has no boot image, while a load needs only the two storage switches already declared. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: The warehouse is fed by batch load from Cloud Storage, amending ADR 0182 decision 4, and no shipped path streams rows."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence architecture.rs:967 is stale (test now named no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store); qip-deepbrain/src/warehouse.rs OutcomeSink writes BigQuery directly, bypassing fabric/GCS. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): BigQuery is fed by batch load from Cloud Storage, not by a fabric sink. fabricd has no boot image, while a load needs only the two storage switches already declared. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: The warehouse is fed by batch load from Cloud Storage, amending ADR 0182 decision 4, and no shipped path streams rows. | 2026-10-31 lane L3-DATA: implemented ADR 0240. Independent skeptic REFUTED promotion (off by default; ADR 0240 itself keeps it PARTIAL until a real load) and found four defects in the first draft, all fixed before commit: no job location on jobs.get (a regional job would 404 and stall the sink), missing jobUser and staging-bucket grants, a clock-derived job id that let a lost load response load twice, and an unbounded reload of a permanently failing batch."
   },
   {
     "id": "R12-DATA-8128",

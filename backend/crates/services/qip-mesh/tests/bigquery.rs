@@ -259,7 +259,7 @@ mod server {
 
 use qip_core::error::Error;
 use qip_mesh::bigquery::{
-    BigQueryConfig, BigQueryWarehouse, InsertRow, QueryParameter, QueryRequest,
+    BigQueryConfig, BigQueryWarehouse, InsertRow, LoadState, QueryParameter, QueryRequest,
 };
 use qip_storage::gcp::{GcpAccess, StaticToken};
 use server::{Action, TestServer};
@@ -276,8 +276,12 @@ fn access_to(server: &TestServer) -> GcpAccess {
 }
 
 fn warehouse(server: &TestServer) -> BigQueryWarehouse {
-    BigQueryWarehouse::new(BigQueryConfig::new("proj", "research").with_access(access_to(server)))
-        .expect("a named project and dataset are a usable configuration")
+    BigQueryWarehouse::new(
+        BigQueryConfig::new("proj", "research")
+            .with_access(access_to(server))
+            .with_location("us-east4"),
+    )
+    .expect("a named project and dataset are a usable configuration")
 }
 #[test]
 fn an_unconfigured_bigquery_warehouse_refuses_and_opens_no_connection() {
@@ -720,4 +724,127 @@ fn a_bigquery_404_names_the_missing_resource_rather_than_reporting_no_rows() {
         matches!(refused, Err(Error::NotFound(_))),
         "a missing table must not look like a table with nothing in it: {refused:?}"
     );
+}
+
+/// ADR 0240's write path: a load job names the staged object, appends to an
+/// existing table, tolerates no bad record and ignores no unknown column, and
+/// carries the caller's job id.
+///
+/// Mutation: drop `"maxBadRecords": 0` from the load configuration — the
+/// shape assertion fails.
+#[test]
+fn a_load_job_appends_one_staged_object_and_tolerates_no_bad_record() {
+    let server = TestServer::always(Action::ok(
+        r#"{"jobReference":{"jobId":"outcomes-1"},"status":{"state":"RUNNING"}}"#,
+    ));
+    let state = warehouse(&server)
+        .load(
+            "resolved_outcomes",
+            "gs://qip-dev-segments-us-central1/warehouse-staging/a.ndjson",
+            "outcomes-1",
+        )
+        .expect("the job is accepted");
+    assert_eq!(state, LoadState::Pending);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].target, "/bigquery/v2/projects/proj/jobs");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json");
+    let load = &body["configuration"]["load"];
+    assert_eq!(body["jobReference"]["jobId"], "outcomes-1");
+    assert_eq!(body["jobReference"]["location"], "us-east4");
+    assert_eq!(load["sourceFormat"], "NEWLINE_DELIMITED_JSON");
+    assert_eq!(load["writeDisposition"], "WRITE_APPEND");
+    assert_eq!(load["createDisposition"], "CREATE_NEVER");
+    assert_eq!(load["maxBadRecords"], 0);
+    assert_eq!(load["ignoreUnknownValues"], false);
+    assert_eq!(load["destinationTable"]["tableId"], "resolved_outcomes");
+    assert_eq!(
+        load["sourceUris"][0],
+        "gs://qip-dev-segments-us-central1/warehouse-staging/a.ndjson"
+    );
+}
+
+/// A retry with the same job id is the same job: BigQuery's 409 is read as
+/// the existing job's state, never as a second load, and the state is read
+/// in the dataset's location, without which a regional job is a 404.
+///
+/// Mutations: return the 409 as an error instead of reading the state — the
+/// retry fails; drop `?location=` from `load_state` — the target assertion
+/// fails.
+#[test]
+fn a_retried_load_reads_the_existing_jobs_state_instead_of_loading_twice() {
+    let server = TestServer::script(vec![
+        Action::json(
+            409,
+            r#"{"error":{"message":"Already Exists: Job proj:outcomes-1"}}"#,
+        ),
+        Action::ok(
+            r#"{"jobReference":{"jobId":"outcomes-1"},"status":{"state":"DONE"},"statistics":{"load":{"outputRows":"3"}}}"#,
+        ),
+    ]);
+    let state = warehouse(&server)
+        .load(
+            "resolved_outcomes",
+            "gs://bucket/warehouse-staging/a.ndjson",
+            "outcomes-1",
+        )
+        .expect("the retry is answered");
+    assert_eq!(
+        state,
+        LoadState::Done {
+            output_rows: Some(3)
+        }
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].method, "GET");
+    assert_eq!(
+        requests[1].target, "/bigquery/v2/projects/proj/jobs/outcomes-1?location=us-east4",
+        "a regional job is found only when the request names its location"
+    );
+}
+
+/// A load that finished with an error finished and did not succeed.
+///
+/// Mutation: read `state` before `errorResult` in `decode_job` — a failed
+/// load reads as done and this fails.
+#[test]
+fn a_finished_load_with_an_error_result_is_failed_not_done() {
+    let server = TestServer::always(Action::ok(
+        r#"{"jobReference":{"jobId":"outcomes-2"},"status":{"state":"DONE","errorResult":{"reason":"invalid","message":"No such field: rationale"}}}"#,
+    ));
+    let state = warehouse(&server)
+        .load_state("outcomes-2")
+        .expect("the state is read");
+    assert!(
+        matches!(&state, LoadState::Failed { reason } if reason.contains("No such field")),
+        "{state:?}"
+    );
+    assert!(
+        warehouse(&server)
+            .load("t", "https://not-a-bucket/x", "outcomes-3")
+            .is_err(),
+        "a load reads only from a gs:// object"
+    );
+}
+
+/// A load with no dataset location is refused before it is sent: its state
+/// could never be read back, so the batch would be pending forever.
+///
+/// Mutation: make `job_location` fall back to an empty string — the load is
+/// sent and this fails.
+#[test]
+fn a_load_with_no_dataset_location_is_refused_before_it_is_sent() {
+    let server = TestServer::always(Action::ok("{}"));
+    let warehouse = BigQueryWarehouse::new(
+        BigQueryConfig::new("proj", "research").with_access(access_to(&server)),
+    )
+    .expect("a configuration");
+    let refused = warehouse.load("t", "gs://bucket/warehouse-staging/a.ndjson", "outcomes-4");
+    assert!(
+        matches!(&refused, Err(error) if error.message().contains("location")),
+        "{refused:?}"
+    );
+    assert_eq!(server.served(), 0, "nothing was sent");
 }
