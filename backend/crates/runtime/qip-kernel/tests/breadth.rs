@@ -1431,3 +1431,93 @@ fn a_revoked_event_permission_withdraws_the_market_at_the_next_cycle() -> Result
     }
     Ok(())
 }
+
+/// R12-ASSET-4073: each unit the simulated merchant delivers becomes a
+/// RealAsset position record carrying the purchase's landed cost and the
+/// unit's state as the inventory ledger holds it, and the record stays in
+/// the commerce research output: the desk's book holds none of it.
+///
+/// Mutation: in `CommerceResearch::position_record`, set the inventory
+/// state from a literal `UnitState::Sold` instead of the ledger read, and
+/// the state assertion fails.
+#[test]
+fn a_received_paper_unit_is_a_real_asset_position_carrying_landed_cost_and_ledger_inventory_and_the_book_is_unchanged()
+-> Result<()> {
+    use qip_financial::asset_class::AssetClass;
+    use qip_financial::commerce::UnitState;
+    let mut platform = platform()?;
+    let book_before = platform.positions_at_cost();
+    platform.install_breadth(
+        &BreadthPlan {
+            commerce: Some(commerce_plan()?),
+            ..BreadthPlan::default()
+        },
+        start(),
+    )?;
+    let mut at = start();
+    for _ in 0..6 {
+        platform.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    let mut runs = Vec::new();
+    for event in platform.event_log().by_topic(Topic::ScenarioEvaluated) {
+        if let Ok(decoded) = StreamEnvelope::from_frame(event)?.decode::<CommerceSimulated>() {
+            runs.push(decoded.body);
+        }
+    }
+    let received: Vec<String> = runs
+        .iter()
+        .flat_map(|run| run.purchases.iter())
+        .flat_map(|purchase| purchase.units.iter().cloned())
+        .collect();
+    assert!(
+        !received.is_empty(),
+        "premise: a unit was received: {runs:?}"
+    );
+    let positions: Vec<&qip_financial::position_record::PositionRecord> =
+        runs.iter().flat_map(|run| run.positions.iter()).collect();
+    assert_eq!(
+        positions
+            .iter()
+            .map(|p| p.asset().to_string())
+            .collect::<Vec<_>>(),
+        received,
+        "one position record per received unit"
+    );
+    // The journal carries each assessment's duty apart (R12-COMMERCE-1093),
+    // so a record's landed cost is matched to its purchase by that figure.
+    let duties: Vec<qip_core::Decimal> = runs
+        .iter()
+        .flat_map(|run| run.assessed.iter())
+        .filter(|assessed| assessed.viable)
+        .map(|assessed| assessed.duty)
+        .collect();
+    for record in &positions {
+        assert_eq!(record.class(), AssetClass::RealAsset);
+        let economics = record
+            .product_economics()
+            .expect("a physical unit carries its landed cost");
+        assert!(
+            economics.goods.is_positive() && duties.contains(&economics.duty),
+            "the landed cost is not the purchase's own: {economics:?} against duties {duties:?}"
+        );
+        assert_eq!(
+            record.inventory_state(),
+            Some(&UnitState::Held),
+            "a unit is held in the ledger at receipt"
+        );
+    }
+    assert_eq!(
+        platform.positions_at_cost(),
+        book_before,
+        "a commerce research unit reached the desk's book"
+    );
+    assert!(
+        platform
+            .positions_at_cost()
+            .keys()
+            .all(|instrument| !received.contains(instrument)),
+        "a received unit is a book position"
+    );
+    Ok(())
+}

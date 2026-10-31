@@ -687,7 +687,7 @@ impl Platform {
             }
         }
         if let Some(research) = self.breadth.commerce.as_mut() {
-            match research.simulate() {
+            match research.simulate(now) {
                 Ok(run) => {
                     outcome.produced += run.assessed.len();
                     outcome.detail.push_str(&format!(
