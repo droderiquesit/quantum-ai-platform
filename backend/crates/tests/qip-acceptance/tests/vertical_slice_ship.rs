@@ -87,7 +87,7 @@ use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
 use qip_strategy::program::Program;
 use qip_streaming::event_fabric::broker::Broker;
-use qip_streaming::event_fabric::service::{SegmentConfigFor, Service};
+use qip_streaming::event_fabric::service::{SegmentConfigFor, Service, TopiclessStreams};
 use qip_transport::event_fabric::auth::{self, BearerToken, IdentityTable};
 use qip_transport::event_fabric::transport::{FabricTransport, HttpTransport};
 use qip_transport::retry::ThreadSleeper;
@@ -231,7 +231,17 @@ impl Fabric {
         let segments: SegmentConfigFor = Arc::new(move |policy: &StreamPolicy| {
             SegmentLogConfig::new(clock.clone()).with_archive_required(policy.archive_required())
         });
-        let service = Arc::new(Service::new(broker, identities, &catalogue, 1, segments).unwrap());
+        let service = Arc::new(
+            Service::new(
+                broker,
+                identities,
+                &catalogue,
+                1,
+                segments,
+                TopiclessStreams::AdmitAll,
+            )
+            .unwrap(),
+        );
         let (listener, address) = listen(&service, "127.0.0.1:0");
         // Opened here, once, before two threads race to open it lazily.
         service.broker().metadata(OUTCOMES, 0).unwrap();

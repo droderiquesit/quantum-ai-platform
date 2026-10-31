@@ -615,8 +615,10 @@ fn cell_configuration(config: &NodeConfig) -> Result<(CellConfig, String)> {
 /// environment `run` reads, read the recorded session off `spool-dir`, and
 /// re-drive every recorded pass against it (`qip_edge_node::replay`).
 ///
-/// The spool is a stopped node's, or a copy: opening a `SegmentLog` recovers
-/// a torn tail, which a running writer must not have done under it. Control
+/// The spool is read through a copy (`replay::with_spool_copy`): opening a
+/// `SegmentLog` recovers a torn tail, and on a running node's spool that tail
+/// is the batch its writer is appending, so the node's own directory is never
+/// the one opened. Control
 /// frames come from the fabric's archive of the control stream when
 /// `QIP_REPLAY_CONTROL_ARCHIVE` names its directory; with no archive a pass
 /// that consumed a control frame is reported as diverged at that frame rather
@@ -654,14 +656,14 @@ fn replay_command(spool: Option<&str>) -> Result<()> {
     let clock = Arc::new(qip_core::ManualClock::new(qip_core::Timestamp::from_secs(
         0,
     )));
-    let log_clock: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
-    let log = SegmentLog::open(spool, SegmentLogConfig::new(log_clock)).map_err(|error| {
-        Error::invalid(format!(
-            "configuration: the spool at {spool} cannot be opened: {}",
-            error.message()
-        ))
-    })?;
-    let session = qip_edge_node::replay::RecordedSession::from_spool(&log)?;
+    let session =
+        qip_edge_node::replay::RecordedSession::from_spool_directory(std::path::Path::new(spool))
+            .map_err(|error| {
+            Error::invalid(format!(
+                "configuration: the spool at {spool} cannot be read: {}",
+                error.message()
+            ))
+        })?;
     let first = session.first_instant().ok_or_else(|| {
         Error::invalid("the spool holds no pass marker; there is no recorded pass to replay")
     })?;

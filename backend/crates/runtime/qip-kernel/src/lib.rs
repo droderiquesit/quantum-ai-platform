@@ -92,6 +92,7 @@ pub mod survival;
 pub mod symbolic_stage;
 pub mod tactical_lane;
 pub mod tail;
+pub mod theory_revision;
 #[cfg(test)]
 pub(crate) mod thesis_fixture;
 pub mod valuation;

@@ -1278,6 +1278,7 @@ mod tests {
         let calibrated = |bias_bps: f64, observations: u64| VenueCalibration {
             bias_bps,
             observations,
+            ..VenueCalibration::default()
         };
         assert_eq!(venue_policy(&base, None), base);
         assert_eq!(

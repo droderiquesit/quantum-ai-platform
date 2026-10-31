@@ -19,13 +19,14 @@ use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, PortfolioId};
 use qip_core::time::Timestamp;
 use qip_core::{Currency, Decimal};
+use qip_financial::history::{UniverseHistory, VenueOutage};
 use qip_financial::universe::Universe;
 use qip_numerics::stats;
 use qip_portfolio::lifecycle::PositionLifecycle;
 use qip_portfolio::portfolio::Portfolio;
 use qip_risk::metrics::RiskMetrics;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What a strategy must provide to be backtested.
 ///
@@ -145,11 +146,13 @@ pub struct BacktestResult {
     /// not to trade. Counting it is what tells the two apart.
     pub superseded: usize,
     /// Venue outages in the universe history that overlap the run, at the
-    /// venues of the instruments the run touched (R12-TICK-2090). A replay
-    /// across a period a venue published nothing is reported, not read as a
-    /// quiet market. Empty for a run given no history.
+    /// venues of the instruments the universe trades on (R12-TICK-2090). A
+    /// replay across a period a venue published nothing is reported, not
+    /// read as a quiet market. Empty for a run given no history, which is
+    /// not the same as a run across no outage; `Backtester::run_with_history`
+    /// is the call that can tell them apart.
     #[serde(default)]
-    pub outages: Vec<qip_financial::history::VenueOutage>,
+    pub outages: Vec<VenueOutage>,
 }
 
 impl BacktestResult {
@@ -285,7 +288,7 @@ impl Backtester {
         Ok(Self { config })
     }
 
-    /// Run one strategy over one clock.
+    /// Run one strategy over one clock, against the present universe alone.
     pub fn run<S: BacktestStrategy>(
         &self,
         strategy: &mut S,
@@ -299,16 +302,20 @@ impl Backtester {
     /// (R12-TICK-2090): an instrument the history says was not listed at a
     /// rebalance — delisted earlier, or not yet listed — is refused there
     /// rather than traded on a membership it did not have, an instrument
-    /// delisted after the window is a member throughout it, and every venue
-    /// outage overlapping the run at a venue the run touched is reported on
-    /// the result. An instrument the history does not name is judged by the
-    /// universe alone, as [`Self::run`] judges everything.
+    /// delisted after the window is a member throughout it, an order at a
+    /// venue the history holds out at that instant is refused naming the
+    /// outage, and every venue outage overlapping the run at a venue the
+    /// universe trades on is reported on the result. An instrument the
+    /// history does not name is judged by the universe alone, as
+    /// [`Self::run`] judges everything: the history is evidence added to the
+    /// universe, never a second universe that could disagree with it about
+    /// contract terms.
     pub fn run_with_history<S: BacktestStrategy>(
         &self,
         strategy: &mut S,
         clock: &mut SimulationClock,
         universe: &Universe,
-        history: &qip_financial::history::UniverseHistory,
+        history: &UniverseHistory,
     ) -> Result<BacktestResult> {
         self.run_inner(strategy, clock, universe, Some(history))
     }
@@ -318,7 +325,7 @@ impl Backtester {
         strategy: &mut S,
         clock: &mut SimulationClock,
         universe: &Universe,
-        history: Option<&qip_financial::history::UniverseHistory>,
+        history: Option<&UniverseHistory>,
     ) -> Result<BacktestResult> {
         clock.reset();
         let Some((started_at, _)) = clock.span() else {
@@ -433,6 +440,23 @@ impl Backtester {
         missing_prices.sort();
         missing_prices.dedup();
 
+        // Every outage inside the span, at every venue the universe trades
+        // on, once each: the run's own account of where the market was out.
+        let mut outages: Vec<VenueOutage> = Vec::new();
+        if let Some(history) = history {
+            let venues: BTreeSet<&str> = universe
+                .iter()
+                .map(|object| object.venue.as_str())
+                .collect();
+            for venue in venues {
+                for outage in history.outages_overlapping(venue, started_at, finished_at) {
+                    if !outages.contains(outage) {
+                        outages.push(outage.clone());
+                    }
+                }
+            }
+        }
+
         // Read off the book rather than accumulated as the run went, so what
         // is reported is the state the positions are actually in at the end
         // and not a log of intentions that a later fill may have overtaken.
@@ -512,7 +536,7 @@ impl Backtester {
         &self,
         portfolio: &mut Portfolio,
         universe: &Universe,
-        history: Option<&qip_financial::history::UniverseHistory>,
+        history: Option<&UniverseHistory>,
         targets: &BTreeMap<String, f64>,
         marks: &BTreeMap<String, Decimal>,
         clock: &SimulationClock,
@@ -562,6 +586,28 @@ impl Backtester {
                     ),
                 });
                 continue;
+            }
+            // A venue the history holds out at this instant is refused with
+            // the outage named (R12-TICK-2090): an outage is a window nothing
+            // trades through, not a quiet market a backtest may fill in.
+            if let Some(history) = history {
+                let instant_after = Timestamp::from_nanos(at.as_nanos().saturating_add(1));
+                if let Some(outage) = history
+                    .outages_overlapping(&object.venue, at, instant_after)
+                    .first()
+                {
+                    rejected.push(RejectedOrder {
+                        at,
+                        object_id: object_key.clone(),
+                        quantity: Decimal::ZERO,
+                        reason: format!(
+                            "venue {} was out from {} until {} ({}); nothing fills through an \
+                             outage",
+                            outage.venue, outage.from, outage.until, outage.reason
+                        ),
+                    });
+                    continue;
+                }
             }
             let Some(fill_price) = clock.fill_price(&object_id, at) else {
                 missing_prices.push(object_key.clone());

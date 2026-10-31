@@ -57,6 +57,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use qip_core::Clock;
+use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
 use qip_events::event_fabric::catalogue::Catalogue;
 use qip_events::event_fabric::policy::StreamPolicy;
@@ -69,7 +70,7 @@ use qip_storage::segment::log::SegmentLogConfig;
 use qip_storage::{BlobStore, CloudStorageBlobStore, CloudStorageConfig, FileBlobStore};
 use qip_streaming::event_fabric::broker::Broker;
 use qip_streaming::event_fabric::managed::ManagedLog;
-use qip_streaming::event_fabric::service::{Handled, SegmentConfigFor, Service};
+use qip_streaming::event_fabric::service::{Handled, SegmentConfigFor, Service, TopiclessStreams};
 use qip_transport::cas::CasIdentity;
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::event_fabric::protocol::Route;
@@ -205,6 +206,22 @@ fn open_archive(target: &ArchiveTarget, clock: Arc<dyn Clock>) -> Result<Arc<dyn
 /// handful of cells, one controller, one ledger) to hold a connection at
 /// once while three quarters of the pool stays open to everyone.
 pub const PRIORITY_RESERVED_CONNECTIONS: usize = 16;
+
+/// What a catalogue stream that names no topic admits on this deployment
+/// (ADR 0215): nothing, unless the deployment is `local`. `local` is the one
+/// deployment that may run a reproducible key or a plaintext link (ADR 0110
+/// decision 5, ADR 0112), and an open stream joins that list for the same
+/// reason: an in-process fixture declares its streams topic-less and
+/// produces raw payloads, and a deployed broker must not. Every deployment
+/// that is not `local` — the four Terraform environments and any variant
+/// added later — closes such a stream, so the fail-closed arm is the one a
+/// new variant falls into.
+pub fn topicless_streams(deployment: Deployment) -> TopiclessStreams {
+    match deployment {
+        Deployment::Local => TopiclessStreams::AdmitAll,
+        _ => TopiclessStreams::AdmitNone,
+    }
+}
 
 /// The protocol listener's limits: the transport's defaults — among them
 /// the connection cap, past which a connection is answered 503 rather than
@@ -683,6 +700,7 @@ fn start_composed(
         &catalogue,
         config.partitions,
         segment_config(clock.clone(), config.segment_bytes),
+        topicless_streams(config.deployment),
     )?);
     // Before anything is served: a partition on a replaced disk is rebuilt
     // from the archive, so it continues the offsets the archive holds rather

@@ -167,10 +167,46 @@ impl TwinState {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorldDriver {
     pub id: String,
+    /// The scenario family the driver's branches belong to (R12-WORLD-9035):
+    /// the class of world it explores, such as `guidance` or
+    /// `monetary_policy`. Two drivers of one family are alternatives of one
+    /// scenario and are weighed against each other in
+    /// [`FutureTree::families`]; a driver of another family is a different
+    /// question, and mixing the two into one distribution lets a family with
+    /// many drivers crowd out one with few. `None` puts the driver in a
+    /// family of its own, named by its id. An empty name, or one of the two
+    /// the tree reserves ([`BASELINE_FAMILY`], [`REALITY_FAMILY`]), is
+    /// refused by [`FutureTree::grow`] rather than merged into the baseline.
+    #[serde(default)]
+    pub family: Option<String>,
     /// Sensitivity of each instrument to one standard-deviation shock of the
     /// driver, as a multiple of the instrument's own volatility.
     pub sensitivities: BTreeMap<String, f64>,
     pub evidence: Vec<String>,
+}
+
+/// The family of the baseline branch: the world continuing on its drift,
+/// which no driver explores and so belongs to no driver's family.
+pub const BASELINE_FAMILY: &str = "baseline";
+
+/// The family of a branch split from reality with no live branch near enough
+/// to inherit a family from.
+pub const REALITY_FAMILY: &str = "reality";
+
+impl WorldDriver {
+    /// The family this driver's branches carry. Refuses an empty name and a
+    /// reserved one, so a driver cannot pose as the baseline.
+    fn family(&self) -> Result<String> {
+        let family = self.family.as_deref().unwrap_or(&self.id);
+        if family.trim().is_empty() || family == BASELINE_FAMILY || family == REALITY_FAMILY {
+            return Err(Error::invalid(format!(
+                "driver {} names the scenario family {family:?}, which is empty or reserved \
+                 for the tree's own branches; name the class of world the driver explores",
+                self.id
+            )));
+        }
+        Ok(family.to_string())
+    }
 }
 
 /// One step of an assumed propagation.
@@ -205,6 +241,10 @@ pub enum BranchStatus {
 pub struct Branch {
     pub id: String,
     pub parent: Option<String>,
+    /// The scenario family the branch belongs to: its driver's, the
+    /// [`BASELINE_FAMILY`], or for a split branch its nearest parent's (the
+    /// [`REALITY_FAMILY`] when it had none).
+    pub family: String,
     pub provenance: Provenance,
     pub probability: f64,
     /// The causal assumptions that produced it: `shock_sigma`,
@@ -290,6 +330,31 @@ pub struct PortfolioOutcome {
     /// Hypothesised portfolio move over the horizon, in basis points of net
     /// asset value.
     pub portfolio_bps: f64,
+}
+
+/// One scenario family's live branches as a distribution of its own
+/// (R12-WORLD-9035).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FamilyPartition {
+    /// The family's share of the tree's live mass. The shares of every
+    /// family in one partition sum to one.
+    pub mass: f64,
+    /// Each live member's probability conditional on the family, by branch
+    /// id. The weights of one family sum to one.
+    pub weights: BTreeMap<String, f64>,
+}
+
+/// The tree's live branches as compact [`qip_contracts::WorldBranch`]
+/// records, partitioned by scenario family (R12-WORLD-9035).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FamilyBranches {
+    /// The records of each family, in branch-id order.
+    pub records: BTreeMap<String, Vec<qip_contracts::WorldBranch>>,
+    /// Live branches with no record, by id, with the contract's reason. The
+    /// baseline and a split branch assume no propagation and so state no
+    /// causal delta, which the contract refuses; they are listed here rather
+    /// than dropped, so a reader can count what the records leave out.
+    pub unrecorded: BTreeMap<String, String>,
 }
 
 /// How a tree grows and is pruned.
@@ -395,6 +460,7 @@ impl FutureTree {
         }
         let mut pending = vec![(
             "baseline".to_string(),
+            BASELINE_FAMILY.to_string(),
             BTreeMap::from([
                 ("shock_sigma".to_string(), 0.0),
                 ("propagation".to_string(), 0.0),
@@ -406,6 +472,7 @@ impl FutureTree {
             false,
         )];
         for driver in drivers {
+            let family = driver.family()?;
             let reached: Vec<(&String, &f64, &InstrumentDynamics)> = driver
                 .sensitivities
                 .iter()
@@ -464,6 +531,7 @@ impl FutureTree {
                         let id = format!("{}:s{shock:+.2}:p{strength:.2}", driver.id);
                         pending.push((
                             id,
+                            family.clone(),
                             BTreeMap::from([
                                 ("shock_sigma".to_string(), shock),
                                 ("propagation".to_string(), *strength),
@@ -486,7 +554,7 @@ impl FutureTree {
                 config.max_branches
             )));
         }
-        for (id, assumptions, evidence, propagation, impact, prior, beyond) in pending {
+        for (id, family, assumptions, evidence, propagation, impact, prior, beyond) in pending {
             let hedges = hedge_for(&impact);
             weights.push(prior);
             branches.insert(
@@ -494,6 +562,7 @@ impl FutureTree {
                 Branch {
                     id,
                     parent: None,
+                    family,
                     provenance: Provenance::Synthetic,
                     probability: prior,
                     assumptions,
@@ -598,6 +667,70 @@ impl FutureTree {
             .collect())
     }
 
+    /// The live branches partitioned by scenario family, each family a
+    /// distribution of its own and the families together a distribution over
+    /// scenarios (R12-WORLD-9035). Pruning removes a branch from its family
+    /// without moving its mass to another, so a family that reality has made
+    /// implausible loses share rather than lending its members' weight to a
+    /// family it never explored. Refuses a tree with no live mass, rather
+    /// than returning families whose weights sum to nothing.
+    pub fn families(&self) -> Result<BTreeMap<String, FamilyPartition>> {
+        let mass: f64 = self.live().map(|b| b.probability).sum();
+        if !mass.is_finite() || mass <= 0.0 {
+            return Err(Error::invalid(
+                "the tree has no live branch with probability, so it has no family to state",
+            ));
+        }
+        let mut members: BTreeMap<&str, Vec<&Branch>> = BTreeMap::new();
+        for branch in self.live() {
+            members.entry(&branch.family).or_default().push(branch);
+        }
+        let mut families = BTreeMap::new();
+        for (family, branches) in members {
+            let within: f64 = branches.iter().map(|b| b.probability).sum();
+            // A family whose every member sits at zero has no conditional
+            // distribution; it is left out rather than given equal weights
+            // nobody computed.
+            if within <= 0.0 {
+                continue;
+            }
+            families.insert(
+                family.to_string(),
+                FamilyPartition {
+                    mass: within / mass,
+                    weights: branches
+                        .iter()
+                        .map(|b| (b.id.clone(), b.probability / within))
+                        .collect(),
+                },
+            );
+        }
+        Ok(families)
+    }
+
+    /// The live branches as compact [`qip_contracts::WorldBranch`] records,
+    /// partitioned by scenario family (R12-WORLD-9035). A branch the
+    /// contract refuses is listed with the refusal, never dropped.
+    pub fn world_branches_by_family(&self) -> FamilyBranches {
+        let mut records: BTreeMap<String, Vec<qip_contracts::WorldBranch>> = BTreeMap::new();
+        let mut unrecorded = BTreeMap::new();
+        for branch in self.live() {
+            match branch.to_world_branch() {
+                Ok(record) => records
+                    .entry(branch.family.clone())
+                    .or_default()
+                    .push(record),
+                Err(error) => {
+                    unrecorded.insert(branch.id.clone(), error.message().to_string());
+                }
+            }
+        }
+        FamilyBranches {
+            records,
+            unrecorded,
+        }
+    }
+
     /// Standardised distance of `moves` from `branch`, over the instruments
     /// both name.
     fn distance(&self, branch: &Branch, moves: &BTreeMap<String, f64>) -> Option<f64> {
@@ -684,6 +817,10 @@ impl FutureTree {
             && self.branches.len() < self.config.max_branches
         {
             let parent = best.clone();
+            let family = parent
+                .as_ref()
+                .and_then(|id| self.branches.get(id))
+                .map_or_else(|| REALITY_FAMILY.to_string(), |b| b.family.clone());
             let id = format!("split:{}:{}", observed.at.as_nanos(), self.observations);
             let mut impact = BTreeMap::new();
             for instrument in self.state.instruments.keys() {
@@ -704,6 +841,7 @@ impl FutureTree {
                 Branch {
                     id: id.clone(),
                     parent,
+                    family,
                     provenance: Provenance::Synthetic,
                     probability,
                     assumptions: BTreeMap::from([("split_from_reality".to_string(), nearest)]),

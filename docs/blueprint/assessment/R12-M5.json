@@ -705,7 +705,7 @@
     "verification": "cargo +1.94.1 test -p qip-edge --test policy_rollback",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 section 11. Mutation fired: multiplying the pass multiplier by the applied belief prior sized 0.5 against 9.5 and the equality assertion failed (premise: both payloads applied and both cells traded). The only admissible future use is a (0,1] narrowing multiplier under its own ADR once ADR 0088 is built and scored; which detector an opportunity id names is ADR 0149. AUDIT-2 2026-10-24: regraded, requirement is a package whose every slot (beliefs and opportunity definitions included) is consumed by the cell; the cell reads no belief prior or opportunity definition value (freshness only, by decision), and the named test asserts the absence of use, so removing the freshness consumption itself passes 2026-10-24 lane L5-EDGE: built in 288e5887. Mutation fired: PolicyItem::BeliefPriors mapped to no capability; the new test fails (the older equality test alone survived this mutation, which is what AUDIT-2 found). Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Findings: R12-REFLEX-5030 is not COMPLETE. Its record in R12-M5.json already says PARTIAL, with deployable=false. Commit 288e5887 fixes only the narrow thing AUDIT-2 found missing, the belief-freshness mutation test.  What 288e5887 did: - Added `a_cell_reads_the_belief_slot_by_its_freshness_and_its_absence_narrows_the_size` in `backend/crates/edge/qip-edge/tests/policy_rollback.rs`, inside `mod belief_is_freshness_only`, after line 455. - The test says it fails if `BeliefPriors` maps to no capability. I did not run it or reproduce that mutation. - For the belief slot only, this covers bar part 1 at the freshness level.  Bar failures: 1. Part 4: the requirement (requirements.md:295) says each of eight slots, opportunity definitions included, is \"consumed by the cell\".    - `OpportunityDefinitions` maps to `None` in `PolicyItem::capability` (qip-contracts/src/policy.rs:192-210). Its staleness narrows nothing.    - `grep -rn 'belief_priors|opportunity_definitions'` over `qip-edge/src` and `qip-edge-node/src` finds nothing. No cell code reads an opportunity definition by value or by freshness.    - The ADR 0149 s7 narrowing filter is not built.    - Beliefs are read for freshness only (ADR 0155 s11). That narrows \"combined with live local state\", and the requirement does not allow it. 2. Part 1: no test fails when the opportunity-definitions slot is ignored, because nothing reads it. The test that two payloads differing in that slot size the same order is a test that nothing uses it. 3. Part 2: the cell pass runs only on `qip-edge-node` with `QIP_VENUE_FEED=simulated`, and no committed environment deploys a node.    - `execution_nodes = {}` in test, stage and prod tfvars.    - dev/terraform.tfvars:268 sets `execution_nodes_enabled = false`. 4. Not checked here: the requirement's sign"
+    "notes": "2026-10-24 ADR 0155 section 11. Mutation fired: multiplying the pass multiplier by the applied belief prior sized 0.5 against 9.5 and the equality assertion failed (premise: both payloads applied and both cells traded). The only admissible future use is a (0,1] narrowing multiplier under its own ADR once ADR 0088 is built and scored; which detector an opportunity id names is ADR 0149. AUDIT-2 2026-10-24: regraded, requirement is a package whose every slot (beliefs and opportunity definitions included) is consumed by the cell; the cell reads no belief prior or opportunity definition value (freshness only, by decision), and the named test asserts the absence of use, so removing the freshness consumption itself passes 2026-10-24 lane L5-EDGE: built in 288e5887. Mutation fired: PolicyItem::BeliefPriors mapped to no capability; the new test fails (the older equality test alone survived this mutation, which is what AUDIT-2 found). Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Findings: R12-REFLEX-5030 is not COMPLETE. Its record in R12-M5.json already says PARTIAL, with deployable=false. Commit 288e5887 fixes only the narrow thing AUDIT-2 found missing, the belief-freshness mutation test.  What 288e5887 did: - Added `a_cell_reads_the_belief_slot_by_its_freshness_and_its_absence_narrows_the_size` in `backend/crates/edge/qip-edge/tests/policy_rollback.rs`, inside `mod belief_is_freshness_only`, after line 455. - The test says it fails if `BeliefPriors` maps to no capability. I did not run it or reproduce that mutation. - For the belief slot only, this covers bar part 1 at the freshness level.  Bar failures: 1. Part 4: the requirement (requirements.md:295) says each of eight slots, opportunity definitions included, is \"consumed by the cell\".    - `OpportunityDefinitions` maps to `None` in `PolicyItem::capability` (qip-contracts/src/policy.rs:192-210). Its staleness narrows nothing.    - `grep -rn 'belief_priors|opportunity_definitions'` over `qip-edge/src` and `qip-edge-node/src` finds nothing. No cell code reads an opportunity definition by value or by freshness.    - The ADR 0149 s7 narrowing filter is not built.    - Beliefs are read for freshness only (ADR 0155 s11). That narrows \"combined with live local state\", and the requirement does not allow it. 2. Part 1: no test fails when the opportunity-definitions slot is ignored, because nothing reads it. The test that two payloads differing in that slot size the same order is a test that nothing uses it. 3. Part 2: the cell pass runs only on `qip-edge-node` with `QIP_VENUE_FEED=simulated`, and no committed environment deploys a node.    - `execution_nodes = {}` in test, stage and prod tfvars.    - dev/terraform.tfvars:268 sets `execution_nodes_enabled = false`. 4. Not checked here: the requirement's sign Owner ruling 2026-10-31 (IMPLEMENT): Belief priors stay freshness-only. A belief value never sizes an order until ADR 0088's belief is built and Brier-scored, and then only as a (0,1] narrowing multiplier under its own record. Handed to lane L5 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-REFLEX-5031",
@@ -839,7 +839,7 @@
       "backend/crates/apps/qip-edge-node/src/feed.rs:119 SIMULATED_FEED only",
       "backend/crates/apps/qip-edge-node/src/main.rs:724"
     ],
-    "gap": "A native feed transport (multicast/session) in the node.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. A native venue feed needs a licensed source and a venue connection, and both come from vendors I have not bought. QIP_VENUE_FEED keeps `simulated` as its only value. The row stays PARTIAL until a licence record under ADR 0157 and venue access exist. Closes on: The owner obtains venue market-data access and commits its licence record (ADR 0157). Then a lane adds a native transport in qip-edge-node feed.rs feeding Cell::on_bytes, proven by a recorded-capture decode test with a decoder-field mutation. Earlier: A native feed transport (multicast/session) in the node.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -850,7 +850,7 @@
     "verification": "cargo test -p qip-protocols; node test with a recorded native capture",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): A native venue feed needs a licensed source and a venue connection, and both come from vendors I have not bought."
   },
   {
     "id": "R12-REFLEX-5037",
@@ -996,7 +996,7 @@
     "verification": "cargo test -p qip-edge-node --test arbitrage",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure (run qip_arbitrage::search over the full venue graph) presumes a full graph; the whitelist is the only source of conversions and the module doc states a cycle is never built from a book alone because that would trade a conversion nobody permitted."
+    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure (run qip_arbitrage::search over the full venue graph) presumes a full graph; the whitelist is the only source of conversions and the module doc states a cycle is never built from a book alone because that would trade a conversion nobody permitted. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Discovery proposes and the operator permits. The signed policy carries an operator-signed market reference, and the cell reports any cycle it finds outside the whitelist and sends nothing on it. Handed to lane L5b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered."
   },
   {
     "id": "R12-REFLEX-5043",
@@ -1404,7 +1404,7 @@
     "verification": "kernel test producing a whitelist from discovery",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The centre discovers templates only inside what the operator signed. Slot 8 carries the operator's conversions narrowed to the cycles the centre finds over them, so stopping discovery empties it. Handed to lane L5b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered."
   },
   {
     "id": "R12-MESH-5060",
@@ -1517,9 +1517,11 @@
     "current": "LegPlanner::plan always orders legs ascending by reversibility, least reversible first (backend/crates/edge/qip-arbitrage/src/plan.rs:130-150). The cell's decomposition and passive-first mechanisms choose between all-at-once and resting one leg by measured fill time (CycleRested, libs/qip-contracts/src/reflex.rs:388-410). No cycle policy field selects 'concurrent' versus 'risk-ordered': grep for concurrent/LegOrder/ExecutionPolicy in qip-arbitrage, qip-edge and qip-contracts finds none.",
     "evidence": [
       "backend/crates/edge/qip-arbitrage/src/plan.rs:130",
-      "edge/qip-arbitrage/tests/arbitrage.rs::the_least_reversible_leg_is_planned_first"
+      "edge/qip-arbitrage/tests/arbitrage.rs::the_least_reversible_leg_is_planned_first",
+      "docs/adr/0154 decision 5 (legs stay sequential, no Concurrent arm)",
+      "backend/crates/edge/qip-edge/src/cell.rs::Cell::place_cycle; src/passive.rs"
     ],
-    "gap": "No per-cycle policy field selects concurrent versus risk-ordered legs: CycleWhitelist (qip-contracts policy.rs) carries cycles, conversions and start_sizes; qip-edge-node's desk_from_whitelist_in builds PlanSettings::with_budget(PLAN_BUDGET) from a literal; LegPlanner::plan always sorts legs least-reversible first, and LegPlan consumers read steps by position. A Concurrent arm loosens the stranded-leg protection the ordering exists for, so it needs the cell's send path and the residual-risk budget (LegPlan::residual_after assumes sequential completion) revisited together, and a decision on who may select it.",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): legs stay risk-ordered, on paper as anywhere else (ADR 0154 decision 5: 'Legs stay sequential. No Concurrent arm'). A Concurrent arm removes the ordering that bounds a stranded leg (qip-arbitrage plan.rs::LegPlanner::plan sorts least-reversible first, LegPlan::residual_after assumes sequential completion, qip-edge cell.rs::Cell::place_cycle sends whole or rests the slow leg through passive.rs, sizing each leg by the previous fill), and no delegation loosens a risk control, so it cannot be implemented under tightens_only. The requirement text stands and the row stays PARTIAL on its concurrent clause; it waits for a RISK record that brings the forfeited-edge measurement ADR 0154's dissent asks for. Earlier: No per-cycle policy field selects concurrent versus risk-ordered legs: CycleWhitelist (qip-contracts policy.rs) carries cycles, conversions and start_sizes; qip-edge-node's desk_from_whitelist_in builds PlanSettings::with_budget(PLAN_BUDGET) from a literal; LegPlanner::plan always sorts legs least-reversible first, and LegPlan consumers read steps by position. A Concurrent arm loosens the stranded-leg protection the ordering exists for, so it needs the cell's send path and the residual-risk budget (LegPlan::residual_after assumes sequential completion) revisited together, and a decision on who may select it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1530,7 +1532,7 @@
     "verification": "cargo test -p qip-arbitrage --test arbitrage",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L24 2026-10-18 re-graded: not a one-field change; a field the planner honoured but the send path ignored would be a policy that reads as a control and cannot fire. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: not a one-field change; a field the planner honoured but the send path ignored would be a policy that reads as a control and cannot fire. Kept PARTIAL. Owner ruling 2026-10-31 (REGRADE_TEXT): Legs stay risk-ordered, on paper as anywhere else. A Concurrent arm removes the ordering that bounds a stranded leg, and no delegation loosens a risk control."
   },
   {
     "id": "R12-MESH-5065",
@@ -2006,7 +2008,7 @@
     "verification": "cargo test -p qip-prediction -p qip-kernel --no-fail-fast",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Event-market resolution runs in the cycle' holds only when QIP_DEEPBRAIN_BREADTH_PLAN is set; no committed deployment sets it, so it is not on a shipped default path. 2026-10-31 lane L6-platform: corroboration implemented under the owner's ruling (an oracle's report never resolves a market by itself). Mutation-verified: skipping the evaluate check in corroborate fails the contradiction test (left Proposed cut, right Pending); accepting a report with no held observation fails the no-observation test; disabling the source check fails the stranger-source test; a synthetic oracle reporting the next outcome over fails the arbitrage.rs 24-seed test and breadth.rs's proposed-then-final test. Status unchanged."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Event-market resolution runs in the cycle' holds only when QIP_DEEPBRAIN_BREADTH_PLAN is set; no committed deployment sets it, so it is not on a shipped default path. Owner ruling 2026-10-31 (IMPLEMENT): An oracle's report never resolves a market by itself. discover proposes a resolution only when the market's own criteria, evaluated over named observations from its named source, agree with the report. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. 2026-10-31 lane L6-platform: corroboration implemented under the owner's ruling (an oracle's report never resolves a market by itself). Mutation-verified: skipping the evaluate check in corroborate fails the contradiction test (left Proposed cut, right Pending); accepting a report with no held observation fails the no-observation test; disabling the source check fails the stranger-source test; a synthetic oracle reporting the next outcome over fails the arbitrage.rs 24-seed test and breadth.rs's proposed-then-final test. Status unchanged."
   },
   {
     "id": "R12-EVENT-5084",
@@ -2461,7 +2463,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 ADR 0155 section 17: gap restated, PARTIAL kept; no code. DigitalAsset is registered with exchange T+0 settlement and a crypto spot fills on the simulated broker."
+    "notes": "2026-10-24 ADR 0155 section 17: gap restated, PARTIAL kept; no code. DigitalAsset is registered with exchange T+0 settlement and a crypto spot fills on the simulated broker. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Crypto trades on paper through the same simulated gateway as every class, and its settlement is simulated there too. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Digital assets settle on paper through a simulated chain: proceeds wait on an operator-declared finality depth, a bridge is a declared delay and fee, and nothing signs or broadcasts a transaction."
   },
   {
     "id": "R12-COVERAGE-5104",
@@ -2481,7 +2483,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Event contracts trade on paper only. An event contract is a fully-funded payoff bounded to one unit, priced only where the simulated exchange prints it, and settled only on an operator-declared, dated outcome. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: An event contract is a fully-funded payoff bounded to one unit, traded only where the simulated exchange prints it and settled only on a declared outcome; a prediction-market venue stays unlicensed."
   },
   {
     "id": "R12-COVERAGE-5105",

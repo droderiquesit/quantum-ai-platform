@@ -45,6 +45,7 @@ fn config() -> TreeConfig {
 fn driver() -> WorldDriver {
     WorldDriver {
         id: "evt-strike".into(),
+        family: None,
         sensitivities: BTreeMap::from([("obj-ACME".to_string(), -1.0)]),
         evidence: vec!["wire:strike-announced".into()],
     }
@@ -188,6 +189,157 @@ fn reality_reweights_toward_the_branch_it_resembles_and_prunes_the_implausible()
         ));
     }
     assert!(report.log_score.is_finite());
+    Ok(())
+}
+
+fn family_driver(id: &str, family: &str, instrument: &str, sensitivity: f64) -> WorldDriver {
+    WorldDriver {
+        id: id.into(),
+        family: Some(family.into()),
+        sensitivities: BTreeMap::from([(instrument.to_string(), sensitivity)]),
+        evidence: vec![format!("wire:{id}")],
+    }
+}
+
+/// R12-WORLD-9035. A tree over drivers of two scenario families, reweighted
+/// and pruned by reality, still states each family as a distribution whose
+/// weights sum to one, the families together as one, and never holds more
+/// branches than its bound. Mutations: divide a member's weight by the
+/// tree's live mass instead of its family's; give every driver branch the
+/// baseline family; read a driver's family from its id; drop the bound check
+/// before a split.
+#[test]
+fn live_branch_weights_sum_to_one_within_each_family_after_pruning() -> Result<()> {
+    let state = TwinState::fit(&series(200), at(199))?;
+    let drivers = [
+        family_driver("evt-guide-up", "guidance", "obj-ACME", 1.0),
+        family_driver("evt-guide-beta", "guidance", "obj-BETA", 1.0),
+        family_driver("evt-rates", "rates", "obj-ACME", -1.0),
+    ];
+    // 3 drivers x 3 sizes x 2 signs x 2 strengths, plus the baseline, plus
+    // room for exactly one split.
+    let bound = 3 * 3 * 2 * 2 + 1 + 1;
+    let mut tree = FutureTree::grow(
+        &state,
+        &drivers,
+        TreeConfig {
+            max_branches: bound,
+            ..config()
+        },
+    )?;
+    let sum_to_one = |tree: &FutureTree| -> Result<()> {
+        let families = tree.families()?;
+        let mass: f64 = families.values().map(|f| f.mass).sum();
+        assert!((mass - 1.0).abs() < 1e-9, "family masses sum to {mass}");
+        for (family, partition) in &families {
+            let within: f64 = partition.weights.values().sum();
+            assert!(
+                (within - 1.0).abs() < 1e-9,
+                "family {family}'s weights sum to {within}"
+            );
+            for id in partition.weights.keys() {
+                assert_eq!(&tree.branches[id].family, family, "{id} filed elsewhere");
+                assert_eq!(tree.branches[id].status, BranchStatus::Live, "{id} pruned");
+            }
+        }
+        Ok(())
+    };
+    let families = tree.families()?;
+    assert_eq!(
+        families.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["baseline", "guidance", "rates"],
+        "the two guidance drivers are one family, and the baseline its own"
+    );
+    assert_eq!(families["guidance"].weights.len(), 24);
+    sum_to_one(&tree)?;
+
+    // Reality lands on one guidance world: the others are pruned.
+    let target = tree.branches["evt-guide-up:s+6.00:p1.00"]
+        .impact_bps
+        .clone();
+    let report = tree.observe(&ObservedMoves {
+        at: at(260),
+        moves_bps: target,
+    })?;
+    assert!(
+        !report.pruned.is_empty(),
+        "premise: reality pruned branches"
+    );
+    assert!(report.split.is_none(), "premise: reality was on a branch");
+    sum_to_one(&tree)?;
+    assert!(
+        tree.families()?
+            .values()
+            .map(|f| f.weights.len())
+            .sum::<usize>()
+            < bound - 1,
+        "pruned branches left their families"
+    );
+
+    // Reality far outside every branch splits one in, inheriting its nearest
+    // parent's family; a second time, the tree is at its bound and does not.
+    // The second lands far from the first split too, so only the bound
+    // stops it splitting.
+    let far = |at_s, sign: f64| ObservedMoves {
+        at: at(at_s),
+        moves_bps: BTreeMap::from([
+            ("obj-ACME".to_string(), sign * 300.0),
+            ("obj-BETA".to_string(), -sign * 300.0),
+        ]),
+    };
+    let split = tree
+        .observe(&far(320, 1.0))?
+        .split
+        .expect("premise: a split");
+    let parent = tree.branches[&split]
+        .parent
+        .clone()
+        .expect("a nearest parent");
+    assert_eq!(tree.branches[&split].family, tree.branches[&parent].family);
+    sum_to_one(&tree)?;
+    assert!(
+        tree.observe(&far(380, -1.0))?.split.is_none(),
+        "split past the bound"
+    );
+    assert!(
+        tree.branches.len() <= bound,
+        "{} branches",
+        tree.branches.len()
+    );
+    sum_to_one(&tree)?;
+
+    // The records are partitioned the same way, and what the contract
+    // refuses is listed rather than lost.
+    let records = tree.world_branches_by_family();
+    let live = tree.live().count();
+    let recorded: usize = records.records.values().map(Vec::len).sum();
+    assert_eq!(recorded + records.unrecorded.len(), live);
+    for (family, branches) in &records.records {
+        for record in branches {
+            assert_eq!(&tree.branches[&record.branch_id].family, family);
+        }
+    }
+    Ok(())
+}
+
+/// A driver cannot name an empty family or pose as the baseline: its
+/// branches would be weighed as the world continuing. Mutation: accept any
+/// name in `WorldDriver::family`.
+#[test]
+fn a_driver_naming_an_empty_or_reserved_family_is_refused_by_name() -> Result<()> {
+    let state = TwinState::fit(&series(200), at(199))?;
+    for family in ["", "  ", "baseline", "reality"] {
+        let refused = FutureTree::grow(
+            &state,
+            &[family_driver("evt-x", family, "obj-ACME", 1.0)],
+            config(),
+        )
+        .expect_err("a reserved or empty family was accepted");
+        assert!(refused.message().contains("evt-x"), "{}", refused.message());
+    }
+    let named = family_driver("evt-x", "guidance", "obj-ACME", 1.0);
+    let tree = FutureTree::grow(&state, &[named], config())?;
+    assert!(tree.live().any(|b| b.family == "guidance"));
     Ok(())
 }
 
@@ -337,6 +489,87 @@ fn a_scenario_world_yields_a_portfolio_outcome_distribution_whose_weights_sum_to
     assert!(
         tree.portfolio_outcomes(&BTreeMap::from([("obj-ACME".to_string(), f64::NAN)]))
             .is_err()
+    );
+    Ok(())
+}
+
+/// R12-TICK-2080: the twin's impact model is calibrated from the platform's
+/// own fills, not only its spread. Fills whose error grows with the square
+/// root of their participation — a purely size-dependent misfit, no bias —
+/// move the impact coefficient toward what the fills charged and leave the
+/// spread where it was; fills with no participation beside them move the
+/// spread alone, as before.
+///
+/// Mutation: make `observe_with_participation` ignore the participation and
+/// update the bias alone — the impact coefficient never moves and the first
+/// assertion fails.
+#[test]
+fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficient_moves_toward_the_observed_fills()
+-> Result<()> {
+    let base = CostModel::liquid_equity();
+    let mut calibration = FillCalibration::default();
+    // Reality charged 20 bps more impact per unit of sqrt(participation)
+    // than the twin priced, on fills of four sizes, forty times over.
+    let participations: [f64; 4] = [0.01, 0.04, 0.09, 0.16];
+    for round in 0..40 {
+        let participation = participations[round % participations.len()];
+        let error_bps = -20.0 * participation.sqrt();
+        calibration.observe_with_participation("XLON", error_bps, Some(participation))?;
+    }
+    let calibrated = calibration.cost_model(&base, "XLON");
+    assert!(
+        calibrated.impact_coefficient_bps > base.impact_coefficient_bps + 10.0,
+        "the impact coefficient did not move toward the observed fills: {} -> {}",
+        base.impact_coefficient_bps,
+        calibrated.impact_coefficient_bps
+    );
+    assert!(
+        (calibrated.half_spread_bps - base.half_spread_bps).abs() < 3.0,
+        "a size-dependent error was charged to the spread: {} -> {}",
+        base.half_spread_bps,
+        calibrated.half_spread_bps
+    );
+    let venue = calibration.venue("XLON").expect("calibrated");
+    assert_eq!(venue.participation_observations, 40);
+    assert_eq!(venue.observations, 40);
+
+    // Without participation the slope is untouched and the spread moves.
+    let mut blind = FillCalibration::default();
+    for _ in 0..20 {
+        blind.observe_with_participation("XLON", -12.0, None)?;
+    }
+    let venue = blind.venue("XLON").expect("calibrated");
+    assert_eq!(venue.impact_slope_bps, 0.0);
+    assert_eq!(venue.participation_observations, 0);
+    assert!(blind.cost_model(&base, "XLON").half_spread_bps > base.half_spread_bps + 10.0);
+
+    assert!(
+        calibration
+            .observe_with_participation("XLON", -1.0, Some(1.5))
+            .is_err(),
+        "a fill that took more than the bar traded is refused"
+    );
+
+    // Fills that are one size for the twin's purposes — a share against bars
+    // of slightly different volume — carry no size law however wild their
+    // errors, and the slope holds still while the spread takes them. Before
+    // the identifiability floor two such fills fitted a slope of thousands of
+    // basis points per unit root and the twin's impact term left the earth.
+    let mut one_size = FillCalibration::default();
+    one_size.observe_with_participation("XLON", -30.0, Some(1.0e-6))?;
+    one_size.observe_with_participation("XLON", 25.0, Some(2.0e-6))?;
+    one_size.observe_with_participation("XLON", -40.0, Some(1.5e-6))?;
+    let venue = one_size.venue("XLON").expect("calibrated");
+    assert_eq!(venue.participation_observations, 3);
+    assert_eq!(
+        venue.impact_slope_bps, 0.0,
+        "fills of one size fitted a size law: {}",
+        venue.impact_slope_bps
+    );
+    assert!(
+        (one_size.cost_model(&base, "XLON").impact_coefficient_bps - base.impact_coefficient_bps)
+            .abs()
+            < 1e-12
     );
     Ok(())
 }

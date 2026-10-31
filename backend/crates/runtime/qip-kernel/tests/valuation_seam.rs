@@ -818,13 +818,25 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
 
     // Observed before either loop below submits anything, so a fill decided
     // two days in (see `fill_time`) has a price to execute against.
-    platform.observe(flat_after("AAA", start(), 7, 110.0));
+    // The level the tape settles on after the reference instant, and the
+    // level the compounding cycle's fresh move below comes off: one number,
+    // so the two cannot drift apart into a jump nobody meant.
+    const PLATEAU: f64 = 110.0;
+    platform.observe(flat_after("AAA", start(), 7, PLATEAU));
 
-    // The evidence: ten buys a control refused at the reference instant,
-    // against a flat tape ten percent higher. A rise after a declined buy is
-    // what the twin charges it a loss for (the direction convention
-    // `qip-kernel/tests/learning.rs` states), so every decline scores as
-    // correctly declined and ADR 0055's bar is cleared.
+    // The evidence: ten buys a control refused two days in, on the plateau.
+    // A declined buy whose twin entry and exit both sit on the flat plateau
+    // has a `trade` arm with an identical entry and exit price, so its gross
+    // is exactly zero and what it would have earned is minus its own costs:
+    // every decline scores as correctly declined on the costs alone, and
+    // ADR 0055's bar is cleared without a directional move doing the work.
+    // (Until 2026-10-31 the declines were taken at the reference instant
+    // against this plateau ten percent above their entry, and the comment
+    // called that rise the loss, because the twin's `ActualTrade::direction`
+    // read a buy as a short. A rise after a declined buy is the regret it
+    // always was — `qip-kernel/tests/learning.rs` pins the direction — and
+    // the compounding cycle below needs the plateau where it is, so the
+    // declines moved onto it rather than the tape under them.)
     let fill_time = start().saturating_add(Duration::from_days(2));
     for n in 0..10 {
         let declined = platform.order_from(
@@ -834,10 +846,10 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
             dec!("100"),
             &format!("prop-declined-{n}"),
             Vec::new(),
-            start(),
+            fill_time,
         );
         assert!(
-            platform.submit_order(declined, start()).is_err(),
+            platform.submit_order(declined, fill_time).is_err(),
             "an untraceable order was accepted"
         );
         // One share each, so that what the fills do to the book — their
@@ -845,8 +857,8 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
         // it and the budget below can be stated on the book rather than read
         // back; ten thousand-share fills moved it by three percent.
         //
-        // Decided two days after the declines, once the tape has already
-        // settled onto the flat 110 plateau rather than during the move
+        // Decided two days after the reference instant, once the tape has
+        // already settled onto the flat plateau rather than during the move
         // that produced it — deliberately, not incidentally. A fill whose
         // entry and exit both sit on the plateau has a twin `trade` arm
         // with an *identical* entry and exit price, so its gross is exactly
@@ -894,7 +906,7 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
         platform
             .declined_scores()
             .iter()
-            .map(|score| score.regret)
+            .map(|score| (score.regret, score.would_have_earned))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -915,8 +927,8 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
     assert_eq!(platform.sizing_cap_multiplier("obj-AAA"), dec!("0.5"));
 
     // The compounding cycle, on the same kind of fresh move the reference
-    // reasoned on: the reference tape's last-bar drop, off the 110 plateau,
-    // on the first day after it. Since ADR 0170 the verifier society's
+    // reasoned on: the reference tape's last-bar drop, off the plateau, on
+    // the first day after it. Since ADR 0170 the verifier society's
     // refutation vetoes an approved thesis, and on the plateau itself it
     // rightly did: the equity analyst read the risen price against the claim
     // at 0.68 conviction and one detector carried over 80% of the support,
@@ -925,7 +937,12 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
     // asserted active below, so moving the instant past the plateau changes
     // nothing this test claims.
     let compounding = start().saturating_add(Duration::from_days(8));
-    platform.observe(vec![bar("AAA", compounding, 110.0, 110.0 * (1.0 + DROP))]);
+    platform.observe(vec![bar(
+        "AAA",
+        compounding,
+        PLATEAU,
+        PLATEAU * (1.0 + DROP),
+    )]);
     let report = platform.run_cycle(compounding);
     assert!(report.traversed_every_stage(), "{}", report.summarise());
     let compounded = platform
@@ -1697,5 +1714,147 @@ fn an_approved_hypothesis_the_verifier_society_refutes_forms_no_proposal() -> Re
         "a refuted thesis reached a proposal: {}",
         proposal.rationale
     );
+    Ok(())
+}
+
+/// A quote on `symbol` whose spread is `bps` basis points of a hundred-dollar
+/// mid, so the manipulation critic has a quoted spread history to read.
+fn quote(symbol: &str, at: Timestamp, bps: f64) -> Result<SensedRecord> {
+    let half = 100.0 * bps / 20_000.0;
+    let price = |value: f64| {
+        Decimal::from_f64(value)
+            .ok_or_else(|| qip_core::error::Error::numeric(format!("{value} has no decimal form")))
+    };
+    Ok(SensedRecord::Quote(qip_market::quote::Quote {
+        object_id: object(symbol),
+        venue: "XNYS".to_string(),
+        at,
+        capture_time: at,
+        sequence: None,
+        bid: price(100.0 - half)?,
+        ask: price(100.0 + half)?,
+        bid_size: dec!("1000"),
+        ask_size: dec!("1000"),
+        quality: DataQuality::default(),
+    }))
+}
+
+/// The verifications the tournament journaled, oldest first.
+fn journaled_verifications(
+    platform: &Platform,
+) -> Result<Vec<qip_learning_engine::verifier::Verification>> {
+    use qip_events::EventBody;
+    use qip_kernel::model_tournament::{TOURNAMENT_ORIGIN, TournamentReview};
+    let mut out = Vec::new();
+    for record in platform.event_log().records() {
+        if record.event.topic != TournamentReview::TOPIC
+            || record.event.lineage.producer != TOURNAMENT_ORIGIN
+        {
+            continue;
+        }
+        let review = qip_streaming::envelope::StreamEnvelope::from_frame(&record.event)?
+            .decode::<TournamentReview>()?
+            .body;
+        out.extend(review.verifications);
+    }
+    Ok(out)
+}
+
+/// R12-REASON-3108 on the default cycle, not on a hand-built dossier: once
+/// the cycle has fed the critics what they read — a quoted spread history
+/// for manipulation, a regime mark on the subject for structural break
+/// (every priced subject is marked, not only causal-edge effects), and
+/// scored forecasters for model risk, which the tournament produces when
+/// the first question resolves — every one of the eight critics examines
+/// an important prediction rather than abstaining. Until the regime tracker
+/// read every priced subject, the structural-break critic abstained on
+/// every subject nobody had drawn a causal edge to, which on this fixture
+/// is the only subject there is.
+///
+/// Mutation: in `Platform::mark_regime_transitions`, drop the
+/// `price_history` keys from the subject set (back to causal effects only)
+/// — the structural-break critic abstains on every cycle and the assertion
+/// names it. Verified and restored.
+#[test]
+fn every_critic_examines_an_important_prediction_once_the_cycle_has_fed_it() -> Result<()> {
+    use qip_learning_engine::verifier::{CriticKind, CriticVerdict};
+    let universe = {
+        let mut universe = Universe::new();
+        universe.insert(listed("AAA")?)?;
+        universe
+    };
+    let mut platform = platform_over(universe, leverage_only())?;
+    platform.observe(tape("AAA"));
+    for minute in 0..3 {
+        platform.observe(vec![quote(
+            "AAA",
+            start().saturating_sub(Duration::from_mins(3 - minute)),
+            8.0,
+        )?]);
+    }
+    platform.run_cycle(start());
+    // Premise: the first cycle opened a question the forecasters answered;
+    // its resolution is what gives the model-risk critic a record to read.
+    let question = platform
+        .model_tournament()
+        .open_questions()
+        .next()
+        .cloned()
+        .ok_or_else(|| qip_core::error::Error::not_found("the first cycle opened no question"))?;
+    let resolves_at = question.spec().resolves_at;
+    platform.observe(flat_after("AAA", start(), 7, 110.0));
+
+    let mut examined_by: Vec<CriticKind> = Vec::new();
+    let mut abstained: Vec<(CriticKind, String)> = Vec::new();
+    let mut day = 1i64;
+    while day <= 40 {
+        let at = start().saturating_add(Duration::from_days(day));
+        if at >= resolves_at.saturating_add(Duration::from_days(1)) {
+            platform.observe(vec![bar("AAA", at, 110.0, 110.0)]);
+        }
+        platform.observe(vec![quote("AAA", at, 8.0)?]);
+        platform.run_cycle(at);
+        // The society also attacks models at promotion review; only a
+        // prediction's attack is the eight critics the requirement names.
+        let predictions: Vec<_> = journaled_verifications(&platform)?
+            .into_iter()
+            .filter(|v| {
+                matches!(
+                    v.target,
+                    qip_learning_engine::verifier::Target::Prediction { .. }
+                )
+            })
+            .collect();
+        if let Some(latest) = predictions.last() {
+            examined_by = latest
+                .findings
+                .iter()
+                .filter(|f| !matches!(f.verdict, CriticVerdict::Abstained { .. }))
+                .map(|f| f.critic)
+                .collect();
+            abstained = latest
+                .findings
+                .iter()
+                .filter_map(|f| match &f.verdict {
+                    CriticVerdict::Abstained { missing } => Some((f.critic, missing.clone())),
+                    _ => None,
+                })
+                .collect();
+            if examined_by.len() == CriticKind::ALL.len() {
+                break;
+            }
+        }
+        day += 1;
+    }
+    assert!(
+        !examined_by.is_empty(),
+        "premise: no important prediction was attacked within forty days"
+    );
+    for kind in CriticKind::ALL {
+        assert!(
+            examined_by.contains(&kind),
+            "{kind:?} never examined an important prediction on the cycle; abstaining: {abstained:?}"
+        );
+    }
     Ok(())
 }
