@@ -1,0 +1,1663 @@
+R12-CICD-9083: commit the running round's lane manifest and require the Agent-Lane trailer
+==========================================================================================
+
+Lane L6 (l6-platform) wrote this file. It changes protected paths
+(scripts/agent-policy.json, scripts/lanes/**, the guard's tests,
+.github/workflows/ci.yml), so it is a patch for the orchestrator to apply.
+git apply ignores everything above the first "diff --git" line.
+
+WHAT IT DOES
+
+The owner's ruling of 2026-10-31 on CICD-9083 says: "Require the trailer:
+from the instant the running round's manifest is committed, every agent commit
+names its lane, and one that names none is refused, the orchestrator's
+included." The patch does six things.
+
+1. Adds scripts/lanes/round-wave1031.json, the running round as 39 lanes.
+   Each of the eleven sessions (L1, L1b, L2, L2b, L3, L3b, L4, L4b, L5, L5b,
+   L6) on branch ccr-d1bc1e54-kf6mr0-<session> is split by role into
+   <session>-code (backend-engineer), -tests (test-engineer), -docs
+   (technical-writer) and, for L1b and L6, -platform (cloud-platform-engineer).
+   Four orchestrator lanes on ccr-116bbb27-osu8n8 (orchestrator-code, -tests,
+   -docs, -platform) each depend on all 35 session lanes. Territories come
+   from the branches' diffs since 725c180b, read at e1563525. The manifest's
+   "comment" says how they were read, how overlaps are ordered (by merge
+   order within each role), and which paths no role may edit.
+2. Points scripts/agent-policy.json lane_manifest.path at that manifest.
+3. Sets lane_manifest.trailer_required_after to the placeholder
+   REPLACE-WITH-THE-INSTANT-OF-THE-APPLY-COMMIT, and updates the comment.
+4. Updates scripts/agent-guard.test.mjs and scripts/agent-lanes.test.mjs:
+   - the round-3 lane tests read round-3.json as a fixture;
+   - the role, protection, review and range tests run with the trailer
+     off, because their fixture commits name no lane;
+   - new tests check the committed switch and the new manifest.
+5. Points ci.yml's scripts job validate step at the new manifest.
+6. Updates scripts/game-day/agent-escalation.mjs, the agent-authority drill
+   (SEC-10157), and its tests in harness.test.mjs.
+   - The drill judges the committed policy. With the switch on, its control
+     attempt (an unlaned in-role change) would be refused, and every other
+     attempt would be refused for the missing lane as well as for its own
+     rule. A broken protected-path rule would then read as held.
+   - To prevent that, the existing attempts are dated before any switch.
+   - A new attempt, "an agent commit naming no lane, made now, after the
+     lane-trailer instant", is dated at the drill's instant and must be
+     refused.
+   - A new harness test proves the drill fails on that attempt alone when
+     the switch is off.
+
+THE PLACEHOLDER, AND WHY NOT null
+
+agent-guard.mjs step 1c runs Date.parse on trailer_required_after:
+- null turns the gate off with no signal;
+- an unparseable string refuses every agent change ("... which is not a
+  date");
+- any parseable string turns the gate on from that date.
+
+So the patch ships a string that fails loudly instead of a null that fails
+silently. The placeholder contains no digits on purpose. An earlier draft
+ended in "-ISO-8601-UTC", and Date.parse reads that as 8601-01-01, which
+would have turned the gate off until the year 8601. The new guard test
+asserts Number.isNaN(Date.parse(placeholder)).
+
+Until the placeholder is replaced, two things fail:
+- every agent change is refused;
+- "the committed policy turns the lane trailer on" fails, naming the
+  placeholder.
+That test also refuses null and a future instant.
+
+APPLY ORDER (orchestrator, on ccr-116bbb27-osu8n8)
+
+1. Tell every running session that the trailer is required. Give each
+   session its lane ids from the manifest: <session>-code, -tests, -docs,
+   -platform. Tell them that a commit names the one lane its files lie in,
+   and that a commit spanning two lanes must be split into two commits.
+   Commits dated before the instant are not judged, so in-flight work is
+   safe. Unlaned commits after the instant are refused.
+2. git apply --check docs/blueprint/lanes/l6-cicd-9083-lane-manifest.patch
+   git apply docs/blueprint/lanes/l6-cicd-9083-lane-manifest.patch
+3. Replace REPLACE-WITH-THE-INSTANT-OF-THE-APPLY-COMMIT in
+   scripts/agent-policy.json with the output of
+   date -u +%Y-%m-%dT%H:%M:%SZ, taken just before committing. It must not
+   be later than the apply commit's own committer date.
+4. Run the checks. On e1563525 plus this patch, the instant filled:
+   - validate prints 12 waves and exits 0;
+   - the three agent suites print "pass 67, fail 0";
+   - ci.yml's whole scripts-job list prints "pass 212, fail 0".
+   node scripts/agent-lanes.mjs validate --policy scripts/agent-policy.json --manifest scripts/lanes/round-wave1031.json
+   node --test scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs
+   node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs scripts/sast-gate.test.mjs scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs scripts/game-day/harness.test.mjs scripts/rule-citation.test.mjs
+5. Commit with the trailer "Agent-Lane: orchestrator-platform". The apply
+   commit is after the instant, so it needs a lane. Every file it changes is
+   in that lane's owns:
+   - scripts/agent-policy.json
+   - scripts/lanes/round-wave1031.json
+   - scripts/agent-guard.test.mjs
+   - scripts/agent-lanes.test.mjs
+   - scripts/game-day/agent-escalation.mjs
+   - scripts/game-day/harness.test.mjs
+   - .github/workflows/ci.yml
+   Then push.
+
+This patch has no ordering dependency on l6-cicd-10203-sha-pins.patch. Both
+change ci.yml in hunks that do not touch, and each applies with or without
+the other.
+
+BEFORE STEP 3, KNOW THIS
+
+- The rolling integration pull request will be refused.
+  - Cause: agent-guard.mjs step 1b, unchanged here, holds the whole pull
+    request's file list to every lane its commits name. The pull request
+    API gives no per-commit file list.
+  - Effect: one pull request carrying two lanes' commits is refused for
+    each lane, even when each commit stays inside its own lane.
+  - Before this switch, unlaned commits never hit that rule. After it, the
+    ccr-116bbb27-osu8n8 -> main pull request will hit it, and a person's
+    approval does not clear a 1b refusal.
+  - The judgeRange step at deploy judges each commit against its own files,
+    so deploy is not affected.
+  - The fix is to judge 1b per commit on the pull request too, gathering
+    each commit's files the way the range mode already does. That needs
+    agent-guard.mjs and agent-boundary.yml and is not in this patch.
+  - Decide whether to apply this patch before that fix exists.
+- Paths with no lane are refused.
+  - The manifest's comment lists the paths no role may edit: the
+    composition roots under backend/crates/apps/*/src, backend/Cargo.lock,
+    data/ and .github/rulesets/.
+  - Once the switch is on, an agent commit touching one of them is
+    refused. The same is true of a new file not yet in its lane's owns: add
+    it to the manifest first.
+- Overlaps are ordered by merge order.
+  - Shared files are ordered by depends_on in merge order:
+    - platform.rs: eight sessions' code lanes;
+    - docs/adr/README.md: nine sessions' docs lanes;
+    - the R12 register: all eleven sessions.
+  - So `validate` prints 12 waves, and the widest has 6 lanes.
+  - Those waves are not a run schedule. A max_concurrent_lanes cap set to
+    "the largest wave" (L1b's ruling) would come out at 6 while eleven
+    sessions run.
+- docs/ops/runbooks/development-agent-controls.md:21 and ADR 0117 still
+  name round-3.json as the round's plan. They are outside this patch's
+  paths.
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 3cece3d6..826d4c0d 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -737,7 +737,7 @@ jobs:
+       # commits to, is valid under the policy the merge enforces (CICD-9082,
+       # CICD-9083): every lane has a branch, gates and a bounded budget, owns
+       # only what its role may edit, and shares no path with an unordered lane.
+-      - run: node scripts/agent-lanes.mjs validate --policy scripts/agent-policy.json --manifest scripts/lanes/round-3.json
++      - run: node scripts/agent-lanes.mjs validate --policy scripts/agent-policy.json --manifest scripts/lanes/round-wave1031.json
+ 
+   # A pull request that changes a rule names it (R12 GOV-9080). The body is
+   # read from the event file rather than an expression, because a pull
+diff --git a/scripts/agent-guard.test.mjs b/scripts/agent-guard.test.mjs
+index 2fe7c04e..0810edb8 100644
+--- a/scripts/agent-guard.test.mjs
++++ b/scripts/agent-guard.test.mjs
+@@ -12,7 +12,14 @@ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { gatherRange, ghApi, globToRegExp, isAgentCommit, judgeChange, judgeDispatch, judgeRange, judgeSandboxWorkflow, loadLanes, main, matchesAny, pathsOf } from "./agent-guard.mjs";
+ 
+-const POLICY = JSON.parse(readFileSync(new URL("./agent-policy.json", import.meta.url), "utf8"));
++const COMMITTED = JSON.parse(readFileSync(new URL("./agent-policy.json", import.meta.url), "utf8"));
++// The committed policy with the CICD-9083 lane trailer switched off. The
++// tests below that use it judge the role, protection, review and range rules
++// with fixture commits that name no lane; with the switch on, step 1c would
++// add its own refusal to every one of them and no other rule's verdict could
++// be read. Step 1c is judged by its own tests, and the committed switch by
++// "the committed policy turns the lane trailer on".
++const POLICY = { ...COMMITTED, lane_manifest: { ...COMMITTED.lane_manifest, trailer_required_after: null } };
+ const HEAD = "a".repeat(40);
+ 
+ const agentCommit = (role) => ({
+@@ -488,7 +495,7 @@ test("the command refuses a protected agent change and admits it once approved",
+       writeFileSync(join(dir, name), JSON.stringify(value));
+       return join(dir, name);
+     };
+-    const policy = new URL("./agent-policy.json", import.meta.url).pathname;
++    const policy = write("agent-policy.json", POLICY);
+     const files = write("files.json", [{ filename: ".claude/settings.json" }]);
+     const commits = write("commits.json", [agentCommit("technical-writer")]);
+     const none = write("none.json", []);
+@@ -520,7 +527,7 @@ test("the command admits an agent's new decision record and refuses the same rec
+       writeFileSync(join(dir, name), JSON.stringify(value));
+       return join(dir, name);
+     };
+-    const policy = new URL("./agent-policy.json", import.meta.url).pathname;
++    const policy = write("agent-policy.json", POLICY);
+     // No role on the commit, so only the protection decides the verdict.
+     const commits = write("commits.json", [agentCommit()]);
+     const none = write("none.json", []);
+@@ -589,11 +596,11 @@ test("a commit pushed straight to the branch has no approval to show, and an ent
+ test("the range command refuses an empty range and a protected agent commit", () => {
+   const dir = mkdtempSync(join(tmpdir(), "agent-guard-range-"));
+   try {
+-    const policy = new URL("./agent-policy.json", import.meta.url).pathname;
+     const write = (name, value) => {
+       writeFileSync(join(dir, name), JSON.stringify(value));
+       return join(dir, name);
+     };
++    const policy = write("agent-policy.json", POLICY);
+     const quiet = { out: () => {}, err: () => {} };
+     const run = (path) => main(["range", "--policy", policy, "--range", path], quiet);
+     assert.equal(run(write("clean.json", [rangeEntry("b".repeat(40), personCommit, ["README.md"])])), 0);
+@@ -692,9 +699,12 @@ test("a range the compare endpoint pages through is gathered whole, and its late
+   assert.match(refusals[0], /^bbbbbbbbbbbb: the technical-writer role/);
+ });
+ 
+-// CICD-9083: the committed round-3 manifest is the one the guard reads, and
+-// an agent commit naming its lane is held to that lane's territory.
+-const LANES = loadLanes(POLICY, new URL("./agent-policy.json", import.meta.url).pathname);
++// CICD-9083: an agent commit naming its lane is held to that lane's
++// territory. These tests read round-3.json as a fixture, through the same
++// loader the guard uses, because their lane ids are round 3's; the manifest
++// the committed policy names is judged by its own test further down.
++const POLICY_PATH = new URL("./agent-policy.json", import.meta.url).pathname;
++const LANES = loadLanes({ lane_manifest: { path: "scripts/lanes/round-3.json" } }, POLICY_PATH);
+ const laneCommit = (role, lane) => ({
+   commit: {
+     author: { name: "Claude", email: "noreply@anthropic.com" },
+@@ -780,8 +790,8 @@ test("after the policy's trailer instant, an agent commit with no lane trailer i
+       policy: policy(instant), permissions: PERMS, lanes: LANES, headRef: "x", headSha: HEAD,
+       files: ["backend/crates/services/qip-risk-engine/src/pretrade.rs"], commits, reviews: [],
+     }).refusals;
+-  // Premise: the committed policy leaves the switch off, and off judges nothing.
+-  assert.equal(POLICY.lane_manifest.trailer_required_after, null);
++  // Premise: off judges nothing. (The committed policy's own value is judged
++  // by the test below; this one is about the rule.)
+   assert.deepEqual(judge(null, [at("2026-11-01T00:00:00Z")]), []);
+ 
+   const instant = "2026-11-01T00:00:00Z";
+@@ -797,6 +807,62 @@ test("after the policy's trailer instant, an agent commit with no lane trailer i
+   assert.deepEqual(judge(instant, [at("2026-11-02T00:00:00Z", "r3-capital-code")]), []);
+   // A merge commit is the merge button's, not a lane's.
+   assert.deepEqual(judge(instant, [{ ...at("2026-11-02T00:00:00Z"), parents: [{}, {}] }]), []);
+-  // A switch nobody can read is not off.
++  // A switch nobody can read is not off — including the placeholder the
++  // CICD-9083 manifest patch ships in place of the instant it cannot know.
++  // That placeholder carries no digit on purpose: its first draft ended
++  // "...-ISO-8601-UTC", and Date.parse reads that as 1 January 8601, so the
++  // gate would have been silently off for six thousand years instead of
++  // refusing everything until the instant was written in.
+   assert.match(judge("soon", [at("2026-10-01T00:00:00Z", "r3-capital-code")])[0], /is not a date/);
++  assert.ok(Number.isNaN(Date.parse("REPLACE-WITH-THE-INSTANT-OF-THE-APPLY-COMMIT")));
++  assert.match(
++    judge("REPLACE-WITH-THE-INSTANT-OF-THE-APPLY-COMMIT", [at("2026-10-01T00:00:00Z", "r3-capital-code")])[0],
++    /is not a date/,
++  );
++});
++
++// CICD-9083, the owner's ruling of 2026-10-31: from the instant the running
++// round's manifest is committed, every agent commit names its lane, the
++// orchestrator's included. So the committed policy must name that manifest,
++// the manifest must load and define the orchestrator's lanes on the
++// integration branch, and the switch must be an ISO 8601 UTC instant that has
++// already arrived. A placeholder left unreplaced, a null (the gate silently
++// off) or a future instant (off until then) each fail here, by name.
++// Mutation: set trailer_required_after back to null, to a future instant, or
++// leave the patch's placeholder; or point path back at round-3.json.
++test("the committed policy turns the lane trailer on, against the running round's manifest", () => {
++  const instant = COMMITTED.lane_manifest.trailer_required_after;
++  assert.equal(typeof instant, "string", "lane_manifest.trailer_required_after is not set; the trailer is not required");
++  assert.match(
++    instant,
++    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/,
++    `lane_manifest.trailer_required_after is ${JSON.stringify(instant)}: replace it with the apply commit's instant, ISO 8601 UTC`,
++  );
++  assert.ok(Date.parse(instant) <= Date.now(), `trailer_required_after ${instant} is in the future, so the gate is off until then`);
++
++  assert.equal(COMMITTED.lane_manifest.path, "scripts/lanes/round-wave1031.json", "the guard reads the running round's manifest");
++  const live = loadLanes(COMMITTED, POLICY_PATH);
++  assert.ok(live.lanes, `premise: the committed manifest loads (${live.problem})`);
++  const orchestrator = [...live.lanes.values()].filter((l) => l.branch === "ccr-116bbb27-osu8n8");
++  assert.ok(orchestrator.length > 0, "the manifest names no orchestrator lane on the integration branch");
++
++  // With the committed policy, an unlaned agent commit made now is refused,
++  // and the same commit naming the lane that owns its file is admitted.
++  const now = new Date().toISOString();
++  const commit = (lane) => ({
++    commit: {
++      author: { name: "Claude", email: "noreply@anthropic.com" },
++      committer: { name: "Claude", email: "noreply@anthropic.com", date: now },
++      message: `Do a thing\n\n${lane ? `Agent-Lane: ${lane}\n` : ""}Co-Authored-By: Claude <noreply@anthropic.com>\n`,
++    },
++  });
++  const judge = (lane) =>
++    judgeChange({
++      policy: COMMITTED, permissions: PERMS, lanes: live, headRef: "x", headSha: HEAD,
++      files: ["scripts/lanes/round-wave1031.json"], commits: [commit(lane)], reviews: [approval("dana")],
++    }).refusals;
++  const refused = judge(undefined);
++  assert.equal(refused.length, 1);
++  assert.match(refused[0], /carry no Agent-Lane trailer/);
++  assert.deepEqual(judge("orchestrator-platform"), []);
+ });
+diff --git a/scripts/agent-lanes.test.mjs b/scripts/agent-lanes.test.mjs
+index cf1df400..bc73aae9 100644
+--- a/scripts/agent-lanes.test.mjs
++++ b/scripts/agent-lanes.test.mjs
+@@ -230,7 +230,6 @@ test("the committed round-3 lane manifest validates, and every lane names its br
+   const { problems, waves } = validate(manifest, POLICY);
+   assert.deepEqual(problems, []);
+   assert.equal(waves.flat().length, manifest.lanes.length);
+-  assert.equal(POLICY.lane_manifest.path, "scripts/lanes/round-3.json", "the guard reads the committed manifest");
+   // The overlap is real and ordered: remove the order and it is refused.
+   const unordered = structuredClone(manifest);
+   unordered.lanes.find((l) => l.id === "r3-agents-adr").depends_on = [];
+@@ -240,3 +239,42 @@ test("the committed round-3 lane manifest validates, and every lane names its br
+   delete branchless.lanes[0].branch;
+   assert.match(validate(branchless, POLICY).problems.join("\n"), /names no branch/);
+ });
++
++// CICD-9083, the owner's ruling of 2026-10-31: the running round's manifest is
++// the one the guard reads, it is valid under the policy the merge enforces,
++// and the orchestrator — the session that commits it, on the integration
++// branch — waits for every other lane, so its depends_on is the round's DAG.
++// Mutation: drop a lane from an orchestrator lane's depends_on; drop the
++// ordering between two lanes that share platform.rs; give a lane a path its
++// role may not edit.
++test("the committed wave1031 lane manifest validates, the guard reads it, and the orchestrator waits for every lane", () => {
++  const manifest = JSON.parse(readFileSync(new URL("./lanes/round-wave1031.json", import.meta.url), "utf8"));
++  assert.equal(POLICY.lane_manifest.path, "scripts/lanes/round-wave1031.json", "the guard reads the committed manifest");
++  assert.ok(manifest.lanes.length >= 11, "premise: the manifest declares the round's lanes");
++  const { problems, waves } = validate(manifest, POLICY);
++  assert.deepEqual(problems, []);
++  assert.equal(waves.flat().length, manifest.lanes.length);
++
++  const ORCHESTRATOR = "ccr-116bbb27-osu8n8";
++  const orchestrator = manifest.lanes.filter((l) => l.branch === ORCHESTRATOR);
++  const workers = manifest.lanes.filter((l) => l.branch !== ORCHESTRATOR);
++  assert.ok(orchestrator.length > 0 && workers.length > 0, "premise: both orchestrator and session lanes exist");
++  for (const lane of orchestrator) {
++    assert.deepEqual([...lane.depends_on].sort(), workers.map((w) => w.id).sort(), `${lane.id} does not wait for every session lane`);
++  }
++  // Every session lane is on one of the round's branches, and no lane owns
++  // everything (an `owns: **` lane any agent could claim would hollow out the
++  // lane boundary).
++  for (const lane of workers) assert.match(lane.branch, /^ccr-d1bc1e54-kf6mr0-l[1-6]b?-[a-z]+$/, lane.id);
++  for (const lane of manifest.lanes) assert.ok(!lane.owns.some((g) => g === "**" || g === "*"), `${lane.id} owns everything`);
++  // The last wave is the orchestrator's, alone.
++  assert.deepEqual([...waves.at(-1)].sort(), orchestrator.map((l) => l.id).sort());
++
++  // The platform.rs overlap is real and ordered: remove the order and it is refused.
++  const unordered = structuredClone(manifest);
++  unordered.lanes.find((l) => l.id === "l2b-ambient-code").depends_on = [];
++  assert.match(
++    validate(unordered, POLICY).problems.join("\n"),
++    /l2-intel-code and l2b-ambient-code own overlapping paths \([^)]*backend\/crates\/runtime\/qip-kernel\/src\/platform\.rs/,
++  );
++});
+diff --git a/scripts/agent-policy.json b/scripts/agent-policy.json
+index 4ec45f25..aa03a74e 100644
+--- a/scripts/agent-policy.json
++++ b/scripts/agent-policy.json
+@@ -75,9 +75,9 @@
+   },
+ 
+   "lane_manifest": {
+-    "comment": "The current round's lane plan, a path relative to the repository root. An agent commit carrying `Agent-Lane: <id>` is held to that lane's `owns` by agent-guard.mjs, on the pull request and at deploy; a trailer naming no lane in this file is refused. Point it at the next round's manifest in the same protected change that commits it. `trailer_required_after` (CICD-9083): when set to an ISO 8601 instant, every agent commit committed at or after it must carry an Agent-Lane trailer naming a lane in the manifest above; earlier commits are not judged. Unset (null) on purpose when this was written: round-3.json names no lane of the round now running, so turning it on before that round's manifest is committed would refuse every lane's commits. Set it in the same protected change that points `path` at the running round's manifest.",
+-    "path": "scripts/lanes/round-3.json",
+-    "trailer_required_after": null
++    "comment": "The current round's lane plan, a path relative to the repository root. An agent commit carrying `Agent-Lane: <id>` is held to that lane's `owns` by agent-guard.mjs, on the pull request and at deploy; a trailer naming no lane in this file is refused. Point it at the next round's manifest in the same protected change that commits it. `trailer_required_after` (CICD-9083): when set to an ISO 8601 instant, every agent commit committed at or after it must carry an Agent-Lane trailer naming a lane in the manifest above; earlier commits are not judged. It was null while round-3.json, which names no lane of the round now running, was the manifest. The 2026-10-31 owner ruling on CICD-9083 turns it on: from the instant the running round's manifest (round-wave1031.json) is committed, every agent commit names its lane, the orchestrator's included. The patch that set `path` could not know that instant, so it shipped `REPLACE-WITH-THE-INSTANT-OF-THE-APPLY-COMMIT` in its place, which is not a date and carries no digit (Date.parse reads a stray digit run as a year, which would switch the gate off until then rather than refuse): agent-guard.mjs refuses every agent change while it stands (\"which is not a date\") and the committed-policy test in agent-guard.test.mjs fails, so a forgotten fill-in stops the merge rather than switching the gate off. The orchestrator writes the apply commit's own instant here, as ISO 8601 UTC, after every lane has been told the trailer is required. A future instant would leave the gate off until it arrives, and the test refuses one.",
++    "path": "scripts/lanes/round-wave1031.json",
++    "trailer_required_after": "REPLACE-WITH-THE-INSTANT-OF-THE-APPLY-COMMIT"
+   },
+ 
+   "lane_limits": {
+diff --git a/scripts/game-day/agent-escalation.mjs b/scripts/game-day/agent-escalation.mjs
+index 8568f32e..9df81dd0 100644
+--- a/scripts/game-day/agent-escalation.mjs
++++ b/scripts/game-day/agent-escalation.mjs
+@@ -35,9 +35,18 @@ const POLICY_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "agent-p
+ const HEAD = "b".repeat(40);
+ const EARLIER = "c".repeat(40);
+ 
+-const agentCommit = (role, extra = "") => ({
++// Every attempt but one is dated before any lane-trailer switch could have
++// been set (step 1c of agent-guard.mjs, CICD-9083, first switched on
++// 2026-10-31), so that each attempt is refused by the one rule it names and
++// not also by the missing trailer: with the switch on, an attempt dated now
++// is refused for having no lane whatever else it does, and a broken
++// protected-path rule would read as held. The trailer rule has its own
++// attempt below, dated at the drill's own instant.
++const BEFORE_THE_TRAILER_SWITCH = "2026-01-01T00:00:00Z";
++const agentCommit = (role, extra = "", date = BEFORE_THE_TRAILER_SWITCH) => ({
+   commit: {
+     author: { name: "Claude", email: "noreply@anthropic.com" },
++    committer: { name: "Claude", email: "noreply@anthropic.com", date },
+     message: `Change something\n\nCo-Authored-By: Claude <noreply@anthropic.com>${role ? `\nAgent-Role: ${role}` : ""}${extra}\n`,
+   },
+ });
+@@ -46,7 +55,7 @@ const approval = (login, commit_id, type = "User") => ({ user: { login, type },
+ const PERMISSIONS = { dana: "write", rita: "read", "release[bot]": "write", "claude-agent": "write" };
+ 
+ /** The attempts: a name, what it tries, and a function returning refusals ([] means admitted). */
+-export function attempts(policy, lanes) {
++export function attempts(policy, lanes, now = new Date()) {
+   const change = (over) => judgeChange({ policy, permissions: PERMISSIONS, headRef: "claude/drill", headSha: HEAD, lanes, ...over }).refusals;
+   const manifest = (lane) => validate({ lanes: [{ id: "drill", role: "backend-engineer", branch: "lane/drill", owns: ["backend/crates/libs/**"], depends_on: [], acceptance: ["cargo test"], budget: { minutes: 60, usd: 5, tokens: 100000 }, ...lane }] }, policy).problems;
+   return [
+@@ -95,6 +104,14 @@ export function attempts(policy, lanes) {
+       expect: "refused",
+       run: () => change({ files: ["backend/crates/libs/qip-core/src/lib.rs"], commits: [agentCommit("backend-engineer", "\nAgent-Lane: not-a-lane")], reviews: [approval("dana", HEAD)] }),
+     },
++    {
++      // CICD-9083: the committed policy requires every agent commit after
++      // its instant to name a lane. An in-role change, approved, that names
++      // none is the cheapest way past a lane boundary.
++      name: "an agent commit naming no lane, made now, after the lane-trailer instant",
++      expect: "refused",
++      run: () => change({ files: ["backend/crates/libs/qip-core/src/lib.rs"], commits: [agentCommit("backend-engineer", "", now.toISOString())], reviews: [approval("dana", HEAD)] }),
++    },
+     {
+       name: "dispatch the deploy workflow as an agent identity",
+       expect: "refused",
+@@ -126,7 +143,7 @@ export function attempts(policy, lanes) {
+ /** Run every attempt; the verdict is `held` only if each did what it was expected to. */
+ export function runDrill({ policy, policyPath = POLICY_PATH, commit = "unknown", now = new Date() }) {
+   const lanes = loadLanes(policy, policyPath);
+-  const results = attempts(policy, lanes).map((attempt) => {
++  const results = attempts(policy, lanes, now).map((attempt) => {
+     let refusals;
+     try {
+       refusals = attempt.run();
+diff --git a/scripts/game-day/harness.test.mjs b/scripts/game-day/harness.test.mjs
+index c353627b..a17278ac 100644
+--- a/scripts/game-day/harness.test.mjs
++++ b/scripts/game-day/harness.test.mjs
+@@ -230,6 +230,22 @@ test("a policy that stops protecting the workflows is reported as breached, nami
+   assert.deepEqual(validateEscalation(record), []);
+ });
+ 
++// CICD-9083. The lane-trailer switch is an attempt of its own, and only that
++// attempt depends on it: the others are dated before any switch, so each is
++// still refused by the rule it names. Mutations, both run: date the other
++// attempts now (the control is refused for having no lane, and with
++// `protected_paths` emptied the workflow attempts still read as held — the
++// two tests above fail); date the trailer attempt before the switch (it is
++// admitted — the committed-judges test above fails).
++test("a policy with the lane trailer switched off is breached on the unlaned attempt alone", () => {
++  const off = policy();
++  off.lane_manifest.trailer_required_after = null;
++  const record = runDrill({ policy: off, policyPath: urlToPathForDrill(POLICY_PATH), commit: "test" });
++  assert.equal(record.verdict, "breached");
++  const breached = record.attempts.filter((a) => !a.held).map((a) => a.attempt);
++  assert.deepEqual(breached, ["an agent commit naming no lane, made now, after the lane-trailer instant"]);
++});
++
+ test("a record claiming held over a breached attempt, or with no control, is refused", () => {
+   const record = runDrill({ policy: policy(), policyPath: urlToPathForDrill(POLICY_PATH), commit: "test" });
+   const lying = structuredClone(record);
+diff --git a/scripts/lanes/round-wave1031.json b/scripts/lanes/round-wave1031.json
+new file mode 100644
+index 00000000..953d2e50
+--- /dev/null
++++ b/scripts/lanes/round-wave1031.json
+@@ -0,0 +1,1205 @@
++{
++  "comment": "The running round (wave1031: 2026-10-31 decisions 1 and 2, integration branch ccr-116bbb27-osu8n8) as lanes, committed under the CICD-9083 owner ruling of 2026-10-31: from the instant scripts/agent-policy.json's lane_manifest.trailer_required_after names, every agent commit carries `Agent-Lane: <id>` naming a lane below, the orchestrator's included, and agent-guard.mjs holds it to that lane's `owns`. Territories were taken from diffs, not from intention, on 2026-10-31 at ccr-116bbb27-osu8n8 e1563525: a session's lanes own the paths its own non-merge commits changed since 725c180b, the integration commit every one of the eleven branches descends from, found by walking first parents from the branch tip and from the second parent of every `Merge lane <session>` commit on the integration branch and stopping at the integration branch's own commits; the orchestrator's lanes own what the integration branch's own non-merge commits changed, plus scripts/lanes/**, scripts/agent-lanes.test.mjs, .github/workflows/ci.yml, scripts/game-day/agent-escalation.mjs and scripts/game-day/harness.test.mjs, which the commit that applies this manifest changes. A session is split by the role that may edit each path, as round-3.json did, because a lane runs as one role: <session>-code (backend-engineer), -tests (test-engineer; a file under backend/crates/**/tests/** goes here and nowhere else), -docs (technical-writer), -platform (cloud-platform-engineer). A commit names the one lane its files lie in; a commit spanning two lanes is two commits. Overlap is wide and real, not tidied away: backend/crates/runtime/qip-kernel/src/platform.rs is in eight sessions' code, docs/adr/README.md in nine sessions' docs, and docs/blueprint/assessment/R12-*.json in all eleven. So within each role the lanes that share a path are ordered in session order L1, L1b, L2, L2b, L3, L3b, L4, L4b, L5, L5b, L6, the order the integration branch merges them in. Read depends_on here as merge order, not start order: the eleven sessions run at once, and the waves `validate` prints are the order their shared files are reconciled in, not a schedule; no scheduler reads them. A lane whose territory meets no other lane's waits for none. Every orchestrator lane depends on every session lane. Owns are exact paths, so a lane that is about to create a file (a new ADR, a new test) has the orchestrator add it here, in a protected change, before it commits. Not declarable, said rather than hidden, because no role in agent-policy.json may edit a composition root's source or manifest, the lockfile, data/ or .github/rulesets/: L1 backend/crates/apps/qip-ledgerd/src/{read_api,store}.rs, data/README.md, data/breadth/dev-commerce-paper.json; L1b backend/crates/apps/qip-edge-node/src/{event_fabric/inputs,event_fabric/writer,scheduler}.rs, backend/crates/apps/qip-fabricd/src/{config,lib}.rs; L2 backend/crates/apps/qip-deepbrain/src/research.rs; L2b backend/crates/apps/qip-deepbrain/src/{evolution,reference,research}.rs; L3 backend/Cargo.lock, backend/crates/apps/qip-cli/{Cargo.toml,src/adapter_proposals.rs,src/lib.rs,src/main.rs}, backend/crates/apps/qip-deepbrain/src/{evolution,main,node,source_alpha}.rs; L3b backend/Cargo.lock, backend/crates/apps/qip-deepbrain/src/evolution.rs, backend/crates/apps/qip-edge-node/src/{main,replay}.rs; L4 backend/crates/apps/qip-deepbrain/src/tick_desk.rs; L4b backend/crates/apps/qip-cli/src/agency.rs, backend/crates/apps/qip-deepbrain/src/{ambient_journal,discovery,main,node,research,source_alpha}.rs; L5 backend/crates/apps/qip-cli/src/event_fabric/grant.rs, backend/crates/apps/qip-edge-node/src/strategies.rs; L5b backend/crates/apps/qip-api/src/mesh.rs; L6 backend/crates/apps/qip-deepbrain/src/{cognition,evolution,lib,main,node,research,status,tick_desk}.rs, backend/crates/apps/qip-fabricd/src/{lib,mirror,telemetry}.rs; the orchestrator .github/rulesets/{README.md,main-integrity.json,main-review.json}, backend/crates/apps/qip-deepbrain/src/node.rs, backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs. Those paths have no lane: once the trailer is required, an agent commit touching one is refused by step 1b, and the work is a person's until a role is given them in .claude/agents/ and the policy together. Also not declared: lane l9-deploy-prep, merged into this round's integration but not running, and the branches ccr-d1bc1e54-kf6mr0-{l7-5107,l8-sast,l9-deploy-prep,l10-perf}, which are not among the eleven running lanes.",
++  "lanes": [
++    {
++      "id": "l1-money-tests",
++      "role": "test-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l1-money",
++      "owns": [
++        "backend/crates/apps/qip-ledgerd/tests/operations_on_the_stream.rs",
++        "backend/crates/runtime/qip-kernel/tests/breadth.rs",
++        "backend/crates/runtime/qip-kernel/tests/central.rs",
++        "backend/crates/services/qip-capital/tests/capital.rs",
++        "backend/crates/services/qip-cost-router/tests/cost_router.rs"
++      ],
++      "depends_on": [],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-capital -p qip-cost-router -p qip-kernel -p qip-ledgerd"
++      ],
++      "budget": {
++        "minutes": 180,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l1-money-code",
++      "role": "backend-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l1-money",
++      "owns": [
++        "backend/crates/libs/qip-ai/src/registry.rs",
++        "backend/crates/libs/qip-financial/src/position_record.rs",
++        "backend/crates/runtime/qip-kernel/src/breadth.rs",
++        "backend/crates/runtime/qip-kernel/src/central/plane.rs",
++        "backend/crates/runtime/qip-kernel/src/commerce_research.rs",
++        "backend/crates/services/qip-capital/src/lib.rs",
++        "backend/crates/services/qip-capital/src/society.rs",
++        "backend/crates/services/qip-cost-router/src/reputation.rs"
++      ],
++      "depends_on": [],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-ai -p qip-capital -p qip-cost-router -p qip-financial -p qip-kernel"
++      ],
++      "budget": {
++        "minutes": 240,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l1-money-docs",
++      "role": "technical-writer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l1-money",
++      "owns": [
++        "docs/adr/0229-capital-agents-only-propose-every-named-agents-plan-is-recorded-each-cycle-and-the-kernel-acts-on-the-per-line-minimum-of-those-plans-and-the-one-allocators.md",
++        "docs/adr/README.md",
++        "docs/blueprint/assessment/R12-G1.json",
++        "docs/blueprint/assessment/R12-M1.json",
++        "docs/blueprint/assessment/R12-M4.json",
++        "docs/blueprint/assessment/R12-M5.json"
++      ],
++      "depends_on": [],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 60,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l1b-fabric-tests",
++      "role": "test-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l1b-fabric",
++      "owns": [
++        "backend/crates/apps/qip-cli/tests/event_fabric_admin.rs",
++        "backend/crates/apps/qip-cli/tests/event_fabric_produce.rs",
++        "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs",
++        "backend/crates/apps/qip-edge-node/tests/fabric_envelope.rs",
++        "backend/crates/apps/qip-edge-node/tests/fabric_wiring.rs",
++        "backend/crates/apps/qip-edge-node/tests/replay_manifests.rs",
++        "backend/crates/apps/qip-ledgerd/tests/fabric.rs",
++        "backend/crates/libs/qip-events/tests/backbone.rs",
++        "backend/crates/libs/qip-transport/tests/dns.rs",
++        "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs",
++        "backend/crates/services/qip-streaming/tests/event_fabric_topicless.rs",
++        "backend/crates/tests/qip-acceptance/src/lib.rs",
++        "backend/crates/tests/qip-acceptance/tests/event_fabric_architecture.rs",
++        "backend/crates/tests/qip-acceptance/tests/event_fabric_catalogue.rs",
++        "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs",
++        "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs",
++        "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs"
++      ],
++      "depends_on": [
++        "l1-money-tests"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-acceptance -p qip-cli -p qip-edge-node -p qip-events -p qip-ledgerd -p qip-streaming -p qip-transport"
++      ],
++      "budget": {
++        "minutes": 180,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l1b-fabric-code",
++      "role": "backend-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l1b-fabric",
++      "owns": [
++        "backend/crates/edge/qip-edge/src/cell.rs",
++        "backend/crates/libs/qip-contracts/src/replay.rs",
++        "backend/crates/libs/qip-events/consumers.lock.json",
++        "backend/crates/libs/qip-events/schemas.lock.json",
++        "backend/crates/libs/qip-events/src/event_fabric/bindings.rs",
++        "backend/crates/libs/qip-events/src/event_fabric/message_routing.rs",
++        "backend/crates/libs/qip-events/src/topic.rs",
++        "backend/crates/libs/qip-transport/src/dns.rs",
++        "backend/crates/libs/qip-transport/src/lib.rs",
++        "backend/crates/services/qip-streaming/src/event_fabric/broker.rs",
++        "backend/crates/services/qip-streaming/src/event_fabric/service.rs"
++      ],
++      "depends_on": [
++        "l1-money-code"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-contracts -p qip-edge -p qip-events -p qip-streaming -p qip-transport"
++      ],
++      "budget": {
++        "minutes": 240,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l1b-fabric-docs",
++      "role": "technical-writer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l1b-fabric",
++      "owns": [
++        "docs/adr/0215-a-catalogue-stream-that-names-no-topic-admits-no-record-on-a-deployed-broker-and-only-a-local-broker-may-run-one-open.md",
++        "docs/adr/README.md",
++        "docs/blueprint/assessment/R12-G1.json",
++        "docs/blueprint/assessment/R12-G3.json"
++      ],
++      "depends_on": [
++        "l1-money-docs"
++      ],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 60,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l1b-fabric-platform",
++      "role": "cloud-platform-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l1b-fabric",
++      "owns": [
++        "infrastructure/event-fabric/streams.local.json",
++        "infrastructure/event-fabric/streams.managed.json"
++      ],
++      "depends_on": [],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-events --test event_fabric_policy",
++        "cd backend && cargo test --no-fail-fast -p qip-acceptance --test event_fabric_catalogue --test event_fabric_foundations"
++      ],
++      "budget": {
++        "minutes": 120,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l2-intel-tests",
++      "role": "test-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l2-intel",
++      "owns": [
++        "backend/crates/apps/qip-cli/tests/replay.rs",
++        "backend/crates/apps/qip-deepbrain/tests/research.rs",
++        "backend/crates/runtime/qip-kernel/tests/body_schema_lock.rs",
++        "backend/crates/runtime/qip-kernel/tests/central.rs",
++        "backend/crates/runtime/qip-kernel/tests/learning.rs",
++        "backend/crates/runtime/qip-kernel/tests/model_tournament.rs",
++        "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs",
++        "backend/crates/services/qip-agency/tests/causal.rs"
++      ],
++      "depends_on": [
++        "l1b-fabric-tests"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-agency -p qip-cli -p qip-deepbrain -p qip-kernel"
++      ],
++      "budget": {
++        "minutes": 180,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l2-intel-code",
++      "role": "backend-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l2-intel",
++      "owns": [
++        "backend/crates/runtime/qip-kernel/src/attribution.rs",
++        "backend/crates/runtime/qip-kernel/src/model_tournament.rs",
++        "backend/crates/runtime/qip-kernel/src/now_stage.rs",
++        "backend/crates/runtime/qip-kernel/src/platform.rs",
++        "backend/crates/runtime/qip-kernel/src/replay_divergence.rs",
++        "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs",
++        "backend/crates/services/qip-agency/src/causal.rs",
++        "backend/crates/services/qip-agency/src/estimate.rs",
++        "backend/crates/services/qip-expansion/src/detectors.rs",
++        "backend/crates/services/qip-learning-engine/src/tournament.rs"
++      ],
++      "depends_on": [
++        "l1b-fabric-code"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-agency -p qip-expansion -p qip-kernel -p qip-learning-engine"
++      ],
++      "budget": {
++        "minutes": 240,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l2-intel-docs",
++      "role": "technical-writer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l2-intel",
++      "owns": [
++        "docs/adr/0226-a-concluded-microstructure-delta-is-read-by-the-centres-divergence-hold-a-residual-may-keep-a-venues-hold-but-never-lift-one-or-size-anything.md",
++        "docs/adr/0227-world-model-states-receiver-is-the-deep-brains-gap-detector-an-expired-partition-queues-re-estimation-and-moves-no-size.md",
++        "docs/adr/README.md",
++        "docs/blueprint/assessment/R12-G3.json",
++        "docs/blueprint/assessment/R12-M1.json",
++        "docs/blueprint/assessment/R12-M4.json",
++        "docs/blueprint/assessment/R12-M6.json",
++        "docs/blueprint/assessment/R12-M7.json"
++      ],
++      "depends_on": [
++        "l1b-fabric-docs"
++      ],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 60,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l2b-ambient-tests",
++      "role": "test-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l2b-ambient",
++      "owns": [
++        "backend/crates/agents/qip-investment-agents/tests/organisation.rs",
++        "backend/crates/apps/qip-deepbrain/tests/contract_rule.rs",
++        "backend/crates/runtime/qip-kernel/tests/kernel.rs",
++        "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs",
++        "backend/crates/tests/qip-acceptance/tests/documentation.rs",
++        "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs"
++      ],
++      "depends_on": [
++        "l2-intel-tests"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-acceptance -p qip-deepbrain -p qip-investment-agents -p qip-kernel"
++      ],
++      "budget": {
++        "minutes": 180,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l2b-ambient-code",
++      "role": "backend-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l2b-ambient",
++      "owns": [
++        "backend/crates/agents/qip-investment-agents/src/adversary.rs",
++        "backend/crates/agents/qip-investment-agents/src/analysts.rs",
++        "backend/crates/agents/qip-investment-agents/src/chief.rs",
++        "backend/crates/agents/qip-investment-agents/src/coverage.rs",
++        "backend/crates/agents/qip-investment-agents/src/desk.rs",
++        "backend/crates/agents/qip-investment-agents/src/manifests.rs",
++        "backend/crates/libs/qip-agents/src/capability.rs",
++        "backend/crates/runtime/qip-kernel/src/platform.rs",
++        "backend/crates/services/qip-market-ingestion/src/synthetic/mod.rs"
++      ],
++      "depends_on": [
++        "l2-intel-code"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-agents -p qip-investment-agents -p qip-kernel -p qip-market-ingestion"
++      ],
++      "budget": {
++        "minutes": 240,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l2b-ambient-docs",
++      "role": "technical-writer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l2b-ambient",
++      "owns": [
++        "README.md",
++        "docs/architecture/README.md",
++        "docs/blueprint/assessment/R12-G3.json",
++        "docs/blueprint/assessment/R12-M3.json",
++        "docs/blueprint/assessment/R12-M7.json"
++      ],
++      "depends_on": [
++        "l2-intel-docs"
++      ],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 60,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l3-data-tests",
++      "role": "test-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l3-data",
++      "owns": [
++        "backend/crates/agents/qip-investment-agents/tests/organisation.rs",
++        "backend/crates/apps/qip-cli/tests/adapter_proposals.rs",
++        "backend/crates/libs/qip-events/tests/backbone.rs",
++        "backend/crates/libs/qip-storage/tests/manifest_registry.rs",
++        "backend/crates/libs/qip-storage/tests/support/mod.rs",
++        "backend/crates/libs/qip-storage/tests/support/spanner_double.rs",
++        "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs",
++        "backend/crates/runtime/qip-kernel/tests/learning.rs",
++        "backend/crates/runtime/qip-kernel/tests/position_life.rs",
++        "backend/crates/runtime/qip-kernel/tests/position_record.rs",
++        "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs",
++        "backend/crates/services/qip-simulation-engine/tests/universe_history.rs",
++        "backend/crates/services/qip-world-model/tests/evidence_fabric.rs",
++        "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs",
++        "backend/crates/tests/qip-acceptance/tests/documentation.rs",
++        "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs"
++      ],
++      "depends_on": [
++        "l2b-ambient-tests"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-acceptance -p qip-cli -p qip-events -p qip-investment-agents -p qip-kernel -p qip-simulation-engine -p qip-storage -p qip-world-model"
++      ],
++      "budget": {
++        "minutes": 180,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l3-data-code",
++      "role": "backend-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l3-data",
++      "owns": [
++        "backend/crates/agents/qip-investment-agents/src/chief.rs",
++        "backend/crates/agents/qip-investment-agents/src/coverage.rs",
++        "backend/crates/agents/qip-investment-agents/src/lib.rs",
++        "backend/crates/agents/qip-investment-agents/src/manifests.rs",
++        "backend/crates/agents/qip-investment-agents/src/portfolio_brain.rs",
++        "backend/crates/libs/qip-contracts/src/knowledge_pack.rs",
++        "backend/crates/libs/qip-events/src/topic.rs",
++        "backend/crates/libs/qip-evidence/src/evidence.rs",
++        "backend/crates/libs/qip-evidence/src/fabric.rs",
++        "backend/crates/libs/qip-financial/src/history.rs",
++        "backend/crates/libs/qip-storage/Cargo.toml",
++        "backend/crates/libs/qip-storage/src/classes.rs",
++        "backend/crates/libs/qip-storage/src/gcp/manifest_registry.rs",
++        "backend/crates/libs/qip-storage/src/gcp/mod.rs",
++        "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs",
++        "backend/crates/runtime/qip-kernel/src/evidence_intake.rs",
++        "backend/crates/runtime/qip-kernel/src/lib.rs",
++        "backend/crates/runtime/qip-kernel/src/platform.rs",
++        "backend/crates/runtime/qip-kernel/src/position_life.rs",
++        "backend/crates/runtime/qip-kernel/src/source_alpha_record.rs",
++        "backend/crates/services/qip-simulation-engine/src/backtest.rs",
++        "backend/crates/services/qip-world-model/src/world.rs"
++      ],
++      "depends_on": [
++        "l2b-ambient-code"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-contracts -p qip-events -p qip-evidence -p qip-financial -p qip-investment-agents -p qip-kernel -p qip-simulation-engine -p qip-storage -p qip-world-model"
++      ],
++      "budget": {
++        "minutes": 240,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l3-data-docs",
++      "role": "technical-writer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l3-data",
++      "owns": [
++        "README.md",
++        "docs/adr/0183-a-position-is-opened-only-with-an-exit-plan-its-instruments-stated-terms-admit.md",
++        "docs/adr/0184-the-finders-adapter-proposal-is-printed-for-review-and-no-adapter-is-generated-or-loaded-from-it.md",
++        "docs/adr/README.md",
++        "docs/architecture/README.md",
++        "docs/blueprint/assessment/R12-G1.json",
++        "docs/blueprint/assessment/R12-G3.json",
++        "docs/blueprint/assessment/R12-M1.json",
++        "docs/blueprint/assessment/R12-M2.json",
++        "docs/blueprint/assessment/R12-M3.json",
++        "docs/blueprint/assessment/R12-M4.json"
++      ],
++      "depends_on": [
++        "l2b-ambient-docs"
++      ],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 60,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l3b-tick-tests",
++      "role": "test-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l3b-tick",
++      "owns": [
++        "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs",
++        "backend/crates/apps/qip-deepbrain/tests/universe_history.rs",
++        "backend/crates/apps/qip-edge-node/tests/replay.rs",
++        "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs",
++        "backend/crates/libs/qip-contracts/tests/admission.rs",
++        "backend/crates/libs/qip-contracts/tests/market_event.rs",
++        "backend/crates/libs/qip-financial/tests/history.rs",
++        "backend/crates/runtime/qip-kernel/tests/learning.rs",
++        "backend/crates/services/qip-simulation-engine/tests/simulation.rs",
++        "backend/crates/services/qip-twin/tests/futures.rs"
++      ],
++      "depends_on": [
++        "l3-data-tests"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-contracts -p qip-deepbrain -p qip-edge-node -p qip-feature-dag -p qip-financial -p qip-kernel -p qip-simulation-engine -p qip-twin"
++      ],
++      "budget": {
++        "minutes": 180,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l3b-tick-code",
++      "role": "backend-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l3b-tick",
++      "owns": [
++        "backend/crates/edge/qip-edge/src/cell.rs",
++        "backend/crates/edge/qip-feature-dag/Cargo.toml",
++        "backend/crates/edge/qip-feature-dag/src/engine.rs",
++        "backend/crates/edge/qip-feature-dag/src/features.rs",
++        "backend/crates/edge/qip-feature-dag/src/state.rs",
++        "backend/crates/libs/qip-contracts/src/admission.rs",
++        "backend/crates/libs/qip-contracts/src/lib.rs",
++        "backend/crates/libs/qip-contracts/src/market_event.rs",
++        "backend/crates/libs/qip-financial/src/history.rs",
++        "backend/crates/runtime/qip-kernel/src/platform.rs",
++        "backend/crates/runtime/qip-kernel/src/quote_loop.rs",
++        "backend/crates/services/qip-market-ingestion/src/adapter.rs",
++        "backend/crates/services/qip-simulation-engine/src/backtest.rs",
++        "backend/crates/services/qip-twin/src/calibration.rs"
++      ],
++      "depends_on": [
++        "l3-data-code"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-contracts -p qip-edge -p qip-feature-dag -p qip-financial -p qip-kernel -p qip-market-ingestion -p qip-simulation-engine -p qip-twin"
++      ],
++      "budget": {
++        "minutes": 240,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l3b-tick-docs",
++      "role": "technical-writer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l3b-tick",
++      "owns": [
++        "docs/blueprint/assessment/R12-G3.json",
++        "docs/blueprint/assessment/R12-M2.json"
++      ],
++      "depends_on": [
++        "l3-data-docs"
++      ],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 60,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l4-quant-tests",
++      "role": "test-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l4-quant",
++      "owns": [
++        "backend/crates/apps/qip-cli/tests/agency.rs",
++        "backend/crates/runtime/qip-kernel/tests/now_lattice.rs",
++        "backend/crates/runtime/qip-kernel/tests/serving.rs",
++        "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs",
++        "backend/crates/services/qip-twin/tests/futures.rs",
++        "backend/crates/services/qip-world-model/tests/granger.rs",
++        "backend/crates/services/qip-world-model/tests/now_brain.rs",
++        "backend/crates/tests/qip-acceptance/tests/arch_033_quantum_path.rs"
++      ],
++      "depends_on": [
++        "l3b-tick-tests"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-acceptance -p qip-cli -p qip-kernel -p qip-twin -p qip-world-model"
++      ],
++      "budget": {
++        "minutes": 180,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l4-quant-code",
++      "role": "backend-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l4-quant",
++      "owns": [
++        "backend/crates/runtime/qip-kernel/src/central/models.rs",
++        "backend/crates/runtime/qip-kernel/src/federation_stage.rs",
++        "backend/crates/runtime/qip-kernel/src/model_serving.rs",
++        "backend/crates/runtime/qip-kernel/src/now_stage.rs",
++        "backend/crates/runtime/qip-kernel/src/platform.rs",
++        "backend/crates/services/qip-twin/src/futures.rs",
++        "backend/crates/services/qip-world-model/src/causal.rs",
++        "backend/crates/services/qip-world-model/src/granger.rs",
++        "backend/crates/services/qip-world-model/src/now.rs",
++        "backend/crates/services/qip-world-model/src/world.rs"
++      ],
++      "depends_on": [
++        "l3b-tick-code"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-kernel -p qip-twin -p qip-world-model"
++      ],
++      "budget": {
++        "minutes": 240,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l4-quant-docs",
++      "role": "technical-writer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l4-quant",
++      "owns": [
++        "docs/adr/0194-the-federation-gains-a-capital-member-whose-proposition-is-a-funding-draw-on-the-next-pass-resolved-by-the-books-own-cash.md",
++        "docs/adr/README.md",
++        "docs/blueprint/assessment/R12-G2.json",
++        "docs/blueprint/assessment/R12-M3.json",
++        "docs/blueprint/assessment/R12-M4.json",
++        "docs/blueprint/assessment/R12-M6.json"
++      ],
++      "depends_on": [
++        "l3b-tick-docs"
++      ],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 60,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l4b-expand-tests",
++      "role": "test-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l4b-expand",
++      "owns": [
++        "backend/crates/apps/qip-cli/tests/agency.rs",
++        "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs",
++        "backend/crates/apps/qip-deepbrain/tests/cross_domain.rs",
++        "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs",
++        "backend/crates/apps/qip-deepbrain/tests/theory_revision.rs",
++        "backend/crates/libs/qip-agents/tests/agents.rs",
++        "backend/crates/libs/qip-agents/tests/expansion_registries.rs",
++        "backend/crates/libs/qip-ai/tests/registry.rs",
++        "backend/crates/libs/qip-contracts/tests/expansion.rs",
++        "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs",
++        "backend/crates/runtime/qip-kernel/tests/theory_revision.rs",
++        "backend/crates/services/qip-agency/tests/agency.rs",
++        "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs",
++        "backend/crates/services/qip-expansion/tests/loop.rs",
++        "backend/crates/services/qip-world-model/tests/synthesis.rs"
++      ],
++      "depends_on": [
++        "l4-quant-tests"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-agency -p qip-agents -p qip-ai -p qip-cli -p qip-contracts -p qip-data-finder -p qip-deepbrain -p qip-expansion -p qip-kernel -p qip-world-model"
++      ],
++      "budget": {
++        "minutes": 180,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l4b-expand-code",
++      "role": "backend-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l4b-expand",
++      "owns": [
++        "backend/crates/libs/qip-agents/src/memory.rs",
++        "backend/crates/libs/qip-agents/src/registries.rs",
++        "backend/crates/libs/qip-ai/src/registry.rs",
++        "backend/crates/libs/qip-contracts/src/expansion.rs",
++        "backend/crates/runtime/qip-kernel/src/evidence_intake.rs",
++        "backend/crates/runtime/qip-kernel/src/lib.rs",
++        "backend/crates/runtime/qip-kernel/src/platform.rs",
++        "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs",
++        "backend/crates/runtime/qip-kernel/src/theory_revision.rs",
++        "backend/crates/services/qip-agency/src/autonomy.rs",
++        "backend/crates/services/qip-data-finder/src/finder.rs",
++        "backend/crates/services/qip-data-finder/src/scoring.rs",
++        "backend/crates/services/qip-expansion/src/detectors.rs",
++        "backend/crates/services/qip-expansion/src/executor.rs",
++        "backend/crates/services/qip-world-model/src/lib.rs",
++        "backend/crates/services/qip-world-model/src/synthesis.rs"
++      ],
++      "depends_on": [
++        "l4-quant-code"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-agency -p qip-agents -p qip-ai -p qip-contracts -p qip-data-finder -p qip-expansion -p qip-kernel -p qip-world-model"
++      ],
++      "budget": {
++        "minutes": 240,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l4b-expand-docs",
++      "role": "technical-writer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l4b-expand",
++      "owns": [
++        "docs/adr/0192-every-capability-class-names-its-benchmark-and-its-incumbent-before-it-is-admitted.md",
++        "docs/adr/0193-central-plane-break-and-saga-facts-reach-the-curriculum-only-as-journaled-records-the-deep-brain-can-read-and-no-detector-is-built-before-they-do.md",
++        "docs/adr/0198-every-capability-registry-has-one-widening-door-and-that-door-cites-a-passing-evaluation.md",
++        "docs/adr/0199-three-expansion-clauses-stay-declined-under-the-2026-10-31-delegation-specialists-are-never-minted-cross-brain-episodes-wait-on-a-named-consumer-and-the-quantum-research-families-stay-parked.md",
++        "docs/adr/README.md",
++        "docs/blueprint/assessment/R12-M1.json",
++        "docs/blueprint/assessment/R12-M6.json",
++        "docs/blueprint/assessment/R12-M7.json"
++      ],
++      "depends_on": [
++        "l4-quant-docs"
++      ],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 60,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l5-edge-tests",
++      "role": "test-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l5-edge",
++      "owns": [
++        "backend/crates/apps/qip-cli/tests/event_fabric_grant.rs",
++        "backend/crates/apps/qip-edge-node/tests/strategies.rs",
++        "backend/crates/edge/qip-edge/tests/arbitrage.rs",
++        "backend/crates/edge/qip-strategy/tests/compile.rs",
++        "backend/crates/runtime/qip-kernel/tests/breadth.rs",
++        "backend/crates/runtime/qip-kernel/tests/central.rs",
++        "backend/crates/runtime/qip-kernel/tests/learning.rs",
++        "backend/crates/tests/qip-acceptance/tests/opportunity_manifest.rs"
++      ],
++      "depends_on": [
++        "l4b-expand-tests"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-acceptance -p qip-cli -p qip-edge -p qip-edge-node -p qip-kernel -p qip-strategy"
++      ],
++      "budget": {
++        "minutes": 180,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l5-edge-code",
++      "role": "backend-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l5-edge",
++      "owns": [
++        "backend/crates/edge/qip-edge/src/cell.rs",
++        "backend/crates/edge/qip-edge/src/mesh.rs",
++        "backend/crates/edge/qip-strategy/src/compile.rs",
++        "backend/crates/edge/qip-strategy/src/program.rs",
++        "backend/crates/libs/qip-contracts/src/wire.rs",
++        "backend/crates/runtime/qip-kernel/src/breadth.rs",
++        "backend/crates/runtime/qip-kernel/src/commerce_research.rs",
++        "backend/crates/runtime/qip-kernel/src/platform.rs",
++        "backend/crates/services/qip-mesh/src/delta.rs"
++      ],
++      "depends_on": [
++        "l4b-expand-code"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-contracts -p qip-edge -p qip-kernel -p qip-mesh -p qip-strategy"
++      ],
++      "budget": {
++        "minutes": 240,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l5-edge-docs",
++      "role": "technical-writer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l5-edge",
++      "owns": [
++        "docs/adr/README.md",
++        "docs/blueprint/assessment/R12-G2.json",
++        "docs/blueprint/assessment/R12-M5.json",
++        "docs/blueprint/assessment/R12-M6.json",
++        "docs/blueprint/assessment/R12-M7.json",
++        "docs/blueprint/lanes/l5-edge-GOV-9075.patch"
++      ],
++      "depends_on": [
++        "l4b-expand-docs"
++      ],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 60,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l5b-mesh-tests",
++      "role": "test-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l5b-mesh",
++      "owns": [
++        "backend/crates/apps/qip-api/tests/mesh.rs",
++        "backend/crates/apps/qip-cli/tests/demo.rs",
++        "backend/crates/tests/qip-acceptance/tests/acceptance.rs",
++        "backend/crates/tests/qip-acceptance/tests/cycle_unwind_hedge.rs",
++        "backend/crates/tests/qip-acceptance/tests/regional_episodes.rs",
++        "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs"
++      ],
++      "depends_on": [
++        "l5-edge-tests"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-acceptance -p qip-api -p qip-cli"
++      ],
++      "budget": {
++        "minutes": 180,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l5b-mesh-code",
++      "role": "backend-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l5b-mesh",
++      "owns": [
++        "backend/crates/edge/qip-edge/src/cell.rs",
++        "backend/crates/edge/qip-edge/src/mesh.rs",
++        "backend/crates/libs/qip-contracts/src/wire.rs",
++        "backend/crates/runtime/qip-kernel/src/central/plane.rs",
++        "backend/crates/runtime/qip-kernel/src/hedge.rs",
++        "backend/crates/runtime/qip-kernel/src/platform.rs",
++        "backend/crates/services/qip-mesh/src/delta.rs"
++      ],
++      "depends_on": [
++        "l5-edge-code"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-contracts -p qip-edge -p qip-kernel -p qip-mesh"
++      ],
++      "budget": {
++        "minutes": 240,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l5b-mesh-docs",
++      "role": "technical-writer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l5b-mesh",
++      "owns": [
++        "docs/adr/0207-a-cells-regional-episodes-ride-its-mesh-delta-to-the-centre-as-a-bounded-view-and-the-centre-keeps-a-bounded-per-cell-store.md",
++        "docs/adr/0208-a-cells-open-positions-ride-its-mesh-delta-as-a-bounded-sequenced-statement-the-centre-reconciles-against-its-settled-books-and-never-treats-as-a-balance.md",
++        "docs/adr/README.md",
++        "docs/blueprint/assessment/R12-G3.json",
++        "docs/blueprint/assessment/R12-M1.json",
++        "docs/blueprint/assessment/R12-M5.json",
++        "docs/blueprint/assessment/R12-M6.json",
++        "docs/blueprint/assessment/R12-M7.json"
++      ],
++      "depends_on": [
++        "l5-edge-docs"
++      ],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 60,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l6-platform-tests",
++      "role": "test-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l6-platform",
++      "owns": [
++        "backend/crates/apps/qip-deepbrain/tests/research.rs",
++        "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs",
++        "backend/crates/apps/qip-edge-node/tests/reasoning_outage_loop.rs",
++        "backend/crates/apps/qip-fabricd/tests/mirror.rs",
++        "backend/crates/runtime/qip-kernel/tests/body_schema_lock.rs",
++        "backend/crates/runtime/qip-kernel/tests/breadth.rs",
++        "backend/crates/runtime/qip-kernel/tests/event_resolution.rs",
++        "backend/crates/services/qip-prediction/tests/arbitrage.rs",
++        "backend/crates/tests/qip-acceptance/tests/development_roles.rs",
++        "backend/crates/tests/qip-acceptance/tests/event_fabric_wire_format.rs",
++        "backend/crates/tests/qip-acceptance/tests/infrastructure.rs"
++      ],
++      "depends_on": [
++        "l5b-mesh-tests"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-acceptance -p qip-deepbrain -p qip-edge-node -p qip-fabricd -p qip-kernel -p qip-prediction"
++      ],
++      "budget": {
++        "minutes": 180,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l6-platform-code",
++      "role": "backend-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l6-platform",
++      "owns": [
++        "backend/crates/libs/qip-observability/src/metrics.rs",
++        "backend/crates/libs/qip-tls/src/lib.rs",
++        "backend/crates/runtime/qip-kernel/src/event_markets.rs",
++        "backend/crates/services/qip-prediction/src/adapter.rs"
++      ],
++      "depends_on": [],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-kernel -p qip-observability -p qip-prediction -p qip-tls"
++      ],
++      "budget": {
++        "minutes": 240,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l6-platform-docs",
++      "role": "technical-writer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l6-platform",
++      "owns": [
++        "docs/adr/0214-while-the-ai-platform-is-lost-no-new-cognition-is-produced-its-work-queues-in-a-bounded-backlog-and-installed-packages-keep-trading.md",
++        "docs/adr/README.md",
++        "docs/architecture/phase-register.json",
++        "docs/blueprint/assessment/R12-G1.json",
++        "docs/blueprint/assessment/R12-G2.json",
++        "docs/blueprint/assessment/R12-G3.json",
++        "docs/blueprint/assessment/R12-M5.json",
++        "docs/blueprint/assessment/R12-M7.json",
++        "docs/blueprint/lanes/l6-cicd-10203-sha-pins.patch",
++        "docs/blueprint/lanes/l6-cicd-9083-lane-manifest.patch",
++        "docs/blueprint/lanes/l6-node-prereqs-protected.patch",
++        "docs/blueprint/lanes/l9-CICD-10117.patch",
++        "docs/operations/deploying-an-edge-cell.md",
++        "docs/ops/runbooks/owner-switches.md"
++      ],
++      "depends_on": [
++        "l5b-mesh-docs"
++      ],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 60,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "l6-platform-platform",
++      "role": "cloud-platform-engineer",
++      "branch": "ccr-d1bc1e54-kf6mr0-l6-platform",
++      "owns": [
++        "infrastructure/terraform/modules/connectivity/main.tf",
++        "infrastructure/terraform/modules/connectivity/outputs.tf",
++        "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl",
++        "infrastructure/terraform/modules/network/main.tf",
++        "infrastructure/terraform/modules/network/tests/data-and-engineering-vpcs.tftest.hcl",
++        "infrastructure/terraform/modules/trust-zones/tests/zone-model.tftest.hcl",
++        "infrastructure/terraform/tests/security.tftest.hcl",
++        "infrastructure/trust/README.md",
++        "infrastructure/trust/google-roots.pem"
++      ],
++      "depends_on": [],
++      "acceptance": [
++        "terraform -chdir=infrastructure/terraform fmt -check -recursive",
++        "cd infrastructure/terraform/modules/connectivity && terraform init -backend=false && terraform test",
++        "cd infrastructure/terraform/modules/network && terraform init -backend=false && terraform test",
++        "cd infrastructure/terraform/modules/trust-zones && terraform init -backend=false && terraform test",
++        "cd infrastructure/terraform && terraform init -backend=false && terraform test",
++        "cd backend && cargo test --no-fail-fast -p qip-tls",
++        "cd backend && cargo test --no-fail-fast -p qip-acceptance --test infrastructure"
++      ],
++      "budget": {
++        "minutes": 120,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "orchestrator-tests",
++      "role": "test-engineer",
++      "branch": "ccr-116bbb27-osu8n8",
++      "owns": [
++        "backend/crates/apps/qip-deepbrain/tests/research.rs",
++        "backend/crates/apps/qip-edge-node/tests/fabric_envelope.rs",
++        "backend/crates/libs/qip-events/tests/backbone.rs",
++        "backend/crates/runtime/qip-kernel/tests/kernel.rs",
++        "backend/crates/runtime/qip-kernel/tests/learning.rs",
++        "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs",
++        "backend/crates/services/qip-twin/tests/twin.rs",
++        "backend/crates/tests/qip-acceptance/tests/branch_rules.rs",
++        "backend/crates/tests/qip-acceptance/tests/drift_plan.rs",
++        "backend/crates/tests/qip-acceptance/tests/e2e.rs",
++        "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs"
++      ],
++      "depends_on": [
++        "l1-money-tests",
++        "l1-money-code",
++        "l1-money-docs",
++        "l1b-fabric-tests",
++        "l1b-fabric-code",
++        "l1b-fabric-docs",
++        "l1b-fabric-platform",
++        "l2-intel-tests",
++        "l2-intel-code",
++        "l2-intel-docs",
++        "l2b-ambient-tests",
++        "l2b-ambient-code",
++        "l2b-ambient-docs",
++        "l3-data-tests",
++        "l3-data-code",
++        "l3-data-docs",
++        "l3b-tick-tests",
++        "l3b-tick-code",
++        "l3b-tick-docs",
++        "l4-quant-tests",
++        "l4-quant-code",
++        "l4-quant-docs",
++        "l4b-expand-tests",
++        "l4b-expand-code",
++        "l4b-expand-docs",
++        "l5-edge-tests",
++        "l5-edge-code",
++        "l5-edge-docs",
++        "l5b-mesh-tests",
++        "l5b-mesh-code",
++        "l5b-mesh-docs",
++        "l6-platform-tests",
++        "l6-platform-code",
++        "l6-platform-docs",
++        "l6-platform-platform"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-acceptance -p qip-deepbrain -p qip-edge-node -p qip-events -p qip-kernel -p qip-twin"
++      ],
++      "budget": {
++        "minutes": 360,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "orchestrator-code",
++      "role": "backend-engineer",
++      "branch": "ccr-116bbb27-osu8n8",
++      "owns": [
++        "backend/crates/libs/qip-events/src/topic.rs",
++        "backend/crates/runtime/qip-kernel/src/platform.rs",
++        "backend/crates/services/qip-twin/src/counterfactual.rs",
++        "backend/crates/services/qip-world-model/src/world.rs"
++      ],
++      "depends_on": [
++        "l1-money-tests",
++        "l1-money-code",
++        "l1-money-docs",
++        "l1b-fabric-tests",
++        "l1b-fabric-code",
++        "l1b-fabric-docs",
++        "l1b-fabric-platform",
++        "l2-intel-tests",
++        "l2-intel-code",
++        "l2-intel-docs",
++        "l2b-ambient-tests",
++        "l2b-ambient-code",
++        "l2b-ambient-docs",
++        "l3-data-tests",
++        "l3-data-code",
++        "l3-data-docs",
++        "l3b-tick-tests",
++        "l3b-tick-code",
++        "l3b-tick-docs",
++        "l4-quant-tests",
++        "l4-quant-code",
++        "l4-quant-docs",
++        "l4b-expand-tests",
++        "l4b-expand-code",
++        "l4b-expand-docs",
++        "l5-edge-tests",
++        "l5-edge-code",
++        "l5-edge-docs",
++        "l5b-mesh-tests",
++        "l5b-mesh-code",
++        "l5b-mesh-docs",
++        "l6-platform-tests",
++        "l6-platform-code",
++        "l6-platform-docs",
++        "l6-platform-platform"
++      ],
++      "acceptance": [
++        "cd backend && cargo test --no-fail-fast -p qip-events -p qip-kernel -p qip-twin -p qip-world-model"
++      ],
++      "budget": {
++        "minutes": 360,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "orchestrator-docs",
++      "role": "technical-writer",
++      "branch": "ccr-116bbb27-osu8n8",
++      "owns": [
++        "docs/adr/README.md",
++        "docs/blueprint/assessment/R12-G1.json",
++        "docs/blueprint/assessment/R12-G2.json",
++        "docs/blueprint/assessment/R12-G3.json",
++        "docs/blueprint/assessment/R12-M1.json",
++        "docs/blueprint/assessment/R12-M2.json",
++        "docs/blueprint/assessment/R12-M3.json",
++        "docs/blueprint/assessment/R12-M4.json",
++        "docs/blueprint/assessment/R12-M5.json",
++        "docs/blueprint/assessment/R12-M6.json",
++        "docs/blueprint/assessment/R12-M7.json",
++        "docs/blueprint/lanes/wave1031-handoff-2026-10-31.json",
++        "docs/blueprint/lanes/wave1031-owner-rulings-2026-10-31.json",
++        "docs/blueprint/lanes/wave1031-triage-2026-10-31.json",
++        "docs/blueprint/owner-decisions-2026-10-25.md",
++        "docs/blueprint/owner-decisions-2026-10-31.md",
++        "docs/blueprint/traceability-matrix.md",
++        "docs/blueprint/v12-completion-plan.md"
++      ],
++      "depends_on": [
++        "l1-money-tests",
++        "l1-money-code",
++        "l1-money-docs",
++        "l1b-fabric-tests",
++        "l1b-fabric-code",
++        "l1b-fabric-docs",
++        "l1b-fabric-platform",
++        "l2-intel-tests",
++        "l2-intel-code",
++        "l2-intel-docs",
++        "l2b-ambient-tests",
++        "l2b-ambient-code",
++        "l2b-ambient-docs",
++        "l3-data-tests",
++        "l3-data-code",
++        "l3-data-docs",
++        "l3b-tick-tests",
++        "l3b-tick-code",
++        "l3b-tick-docs",
++        "l4-quant-tests",
++        "l4-quant-code",
++        "l4-quant-docs",
++        "l4b-expand-tests",
++        "l4b-expand-code",
++        "l4b-expand-docs",
++        "l5-edge-tests",
++        "l5-edge-code",
++        "l5-edge-docs",
++        "l5b-mesh-tests",
++        "l5b-mesh-code",
++        "l5b-mesh-docs",
++        "l6-platform-tests",
++        "l6-platform-code",
++        "l6-platform-docs",
++        "l6-platform-platform"
++      ],
++      "acceptance": [
++        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test documentation --test blueprint_rules"
++      ],
++      "budget": {
++        "minutes": 360,
++        "usd": 0,
++        "tokens": 0
++      }
++    },
++    {
++      "id": "orchestrator-platform",
++      "role": "cloud-platform-engineer",
++      "branch": "ccr-116bbb27-osu8n8",
++      "owns": [
++        ".github/workflows/ci.yml",
++        ".github/workflows/drift.yml",
++        ".github/workflows/rules.yml",
++        "infrastructure/environments/dev/terraform.tfvars",
++        "infrastructure/terraform/main.tf",
++        "infrastructure/terraform/variables.tf",
++        "scripts/agent-guard.mjs",
++        "scripts/agent-guard.test.mjs",
++        "scripts/agent-lanes.test.mjs",
++        "scripts/agent-policy.json",
++        "scripts/game-day/agent-escalation.mjs",
++        "scripts/game-day/harness.test.mjs",
++        "scripts/lanes/**"
++      ],
++      "depends_on": [
++        "l1-money-tests",
++        "l1-money-code",
++        "l1-money-docs",
++        "l1b-fabric-tests",
++        "l1b-fabric-code",
++        "l1b-fabric-docs",
++        "l1b-fabric-platform",
++        "l2-intel-tests",
++        "l2-intel-code",
++        "l2-intel-docs",
++        "l2b-ambient-tests",
++        "l2b-ambient-code",
++        "l2b-ambient-docs",
++        "l3-data-tests",
++        "l3-data-code",
++        "l3-data-docs",
++        "l3b-tick-tests",
++        "l3b-tick-code",
++        "l3b-tick-docs",
++        "l4-quant-tests",
++        "l4-quant-code",
++        "l4-quant-docs",
++        "l4b-expand-tests",
++        "l4b-expand-code",
++        "l4b-expand-docs",
++        "l5-edge-tests",
++        "l5-edge-code",
++        "l5-edge-docs",
++        "l5b-mesh-tests",
++        "l5b-mesh-code",
++        "l5b-mesh-docs",
++        "l6-platform-tests",
++        "l6-platform-code",
++        "l6-platform-docs",
++        "l6-platform-platform"
++      ],
++      "acceptance": [
++        "node --test scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs",
++        "node scripts/agent-lanes.mjs validate --policy scripts/agent-policy.json --manifest scripts/lanes/round-wave1031.json",
++        "terraform -chdir=infrastructure/terraform fmt -check -recursive"
++      ],
++      "budget": {
++        "minutes": 360,
++        "usd": 0,
++        "tokens": 0
++      }
++    }
++  ]
++}

@@ -572,6 +572,11 @@ pub struct ReplayReport {
     pub journal_entries: u64,
     pub fills: u64,
     pub halt_flags: u64,
+    /// How long each re-driven pass took, by the monotonic clock outside the
+    /// cell (R12-REFLEX-8066). Read by the timing mode and by nothing that
+    /// decides; the cell never sees it, so timing a replay cannot change
+    /// what it reproduces.
+    pub pass_latencies: Vec<std::time::Duration>,
     pub verdict: Verdict,
 }
 
@@ -602,6 +607,71 @@ impl ReplayReport {
     }
 }
 
+// --- the timing mode (R12-REFLEX-8066) ---------------------------------------
+
+/// The per-pass latency distribution of one or more replays of a spool.
+///
+/// A host tuning (isolated cores, tickless cores, huge pages) is adopted only
+/// after the same spool, replayed on one node booted with it and without it,
+/// shows it helps; these are the figures the two boots are compared by.
+/// Nearest-rank percentiles, so every figure is one a pass actually took.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LatencySummary {
+    pub samples: usize,
+    pub p50: std::time::Duration,
+    pub p90: std::time::Duration,
+    pub p99: std::time::Duration,
+    pub max: std::time::Duration,
+}
+
+impl LatencySummary {
+    /// The summary of `latencies`, or `None` for none: a replay that timed
+    /// no pass has no distribution to report, and a zero would read as fast.
+    pub fn of(latencies: &[std::time::Duration]) -> Option<Self> {
+        let mut sorted = latencies.to_vec();
+        sorted.sort_unstable();
+        let rank = |percent: usize| -> Option<std::time::Duration> {
+            let index = (percent * sorted.len()).div_ceil(100).max(1) - 1;
+            sorted.get(index).copied()
+        };
+        Some(Self {
+            samples: sorted.len(),
+            p50: rank(50)?,
+            p90: rank(90)?,
+            p99: rank(99)?,
+            max: *sorted.last()?,
+        })
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "{} passes timed: p50 {} us, p90 {} us, p99 {} us, max {} us",
+            self.samples,
+            self.p50.as_micros(),
+            self.p90.as_micros(),
+            self.p99.as_micros(),
+            self.max.as_micros()
+        )
+    }
+}
+
+/// The host tunings a timing run is labelled with, read from the kernel
+/// command line: `isolcpus`, `nohz_full` and `hugepages`, each its value or
+/// `unset`. Read rather than configured, so a run reports the boot it ran
+/// on and not the one its operator believed it was.
+pub fn host_tuning(cmdline: &str) -> Vec<(&'static str, String)> {
+    ["isolcpus", "nohz_full", "hugepages"]
+        .into_iter()
+        .map(|name| {
+            let value = cmdline
+                .split_whitespace()
+                .find_map(|word| word.strip_prefix(name)?.strip_prefix('='))
+                .map_or_else(|| "unset".to_string(), str::to_string);
+            (name, value)
+        })
+        .collect()
+}
+
 // --- the replay ------------------------------------------------------------
 
 /// Re-drive `session` through `rebuilt`. See the module documentation.
@@ -626,6 +696,7 @@ pub fn replay(
         journal_entries: 0,
         fills: 0,
         halt_flags: 0,
+        pass_latencies: Vec::new(),
         verdict: Verdict::Reproduced,
     };
     let Some(first) = session.passes.first() else {
@@ -730,6 +801,7 @@ pub fn replay(
 
         // The node tolerates a pass that errs — the journal holds the
         // refusal and the loop keeps turning — so the replay does too.
+        let started = std::time::Instant::now();
         let outcome = run_pass(
             &mut rebuilt.cell,
             &mut rebuilt.gateway,
@@ -738,6 +810,7 @@ pub fn replay(
             &mut stats,
             now,
         );
+        report.pass_latencies.push(started.elapsed());
         report.passes = report.passes.saturating_add(1);
         if let Ok(PassOutcome::Halted { .. }) = outcome {
             report.halted_passes = report.halted_passes.saturating_add(1);

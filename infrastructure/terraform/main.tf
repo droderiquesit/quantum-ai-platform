@@ -599,6 +599,11 @@ module "registry" {
   # after dev is provisioned.
   promotion_readers = var.registry_promotion_readers
 
+  # The replica in another region, null everywhere today (R12-RES-9177;
+  # owner decision 5 of 2026-10-25). deploy.yml reads the same tfvars line
+  # and copies each signed digest here only when one is named.
+  secondary_region = var.secondary_region
+
   # The ring every keyed store's key lives in; the two GENERIC repositories
   # are encrypted with a key the module creates there (SEC-046).
   key_ring_id          = module.secrets.key_ring_id

@@ -14962,6 +14962,61 @@ impl Platform {
             .collect()
     }
 
+    /// A company twin over the supply relationships the world graph holds as
+    /// true and known at `now` (R12-WORLD-9037). Each `Supplies` fact
+    /// becomes a supply link whose share is the fact's weight (the graph's
+    /// "share of supply", read as the customer's share of input from that
+    /// supplier) and whose source is the fact's. Where a pair was stated more
+    /// than once, the latest recorded statement is kept.
+    ///
+    /// The twin is a simulation over facts, not a causal claim: that a
+    /// company supplies another is a fact, that a shock travels between them
+    /// is the twin's hypothesis, and nothing here writes a causal edge.
+    /// Refuses the graph's links if the twin would: shares that sum past a
+    /// customer's whole input are a data error to correct, not to clamp.
+    pub fn business_twin(&self, now: Timestamp) -> Result<qip_twin::business::BusinessTwin> {
+        use qip_world_model::relationship::RelationshipKind;
+        let world = self.world.read();
+        let mut latest: BTreeMap<(String, String), (Timestamp, qip_twin::business::SupplyLink)> =
+            BTreeMap::new();
+        for fact in world.graph().facts_at(now, now) {
+            let relationship = &fact.relationship;
+            if relationship.kind != RelationshipKind::Supplies {
+                continue;
+            }
+            let key = (relationship.from.clone(), relationship.to.clone());
+            if latest
+                .get(&key)
+                .is_some_and(|(at, _)| *at >= fact.recorded_at)
+            {
+                continue;
+            }
+            latest.insert(
+                key,
+                (
+                    fact.recorded_at,
+                    qip_twin::business::SupplyLink {
+                        supplier: relationship.from.clone(),
+                        customer: relationship.to.clone(),
+                        share: relationship.weight,
+                        source: relationship.source.clone(),
+                    },
+                ),
+            );
+        }
+        qip_twin::business::BusinessTwin::new(
+            latest
+                .into_values()
+                .map(|(_, link)| link)
+                // A supply stated at a weight of nothing carries nothing; the
+                // graph admits it, and the twin, which refuses a zero share,
+                // would otherwise refuse every other link with it.
+                .filter(|link| link.share > 0.0)
+                .collect(),
+            Vec::new(),
+        )
+    }
+
     /// Each instrument's issuer's latest fundamental surprise readable at
     /// `now` (R12-WORLD-3044): the `<metric>_surprise` company readings,
     /// newest by availability per entity, carried to every instrument the
@@ -18586,6 +18641,12 @@ impl Platform {
         // `free` is the budget before the governor and the multipliers took
         // anything from it: the reference the leg quantities are reported
         // against, by the constructor in this same pass (ADR 0148 decision 5).
+        // No grouped caps are passed (R12-ASSET-4070, ADR 0228 decision 4):
+        // no class, region, strategy or horizon budget has a risk record, and
+        // even a row at the gross target that cannot bind changed the
+        // solver's feasibility report on the fast-brain tape, so a
+        // placeholder group is not inert. A budget lands here, through
+        // `construct_grouped`, only with its own record.
         let outcome = self.constructor.construct_referenced(
             theses,
             &covariance,
@@ -29118,6 +29179,61 @@ mod decide_tests {
                 .count(),
             3,
             "a reaction was applied twice or not at all"
+        );
+    }
+
+    /// R12-WORLD-9037: the platform's company twin is built from the
+    /// supply facts its world graph holds, so a shock to an upstream company
+    /// reaches the companies it supplies, at each customer's share, and a
+    /// supply fact not yet known is not in the twin.
+    ///
+    /// A supply stated at a weight of nothing carries nothing and is left
+    /// out, rather than making the twin refuse every other link with it.
+    ///
+    /// Mutations: build the twin from no facts, from every relationship
+    /// kind, or from facts not yet known; keep the zero-weight supply.
+    #[test]
+    fn the_platforms_company_twin_carries_a_suppliers_shock_to_its_customers_from_the_graph() {
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        let platform = small_book_platform();
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let later = t0.saturating_add(Duration::from_days(30));
+        platform.world.update(|world| {
+            for (from, to, kind, weight, known) in [
+                ("FOUNDRY", "CHIPS", RelationshipKind::Supplies, 0.4, t0),
+                ("CHIPS", "DEVICES", RelationshipKind::Supplies, 0.5, t0),
+                ("CHIPS", "RIVAL", RelationshipKind::Competitor, 1.0, t0),
+                (
+                    "FOUNDRY",
+                    "LATECOMER",
+                    RelationshipKind::Supplies,
+                    0.9,
+                    later,
+                ),
+                // A supply the graph admits at a weight of nothing.
+                ("FARM", "DEVICES", RelationshipKind::Supplies, 0.0, t0),
+            ] {
+                world
+                    .relate(
+                        Relationship::new(from, to, kind, weight, "filing"),
+                        t0,
+                        known,
+                        0.9,
+                    )
+                    .expect("the fixture relates");
+            }
+        });
+        let now = t0.saturating_add(Duration::from_days(1));
+        let twin = platform.business_twin(now).expect("a twin from the graph");
+        assert_eq!(twin.len(), 2, "only the supply facts known now are links");
+        let response = twin.shock_entity("FOUNDRY", -0.10, 4).expect("a shock");
+        let change = |e: &str| response.effects.get(e).map(|x| x.change);
+        assert!((change("CHIPS").expect("reached") - -0.04).abs() < 1e-12);
+        assert!((change("DEVICES").expect("reached") - -0.02).abs() < 1e-12);
+        assert!(change("RIVAL").is_none(), "a competitor is not a customer");
+        assert!(
+            change("LATECOMER").is_none(),
+            "a fact not yet known was in the twin"
         );
     }
 
