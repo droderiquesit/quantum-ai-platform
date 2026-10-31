@@ -1486,13 +1486,16 @@
   {
     "id": "R12-TICK-2062",
     "status": "PARTIAL",
-    "current": "qip_sequencing::align orders only beyond combined uncertainty and provides an as-of join; property-style tests; not called outside the crate (feature DAG uses its own aligned_tail).",
+    "current": "The feature DAG now places every mid sample in time: InstrumentState keeps placements: Vec<qip_sequencing::align::Placed> (venue instant, clock doubt as a half-width, arrival) index for index with samples, filled by MarketState::apply_placed / FeatureEngine::ingest_placed(message, uncertainty); ingest/apply delegate with Duration::ZERO. LeadLagCorrelation::compute aligns the two tails through aligned_tail_placed and asks qip_sequencing::align whether the leader's closing sample is Before the follower's lagged one; any pair the clocks cannot order (Unordered or After) leaves the feature Undefined instead of a correlation read off the bucket grid. The cell's apply_batch passes Cell::clock_uncertainty(venue, lead) to ingest_placed, so a venue whose stamps have run ahead of receipt widens the doubt on its samples. RollingCorrelation and CrossVenueSpread still pair samples through the uncertainty-free aligned_tail, and arrival is stored but read by no feature.",
     "evidence": [
-      "backend/crates/edge/qip-sequencing/src/align.rs:51-120",
-      "backend/crates/edge/qip-sequencing/tests/align.rs:187 identical_stamps_are_unordered_rather_than_simultaneous_and_the_bound_itself_is_not_an_order",
-      "backend/crates/edge/qip-feature-dag/src/features.rs:583 aligned_tail (separate, uncertainty-free)"
+      "backend/crates/edge/qip-feature-dag/src/state.rs InstrumentState::placements, apply_placed; MarketState::apply_placed",
+      "backend/crates/edge/qip-feature-dag/src/engine.rs FeatureEngine::ingest_placed",
+      "backend/crates/edge/qip-feature-dag/src/features.rs LeadLagCorrelation::compute (align(...).order != Order::Before -> Undefined), aligned_tail_placed",
+      "backend/crates/edge/qip-edge/src/cell.rs apply_batch: self.features.ingest_placed(message, self.clock_uncertainty(&venue, lead)?)",
+      "backend/crates/edge/qip-sequencing/src/align.rs Placed, align",
+      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs cross_instrument_samples_within_combined_clock_uncertainty_yield_no_aligned_pair"
     ],
-    "gap": "Nothing supplies the uncertainty alignment needs: qip_sequencing::align (align.rs:158) takes Placed stamps whose uncertainty comes from the clock discipline (DisciplinedTime), and nothing outside qip-sequencing calls the discipline, Placed or align. The feature DAG's InstrumentState keeps only (bucket, mid) per sample (state.rs:131), with no per-instrument clock uncertainty or arrival time, so replacing aligned_tail (features.rs:583) with align would order every pair exactly (zero uncertainty), which is the defect, or refuse every cross-venue feature. Needs the clock discipline threaded into MarketState per instrument first.",
+    "gap": "2026-10-31 lane L3b: skeptic REFUTED on the COMPLETE bar: no shipped path computes the changed feature (qip-edge-node registers standard_suite only, which holds no LeadLagCorrelation, RollingCorrelation or CrossVenueSpread); on the default simulated feed venue_time is the gateway's now so Cell::clock_uncertainty is always zero and every pair in distinct buckets orders as Before, the behaviour before the change; the bound passed is the largest observed stamp lead, a floor rather than the clock discipline's published half-width (Placed::from_disciplined has no caller); RollingCorrelation and CrossVenueSpread still treat bucket co-membership as simultaneity and no feature reads arrival; the reset fan-out and snapshot rebuild in cell.rs still ingest with zero doubt; no test pins the cell wiring (passing Duration::ZERO from apply_batch fails nothing). Remaining step: register the cross-instrument features on a shipped path, feed the discipline's half-width, align RollingCorrelation and CrossVenueSpread and read arrival, thread the bound through reset and rebuild, and a cell-level wiring test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1502,10 +1505,10 @@
       "R12-TICK-2051"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-sequencing --test align",
+    "verification": "cargo test -p qip-feature-dag --test feature_dag cross_instrument_samples_within_combined_clock_uncertainty",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure's test two_venues_inside_combined_uncertainty_are_not_ordered_by_a_cross_venue_feature could only pass with an uncertainty the test itself declares, proving the arithmetic of align and not the feed. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's test two_venues_inside_combined_uncertainty_are_not_ordered_by_a_cross_venue_feature could only pass with an uncertainty the test itself declares, proving the arithmetic of align and not the feed. Kept PARTIAL. 2026-10-31 lane L3b (wave580): placements and the uncertainty-aware lead/lag landed; qip-feature-dag gains qip-sequencing as a workspace dependency (in-tree crate, no new third-party package). Mutation fired and restored by cp + cmp: accept every alignment in LeadLagCorrelation::compute; the doubted engine computes Statistic(1.0) and the first assertion fails. The first assertion accepted a missing key until the skeptic noted it; it now requires an evaluated Undefined. Gates: cargo test -p qip-edge -p qip-feature-dag -p qip-sequencing --no-fail-fast 54 binaries all ok (567 passed); qip-acceptance mesh_lane, event_fabric_architecture, paper_boundary ok; fmt and clippy -D warnings clean on qip-feature-dag and qip-edge. Skeptic (code-reviewer) REFUTED as in the gap."
   },
   {
     "id": "R12-TICK-2063",

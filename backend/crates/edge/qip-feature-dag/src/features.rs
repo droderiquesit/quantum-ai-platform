@@ -19,6 +19,7 @@ use qip_core::error::Result;
 use qip_core::{Decimal, ObjectId};
 use qip_market::book::{OrderBook, Side};
 use qip_numerics::stats;
+use qip_sequencing::align::{Order, Placed, align};
 
 /// A two-sided book we are willing to price off.
 ///
@@ -670,24 +671,100 @@ impl FeatureDefinition for LeadLagCorrelation {
         let (Some(left), Some(right)) = (ctx.fresh(&self.subject), ctx.fresh(&self.other)) else {
             return Ok(FeatureValue::Undefined);
         };
-        let Some((left_mids, right_mids)) =
-            aligned_tail(left.samples(), right.samples(), self.window + self.lag + 1)
-        else {
+        // R12-TICK-2062: the bucket grid says which samples to compare; the
+        // clocks say whether the leader's sample really preceded the
+        // follower's. A lead/lag statistic over pairs the combined clock
+        // doubt covers would manufacture a lead that may not exist, so those
+        // pairs are left out and a window with too few ordered pairs is
+        // undefined rather than computed from a grid.
+        let Some(aligned) = aligned_tail_placed(
+            left.samples(),
+            left.placements(),
+            right.samples(),
+            right.placements(),
+            self.window + self.lag + 1,
+        ) else {
             return Ok(FeatureValue::Undefined);
         };
-        let left_returns = stats::log_returns(&left_mids);
-        let right_returns = stats::log_returns(&right_mids);
-        // The follower's last `window` returns against the leader's returns
-        // `lag` steps before each of them.
-        let follower = &left_returns[self.lag..];
-        let leader = &right_returns[..right_returns.len() - self.lag];
-        if stats::stddev(follower) <= 0.0 || stats::stddev(leader) <= 0.0 {
+        let left_returns = stats::log_returns(&aligned.left_mids);
+        let right_returns = stats::log_returns(&aligned.right_mids);
+        let mut follower = Vec::with_capacity(self.window);
+        let mut leader = Vec::with_capacity(self.window);
+        for step in 0..right_returns.len() - self.lag {
+            // Return `k` closes on sample `k + 1`; the leader's return `step`
+            // must have closed, by the clocks, before the follower's return
+            // `step + lag` did.
+            let leader_closed = &aligned.right_placed[step + 1];
+            let follower_closed = &aligned.left_placed[step + self.lag + 1];
+            if align(leader_closed, follower_closed).order != Order::Before {
+                continue;
+            }
+            follower.push(left_returns[step + self.lag]);
+            leader.push(right_returns[step]);
+        }
+        if follower.len() < self.window {
+            return Ok(FeatureValue::Undefined);
+        }
+        if stats::stddev(&follower) <= 0.0 || stats::stddev(&leader) <= 0.0 {
             return Ok(FeatureValue::Undefined);
         }
         Ok(FeatureValue::Statistic(stats::correlation(
-            follower, leader,
+            &follower, &leader,
         )))
     }
+}
+
+/// Two instruments' sample tails aligned by bucket, with where each sample
+/// sits in time beside its mid (R12-TICK-2062). `None` with fewer than
+/// `count` shared buckets, or when either instrument's placements have fallen
+/// out of step with its samples, which a feature must not paper over.
+struct AlignedPlaced {
+    left_mids: Vec<f64>,
+    right_mids: Vec<f64>,
+    left_placed: Vec<Placed>,
+    right_placed: Vec<Placed>,
+}
+
+fn aligned_tail_placed(
+    left: &[(i64, Decimal)],
+    left_placed: &[Placed],
+    right: &[(i64, Decimal)],
+    right_placed: &[Placed],
+    count: usize,
+) -> Option<AlignedPlaced> {
+    if count == 0 || left.len() != left_placed.len() || right.len() != right_placed.len() {
+        return None;
+    }
+    let mut aligned = AlignedPlaced {
+        left_mids: Vec::new(),
+        right_mids: Vec::new(),
+        left_placed: Vec::new(),
+        right_placed: Vec::new(),
+    };
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < left.len() && j < right.len() {
+        match left[i].0.cmp(&right[j].0) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                aligned.left_mids.push(left[i].1.to_f64());
+                aligned.right_mids.push(right[j].1.to_f64());
+                aligned.left_placed.push(left_placed[i]);
+                aligned.right_placed.push(right_placed[j]);
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    if aligned.left_mids.len() < count {
+        return None;
+    }
+    let start = aligned.left_mids.len() - count;
+    aligned.left_mids.drain(..start);
+    aligned.right_mids.drain(..start);
+    aligned.left_placed.drain(..start);
+    aligned.right_placed.drain(..start);
+    Some(aligned)
 }
 
 /// Mid of `other` less mid of `subject`, in basis points of `subject`'s mid
