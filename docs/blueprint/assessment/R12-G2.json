@@ -1135,9 +1135,13 @@
       "backend/crates/services/qip-capital/src/funding.rs",
       "backend/crates/services/qip-capital-fabric/src",
       "backend/crates/runtime/qip-kernel/src/central/regions.rs:349 GrantManifests",
-      "backend/crates/services/qip-capital/tests/capital.rs"
+      "backend/crates/services/qip-capital/tests/capital.rs",
+      "docs/adr/0230-the-capital-society-coordinator-is-a-kernel-step-that-settles-allocation-funding-liquidity-and-collateral-proposals-in-the-survival-waterfalls-order-against-the-regions-grant.md",
+      "backend/crates/services/qip-capital/src/coordinator.rs Claim (waterfall order), settle, granted_total",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs CentralPlane::grant_manifests -> coordinate (against RegionShare::named_gross); set_coordinator_claims; coordination()",
+      "backend/crates/runtime/qip-kernel/tests/central.rs competing_proposals_never_sum_past_the_grant"
     ],
-    "gap": "Coordinator over the four proposal kinds; durable ledger.",
+    "gap": "Coordinator over the four proposal kinds; durable ledger.\n2026-10-31 (lane L1-MONEY, 4f58eb01 + b0464e44, ADR 0230): qip_capital::coordinator::settle settles liquidity, collateral, funding and allocation claims against one grant in waterfall order and cuts from the bottom; CentralPlane::grant_manifests settles each decided cell against the live grants its manifest names (named_gross; fixed after the skeptic found it settling against the plan's share). Remaining: (1) no shipped binary calls set_coordinator_claims, so in production only the plan's own allocation lines are settled and nothing can be cut; (2) grant_manifests runs only from qip-api mesh::pending_policy, which needs QIP_MESH_CELLS and QIP_MESH_REGIONS, and QIP_MESH_CELLS is unset in the committed infrastructure; (3) the settlement is recorded and read by nothing: manifests ship unchanged; (4) durable ledger is not Spanner (unfunded).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1148,7 +1152,7 @@
     "verification": "cargo test -p qip-capital",
     "work_item": "",
     "size": "L",
-    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The capital-society coordinator is a step the kernel composes over qip-capital, not a new binary (ADR 0127). Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: The capital-society coordinator is a kernel step that settles allocation, funding, liquidity and collateral proposals in the survival waterfall's order against the region's grant, and no set of proposals ever sums past it."
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The capital-society coordinator is a step the kernel composes over qip-capital, not a new binary (ADR 0127). Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: The capital-society coordinator is a kernel step that settles allocation, funding, liquidity and collateral proposals in the survival waterfall's order against the region's grant, and no set of proposals ever sums past it. 2026-10-31 lane L1-MONEY: mutations fired (drop the cut: granted 3500000 against 2000000; settle against amount(): granted 2000000 with no live grant), each restored with cp+cmp. One code-reviewer skeptic REFUTED (no production claims, not on a default path, recorded not acted on, wrong grant figure - the last fixed in b0464e44). Kept PARTIAL."
   },
   {
     "id": "R12-CAPITAL-9048",

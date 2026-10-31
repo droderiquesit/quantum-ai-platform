@@ -18476,6 +18476,12 @@ impl Platform {
         // `free` is the budget before the governor and the multipliers took
         // anything from it: the reference the leg quantities are reported
         // against, by the constructor in this same pass (ADR 0148 decision 5).
+        // No grouped caps are passed (R12-ASSET-4070, ADR 0228 decision 4):
+        // no class, region, strategy or horizon budget has a risk record, and
+        // even a row at the gross target that cannot bind changed the
+        // solver's feasibility report on the fast-brain tape, so a
+        // placeholder group is not inert. A budget lands here, through
+        // `construct_grouped`, only with its own record.
         let outcome = self.constructor.construct_referenced(
             theses,
             &covariance,
