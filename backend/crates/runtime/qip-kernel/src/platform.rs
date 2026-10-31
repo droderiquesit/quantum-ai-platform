@@ -146,12 +146,14 @@ use qip_financial::asset_class::{AssetClass, InstrumentType};
 use qip_financial::constraints::Jurisdiction;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
 use qip_financial::derivative_permissions::DerivativePermissions;
+use qip_financial::history::UniverseHistory;
 use qip_financial::intelligence::MacroObservation;
 use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
-    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, MarketView, RiskView, TradeSide,
+    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth, MarketView,
+    ModelsView, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -243,6 +245,10 @@ struct SymbolicReading {
     /// The derivation was computed and could not be journaled.
     problem: Option<String>,
     veto: Option<String>,
+    /// The rule and invariant ids whose firing made `veto`; empty without one.
+    veto_rules: Vec<String>,
+    /// The pack and version the derivation ran under.
+    pack: (String, u32),
     infeasible: Option<String>,
 }
 
@@ -577,6 +583,12 @@ pub struct Platform {
     /// Orders a control refused and the twin has not yet priced, oldest
     /// first, bounded by [`DECLINED_HISTORY`].
     declined: Vec<DeclinedPath>,
+    /// Hypotheses the symbolic rule pack refused and LEARN has not yet
+    /// graded, by hypothesis id, bounded by
+    /// [`crate::theory_revision::SYMBOLIC_VETO_HISTORY`]. Read back when the
+    /// thesis is graded, so a refusal the outcome contradicted leaves a
+    /// theory delta rather than nothing (R12-EXPAND-6044).
+    pub(crate) symbolic_vetoes: BTreeMap<String, crate::theory_revision::SymbolicVetoNote>,
     /// What each priced refusal would have earned, most recent last, bounded
     /// by [`DECLINED_HISTORY`].
     declined_scores: Vec<DeclinedScore>,
@@ -590,6 +602,16 @@ pub struct Platform {
     /// forgotten first; see [`Platform::queue_cell_fills`] for why the key
     /// is this and why the set exists at all.
     cell_fills_queued: CellFillsQueued,
+    /// Legs of cells' refused cycles waiting for the twin (R12-MESH-5068),
+    /// bounded by [`DECLINED_HISTORY`]; see [`CellDeclinedPath`] for why
+    /// this is not `declined`.
+    cell_declined: Vec<CellDeclinedPath>,
+    /// Which refused legs have been queued, so a replayed report queues
+    /// none twice. The same bounded memory the cell fills use.
+    cell_refusals_queued: CellFillsQueued,
+    /// What each priced leg would have done, most recent last, bounded by
+    /// [`DECLINED_HISTORY`].
+    cell_declined_scores: Vec<CellDeclinedScore>,
     /// What the twin found about each priced fill — whether a smaller or a
     /// larger size would have done better, and how far its own entry price
     /// was from the venue's — most recent last, bounded by
@@ -896,6 +918,16 @@ pub struct Platform {
     /// platform was assembled from. Kept so the overview can say it without
     /// decoding the log; the log is the record.
     universe_assembled: UniverseAssembled,
+    /// The historical universe (R12-TICK-2090): every instrument this
+    /// platform was assembled to trade, listed from the assembly instant,
+    /// with the delistings and renamings the corporate-action tape announced
+    /// (effective at their ex-dates) and the venue outages the platform
+    /// itself caused by withdrawing a venue on feasibility evidence. A
+    /// backtest reads membership and outages as of its own instants from
+    /// here, so a name delisted later stays in the universe it is judged
+    /// against and a venue that was out is not filled through. The present
+    /// `Universe` behind the desk drops a delisted name; this does not.
+    universe_history: UniverseHistory,
     /// The last log sequence this platform inherited rather than wrote. See
     /// `inherited_through`.
     inherited_through: u64,
@@ -1076,11 +1108,25 @@ pub struct Platform {
     /// [`Platform::risk_state`] here before the panel is convened; see
     /// [`Self::brief_the_desk_on_risk`].
     risk: Upstream<RiskView>,
+    /// The book the desk's `read_portfolio` gate reads (R12-ASSET-3019),
+    /// written from the position lifecycle register before the panel is
+    /// convened. Until it existed the desk held the empty portfolio it was
+    /// assembled with for the life of the process, so the Portfolio/Asset
+    /// Brain would have read an empty book in every running binary and
+    /// construction priced its turnover against nothing.
+    book: Upstream<BookView>,
     /// The platform's own executions as the desk's adversary probe reads
     /// them (R12-REASON-3023): rebuilt from the order manager before every
     /// REASON by `brief_the_desk_on_executions`, bounded to the most recent
     /// `EXECUTION_HISTORY_KEPT`.
     executions: Upstream<ExecutionView>,
+    /// The platform's models as the desk's model-failure probe reads them
+    /// (R12-REASON-3023): every forecaster the tournament holds an open
+    /// question from, with its mean Brier score and the meta-model's
+    /// predicted failure, and the production models the deep brain last
+    /// reported past their drift threshold. Rebuilt before every REASON by
+    /// `brief_the_desk_on_models`.
+    models: Upstream<ModelsView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -1095,6 +1141,22 @@ pub struct Platform {
     /// version (R12-WORLD-3034): the record that a distilled procedure was
     /// retrieved for reuse, not only stored.
     procedures_briefed: Vec<(String, u32)>,
+    /// (event id, horizon in bars) pairs whose market reaction has been
+    /// measured and applied to the causal graph (R12-WORLD-6015), so each
+    /// is applied once. Pruned to events still held in `market_events`.
+    reactions_applied: BTreeSet<(String, usize)>,
+    /// The contradictions recent reactions found against held causal edges,
+    /// newest last and bounded by [`REACTION_CONTRADICTION_HISTORY`].
+    reaction_contradictions: Vec<qip_world_model::granger::ReactionContradiction>,
+    /// The synthetic future tree grown from the held world events and the
+    /// bars they land on (R12-WORLD-9035), observed against each later bar.
+    future_tree: Option<qip_twin::futures::FutureTree>,
+    /// The event ids `future_tree` was last grown on, or last tried; the tree
+    /// is regrown only when they change, so a refused grow is recorded once
+    /// per driver set rather than every cycle.
+    future_drivers: BTreeSet<String>,
+    /// The bar close instant `future_tree` was last observed at.
+    future_observed_at: Option<Timestamp>,
     /// The value policy over the episodes `research_memory` holds: which
     /// resolved analyst calls were surprising enough to keep whole and which
     /// are counted into a per-analyst summary (ADR 0152 decision 8,
@@ -1349,7 +1411,29 @@ pub struct Platform {
     /// of which has no admissible plan is refused before it holds capital,
     /// so nothing reaches ACT without one.
     position_exit_plans: BTreeMap<String, qip_financial::position_record::ExitPlan>,
+    /// The platform's own decision latency, SENSE through ACT, one sample per
+    /// cycle on the injected clock and the most recent
+    /// [`DECISION_LATENCY_SAMPLES`] kept (R12-TICK-2074). The capacity probe
+    /// runs behind it, so a simulated execution arrives as late as this
+    /// platform's own decisions do rather than at the instant it decided.
+    decision_latencies: std::collections::VecDeque<Duration>,
+    /// The adapter and lifecycle engine each desk position was booked
+    /// through, by object id, resolved from the asset class registry at the
+    /// fill (R12-ASSET-1015). Bounded by the universe: one entry per
+    /// instrument the desk has held.
+    position_bookings: BTreeMap<
+        String,
+        (
+            crate::asset_class_registry::ClassAdapter,
+            crate::asset_class_registry::LifecycleEngine,
+        ),
+    >,
 }
+
+/// How many cycles of decision latency the platform keeps: enough for a
+/// median and a tenth-to-ninetieth spread, few enough that one slow hour
+/// leaves the window within the hour.
+const DECISION_LATENCY_SAMPLES: usize = 64;
 
 /// How many announced-but-not-yet-due corporate actions the platform holds.
 ///
@@ -1513,6 +1597,12 @@ pub(crate) const VOLATILITY_CLAIM_WINDOW: usize = 20;
 /// stage runs inside the cycle's own latency budget; a backlog is a fact an
 /// operator should see, not a stall the cycle should absorb.
 const COUNTERFACTUALS_PER_CYCLE: usize = 8;
+
+/// The `gate` label a cell's refused cycle is scored under centrally
+/// (R12-MESH-5068). A source literal, because the cell's own gate string
+/// arrives on an unauthenticated wire; the gate itself is kept on
+/// [`CellDeclinedScore`].
+const CELL_CYCLE_GATE: &str = "cell_cycle";
 
 /// How many declined paths wait to be priced, and how many scores are kept.
 ///
@@ -1962,16 +2052,6 @@ pub struct StressReport {
     /// book is held at failing, and the model the book was built on failing —
     /// computed off the book directly. See [`crate::tail`].
     pub tail_worlds: Vec<crate::tail::TailWorld>,
-    /// One record per scenario this pass generated and applied, in the order
-    /// applied (R12-EXPAND-6033, ADR 0149 decision 18): every library entry
-    /// and the composed event under `Library`, and both signs of every
-    /// causal driver's shock under `Conditional`, each with the digest of the
-    /// book and the shock it was made from and no seed, because neither
-    /// generator draws. The stage journals each, so a scenario the book was
-    /// stressed against is on the record as generated rather than observed.
-    /// The tail worlds are not here: they are not `Scenario`s and their
-    /// generated pair is seeded by the cycle, which is recorded on them.
-    pub episodes: Vec<qip_contracts::expansion::SyntheticEpisode>,
     /// Generated worlds computed and reported but **not applied**: neither the
     /// survival reserve nor hedge selection reads them. Today the joint tail
     /// world (R12-RISK-4116), until the owner authorises applying it.
@@ -1983,6 +2063,16 @@ pub struct StressReport {
     /// advisory, or when that reserve could not be computed.
     #[serde(default)]
     pub advisory_reserve: Option<Decimal>,
+    /// One record per scenario this pass generated and applied, in the order
+    /// applied (R12-EXPAND-6033, ADR 0149 decision 18): every library entry
+    /// and the composed event under `Library`, and both signs of every
+    /// causal driver's shock under `Conditional`, each with the digest of the
+    /// book and the shock it was made from and no seed, because neither
+    /// generator draws. The stage journals each, so a scenario the book was
+    /// stressed against is on the record as generated rather than observed.
+    /// The tail worlds are not here: they are not `Scenario`s and their
+    /// generated pair is seeded by the cycle, which is recorded on them.
+    pub episodes: Vec<qip_contracts::expansion::SyntheticEpisode>,
 }
 
 /// One synthetic episode as the log holds it (R12-EXPAND-6033): the contract
@@ -2932,6 +3022,21 @@ const PRECEDENT_K: usize = 5;
 /// their head at once. It is not a threshold and nothing fires on it.
 const CAUSAL_CONTEXT_LIMIT: usize = 5;
 
+/// Reaction contradictions the platform keeps for inspection
+/// (R12-WORLD-6015). A cap, not a forecast: the record of what each did is on
+/// the edges themselves, which cite the reaction that weakened them.
+const REACTION_CONTRADICTION_HISTORY: usize = 256;
+
+/// The newest world events the future tree explores (R12-WORLD-9035). With
+/// the grid below each driver grows twelve branches, so 32 drivers and the
+/// baseline hold 385, inside [`FUTURE_MAX_BRANCHES`] with room for splits; a
+/// grid that outgrew the bound would be refused by the tree rather than
+/// trimmed.
+const FUTURE_DRIVERS: usize = 32;
+
+/// The bound on the future tree's branches, splits included.
+const FUTURE_MAX_BRANCHES: usize = 512;
+
 /// The most recent correct calls an analyst's procedure is distilled from.
 /// A window, not a lifetime: a way of answering that worked two years ago
 /// and has not been followed since is not the desk's procedure now.
@@ -3181,6 +3286,33 @@ pub struct SourceAssessment {
     /// Registrations the catalogue refused, with its reason. Recorded rather
     /// than raised: one unusable entry must not lose the others.
     pub catalogue_problems: Vec<String>,
+    /// The Source Registry entry of every registration this pass made
+    /// (R12-EXPAND-6055): provenance, cost, licence, freshness and utility
+    /// as `RegisteredSource::entry` reads them off the registered source, so
+    /// the entry is consulted on the running path and travels with the
+    /// assessment rather than being derivable only by a test that opens the
+    /// finder. A registration the registry does not hold under its id is a
+    /// catalogue problem, not a silent gap.
+    pub entries: Vec<SourceRegistryView>,
+}
+
+/// One Source Registry entry as a running path read it
+/// (`qip_data_finder::decision::SourceRegistryEntry`, flattened to owned
+/// values for the record).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceRegistryView {
+    pub source_id: String,
+    /// Where the source was found.
+    pub discovered_from: String,
+    pub discovered_at: Timestamp,
+    pub monthly_fee: Decimal,
+    /// The licence identifier the registration was decided on. Every
+    /// registered source has one: the finder treats an unknown legality as
+    /// forbidden, so a candidate without a declared licence never registers.
+    pub licence: String,
+    pub freshness: qip_data_finder::coverage::UpdateFrequency,
+    pub routing: qip_data_finder::RoutingClass,
+    pub composite: f64,
 }
 
 impl SourceAssessment {
@@ -3528,6 +3660,15 @@ pub struct CounterfactualJournal {
     /// field existed replays as having scored no fill.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fill_outcomes: Vec<FillScore>,
+    /// Legs of cells' refused cycles priced this cycle (R12-MESH-5068).
+    /// Defaulted so a journal written before the cell arm ran replays as
+    /// having priced none, which is what it did.
+    #[serde(default)]
+    pub cell_declined_scored: usize,
+    /// The individual leg scores priced this cycle, attributed to the cell's
+    /// gate. Defaulted for the same reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cell_declined_outcomes: Vec<CellDeclinedScore>,
 }
 
 /// Which solver sized the cycle's proposal, and what the classical baseline
@@ -3794,6 +3935,52 @@ pub struct DeclinedScore {
     /// before the field existed reads back as `unrecorded` rather than as
     /// priced by a method it never named.
     #[serde(default)]
+    pub method: EstimationMethod,
+}
+
+/// One leg of an arbitrage cycle a cell refused whole, kept until the twin
+/// can price what declining it cost (R12-MESH-5068, blueprint §17.2).
+///
+/// Its own queue, beside [`DeclinedPath`] and never in it: the desk's
+/// declined paths feed its sizing discount and its rule reviews, and a
+/// cell's refused cycles are evidence about the cell's coordination rule,
+/// not about the desk's limits. Sharing the window would also let a busy
+/// cell fill it and leave the desk's own vetoes unexamined.
+#[derive(Clone, Debug)]
+struct CellDeclinedPath {
+    /// `{cell}/{reported_at}/refusal-{index}/leg-{n}`: a cell's refusals have
+    /// no id of their own, and this one is the same on every replay of the
+    /// same report.
+    order_id: OrderId,
+    cell: String,
+    /// The refusal's gate, as the cell wrote it (a source literal there).
+    gate: String,
+    reason: String,
+    object_id: ObjectId,
+    venue: VenueId,
+    side: BookSide,
+    quantity: Decimal,
+    /// The report's instant: the only one the wire carries for the refusal.
+    declined_at: Timestamp,
+}
+
+/// What one leg of a cell's refused cycle would have done, once the twin has
+/// priced it. Every money figure is [`Simulated`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CellDeclinedScore {
+    pub order_id: OrderId,
+    pub cell: String,
+    /// The cell's gate that refused the cycle — the rule the score is
+    /// attributed to.
+    pub gate: String,
+    pub object_id: ObjectId,
+    pub venue: String,
+    pub declined_at: Timestamp,
+    pub scored_at: Timestamp,
+    /// What the leg as proposed would have earned over the twin's horizon.
+    pub would_have_earned: Simulated<Decimal>,
+    /// Whether taking the leg would have beaten standing aside.
+    pub regret: bool,
     pub method: EstimationMethod,
 }
 
@@ -5824,6 +6011,14 @@ impl Platform {
         // the journal both exist — but before this function returns, so no
         // cycle can precede it.
         let members: Vec<String> = universe.ids().map(|id| id.as_str().to_string()).collect();
+        // The historical universe starts as the assembled one, every member
+        // listed from this instant: the earliest this process can say it
+        // knew the name. A listing date the catalogue does not carry is not
+        // invented here.
+        let mut universe_history = UniverseHistory::new();
+        for object in universe.iter() {
+            universe_history.list(object.object_id.clone(), object.symbol.clone(), now)?;
+        }
         let universe_assembled = UniverseAssembled {
             catalogue: universe.origin().cloned(),
             instruments: universe.len(),
@@ -5901,8 +6096,15 @@ impl Platform {
         desk.world = world.gate(desk.world.required(), desk.world.label());
         desk.market = market.gate(desk.market.required(), desk.market.label());
         desk.risk = risk.gate(desk.risk.required(), desk.risk.label());
+        let book = Upstream::new(BookView {
+            portfolio: asset_book_opened(initial_equity, now),
+            marks: BTreeMap::new(),
+        });
+        desk.book = book.gate(desk.book.required(), desk.book.label());
         let executions = Upstream::new(ExecutionView::default());
         desk.executions = executions.gate(desk.executions.required(), desk.executions.label());
+        let models = Upstream::new(ModelsView::default());
+        desk.models = models.gate(desk.models.required(), desk.models.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -6155,9 +6357,13 @@ impl Platform {
             bar_history: BTreeMap::new(),
             publication_delays: BTreeMap::new(),
             declined: Vec::new(),
+            symbolic_vetoes: BTreeMap::new(),
             declined_scores: Vec::new(),
             filled: Vec::new(),
             cell_fills_queued: CellFillsQueued::default(),
+            cell_declined: Vec::new(),
+            cell_refusals_queued: CellFillsQueued::default(),
+            cell_declined_scores: Vec::new(),
             fill_scores: Vec::new(),
             fill_calibration: qip_twin::calibration::FillCalibration::default(),
             tactical: None,
@@ -6213,6 +6419,7 @@ impl Platform {
             private_forecasts,
             credit,
             universe_assembled,
+            universe_history,
             inherited_through,
             asset_classes,
             derivative_types,
@@ -6242,6 +6449,11 @@ impl Platform {
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             procedures_briefed: Vec::new(),
+            reactions_applied: BTreeSet::new(),
+            reaction_contradictions: Vec::new(),
+            future_tree: None,
+            future_drivers: BTreeSet::new(),
+            future_observed_at: None,
             pending_theses: Vec::new(),
             justified_hypotheses: justification::JustifiedHypotheses::default(),
             outside_priors: BTreeMap::new(),
@@ -6318,7 +6530,9 @@ impl Platform {
             world,
             market,
             risk,
+            book,
             executions,
+            models,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -6337,6 +6551,8 @@ impl Platform {
             position_mandates: BTreeMap::new(),
             position_horizons: BTreeMap::new(),
             position_exit_plans: BTreeMap::new(),
+            decision_latencies: std::collections::VecDeque::new(),
+            position_bookings: BTreeMap::new(),
         };
         platform.describe_metrics();
         // Every rule reads as not dormant from assembly, so the series exists
@@ -6364,6 +6580,18 @@ impl Platform {
         // a platform running cycles whose log never says what universe they
         // ran over — is the state this record exists to end.
         platform.record_universe_assembled(now)?;
+        // A venue the log says was withdrawn before this process started is
+        // out from this instant in the historical universe: the withdrawal's
+        // own instant is on the log, but the earliest this process can speak
+        // for is now, and a backtest that filled through a venue the desk
+        // refuses would be the survivorship the history exists to end.
+        for venue in platform.withdrawn_venues.clone() {
+            platform.universe_history.open_outage(
+                venue,
+                now,
+                "withdrawn on feasibility evidence before this process started (resumed from the log)",
+            )?;
+        }
         // The committed eligibility decisions, after the universe record and
         // after every mandate is enrolled, through the same journaled path
         // an operator's runtime decision takes. A decision the registry
@@ -7382,6 +7610,16 @@ impl Platform {
         // as a passing one.
         let netting = crate::blueprint_objectives::netting_ratio_of(&report.orders);
         let reported_at = report.at;
+        // Taken before the report moves, for the reason the netting ratio
+        // is: the plane keeps no copy of the refusals' legs.
+        let refused_cycles: Vec<(usize, qip_mesh::delta::DeltaRefusal)> = report
+            .refusals
+            .iter()
+            .enumerate()
+            .filter(|(_, refusal)| !refusal.legs.is_empty())
+            .map(|(index, refusal)| (index, refusal.clone()))
+            .collect();
+        let reporting_cell = report.cell.clone();
         // ADR 0079: a region that went dark by the passage of time since the
         // last cycle is recorded *before* this report can clear it, so a
         // region that went dark and spoke again between two cycles leaves
@@ -7426,6 +7664,14 @@ impl Platform {
                 return Err(error);
             }
         };
+        // ADR 0208: where the cell's own statement of its book disagrees with
+        // what the centre settled from that cell's fills, the disagreement is
+        // a capture problem on the record — not a correction of either side.
+        // The settled book stays the truth for every balance; the statement
+        // is the cell's claim, and a claim the centre cannot reproduce from
+        // the fills it was sent is the thing a reconciler looks at next.
+        self.capture_problems
+            .extend(ingestion.advisory_disagreements.iter().cloned());
         // One observation per report absorbed. `halted` is `None` exactly
         // where the report reconciled — the plane sets it from the union of
         // the cell's own breaks and the settlement's `UnsentFill` findings —
@@ -7493,6 +7739,7 @@ impl Platform {
         }
         self.charge_cell_fills(&ingestion.cell, &ingestion.settlement.absorbed);
         self.queue_cell_fills(&ingestion.cell, reported_at, &ingestion.settlement.absorbed);
+        self.queue_cell_refusals(&reporting_cell, reported_at, &refused_cycles);
         self.book_settlement(&ingestion.settlement, now);
         // The cell's feasibility refusals, into the same window the desk's
         // land in, through the same recording site. What the plane could
@@ -10622,6 +10869,270 @@ impl Platform {
         self.aggregates.mark_cash(self.capital.cash);
     }
 
+    /// Queue the legs of every cycle `cell` refused whole, for the twin to
+    /// price once their horizon has passed (R12-MESH-5068).
+    ///
+    /// Each leg is its own path, keyed by the report and the refusal's
+    /// position in it, so a replayed report queues nothing twice. A full
+    /// window is a refusal to queue, counted, not an eviction, for the
+    /// reason the desk's window gives: dropping the oldest would silently
+    /// choose which refusal goes unexamined.
+    fn queue_cell_refusals(
+        &mut self,
+        cell: &str,
+        reported_at: Timestamp,
+        refused: &[(usize, qip_mesh::delta::DeltaRefusal)],
+    ) {
+        for (index, refusal) in refused {
+            if refusal.legs.len() > qip_contracts::wire::MAX_REFUSED_LEGS {
+                self.telemetry.metrics.count(
+                    names::COUNTERFACTUALS_UNSCORED,
+                    labels([("reason", "cell_cycle_too_long")]),
+                );
+                continue;
+            }
+            for (n, leg) in refusal.legs.iter().enumerate() {
+                let key = (cell.to_string(), reported_at, format!("refusal-{index}"), n);
+                if !self.cell_refusals_queued.admit(key) {
+                    continue;
+                }
+                // A leg on an instrument the centre holds no bars for could
+                // never fall due, and would hold a slot of the window for
+                // good: counted, not queued.
+                if !self.bar_history.contains_key(leg.object_id.as_str()) {
+                    self.telemetry.metrics.count(
+                        names::COUNTERFACTUALS_UNSCORED,
+                        labels([("reason", "unobserved_instrument")]),
+                    );
+                    continue;
+                }
+                if self.cell_declined.len() >= DECLINED_HISTORY {
+                    self.telemetry.metrics.count(
+                        names::COUNTERFACTUALS_UNSCORED,
+                        labels([("reason", "cell_capacity")]),
+                    );
+                    self.capture_problems.push(format!(
+                        "{cell}'s refused cycle under {} will not be priced: {DECLINED_HISTORY} \
+                         refused legs are already waiting to be",
+                        refusal.gate
+                    ));
+                    continue;
+                }
+                self.cell_declined.push(CellDeclinedPath {
+                    order_id: OrderId::from_string(format!(
+                        "{cell}/{}/refusal-{index}/leg-{n}",
+                        reported_at.to_rfc3339()
+                    )),
+                    cell: cell.to_string(),
+                    gate: refusal.gate.clone(),
+                    reason: refusal.reason.clone(),
+                    object_id: leg.object_id.clone(),
+                    venue: leg.venue.clone(),
+                    side: leg.side,
+                    quantity: leg.quantity,
+                    declined_at: reported_at,
+                });
+            }
+        }
+    }
+
+    /// The twin's alternatives to one leg of a cell's refused cycle, priced
+    /// from the queued path itself: the refusal happened at the cell and has
+    /// no entry in this platform's outcome capture. Named deterministically
+    /// from the path, so a replay of the same log prices the same score.
+    fn evaluate_cell_refusal(
+        &self,
+        path: &CellDeclinedPath,
+        market: &mut TwinMarket,
+    ) -> Result<CounterfactualSet> {
+        let decision = Decision::new(
+            qip_core::ids::DecisionId::from_string(format!("cell-refusal:{}", path.order_id)),
+            TraceId::new(format!("trace-cell-refusal-{}", path.order_id)),
+            CorrelationId::from_string(format!("cell-refusal-{}", path.order_id)),
+            path.declined_at,
+            path.object_id.clone(),
+            Action::Rejected {
+                order_id: path.order_id.clone(),
+                gate: path.gate.clone(),
+                reason: path.reason.clone(),
+            },
+        )
+        .because(format!(
+            "{} refused this leg's cycle under {}; the twin prices what declining it cost",
+            path.cell, path.gate
+        ));
+        // The wire's convention is `Ask` bought and `Bid` sold (the order a
+        // cell sends takes the ask to buy), and since 2026-10-31 the twin's
+        // `ActualTrade` reads the same side the same way, so the leg's side
+        // goes through uncrossed; a cross here would price every leg in the
+        // direction it did not propose.
+        let actual = ActualTrade::new(
+            path.object_id.clone(),
+            path.side,
+            path.quantity,
+            path.venue.clone(),
+            HOME_REGION,
+            path.declined_at,
+        )?;
+        self.counterfactuals.evaluate(
+            market,
+            &decision,
+            &actual,
+            &RealisedOutcome::nothing_happened(path.declined_at),
+        )
+    }
+
+    /// Price the legs of cells' refused cycles whose horizon has passed,
+    /// under what the desk's declined pass left of the one cap
+    /// (R12-MESH-5068). The same due rule and the same refusal handling as
+    /// [`Self::score_declined`]; the third element is how many evaluations
+    /// this pass used, so the fill pass prices under the remainder.
+    fn score_cell_declined(
+        &mut self,
+        now: Timestamp,
+        budget: usize,
+    ) -> (Option<String>, Vec<String>, usize) {
+        let horizon = self.counterfactuals.horizon();
+        let due: Vec<OrderId> = self
+            .cell_declined
+            .iter()
+            .filter(|path| {
+                let marks_at = path.declined_at.saturating_add(horizon);
+                marks_at <= now
+                    && self
+                        .bar_history
+                        .get(path.object_id.as_str())
+                        .and_then(|bars| bars.iter().map(Bar::close_time).max())
+                        .is_some_and(|last_close| last_close >= marks_at)
+            })
+            .map(|path| path.order_id.clone())
+            .collect();
+        if due.is_empty() {
+            return (None, Vec::new(), 0);
+        }
+        let attempted = due.len().min(budget);
+        let deferred = due.len().saturating_sub(budget);
+        if deferred > 0 {
+            self.telemetry.metrics.increment(
+                names::COUNTERFACTUALS_DEFERRED,
+                labels([]),
+                deferred as u64,
+            );
+        }
+        let mut scored = 0usize;
+        let mut regrets = 0usize;
+        let mut problems = Vec::new();
+        for order_id in due.into_iter().take(budget) {
+            let Some(index) = self
+                .cell_declined
+                .iter()
+                .position(|path| path.order_id == order_id)
+            else {
+                continue;
+            };
+            let path = self.cell_declined.remove(index);
+            let priced = self
+                .counterfactual_bars(&path.object_id)
+                .and_then(|bars| {
+                    TwinMarket::new(
+                        bars,
+                        CostModel::liquid_equity(),
+                        COUNTERFACTUAL_IMPACT_WINDOW,
+                    )
+                })
+                .and_then(|mut market| self.evaluate_cell_refusal(&path, &mut market));
+            match priced {
+                Ok(set) => {
+                    let trade = set.by_kind("trade");
+                    let regret = trade.is_some_and(Counterfactual::favours_the_alternative);
+                    let would_have_earned = trade.map_or(Simulated::ZERO, |entry| {
+                        entry.counterfactual_outcome.simulated_pnl()
+                    });
+                    let method = trade.map_or(EstimationMethod::Unrecorded, |entry| {
+                        entry.counterfactual_outcome.method()
+                    });
+                    // One literal label, never the cell's gate: the gate
+                    // arrives on a wire that authenticates nobody, and a
+                    // label minted from it would be unbounded. The gate is
+                    // kept on the score, which is bounded.
+                    self.telemetry.metrics.count(
+                        names::COUNTERFACTUALS_SCORED,
+                        labels([("gate", CELL_CYCLE_GATE)]),
+                    );
+                    if regret {
+                        regrets += 1;
+                        self.telemetry.metrics.count(
+                            names::COUNTERFACTUAL_REGRETS,
+                            labels([("gate", CELL_CYCLE_GATE)]),
+                        );
+                    }
+                    scored += 1;
+                    self.cell_declined_scores.push(CellDeclinedScore {
+                        order_id: path.order_id,
+                        cell: path.cell,
+                        gate: path.gate,
+                        object_id: path.object_id,
+                        venue: path.venue.as_str().to_string(),
+                        declined_at: path.declined_at,
+                        scored_at: now,
+                        would_have_earned,
+                        regret,
+                        method,
+                    });
+                    if self.cell_declined_scores.len() > DECLINED_HISTORY {
+                        let excess = self.cell_declined_scores.len() - DECLINED_HISTORY;
+                        self.cell_declined_scores.drain(..excess);
+                    }
+                }
+                Err(error) => {
+                    self.telemetry.metrics.count(
+                        names::COUNTERFACTUALS_UNSCORED,
+                        labels([("reason", "refused")]),
+                    );
+                    problems.push(format!(
+                        "{}'s refused leg {} could not be priced: {}",
+                        path.cell,
+                        path.order_id,
+                        error.message()
+                    ));
+                }
+            }
+        }
+        let journal = self
+            .cycle_counterfactuals
+            .get_or_insert_with(|| CounterfactualJournal {
+                scored: 0,
+                regrets: 0,
+                deferred: 0,
+                fills_scored: 0,
+                fills_deferred: 0,
+                declined_outcomes: Vec::new(),
+                fill_outcomes: Vec::new(),
+                cell_declined_scored: 0,
+                cell_declined_outcomes: Vec::new(),
+            });
+        journal.cell_declined_scored = scored;
+        journal.cell_declined_outcomes = self.cell_declined_scores.clone();
+        let mut summary =
+            format!("{scored} leg(s) of cells' refused cycles priced, {regrets} regret(s)");
+        if deferred > 0 {
+            summary.push_str(&format!(", {deferred} deferred by the per-cycle cap"));
+        }
+        (Some(summary), problems, attempted)
+    }
+
+    /// What each priced leg of a cell's refused cycle would have done, most
+    /// recent last.
+    pub fn cell_declined_scores(&self) -> &[CellDeclinedScore] {
+        &self.cell_declined_scores
+    }
+
+    /// How many legs of cells' refused cycles are waiting for their horizon
+    /// or their bars.
+    pub fn cell_declined_awaiting_score(&self) -> usize {
+        self.cell_declined.len()
+    }
+
     /// Queue every fill the centre absorbed from a cell for the twin's fill
     /// scoring — the same queue, the same pass and the same
     /// `qip_venue_fill_error_bps` and calibration a desk fill reaches
@@ -11123,6 +11634,7 @@ impl Platform {
         self.world.feeds(&self.desk.world)
             && self.market.feeds(&self.desk.market)
             && self.risk.feeds(&self.desk.risk)
+            && self.book.feeds(&self.desk.book)
     }
 
     /// The risk view the desk's risk control reads through its
@@ -11153,6 +11665,69 @@ impl Platform {
             view.state = state;
             view.limits = limits;
         });
+    }
+
+    /// Write the position lifecycle register and the latest close of every
+    /// instrument it holds into the slot the desk's `read_portfolio` gate
+    /// reads (R12-ASSET-3019), before the panel is convened. The register is
+    /// the book a flag for want of a mandate is raised on (R12-ASSET-4066),
+    /// so the Portfolio/Asset Brain reads that flag rather than inferring
+    /// one. An instrument with no close is left unmarked, and the brain says
+    /// how many, rather than marked at a price nobody observed.
+    fn brief_the_desk_on_book(&self) {
+        let portfolio = self.asset_book.clone();
+        let marks: BTreeMap<String, Decimal> = portfolio
+            .positions()
+            .filter_map(|position| {
+                let object = position.object_id.as_str();
+                self.bar_history
+                    .get(object)
+                    .and_then(|bars| bars.last())
+                    .map(|bar| (object.to_string(), bar.close))
+            })
+            .collect();
+        self.book.update(|view| {
+            view.portfolio = portfolio;
+            view.marks = marks;
+        });
+    }
+
+    /// List `object_id` in the universe history from `at` the first time the
+    /// platform sees it, under the universe record's symbol (or its id where
+    /// the universe holds no record). A later sighting changes nothing unless
+    /// it is *earlier* than the listing the history holds: an assembled name
+    /// is listed from the assembly instant, the earliest the process could
+    /// say it knew the name, and a bar dated before that is evidence the name
+    /// traded then, so the listing moves back to it. Without that a backtest
+    /// as of a date before this process started would find an empty universe
+    /// and refuse every order in it (R12-TICK-2090).
+    fn note_listing(&mut self, object_id: &ObjectId, at: Timestamp) {
+        if self.universe_history.is_named(object_id) {
+            if let Err(error) = self.universe_history.backdate_listing(object_id, at) {
+                self.capture_problems.push(format!(
+                    "{object_id} traded at {at} before its listing and the universe history \
+                     refused to move the listing back: {}",
+                    error.message()
+                ));
+            }
+            return;
+        }
+        let symbol = self.market.read().universe.get(object_id).map_or_else(
+            || object_id.as_str().to_string(),
+            |record| record.symbol.clone(),
+        );
+        if let Err(error) = self.universe_history.list(object_id.clone(), symbol, at) {
+            self.capture_problems.push(format!(
+                "{object_id} could not be listed in the universe history: {}",
+                error.message()
+            ));
+        }
+    }
+
+    /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
+    /// it.
+    pub fn desk_book_view(&self) -> Reading<'_, BookView> {
+        self.book.read()
     }
 
     /// Write the platform's own executed orders into the slot the desk's
@@ -11191,6 +11766,44 @@ impl Platform {
             records.drain(..records.len() - EXECUTION_HISTORY_KEPT);
         }
         self.executions.update(|view| view.executions = records);
+    }
+
+    /// Write the platform's forecaster records and drift report into the
+    /// slot the desk's model-failure probe reads, before the panel is
+    /// convened (R12-REASON-3023). Forecasters are the ones the tournament
+    /// holds an open question from, each with the mean Brier score of the
+    /// questions it has been scored on and the meta-model's predicted
+    /// failure in that question's regime; drifted models are what the deep
+    /// brain last reported through `observe_model_drift`. Rebuilt each
+    /// time, so the view cannot disagree with the tournament it describes.
+    fn brief_the_desk_on_models(&self) {
+        let tournament = self.tournament.tournament();
+        let mut seen: BTreeMap<String, ForecasterHealth> = BTreeMap::new();
+        for question in tournament.open_questions() {
+            let regime = question.spec().regime.clone();
+            for name in question.forecasts().keys() {
+                // A forecaster answering questions in several regimes is
+                // judged by the regime it is most expected to fail in: the
+                // probe asks whether anything behind a claim is failing,
+                // and the best regime would hide the worst.
+                let predicted = tournament.meta_model().predict(name, &regime);
+                seen.entry(name.clone())
+                    .and_modify(|health| {
+                        health.predicted_failure = health.predicted_failure.max(predicted);
+                    })
+                    .or_insert_with(|| ForecasterHealth {
+                        name: name.clone(),
+                        mean_brier: tournament.mean_brier(name),
+                        predicted_failure: predicted,
+                    });
+            }
+        }
+        let forecasters: Vec<ForecasterHealth> = seen.into_values().collect();
+        let drifted: Vec<String> = self.drifted_models.iter().cloned().collect();
+        self.models.update(|view| {
+            view.forecasters = forecasters;
+            view.drifted = drifted;
+        });
     }
 
     /// Where liquidity lives, per instrument across venues, as fed from the
@@ -12013,10 +12626,34 @@ impl Platform {
             // the platform learns it, because nothing downstream keeps the
             // source beside the figure.
             self.source_leads.observe(&record);
+            // ADR 0132 decision 1: one admission rule for every sensed
+            // record. A record that states both the instant it happened and
+            // the instant it was captured is held to `Admission::check_order`
+            // — received before it happened is refused, not reconciled —
+            // with no clock doubt, because a centre record carries none. The
+            // refusal is a capture problem the cycle reports, and the record
+            // reaches no series: a feature computed from it would be knowable
+            // before it was true, the leak the bitemporal rules exist for.
+            {
+                use qip_contracts::admission::{Admissible, Admission};
+                let own = record.own_times();
+                if let (Some(event_time), Some(receive_time)) = (own.event_time, own.receive_time)
+                    && let Err(error) =
+                        Admission::check_order(event_time, receive_time, Duration::ZERO)
+                {
+                    self.capture_problems.push(format!(
+                        "a {} record was refused at admission: {}",
+                        record.topic(),
+                        error.message()
+                    ));
+                    continue;
+                }
+            }
             match record {
                 SensedRecord::Bar(bar) => {
                     let key = bar.object_id.as_str().to_string();
                     self.ensure_world_object(key.as_str(), bar.close_time());
+                    self.note_listing(&bar.object_id, bar.open_time);
                     push_bounded(
                         self.price_history.entry(key.clone()).or_default(),
                         bar.close.to_f64(),
@@ -12430,6 +13067,273 @@ impl Platform {
     /// what the caller gets back. The refusal is not a stage failing — it is the
     /// argument being wrong — so nothing is journalled, nothing is charged and
     /// no state moves.
+    /// Pair each world event with the market's reaction at each of
+    /// [`qip_world_model::granger::REACTION_HORIZONS_BARS`] once enough bars
+    /// have closed, and apply each reaction to the causal graph
+    /// (R12-WORLD-6015): a reaction with no edge behind it establishes one,
+    /// and one against a held edge lowers that edge's confidence and is kept
+    /// in [`Self::reaction_contradictions`].
+    ///
+    /// The move is the subject's close at the horizon against its last
+    /// close before the event, in basis points. An event whose subject has
+    /// no bar history, or whose weight is not a probability, is skipped with
+    /// a problem on the cycle; one whose horizon has not closed yet waits.
+    fn react_to_world_events(&mut self, now: Timestamp) {
+        use qip_world_model::granger::REACTION_HORIZONS_BARS;
+        use qip_world_model::reaction::ReactionEpisode;
+        let held: BTreeSet<String> = self
+            .market_events
+            .iter()
+            .map(|e| e.event_id.clone())
+            .collect();
+        self.reactions_applied
+            .retain(|(event_id, _)| held.contains(event_id));
+        let mut problems = Vec::new();
+        let mut episodes: Vec<(ReactionEpisode, f64)> = Vec::new();
+        for event in &self.market_events {
+            if event.direction == 0.0 || event.known_at() > now {
+                continue;
+            }
+            let Some(bars) = self.bar_history.get(&event.subject) else {
+                continue;
+            };
+            let Some(first_after) = bars
+                .iter()
+                .position(|bar| bar.open_time >= event.occurred_at())
+            else {
+                continue;
+            };
+            let Some(base) = first_after
+                .checked_sub(1)
+                .and_then(|i| bars.get(i))
+                .map(|bar| bar.close.to_f64())
+                .filter(|c| *c > 0.0)
+            else {
+                continue;
+            };
+            for horizon in REACTION_HORIZONS_BARS {
+                if self
+                    .reactions_applied
+                    .contains(&(event.event_id.clone(), horizon))
+                {
+                    continue;
+                }
+                let Some(bar) = bars.get(first_after + horizon - 1) else {
+                    continue;
+                };
+                if bar.close_time() > now {
+                    continue;
+                }
+                // Statistics from here: a return in basis points.
+                let moved_bps = (bar.close.to_f64() / base - 1.0) * 10_000.0;
+                let sign = if moved_bps > 0.0 {
+                    1.0
+                } else if moved_bps < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                };
+                match ReactionEpisode::new(
+                    format!("{}@{horizon}", event.event_id),
+                    event.class.clone(),
+                    event.occurred_at(),
+                    bar.close_time(),
+                    vec![(event.subject.clone(), moved_bps, sign)],
+                    horizon,
+                    event.weight,
+                    format!("{} over {horizon} bar(s)", event.description),
+                    now,
+                ) {
+                    Ok(episode) => episodes.push((episode, event.direction)),
+                    Err(error) => problems.push(format!(
+                        "the reaction to {} over {horizon} bar(s) was not recorded: {}",
+                        event.event_id,
+                        error.message()
+                    )),
+                }
+            }
+        }
+        let mut contradictions = Vec::new();
+        for (episode, direction) in episodes {
+            let applied = self.world.update(|world| {
+                world.apply_reaction(
+                    &episode,
+                    direction,
+                    qip_world_model::causal::Mechanism::TemporalPrecedence,
+                    now,
+                )
+            });
+            match applied {
+                Ok(outcome) => {
+                    if let Some((event_id, horizon)) = episode.episode_id.rsplit_once('@')
+                        && let Ok(horizon) = horizon.parse::<usize>()
+                    {
+                        self.reactions_applied
+                            .insert((event_id.to_string(), horizon));
+                    }
+                    contradictions.extend(outcome.contradicted);
+                }
+                Err(error) => problems.push(format!(
+                    "the reaction {} was not applied to the causal graph: {}",
+                    episode.episode_id,
+                    error.message()
+                )),
+            }
+        }
+        self.reaction_contradictions.extend(contradictions);
+        let excess = self
+            .reaction_contradictions
+            .len()
+            .saturating_sub(REACTION_CONTRADICTION_HISTORY);
+        self.reaction_contradictions.drain(..excess);
+        self.capture_problems.extend(problems);
+    }
+
+    /// Grow, observe and prune the synthetic future tree (R12-WORLD-9035).
+    ///
+    /// Each held world event with a direction, knowable by `now` and landing
+    /// on an instrument with bars, is a driver whose scenario family is the
+    /// event's class, so two guidance events are weighed as alternatives of
+    /// one scenario and not against a rate decision. The tree is observed
+    /// first, against the newest bar closes after its fork, and regrown only
+    /// when the driver set changes — a regrow starts the weights again from
+    /// the prior, which is why it is not done every cycle. A grow the tree
+    /// refuses (too few bars, an event with no class) is a capture problem,
+    /// recorded once for that driver set, and leaves no tree rather than an
+    /// old one standing for events it never saw.
+    ///
+    /// Bar closes cross into the twin as `f64` here: the tree is statistics
+    /// about moves, and no money amount comes back out of it.
+    fn tend_futures(&mut self, now: Timestamp) {
+        use qip_twin::futures::{FutureTree, ObservedMoves, TreeConfig, TwinState, WorldDriver};
+        let mut problems = Vec::new();
+        if let Some(tree) = self.future_tree.as_mut() {
+            let mut moves = BTreeMap::new();
+            let mut at = None;
+            for (instrument, dynamics) in &tree.state().instruments {
+                let Some(bar) = self.bar_history.get(instrument).and_then(|bars| {
+                    bars.iter()
+                        .rev()
+                        .find(|bar| bar.close_time() <= now && bar.close_time() > tree.grown_at)
+                }) else {
+                    continue;
+                };
+                if dynamics.last_mid > 0.0 {
+                    moves.insert(
+                        instrument.clone(),
+                        (bar.close.to_f64() / dynamics.last_mid - 1.0) * 10_000.0,
+                    );
+                    at = at.max(Some(bar.close_time()));
+                }
+            }
+            if let Some(at) = at
+                && self.future_observed_at.is_none_or(|seen| at > seen)
+            {
+                match tree.observe(&ObservedMoves {
+                    at,
+                    moves_bps: moves,
+                }) {
+                    Ok(_) => self.future_observed_at = Some(at),
+                    Err(error) => problems.push(format!(
+                        "the future tree was not observed at {at}: {}",
+                        error.message()
+                    )),
+                }
+            }
+        }
+        let mut events: Vec<&MarketEvent> = self
+            .market_events
+            .iter()
+            .filter(|e| {
+                e.direction != 0.0
+                    && e.known_at() <= now
+                    && self.bar_history.contains_key(&e.subject)
+            })
+            .collect();
+        let skip = events.len().saturating_sub(FUTURE_DRIVERS);
+        events.drain(..skip);
+        let ids: BTreeSet<String> = events.iter().map(|e| e.event_id.clone()).collect();
+        if ids.is_empty() {
+            // Every event the tree explored has aged out: a tree standing for
+            // events the platform no longer holds is not kept.
+            self.future_tree = None;
+            self.future_drivers.clear();
+            self.future_observed_at = None;
+        } else if ids != self.future_drivers {
+            let drivers: Vec<WorldDriver> = events
+                .iter()
+                .map(|e| WorldDriver {
+                    id: e.event_id.clone(),
+                    family: Some(e.class.clone()),
+                    sensitivities: BTreeMap::from([(e.subject.clone(), e.direction)]),
+                    evidence: vec![e.event_id.clone()],
+                })
+                .collect();
+            let series: BTreeMap<String, Vec<(Timestamp, f64)>> = drivers
+                .iter()
+                .flat_map(|d| d.sensitivities.keys())
+                .filter_map(|instrument| {
+                    self.bar_history.get(instrument).map(|bars| {
+                        (
+                            instrument.clone(),
+                            bars.iter()
+                                .map(|bar| (bar.close_time(), bar.close.to_f64()))
+                                .collect(),
+                        )
+                    })
+                })
+                .collect();
+            let grown = TwinState::fit(&series, now).and_then(|state| {
+                FutureTree::grow(
+                    &state,
+                    &drivers,
+                    TreeConfig {
+                        horizon: Duration::from_days(1),
+                        shock_sigmas: vec![1.0, 2.0, 4.0],
+                        propagation: vec![0.0, 0.5],
+                        prune_below: 0.001,
+                        split_beyond_sigmas: 3.0,
+                        max_branches: FUTURE_MAX_BRANCHES,
+                    },
+                )
+            });
+            self.future_drivers = ids;
+            self.future_observed_at = None;
+            match grown {
+                Ok(tree) => self.future_tree = Some(tree),
+                Err(error) => {
+                    self.future_tree = None;
+                    problems.push(format!(
+                        "no future tree was grown from {} world event(s): {}",
+                        drivers.len(),
+                        error.message()
+                    ));
+                }
+            }
+        }
+        self.capture_problems.extend(problems);
+    }
+
+    /// The synthetic future tree the cycle tends (R12-WORLD-9035), if the
+    /// held world events have grown one.
+    pub const fn future_tree(&self) -> Option<&qip_twin::futures::FutureTree> {
+        self.future_tree.as_ref()
+    }
+
+    /// The future tree's live branches as compact `WorldBranch` records,
+    /// partitioned by scenario family (R12-WORLD-9035).
+    pub fn world_branches_by_family(&self) -> Option<qip_twin::futures::FamilyBranches> {
+        self.future_tree
+            .as_ref()
+            .map(qip_twin::futures::FutureTree::world_branches_by_family)
+    }
+
+    /// The contradictions recent world-event reactions found against held
+    /// causal edges, newest last (R12-WORLD-6015).
+    pub fn reaction_contradictions(&self) -> &[qip_world_model::granger::ReactionContradiction] {
+        &self.reaction_contradictions
+    }
+
     /// Hand the self-model this cycle's operational health: whether the
     /// global kill switch is tripped, and every §6.2 row the centre reads as
     /// other than fresh (R12-WORLD-3036). Run after LEARN on every cycle,
@@ -12528,6 +13432,8 @@ impl Platform {
         let learned = self.stage_learn(now);
         self.finish_stage(&mut stages, learned, &mut mark);
         self.observe_own_health(now);
+        self.react_to_world_events(now);
+        self.tend_futures(now);
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next
@@ -12541,6 +13447,16 @@ impl Platform {
                 learn.problems.push(problem);
             }
         }
+
+        // SENSE through ACT, the stages a decision waits on before an order
+        // exists (R12-TICK-2074). Recorded every cycle, zero included: a
+        // window that kept only the slow cycles would calibrate a latency
+        // this platform does not have.
+        let decided_in = stages
+            .iter()
+            .filter(|outcome| outcome.stage != Stage::Learn)
+            .fold(Duration::ZERO, |total, outcome| total + outcome.elapsed);
+        self.observe_decision_latency(decided_in);
 
         let mut report = CycleReport {
             cycle: self.cycle,
@@ -13009,6 +13925,38 @@ impl Platform {
             ));
             return;
         }
+        // The historical universe takes the membership facts now, at the
+        // announcement, effective at the ex-date: a delisting ends the
+        // listing there and a renaming opens a new symbol era there. Recorded
+        // here, after the duplicate checks, so a tape re-fed to a restarted
+        // process does not end a listing twice. A refusal is a tape fault
+        // (a delisting before the listing began, an unknown name) and is
+        // captured as one rather than aborting the observation.
+        // Terminal actions — a delisting, a merger that takes the name away
+        // — end the listing; `CorporateAction::is_terminal` is the one
+        // place that says which kinds those are, so a kind added there ends
+        // a listing here without a second list to keep in step.
+        let membership = match &action.kind {
+            CorporateActionKind::Renamed { new_symbol } => Some(self.universe_history.rename(
+                &action.object_id,
+                new_symbol.clone(),
+                action.ex_date,
+            )),
+            _ if action.is_terminal() => Some(
+                self.universe_history
+                    .delist(&action.object_id, action.ex_date),
+            ),
+            _ => None,
+        };
+        if let Some(Err(error)) = membership {
+            self.capture_problems.push(format!(
+                "a corporate action on {} ex {} was queued but the historical universe refused \
+                 it: {}",
+                action.object_id,
+                action.ex_date.to_rfc3339(),
+                error.message()
+            ));
+        }
         self.corporate_actions_pending.insert(key, action);
     }
 
@@ -13147,6 +14095,12 @@ impl Platform {
                 self.price_history.insert(object.to_string(), closes);
             }
         }
+
+        // The universe history took this action's membership fact when the
+        // action was queued (R12-TICK-2090, `queue_corporate_action`), dated
+        // at the ex-date; it is not taken again here, because a delisting
+        // recorded twice is refused and would report a tape fault that is
+        // not one.
 
         // A book the log rebuilt has already taken this action in an earlier
         // process. The series above still needed it — bars are re-fed to
@@ -13716,6 +14670,7 @@ impl Platform {
             blind_spot_share: (priced > 0).then(|| thin as f64 / priced as f64),
             macro_surprises,
             company_features,
+            causal_parents: self.now_causal_parents(now),
         };
         let review = self.now_brain.run(inputs, now);
         let mut problems: Vec<String> = Vec::new();
@@ -13940,6 +14895,75 @@ impl Platform {
             .collect()
     }
 
+    /// Each instrument's issuer's latest fundamental surprise readable at
+    /// `now` (R12-WORLD-3044): the `<metric>_surprise` company readings,
+    /// newest by availability per entity, carried to every instrument the
+    /// entity issues in the knowledge graph. An instrument whose issuer is not
+    /// in the graph, or has reported no surprise, is absent.
+    fn fundamental_surprises(&self, now: Timestamp) -> BTreeMap<String, f64> {
+        use qip_world_model::relationship::RelationshipKind;
+        let world = self.world.read();
+        let mut latest: BTreeMap<String, (Timestamp, f64)> = BTreeMap::new();
+        for reading in qip_world_model::now::company_features(&world, now) {
+            if !reading.feature.ends_with("_surprise") {
+                continue;
+            }
+            let newer = latest
+                .get(&reading.subject)
+                .is_none_or(|(at, _)| reading.available_at > *at);
+            if newer {
+                latest.insert(
+                    reading.subject.clone(),
+                    (reading.available_at, reading.value),
+                );
+            }
+        }
+        let mut by_instrument = BTreeMap::new();
+        for (entity, (_, surprise)) in latest {
+            for fact in world
+                .graph()
+                .neighbours(&entity, Some(RelationshipKind::Issues), now, now)
+            {
+                by_instrument.insert(fact.relationship.to.clone(), surprise);
+            }
+        }
+        by_instrument
+    }
+
+    /// Each priced instrument's causal parents among the priced instruments,
+    /// from the causal graph's live edges known now (R12-WORLD-3078). The
+    /// transmission is the edge's strength, signed by whether its mechanism
+    /// preserves the sign. An edge from a cause the NOW brain holds no state
+    /// for (a factor, an event class) gives the estimator nothing to read and
+    /// is left out.
+    fn now_causal_parents(
+        &self,
+        now: Timestamp,
+    ) -> BTreeMap<String, Vec<qip_world_model::now::CausalParent>> {
+        let world = self.world.read();
+        let mut parents: BTreeMap<String, Vec<qip_world_model::now::CausalParent>> =
+            BTreeMap::new();
+        for effect in self.price_history.keys() {
+            for edge in world.causal().incoming(effect, now) {
+                if !self.price_history.contains_key(&edge.cause) || edge.cause == *effect {
+                    continue;
+                }
+                let sign = if edge.mechanism.preserves_sign() {
+                    1.0
+                } else {
+                    -1.0
+                };
+                parents.entry(effect.clone()).or_default().push(
+                    qip_world_model::now::CausalParent {
+                        cause: edge.cause.clone(),
+                        transmission: sign * edge.strength,
+                    },
+                );
+            }
+        }
+        parents
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -13947,6 +14971,7 @@ impl Platform {
         let mut instruments = Vec::new();
         let mut thin_subjects = 0;
         let causal_views = self.causal_views(now);
+        let surprises = self.fundamental_surprises(now);
         for (subject, closes) in &self.price_history {
             let returns = Self::returns_of(closes);
             let (Some(last_close), Some(bar)) = (
@@ -13966,6 +14991,7 @@ impl Platform {
                 observed_through: bar.close_time(),
                 spread_ratio: self.spread_ratio(subject),
                 causal: causal_views.get(subject).copied(),
+                fundamental_surprise: surprises.get(subject).copied(),
             });
         }
         let level = self.autonomy.level();
@@ -14186,16 +15212,26 @@ impl Platform {
     /// the pass atomic within a cycle: every subject is labelled against the
     /// same graph snapshot.
     fn mark_regime_transitions(&mut self, now: Timestamp) -> usize {
-        let subjects: BTreeSet<String> = {
+        // Every priced subject, and every causal effect: a regime is a
+        // fact about an instrument's own tape, and a tracker that marked
+        // only the effects of causal edges left every other subject's
+        // structural-break critic abstaining for want of a regime
+        // (R12-REASON-3108, F2) — the subject the panel most often reasons
+        // about is the one with a tape, not the one somebody drew an edge
+        // to. The first observation of a subject records its regime and
+        // marks no crossing, so widening the set raises no spurious break.
+        let mut subjects: BTreeSet<String> = self.price_history.keys().cloned().collect();
+        {
             let world = self.world.read();
-            world
-                .causal()
-                .edges()
-                .iter()
-                .filter(|edge| edge.recorded_at <= now)
-                .map(|edge| edge.effect.clone())
-                .collect()
-        };
+            subjects.extend(
+                world
+                    .causal()
+                    .edges()
+                    .iter()
+                    .filter(|edge| edge.recorded_at <= now)
+                    .map(|edge| edge.effect.clone()),
+            );
+        }
         let observed: Vec<(String, String)> = subjects
             .into_iter()
             .map(|subject| {
@@ -15030,7 +16066,9 @@ impl Platform {
             expired.len() as f64,
         );
         self.brief_the_desk_on_risk();
+        self.brief_the_desk_on_book();
         self.brief_the_desk_on_executions();
+        self.brief_the_desk_on_models();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
             return outcome;
@@ -15395,6 +16433,8 @@ impl Platform {
                     detail: symbolic_detail,
                     problem: symbolic_problem,
                     veto: symbolic_veto,
+                    veto_rules: symbolic_veto_rules,
+                    pack: symbolic_pack,
                     infeasible: symbolic_infeasibility,
                 } = self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
                 // ADR 0212: a derivation that contradicts itself is a
@@ -15471,6 +16511,7 @@ impl Platform {
                         }
                     ),
                 );
+                let claim_written = matches!(predicted, Ok(true));
                 if let Err(error) = predicted {
                     outcome = outcome.with_problem(format!(
                         "the hypothesis could not be written as a resolvable claim: {}",
@@ -15516,6 +16557,30 @@ impl Platform {
                     outcome = outcome.with_problem(format!(
                         "approved on review but vetoed by the symbolic rule pack: {veto}"
                     ));
+                    // R12-EXPAND-6044: the veto is held against the grade
+                    // LEARN gives this thesis, so a stop the outcome
+                    // contradicts leaves a theory delta. Only where a claim
+                    // was written above: a veto on a thesis that never
+                    // became a claim has no grade to be held against, and
+                    // its note would hold a slot in the window forever.
+                    if claim_written
+                        && let Some(problem) =
+                            self.note_symbolic_veto(crate::theory_revision::SymbolicVetoNote {
+                                hypothesis_id: reasoned
+                                    .hypothesis
+                                    .hypothesis_id
+                                    .as_str()
+                                    .to_string(),
+                                cycle: self.cycle,
+                                at: now,
+                                pack: symbolic_pack.0.clone(),
+                                version: symbolic_pack.1,
+                                rules: symbolic_veto_rules.clone(),
+                                veto: veto.clone(),
+                            })
+                    {
+                        outcome = outcome.with_problem(problem);
+                    }
                     DecisionTaken::NotSizeable
                 } else if !approved {
                     outcome = outcome
@@ -15924,6 +16989,11 @@ impl Platform {
         };
         let detail = derivation.detail();
         let veto = derivation.veto();
+        let veto_rules = derivation.veto_rules();
+        let pack = (
+            self.symbolic_rule_pack.name.clone(),
+            self.symbolic_rule_pack.version,
+        );
         let infeasible = derivation.infeasibility();
         let problem = self
             .journal_record(derivation, "kernel/symbolic", now)
@@ -15938,6 +17008,8 @@ impl Platform {
             detail,
             problem,
             veto,
+            veto_rules,
+            pack,
             infeasible,
         }
     }
@@ -16520,8 +17592,8 @@ impl Platform {
             superseded_at: None,
         };
         let policy = PromotionPolicy::default();
-        let clears = candidate.supporting_episodes.len() >= policy.minimum_support
-            && candidate.smoothed_support() >= policy.minimum_smoothed_support;
+        let clears = candidate.supporting_episodes.len() >= policy.minimum_support()
+            && candidate.smoothed_support() >= policy.minimum_smoothed_support();
         match tally.lesson {
             LessonState::Unpromoted if clears => {
                 let statement = candidate.statement.clone();
@@ -18197,6 +19269,13 @@ struct CapacityProbeResult {
     adversity_bps: f64,
     /// The calibrated feed delay the probe ran behind (R12-TICK-2087).
     feed_delay: Duration,
+    /// How long after the decision the order reached the venue, and what
+    /// the fill paid beyond the mark the probe decided against, in basis
+    /// points (R12-TICK-2074). The adversity above is measured from the
+    /// book the order arrived at, so a latency is invisible in it; this is
+    /// where the platform's own slowness shows as cost.
+    latency: Duration,
+    shortfall_bps: Option<f64>,
     /// The conditions the simulator reports it applied to the probe's
     /// arrival, by name — read off the run rather than off the schedule, so
     /// the detail states what the fill saw and not what was requested.
@@ -18214,6 +19293,10 @@ struct CapacityProbeStrategy {
     venue: String,
     quantity: Decimal,
     submitted: bool,
+    /// The mark the probe decided against, at the step it submitted
+    /// (R12-TICK-2074): the reference a latency is paid against, where the
+    /// execution's own reference is the book it arrived at.
+    decided_at_price: Option<Decimal>,
 }
 
 impl SimStrategy for CapacityProbeStrategy {
@@ -18221,11 +19304,14 @@ impl SimStrategy for CapacityProbeStrategy {
         "capacity-probe"
     }
 
-    fn on_step(&mut self, _view: &SimMarketView<'_>) -> Vec<SimOrder> {
+    fn on_step(&mut self, view: &SimMarketView<'_>) -> Vec<SimOrder> {
         if self.submitted {
             return Vec::new();
         }
         self.submitted = true;
+        self.decided_at_price = view
+            .mark(&self.object_id, &self.venue)
+            .and_then(|mark| mark.price);
         vec![SimOrder::market(
             self.object_id.clone(),
             self.venue.clone(),
@@ -18268,6 +19354,13 @@ impl Platform {
                 probe.feed_delay.as_secs_f64(),
                 probe.conditions.join(", ")
             ));
+            if let Some(shortfall) = probe.shortfall_bps {
+                detail.push_str(&format!(
+                    ", arriving {:.0}s after the decision at {shortfall:.1}bps over the mark it \
+                     decided on",
+                    probe.latency.as_secs_f64()
+                ));
+            }
             self.telemetry.metrics.gauge(
                 names::SIMULATION_CAPACITY_ADVERSITY_BPS,
                 labels([("instrument", probe.subject.as_str())]),
@@ -18447,26 +19540,59 @@ impl Platform {
                 .ok()?,
             ])
             .ok()?;
+        // And behind this platform's own measured decision latency
+        // (R12-TICK-2074): a probe that executed at the instant it decided
+        // would read a capacity no order of this platform's could reach.
+        let latencies: Vec<Duration> = self.decision_latencies.iter().copied().collect();
+        let latency = MarketCondition::latency_from_measured(&latencies)
+            .ok()
+            .filter(|condition| match condition {
+                MarketCondition::Latency { base, jitter } => {
+                    *base > Duration::ZERO || *jitter > Duration::ZERO
+                }
+                _ => false,
+            });
+        let mut schedule = ConditionSchedule::new();
+        let mut conditioned = false;
         if feed_delay > Duration::ZERO {
-            run = run
-                .with_conditions(ConditionSchedule::new().with(ConditionWindow::always(
-                    MarketCondition::DelayedFeed { delay: feed_delay },
-                )))
-                .ok()?;
+            schedule = schedule.with(ConditionWindow::always(MarketCondition::DelayedFeed {
+                delay: feed_delay,
+            }));
+            conditioned = true;
+        }
+        if let Some(latency) = latency {
+            schedule = schedule.with(ConditionWindow::always(latency));
+            conditioned = true;
+        }
+        if conditioned {
+            run = run.with_conditions(schedule).ok()?;
         }
         let mut strategy = CapacityProbeStrategy {
             object_id: subject.clone(),
             venue: "XSIM".to_string(),
             quantity,
             submitted: false,
+            decided_at_price: None,
         };
         let outcome = run.run(&mut strategy).ok()?;
         let report = outcome.reports.first()?;
+        // Statistics: the decision mark and the average fill cross to f64
+        // here, for a diagnostic nothing sizes from.
+        let shortfall_bps = strategy
+            .decided_at_price
+            .filter(|price| price.is_positive() && report.filled.is_positive())
+            .and_then(|decided| {
+                let average = report.notional.checked_div(report.filled)?;
+                let decided = decided.to_f64();
+                Some((average.to_f64() - decided) / decided * 10_000.0)
+            });
         Some(CapacityProbeResult {
             subject: subject.clone(),
             quantity,
             adversity_bps: report.adversity_bps(),
             feed_delay,
+            latency: report.latency,
+            shortfall_bps,
             conditions: report.conditions.clone(),
         })
     }
@@ -20083,8 +21209,24 @@ impl Platform {
         // two halves and until this call the platform read only the declined
         // one: a fill was captured, attributed and never asked whether half
         // or twice the size would have done better.
-        let (priced, problems) =
+        let (priced, problems, filled_attempted) =
             self.score_filled(now, COUNTERFACTUALS_PER_CYCLE.saturating_sub(attempted));
+        if let Some(priced) = priced {
+            let detail = format!("{}; {priced}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // Then the legs of the cycles cells refused whole, under what the
+        // desk's two passes left of the one cap (R12-MESH-5068): last, so a
+        // busy cell can defer its own scoring and never the desk's.
+        // Blueprint §17.2 asks whether the coordination rule was too
+        // conservative, and a refusal nobody priced cannot say.
+        let (priced, problems, _) = self.score_cell_declined(
+            now,
+            COUNTERFACTUALS_PER_CYCLE.saturating_sub(attempted + filled_attempted),
+        );
         if let Some(priced) = priced {
             let detail = format!("{}; {priced}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };
@@ -20777,11 +21919,24 @@ impl Platform {
         // through the same drain every other LEARN-time problem reaches.
         self.capture_problems
             .extend(learned.problems.iter().cloned());
+        // R12-EXPAND-6044: a thesis the rule pack refused and the grader
+        // credited is a contradiction between the theory and the evidence,
+        // and it leaves a theory delta on the log here, at the instant the
+        // grade is known. A proposal only: see `crate::theory_revision`.
+        let revision = self.revise_theory(&learned.evaluations, self.cycle, now);
+        self.capture_problems
+            .extend(revision.problems.iter().cloned());
         let mut summary = format!(
             "{} thesis(es) resolved, {} graded",
             scored.len(),
             learned.evaluations.len()
         );
+        if revision.produced > 0 || revision.upheld > 0 {
+            summary.push_str(&format!(
+                ", {} theory delta(s) proposed, {} veto(es) upheld",
+                revision.produced, revision.upheld
+            ));
+        }
         if ungradeable > 0 {
             summary.push_str(&format!(", {ungradeable} ungradeable"));
         }
@@ -21145,6 +22300,7 @@ impl Platform {
             let market = self.market.read();
             crate::hedge::plan(&crate::hedge::HedgeBrainInputs {
                 declarations: &self.config.hedge_candidates,
+                hedge_map: &self.asset_class_registry,
                 universe: &market.universe,
                 snapshot: &market.snapshot,
                 state: &state,
@@ -21906,6 +23062,7 @@ impl Platform {
         // further without that routing. `Router::determine` returns a type that
         // cannot name a model rung, so the limits below are structurally a
         // function of their inputs.
+        self.begin_deliberate_close(&order);
         let subject = order.object_id.as_str().to_string();
         let conditions = self.pretrade_conditions(&subject);
         self.pretrade_routing = Some(
@@ -22000,6 +23157,53 @@ impl Platform {
                     .map(|reason| reason.describe())
                     .unwrap_or_else(|| "refused with no reason recorded".to_string()),
             ))
+        }
+    }
+
+    /// Record a sell that takes the whole long off the book as blueprint
+    /// §35.1's divestment: the position moves to `Unwinding` through
+    /// [`Portfolio::begin_unwind`] (R12-ASSET-1160).
+    ///
+    /// Before this, `begin_unwind` had no production caller, so a book being
+    /// sold down read as `Held` until the last lot closed, and the
+    /// Portfolio/Asset Brain's divestment count was zero on every book. A
+    /// trim is not this: a sell smaller than the long leaves the position
+    /// held, because §35.1 separates being closed deliberately from being
+    /// reduced.
+    ///
+    /// Run before the controls rule and before any fill exists, which is the
+    /// seam `begin_unwind` names. `Unwinding` records the desk's decision to
+    /// divest, so it stands if a control then refuses the order; the
+    /// refusal is on the record beside it. The lifecycle table has no
+    /// `Held -> Unwinding` edge, so the concern that caused the close (a
+    /// sizing that took the position to flat) is raised through
+    /// [`Portfolio::flag_position`] first. A register that will not move is
+    /// said on the cycle; it never stops the order.
+    fn begin_deliberate_close(&mut self, order: &Order) {
+        if !matches!(order.side, Side::Sell) {
+            return;
+        }
+        let long = self
+            .capital
+            .positions
+            .get(order.object_id.as_str())
+            .map_or(Decimal::ZERO, |lot| lot.quantity);
+        if !long.is_positive() || order.quantity < long {
+            return;
+        }
+        let id = ObjectId::from_string(order.object_id.as_str());
+        let moved = self
+            .asset_book
+            .flag_position(&id)
+            .and_then(|_| self.asset_book.begin_unwind(&id));
+        if let Err(error) = moved {
+            self.capture_problems.push(format!(
+                "selling {} of {} takes the position to flat and the lifecycle register could \
+                 not record the unwind: {}",
+                order.quantity,
+                order.object_id.as_str(),
+                error.message()
+            ));
         }
     }
 
@@ -22732,6 +23936,22 @@ impl Platform {
             .universe
             .get(&ObjectId::from_string(object_id))
             .cloned();
+        // Booked through the adapter and lifecycle engine its class names
+        // (R12-ASSET-1015). A class the registry refuses was refused at
+        // assembly too, so a refusal here is the registry and the universe
+        // disagreeing, said on the cycle rather than booked under a guess.
+        if let Some(object) = &object {
+            match self.asset_class_registry.booking_of(object.asset_class) {
+                Ok(booking) => {
+                    self.position_bookings
+                        .insert(object_id.to_string(), booking);
+                }
+                Err(error) => self.capture_problems.push(format!(
+                    "a desk fill in {object_id} has no adapter or lifecycle engine: {}",
+                    error.message()
+                )),
+            }
+        }
         let mirrored = match object {
             Some(object) => self
                 .asset_book
@@ -23105,6 +24325,7 @@ impl Platform {
         }
         let mut catalogued = Vec::new();
         let mut catalogue_problems = Vec::new();
+        let mut entries = Vec::new();
         // The owner is validated once, as a `NamedOperator`, before any entry
         // is built (R12-DATA-2020). The configured default is the process's
         // own name, and a catalogue entry owned by a process names nobody who
@@ -23117,6 +24338,44 @@ impl Platform {
         for decision in &decisions {
             if !decision.is_registered() {
                 continue;
+            }
+            // The registry entry, read where the registration is made
+            // (R12-EXPAND-6055). The finder admits no source without a
+            // declared licence, so an entry whose licence cannot be named is
+            // a registry that disagrees with its own decision, and is
+            // recorded as a problem rather than catalogued.
+            match self.data_finder.registry().get(decision.source_id()) {
+                Some(registered) => {
+                    let entry = registered.entry();
+                    match entry.licence.license() {
+                        Some(license) => entries.push(SourceRegistryView {
+                            source_id: decision.source_id().to_string(),
+                            discovered_from: entry.provenance.discovered_from().to_string(),
+                            discovered_at: entry.provenance.discovered_at(),
+                            monthly_fee: entry.cost.monthly_fee(),
+                            licence: license.identifier().to_string(),
+                            freshness: entry.freshness,
+                            routing: entry.utility.class(),
+                            composite: entry.utility.composite(),
+                        }),
+                        None => {
+                            catalogue_problems.push(format!(
+                                "source.{}: registered with no declared licence in its registry \
+                                 entry; not catalogued",
+                                decision.source_id()
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                None => {
+                    catalogue_problems.push(format!(
+                        "source.{}: the decision says registered and the registry holds no \
+                         entry under that id; not catalogued",
+                        decision.source_id()
+                    ));
+                    continue;
+                }
             }
             let operator = match &operator {
                 Ok(operator) => operator,
@@ -23147,6 +24406,7 @@ impl Platform {
             decisions,
             catalogued,
             catalogue_problems,
+            entries,
         })
     }
 
@@ -24034,6 +25294,23 @@ impl Platform {
         }
     }
 
+    /// Record one decision latency in the bounded window the capacity probe
+    /// calibrates from (R12-TICK-2074). `run_cycle` calls it with each
+    /// cycle's SENSE-through-ACT time; a test calls it to stand in for a
+    /// clock that does not move.
+    #[doc(hidden)]
+    pub fn observe_decision_latency(&mut self, latency: Duration) {
+        self.decision_latencies.push_back(latency);
+        while self.decision_latencies.len() > DECISION_LATENCY_SAMPLES {
+            self.decision_latencies.pop_front();
+        }
+    }
+
+    /// The decision latencies the platform has measured, oldest first.
+    pub fn decision_latencies(&self) -> impl Iterator<Item = &Duration> {
+        self.decision_latencies.iter()
+    }
+
     /// The publication delay each source has shown, by source name.
     pub fn publication_delays(&self) -> &BTreeMap<String, PublicationDelay> {
         &self.publication_delays
@@ -24335,6 +25612,8 @@ impl Platform {
             fills_deferred: 0,
             declined_outcomes: self.declined_scores.clone(),
             fill_outcomes: Vec::new(),
+            cell_declined_scored: 0,
+            cell_declined_outcomes: Vec::new(),
         });
         let mut summary = format!("{scored} declined path(s) priced, {regrets} regret(s)");
         if deferred > 0 {
@@ -24368,7 +25647,11 @@ impl Platform {
     /// of the twin and is read by nothing that decides — a venue is
     /// withdrawn on feasibility evidence alone, and a size is narrowed on the
     /// bits, never on the error.
-    fn score_filled(&mut self, now: Timestamp, budget: usize) -> (Option<String>, Vec<String>) {
+    fn score_filled(
+        &mut self,
+        now: Timestamp,
+        budget: usize,
+    ) -> (Option<String>, Vec<String>, usize) {
         let horizon = self.counterfactuals.horizon();
         let due: Vec<OrderId> = self
             .filled
@@ -24385,9 +25668,10 @@ impl Platform {
             .map(|filled| filled.order_id.clone())
             .collect();
         if due.is_empty() {
-            return (None, Vec::new());
+            return (None, Vec::new(), 0);
         }
 
+        let attempted = due.len().min(budget);
         let deferred = due.len().saturating_sub(budget);
         if deferred > 0 {
             self.telemetry.metrics.increment(
@@ -24596,10 +25880,18 @@ impl Platform {
                             error_bps,
                             Histogram::signed_basis_points,
                         );
-                        if let Err(error) = self
-                            .fill_calibration
-                            .observe(path.venue.as_str(), error_bps)
-                        {
+                        // R12-TICK-2080: the fill's share of the bar it filled
+                        // in, so the calibration can split the error between
+                        // spread and impact. Unknown — no order on the desk, no
+                        // bar covering the fill, a bar with no volume — leaves
+                        // the spread to take the whole error, as before, rather
+                        // than a participation nobody measured.
+                        let participation = self.fill_participation(&order_id, &path);
+                        if let Err(error) = self.fill_calibration.observe_with_participation(
+                            path.venue.as_str(),
+                            error_bps,
+                            participation,
+                        ) {
                             problems.push(format!("fill calibration: {}", error.message()));
                         }
                     }
@@ -24653,6 +25945,8 @@ impl Platform {
                     fills_deferred: deferred,
                     declined_outcomes: Vec::new(),
                     fill_outcomes: self.fill_scores.clone(),
+                    cell_declined_scored: 0,
+                    cell_declined_outcomes: Vec::new(),
                 });
             }
         }
@@ -24660,7 +25954,7 @@ impl Platform {
         if deferred > 0 {
             summary.push_str(&format!(", {deferred} deferred by the per-cycle cap"));
         }
-        (Some(summary), problems)
+        (Some(summary), problems, attempted)
     }
 
     /// What the twin found about each priced fill, most recent last.
@@ -24887,6 +26181,44 @@ impl Platform {
         self.tactical = Some(refresh);
     }
 
+    /// The share of its bar's volume a scored fill took (R12-TICK-2080): the
+    /// quantity the desk's order filled, or the cell's reported fill
+    /// quantity, over the volume of the held bar whose session covers the
+    /// decision instant. `None` when any of the three is unknown, so the
+    /// calibration charges the error to the spread alone rather than to a
+    /// size nobody measured. Money to statistic at the one place it happens
+    /// for this path: a participation is a ratio of two quantities.
+    fn fill_participation(&self, order_id: &OrderId, path: &FilledPath) -> Option<f64> {
+        let quantity = match &path.cell {
+            Some(origin) => origin.quantity,
+            None => self
+                .orders
+                .order(order_id)?
+                .fills
+                .iter()
+                .try_fold(Decimal::ZERO, |sum, fill| sum.checked_add(fill.quantity))?,
+        };
+        if quantity <= Decimal::ZERO {
+            return None;
+        }
+        let bars = self.bar_history.get(path.object_id.as_str())?;
+        let bar = bars
+            .iter()
+            .find(|bar| bar.open_time <= path.decided_at && path.decided_at < bar.close_time())
+            .or_else(|| {
+                bars.iter()
+                    .rev()
+                    .find(|bar| bar.close_time() <= path.decided_at)
+            })?;
+        if bar.volume <= Decimal::ZERO {
+            return None;
+        }
+        let participation = quantity.to_f64() / bar.volume.to_f64();
+        (0.0..=1.0)
+            .contains(&participation)
+            .then_some(participation)
+    }
+
     /// The twin's per-venue fill calibration, as the scored fills have moved
     /// it (R12-TICK-2080).
     pub fn fill_calibration(&self) -> &qip_twin::calibration::FillCalibration {
@@ -24992,6 +26324,28 @@ impl Platform {
     /// venue back takes two operators' signatures (ADR 0062).
     pub fn withdrawn_venues(&self) -> &BTreeSet<String> {
         &self.withdrawn_venues
+    }
+
+    /// The historical universe (R12-TICK-2090): membership as of any instant,
+    /// delistings and renamings effective at their ex-dates, and the venue
+    /// outages this platform's withdrawals caused. What a backtest judges a
+    /// strategy against, so a name delisted later is still in the universe
+    /// it traded in.
+    pub fn universe_history(&self) -> &UniverseHistory {
+        &self.universe_history
+    }
+
+    /// The adapter and lifecycle engine `object_id`'s desk position was
+    /// booked through, or `None` where the desk has never held it
+    /// (R12-ASSET-1015).
+    pub fn position_booking(
+        &self,
+        object_id: &str,
+    ) -> Option<(
+        crate::asset_class_registry::ClassAdapter,
+        crate::asset_class_registry::LifecycleEngine,
+    )> {
+        self.position_bookings.get(object_id).copied()
     }
 
     /// Every withdrawal record this kernel's review has written, oldest
@@ -25364,7 +26718,7 @@ impl Platform {
         let record = VenueWithdrawal::of(&cluster, self.cycle, now);
         match self.journal_once(record, VENUE_REVIEW_ORIGIN, now) {
             Ok(_) => {
-                self.withdraw_venue(&cluster.venue);
+                self.withdraw_venue(&cluster.venue, now);
                 (
                     Some(format!(
                         "venue {} withdrawn on feasibility evidence ({} of {} recent refusals, \
@@ -25391,10 +26745,23 @@ impl Platform {
     /// Withdraw `venue` at both seams. The one writer of the withdrawn set,
     /// called only after the record is in the log; the order manager
     /// refuses and the plane omits from the next call on.
-    fn withdraw_venue(&mut self, venue: &str) {
+    fn withdraw_venue(&mut self, venue: &str, now: Timestamp) {
         self.withdrawn_venues.insert(venue.to_string());
         self.orders.withdraw_venue(venue);
         self.central.withdraw_venue(venue);
+        // And the historical universe: the venue is out from now until a
+        // reinstatement says otherwise, so a backtest over this window does
+        // not fill through a venue the desk refused.
+        if let Err(error) = self.universe_history.open_outage(
+            venue,
+            now,
+            "withdrawn on feasibility evidence (venue review)",
+        ) {
+            self.capture_problems.push(format!(
+                "{venue} was withdrawn but the historical universe refused the outage: {}",
+                error.message()
+            ));
+        }
     }
 
     /// Sign a withdrawn venue's reinstatement, and put it back at both seams
@@ -25524,7 +26891,7 @@ impl Platform {
                 // by the next assembly.
                 self.journal_record(entry.clone(), VENUE_REINSTATEMENT_ORIGIN, now)?;
                 approval?;
-                self.reinstate_venue_at_seams(venue);
+                self.reinstate_venue_at_seams(venue, now);
                 Ok(entry)
             }
         }
@@ -25557,8 +26924,15 @@ impl Platform {
     /// is never resumed from the log — so the pardon there is a no-op, and
     /// the two callers are kept on one path rather than on two that could
     /// drift.
-    fn reinstate_venue_at_seams(&mut self, venue: &str) {
+    fn reinstate_venue_at_seams(&mut self, venue: &str, now: Timestamp) {
         self.withdrawn_venues.remove(venue);
+        if let Err(error) = self.universe_history.close_outage(venue, now) {
+            self.capture_problems.push(format!(
+                "{venue} was reinstated but the historical universe refused to close its \
+                 outage: {}",
+                error.message()
+            ));
+        }
         crate::venue_review::pardon(&mut self.feasibility_refusals, venue);
         self.orders.reinstate_venue(venue);
         self.central.reinstate_venue(venue);
@@ -26616,7 +27990,11 @@ fn signed_bps(price: f64, reference: f64, side: BookSide) -> Option<f64> {
 ///
 /// A buy lifts the offer and a sell hits the bid, so a buy is recorded against
 /// the ask. Written out rather than assumed, because getting it backwards would
-/// make every counterfactual price the opposite trade.
+/// make every counterfactual price the opposite trade — which is what happened
+/// until 2026-10-31, from the other end: this mapping was right and the twin's
+/// `ActualTrade::direction` read `Bid` as long, so every refused buy scored as
+/// a short. `a_declined_buy_on_a_rising_tape_is_scored_as_the_long_it_was` in
+/// `tests/learning.rs` holds the two ends together.
 const fn book_side(side: Side) -> BookSide {
     match side {
         Side::Buy => BookSide::Ask,
@@ -27284,6 +28662,234 @@ mod decide_tests {
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
+    }
+
+    /// R12-WORLD-3078: the NOW brain is told each priced instrument's causal
+    /// parents among the priced instruments, signed by mechanism. An edge
+    /// from a cause the brain holds no state for is left out.
+    ///
+    /// Mutation: in `now_causal_parents`, drop the sign -- the inverting
+    /// edge's transmission then reads positive.
+    #[test]
+    fn the_now_brain_is_told_each_instruments_causal_parents_signed_by_mechanism() {
+        use qip_world_model::causal::{CausalEdge, Mechanism};
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        let edge = |cause: &str, mechanism: Mechanism| {
+            CausalEdge::new(cause, "MSFT", mechanism, 0.6, Duration::from_hours(1), now)
+                .expect("a valid edge")
+        };
+        platform.world.update(|world| {
+            world
+                .claim_causal(edge("AAPL", Mechanism::CompetitiveSubstitution))
+                .expect("the edge is claimed");
+            world
+                .claim_causal(edge("FACTOR", Mechanism::TemporalPrecedence))
+                .expect("the edge is claimed");
+        });
+        let parents = platform.now_causal_parents(now);
+        let msft = parents.get("MSFT").expect("MSFT has a priced parent");
+        assert_eq!(msft.len(), 1, "an unpriced cause was passed on: {msft:?}");
+        assert_eq!(msft[0].cause, "AAPL");
+        assert!((msft[0].transmission + 0.6).abs() < 1e-12, "{msft:?}");
+        assert!(!parents.contains_key("AAPL"));
+    }
+
+    /// R12-WORLD-6015: a world event is paired with the market's reaction at
+    /// one, five and twenty bars, and each is applied to the causal graph once.
+    /// A second event of the same class whose direction the market goes
+    /// against lowers the confidence of the edge the first established, and
+    /// the contradiction is kept on the platform.
+    ///
+    /// Mutation: in `react_to_world_events`, measure only the first horizon
+    /// -- the event then yields one reaction, not three.
+    #[test]
+    fn a_news_event_yields_reactions_at_three_horizons_and_a_contradiction_lowers_the_edge_confidence()
+     {
+        use qip_market::bar::{Bar, Interval};
+        use qip_opportunity_engine::catalyst::MarketEvent;
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let mut platform = small_book_platform();
+        // Fifty daily bars: flat to day 4, rising to day 24 (past the first
+        // event's last horizon), then falling.
+        let bars: Vec<Bar> = (0..50)
+            .map(|day| {
+                let close = if day < 5 {
+                    100.0
+                } else if day < 25 {
+                    100.0 + (day - 4) as f64
+                } else {
+                    120.0 - (day - 24) as f64 * 2.0
+                };
+                let px = |v: f64| Decimal::from_f64(v).expect("a price");
+                Bar {
+                    object_id: qip_core::ObjectId::from_string("AAPL"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: t0.saturating_add(Duration::from_days(day)),
+                    open: px(close),
+                    high: px(close),
+                    low: px(close),
+                    close: px(close),
+                    volume: Decimal::from_int(1_000),
+                    vwap: None,
+                    trade_count: 1,
+                    quality: qip_financial::quality::DataQuality::default(),
+                }
+            })
+            .collect();
+        platform.bar_history.insert("AAPL".to_string(), bars);
+        let event = |id: &str, day: i64| {
+            let at = t0
+                .saturating_add(Duration::from_days(day))
+                .saturating_add(Duration::from_hours(1));
+            MarketEvent::new(id, "AAPL", "guidance", at, at)
+                .with_direction(1.0)
+                .with_weight(0.8)
+        };
+        platform.market_events.push(event("ev-up", 4));
+        let after_first = t0.saturating_add(Duration::from_days(60));
+        platform.react_to_world_events(after_first);
+        let applied: Vec<usize> = platform
+            .reactions_applied
+            .iter()
+            .filter(|(id, _)| id == "ev-up")
+            .map(|(_, h)| *h)
+            .collect();
+        assert_eq!(
+            applied,
+            vec![1, 5, 20],
+            "the event did not react at three horizons"
+        );
+        let confidence = |p: &Platform| {
+            p.world
+                .read()
+                .causal()
+                .edges()
+                .iter()
+                .find(|e| e.cause == "guidance" && e.effect == "AAPL")
+                .map(|e| e.confidence)
+                .expect("the reaction established an edge")
+        };
+        let established = confidence(&platform);
+        assert!(platform.reaction_contradictions().is_empty(), "premise");
+        // The same guidance up a second time, after which the market fell.
+        platform.market_events.push(event("ev-down", 25));
+        platform.react_to_world_events(after_first);
+        assert!(
+            !platform.reaction_contradictions().is_empty(),
+            "a reaction against the edge recorded no contradiction"
+        );
+        assert!(
+            confidence(&platform) < established,
+            "the edge's confidence did not fall"
+        );
+        platform.react_to_world_events(after_first);
+        assert_eq!(
+            platform
+                .reactions_applied
+                .iter()
+                .filter(|(id, _)| id == "ev-down")
+                .count(),
+            3,
+            "a reaction was applied twice or not at all"
+        );
+    }
+
+    /// R12-WORLD-9035: the cycle grows a future tree from the held world
+    /// events, partitioned by each event's class, and the next cycle's bars
+    /// reweight and prune it while every family stays a distribution and the
+    /// tree stays within its bound.
+    ///
+    /// Mutations: drop the `tend_futures` call from `run_cycle` (no tree);
+    /// give each driver no family (the families are the event ids); skip the
+    /// observation (the tree is never scored).
+    #[test]
+    fn the_cycle_grows_a_future_tree_partitioned_by_event_class_and_the_next_bars_prune_it() {
+        use qip_market::bar::{Bar, Interval};
+        use qip_opportunity_engine::catalyst::MarketEvent;
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let mut platform = small_book_platform();
+        // Thirty daily bars wiggling around 100, then a jump of eight percent
+        // from day 31: reality the tree's one-sigma worlds did not hold.
+        let bars: Vec<Bar> = (0..40)
+            .map(|day| {
+                let wiggle = ((day * 7919) % 13) as f64 / 13.0 - 0.5;
+                let close = if day <= 30 { 100.0 + wiggle } else { 108.0 };
+                let px = |v: f64| Decimal::from_f64(v).expect("a price");
+                Bar {
+                    object_id: qip_core::ObjectId::from_string("AAPL"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: t0.saturating_add(Duration::from_days(day)),
+                    open: px(close),
+                    high: px(close),
+                    low: px(close),
+                    close: px(close),
+                    volume: Decimal::from_int(1_000),
+                    vwap: None,
+                    trade_count: 1,
+                    quality: qip_financial::quality::DataQuality::default(),
+                }
+            })
+            .collect();
+        platform.bar_history.insert("AAPL".to_string(), bars);
+        let event = |id: &str, class: &str, direction: f64| {
+            let at = t0.saturating_add(Duration::from_days(28));
+            MarketEvent::new(id, "AAPL", class, at, at)
+                .with_direction(direction)
+                .with_weight(0.8)
+        };
+        platform
+            .market_events
+            .push(event("ev-guide-up", "guidance", 1.0));
+        platform
+            .market_events
+            .push(event("ev-guide-cut", "guidance", -1.0));
+        platform
+            .market_events
+            .push(event("ev-rates", "monetary_policy", -0.5));
+        let sums_to_one = |platform: &Platform| {
+            let tree = platform.future_tree().expect("the cycle grew a tree");
+            let families = tree.families().expect("live mass");
+            let mass: f64 = families.values().map(|f| f.mass).sum();
+            assert!((mass - 1.0).abs() < 1e-9, "family masses sum to {mass}");
+            for (family, partition) in &families {
+                let within: f64 = partition.weights.values().sum();
+                assert!((within - 1.0).abs() < 1e-9, "{family} sums to {within}");
+            }
+            assert!(tree.branches.len() <= FUTURE_MAX_BRANCHES);
+            families
+        };
+        let grown_at = t0.saturating_add(Duration::from_days(30) + Duration::from_hours(1));
+        platform.run_cycle(grown_at);
+        let families = sums_to_one(&platform);
+        assert_eq!(
+            families.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["baseline", "guidance", "monetary_policy"],
+            "the two guidance events are one family"
+        );
+        let records = platform.world_branches_by_family().expect("a tree");
+        assert_eq!(records.records["guidance"].len(), 24);
+        assert!(records.unrecorded.contains_key("baseline"));
+        let live_before = platform.future_tree().map_or(0, |t| t.live().count());
+
+        platform.run_cycle(t0.saturating_add(Duration::from_days(33)));
+        let tree = platform.future_tree().expect("the tree is kept");
+        assert_eq!(tree.observations, 1, "the next bars did not score the tree");
+        assert_eq!(
+            tree.grown_at, grown_at,
+            "the same driver set regrew the tree"
+        );
+        assert!(
+            tree.branches
+                .values()
+                .any(|b| b.status != qip_twin::futures::BranchStatus::Live),
+            "reality eight percent away pruned nothing (live before {live_before})"
+        );
+        sums_to_one(&platform);
     }
 
     /// R12-WORLD-3034: an analyst's distilled procedure is retrieved at its

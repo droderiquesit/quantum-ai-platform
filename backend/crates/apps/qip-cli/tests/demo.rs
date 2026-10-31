@@ -393,6 +393,11 @@ fn the_walk_no_longer_reports_the_delta_decode_the_api_composition_root_performs
             reconciliation_breaks_omitted: 0,
             crosses: Vec::new(),
             crosses_omitted: 0,
+            episodes: Vec::new(),
+            episodes_omitted: 0,
+            positions: Vec::new(),
+            positions_omitted: 0,
+            positions_as_of: 0,
         },
         now,
     )?;

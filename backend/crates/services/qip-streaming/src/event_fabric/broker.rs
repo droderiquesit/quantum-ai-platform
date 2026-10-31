@@ -882,6 +882,20 @@ impl Broker {
         Ok(())
     }
 
+    /// Admit no body topic on `stream` (ADR 0215): a catalogue stream that
+    /// names no topic, on a deployed broker, is closed rather than open.
+    /// Every record produced to it is then refused by
+    /// `require_admitted_topics` before append, naming the stream. Distinct
+    /// from [`Self::register_body_schemas`], which refuses an empty set as a
+    /// catalogue mistake: closing a stream is a decision, and this is the
+    /// one call that makes it.
+    pub fn close_body_topics(&self, stream: &str) -> Result<()> {
+        self.partition_count(stream)?;
+        let mut schemas = self.schemas.lock().unwrap_or_else(|e| e.into_inner());
+        schemas.entry(stream.to_string()).or_default().body_schemas = Some(BTreeMap::new());
+        Ok(())
+    }
+
     /// Produce `batch` (already stamped by the drain — see
     /// [`qip_events::event_fabric::codec::stamp_drain`]) under `key`, which
     /// [`partition::partition_for`] routes to one of `stream`'s declared
@@ -996,7 +1010,7 @@ impl Broker {
             )));
         }
         self.refuse_when_a_group_lags(stream, partition)?;
-        let credit = match self.charge_quota(stream, &batch)? {
+        let credit = match self.charge_quota(stream, &batch, principal)? {
             Ok(credit) => credit,
             Err(refused) => return Ok(Err(refused)),
         };
@@ -2288,6 +2302,7 @@ impl Broker {
         &self,
         stream: &str,
         batch: &Batch,
+        principal: Option<&str>,
     ) -> Result<std::result::Result<ProducerCredit, ProduceRefusal>> {
         let policy = self.stream_policy(stream)?;
         let messages = u64::try_from(batch.records.len())
@@ -2301,8 +2316,14 @@ impl Broker {
         let mut spent = self.quota_spent.lock().unwrap_or_else(|e| e.into_inner());
         let window_start = now - now.rem_euclid(QUOTA_WINDOW_NS);
         spent.retain(|_, (start, _, _)| *start == window_start);
+        // Keyed on the authenticated principal where a session has one
+        // (R12-FABRIC-8089): the producer id is the client's own string, and
+        // a window keyed on it alone is one a caller multiplies by minting
+        // ids. An in-process producer with no session falls back to its id,
+        // which is the only name it has.
+        let payer = principal.unwrap_or(&batch.producer_id).to_string();
         let entry = spent
-            .entry((stream.to_string(), batch.producer_id.clone()))
+            .entry((stream.to_string(), payer))
             .or_insert((window_start, 0, 0));
         let over_bytes = entry.1.saturating_add(bytes) > policy.byte_quota_per_producer();
         let over_messages = entry.2.saturating_add(messages) > policy.message_quota_per_producer();
@@ -2386,6 +2407,15 @@ impl Broker {
                 ))
             })?;
             let Some(versions) = admitted.get(event.topic.name()) else {
+                if admitted.is_empty() {
+                    return Err(Error::denied(format!(
+                        "record {} carries topic '{}', and stream '{stream}' names no topic in \
+                         the catalogue, so on this deployment it admits no record (ADR 0215); \
+                         name the topic in the catalogue before producing to it",
+                        record.event_id,
+                        event.topic.name(),
+                    )));
+                }
                 return Err(Error::denied(format!(
                     "record {} carries topic '{}', which stream '{stream}' does not admit \
                      (it admits {}); refusing to append it (FABRIC-024)",

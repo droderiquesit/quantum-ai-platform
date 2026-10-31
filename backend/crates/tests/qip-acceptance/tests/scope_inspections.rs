@@ -238,3 +238,212 @@ fn every_reflex_node_scope_item_is_still_composed_where_the_node_assembles_it() 
         "pass",
     );
 }
+
+/// R12-MESH-1167: the arbitrage scope, item by item — 2 to 20 legs,
+/// cross-venue, cross-region, cross-asset and cross-currency cycles, and
+/// size-aware graph costs — each held to the seam a composition root reaches
+/// and a test that names it. The desk is installed by `qip-edge-node`'s
+/// `ArbitrageInstaller` from the whitelist `qip-api`'s `load_arbitrage_policy`
+/// ships, so the first two rows pin those roots; every other row pins the
+/// library seam the installed desk runs through and the test that drives
+/// it. A seam renamed away or a test deleted fails here naming the item.
+/// What this does not claim: that a cycle crosses a region on a deployed
+/// node — the peer saga's seam is spawned behind the peer-mesh switch, and
+/// the row's gap says so.
+const ARBITRAGE_SCOPE: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "desk installed from the centre's whitelist at the node's root",
+        "crates/apps/qip-edge-node/src/main.rs",
+        "ArbitrageInstaller::new(strategy, config.venues.clone())",
+        "crates/apps/qip-edge-node/tests/arbitrage.rs",
+        "fn the_node_installs_a_desk_from_the_payloads_whitelist_once_capital_for_it_has_arrived",
+    ),
+    (
+        "policy loaded at the centre's root",
+        "crates/apps/qip-api/src/main.rs",
+        "fn load_arbitrage_policy()",
+        "crates/runtime/qip-kernel/src/central/whitelist.rs",
+        "fn a_markets_stated_costs_ship_on_both_of_its_conversions_and_an_impossible_one_is_refused",
+    ),
+    (
+        "2 to 20 legs: the node's leg bound",
+        "crates/apps/qip-edge-node/src/arbitrage.rs",
+        "pub fn parse_max_legs(",
+        "crates/apps/qip-edge-node/tests/arbitrage.rs",
+        "fn the_configured_maximum_leg_count_is_refused_outside_two_to_twenty_and_unset_is_the_engine_default",
+    ),
+    (
+        "2 to 20 legs: the search's ceiling",
+        "crates/edge/qip-arbitrage/src/search.rs",
+        "max_cycle_edges",
+        "crates/edge/qip-arbitrage/tests/leg_limit.rs",
+        "fn with_the_maximum_at_twenty_cycles_of_two_and_twenty_legs_are_accepted_and_one_and_twenty_one_are_refused",
+    ),
+    (
+        "cross-venue: a transfer edge between venues",
+        "crates/edge/qip-arbitrage/src/graph.rs",
+        "pub fn add_transfer(",
+        "crates/edge/qip-edge/tests/cross_region.rs",
+        "fn the_same_cell_with_both_venues_at_home_is_assigned_path_two_exactly_as_before",
+    ),
+    (
+        "cross-venue: a two-venue cycle's legs book on the ledger",
+        "crates/edge/qip-arbitrage/src/graph.rs",
+        "pub fn add_transfer(",
+        "crates/tests/qip-acceptance/tests/cycle_ledger.rs",
+        "fn every_filled_leg_of_a_completed_cycle_posts_balanced_and_the_cycle_cash_nets_to_zero",
+    ),
+    (
+        "cross-region: mirror edges and the measured round trip",
+        "crates/edge/qip-edge/src/mirror.rs",
+        "pub fn with_round_trip(",
+        "crates/edge/qip-edge/tests/cross_region.rs",
+        "fn a_cell_told_one_of_its_venues_is_abroad_composes_mirror_edges_and_is_assigned_path_three",
+    ),
+    (
+        "cross-region: legs executed between two nodes over the peer wire",
+        "crates/apps/qip-edge-node/src/main.rs",
+        "qip_peer_link::spawn(settings, Arc::clone(&clock))",
+        "crates/edge/qip-peer-link/tests/saga.rs",
+        "fn two_nodes_publishing_only_through_their_ports_run_a_cross_region_cycle_to_its_unwind",
+    ),
+    (
+        "cross-asset: a triangle over three instruments",
+        "crates/edge/qip-arbitrage/src/graph.rs",
+        "pub fn add_trade(",
+        "crates/edge/qip-edge/tests/arbitrage.rs",
+        "fn a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass",
+    ),
+    (
+        "cross-currency: a currency conversion leg in the cell's graph",
+        "crates/edge/qip-arbitrage/src/graph.rs",
+        "pub fn add_trade(",
+        "crates/edge/qip-edge/tests/cross_region.rs",
+        "\"USDTUSD\"",
+    ),
+    (
+        "size-aware graph costs: spread and slippage charged on the size walked",
+        "crates/edge/qip-arbitrage/src/netedge.rs",
+        "fn book_cost_fractions(",
+        "crates/edge/qip-arbitrage/tests/arbitrage.rs",
+        "fn spread_and_slippage_are_charged_as_separate_costs",
+    ),
+    (
+        "size-aware graph costs: a path with no stated size is refused",
+        "crates/edge/qip-arbitrage/src/scan.rs",
+        "pub struct SizePolicy",
+        "crates/edge/qip-arbitrage/tests/arbitrage.rs",
+        "fn a_path_with_no_stated_size_is_refused_rather_than_guessed",
+    ),
+];
+
+#[test]
+fn every_arbitrage_scope_item_maps_to_a_seam_a_composition_root_reaches_and_a_named_test() {
+    assert_eq!(
+        ARBITRAGE_SCOPE.len(),
+        12,
+        "premise: the map covers the leg bound, three cross dimensions, currency and size-aware costs"
+    );
+    // The two roots: a desk installed only from the centre's whitelist, a
+    // policy loaded only at the API's root. Pinned by the lines the other
+    // rows hang off, so a root that stops installing fails here first.
+    holds(
+        "crates/apps/qip-edge-node/src/main.rs",
+        ".in_region(&config.region)",
+        "desk installed in the cell's region",
+    );
+    for (item, seam_file, seam, test_file, test) in ARBITRAGE_SCOPE {
+        holds(seam_file, seam, item);
+        holds(test_file, test, item);
+    }
+}
+
+/// The ten items of "Asset management" (R12-ASSET-1160): (item, seam file,
+/// seam symbol, test file, test name). Every seam is on the kernel's cycle
+/// or an operator route the API composes, and every test drives the
+/// platform rather than the helper.
+const ASSET_MANAGEMENT: [(&str, &str, &str, &str, &str); 10] = [
+    (
+        "portfolio construction",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "fn construct_from(",
+        "crates/runtime/qip-kernel/tests/solver_routing.rs",
+        "fn a_cycle_that_sizes_a_proposal_journals_the_solver_and_the_classical_baseline_it_was_measured_against",
+    ),
+    (
+        "mandates",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "fn review_position_mandates(",
+        "crates/runtime/qip-kernel/tests/position_record.rs",
+        "fn every_held_position_resolves_to_a_mandate_and_target_or_is_flagged",
+    ),
+    (
+        "horizons",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "pub fn arm_horizon_gate(",
+        "crates/runtime/qip-kernel/tests/position_record.rs",
+        "fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liquidity",
+    ),
+    (
+        "valuation",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "pub fn sizing_confidence(",
+        "crates/runtime/qip-kernel/tests/valuation_seam.rs",
+        "fn a_cycle_whose_thesis_rests_on_a_mark_past_its_review_date_sizes_nothing_and_says_when_it_fell_due",
+    ),
+    (
+        "lifecycle",
+        "crates/runtime/qip-kernel/src/position_life.rs",
+        "pub fn on_fill(",
+        "crates/runtime/qip-kernel/tests/position_life.rs",
+        "fn an_exited_unsettled_position_is_not_attributed",
+    ),
+    (
+        "corporate actions",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "fn apply_corporate_action(",
+        "crates/runtime/qip-kernel/tests/ledger.rs",
+        "fn a_split_the_book_took_before_a_restart_is_on_the_log_and_is_not_taken_again_when_the_tape_is_fed_to_the_new_process",
+    ),
+    (
+        "commitments",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "pub fn record_capital_call(",
+        "crates/runtime/qip-kernel/tests/capital_calls.rs",
+        "fn a_capital_call_is_refused_before_anything_is_journalled_and_an_admitted_one_is_on_the_log",
+    ),
+    (
+        "divestment",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "fn begin_deliberate_close(",
+        "crates/runtime/qip-kernel/tests/position_record.rs",
+        "fn selling_the_whole_long_unwinds_the_position_and_a_trim_leaves_it_held",
+    ),
+    (
+        "hedging",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "fn review_hedges(",
+        "crates/runtime/qip-kernel/tests/hedge.rs",
+        "fn a_declared_hedge_policy_is_surveyed_against_the_book_in_decide_and_reaches_the_log",
+    ),
+    (
+        "attribution",
+        "crates/runtime/qip-kernel/src/attribution.rs",
+        "pub fn note_release(",
+        "crates/runtime/qip-kernel/tests/model_tournament.rs",
+        "fn a_filled_order_is_attributed_its_marked_pnl_under_all_seven_keys",
+    ),
+];
+
+#[test]
+fn every_asset_management_scope_item_names_a_seam_and_a_test_that_still_exist() {
+    assert_eq!(
+        ASSET_MANAGEMENT.len(),
+        10,
+        "premise: the requirement lists ten items"
+    );
+    for (item, seam_file, seam, test_file, test) in ASSET_MANAGEMENT {
+        holds(seam_file, seam, item);
+        holds(test_file, test, item);
+    }
+}

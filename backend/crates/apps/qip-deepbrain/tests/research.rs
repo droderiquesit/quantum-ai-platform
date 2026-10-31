@@ -198,6 +198,37 @@ fn a_raised_gap_flows_from_ambient_signal_through_attention_event_to_a_complete_
     );
 }
 
+/// R12-AMBIENT-10175: a raised gap's signal states the urgency of its own
+/// deadline rather than zero. The loop stated `urgency_bp: 0` on every
+/// signal it emitted while `admit` derived the same gap's urgency from that
+/// deadline, so the journaled signal and the information request it became
+/// disagreed about how much the gap wanted attention, and the signal said
+/// "none". Mutation: restore the literal `urgency_bp: 0` in
+/// `ResearchLoop::emit`; the emitted signal's urgency is zero and both
+/// assertions fail.
+#[test]
+fn a_raised_gap_signal_carries_the_urgency_of_its_deadline_not_zero() {
+    let platform = platform();
+    let mut loop_ = research(coverage(&[("Equity", &["obj-A", "obj-B"])]));
+    let round = loop_
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(round.raised, 1, "premise: one gap raised: {round:?}");
+    let signal = round
+        .signals
+        .iter()
+        .find(|s| s.id() == "ambient-1")
+        .unwrap_or_else(|| panic!("premise: the raised gap was emitted: {round:?}"));
+    let ttl = ResearchConfig::default().signal_ttl;
+    assert_eq!(signal.expiry(), start().saturating_add(ttl), "premise");
+    let expected = qip_deepbrain::research::urgency_bp(start(), signal.expiry(), ttl);
+    assert!(
+        expected > 0,
+        "premise: a deadline ahead is not without urgency"
+    );
+    assert_eq!(signal.urgency_bp(), expected, "{signal:?}");
+}
+
 #[test]
 fn an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router() {
     let platform = platform();
@@ -372,6 +403,7 @@ fn the_run_loop_sweeps_research_and_observes_operations_every_cycle() {
             ambient: None,
             agency: None,
             warehouse: None,
+            backlog: None,
         },
         |outcome| {
             researched += usize::from(outcome.research.is_some());
@@ -634,6 +666,199 @@ fn an_action_that_ran_but_could_not_journal_its_outcome_is_counted_applied_not_r
         remediation.contains("could not be journalled"),
         "the incident says the outcome was not journalled: {remediation}"
     );
+}
+
+/// Drive `levels` through a journalled loop, one level per run of twelve
+/// iterations, alternating by one millisecond so the series has a spread.
+fn drive_levels(
+    platform: &Platform,
+    ops: &mut Operations,
+    levels: &[f64],
+) -> Vec<qip_deepbrain::operations::Incident> {
+    let mut incidents = Vec::new();
+    for (step, level) in levels.iter().enumerate() {
+        for k in 0..12i64 {
+            let i = step as i64 * 12 + k;
+            let at = start().saturating_add(Duration::from_secs(i));
+            let round = ops
+                .observe(platform, &facts(at, level + (i % 2) as f64, &[]))
+                .unwrap_or_else(|e| panic!("{e}"));
+            incidents.extend(round.incident);
+        }
+    }
+    incidents
+}
+
+/// R12-OBS-9158 under ADR 0213: a detected anomaly yields an incident record
+/// on the hash-chained journal, one runbook action, and nothing else; every
+/// action is in the record's audit, and the actions no runbook names are
+/// written down for a person rather than attempted.
+///
+/// Mutations, each fired: build the record's `actions` as an empty vector in
+/// `Operations::open_incident` (the audit entry skipped) and the record's
+/// actions no longer equal the journal's; make the runbook partition admit
+/// every proposal and the scale proposal reaches the remediator, is refused
+/// and audited with no runbook, and the record holds three actions.
+#[test]
+fn a_detected_anomaly_yields_a_journaled_incident_a_runbook_action_and_nothing_else_all_audited() {
+    use qip_deepbrain::operations::{OperationsDraft, runbook_for};
+    let platform = platform();
+    let journal = RemediationJournal::open(None, Arc::new(ManualClock::new(start())))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut ops =
+        Operations::journalled(start(), journal.clone()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        journal
+            .incidents()
+            .unwrap_or_else(|e| panic!("{e}"))
+            .is_empty()
+            && journal
+                .drafts()
+                .unwrap_or_else(|e| panic!("{e}"))
+                .is_empty(),
+        "premise: no incident and no draft before an anomaly"
+    );
+
+    let incidents = drive_levels(&platform, &mut ops, &[10.0, 1_000.0]);
+    assert_eq!(incidents.len(), 1, "premise: one shift, one incident");
+    let incident = &incidents[0];
+
+    let records = journal.incidents().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(records.len(), 1, "the incident is journalled: {records:?}");
+    let record = &records[0];
+    assert_eq!(record.incident, incident.id);
+    assert_eq!(record.shift, incident.shift);
+    assert!(
+        matches!(incident.recorded, Ok((_, _))),
+        "{:?}",
+        incident.recorded
+    );
+
+    // Every action is audited in the record, and the record's audit is the
+    // journal's, record for record.
+    let audited = journal.records().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        audited.len(),
+        2,
+        "authorisation then outcome of one action: {audited:?}"
+    );
+    assert_eq!(
+        record.actions, audited,
+        "the record carries every audit entry"
+    );
+    assert_eq!(&record.actions[..], ops.remediator().audit().records());
+
+    // Only a runbook action: every audited action names the runbook that
+    // authorised it, and that runbook names this action on this target.
+    for action in &record.actions {
+        assert_eq!(
+            runbook_for(&action.action, &action.target).as_deref(),
+            Some(action.runbook.as_str()),
+            "an audited action no runbook names: {action:?}"
+        );
+    }
+    assert!(
+        ops.is_disabled("research"),
+        "the runbook action took effect"
+    );
+    for other in [
+        "qip-deepbrain",
+        "model-package",
+        "qip-api",
+        "execution-engine",
+    ] {
+        assert!(!ops.is_disabled(other), "{other} was touched");
+    }
+
+    // And nothing else: the scaling the diagnosis proposed is left for a
+    // person, named in the record, and never reached the remediator.
+    assert_eq!(
+        record
+            .for_a_person
+            .iter()
+            .map(|a| (a.action.as_str(), a.target.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("scale", "qip-deepbrain")],
+    );
+    for person in &record.for_a_person {
+        assert!(runbook_for(&person.action, &person.target).is_none());
+        assert!(
+            !record.actions.iter().any(|a| a.action == person.action),
+            "a person's action was attempted: {person:?}"
+        );
+    }
+
+    // Drafted to the internal outbox, and only there.
+    assert_eq!(record.channel, qip_agency::outbox::OUTBOX_CHANNEL);
+    let drafts = journal.drafts().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        drafts.len(),
+        2,
+        "the fixture, then the incident: {drafts:?}"
+    );
+    assert!(matches!(drafts[0].draft, OperationsDraft::Fixture(_)));
+    assert_eq!(drafts[1].draft, OperationsDraft::Incident(record.clone()));
+    journal.verify().unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// R12-RES-9087 under ADR 0213: each incident record links, by digest, a
+/// replay fixture drafted to the outbox, and the fixture's journal window
+/// replays through the detector to the incident's own anomaly.
+///
+/// Mutation, fired: journal the record with `fixture: Err(..)` in place of
+/// the drafted link and the first assertion on the link fails.
+#[test]
+fn each_incident_record_links_a_drafted_replay_fixture_that_reproduces_it() {
+    use qip_deepbrain::operations::{SHIFT_HALF, replay_fixture};
+    let platform = platform();
+    let journal = RemediationJournal::open(None, Arc::new(ManualClock::new(start())))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut ops =
+        Operations::journalled(start(), journal.clone()).unwrap_or_else(|e| panic!("{e}"));
+
+    // Two shifts, the second much the stronger, so the detector finds each
+    // in turn over the one retained series.
+    let incidents = drive_levels(&platform, &mut ops, &[10.0, 30.0, 3_000.0]);
+    assert_eq!(incidents.len(), 2, "premise: two shifts, two incidents");
+    let records = journal.incidents().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(records.len(), 2, "premise: both are journalled");
+    assert_ne!(records[0].incident, records[1].incident);
+    assert_ne!(records[0].shift, records[1].shift);
+
+    for record in &records {
+        let link = record
+            .fixture
+            .as_ref()
+            .unwrap_or_else(|why| panic!("{} links no fixture: {why}", record.incident));
+        let fixture = journal
+            .linked_fixture(link)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .unwrap_or_else(|| panic!("no drafted fixture has digest {}", link.digest));
+        assert_eq!(fixture.incident, record.incident);
+        assert_eq!(fixture.expected, record.shift);
+        assert!(
+            fixture.samples >= 2 * SHIFT_HALF,
+            "premise: the window is wide enough to detect in: {fixture:?}"
+        );
+        let replayed = replay_fixture(&journal, &fixture).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            replayed.as_ref(),
+            Some(&record.shift),
+            "{}'s window replays to its own anomaly",
+            record.incident
+        );
+        // The replay reads the journal, not the fixture's own claim.
+        let mut claimed = fixture.clone();
+        claimed.expected.score = 0.0;
+        assert_eq!(
+            replay_fixture(&journal, &claimed).unwrap_or_else(|e| panic!("{e}")),
+            Some(record.shift.clone())
+        );
+        // And a window that names other records is refused, not replayed.
+        let mut shifted = fixture.clone();
+        shifted.journal_sequences.0 += 1;
+        assert!(replay_fixture(&journal, &shifted).is_err());
+    }
 }
 
 /// R12-OBS-9164: model package freshness and the research queue's depth are
@@ -1091,6 +1316,7 @@ fn a_sweep_record_carries_the_evolution_round_that_preceded_it() {
             ambient: None,
             agency: None,
             warehouse: None,
+            backlog: None,
         },
         |outcome| {
             manual.advance(Duration::from_mins(1));
@@ -1372,12 +1598,14 @@ fn platform_knowing_aaa() -> Platform {
 
 /// A flat tape: `count` quiet daily bars ending at `start`, then a flat
 /// `level` for `days` after it. The twin marks a declined path at the open of
-/// a bar. `Platform::capture_submission` books a buy against the ask, so the
-/// twin's gross for a declined buy is `(entry - exit) * quantity` (see
-/// `qip-kernel/tests/learning.rs`, where a *rise* scores the decline
-/// unfavourable): a level far below the ~100 entry is what makes each
-/// declined buy score as a regret. The premise below asserts the score
-/// rather than trusting this reading.
+/// a bar. `Platform::capture_submission` books a buy against the ask, and the
+/// twin settles a trade against the ask as the long it is, so the gross for
+/// a declined buy is `(exit - entry) * quantity` (see
+/// `qip-kernel/tests/learning.rs`, where a *rise* after a declined buy is
+/// the regret): a level far above the ~100 entry is what makes each declined
+/// buy score as a regret. Until 2026-10-31 this comment and the level below
+/// encoded the twin's inverted direction. The premise below asserts the
+/// score rather than trusting this reading.
 fn tape_stepping_to(level: f64, count: i64, days: i64) -> Vec<SensedRecord> {
     let mut records = Vec::new();
     for i in 0..count {
@@ -1421,7 +1649,7 @@ fn three_regretted_declines_at_one_gate_reach_the_sweep_as_an_opportunity_class_
     use qip_execution_engine::order::Side;
 
     let mut platform = platform_knowing_aaa();
-    platform.observe(tape_stepping_to(30.0, 90, 5));
+    platform.observe(tape_stepping_to(300.0, 90, 5));
     for n in 0..MIN_REGRETS {
         let order = platform.order_from(
             ObjectId::from_string("obj-AAA".to_string()),

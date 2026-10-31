@@ -353,6 +353,7 @@ fn config_with_a_second_venue_and_a_hedge() -> PlatformConfig {
             WhitelistedVenue {
                 class: VenueClass::Exchange,
                 taker_cost: dec!("0.0005"),
+                simulated: true,
             },
         )]
         .into_iter()

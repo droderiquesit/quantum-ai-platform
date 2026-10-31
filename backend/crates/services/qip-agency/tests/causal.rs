@@ -780,3 +780,154 @@ fn an_attribution_is_supported_only_by_an_estimate_with_its_label_and_its_effect
         "{relabelled}"
     );
 }
+
+/// R12-MODEL-4013: an uplift estimator returns an effect with its
+/// identification status and abstains on a design the graph does not
+/// identify. The model is the textbook confounded design: `u` drives both
+/// the treatment `t` and the outcome `y`, and `t` drives `y` through a
+/// mediator `m`. Unadjusted, the association carries `u`'s effect, and an
+/// estimator that labelled it identified would report a confounded number;
+/// adjusted for the mediator, part of the effect is removed. Both abstain.
+/// Adjusted for `u`, the effect is identified and the estimate recovers the
+/// true coefficient (2.0, through `m`: 1.0 x 2.0). Mutations: make
+/// `backdoor_open_path` return `None` without checking — the unadjusted
+/// design is estimated, not refused; drop its descendant check — the
+/// mediator design is estimated.
+#[test]
+fn an_uplift_estimate_abstains_on_a_confounded_design_and_is_identified_by_the_back_door_set() {
+    use qip_agency::causal::{StructuralLink, StructuralModel, StructuralModelDecl};
+    use qip_agency::estimate::backdoor_adjusted;
+    use std::collections::BTreeMap;
+
+    let link = |cause: &str, effect: &str, coefficient: f64| StructuralLink {
+        cause: cause.to_string(),
+        effect: effect.to_string(),
+        coefficient,
+    };
+    let model = StructuralModel::new(StructuralModelDecl {
+        name: "confounded".to_string(),
+        links: vec![
+            link("u", "t", 1.0),
+            link("u", "y", 3.0),
+            link("t", "m", 1.0),
+            link("m", "y", 2.0),
+        ],
+        variables: Vec::new(),
+        intercepts: BTreeMap::new(),
+        noise_variance: BTreeMap::new(),
+    })
+    .expect("an acyclic model is admitted");
+
+    // Units: `u` varies; the treatment is more likely where `u` is high (the
+    // confounding), and the outcome follows the structure exactly, plus a
+    // small deterministic wobble so the fit has residual variance.
+    let n = 200;
+    let u: Vec<f64> = (0..n)
+        .map(|i| ((i * 37) % 101) as f64 / 50.0 - 1.0)
+        .collect();
+    let t: Vec<f64> = (0..n)
+        .map(|i| {
+            if u[i] + ((i * 13) % 7) as f64 / 7.0 - 0.5 > 0.0 {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| 2.0 * t[i] + 3.0 * u[i] + ((i * 29) % 11) as f64 / 110.0)
+        .collect();
+    let m: Vec<f64> = t.clone();
+    let treated = t.iter().filter(|d| **d > 0.5).count();
+    assert!(
+        treated > 0 && treated < n,
+        "premise: both arms are populated"
+    );
+
+    let unadjusted = backdoor_adjusted(&model, "t", "y", &BTreeMap::new(), &t, &y, 10.0);
+    let refusal = unadjusted.expect_err("a confounded design was estimated");
+    assert!(
+        refusal.message().starts_with("abstains") && refusal.message().contains("back-door"),
+        "{refusal:?}"
+    );
+
+    let mediated = backdoor_adjusted(
+        &model,
+        "t",
+        "y",
+        &BTreeMap::from([("m".to_string(), m)]),
+        &t,
+        &y,
+        10.0,
+    );
+    let refusal = mediated.expect_err("a design adjusting for a mediator was estimated");
+    assert!(refusal.message().contains("descendant"), "{refusal:?}");
+
+    let adjusted = backdoor_adjusted(
+        &model,
+        "t",
+        "y",
+        &BTreeMap::from([("u".to_string(), u)]),
+        &t,
+        &y,
+        10.0,
+    )
+    .expect("the back-door set identifies the effect");
+    assert!(adjusted.identification().is_identified());
+    assert!(
+        (adjusted.effect() - 2.0).abs() < 0.05,
+        "the adjusted effect is {}, not the true 2.0",
+        adjusted.effect()
+    );
+}
+
+/// R12-MODEL-4013: M-bias, the case a back-door check most often gets
+/// wrong. `z` is a collider of two unobserved causes, one of the treatment
+/// and one of the outcome; it is not a confounder, and adjusting for it
+/// *opens* a path that was closed. So the empty set identifies the effect
+/// and `{z}` does not. Mutations: delete the marriage of a common child's
+/// parents in `backdoor_open_path` — `{z}` reads as identified; build the
+/// moral graph over the whole model instead of the ancestral set — the
+/// empty set reads as not identified.
+#[test]
+fn adjusting_for_a_collider_opens_the_path_it_was_meant_to_close() {
+    use qip_agency::causal::{StructuralLink, StructuralModel, StructuralModelDecl};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let link = |cause: &str, effect: &str| StructuralLink {
+        cause: cause.to_string(),
+        effect: effect.to_string(),
+        coefficient: 1.0,
+    };
+    let model = StructuralModel::new(StructuralModelDecl {
+        name: "m-bias".to_string(),
+        links: vec![
+            link("u1", "z"),
+            link("u2", "z"),
+            link("u1", "t"),
+            link("u2", "y"),
+            link("t", "y"),
+        ],
+        variables: Vec::new(),
+        intercepts: BTreeMap::new(),
+        noise_variance: BTreeMap::new(),
+    })
+    .expect("an acyclic model is admitted");
+
+    let empty = model
+        .backdoor_open_path("t", "y", &BTreeSet::new())
+        .expect("every variable is in the model");
+    assert_eq!(
+        empty, None,
+        "the empty set identifies the effect under M-bias"
+    );
+    let collider = model
+        .backdoor_open_path("t", "y", &BTreeSet::from(["z".to_string()]))
+        .expect("every variable is in the model");
+    assert!(
+        collider
+            .as_deref()
+            .is_some_and(|why| why.contains("back-door path")),
+        "adjusting for the collider was read as identifying the effect: {collider:?}"
+    );
+}

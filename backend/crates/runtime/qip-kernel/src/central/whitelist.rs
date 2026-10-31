@@ -368,6 +368,13 @@ pub struct WhitelistedVenue {
     /// Proportional cost of taking a conversion here, as a fraction in
     /// `[0, 1)`. Exact, because it is charged against money.
     pub taker_cost: Decimal,
+    /// Whether the venue is the platform's own simulator (ADR 0154 decision
+    /// 3). Stated, never inferred, and `false` when absent: a market at a
+    /// venue not stated simulated must state its costs, because "no costs"
+    /// is priced by the cell as certain, free fill, which is the failure the
+    /// cost model exists to prevent. Absent means the restrictive reading.
+    #[serde(default)]
+    pub simulated: bool,
 }
 
 /// One book the desk may price, named by its own instrument id at its venue.
@@ -545,8 +552,24 @@ impl ArbitragePolicy {
                     market.market, market.venue
                 )));
             }
-            if let Some(costs) = &market.costs {
-                Self::validate_costs(position, market, costs)?;
+            match &market.costs {
+                Some(costs) => Self::validate_costs(position, market, costs)?,
+                // Looked up above; a market at an undescribed venue was
+                // already refused, so `None` here is the stated simulator.
+                None if !self
+                    .venues
+                    .get(&market.venue)
+                    .is_some_and(|terms| terms.simulated) =>
+                {
+                    return Err(Error::invalid(format!(
+                        "CentralConfig::arbitrage market {position} ({} at {}) states no costs \
+                         at a venue not stated simulated; the cell prices no costs as a \
+                         certain, free fill, so state its duty, logistics, settlement risk, \
+                         fill probability and borrow rate (ADR 0154 decision 3)",
+                        market.market, market.venue
+                    )));
+                }
+                None => {}
             }
             venues_used.insert(market.venue.clone());
             instruments.insert(market.base.clone());
@@ -810,6 +833,7 @@ mod tests {
                     WhitelistedVenue {
                         class: VenueClass::Exchange,
                         taker_cost: dec!("0.0005"),
+                        simulated: true,
                     },
                 ),
                 (
@@ -817,6 +841,7 @@ mod tests {
                     WhitelistedVenue {
                         class: VenueClass::Exchange,
                         taker_cost: dec!("0.001"),
+                        simulated: true,
                     },
                 ),
             ]),
@@ -1018,6 +1043,7 @@ mod tests {
             WhitelistedVenue {
                 class: VenueClass::Exchange,
                 taker_cost: Decimal::ZERO,
+                simulated: true,
             },
         );
         let error = policy.validate().expect_err("XPAR has no market");

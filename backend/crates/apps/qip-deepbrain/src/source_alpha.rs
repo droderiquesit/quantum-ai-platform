@@ -38,7 +38,7 @@ use qip_market_ingestion::adapter::SensedRecord;
 use std::collections::{BTreeMap, VecDeque};
 
 /// The variable naming how often, in research cycles, sources are scored.
-/// Unset or `0` disables the desk.
+/// `0` disables the desk; unset is [`DEFAULT_SOURCE_ALPHA_EVERY`].
 pub const SOURCE_ALPHA_EVERY_VARIABLE: &str = "QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY";
 
 /// Aligned samples kept per source and subject.
@@ -48,11 +48,18 @@ pub const WINDOW: usize = 128;
 /// one-interval lead of the outcome.
 pub const MIN_SAMPLES: usize = MIN_OBSERVATIONS + 2;
 
-/// The scoring cadence in cycles; `0` when unset. Refuses anything that is
-/// not a cycle count.
+/// The default cadence when the variable is unset: every cycle
+/// (R12-EXPAND-6027). Scoring reads only what the connectors and the own
+/// stream already observed and opens nothing, and a node with no connector
+/// arm scores no pair and records nothing, so the default costs a map walk;
+/// `0` still disables it by name.
+pub const DEFAULT_SOURCE_ALPHA_EVERY: u64 = 1;
+
+/// The scoring cadence in cycles; [`DEFAULT_SOURCE_ALPHA_EVERY`] when unset,
+/// `0` to disable. Refuses anything that is not a cycle count.
 pub fn source_alpha_every(lookup: &dyn Fn(&str) -> Option<String>) -> Result<u64> {
     match lookup(SOURCE_ALPHA_EVERY_VARIABLE) {
-        None => Ok(0),
+        None => Ok(DEFAULT_SOURCE_ALPHA_EVERY),
         Some(raw) => raw.trim().parse().map_err(|_| {
             qip_core::error::Error::invalid(format!(
                 "{SOURCE_ALPHA_EVERY_VARIABLE} is {raw:?}, not a cycle count; 0 disables source \
@@ -109,6 +116,15 @@ pub struct SourceScore {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SourceAlphaRound {
     pub scores: Vec<SourceScore>,
+    /// One validated contract record per scored pair (R12-EXPAND-6027):
+    /// the figures, the window of senses they were computed over and the
+    /// digest of the aligned samples, which is what the ambient journal
+    /// writes. A pair whose score was refused leaves none.
+    pub records: Vec<qip_contracts::expansion::SourceScore>,
+    /// Records the contract refused, with why: counted rather than dropped,
+    /// because a score computed and not recorded is a figure nobody can
+    /// check against its inputs.
+    pub records_refused: Vec<String>,
 }
 
 impl SourceAlphaRound {
@@ -228,6 +244,31 @@ impl SourceAlphaDesk {
                     .score_over(source, now, &signal, &incumbents, &outcome)
                     .map_err(|error| error.message().to_string())
             };
+            if let Ok(alpha) = &outcome {
+                // The window and the inputs as their bits: a rounded price
+                // would let two different windows share a digest.
+                let mut inputs = format!("{source}|{subject}");
+                for (sense, theirs, own) in window {
+                    inputs.push_str(&format!("|{sense}|{}|{}", theirs.to_bits(), own.to_bits()));
+                }
+                let record = qip_contracts::expansion::SourceScore {
+                    source: source.clone(),
+                    subject: subject.clone(),
+                    incremental_gain: alpha.incremental_gain,
+                    realised_contribution: alpha.realised_contribution,
+                    samples,
+                    window_from: window.front().map_or(0, |s| s.0),
+                    window_to: window.back().map_or(0, |s| s.0),
+                    dataset_digest: qip_core::hash::sha256_hex(inputs.as_bytes()),
+                    scored_at: now,
+                };
+                match record.validate() {
+                    Ok(()) => round.records.push(record),
+                    Err(error) => round
+                        .records_refused
+                        .push(format!("{source}/{subject}: {}", error.message())),
+                }
+            }
             round.scores.push(SourceScore {
                 source: source.clone(),
                 subject: subject.clone(),
@@ -372,6 +413,65 @@ mod tests {
         Ok(())
     }
 
+    /// R12-EXPAND-6027: a scored pair leaves one validated contract record
+    /// naming the window of senses it was computed over and the digest of the
+    /// aligned samples, with the same two figures the score carries, and an
+    /// unscored pair (too few samples) leaves none. Mutation: replace
+    /// `round.records.push(record)` with `{}` — `records` is empty and the
+    /// first assertion fails.
+    #[test]
+    fn a_scored_connector_leaves_a_validated_source_score_citing_its_window() -> Result<()> {
+        let own = walk(41, 7);
+        let leading: Vec<f64> = own[1..].to_vec();
+        let mut desk = fed(&own[..40], &[("leading", leading)]);
+        // A second arm that printed too rarely to be scored.
+        desk.observe_own(&[tick("S", own[39])]);
+        desk.observe_source("sparse", &[tick("S", 1.0)]);
+        desk.end_sense();
+        let round = desk
+            .maybe_score(1, Timestamp::from_secs(1))
+            .ok_or_else(|| qip_core::error::Error::not_found("no round on the cadence"))?;
+        assert_eq!(round.scores.len(), 2, "premise: two pairs read: {round:?}");
+        assert!(
+            round
+                .scores
+                .iter()
+                .any(|s| s.source == "sparse" && s.outcome.is_err()),
+            "premise: the sparse arm was not scored: {round:?}"
+        );
+        assert_eq!(
+            round.records.len(),
+            1,
+            "one record per scored pair: {round:?}"
+        );
+        assert!(
+            round.records_refused.is_empty(),
+            "{:?}",
+            round.records_refused
+        );
+        let record = &round.records[0];
+        record.validate()?;
+        assert_eq!(record.source, "leading");
+        assert_eq!(record.subject, "S");
+        assert_eq!(record.samples, 40);
+        assert_eq!((record.window_from, record.window_to), (1, 40));
+        assert_eq!(record.dataset_digest.len(), 64);
+        let scored = round
+            .scores
+            .iter()
+            .find(|s| s.source == "leading")
+            .and_then(|s| s.outcome.as_ref().ok())
+            .ok_or_else(|| qip_core::error::Error::not_found("leading unscored"))?;
+        assert!((record.incremental_gain - scored.incremental_gain).abs() < 1e-12);
+        assert!((record.realised_contribution - scored.realised_contribution).abs() < 1e-12);
+        // The same window scored again digests alike: the record is replayable.
+        let again = desk
+            .maybe_score(2, Timestamp::from_secs(2))
+            .ok_or_else(|| qip_core::error::Error::not_found("no round on the cadence"))?;
+        assert_eq!(again.records[0].dataset_digest, record.dataset_digest);
+        Ok(())
+    }
+
     #[test]
     fn a_source_that_anticipates_the_next_move_earns_a_positive_contribution() -> Result<()> {
         // The source prints, now, the own stream's next price: its change
@@ -411,8 +511,16 @@ mod tests {
     }
 
     #[test]
-    fn the_cadence_variable_is_zero_unless_set_and_refuses_a_non_count() {
-        assert!(matches!(source_alpha_every(&|_| None), Ok(0)));
+    fn the_cadence_defaults_to_every_cycle_unless_set_and_zero_disables_and_a_non_count_is_refused()
+    {
+        assert!(matches!(
+            source_alpha_every(&|_| None),
+            Ok(DEFAULT_SOURCE_ALPHA_EVERY)
+        ));
+        assert_eq!(
+            DEFAULT_SOURCE_ALPHA_EVERY, 1,
+            "the default scores every cycle"
+        );
         assert!(matches!(
             source_alpha_every(&|_| Some("4".to_string())),
             Ok(4)

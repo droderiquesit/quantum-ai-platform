@@ -69,7 +69,7 @@
     "verification": "per-class training + consumer integration tests",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): A specialist model is trained only from a source a licence record admits. Volatility and regime qualify now, from the licensed bars. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: a specialist model is trained only from a licensed source, read by one named warm-lane consumer that may only narrow, never admitted to a hot lane, and a paper fill trains no slippage model (MODEL-4003)."
   },
   {
     "id": "R12-MODEL-4004",
@@ -81,7 +81,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:3317-3353 check_models_promoted",
       "backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs:38-120 one toy tree evaluated under five purpose names"
     ],
-    "gap": "Corrected 2026-10-24. No model trained for order-book state, fill probability, adverse selection, short-horizon signal or opportunity scoring exists, and no plan in the deployed path carries one (R12-MODEL-4024: no compiled plan carries a model, no node deployed). The in-tree LocalTrainer, distillation and manifest path are free to run, but the only data a purpose model could be fitted on today is the paper simulator's own fills, so the fit would measure the simulator and not a venue; that is a data decision (an ADR and a licensed venue record), not a lane's. model_reflex_evaluation.rs still evaluates one toy tree under five purpose names and constructs two forms; its title overstates it and its assertions pass with every purpose model absent.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. A model fitted on the paper simulator's own fills measures the simulator, not a venue. None is trained or promoted as an order-book, fill-probability or adverse-selection model. Purpose models wait on a licensed venue data record admitted under its own ADR. Closes on: Restate the evidence and notes to the current model_reflex_evaluation.rs, which needs no title fix. Hold PARTIAL until a licensed venue record is admitted. Then fit, distil and promote each purpose model through the manifest. Earlier: Corrected 2026-10-24. No model trained for order-book state, fill probability, adverse selection, short-horizon signal or opportunity scoring exists, and no plan in the deployed path carries one (R12-MODEL-4024: no compiled plan carries a model, no node deployed). The in-tree LocalTrainer, distillation and manifest path are free to run, but the only data a purpose model could be fitted on today is the paper simulator's own fills, so the fit would measure the simulator and not a venue; that is a data decision (an ADR and a licensed venue record), not a lane's. model_reflex_evaluation.rs still evaluates one toy tree under five purpose names and constructs two forms; its title overstates it and its assertions pass with every purpose model absent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -94,7 +94,7 @@
     "verification": "cargo test -p qip-edge with a purpose model deployed through the manifest",
     "work_item": "",
     "size": "L",
-    "notes": "model_reflex_evaluation.rs claims to verify 'trained models for each of five named purposes' and 'three forms tree, linear and ensemble'; it evaluates one toy tree renamed per purpose and constructs only two forms, so its assertions would pass with every purpose model absent. 2026-10-24 lane N3-MODEL-EDGE-INFRA: gap restated; no training job launched, no code changed."
+    "notes": "model_reflex_evaluation.rs claims to verify 'trained models for each of five named purposes' and 'three forms tree, linear and ensemble'; it evaluates one toy tree renamed per purpose and constructs only two forms, so its assertions would pass with every purpose model absent. 2026-10-24 lane N3-MODEL-EDGE-INFRA: gap restated; no training job launched, no code changed. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): A model fitted on the paper simulator's own fills measures the simulator, not a venue."
   },
   {
     "id": "R12-MODEL-4005",
@@ -108,7 +108,7 @@
       "backend/crates/services/qip-training/tests/training.rs a_distillation_reports_the_gap_its_student_actually_has_on_every_axis (a linear student of a boosted teacher on a humped target: mean and max gap, R2, Spearman rank and decision agreement recomputed independently from both models' outputs and required to equal the report; premises assert the gap is nonzero on every axis)",
       "backend/crates/services/qip-training/tests/training.rs each_fidelity_bar_alone_refuses_a_student_that_misses_only_it (R2, rank, decision agreement and mean gap each fire alone, by name)"
     ],
-    "gap": "2026-10-24 (lane L2-INTEL, skeptic REFUTED): the fidelity clause is closed (measured values asserted against an independent recomputation; each of R2, rank, decision agreement and mean gap refuses alone), but 'evaluable ... in hot/warm lanes' is met on no default path. model_serving.rs:47-50 says no stage of the cycle reads a served score; qip-api main.rs:265-270 says a served score reaches no filter; the deep brain promotes the teacher (learning.rs InTreeProvider::pack(&candidate.teacher)) and passes the student only as a manifest entry; no non-test code builds an Expr::Model, so Cell::work never evaluates one. Remaining step: a shipped binary's default path that evaluates a promoted distilled student in a hot or warm lane (an approved student compiled into a plan as Expr::Model and run by the edge node's simulated pass, or a warm brain serving the promoted DistilledLinear artifact on its default cycle), with a test that fails when that call is removed. Also: the deep brain judges under FidelityPolicy::default(), whose maximum_mean_gap is infinite, so the mean-gap bar never fires there.",
+    "gap": "2026-10-24 (lane L2-INTEL, skeptic REFUTED): the fidelity clause is closed (measured values asserted against an independent recomputation; each of R2, rank, decision agreement and mean gap refuses alone), but 'evaluable ... in hot/warm lanes' is met on no default path. model_serving.rs:47-50 says no stage of the cycle reads a served score; qip-api main.rs:265-270 says a served score reaches no filter; the deep brain promotes the teacher (learning.rs InTreeProvider::pack(&candidate.teacher)) and passes the student only as a manifest entry; no non-test code builds an Expr::Model, so Cell::work never evaluates one. Remaining step: a shipped binary's default path that evaluates a promoted distilled student in a hot or warm lane (an approved student compiled into a plan as Expr::Model and run by the edge node's simulated pass, or a warm brain serving the promoted DistilledLinear artifact on its default cycle), with a test that fails when that call is removed. Also: the deep brain judges under FidelityPolicy::default(), whose maximum_mean_gap is infinite, so the mean-gap bar never fires there. 2026-10-30 (lane L2-INTEL), one sentence: deploy-dependent; Expr::Model compiles and the edge pass evaluates it, but the hot/warm lanes that would evaluate a distilled student run passes only in test (execution_nodes = {} in every environment), so wiring the foundry to emit it cannot reach a default path until a node is deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -151,7 +151,7 @@
     "evidence": [
       "backend/crates/libs/qip-ai/src/embedding.rs text embeddings only"
     ],
-    "gap": "Everything.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. Simulator ticks are not a training source: a representation learned from them embeds the simulator. The row waits for a depth feed admitted under ADR 0157 as a committed licence record, and nothing is coded before it; I will read the depth terms of the host whose spot ticker is already admitted first. Closes on: After a depth source's licence record is committed under ADR 0157, build a versioned embedding over its recorded replay. Feed it to one regime detector, with a test that removing the embedding changes the detector's inputs. Earlier: Everything.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -162,7 +162,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): Simulator ticks are not a training source: a representation learned from them embeds the simulator."
   },
   {
     "id": "R12-MODEL-4008",
@@ -220,7 +220,7 @@
       "backend/crates/services/qip-reasoning-engine/src/constraint.rs constraint reasoner",
       "backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs"
     ],
-    "gap": "Neural-symbolic hybrids and planning reasoners absent. Registering a planning or hybrid ModelClass would be a card in a test registry: the graph and causal cards in symbolic_reasoner_registration.rs are test fixtures, no binary registers a reasoner card. The real work is a planning search over qip-reasoning-engine's constraint goals and a path by which a registered model's prediction enters the Bayesian network (symbolic_stage.rs composes rules, timeline, network, constraint and lifecycle but takes no model prediction). symbolic_stage is advisory by design (its header), so a hybrid would be recorded, not acted on.",
+    "gap": "2026-10-31 (lane L2-INTEL), one sentence: a neuro-symbolic hybrid needs a registered model's prediction at REASON, and no shipped binary serves one there — serve_model's only callers are the deep brain's promote stage and Platform::promote_model_from — so wiring a model node into symbolic_stage's network would read an input nothing produces; it waits on a served production model (R12-MODEL-9002/1083), and the planning reasoner over constraint goals is still absent.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -252,7 +252,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; a distillate with no teacher is the filter relabelled. Left PARTIAL with the corrected gap."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; a distillate with no teacher is the filter relabelled. Left PARTIAL with the corrected gap. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): An ambient model reaches a fast lane only as the signed distillate of a fitted teacher with its own training rows and holdout. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: an ambient model reaches a fast lane only as the signed distillate of a fitted teacher with its own training rows, and the now-stage filter is not a teacher (MODEL-4011)."
   },
   {
     "id": "R12-MODEL-4012",
@@ -277,14 +277,17 @@
   },
   {
     "id": "R12-MODEL-4013",
-    "status": "MISSING",
-    "current": "No uplift/heterogeneous-effect estimator; qip-agency plan.rs accepts a caller-supplied effect estimate beside a plan and ranks after hard-constraint refusal.",
+    "status": "PARTIAL",
+    "current": "qip-agency's estimators carry an identification label (estimate.rs). Since 2026-10-30 the back-door criterion is checked against a declared structural model's graph: StructuralModel::backdoor_open_path refuses an adjustment set containing a descendant of the treatment, or one that leaves a back-door path open (d-separation on the moral ancestral graph with the treatment's outgoing edges cut). estimate::backdoor_adjusted returns the covariate-adjusted effect labelled with the set it checked, or abstains with the reason and no number.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/plan.rs header: learned effect estimate is an input"
+      "backend/crates/services/qip-agency/src/causal.rs StructuralModel::backdoor_open_path",
+      "backend/crates/services/qip-agency/src/estimate.rs backdoor_adjusted",
+      "backend/crates/services/qip-agency/tests/causal.rs::an_uplift_estimate_abstains_on_a_confounded_design_and_is_identified_by_the_back_door_set",
+      "backend/crates/services/qip-agency/tests/causal.rs::adjusting_for_a_collider_opens_the_path_it_was_meant_to_close"
     ],
-    "gap": "Everything.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-30 (lane L2-INTEL): the unit clause is built; the in-lane skeptic HELD the PARTIAL status. Its one finding, that the moralisation and ancestral steps were untested, is closed by an M-bias test with both mutations firing. Open: no composition root calls backdoor_adjusted, and heterogeneity is not modelled (one effect per design, not per entity, audience, market or horizon).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -293,20 +296,20 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " 2026-10-30 L2-INTEL: mutations, each fired, restored by copy + cmp: backdoor_open_path short-circuited to None; its descendant check disabled. Each fails an_uplift_estimate_abstains_on_a_confounded_design_and_is_identified_by_the_back_door_set. Also: the parent-marriage step disabled, and the moral graph built over the whole model instead of the ancestral set; each fails adjusting_for_a_collider_opens_the_path_it_was_meant_to_close."
   },
   {
     "id": "R12-MODEL-4014",
     "status": "PARTIAL",
-    "current": "qip-agency plan.rs builds intervention plans only when every hard constraint holds and always offers do-nothing. Since 2026-10-18 authority is used only over a plan evaluated against simulators and counterfactual branches: engine::execute (engine.rs:338) refuses to act at narrow-reversible authority unless the chosen candidate's Simulated record (Gated::simulated) holds at least one (model, scenario) branch — each the world with the action against the same world without it — and every branch moves the objective toward the goal (counterfactually_supported, engine.rs:454). A plan nobody simulated, or one the competing models disagree on, is withheld at Act with no adapter call; shadow is not gated. Reached from qip-cli agency (operator tool) only.",
+    "current": "qip-agency plan.rs builds intervention plans only when every hard constraint holds and always offers do-nothing. Since 2026-10-18 authority is used only over a plan evaluated against simulators and counterfactual branches: engine::execute (engine.rs:401) refuses to act at narrow-reversible authority unless the chosen candidate's Simulated record (Gated::simulated) holds at least one (model, scenario) branch — each the world with the action against the same world without it — and every branch moves the objective toward the goal (counterfactually_supported, engine.rs:560). A plan nobody simulated, or one the competing models disagree on, is withheld at Act with no adapter call; shadow is not gated. Reached from qip-cli agency (operator tool) only.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/engine.rs:338",
-      "backend/crates/services/qip-agency/src/engine.rs:454",
+      "backend/crates/services/qip-agency/src/engine.rs:401 execute",
+      "backend/crates/services/qip-agency/src/engine.rs:560 counterfactually_supported; :1115 run_governed_with",
       "backend/crates/services/qip-agency/tests/agency.rs::authority_is_used_only_over_a_plan_every_competing_model_agrees_helps",
       "backend/crates/apps/qip-cli/tests/agency.rs::every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations",
       "backend/crates/apps/qip-cli/src/agency.rs only caller"
     ],
-    "gap": "Integration beyond the CLI is not built, by decision (ADR 0146 decision 2): no deployed binary acts under authority; qip-deepbrain's ambient door only drafts and never runs engine::execute. Branches come from the request's declared structural models and, when the request declares a twin, qip-twin futures (qip-cli agency.rs TwinScenarios, a ScenarioSource). Corrected 2026-10-24.",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is read on the operator CLI (ADR 0146 decision 2: no deployed binary acts under authority), where engine::execute refuses a plan that no simulated branch supports, reached only through engine::run_governed_with from qip-cli agency.rs; integration beyond the CLI is out of scope by decision and is not a gap, and amending ADR 0146 d2 to let a deployed binary act would widen authority. Graded on authority_is_used_only_over_a_plan_every_competing_model_agrees_helps and its recorded mutation. Earlier: Integration beyond the CLI is not built, by decision (ADR 0146 decision 2): no deployed binary acts under authority; qip-deepbrain's ambient door only drafts and never runs engine::execute. Branches come from the request's declared structural models and, when the request declares a twin, qip-twin futures (qip-cli agency.rs TwinScenarios, a ScenarioSource). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -317,7 +320,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L10): simulation-before-authority is met. 2026-10-24 lane T6-MODEL-AGENTS: gap rewritten per ADR 0146 (the twin-futures clause was stale: TwinScenarios exists); kept PARTIAL because no running deployed path acts under authority, which the ADR keeps true on purpose. Mutation fired earlier: reading only the first branch in counterfactually_supported lets the contested pass Execute."
+    "notes": "Re-graded 2026-10-18 (lane L10): simulation-before-authority is met. 2026-10-24 lane T6-MODEL-AGENTS: gap rewritten per ADR 0146 (the twin-futures clause was stale: TwinScenarios exists); kept PARTIAL because no running deployed path acts under authority, which the ADR keeps true on purpose. Mutation fired earlier: reading only the first branch in counterfactually_supported lets the contested pass Execute. Owner ruling 2026-10-31 (REGRADE_TEXT): No deployed binary acts under authority, and the requirement is read on the operator CLI."
   },
   {
     "id": "R12-MODEL-4015",
@@ -327,7 +330,7 @@
       "backend/crates/apps/qip-deepbrain/src/campaign.rs:308 assemble",
       "backend/crates/apps/qip-deepbrain/src/main.rs:608-640 learning rounds through the campaign"
     ],
-    "gap": "Retained internal episodes are not a campaign input, and naming one in the manifest alone would be false: campaign::assemble builds the window from the subject's bars (or the platform's fallback bars) and LearningDesk::learn fits only bars, so an episode set listed in the manifest would describe data the fit never read. Closing this needs the learning dataset to admit episode-derived rows (learning.rs, lane L20's file) and then an episode-set DataReference hashed into the FetchCampaign manifest; external references remain market streams only.",
+    "gap": "Retained internal episodes are not a campaign input, and naming one in the manifest alone would be false: campaign::assemble builds the window from the subject's bars (or the platform's fallback bars) and LearningDesk::learn fits only bars, so an episode set listed in the manifest would describe data the fit never read. Closing this needs the learning dataset to admit episode-derived rows (learning.rs, lane L20's file) and then an episode-set DataReference hashed into the FetchCampaign manifest; external references remain market streams only. 2026-10-30 (lane L2-INTEL), one sentence: needs a target decision first; the deep brain's bar model predicts next-bar return while a retained episode's realised outcome is a decision's result, so episode rows belong to a model of their own, and choosing it is an ADR (this lane holds 0171-0176) before code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -406,7 +409,7 @@
     "verification": "cargo test -p qip-kernel --test serving",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate."
+    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate. Owner ruling 2026-10-31 (IMPLEMENT): The requirement calls quantum variants optional. ADR 0150 decision 5 keeps them unbuilt until a family has a benefit record on a non-simulated provider. Handed to lane L4 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-MODEL-4019",
@@ -485,7 +488,7 @@
       "backend/crates/services/qip-lifecycle/src/gates.rs:490 PaperGate",
       "backend/crates/services/qip-lifecycle/src/gates.rs:629 ShadowGate"
     ],
-    "gap": "Model promotion (Platform::promote_model) does not require a simulation/paper trial record. The only validation before promotion is the deep brain held-out rmse comparison; score_filled scores fills of cycles that already ran, with no per-candidate shadow run, so no PaperGate-style trial record exists to require. Needs a shadow-scoring stage that runs a candidate beside the incumbent over simulated or paper fills and journals the result before the kernel can refuse a promotion lacking it.",
+    "gap": "2026-10-30 (lane L2-INTEL): the gap above is stale. ModelStage::Shadow with MIN_SHADOW_ROUNDS = 3 exists, and the deep brain's own candidates (ModelProducer::SelfFitted) cannot be promoted without it (require_completed_shadow). Open: ModelProducer::TrainingPipeline, the producer Platform::promote_model uses, skips the shadow stage. Requiring it was tried and reverted unpushed: 21 kernel and qip-api tests promote TrainingPipeline fixtures, and nine of them assert exact card stages or exercise the shadow refusal itself, so each needs reworking rather than a shared helper. Shadow rounds also score rmse on later bars, not twin-priced paper fills, so whether the shadow is 'simulation and paper trading' stands under bar part 4.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -511,7 +514,7 @@
       "backend/crates/edge/qip-edge/tests/model_release.rs",
       ".github/workflows/model-pack-publish.yml"
     ],
-    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: promote_model drafting a qip_contracts ModelPack with an additive lineage field, and a test that the draft's digest and lineage match the promoted member. 2026-10-25 (lane L2-INTEL): not built, and not completable in code here. (1) The draft's calibration has no producer: LocalTrainer::fit sets TrainedTeacher.calibration to Calibration::default(), and no evaluation metric is a calibration in [0,1], so a drafted figure would be a guess (refuse rather than guess). Allowed universes have no source on the promotion record either. (2) Signing and attestation are the two-person KMS workflow (model-pack-publish.yml), which only a deploy exercises. Next step: a calibration producer in qip-training (e.g. a holdout reliability measure recorded on the card), then the ModelPack draft with an additive tagged lineage tail (the inline_model pattern, so signed bytes of existing packs do not move).",
+    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: promote_model drafting a qip_contracts ModelPack with an additive lineage field, and a test that the draft's digest and lineage match the promoted member. 2026-10-25 (lane L2-INTEL): not built, and not completable in code here. (1) The draft's calibration has no producer: LocalTrainer::fit sets TrainedTeacher.calibration to Calibration::default(), and no evaluation metric is a calibration in [0,1], so a drafted figure would be a guess (refuse rather than guess). Allowed universes have no source on the promotion record either. (2) Signing and attestation are the two-person KMS workflow (model-pack-publish.yml), which only a deploy exercises. Next step: a calibration producer in qip-training (e.g. a holdout reliability measure recorded on the card), then the ModelPack draft with an additive tagged lineage tail (the inline_model pattern, so signed bytes of existing packs do not move). 2026-10-30 (lane L2-INTEL), one sentence: the signable draft is not built because the card has no producer for two of the pack's required fields, a calibration figure in [0,1] (Calibration is a linear rescale) and the allowed universes, and signing is the deploy-time two-person KMS workflow; defining both fields is an ADR (this lane holds 0171-0176) plus a card field.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -533,7 +536,7 @@
       "backend/crates/apps/qip-api/src/mesh.rs:883 manifest into policy payload",
       "backend/crates/edge/qip-edge/src/cell.rs:3317-3353 check_models_promoted"
     ],
-    "gap": "No compiled plan in the deploy path carries a model; no edge node is deployed (execution_nodes = {}).",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. The export chain is built, and the row closes only when a deployed cell admits a promoted digest. That waits on the owner's node switch and one two-person published pack, and nothing is enabled early to close it. Closes on: Correct cell.rs check_models_promoted's stale 'produced nowhere yet' doc now. After the owner enables the dev node and publishes one signed pack with inline_model, close on the node journal showing Cell::check_models_promoted admitting that digest. Earlier: No compiled plan in the deploy path carries a model; no edge node is deployed (execution_nodes = {}).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -546,7 +549,7 @@
     "verification": "acceptance: promoted distillate reaches a cell via mesh and is evaluated in Cell::work",
     "work_item": "",
     "size": "M",
-    "notes": "cell.rs:3305-3309 says the trained_models slot 'is produced nowhere yet (returned nothing on 2026-09-19)'; the code contradicts it — Platform::model_manifest produces it and qip-api mesh.rs:883 ships it."
+    "notes": "cell.rs:3305-3309 says the trained_models slot 'is produced nowhere yet (returned nothing on 2026-09-19)'; the code contradicts it — Platform::model_manifest produces it and qip-api mesh.rs:883 ships it. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): The export chain is built, and the row closes only when a deployed cell admits a promoted digest."
   },
   {
     "id": "R12-MODEL-4025",
@@ -847,7 +850,7 @@
     "evidence": [
       "backend/crates/libs/qip-quantum/src/foundry.rs:192-235"
     ],
-    "gap": "Everything. 2026-10-24 (L4): blocked by ADR 0150 decision A2, accepted 2026-10-19: a new family's encoding, baseline and benchmark may be written only after a committed note shows the sizes the platform actually poses lie above the exact-enumeration limit and at or below the provider's qubit ceiling. A2 also keeps FeatureEnsembleSelection not built on purpose. No such note exists. For this row the parked patch holds budgeted scenario selection with budget slack, compared with a greedy value-per-cost selector. The code is written and parked unlanded in docs/blueprint/lanes/L4-quant-research-families-adr0150.patch: the graph-search, feature-selection and scenario-selection QUBO families and the kernel and reservoir QML families, each with a greedy or in-sample-chosen classical baseline, a validated experiment record with a problem digest, and registration in Foundry::platform with a required benchmark field. It applied cleanly to 09ccd529, and its tests and mutations ran green there (qip-quantum --test families 7 passed, --test qml 5 passed, --test foundry 11 passed). The remaining step is an owner or ADR decision that supersedes A2, or the benefit note A2 asks for; then apply the patch. Even then the families run in no binary, so bar part 2 also needs a deep-brain research sweep to run them.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. ADR 0150 A2 stands, as ADR 0190 confirmed, and the parked scenario-selection family stays parked. Nothing the platform runs poses a scenario selection, so an encoding and a greedy comparison would be a benchmark for a workload nobody has. I do not reword the requirement. The row stays MISSING until there is either a benefit note or a hosted provider with a wider qubit ceiling, which is billed and mine to buy later. Closes on: No build now. Cite ADR 0190 and this ruling in the gap. Reopen on either a committed benefit note showing posed sizes in (22, 24] or a funded hosted provider. Then land the scenario-selection part of the parked patch under its own ADR, with a deep-brain sweep as its caller. Earlier: Everything. 2026-10-24 (L4): blocked by ADR 0150 decision A2, accepted 2026-10-19: a new family's encoding, baseline and benchmark may be written only after a committed note shows the sizes the platform actually poses lie above the exact-enumeration limit and at or below the provider's qubit ceiling. A2 also keeps FeatureEnsembleSelection not built on purpose. No such note exists. For this row the parked patch holds budgeted scenario selection with budget slack, compared with a greedy value-per-cost selector. The code is written and parked unlanded in docs/blueprint/lanes/L4-quant-research-families-adr0150.patch: the graph-search, feature-selection and scenario-selection QUBO families and the kernel and reservoir QML families, each with a greedy or in-sample-chosen classical baseline, a validated experiment record with a problem digest, and registration in Foundry::platform with a required benchmark field. It applied cleanly to 09ccd529, and its tests and mutations ran green there (qip-quantum --test families 7 passed, --test qml 5 passed, --test foundry 11 passed). The remaining step is an owner or ADR decision that supersedes A2, or the benefit note A2 asks for; then apply the patch. Even then the families run in no binary, so bar part 2 also needs a deep-brain research sweep to run them.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -858,7 +861,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it."
+    "notes": "2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): ADR 0150 A2 stands, as ADR 0190 confirmed, and the parked scenario-selection family stays parked."
   },
   {
     "id": "R12-QUANT-4039",
@@ -1312,7 +1315,7 @@
     "status": "MISSING",
     "current": "No quantum path exists for this research domain, so the required classical check does not exist either.",
     "evidence": [],
-    "gap": "The research family and its check. 2026-10-24 (L4): blocked by ADR 0150 decision A2, accepted 2026-10-19: a new family's encoding, baseline and benchmark may be written only after a committed note shows the sizes the platform actually poses lie above the exact-enumeration limit and at or below the provider's qubit ceiling. A2 also keeps FeatureEnsembleSelection not built on purpose. No such note exists. For this row the parked patch holds a selection that reports score uplift and compute cost (runtime and price per entrant) against the classical selection. The code is written and parked unlanded in docs/blueprint/lanes/L4-quant-research-families-adr0150.patch: the graph-search, feature-selection and scenario-selection QUBO families and the kernel and reservoir QML families, each with a greedy or in-sample-chosen classical baseline, a validated experiment record with a problem digest, and registration in Foundry::platform with a required benchmark field. It applied cleanly to 09ccd529, and its tests and mutations ran green there (qip-quantum --test families 7 passed, --test qml 5 passed, --test foundry 11 passed). The remaining step is an owner or ADR decision that supersedes A2, or the benefit note A2 asks for; then apply the patch. Even then the families run in no binary, so bar part 2 also needs a deep-brain research sweep to run them.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. FeatureEnsembleSelection stays not built, as ADR 0150 A2 decided on purpose and ADR 0190 confirmed. A selection over fewer features than the enumeration limit can at best tie the exact classical answer, so an uplift-and-cost report on it would read as evidence and is not. The row stays MISSING and its text stands. It reopens on a benefit note or a hosted provider that I fund later. Closes on: No build now. Cite ADR 0190 and this ruling in the gap. When a benefit note or a funded hosted provider meets A2, land the feature-selection family from the parked patch under its own ADR. It reports score uplift and compute cost against the classical selection, and a deep-brain research sweep runs it. Earlier: The research family and its check. 2026-10-24 (L4): blocked by ADR 0150 decision A2, accepted 2026-10-19: a new family's encoding, baseline and benchmark may be written only after a committed note shows the sizes the platform actually poses lie above the exact-enumeration limit and at or below the provider's qubit ceiling. A2 also keeps FeatureEnsembleSelection not built on purpose. No such note exists. For this row the parked patch holds a selection that reports score uplift and compute cost (runtime and price per entrant) against the classical selection. The code is written and parked unlanded in docs/blueprint/lanes/L4-quant-research-families-adr0150.patch: the graph-search, feature-selection and scenario-selection QUBO families and the kernel and reservoir QML families, each with a greedy or in-sample-chosen classical baseline, a validated experiment record with a problem digest, and registration in Foundry::platform with a required benchmark field. It applied cleanly to 09ccd529, and its tests and mutations ran green there (qip-quantum --test families 7 passed, --test qml 5 passed, --test foundry 11 passed). The remaining step is an owner or ADR decision that supersedes A2, or the benefit note A2 asks for; then apply the patch. Even then the families run in no binary, so bar part 2 also needs a deep-brain research sweep to run them.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1323,7 +1326,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it."
+    "notes": "2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): FeatureEnsembleSelection stays not built, as ADR 0150 A2 decided on purpose and ADR 0190 confirmed."
   },
   {
     "id": "R12-QUANT-4060",
@@ -1351,7 +1354,7 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:615-650",
       "backend/crates/runtime/qip-kernel/tests/serving.rs:673,713"
     ],
-    "gap": "Ensemble-feature path for quantum-derived representations.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. ADR 0150 decision 5 stands. No quantum-derived feature is admitted until a family has a benefit record against a non-simulated provider. That provider, its key and its budget are billed and mine, and none is engaged now. So the ensemble-feature path is not built ahead of a benefit nobody has measured. The refusal of a quantum output offered as a model stays as it is, and the row stays PARTIAL. Closes on: After a hosted provider is funded and a family commits a benefit record against it: an ensemble-feature path in qip-kernel model serving that takes a quantum output only as an input feature to an evaluated model. Its test is a_quantum_output_reaches_a_decision_only_as_a_feature_and_offering_it_as_a_model_is_refused. Earlier: Ensemble-feature path for quantum-derived representations.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1362,14 +1365,14 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): ADR 0150 decision 5 stands. No quantum-derived feature is admitted until a family has a benefit record against a non-simulated provider."
   },
   {
     "id": "R12-QUANT-4062",
     "status": "MISSING",
     "current": "Nothing measures information gain of quantum-derived features.",
     "evidence": [],
-    "gap": "Everything.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. No quantum-derived feature exists, and ADR 0150 decision 5 admits none until a family has a benefit record on a non-simulated provider. A per-regime information-gain scorer over an empty set would be a capability that measures nothing, so I am not having one built. The row stays MISSING behind R12-QUANT-4061 and the hosted-provider decision, which is billed and mine. Closes on: No build now. Cite ADR 0150 decision 5 and this ruling in the gap. Once a quantum-derived feature is admitted under a benefit record, the Evaluation Brain records a per-regime information-gain score for each such feature against its classical baseline. Earlier: Everything.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1382,7 +1385,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): No quantum-derived feature exists, and ADR 0150 decision 5 admits none until a family has a benefit record on a non-simulated provider."
   },
   {
     "id": "R12-QUANT-4063",
@@ -1576,7 +1579,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Joint construction is approved as one run that can only narrow. construct_from takes grouped caps for strategies from the allocator's plan, for horizons from the reconciled horizon pools and for regions from the region ceilings already on record, and no cap may loosen the mandate. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Joint construction is one optimiser run whose grouped caps only narrow the mandate, and no class or region budget is sized without its own risk record."
   },
   {
     "id": "R12-ASSET-4071",
@@ -1645,7 +1648,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'not composed into the kernel' is stale: commerce_research.rs runs scout, resolver, PurchaseExecutor(SimulatedMerchant), logistics plan, inventory Ledger and resale when a breadth plan is installed (tests: qip-kernel tests/breadth.rs, qip-deepbrain tests/commerce.rs)."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'not composed into the kernel' is stale: commerce_research.rs runs scout, resolver, PurchaseExecutor(SimulatedMerchant), logistics plan, inventory Ledger and resale when a breadth plan is installed (tests: qip-kernel tests/breadth.rs, qip-deepbrain tests/commerce.rs). Owner ruling 2026-10-31 (IMPLEMENT): A physical position is a paper research record. Each unit the simulated merchant delivers becomes a RealAsset position carrying its landed cost, and its inventory state from the ledger. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-ASSET-4074",
@@ -1924,7 +1927,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Capital agents are approved as proposers only. Each of the ten named agents submits a plan every cycle, and the kernel records all ten before it chooses. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: Capital agents only propose: every named agent's plan is recorded each cycle, and the kernel acts on the per-line minimum of those plans and the one allocator's."
   },
   {
     "id": "R12-CAPITAL-4086",
@@ -1938,9 +1941,10 @@
       "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::the_kernel_installs_the_survival_limit_and_it_vetoes_an_order_past_the_ceiling",
       "backend/crates/runtime/qip-kernel/src/survival.rs::tests::a_waterfall_that_disagrees_with_the_ledger_is_refused",
       "backend/crates/runtime/qip-kernel/src/survival.rs::CombinedObligations",
-      "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases"
+      "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases",
+      "backend/crates/apps/qip-ledgerd/src/read_api.rs GET /api/v1/ledger/obligations; test the_obligations_route_answers_the_ledgers_fold_at_the_callers_instant"
     ],
-    "gap": "Platform::observe_ledger_obligations has no production caller. The ledger side exists (qip-ledgerd store.rs obligations() folds LedgerObligations::from_balances) but is not served: read_api.rs exposes balance, postings, parked, tax-lots and trial-balance, and qip-api holds no ledger state by acceptance (api_boundary). Needs a ledgerd obligations route, a qip-api reader with an explicit timeout and a configured ledger URL, and the survival_gate.rs test driving over-commit, ignored obligation and hard-limit breach on one plan.",
+    "gap": "Platform::observe_ledger_obligations has no production caller. The ledger side exists (qip-ledgerd store.rs obligations() folds LedgerObligations::from_balances) but is not served: read_api.rs exposes balance, postings, parked, tax-lots and trial-balance, and qip-api holds no ledger state by acceptance (api_boundary). Needs a ledgerd obligations route, a qip-api reader with an explicit timeout and a configured ledger URL, and the survival_gate.rs test driving over-commit, ignored obligation and hard-limit breach on one plan.\n2026-10-31 (lane L1-MONEY): qip-ledgerd now serves its LedgerObligations fold at GET /api/v1/ledger/obligations?unit=&as_of=; the caller's instant is required, never defaulted. Remaining: a qip-api reader with an explicit timeout that calls it each cycle and feeds Platform::observe_ledger_obligations (qip-api has no ledgerd client today), the survival_gate.rs refusal test the closure names, and a default deployment of qip-ledgerd (variable \"ledgerd\" is null everywhere), so bar part 2 stays unmet.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1954,7 +1958,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: closure's handle_balance reads one account in one unit and cannot produce the fold; the route is the missing piece. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: closure's handle_balance reads one account in one unit and cannot produce the fold; the route is the missing piece. Kept PARTIAL. 2026-10-31 lane L1-MONEY: mutation (route arm unreachable, so 404) fired and was restored with cp+cmp. No skeptic was run: the row cannot be promoted without the reader and a deployment."
   },
   {
     "id": "R12-CAPITAL-4087",
@@ -2201,7 +2205,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL. 2026-10-24 lane L1-MONEY: gap corrected in both directions (borrow gate exists and is tested; quote availability and a borrow source remain). No code changed for this row."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL. 2026-10-24 lane L1-MONEY: gap corrected in both directions (borrow gate exists and is tested; quote availability and a borrow source remain). No code changed for this row. Owner ruling 2026-10-31 (IMPLEMENT): Build the quote gate now: an order on an instrument with no quote in the platform's market snapshot is refused and journaled. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-RISK-4097",
@@ -2261,9 +2265,12 @@
     "evidence": [
       "backend/crates/libs/qip-ai/src/registry.rs ModelCard::decision_eligibility_in, with_training_bounds",
       "backend/crates/apps/qip-deepbrain/src/learning.rs record_validation_scope, and the latest-row check feeding ineligible_in_regime in learn()",
-      "backend/crates/libs/qip-ai/tests/regime_scope.rs an_input_outside_the_range_the_model_was_fitted_on_is_refused, a_non_finite_or_missing_input_is_refused_rather_than_passed_through"
+      "backend/crates/libs/qip-ai/tests/regime_scope.rs an_input_outside_the_range_the_model_was_fitted_on_is_refused, a_non_finite_or_missing_input_is_refused_rather_than_passed_through",
+      "backend/crates/libs/qip-ai/src/registry.rs ModelCard::regime_eligibility",
+      "backend/crates/services/qip-cost-router/src/reputation.rs ReputationBook::rank filters on regime_eligibility in Conditions.regime",
+      "backend/crates/services/qip-cost-router/tests/cost_router.rs a_model_validated_only_in_a_calm_regime_is_not_ranked_for_a_stressed_decision"
     ],
-    "gap": "The input-range and regime refusals reach an operator through the learning round's ineligible list, not a decision: the decision-time admissions (ModelRiskRegister::admit, the cost-router reputation filter) still call the input-free decision_eligibility and a cell's pass supplies no inputs to check.",
+    "gap": "The input-range and regime refusals reach an operator through the learning round's ineligible list, not a decision: the decision-time admissions (ModelRiskRegister::admit, the cost-router reputation filter) still call the input-free decision_eligibility and a cell's pass supplies no inputs to check.\n2026-10-31 (lane L1-MONEY): the cost router's reputation ranking now refuses a model outside the regimes its card was validated in. Remaining: ReputationBook has no production caller, so this guard is on no default path; ModelRiskRegister::evaluate still calls require_for_decision rather than require_for_decision_in, and also has no production caller; and the requirement's six named exposures (drift, calibration, regime mismatch, uncertainty, feature failure, adversarial inputs) have not each been shown with a measurement plus a limit or recorded finding driven by a test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2274,7 +2281,7 @@
     "verification": "cargo test -p qip-ai --test regime_scope && cargo test -p qip-deepbrain --lib a_model_fitted_in_one_regime",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: the range test replaced by false admits the extrapolating input (an_input_outside_... fails); deleting the is_finite branch admits NaN (a_non_finite_... fails). Kept PARTIAL: same remaining half as R12-MODEL-4020."
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: the range test replaced by false admits the extrapolating input (an_input_outside_... fails); deleting the is_finite branch admits NaN (a_non_finite_... fails). Kept PARTIAL: same remaining half as R12-MODEL-4020. 2026-10-31 lane L1-MONEY: mutation (rank reverted to decision_eligibility) fired, restored with cp+cmp. No skeptic was run: the row cannot be promoted without a production caller."
   },
   {
     "id": "R12-RISK-4100",
@@ -2682,7 +2689,7 @@
     "verification": "cargo test -p qip-kernel --lib tail:: (\"ok. 15 passed; 0 failed\"); cargo test -p qip-kernel (1091 passed, 0 failed, on 89af653c); qip-kernel --test stress the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Old gap ('continuous generation') is now partly closed: generation is per-cycle and seeded. The generated worlds are scalar amplifications of single-asset history. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-30 lane L1-MONEY: mutations fired, each restored with cp+cmp: calm-signed correlation (both tail tests); push removed (stress test); correlation range (0,0) (floor test); 0.0 for a non-finite variance (overflow test). Independent security-engineer skeptic REFUTED (see gap). Kept PARTIAL; owner decision needed on the reserve effect. 2026-10-30 hold: mutation \"apply_joint_tail_reserve defaults to true\" fails a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before (\"the joint world was not reported\"). It survived the first version, which set the flag to false explicitly; the test now uses the platform as built. Restored with cp+cmp."
+    "notes": "Round-2 independent audit, 2026-10-11: Old gap ('continuous generation') is now partly closed: generation is per-cycle and seeded. The generated worlds are scalar amplifications of single-asset history. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-30 lane L1-MONEY: mutations fired, each restored with cp+cmp: calm-signed correlation (both tail tests); push removed (stress test); correlation range (0,0) (floor test); 0.0 for a non-finite variance (overflow test). Independent security-engineer skeptic REFUTED (see gap). Kept PARTIAL; owner decision needed on the reserve effect. 2026-10-30 hold: mutation \"apply_joint_tail_reserve defaults to true\" fails a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before (\"the joint world was not reported\"). It survived the first version, which set the flag to false explicitly; the test now uses the platform as built. Restored with cp+cmp. 2026-10-31 lane L1-MONEY: docs/blueprint/owner-decisions-2026-10-31.md (e0387e21) quotes the owner's general delegation (\"You can make all my decisions go\"). Its decision 6, the orchestrator's ruling under that delegation, not the owner's own words, allows the joint-tail reserve on the default path. The lane did not apply it. owner-decisions-2026-10-24.md lists \"No change to a financial risk limit, threshold or limit set\" among what a general delegation does not lift, and the 2026-10-31 record restates that exception as \"no weakening\", which is a rewording, not the owner's. Raising the survival reserve is a change to that control. Switch left off (Platform::set_joint_tail_reserve_applied unset in every composition root); row PARTIAL until the owner confirms decision 6 in their own words. Applying it then is one call per composition root, plus flipping a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before."
   },
   {
     "id": "R12-RISK-4117",

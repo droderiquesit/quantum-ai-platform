@@ -23,7 +23,14 @@ export type GatewayDisposition =
   | "timeout"
   | "misconfigured"
   /** This gateway refused to forward it; the platform was never asked. */
-  | "refused";
+  | "refused"
+  /**
+   * The gateway's circuit to the platform is open after consecutive failures
+   * to reach it, so it refused fast rather than waiting out another timeout.
+   * Rendered as unreachable — which is what the breaker has measured — with
+   * the gateway's own reason as the detail.
+   */
+  | "open";
 
 export const GATEWAY_HEADER = "x-qip-gateway";
 
@@ -185,7 +192,12 @@ export async function request<D>(
     }
   }
 
-  if (disposition === "unreachable" || disposition === "timeout" || disposition === "misconfigured") {
+  if (
+    disposition === "unreachable" ||
+    disposition === "timeout" ||
+    disposition === "misconfigured" ||
+    disposition === "open"
+  ) {
     return finish({
       kind: "unreachable",
       endpoint: path,

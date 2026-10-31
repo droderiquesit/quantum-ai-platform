@@ -16,8 +16,8 @@
 //! declaration there.
 
 use crate::action::Method;
-use qip_core::Decimal;
 use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -997,6 +997,132 @@ impl OntologyPatch {
                 self.cited_observations.join(", ")
             ),
         }
+    }
+}
+
+// --- SourceScore (R12-EXPAND-6027) --------------------------------------------
+
+/// The artifact evidence-quality expansion produces: one source scored on one
+/// subject against the platform's own stream and every other arm, over a
+/// stated window of aligned senses, with the digest of the samples the score
+/// was computed from. `incremental_gain` and `realised_contribution` are
+/// `qip_data_finder::source_alpha`'s two figures and are refused outside
+/// `[-1, 1]`; a score over no samples, or one that cannot name its window or
+/// its inputs, is a figure nobody can recompute and is refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceScore {
+    pub source: String,
+    pub subject: String,
+    pub incremental_gain: f64,
+    pub realised_contribution: f64,
+    /// Aligned samples the score was computed over; at least one.
+    pub samples: usize,
+    /// The first and last sense (the platform's own observation counter) in
+    /// the window, inclusive; `window_from <= window_to`.
+    pub window_from: u64,
+    pub window_to: u64,
+    /// SHA-256 of the aligned samples as their bits, lower-case hex.
+    pub dataset_digest: String,
+    pub scored_at: Timestamp,
+}
+
+impl SourceScore {
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "SourceScore";
+        text(R, "source", &self.source)?;
+        text(R, "subject", &self.subject)?;
+        finite(R, "incremental_gain", self.incremental_gain, -1.0, 1.0)?;
+        finite(
+            R,
+            "realised_contribution",
+            self.realised_contribution,
+            -1.0,
+            1.0,
+        )?;
+        if self.samples == 0 {
+            return Err(Error::invalid(format!(
+                "{R}.samples must be above zero; a score over no samples scores nothing"
+            )));
+        }
+        if self.window_from > self.window_to {
+            return Err(Error::invalid(format!(
+                "{R}.window_from ({}) is after window_to ({}); state the window it was scored over",
+                self.window_from, self.window_to
+            )));
+        }
+        if self.dataset_digest.len() != 64
+            || !self
+                .dataset_digest
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(Error::invalid(format!(
+                "{R}.dataset_digest must be 64 lower-case hex characters; a digest nobody \
+                 computed names no inputs"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes)
+            .map_err(|e| Error::schema(format!("not a SourceScore: {e}; supply every field")))?;
+        v.validate()?;
+        Ok(v)
+    }
+}
+
+// --- TheoryDelta (R12-EXPAND-6044) --------------------------------------------
+
+/// The artifact symbolic theory growth produces when the world contradicts
+/// the rule pack: a hypothesis the pack's hard stop refused resolved as a
+/// call the grader credited, so the stop refused something the market
+/// confirmed. The delta names the pack and version, the rule or invariant
+/// ids that fired, the change it proposes and the evidence that contradicts
+/// the theory, and it is a proposal only: nothing reads one to change a rule,
+/// and `qip_kernel::symbolic_stage::rule_pack` is fixed at build time. A
+/// delta naming no rule or citing no evidence is refused, because a revision
+/// task with no side to revise and nothing to revise it against is a sentence
+/// nobody can act on or check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TheoryDelta {
+    pub pack: String,
+    /// The pack version the contradicted verdict was derived under; at least
+    /// one.
+    pub version: u32,
+    /// The rule and invariant ids whose firing made the refusal; at least one.
+    pub rules: Vec<String>,
+    /// The hypothesis the pack refused and the grader credited.
+    pub hypothesis_id: String,
+    pub proposed_change: String,
+    /// Record ids and facts the contradiction rests on; at least one.
+    pub contradicting_evidence: Vec<String>,
+    pub proposed_at: Timestamp,
+}
+
+impl TheoryDelta {
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "TheoryDelta";
+        text(R, "pack", &self.pack)?;
+        if self.version == 0 {
+            return Err(Error::invalid(format!(
+                "{R}.version must be at least one; version zero names no pack"
+            )));
+        }
+        list(R, "rules", &self.rules)?;
+        text(R, "hypothesis_id", &self.hypothesis_id)?;
+        text(R, "proposed_change", &self.proposed_change)?;
+        list(R, "contradicting_evidence", &self.contradicting_evidence)?;
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes)
+            .map_err(|e| Error::schema(format!("not a TheoryDelta: {e}; supply every field")))?;
+        v.validate()?;
+        Ok(v)
     }
 }
 

@@ -565,3 +565,54 @@ fn a_belief_citing_a_source_retired_as_stale_is_downweighted_not_retracted() -> 
     );
     Ok(())
 }
+
+/// R12-EXPAND-6055: the Source Registry entry is consulted where a source
+/// registers, and travels with the assessment: one view per registration,
+/// naming where the source was found, what it costs, the licence it was
+/// decided on, how often it says it updates and the class it was routed to.
+/// Until this change `RegisteredSource::entry` was read by tests alone.
+/// Mutation: delete the `entries.push(..)` in `assess_sources` — the count
+/// assertion fails.
+#[test]
+fn every_registration_carries_its_source_registry_entry_on_the_assessment() -> Result<()> {
+    let mut platform = platform()?;
+    let mut probe = probe();
+    let first = platform.assess_sources(candidates()?, &mut probe, start())?;
+    assert_eq!(first.registered(), 4, "premise: {:?}", first.decisions);
+    assert!(
+        first.catalogue_problems.is_empty(),
+        "{:?}",
+        first.catalogue_problems
+    );
+
+    assert_eq!(
+        first.entries.len(),
+        4,
+        "one entry per registration: {:?}",
+        first.entries
+    );
+    for entry in &first.entries {
+        assert_eq!(entry.licence, "vendor-terms-2026", "{entry:?}");
+        assert_eq!(
+            entry.discovered_from,
+            "a curated directory of exchange data vendors"
+        );
+        assert_eq!(entry.freshness, UpdateFrequency::Minutely);
+        assert!(entry.composite.is_finite() && (0.0..=1.0).contains(&entry.composite));
+    }
+    let fading = first
+        .entries
+        .iter()
+        .find(|e| e.source_id == "fading")
+        .ok_or_else(|| qip_core::error::Error::not_found("fading"))?;
+    assert_eq!(
+        fading.monthly_fee,
+        Decimal::from_int(DataFinder::COST_CEILING_PER_MONTH),
+        "the cost is the registered source's own"
+    );
+    assert!(
+        first.entries.iter().any(|e| e.monthly_fee == Decimal::ZERO),
+        "the free sources read as free"
+    );
+    Ok(())
+}

@@ -618,3 +618,210 @@ fn a_short_thesis_on_a_fund_inside_its_lockup_is_refused_with_the_lockup_named_a
     );
     Ok(())
 }
+
+/// R12-ASSET-3019: the desk's book slot — the one the Portfolio/Asset Brain
+/// and construction read through `read_portfolio` — holds the position the
+/// cycle opened, marked at its latest close, once the next REASON has run.
+/// Before this the desk held the empty portfolio it was assembled with for
+/// the life of the process, so the brain would have read an empty book in
+/// every running binary.
+///
+/// Mutation: delete `self.brief_the_desk_on_book();` from REASON — the desk
+/// still reads an empty book after the second cycle.
+#[test]
+fn the_desk_reads_the_book_the_cycle_opened_marked_at_its_latest_close() -> Result<()> {
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("desk-book"), start())?;
+    platform.observe(tape("AAA"));
+    assert_eq!(
+        platform.desk_book_view().portfolio.positions().count(),
+        0,
+        "premise: the desk's book starts empty"
+    );
+    let first = platform.run_cycle(start());
+    assert!(first.traversed_every_stage(), "{}", first.summarise());
+    assert!(
+        platform.positions_at_cost().contains_key(aaa.as_str()),
+        "premise: the cycle opened a position in obj-AAA: {}",
+        first.summarise()
+    );
+    let second = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(second.traversed_every_stage(), "{}", second.summarise());
+    let view = platform.desk_book_view();
+    let held: Vec<&str> = view
+        .portfolio
+        .positions()
+        .map(|position| position.object_id.as_str())
+        .collect();
+    assert_eq!(held, vec![aaa.as_str()], "the desk reads the held book");
+    assert!(
+        view.marks
+            .get(aaa.as_str())
+            .is_some_and(|mark| mark.is_positive()),
+        "the held instrument is marked at its latest close: {:?}",
+        view.marks
+    );
+    Ok(())
+}
+
+/// R12-TICK-2090: the kernel keeps every instrument it has seen trade in a
+/// universe history, and a delisting dates the end of its membership
+/// without removing it — so a date before the delisting still finds the
+/// instrument, and a date after does not. Before this the history type
+/// existed with no caller, and the only universe a backtest could ask was
+/// the current one.
+///
+/// Mutation: drop the `universe_history.delist` arm in
+/// `Platform::apply_corporate_action` — the instrument is still a member
+/// after its delisting and the last assertion fails.
+#[test]
+fn the_kernels_universe_history_keeps_a_delisted_instrument_for_the_dates_it_traded() -> Result<()>
+{
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("universe-history"), start())?;
+    platform.observe(tape("AAA"));
+    let delisted = start().saturating_sub(Duration::from_days(10));
+    platform.observe(vec![SensedRecord::CorporateAction(Box::new(
+        CorporateAction {
+            object_id: aaa.clone(),
+            ex_date: delisted,
+            record_date: None,
+            payment_date: None,
+            kind: CorporateActionKind::Delisting {
+                reason: "acquired for cash".to_string(),
+            },
+            announced_at: start().saturating_sub(Duration::from_days(40)),
+        },
+    ))]);
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+
+    let history = platform.universe_history();
+    assert!(history.is_named(&aaa), "premise: the instrument is listed");
+    let before = start().saturating_sub(Duration::from_days(20));
+    assert!(
+        history
+            .members_as_of(before)
+            .iter()
+            .any(|listing| listing.object_id == aaa),
+        "a date before the delisting finds the instrument that later went"
+    );
+    assert!(
+        !history.is_member_at(&aaa, start().saturating_sub(Duration::from_days(5))),
+        "a date after the delisting does not"
+    );
+    Ok(())
+}
+
+/// R12-ASSET-1015: a desk position is booked through the adapter and
+/// lifecycle engine its asset class names in the registry — an equity
+/// through the venue order book and the portfolio stages — resolved at the
+/// fill on the cycle's own path. Before this `lifecycle_of` had no caller and
+/// the registry named no adapter at all.
+///
+/// Mutation: drop the `position_bookings.insert` in
+/// `Platform::book_desk_fill` — the position carries no booking and this
+/// fails.
+#[test]
+fn a_position_is_booked_through_the_lifecycle_engine_and_adapter_its_asset_class_names()
+-> Result<()> {
+    use qip_kernel::asset_class_registry::{ClassAdapter, LifecycleEngine};
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("booking"), start())?;
+    assert!(platform.position_booking(aaa.as_str()).is_none());
+    platform.observe(tape("AAA"));
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    assert!(
+        platform.positions_at_cost().contains_key(aaa.as_str()),
+        "premise: the cycle opened a position in obj-AAA: {}",
+        report.summarise()
+    );
+    assert_eq!(
+        platform.position_booking(aaa.as_str()),
+        Some((
+            ClassAdapter::VenueOrderBook,
+            LifecycleEngine::PortfolioStages
+        )),
+        "an equity is booked through the venue order book and the portfolio stages"
+    );
+    Ok(())
+}
+
+/// R12-ASSET-1160, the divestment item: an order that sells the whole long
+/// moves the position to `Unwinding` before any fill exists, and a trim
+/// leaves it `Held`.
+///
+/// The failure prevented: `Portfolio::begin_unwind` had no production
+/// caller, so a book being sold down read as `Held` until its last lot
+/// closed, and the Portfolio/Asset Brain counted zero divestments on every
+/// book. Both orders go through `Platform::submit_order`, the one seam every
+/// desk order (the ACT stage's included) passes.
+///
+/// Mutation: delete the `begin_deliberate_close` call in
+/// `Platform::submit_order` — the full sell leaves the position `Held` and
+/// the second assertion fails. Mutation: drop `order.quantity < long` from
+/// its guard — the trim unwinds the position and the first assertion fails.
+#[test]
+fn selling_the_whole_long_unwinds_the_position_and_a_trim_leaves_it_held() -> Result<()> {
+    use qip_execution_engine::order::Side;
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("unwind"), start())?;
+    platform.observe(tape("AAA"));
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let (held, _) = platform
+        .positions_at_cost()
+        .get(aaa.as_str())
+        .copied()
+        .expect("premise: the cycle opened a position in obj-AAA");
+    assert!(
+        held > dec!("1"),
+        "premise: a long of more than one unit: {held}"
+    );
+    assert_eq!(
+        platform.position_lifecycle(aaa.as_str()),
+        Some(PositionLifecycle::Held),
+        "premise: the opened position is held"
+    );
+
+    let now = start().saturating_add(Duration::from_mins(5));
+    let price = dec!("90");
+    let trim = platform.order_from(
+        aaa.clone(),
+        Side::Sell,
+        dec!("1"),
+        price,
+        "prop-trim",
+        vec!["hyp-trim".to_string()],
+        now,
+    );
+    let _ = platform.submit_order(trim, now);
+    assert_eq!(
+        platform.position_lifecycle(aaa.as_str()),
+        Some(PositionLifecycle::Held),
+        "a sell smaller than the long is a trim, not a divestment"
+    );
+
+    let (remaining, _) = platform
+        .positions_at_cost()
+        .get(aaa.as_str())
+        .copied()
+        .expect("premise: a trim leaves the position open");
+    let close = platform.order_from(
+        aaa.clone(),
+        Side::Sell,
+        remaining,
+        price,
+        "prop-close",
+        vec!["hyp-close".to_string()],
+        now,
+    );
+    let _ = platform.submit_order(close, now);
+    assert_eq!(
+        platform.position_lifecycle(aaa.as_str()),
+        Some(PositionLifecycle::Unwinding),
+        "a sell of the whole long, partly filled, was not recorded as a divestment"
+    );
+    Ok(())
+}

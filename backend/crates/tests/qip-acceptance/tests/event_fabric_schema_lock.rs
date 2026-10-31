@@ -130,6 +130,30 @@ fn row_for_binding<T: serde::Serialize>(binding: TopicBinding, sample: &T) -> Lo
 
 // --- the six reflex fixtures -------------------------------------------------
 
+/// Every field present and non-empty, so the locked shape is the type's.
+fn feature_digest_sample() -> qip_contracts::replay::FeatureDigest {
+    use qip_contracts::replay::{FeatureDigest, FeatureReading, InstrumentDigest};
+    FeatureDigest {
+        cell: "cell-nynj".to_string(),
+        session: "session-2026-09-26T00".to_string(),
+        pass: 7,
+        now_ns: 1_760_000_000_000_000_000,
+        instruments: vec![InstrumentDigest {
+            subject: "obj-AAA".to_string(),
+            features: vec![FeatureReading {
+                name: "realised_vol[window=20]".to_string(),
+                value: qip_contracts::FeatureValue::Statistic(0.2),
+                revision: 3,
+            }],
+        }],
+        ticks: 1_000,
+        applied: 4,
+        applied_from_ns: 1_760_000_000_000_000_000,
+        applied_to_ns: 1_760_000_000_000_000_400,
+        applied_digest: "applied-digest-abc".to_string(),
+    }
+}
+
 fn pass_marker_sample() -> PassMarker {
     PassMarker {
         cell: "cell-nynj".to_string(),
@@ -445,6 +469,7 @@ fn computed_rows() -> Vec<LockRow> {
     for binding in bindings::ALL {
         let row = match binding.topic {
             Topic::ReflexPassMarked => row_for_binding(binding, &pass_marker_sample()),
+            Topic::ReflexFeatureDigested => row_for_binding(binding, &feature_digest_sample()),
             Topic::ReflexJournalRecorded => row_for_binding(binding, &journal_entry_sample()),
             Topic::MarketEventApplied => row_for_binding(binding, &market_event_sample()),
             Topic::ReflexOutcomeRecorded => row_for_binding(binding, &outcome_record_sample()),

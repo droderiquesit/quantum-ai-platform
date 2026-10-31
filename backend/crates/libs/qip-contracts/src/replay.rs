@@ -103,6 +103,56 @@ pub struct AppliedReadings {
     pub region_wire: Option<WireRecord>,
 }
 
+/// What one edge pass sized against, as one bounded P2 record per pass
+/// (ADR 0132 decision 4, R12-FABRIC-10102): per instrument the pass
+/// registered features for, the feature values the cell evaluated and the
+/// engine revision each was computed at, with the feed messages the pass
+/// was handed counted and the tape events it applied counted, ranged by
+/// event time and digested over their source hashes. The values of a
+/// windowed feature rest on earlier passes' ticks too; this record names
+/// what *this* pass applied, not every tick a value ever saw. Bounded by
+/// the instruments the cell's plan registered features for, not by market
+/// activity: a busy pass and a quiet one write a record of the same shape.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FeatureDigest {
+    pub cell: String,
+    pub session: String,
+    pub pass: u64,
+    /// The pass's own clock reading, in nanoseconds, as [`PassMarker::now_ns`].
+    pub now_ns: i64,
+    /// One entry per instrument the cell holds registered features for, in
+    /// instrument order.
+    pub instruments: Vec<InstrumentDigest>,
+    /// Feed messages the pass was handed, counted and not shipped.
+    pub ticks: u64,
+    /// Tape events the pass applied, counted; their time range in
+    /// nanoseconds, zero when none; and a digest over their source hashes
+    /// in applied order, so replay can check it read the same bytes.
+    pub applied: u64,
+    pub applied_from_ns: i64,
+    pub applied_to_ns: i64,
+    pub applied_digest: String,
+}
+
+/// The features one instrument was sized against this pass.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InstrumentDigest {
+    /// The instrument, as the feature key names its subject.
+    pub subject: String,
+    pub features: Vec<FeatureReading>,
+}
+
+/// One feature's value and freshness as the pass read it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FeatureReading {
+    /// The feature's name and its parameters, joined as the key prints them.
+    pub name: String,
+    pub value: crate::FeatureValue,
+    /// The revision the value was computed at: freshness, by the engine's
+    /// own count rather than a clock nobody set.
+    pub revision: u64,
+}
+
 /// What one edge pass applied, recorded at the seam where it applied it.
 ///
 /// Every field is either an exogenous input (the tape span, the control
@@ -143,19 +193,58 @@ pub struct PassMarker {
 /// hand-picked subset of its fields: a hand-picked list is exactly the shape
 /// of bug that leaves one field — `gateway_seed`, say — silently free to vary
 /// between two passes a caller believes were "reproduced".
+///
+/// A manifest crossing between brains is read only through
+/// [`StatedManifest`]: one that arrives without its assumptions or its model
+/// versions is refused on deserialisation (R12-CONTRACT-7073). Until
+/// 2026-10-25 both fields were `#[serde(default)]`, so a manifest stripped of
+/// them in transit was read back as one that had never stated them and
+/// verified under the marker-only hash — a replay "reproduced" under a fill
+/// model nobody could name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "StatedManifest")]
 pub struct ReplayManifest {
     marker: PassMarker,
     /// What the run assumed about the world it simulated against. Absent
-    /// (not blank) on a manifest that never stated them, which hashes as it
-    /// always did.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// only on a manifest built in memory by [`ReplayManifest::new`], which
+    /// never deserialises.
+    #[serde(skip_serializing_if = "Option::is_none")]
     assumptions: Option<ReplayAssumptions>,
     /// The model versions the run used, by component: the fill model, the
-    /// impact model, the latency model. Empty when none were stated.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// impact model, the latency model.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     model_versions: BTreeMap<String, String>,
     reproducibility_hash: String,
+}
+
+/// The wire form of a [`ReplayManifest`]: every field required, so serde
+/// itself refuses a manifest missing one and names it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatedManifest {
+    marker: PassMarker,
+    assumptions: ReplayAssumptions,
+    model_versions: BTreeMap<String, String>,
+    reproducibility_hash: String,
+}
+
+impl TryFrom<StatedManifest> for ReplayManifest {
+    type Error = Error;
+
+    /// Refuses a blank assumption or a missing or blank model version, as
+    /// [`ReplayManifest::with_assumptions`] does. The hash is carried as
+    /// read, not recomputed, so a tampered one still surfaces through
+    /// [`ReplayManifest::is_consistent`] rather than being silently healed.
+    fn try_from(stated: StatedManifest) -> Result<Self> {
+        stated.assumptions.check()?;
+        Self::check_versions(&stated.model_versions)?;
+        Ok(Self {
+            marker: stated.marker,
+            assumptions: Some(stated.assumptions),
+            model_versions: stated.model_versions,
+            reproducibility_hash: stated.reproducibility_hash,
+        })
+    }
 }
 
 /// What a simulated run assumed about clock, latency, queue position, fills

@@ -705,7 +705,7 @@
     "verification": "cargo +1.94.1 test -p qip-edge --test policy_rollback",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 section 11. Mutation fired: multiplying the pass multiplier by the applied belief prior sized 0.5 against 9.5 and the equality assertion failed (premise: both payloads applied and both cells traded). The only admissible future use is a (0,1] narrowing multiplier under its own ADR once ADR 0088 is built and scored; which detector an opportunity id names is ADR 0149. AUDIT-2 2026-10-24: regraded, requirement is a package whose every slot (beliefs and opportunity definitions included) is consumed by the cell; the cell reads no belief prior or opportunity definition value (freshness only, by decision), and the named test asserts the absence of use, so removing the freshness consumption itself passes 2026-10-24 lane L5-EDGE: built in 288e5887. Mutation fired: PolicyItem::BeliefPriors mapped to no capability; the new test fails (the older equality test alone survived this mutation, which is what AUDIT-2 found). Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Findings: R12-REFLEX-5030 is not COMPLETE. Its record in R12-M5.json already says PARTIAL, with deployable=false. Commit 288e5887 fixes only the narrow thing AUDIT-2 found missing, the belief-freshness mutation test.  What 288e5887 did: - Added `a_cell_reads_the_belief_slot_by_its_freshness_and_its_absence_narrows_the_size` in `backend/crates/edge/qip-edge/tests/policy_rollback.rs`, inside `mod belief_is_freshness_only`, after line 455. - The test says it fails if `BeliefPriors` maps to no capability. I did not run it or reproduce that mutation. - For the belief slot only, this covers bar part 1 at the freshness level.  Bar failures: 1. Part 4: the requirement (requirements.md:295) says each of eight slots, opportunity definitions included, is \"consumed by the cell\".    - `OpportunityDefinitions` maps to `None` in `PolicyItem::capability` (qip-contracts/src/policy.rs:192-210). Its staleness narrows nothing.    - `grep -rn 'belief_priors|opportunity_definitions'` over `qip-edge/src` and `qip-edge-node/src` finds nothing. No cell code reads an opportunity definition by value or by freshness.    - The ADR 0149 s7 narrowing filter is not built.    - Beliefs are read for freshness only (ADR 0155 s11). That narrows \"combined with live local state\", and the requirement does not allow it. 2. Part 1: no test fails when the opportunity-definitions slot is ignored, because nothing reads it. The test that two payloads differing in that slot size the same order is a test that nothing uses it. 3. Part 2: the cell pass runs only on `qip-edge-node` with `QIP_VENUE_FEED=simulated`, and no committed environment deploys a node.    - `execution_nodes = {}` in test, stage and prod tfvars.    - dev/terraform.tfvars:268 sets `execution_nodes_enabled = false`. 4. Not checked here: the requirement's sign"
+    "notes": "2026-10-24 ADR 0155 section 11. Mutation fired: multiplying the pass multiplier by the applied belief prior sized 0.5 against 9.5 and the equality assertion failed (premise: both payloads applied and both cells traded). The only admissible future use is a (0,1] narrowing multiplier under its own ADR once ADR 0088 is built and scored; which detector an opportunity id names is ADR 0149. AUDIT-2 2026-10-24: regraded, requirement is a package whose every slot (beliefs and opportunity definitions included) is consumed by the cell; the cell reads no belief prior or opportunity definition value (freshness only, by decision), and the named test asserts the absence of use, so removing the freshness consumption itself passes 2026-10-24 lane L5-EDGE: built in 288e5887. Mutation fired: PolicyItem::BeliefPriors mapped to no capability; the new test fails (the older equality test alone survived this mutation, which is what AUDIT-2 found). Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Findings: R12-REFLEX-5030 is not COMPLETE. Its record in R12-M5.json already says PARTIAL, with deployable=false. Commit 288e5887 fixes only the narrow thing AUDIT-2 found missing, the belief-freshness mutation test.  What 288e5887 did: - Added `a_cell_reads_the_belief_slot_by_its_freshness_and_its_absence_narrows_the_size` in `backend/crates/edge/qip-edge/tests/policy_rollback.rs`, inside `mod belief_is_freshness_only`, after line 455. - The test says it fails if `BeliefPriors` maps to no capability. I did not run it or reproduce that mutation. - For the belief slot only, this covers bar part 1 at the freshness level.  Bar failures: 1. Part 4: the requirement (requirements.md:295) says each of eight slots, opportunity definitions included, is \"consumed by the cell\".    - `OpportunityDefinitions` maps to `None` in `PolicyItem::capability` (qip-contracts/src/policy.rs:192-210). Its staleness narrows nothing.    - `grep -rn 'belief_priors|opportunity_definitions'` over `qip-edge/src` and `qip-edge-node/src` finds nothing. No cell code reads an opportunity definition by value or by freshness.    - The ADR 0149 s7 narrowing filter is not built.    - Beliefs are read for freshness only (ADR 0155 s11). That narrows \"combined with live local state\", and the requirement does not allow it. 2. Part 1: no test fails when the opportunity-definitions slot is ignored, because nothing reads it. The test that two payloads differing in that slot size the same order is a test that nothing uses it. 3. Part 2: the cell pass runs only on `qip-edge-node` with `QIP_VENUE_FEED=simulated`, and no committed environment deploys a node.    - `execution_nodes = {}` in test, stage and prod tfvars.    - dev/terraform.tfvars:268 sets `execution_nodes_enabled = false`. 4. Not checked here: the requirement's sign Owner ruling 2026-10-31 (IMPLEMENT): Belief priors stay freshness-only. A belief value never sizes an order until ADR 0088's belief is built and Brier-scored, and then only as a (0,1] narrowing multiplier under its own record. Handed to lane L5 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-REFLEX-5031",
@@ -839,7 +839,7 @@
       "backend/crates/apps/qip-edge-node/src/feed.rs:119 SIMULATED_FEED only",
       "backend/crates/apps/qip-edge-node/src/main.rs:724"
     ],
-    "gap": "A native feed transport (multicast/session) in the node.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. A native venue feed needs a licensed source and a venue connection, and both come from vendors I have not bought. QIP_VENUE_FEED keeps `simulated` as its only value. The row stays PARTIAL until a licence record under ADR 0157 and venue access exist. Closes on: The owner obtains venue market-data access and commits its licence record (ADR 0157). Then a lane adds a native transport in qip-edge-node feed.rs feeding Cell::on_bytes, proven by a recorded-capture decode test with a decoder-field mutation. Earlier: A native feed transport (multicast/session) in the node.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -850,7 +850,7 @@
     "verification": "cargo test -p qip-protocols; node test with a recorded native capture",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): A native venue feed needs a licensed source and a venue connection, and both come from vendors I have not bought."
   },
   {
     "id": "R12-REFLEX-5037",
@@ -996,7 +996,7 @@
     "verification": "cargo test -p qip-edge-node --test arbitrage",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure (run qip_arbitrage::search over the full venue graph) presumes a full graph; the whitelist is the only source of conversions and the module doc states a cycle is never built from a book alone because that would trade a conversion nobody permitted."
+    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure (run qip_arbitrage::search over the full venue graph) presumes a full graph; the whitelist is the only source of conversions and the module doc states a cycle is never built from a book alone because that would trade a conversion nobody permitted. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Discovery proposes and the operator permits. The signed policy carries an operator-signed market reference, and the cell reports any cycle it finds outside the whitelist and sends nothing on it. Handed to lane L5b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered."
   },
   {
     "id": "R12-REFLEX-5043",
@@ -1224,10 +1224,10 @@
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
       "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
       "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
       "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
+    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1238,7 +1238,7 @@
     "verification": "cargo test -p qip-mesh --test peer; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
   },
   {
     "id": "R12-MESH-5053",
@@ -1254,7 +1254,7 @@
       "backend/crates/apps/qip-edge-node/tests/arbitrage.rs::a_holding_the_whitelist_states_as_wrapped_and_pending_is_its_own_node_and_breaks_the_free_join",
       "backend/crates/runtime/qip-kernel/src/central/whitelist.rs::tests::a_markets_stated_holding_terms_ship_on_the_ends_that_hold_that_instrument"
     ],
-    "gap": "2026-10-24 (lane L5-EDGE, after 288e5887; independent skeptic REFUTED): Commit an environment that sets QIP_ARBITRAGE_POLICY_PATH to a committed ArbitragePolicy and enables an execution node, so qip-edge-node builds the desk graph through held_as on a default deployed path.",
+    "gap": "2026-10-31 (lane L5b re-read, no code changed): the default path is blocked at three seams, none of them this row's code. (1) qip-api reads QIP_ARBITRAGE_POLICY_PATH only through the catalogue's optional_config_files mechanism (infrastructure/terraform/catalogue.tf), which needs a root variable in the protected variables.tf and a tfvars value; no committed file names a policy, and a policy's markets are an operator's choice of simulated venues and cross markets the dev node (one venue, `simulated-1`) cannot form a cycle on. (2) A whitelist reaches a cell only over the mesh, which the API binds a port for only when QIP_MESH_CELLS is set — unset in every committed environment (manifest_wiring.rs THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN, ADR 0024). (3) ADR 0220: the node's simulated gateway holds no listing register on any shipped path until an execution node is deployed, so even an installed desk would place against nothing; and no node is deployed (decision 5 of 2026-10-25). Previous gap text kept below for the record. Earlier: 2026-10-24 (lane L5-EDGE, after 288e5887; independent skeptic REFUTED): Commit an environment that sets QIP_ARBITRAGE_POLICY_PATH to a committed ArbitragePolicy and enables an execution node, so qip-edge-node builds the desk graph through held_as on a default deployed path.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1265,7 +1265,7 @@
     "verification": "cargo +1.94.1 test -p qip-edge-node --test arbitrage; cargo +1.94.1 test -p qip-kernel --lib a_markets_stated_holding",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L09: region half closed on the node. Mutations, each restored byte for byte: passing None for the region in ArbitrageInstaller::install failed 'a node of the installed graph carries no region'; deleting .in_region(&config.region) from main.rs failed 'main.rs no longer places the desk's graph in the cell's region'. 2026-10-24 lane L5-EDGE: gap corrected by reading the code; no code changed. 2026-10-24 lane L5-EDGE: built in 288e5887. Mutations fired: held_as ignores terms; kernel swaps the ends. Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Findings: The contract and unit-test halves hold. Bar part 2 (shipped default path) fails.  Holds: - Requirement (docs/blueprint/requirements.md:347): node identity is (asset, venue, representation, settlement stage, region). `Node` in backend/crates/edge/qip-arbitrage/src/graph.rs:138-148 derives Eq/Ord/Hash over all five fields. - edge_costs.rs:146 tests that nodes differing only in settlement or region are distinct, as the requirement asks. - Commit 288e5887 adds `HoldingTerms` and `from_terms`/`to_terms` to `WhitelistedConversion` (qip-contracts/src/policy.rs). It adds `base_terms`/`quote_terms` to `WhitelistedMarket`, mapped per side in the kernel's whitelist.rs `whitelist_for`. - It adds `held_as` in qip-edge-node/src/arbitrage.rs, called from `graph_from_whitelist_in`. - New tests: qip-edge-node/tests/arbitrage.rs `a_holding_the_whitelist_states_as_wrapped_and_pending_is_its_own_node_and_breaks_the_free_join`, and whitelist.rs `a_markets_stated_holding_terms_ship_on_the_ends_that_hold_that_instrument`. The commit message claims both were mutation-verified. I read the tests and did not run them. They look able to fail.  Fails part 2: - The behaviour only runs if a desk is installed. qip-api/src/main.rs:1061-1088 (`load_arbitrage_policy`) returns `None` when `QIP_ARBITRAGE_POLICY_PATH` is unset. Every cycle whitelist then ships empty and no cell installs a desk. - `grep -rn QIP_ARBITRAGE_POLICY_PATH infrastructure` finds nothing, so no committed environment sets it. - No committed policy states `base_terms`/`quote_terms`: grep over infrastructure/ and data/ finds none. - Separately, no execution node is deployed: `execution_nodes = {}` in test, stage and prod, and dev sets `execution_nodes_enabled = false`. - On the default path, then, no graph node is ever built, with terms"
+    "notes": "Re-graded 2026-10-18 by lane L09: region half closed on the node. Mutations, each restored byte for byte: passing None for the region in ArbitrageInstaller::install failed 'a node of the installed graph carries no region'; deleting .in_region(&config.region) from main.rs failed 'main.rs no longer places the desk's graph in the cell's region'. 2026-10-24 lane L5-EDGE: gap corrected by reading the code; no code changed. 2026-10-24 lane L5-EDGE: built in 288e5887. Mutations fired: held_as ignores terms; kernel swaps the ends. Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Findings: The contract and unit-test halves hold. Bar part 2 (shipped default path) fails.  Holds: - Requirement (docs/blueprint/requirements.md:347): node identity is (asset, venue, representation, settlement stage, region). `Node` in backend/crates/edge/qip-arbitrage/src/graph.rs:138-148 derives Eq/Ord/Hash over all five fields. - edge_costs.rs:146 tests that nodes differing only in settlement or region are distinct, as the requirement asks. - Commit 288e5887 adds `HoldingTerms` and `from_terms`/`to_terms` to `WhitelistedConversion` (qip-contracts/src/policy.rs). It adds `base_terms`/`quote_terms` to `WhitelistedMarket`, mapped per side in the kernel's whitelist.rs `whitelist_for`. - It adds `held_as` in qip-edge-node/src/arbitrage.rs, called from `graph_from_whitelist_in`. - New tests: qip-edge-node/tests/arbitrage.rs `a_holding_the_whitelist_states_as_wrapped_and_pending_is_its_own_node_and_breaks_the_free_join`, and whitelist.rs `a_markets_stated_holding_terms_ship_on_the_ends_that_hold_that_instrument`. The commit message claims both were mutation-verified. I read the tests and did not run them. They look able to fail.  Fails part 2: - The behaviour only runs if a desk is installed. qip-api/src/main.rs:1061-1088 (`load_arbitrage_policy`) returns `None` when `QIP_ARBITRAGE_POLICY_PATH` is unset. Every cycle whitelist then ships empty and no cell installs a desk. - `grep -rn QIP_ARBITRAGE_POLICY_PATH infrastructure` finds nothing, so no committed environment sets it. - No committed policy states `base_terms`/`quote_terms`: grep over infrastructure/ and data/ finds none. - Separately, no execution node is deployed: `execution_nodes = {}` in test, stage and prod, and dev sets `execution_nodes_enabled = false`. - On the default path, then, no graph node is ever built, with terms Lane L5b 2026-10-31: re-read against the code; gap restated with the three seams; nothing committed as a policy because a market choice on one simulated venue would be invented."
   },
   {
     "id": "R12-MESH-5054",
@@ -1342,9 +1342,14 @@
     "evidence": [
       "backend/crates/edge/qip-arbitrage/src/netedge.rs:73",
       "backend/crates/apps/qip-edge-node/src/arbitrage.rs set_costs from conversion.costs",
-      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs:606 costs: None"
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs:606 costs: None",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs::measured_fill_bound",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs::ArbitragePolicy::validate (costs required at a venue not stated simulated)",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_measured_fill_rate_lowers_a_stated_fill_probability_and_never_raises_it",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_market_at_a_venue_not_stated_simulated_must_state_its_costs",
+      "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs (the net edge falls by exactly each named cost; predates this lane)"
     ],
-    "gap": "The centre's whitelist builder must state per-conversion costs: settlement_risk_fraction from the venue's settlement terms and fill_probability from the venue's measured fill record, both of which the centre holds per venue. The node already prices them; nothing in qip-edge-node needs to change.",
+    "gap": "2026-10-30 (lane L5-EDGE, skeptic REFUTED on the docs example and an unbounded tally, both fixed; remaining PARTIAL): ADR 0154 decision 3 is built in code but runs only when QIP_ARBITRAGE_POLICY_PATH names a policy, which no committed environment sets, and the `simulated` flag that waives the costs requirement is the operator's own statement, tied to no feed or venue class.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1352,10 +1357,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-arbitrage",
+    "verification": "cargo test -p qip-kernel --test central -- fill_probability costs; cargo test -p qip-api the_operator_pages_example_policy_is_one_the_plane_accepts",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: the triage closure proposed deriving the costs on the node, but the node does not hold the evidence for a fill probability (its fill-time measurement is a latency, not a probability) and the settlement terms are the centre's; the producer belongs in qip-kernel central/whitelist.rs, outside this lane."
+    "notes": "Corrected 2026-10-18 by lane L09: the triage closure proposed deriving the costs on the node, but the node does not hold the evidence for a fill probability (its fill-time measurement is a latency, not a probability) and the settlement terms are the centre's; the producer belongs in qip-kernel central/whitelist.rs, outside this lane. 2026-10-30 lane L5-EDGE: WhitelistedVenue gains `simulated` (false when absent) and validate refuses costs None at a venue not stated simulated; CentralPlane tallies per policy venue the orders sent and those that filled at all, and cycle_whitelist_for lowers each stated fill_probability to min(stated, Wilson lower bound at z 1.645) past MIN_FILL_SAMPLE 30 orders, floored above zero; settlement risk stays stated. The tally is in memory and has no window. Mutations fired (5): use stated; max instead of min; no minimum sample; validate admits no costs; tally every venue a report names. The operator page's example now states `simulated`."
   },
   {
     "id": "R12-MESH-5058",
@@ -1399,7 +1404,7 @@
     "verification": "kernel test producing a whitelist from discovery",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The centre discovers templates only inside what the operator signed. Slot 8 carries the operator's conversions narrowed to the cycles the centre finds over them, so stopping discovery empties it. Handed to lane L5b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered."
   },
   {
     "id": "R12-MESH-5060",
@@ -1488,10 +1493,10 @@
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
       "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
       "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
       "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
+    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1504,7 +1509,7 @@
     "verification": "cargo test -p qip-mesh; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The old gap text 'no node constructs PeerEndpoint' is now false: the node constructs one. It just never fires. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). ADR 0116 adds that a reflex decision needing a peer's answer inside the pass is out of bounds for the port, so FIRE handling must arrive as state the cell reads on a later pass. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
+    "notes": "Round-2 independent audit, 2026-10-11: The old gap text 'no node constructs PeerEndpoint' is now false: the node constructs one. It just never fires. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). ADR 0116 adds that a reflex decision needing a peer's answer inside the pass is out of bounds for the port, so FIRE handling must arrive as state the cell reads on a later pass. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
   },
   {
     "id": "R12-MESH-5064",
@@ -1512,9 +1517,11 @@
     "current": "LegPlanner::plan always orders legs ascending by reversibility, least reversible first (backend/crates/edge/qip-arbitrage/src/plan.rs:130-150). The cell's decomposition and passive-first mechanisms choose between all-at-once and resting one leg by measured fill time (CycleRested, libs/qip-contracts/src/reflex.rs:388-410). No cycle policy field selects 'concurrent' versus 'risk-ordered': grep for concurrent/LegOrder/ExecutionPolicy in qip-arbitrage, qip-edge and qip-contracts finds none.",
     "evidence": [
       "backend/crates/edge/qip-arbitrage/src/plan.rs:130",
-      "edge/qip-arbitrage/tests/arbitrage.rs::the_least_reversible_leg_is_planned_first"
+      "edge/qip-arbitrage/tests/arbitrage.rs::the_least_reversible_leg_is_planned_first",
+      "docs/adr/0154 decision 5 (legs stay sequential, no Concurrent arm)",
+      "backend/crates/edge/qip-edge/src/cell.rs::Cell::place_cycle; src/passive.rs"
     ],
-    "gap": "No per-cycle policy field selects concurrent versus risk-ordered legs: CycleWhitelist (qip-contracts policy.rs) carries cycles, conversions and start_sizes; qip-edge-node's desk_from_whitelist_in builds PlanSettings::with_budget(PLAN_BUDGET) from a literal; LegPlanner::plan always sorts legs least-reversible first, and LegPlan consumers read steps by position. A Concurrent arm loosens the stranded-leg protection the ordering exists for, so it needs the cell's send path and the residual-risk budget (LegPlan::residual_after assumes sequential completion) revisited together, and a decision on who may select it.",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): legs stay risk-ordered, on paper as anywhere else (ADR 0154 decision 5: 'Legs stay sequential. No Concurrent arm'). A Concurrent arm removes the ordering that bounds a stranded leg (qip-arbitrage plan.rs::LegPlanner::plan sorts least-reversible first, LegPlan::residual_after assumes sequential completion, qip-edge cell.rs::Cell::place_cycle sends whole or rests the slow leg through passive.rs, sizing each leg by the previous fill), and no delegation loosens a risk control, so it cannot be implemented under tightens_only. The requirement text stands and the row stays PARTIAL on its concurrent clause; it waits for a RISK record that brings the forfeited-edge measurement ADR 0154's dissent asks for. Earlier: No per-cycle policy field selects concurrent versus risk-ordered legs: CycleWhitelist (qip-contracts policy.rs) carries cycles, conversions and start_sizes; qip-edge-node's desk_from_whitelist_in builds PlanSettings::with_budget(PLAN_BUDGET) from a literal; LegPlanner::plan always sorts legs least-reversible first, and LegPlan consumers read steps by position. A Concurrent arm loosens the stranded-leg protection the ordering exists for, so it needs the cell's send path and the residual-risk budget (LegPlan::residual_after assumes sequential completion) revisited together, and a decision on who may select it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1525,7 +1532,7 @@
     "verification": "cargo test -p qip-arbitrage --test arbitrage",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L24 2026-10-18 re-graded: not a one-field change; a field the planner honoured but the send path ignored would be a policy that reads as a control and cannot fire. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: not a one-field change; a field the planner honoured but the send path ignored would be a policy that reads as a control and cannot fire. Kept PARTIAL. Owner ruling 2026-10-31 (REGRADE_TEXT): Legs stay risk-ordered, on paper as anywhere else. A Concurrent arm removes the ordering that bounds a stranded leg, and no delegation loosens a risk control."
   },
   {
     "id": "R12-MESH-5065",
@@ -1541,10 +1548,10 @@
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
       "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
       "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
       "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
+    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1555,7 +1562,7 @@
     "verification": "cargo test -p qip-edge --test decomposition; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The verification's 75%/minimum-viable check is met cell-locally. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
+    "notes": "Round-2 independent audit, 2026-10-11: The verification's 75%/minimum-viable check is met cell-locally. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
   },
   {
     "id": "R12-MESH-5066",
@@ -1611,9 +1618,14 @@
     "status": "PARTIAL",
     "current": "Kernel score_declined scores declined central proposals (backend/crates/runtime/qip-kernel/src/platform.rs:17244), not cell/mesh cycles; refused cycles are journaled at the cell (refusals with gate) but nothing scores them.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined (proposals only)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined (proposals only)",
+      "backend/crates/libs/qip-contracts/src/wire.rs::RefusedLeg",
+      "backend/crates/edge/qip-edge/src/cell.rs::admit_cycle (legs attached to the whole-cycle refusal)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::score_cell_declined",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs::a_cycle_refused_whole_carries_its_legs_to_the_centre_and_a_leg_refusal_carries_none",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate"
     ],
-    "gap": "Cell refusals cannot be priced from the centre: a cell's report carries them as DeltaRefusal { gate, reason, venue } only (qip-edge cell.rs refusals: Vec<(String, String)>, mesh.rs DeltaRefusal), with no instrument, side or quantity, and the twin's evaluate_alternatives needs an order to re-price. Closing needs the cell wire to carry the refused intent (a qip-mesh/qip-edge change outside the kernel) or the cell to price locally; then score_declined can queue them beside the desk's own. The desk's own refusals are already captured and priced (tests/learning.rs a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate).",
+    "gap": "2026-10-31 (lane L5-EDGE, skeptic HOLDS-AS-PARTIAL): a cycle refused whole in admit_cycle is carried to the centre with its legs and priced in LEARN, but the centre ingests deltas only under QIP_MESH_CELLS and the node sends them only under QIP_MESH_PEER, both unset in every committed environment; failed and partial cycles (arbitrage_cycle_broken, partial fills) and refusals before admission (arbitrage_cap, arbitrage_legs, autonomy) carry no legs; a delta superseded in the node's slot, or re-offered after a failed pass under a new instant, loses or re-queues its refusals; and regret is judged per leg, not per cycle.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1621,10 +1633,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new kernel/learning test over cycle refusals",
+    "verification": "cargo test -p qip-kernel --test learning -- a_cells_refused_cycle; cargo test -p qip-edge --test arbitrage -- a_cycle_refused_whole",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the wire, not a missing call in score_declined."
+    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the wire, not a missing call in score_declined. 2026-10-31 lane L5-EDGE: RefusedLeg on both DeltaRefusal types (absent on the wire when empty); the cell attaches the cycle's legs to the last refusal admit_cycle recorded; the centre queues them apart from the desk's declined paths (which feed its sizing), keyed for replay, only for instruments it holds bars for, bounded by DECLINED_HISTORY, and prices them after score_filled under what the cap leaves, counted under gate=cell_cycle with the cell's gate kept on the score. The wire's Ask-is-buy side is crossed to the twin's Bid-is-long at evaluate_cell_refusal. Mutations fired (8): drop the queue call; skip the scoring pass; no replay guard; drop the refused_legs push; attach legs to the first refusal; pass the wire side through unchanged; label with the wire gate; queue unobserved instruments. Found by the skeptic and not changed here: the desk's own declined-path pricing passes book_side(Buy)=Ask to the twin, which reads Bid as long, so the desk's declined scores may carry the inverted sign; that path feeds desk sizing and is left for its owner."
   },
   {
     "id": "R12-MESH-5069",
@@ -1664,10 +1676,10 @@
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
       "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
       "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
       "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
+    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1678,7 +1690,7 @@
     "verification": "cargo test -p qip-mesh --test peer_guarantees; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: forget_expired does run in production every turn (apps/qip-edge-node/src/peer.rs:553), but with no epoch ever installed there it rejects nothing. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
+    "notes": "Round-2 independent audit, 2026-10-11: forget_expired does run in production every turn (apps/qip-edge-node/src/peer.rs:553), but with no epoch ever installed there it rejects nothing. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
   },
   {
     "id": "R12-EXEC-5071",
@@ -1991,7 +2003,7 @@
     "verification": "cargo test -p qip-prediction",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Event-market resolution runs in the cycle' holds only when QIP_DEEPBRAIN_BREADTH_PLAN is set; no committed deployment sets it, so it is not on a shipped default path."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Event-market resolution runs in the cycle' holds only when QIP_DEEPBRAIN_BREADTH_PLAN is set; no committed deployment sets it, so it is not on a shipped default path. Owner ruling 2026-10-31 (IMPLEMENT): An oracle's report never resolves a market by itself. discover proposes a resolution only when the market's own criteria, evaluated over named observations from its named source, agree with the report. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-EVENT-5084",
@@ -2446,7 +2458,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 ADR 0155 section 17: gap restated, PARTIAL kept; no code. DigitalAsset is registered with exchange T+0 settlement and a crypto spot fills on the simulated broker."
+    "notes": "2026-10-24 ADR 0155 section 17: gap restated, PARTIAL kept; no code. DigitalAsset is registered with exchange T+0 settlement and a crypto spot fills on the simulated broker. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Crypto trades on paper through the same simulated gateway as every class, and its settlement is simulated there too. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Digital assets settle on paper through a simulated chain: proceeds wait on an operator-declared finality depth, a bridge is a declared delay and fee, and nothing signs or broadcasts a transaction."
   },
   {
     "id": "R12-COVERAGE-5104",
@@ -2466,7 +2478,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Event contracts trade on paper only. An event contract is a fully-funded payoff bounded to one unit, priced only where the simulated exchange prints it, and settled only on an operator-declared, dated outcome. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: An event contract is a fully-funded payoff bounded to one unit, traded only where the simulated exchange prints it and settled only on a declared outcome; a prediction-market venue stays unlicensed."
   },
   {
     "id": "R12-COVERAGE-5105",

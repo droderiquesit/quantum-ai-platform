@@ -142,6 +142,10 @@ pub struct StepOutcome {
     /// (`tick_desk.rs`): the replay of recorded market history and every
     /// label, model, fusion and future grown from it.
     pub tick: Option<crate::tick_desk::TickRound>,
+    /// What the cognition gate did (ADR 0214): whether the AI platform was
+    /// lost, which due rounds it held and queued, and which held cycles it
+    /// drained once the platform returned.
+    pub cognition: crate::cognition::CognitionRound,
     /// A research sweep or operations pass that failed. Reported on the cycle
     /// line rather than stopping the node: both loops are advisory, and a
     /// node that stopped researching because a detector refused a reading
@@ -180,24 +184,25 @@ impl StepOutcome {
 /// 2026-10-11 the lattice's "strategic service" was a flag only tests set.
 /// It was always up in every binary, so the backlog that an outage is meant
 /// to accumulate could never accumulate in a running node. The service is
-/// now down whenever the node's `/ready` would say it is: stalled, failing
-/// cycle after cycle, halted by the kill switch, or stopping. Strategic
-/// questions then wait in the lattice's bounded backlog while every stage
-/// still runs, and they are answered when the node recovers. *Warming*,
-/// meaning no cycle has completed yet, does not count as an outage. Every
-/// node warms, and holding its first strategic answers back a cycle would be
-/// a backlog nothing went wrong to cause.
+/// down whenever the AI platform is lost as ADR 0214 defines it
+/// ([`crate::cognition::ai_platform_lost`]): failing cycle after cycle, or
+/// halted by the kill switch. Strategic questions then wait in
+/// the lattice's bounded backlog while every stage still runs, and they are
+/// answered when the node recovers. *Warming*, meaning no cycle has
+/// completed yet, does not count as an outage. Every node warms, and holding
+/// its first strategic answers back a cycle would be a backlog nothing went
+/// wrong to cause. *Stalled* and *stopping* no longer count either, since
+/// ADR 0214: the loop that asks has just come back, so a stall it sees is a
+/// clock that jumped — a tape's period, a suspended process — and not a node
+/// that stopped; and stopping is set only after the loop ends. A probe still
+/// reports both.
 ///
 /// Returns what it set.
-pub fn gate_strategic_service(
-    platform: &mut Platform,
-    status: &NodeStatus,
-    now: Timestamp,
-) -> bool {
-    let available = matches!(
-        status.unready(now),
-        None | Some(crate::status::Unready::Warming)
-    );
+pub fn gate_strategic_service(platform: &mut Platform, status: &NodeStatus) -> bool {
+    // The same predicate the cognitive loops are held on (ADR 0214), so the
+    // lattice's strategic rows and the research backlog cannot disagree
+    // about whether the AI platform is lost.
+    let available = crate::cognition::ai_platform_lost(status).is_none();
     platform.lattice_mut().set_strategic_available(available);
     available
 }
@@ -228,6 +233,7 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         warehouse: None,
         operations: None,
         tick: None,
+        cognition: crate::cognition::CognitionRound::default(),
         side_failures: Vec::new(),
     }
 }
@@ -243,6 +249,141 @@ fn drifted_references(learning: Option<&crate::learning::LearningRound>) -> Vec<
         .filter(|d| d.above_threshold)
         .map(|d| d.reference.clone())
         .collect()
+}
+
+/// One research sweep on `cycle`'s cadence, with everything that rides on
+/// it: the scout hand-off, the evolution trace, the ambient journal and the
+/// agency's drafts.
+///
+/// A function rather than a block in the loop because it runs for the
+/// cycle in hand and for each held cycle the backlog drains (ADR 0214), and
+/// two copies would let a drained sweep skip its journal. What it records
+/// is this sweep's round, never one an earlier call left on `outcome`: a
+/// drained sweep followed by a current one that was not due must not
+/// journal the drained round twice.
+fn research_pass(
+    platform: &Platform,
+    mut evolution: Option<&mut crate::evolution::EvolutionEngine>,
+    loops: &mut Loops<'_>,
+    cycle: u64,
+    now: Timestamp,
+    outcome: &mut StepOutcome,
+) {
+    let Some(research) = loops.research.as_deref_mut() else {
+        return;
+    };
+    research.note_drifted_models(drifted_references(outcome.learning.as_ref()));
+    // The bounds are the discovery desk's; with no desk there are no
+    // licensed sources and no eligible jurisdiction, so every admission is
+    // refused by name — fail closed rather than research under a
+    // jurisdiction nobody stated.
+    let (licensed, eligible) = evolution
+        .as_deref()
+        .and_then(|engine| engine.discovery_desk())
+        .map(|desk| {
+            (
+                desk.licensed_sources().clone(),
+                desk.eligible_jurisdictions().clone(),
+            )
+        })
+        .unwrap_or_default();
+    let round = match research.maybe_sweep(platform, cycle, now, &licensed, &eligible) {
+        Ok(round) => round,
+        Err(error) => {
+            outcome
+                .side_failures
+                .push(format!("research: {}", error.message()));
+            None
+        }
+    };
+    let Some(mut round) = round else {
+        return;
+    };
+    // Every request the sweep launched goes to the discovery desk as a scout
+    // job, in rank order (R12-AMBIENT-9033); the desk's next pass looks for
+    // evidence on what the sweep paid to ask about.
+    if let Some(desk) = evolution
+        .as_mut()
+        .and_then(|engine| engine.discovery_desk_mut())
+    {
+        desk.hand_off(&round.scouted);
+    }
+    // The evolution round that preceded this sweep in the same gap rides on
+    // the sweep record (R12-EXPAND-1117), so a reader of the research round
+    // sees the challengers minted and the champion crowned that its research
+    // followed, without opening the desk's own log.
+    if let Some(evolution) = outcome.evolution.as_ref() {
+        round.evolution = Some(crate::research::EvolutionTrace {
+            subject: evolution.subject.clone(),
+            proposed: evolution.proposed,
+            registered: evolution.registered,
+            challengers_minted: evolution.challenge.as_ref().map_or(0, |c| c.minted),
+            crowned: evolution.challenge.as_ref().and_then(|c| c.crowned.clone()),
+        });
+    }
+    if let Some(journal) = loops.ambient.as_deref_mut()
+        && let Err(error) = journal.record(cycle, &round, now)
+    {
+        outcome
+            .side_failures
+            .push(format!("ambient journal: {}", error.message()));
+    }
+    // The source scores of this cycle, on the same journal
+    // (R12-EXPAND-6027): a score printed on a cycle line and written
+    // nowhere is a figure nobody can check against its window.
+    if let (Some(scores), Some(journal)) =
+        (outcome.source_alpha.as_ref(), loops.ambient.as_deref_mut())
+        && let Err(error) = journal.record_source_scores(cycle, scores, now)
+    {
+        outcome
+            .side_failures
+            .push(format!("source-score journal: {}", error.message()));
+    }
+    if let Some(agency) = loops.agency.as_deref_mut() {
+        let shared = loops
+            .ambient
+            .as_deref()
+            .and_then(|journal| journal.last_correlation().cloned());
+        match agency.route(
+            cycle,
+            &round,
+            shared.as_ref(),
+            now,
+            &platform.telemetry().metrics,
+        ) {
+            Ok(routed) => outcome.agency = Some(routed),
+            Err(error) => outcome
+                .side_failures
+                .push(format!("ambient agency: {}", error.message())),
+        }
+    }
+    outcome.research = Some(round);
+}
+
+/// One tick-desk round on `cycle`'s cadence. A function for the reason
+/// [`research_pass`] is one: it runs for the cycle in hand and for each held
+/// cycle the backlog drains.
+fn tick_pass(
+    desk: &mut crate::tick_desk::TickDesk,
+    platform: &Platform,
+    cycle: u64,
+    now: Timestamp,
+    outcome: &mut StepOutcome,
+) {
+    let world = platform.world();
+    match desk.maybe_round_with_orders(
+        world.graph(),
+        cycle,
+        now,
+        platform.orders().orders(),
+        platform.fill_scores(),
+    ) {
+        Ok(Some(round)) => outcome.tick = Some(round),
+        Ok(None) => {}
+        Err(error) => outcome
+            .side_failures
+            .push(format!("tick desk: {}", error.message())),
+    }
 }
 
 /// A monotonic elapsed time as the platform's own [`Duration`].
@@ -387,6 +528,12 @@ pub struct Loops<'a> {
     /// never a stopped node; a shipper whose bookkeeping fails is a side
     /// failure on the cycle line.
     pub desk: Option<&'a mut qip_desk_ship::DeskShipper>,
+    /// Where the rounds the cognition gate holds while the AI platform is
+    /// lost wait, in order, until it returns (ADR 0214). Absent, the rounds
+    /// are still held — the gate does not depend on there being somewhere to
+    /// put them — and each held cycle is a side failure saying nothing was
+    /// queued.
+    pub backlog: Option<&'a mut crate::cognition::ResearchBacklog>,
 }
 
 /// The ledger chain the deep brain's desk books its fills on, and the producer
@@ -486,9 +633,35 @@ pub fn run_with(
             None => 0,
         };
 
-        if let Ok(guard) = status.lock() {
-            gate_strategic_service(platform, &guard, now);
-        }
+        // One reading of the node's readiness for both outage gates, so the
+        // strategic service and the cognitive loops cannot disagree about
+        // whether the AI platform is lost (ADR 0214). A poisoned lock is read
+        // through, as `set_status` writes through it: a panic in a health
+        // handler must not decide that the platform is up.
+        let lost = {
+            let guard = status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            gate_strategic_service(platform, &guard);
+            crate::cognition::ai_platform_lost(&guard)
+        };
+        let mut cognition = crate::cognition::CognitionRound {
+            lost,
+            ..crate::cognition::CognitionRound::default()
+        };
+        // Recovered: what the outage held is handed back before this cycle's
+        // own rounds, oldest first, each to the loops it was held from. It is
+        // read here and recorded drained only once its rounds have run (see
+        // the end of the cycle), so a round that does not run stays held.
+        let drained: Vec<crate::cognition::HeldWork> = if lost.is_none() {
+            loops
+                .backlog
+                .as_deref()
+                .map(|backlog| backlog.pending().cloned().collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         let revised = loops
             .permissions
@@ -544,12 +717,48 @@ pub fn run_with(
             if let Some(desk) = loops.tick.as_deref() {
                 engine.set_priors(desk.posteriors().clone());
             }
-            outcome.evolution = engine.maybe_turn(platform, cycles, now)?;
-            // After the search, on its own cadence. A model fitted from this
-            // cycle's bars and a strategy searched over them describe the same
-            // window, which is what makes the two rounds comparable after the
-            // fact.
-            outcome.learning = engine.maybe_learn(platform, cycles, now)?;
+            // Held rounds first, on the cycle they were due, so each runs
+            // exactly as it would have.
+            for work in &drained {
+                if work
+                    .loops
+                    .contains(&crate::cognition::CognitiveLoop::Search)
+                    && let Some(round) = engine.maybe_turn(platform, work.cycle, now)?
+                {
+                    outcome.evolution = Some(round);
+                }
+                if work
+                    .loops
+                    .contains(&crate::cognition::CognitiveLoop::Learning)
+                    && let Some(round) = engine.maybe_learn(platform, work.cycle, now)?
+                {
+                    outcome.learning = Some(round);
+                }
+            }
+            if lost.is_none() {
+                if let Some(round) = engine.maybe_turn(platform, cycles, now)? {
+                    outcome.evolution = Some(round);
+                }
+                // After the search, on its own cadence. A model fitted from
+                // this cycle's bars and a strategy searched over them describe
+                // the same window, which is what makes the two rounds
+                // comparable after the fact.
+                if let Some(round) = engine.maybe_learn(platform, cycles, now)? {
+                    outcome.learning = Some(round);
+                }
+            } else {
+                // Lost: no search, no fit, no promotion. What was due waits.
+                if engine.search_due(cycles) {
+                    cognition
+                        .held
+                        .insert(crate::cognition::CognitiveLoop::Search);
+                }
+                if engine.learning_due(cycles) {
+                    cognition
+                        .held
+                        .insert(crate::cognition::CognitiveLoop::Learning);
+                }
+            }
             // A third, independent cadence: discovery has no dependency on
             // whether a search or a fit ran this cycle, and gating it behind
             // either would make "no candidates are configured" and "the
@@ -569,80 +778,39 @@ pub fn run_with(
             .operations
             .as_deref()
             .is_some_and(|ops| ops.is_disabled("research"));
-        if let Some(research) = loops.research.as_deref_mut()
-            && !shed
-        {
-            research.note_drifted_models(drifted_references(outcome.learning.as_ref()));
-            let (licensed, eligible) = evolution
-                .as_deref()
-                .and_then(|engine| engine.discovery_desk())
-                .map(|desk| {
-                    (
-                        desk.licensed_sources().clone(),
-                        desk.eligible_jurisdictions().clone(),
-                    )
-                })
-                .unwrap_or_default();
-            match research.maybe_sweep(platform, cycles, now, &licensed, &eligible) {
-                Ok(round) => outcome.research = round,
-                Err(error) => outcome
-                    .side_failures
-                    .push(format!("research: {}", error.message())),
-            }
-            // Every request the sweep launched goes to the discovery desk as a
-            // scout job, in rank order (R12-AMBIENT-9033); the desk's next
-            // pass looks for evidence on what the sweep paid to ask about.
-            if let (Some(round), Some(desk)) = (
-                outcome.research.as_ref(),
-                evolution
-                    .as_deref_mut()
-                    .and_then(|engine| engine.discovery_desk_mut()),
-            ) {
-                desk.hand_off(&round.scouted);
-            }
-            // The evolution round that preceded this sweep in the same gap
-            // rides on the sweep record (R12-EXPAND-1117), so a reader of the
-            // research round sees the challengers minted and the champion
-            // crowned that its research followed, without opening the
-            // desk's own log.
-            if let (Some(round), Some(evolution)) =
-                (outcome.research.as_mut(), outcome.evolution.as_ref())
-            {
-                round.evolution = Some(crate::research::EvolutionTrace {
-                    subject: evolution.subject.clone(),
-                    proposed: evolution.proposed,
-                    registered: evolution.registered,
-                    challengers_minted: evolution.challenge.as_ref().map_or(0, |c| c.minted),
-                    crowned: evolution.challenge.as_ref().and_then(|c| c.crowned.clone()),
-                });
-            }
-            if let (Some(round), Some(journal)) =
-                (outcome.research.as_ref(), loops.ambient.as_deref_mut())
-                && let Err(error) = journal.record(cycles, round, now)
-            {
-                outcome
-                    .side_failures
-                    .push(format!("ambient journal: {}", error.message()));
-            }
-            if let (Some(round), Some(agency)) =
-                (outcome.research.as_ref(), loops.agency.as_deref_mut())
-            {
-                let shared = loops
-                    .ambient
-                    .as_deref()
-                    .and_then(|journal| journal.last_correlation().cloned());
-                match agency.route(
-                    cycles,
-                    round,
-                    shared.as_ref(),
-                    now,
-                    &platform.telemetry().metrics,
-                ) {
-                    Ok(routed) => outcome.agency = Some(routed),
-                    Err(error) => outcome
-                        .side_failures
-                        .push(format!("ambient agency: {}", error.message())),
+        if !shed && loops.research.is_some() {
+            for work in &drained {
+                if work
+                    .loops
+                    .contains(&crate::cognition::CognitiveLoop::Research)
+                {
+                    research_pass(
+                        platform,
+                        evolution.as_deref_mut(),
+                        &mut loops,
+                        work.cycle,
+                        now,
+                        &mut outcome,
+                    );
                 }
+            }
+            if lost.is_none() {
+                research_pass(
+                    platform,
+                    evolution.as_deref_mut(),
+                    &mut loops,
+                    cycles,
+                    now,
+                    &mut outcome,
+                );
+            } else if loops
+                .research
+                .as_deref()
+                .is_some_and(|research| research.due(cycles))
+            {
+                cognition
+                    .held
+                    .insert(crate::cognition::CognitiveLoop::Research);
             }
         }
         if let Some(sink) = loops.warehouse.as_deref_mut() {
@@ -654,20 +822,72 @@ pub fn run_with(
             }
         }
         if let Some(desk) = loops.tick.as_deref_mut() {
-            let world = platform.world();
-            match desk.maybe_round_with_orders(
-                world.graph(),
-                cycles,
-                now,
-                platform.orders().orders(),
-                platform.fill_scores(),
-            ) {
-                Ok(round) => outcome.tick = round,
-                Err(error) => outcome
-                    .side_failures
-                    .push(format!("tick desk: {}", error.message())),
+            for work in &drained {
+                if work.loops.contains(&crate::cognition::CognitiveLoop::Tick) {
+                    tick_pass(desk, platform, work.cycle, now, &mut outcome);
+                }
+            }
+            if lost.is_none() {
+                tick_pass(desk, platform, cycles, now, &mut outcome);
+            } else if desk.due(cycles) {
+                cognition.held.insert(crate::cognition::CognitiveLoop::Tick);
             }
         }
+        // Lost: the rounds due on this cycle wait in the backlog. Refused or
+        // unqueued, they are still not run — a full backlog is not a reason
+        // to think while the platform is lost.
+        if let Some(cause) = lost
+            && !cognition.held.is_empty()
+        {
+            let work = crate::cognition::HeldWork {
+                cycle: cycles,
+                held_at: now,
+                cause,
+                loops: cognition.held.clone(),
+            };
+            match loops.backlog.as_deref_mut() {
+                Some(backlog) => match backlog.hold(work) {
+                    Ok(()) => cognition.queued = true,
+                    Err(error) => outcome
+                        .side_failures
+                        .push(format!("research backlog: {}", error.message())),
+                },
+                None => outcome.side_failures.push(format!(
+                    "research backlog: none is attached, so cycle {cycles}'s held rounds are \
+                     not queued; they were not run either"
+                )),
+            }
+        }
+        // Each handed-back round is recorded drained once every loop it was
+        // held from actually ran this cycle; the first that did not stops the
+        // drain, so the backlog keeps its order and loses nothing.
+        if let Some(backlog) = loops.backlog.as_deref_mut() {
+            for work in &drained {
+                let ran = work.loops.iter().all(|held| match held {
+                    crate::cognition::CognitiveLoop::Search
+                    | crate::cognition::CognitiveLoop::Learning => evolution.is_some(),
+                    crate::cognition::CognitiveLoop::Research => !shed && loops.research.is_some(),
+                    crate::cognition::CognitiveLoop::Tick => loops.tick.is_some(),
+                });
+                if !ran {
+                    break;
+                }
+                match backlog.mark_drained(work.cycle, now) {
+                    Ok(()) => cognition.drained.push(work.cycle),
+                    Err(error) => {
+                        outcome
+                            .side_failures
+                            .push(format!("research backlog: {}", error.message()));
+                        break;
+                    }
+                }
+            }
+        }
+        cognition.pending = loops
+            .backlog
+            .as_deref()
+            .map_or(0, crate::cognition::ResearchBacklog::len);
+        outcome.cognition = cognition;
         if let Some(operations) = loops.operations.as_deref_mut() {
             let drifted = drifted_references(outcome.learning.as_ref());
             let facts = crate::operations::IterationFacts {
@@ -965,7 +1185,7 @@ mod tests {
         let status = shared(&brisk());
         let mut status = status.lock().expect("a fresh lock");
         assert!(
-            gate_strategic_service(&mut platform, &status, start()),
+            gate_strategic_service(&mut platform, &status),
             "premise: a warming node is not an outage"
         );
 
@@ -979,7 +1199,7 @@ mod tests {
             halted,
         };
         status.cycle_finished(&record(true));
-        assert!(!gate_strategic_service(&mut platform, &status, start()));
+        assert!(!gate_strategic_service(&mut platform, &status));
         assert!(!platform.lattice().strategic_available());
         let outcome = step(&mut platform, start(), Duration::from_secs(300));
         assert!(
@@ -988,7 +1208,7 @@ mod tests {
         );
 
         status.cycle_finished(&record(false));
-        assert!(gate_strategic_service(&mut platform, &status, start()));
+        assert!(gate_strategic_service(&mut platform, &status));
         assert!(platform.lattice().strategic_available());
     }
 
@@ -1163,6 +1383,318 @@ mod tests {
             review.backlog > 0,
             "the halted node's strategic questions did not wait in the backlog: {review:?}"
         );
+    }
+
+    /// What one cycle of the cognition test produced, in the terms ADR 0214
+    /// names.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Thought {
+        cycle: u64,
+        lost: Option<crate::status::Unready>,
+        searched: bool,
+        learned: bool,
+        researched: bool,
+        ticked: bool,
+        traversed: bool,
+        cognition: crate::cognition::CognitionRound,
+    }
+
+    /// R12-RES-10130 on the binary's loop (ADR 0214): while the AI platform is
+    /// lost — here the node's own status reports it halted, the mark a
+    /// tripped kill switch leaves on a finished cycle — no loop that produces
+    /// new cognition runs. The search,
+    /// the learning round (and so any package promotion), the research sweep
+    /// and the tick desk each produce nothing; what was due on each lost
+    /// cycle is journaled to the research backlog in order; the decision
+    /// cycle itself traverses every stage on what is installed; and when the
+    /// node is ready again the backlog drains, oldest first, before the
+    /// cycle's own rounds.
+    ///
+    /// The skeptic's refutation this answers: the strategic gate held only
+    /// the lattice's rows while REASON's neighbours — research, tick and
+    /// evolution — went on producing. Each is now asserted silent.
+    ///
+    /// Mutations (each run, each failed here, each restored by `cp` and
+    /// checked with `cmp`): run `research_pass` for the cycle in hand while
+    /// lost; drop the `backlog.hold(work)` enqueue; call `maybe_learn` in the
+    /// lost branch, which is how a new package would be promoted while lost.
+    #[test]
+    fn while_the_ai_platform_is_lost_no_loop_produces_new_cognition_and_the_backlog_queues_in_order()
+     {
+        use crate::cognition::{BacklogDestination, BacklogRecord, CognitiveLoop, ResearchBacklog};
+        use crate::status::Unready;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        let mut platform = platform(clock.clone());
+        let config = DeepBrainConfig {
+            max_cycles: Some(6),
+            ..brisk()
+        };
+        let status = shared(&config);
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let mut engine = crate::evolution::EvolutionEngine::new(
+            crate::evolution::EvolutionConfig {
+                every_cycles: 1,
+                minimum_bars: 64,
+                learning: crate::learning::LearningConfig {
+                    every_cycles: 1,
+                    minimum_bars: 64,
+                    ..crate::learning::LearningConfig::default()
+                },
+                ..crate::evolution::EvolutionConfig::default()
+            },
+            Box::new(qip_market_ingestion::synthetic::SyntheticEnvironment::demo(
+                start(),
+                qip_market_ingestion::synthetic::EnvironmentConfig {
+                    seed: 7,
+                    step: Duration::from_mins(1),
+                    ..qip_market_ingestion::synthetic::EnvironmentConfig::default()
+                },
+            )),
+            7,
+            Universe::new(),
+        )
+        .expect("the engine assembles");
+        // History enough that a search and a fit are possible at all, so a
+        // silent cycle below is the gate and not a want of bars.
+        let mut fed = start();
+        for _ in 0..600 {
+            fed = fed.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, fed).expect("the adapter feeds");
+        }
+        let mut research = crate::research::ResearchLoop::new(
+            crate::research::ResearchConfig::default(),
+            BTreeMap::new(),
+        )
+        .expect("the research loop assembles");
+        let mut tick_config = crate::tick_desk::TickDeskConfig::off();
+        tick_config.every_cycles = 1;
+        tick_config.granted = BTreeSet::from(["vendor-depth".to_string()]);
+        let mut tick = crate::tick_desk::TickDesk::new(
+            tick_config,
+            Arc::new(qip_storage::blob::MemoryBlobStore::new()),
+            Arc::new(qip_storage::blob::MemoryBlobStore::new()),
+        );
+        let mut backlog =
+            ResearchBacklog::open(&BacklogDestination::InMemory).expect("an empty backlog opens");
+
+        // Cycles 3 and 4 are lost: after cycles 2 and 3 the status folds in a
+        // finished cycle marked halted, as the run loop folds in a cycle the
+        // kill switch stopped, so the next cycle begins on a node whose own
+        // readiness says halted. Each cycle's own finish then clears it, so
+        // after 4 nothing is folded in and cycle 5 begins ready.
+        let mut thoughts: Vec<Thought> = Vec::new();
+        let summary = run_with(
+            &mut platform,
+            &archive(),
+            &config,
+            &status,
+            &stop,
+            &clock,
+            0,
+            Some(&mut engine),
+            Loops {
+                research: Some(&mut research),
+                tick: Some(&mut tick),
+                backlog: Some(&mut backlog),
+                ..Loops::default()
+            },
+            |outcome| {
+                let cycle = thoughts.len() as u64 + 1;
+                thoughts.push(Thought {
+                    cycle,
+                    lost: outcome.cognition.lost,
+                    searched: outcome.evolution.is_some(),
+                    learned: outcome.learning.is_some(),
+                    researched: outcome.research.is_some(),
+                    ticked: outcome.tick.is_some(),
+                    traversed: outcome.report.traversed_every_stage(),
+                    cognition: outcome.cognition.clone(),
+                });
+                if cycle == 2 || cycle == 3 {
+                    set_status(&status, |status| {
+                        status.cycle_finished(&CycleRecord {
+                            started_at: start(),
+                            finished_at: start(),
+                            elapsed: Duration::ZERO,
+                            traversed_every_stage: true,
+                            problems: Vec::new(),
+                            archived: 0,
+                            halted: true,
+                        });
+                    });
+                }
+            },
+        )
+        .expect("the loop runs");
+        assert_eq!(summary.cycles, 6, "{thoughts:#?}");
+        assert!(
+            thoughts.iter().all(|t| t.traversed),
+            "an AI-platform outage stopped the decision cycle: {thoughts:#?}"
+        );
+
+        // The premise: on a ready node every one of the four loops produces
+        // something on the same cadence, so silence below is the gate.
+        for healthy in &thoughts[..2] {
+            assert_eq!(healthy.lost, None, "premise: {healthy:?}");
+            assert!(
+                healthy.searched && healthy.learned && healthy.researched && healthy.ticked,
+                "premise: a ready cycle ran every cognitive loop: {healthy:?}"
+            );
+        }
+
+        // Lost: nothing new, and the due rounds queued in order.
+        let every = BTreeSet::from([
+            CognitiveLoop::Search,
+            CognitiveLoop::Learning,
+            CognitiveLoop::Research,
+            CognitiveLoop::Tick,
+        ]);
+        for (lost, pending) in thoughts[2..4].iter().zip([1usize, 2]) {
+            assert_eq!(
+                lost.lost,
+                Some(Unready::Halted),
+                "premise: the cycle began lost: {lost:?}"
+            );
+            assert!(
+                !lost.researched,
+                "the research loop swept while the AI platform was lost: {lost:?}"
+            );
+            assert!(
+                !lost.learned,
+                "a learning round ran — and could promote a package — while the AI platform \
+                 was lost: {lost:?}"
+            );
+            assert!(
+                !lost.searched,
+                "the strategy search ran while the AI platform was lost: {lost:?}"
+            );
+            assert!(
+                !lost.ticked,
+                "the tick desk ran while the AI platform was lost: {lost:?}"
+            );
+            assert_eq!(lost.cognition.held, every, "{lost:?}");
+            assert!(
+                lost.cognition.queued,
+                "the held rounds never reached the backlog: {lost:?}"
+            );
+            assert_eq!(lost.cognition.pending, pending, "{lost:?}");
+        }
+
+        // Recovered: drained oldest first, then the cycle's own rounds.
+        let recovered = &thoughts[4];
+        assert_eq!(recovered.lost, None, "{recovered:?}");
+        assert_eq!(
+            recovered.cognition.drained,
+            vec![3, 4],
+            "the backlog did not drain in the order it was held: {recovered:?}"
+        );
+        assert_eq!(recovered.cognition.pending, 0);
+        assert!(
+            recovered.searched && recovered.learned && recovered.researched && recovered.ticked,
+            "{recovered:?}"
+        );
+        assert!(backlog.is_empty());
+
+        // And the journal says the same, in order.
+        let records = crate::cognition::records(backlog.log()).expect("the backlog decodes");
+        let summary: Vec<(String, u64)> = records
+            .iter()
+            .map(|record| match record {
+                BacklogRecord::Held { work } => ("held".to_string(), work.cycle),
+                BacklogRecord::Refused { work, .. } => ("refused".to_string(), work.cycle),
+                BacklogRecord::Drained { cycle, .. } => ("drained".to_string(), *cycle),
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("held".to_string(), 3),
+                ("held".to_string(), 4),
+                ("drained".to_string(), 3),
+                ("drained".to_string(), 4),
+            ],
+            "the backlog journal is not the outage in order"
+        );
+        assert!(backlog.log().verify_chain().is_ok());
+    }
+
+    /// A held round that cannot run on recovery stays held. The drain was
+    /// once journaled before the work ran, so a research round handed back to
+    /// a node with no research loop attached (or research shed, or a later
+    /// step failing) was recorded drained, gone from the backlog, and never
+    /// run, and a restart replayed the journal to an empty backlog.
+    ///
+    /// Mutation: record a work drained whether or not its loops ran (`let ran
+    /// = true`). The first assertion fails.
+    #[test]
+    fn a_held_round_that_cannot_run_on_recovery_stays_held_and_drains_when_it_can() {
+        use crate::cognition::{BacklogDestination, CognitiveLoop, HeldWork, ResearchBacklog};
+        use crate::status::Unready;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let mut backlog =
+            ResearchBacklog::open(&BacklogDestination::InMemory).expect("an empty backlog opens");
+        backlog
+            .hold(HeldWork {
+                cycle: 7,
+                held_at: start(),
+                cause: Unready::Halted,
+                loops: BTreeSet::from([CognitiveLoop::Research]),
+            })
+            .expect("one round is held");
+        assert_eq!(backlog.len(), 1, "premise: one held round waits");
+
+        let run_once = |backlog: &mut ResearchBacklog,
+                        research: Option<&mut crate::research::ResearchLoop>|
+         -> Vec<u64> {
+            let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+            let mut platform = platform(clock.clone());
+            let config = DeepBrainConfig {
+                max_cycles: Some(1),
+                ..brisk()
+            };
+            let status = shared(&config);
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut drained = Vec::new();
+            run_with(
+                &mut platform,
+                &archive(),
+                &config,
+                &status,
+                &stop,
+                &clock,
+                0,
+                None,
+                Loops {
+                    research,
+                    backlog: Some(backlog),
+                    ..Loops::default()
+                },
+                |outcome| drained.extend(outcome.cognition.drained.iter().copied()),
+            )
+            .expect("the loop runs");
+            drained
+        };
+
+        // Recovered, but no research loop is attached: the round cannot run.
+        assert_eq!(
+            run_once(&mut backlog, None),
+            Vec::<u64>::new(),
+            "a held research round was recorded drained on a node that could not run it"
+        );
+        assert_eq!(backlog.len(), 1, "the held round was lost without running");
+
+        // With the loop back, it runs and only then leaves the backlog.
+        let mut research = crate::research::ResearchLoop::new(
+            crate::research::ResearchConfig::default(),
+            BTreeMap::new(),
+        )
+        .expect("the research loop assembles");
+        assert_eq!(run_once(&mut backlog, Some(&mut research)), vec![7]);
+        assert!(backlog.is_empty());
     }
 
     #[test]

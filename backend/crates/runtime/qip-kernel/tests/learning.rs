@@ -27,6 +27,7 @@ use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::Platform;
 use qip_market::bar::{Bar, Interval};
+use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market::quote::Tick;
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
@@ -521,6 +522,67 @@ fn a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate
 }
 
 #[test]
+fn a_declined_buy_on_a_rising_tape_is_scored_as_the_long_it_was() -> Result<()> {
+    // The failure this guards, and it was in the tree: `book_side` records a
+    // buy against the ask — the side of the book a buy consumes, the
+    // convention the cells' fill reports (`qip_contracts::wire`) and the
+    // central plane's slippage sign share — and the twin's
+    // `ActualTrade::direction` read `Bid` as long. Every refused buy the
+    // kernel handed the twin was settled as a short, so on a tape that rose
+    // after the refusal `would_have_earned` came back negative and the regret
+    // bit §12.3 tallies per rule said the veto had saved money it had cost.
+    // No test above asserts the sign, which is how it survived.
+    let mut platform = platform()?;
+    let before = quiet_bars("AAA", 90);
+    let after = bars_after("AAA", start(), 5);
+
+    // The premise, asserted rather than trusted: the twin marks its entry at
+    // the open of the bar covering the refusal and its exit at the open of
+    // the bar the horizon lands on, so what has to hold is that every price
+    // after the refusal is above every price before it — then a long earns
+    // the rise whichever two bars the twin reads, and a short pays it.
+    let price_of = |record: &SensedRecord| match record {
+        SensedRecord::Bar(bar) => vec![bar.open, bar.close],
+        other => panic!("the fixture is bars, not {other:?}"),
+    };
+    let highest_before = before
+        .iter()
+        .flat_map(price_of)
+        .max()
+        .expect("the tape before the refusal has bars");
+    let lowest_after = after
+        .iter()
+        .flat_map(price_of)
+        .min()
+        .expect("the tape after the refusal has bars");
+    assert!(
+        lowest_after > highest_before,
+        "the premise failed: the tape after the refusal ({lowest_after} at its lowest) is not \
+         above the tape before it ({highest_before} at its highest)"
+    );
+
+    platform.observe(before);
+    let order_id = refuse_one(&mut platform, "prop-refused", start())?;
+    platform.observe(after);
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+    let scores = platform.declined_scores();
+    assert_eq!(scores.len(), 1, "no declined path was priced");
+    assert_eq!(scores[0].order_id, order_id);
+    assert!(
+        scores[0].would_have_earned.is_positive(),
+        "a refused buy on a rising tape was priced as the opposite trade: it would have earned {}",
+        scores[0].would_have_earned
+    );
+    assert!(
+        scores[0].regret,
+        "a refused buy that would have earned {} is not charged to the rule as a regret",
+        scores[0].would_have_earned
+    );
+    Ok(())
+}
+
+#[test]
 fn a_declined_actions_counterfactual_record_names_the_method_that_estimated_it_and_never_joins_the_observed_outcomes()
 -> Result<()> {
     // WORLD-039. The failure this guards: a declined path's score said it was
@@ -841,14 +903,16 @@ fn a_fill_that_lost_purely_to_an_adverse_price_move_does_not_favour_the_smaller_
     // `smaller_favoured` on *every* fill that lost money before costs at
     // all, regardless of whether the size itself was the problem — a
     // smaller loss is trivially closer to zero than a larger one of the
-    // same shape. This is the exact fixture the test above used before the
-    // fix: every order here is a buy, and (as that test's own comment
-    // states) the twin's book-side convention charges a buy a loss when the
-    // tape *rises* after it, so a jump from ~100 to a flat 300 is a large
-    // *directional* loss with a transaction cost that is a rounding error
-    // beside it — the desk's default cost model charges a few basis points
-    // of round-trip commission, spread and tax against a two-hundred-percent
-    // adverse move. Before the fix this fixture is exactly what armed
+    // same shape. This is the shape of the fixture the test above used
+    // before the fix: every order here is a buy, a buy is a long, and a drop
+    // from ~100 to a flat 30 is a large *directional* loss with a
+    // transaction cost that is a rounding error beside it — the desk's
+    // default cost model charges a few basis points of round-trip
+    // commission, spread and tax against a seventy-percent adverse move.
+    // (Until 2026-10-31 this tape *rose* to 300 and the comment called that
+    // adverse, because the twin's `ActualTrade::direction` read a buy as a
+    // short; the fixture was bent to the inverted engine and passed for the
+    // wrong reason.) Before the fix this shape is exactly what armed
     // `smaller_favoured` on pure direction; after it, this fixture is the
     // mutation the fix is for, made a premise instead of an accident. If the
     // fix regresses to comparing raw simulated P&L, this fill will (wrongly)
@@ -857,7 +921,7 @@ fn a_fill_that_lost_purely_to_an_adverse_price_move_does_not_favour_the_smaller_
     platform.observe(quiet_bars("AAA", 90));
     let order_id = fill_one(&mut platform, "prop-adverse", start())?;
 
-    platform.observe(flat_bars_after("AAA", start(), 5, 300.0));
+    platform.observe(flat_bars_after("AAA", start(), 5, 30.0));
     let later = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
     let learn = later.stage(Stage::Learn).expect("learn ran");
     assert!(
@@ -1570,9 +1634,11 @@ fn the_two_reinstatement_signatures_are_held_to_one_rationale_floor() -> Result<
 fn a_larger_size_pattern_journals_a_sizing_proposal_and_leaves_every_bound_where_it_was()
 -> Result<()> {
     // ADR 0063's loosening direction. Ten filled buys before a tape that
-    // falls by half: on the twin's tape every one profits on the `trade` arm
-    // and profits more at twice the size, so `larger_size` wins on every
-    // fill. §12.4 forbids acting on that automatically, and the only
+    // triples: on the twin's tape every one profits on the `trade` arm and
+    // profits more at twice the size, so `larger_size` wins on every fill.
+    // (Until 2026-10-31 this tape *halved* and the comment said every buy
+    // profited, because the twin's `ActualTrade::direction` read a buy as a
+    // short.) §12.4 forbids acting on that automatically, and the only
     // consequence is a record: the proposal is journaled once, the cap on
     // the instrument stays at one, ADR 0055's number stays at one, and no
     // arming is on the record. A review that read the larger finding into
@@ -1583,7 +1649,7 @@ fn a_larger_size_pattern_journals_a_sizing_proposal_and_leaves_every_bound_where
     for n in 0..SAMPLE {
         fill_one(&mut platform, &format!("prop-filled-{n}"), start())?;
     }
-    platform.observe(flat_bars_after("AAA", start(), 5, 50.0));
+    platform.observe(flat_bars_after("AAA", start(), 5, 300.0));
     let scoring_time = start().saturating_add(Duration::from_days(3));
     platform.run_cycle(scoring_time);
     platform.run_cycle(scoring_time);
@@ -1678,16 +1744,17 @@ fn a_persistent_pattern_of_unfavourable_declines_on_one_instrument_narrows_only_
 
     // Every refusal here is a buy, and `Platform::capture_submission` records
     // a buy against the ask (`book_side`'s own doc comment: "a buy lifts the
-    // offer"), so `ActualTrade::direction` for it is `-1`
-    // (`qip_twin::counterfactual`'s `Bid => 1, Ask => -1`) and the twin's
-    // gross for the "trade" alternative is `(entry_price - exit_price) *
-    // quantity`: a *rise* after the refusal is what the twin charges the
-    // declined buy a loss for. The tape jumps from the quiet ~100 entry to a
-    // flat 300 immediately after the refusal, so every one of these ten
-    // declined buys should mark as correctly declined — unambiguously,
-    // because the jump is two hundred, not a trajectory nobody computed by
-    // hand.
-    platform.observe(flat_bars_after("AAA", start(), 5, 300.0));
+    // offer"), which `ActualTrade::direction` reads as the long it is
+    // (`qip_twin::counterfactual`'s `Ask => 1, Bid => -1`), so the twin's
+    // gross for the "trade" alternative is `(exit_price - entry_price) *
+    // quantity`: a *fall* after the refusal is what makes declining the buy
+    // right. The tape drops from the quiet ~100 entry to a flat 30
+    // immediately after the refusal, so every one of these ten declined
+    // buys should mark as correctly declined — unambiguously, because the
+    // drop is seventy, not a trajectory nobody computed by hand. (Until
+    // 2026-10-31 the twin read `Bid` as long, this comment documented that
+    // as the convention, and the tape *rose* to 300 to match it.)
+    platform.observe(flat_bars_after("AAA", start(), 5, 30.0));
     let scoring_time = start().saturating_add(Duration::from_days(3));
     // Two cycles: `COUNTERFACTUALS_PER_CYCLE` caps one LEARN pass at eight,
     // and ten declines need a second pass to drain — the same two-cycle
@@ -1745,7 +1812,7 @@ fn a_persistent_pattern_of_unfavourable_declines_on_one_instrument_narrows_only_
     assert!(platform.fill_scores().is_empty());
 
     // Ten filled buys on `AAA`, submitted two days in — once the tape has
-    // already settled onto the flat 300 plateau, not during the jump that
+    // already settled onto the flat 30 plateau, not during the drop that
     // produced it. This is deliberate: a fill whose entry and exit both sit
     // on the plateau has an *identical* twin entry and exit price, so its
     // `trade` arm's gross is exactly zero and its only regret is the
@@ -2115,7 +2182,13 @@ fn one_allocation_yields_at_least_one_alternate_size_and_one_rejected_opportunit
     use qip_contracts::action::{ShadowPortfolio, ShadowRecord};
 
     let mut platform = platform()?;
-    platform.observe(bars("AAA", 90));
+    // A quiet tape at 100 before the refusal and a rising one after it, so
+    // the declined buy is a regret — the shadow this test needs. Until
+    // 2026-10-31 the tape before was `bars`, which ends near 109 after its
+    // jump, so the twin entered high and exited on the 101-105 that follows:
+    // a fall, which only read as a regret because the twin settled a buy as
+    // a short. The premise is asserted below rather than inherited.
+    platform.observe(quiet_bars("AAA", 90));
 
     let order_id = refuse_one(&mut platform, "prop-test", start())?;
 
@@ -2126,6 +2199,10 @@ fn one_allocation_yields_at_least_one_alternate_size_and_one_rejected_opportunit
     assert!(
         !declined_scores.is_empty(),
         "at least one order should have been declined and scored"
+    );
+    assert!(
+        declined_scores.iter().any(|score| score.regret),
+        "the premise failed: a declined buy on a rising tape scored as no regret: {declined_scores:?}"
     );
 
     for score in declined_scores {
@@ -2157,6 +2234,54 @@ fn one_allocation_yields_at_least_one_alternate_size_and_one_rejected_opportunit
         "a declined allocation should generate both size and opportunity shadows"
     );
 
+    Ok(())
+}
+
+// --- admission: received before it happened (ADR 0132, R12-TICK-2053) -----
+
+/// The centre holds every sensed record to the one admission rule by the
+/// times the record carries: a tick captured before the instant it says it
+/// happened was knowable before it was true, so it reaches no series and is
+/// reported as a capture problem rather than absorbed. The same tick with
+/// its capture at or after its instant is absorbed. Mutation: drop the
+/// `Admission::check_order` arm in `Platform::absorb_records` and the
+/// contaminated tick is absorbed, moving the close feature.
+#[test]
+fn a_tick_captured_before_it_happened_is_refused_at_admission_and_reported() -> Result<()> {
+    let mut platform = platform()?;
+    let at = start().saturating_add(Duration::from_secs(60));
+
+    let absorbed = platform.observe(vec![late_tick("AAA", at, Duration::from_secs(-5), "123")]);
+    assert_eq!(
+        absorbed, 0,
+        "a tick received before it happened was absorbed"
+    );
+    let report = platform.run_cycle(at);
+    let problems: Vec<&String> = report
+        .stages
+        .iter()
+        .flat_map(|stage| stage.problems.iter())
+        .collect();
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.contains("received before it happened")),
+        "the refusal was not reported as a capture problem: {problems:?}"
+    );
+
+    // The same tick, captured five seconds after it happened: absorbed.
+    let later = at.saturating_add(Duration::from_secs(120));
+    let absorbed = platform.observe(vec![late_tick("AAA", later, Duration::from_secs(5), "123")]);
+    assert_eq!(absorbed, 1, "an ordinary late tick was refused");
+    let report = platform.run_cycle(later.saturating_add(Duration::from_secs(10)));
+    assert!(
+        !report
+            .stages
+            .iter()
+            .flat_map(|stage| stage.problems.iter())
+            .any(|problem| problem.contains("received before it happened")),
+        "an ordinary tick was reported as received before it happened"
+    );
     Ok(())
 }
 
@@ -2527,5 +2652,388 @@ fn a_resolved_prediction_updates_the_calibration_report() -> Result<()> {
         (0.0..=1.0).contains(&calibration.brier_score),
         "{calibration:?}"
     );
+    Ok(())
+}
+
+// --- the historical universe (R12-TICK-2090) --------------------------------
+
+fn members_as_of(platform: &Platform, at: Timestamp) -> Vec<String> {
+    platform
+        .universe_history()
+        .members_as_of(at)
+        .iter()
+        .map(|listing| listing.object_id.as_str().to_string())
+        .collect()
+}
+
+/// R12-TICK-2090: the platform keeps the universe that existed. A delisting
+/// announced on the tape ends the name's membership at its ex-date and not
+/// before, so a backtest as of a date before the ex-date still holds it; a
+/// renaming opens a new symbol era at its ex-date; and a venue the platform
+/// withdraws on feasibility evidence is an outage in the history from the
+/// withdrawal on, which is what a backtest across that window reports.
+///
+/// Mutations: drop the `delist` call in `queue_corporate_action` and the
+/// membership after the ex-date still names BBB; drop the `open_outage` call
+/// in `withdraw_venue` and the outage query comes back empty.
+#[test]
+fn a_delisting_on_the_tape_ends_membership_at_its_ex_date_and_a_withdrawn_venue_is_an_outage()
+-> Result<()> {
+    let mut platform = platform()?;
+    let ex = start().saturating_add(Duration::from_days(3));
+    assert_eq!(
+        members_as_of(&platform, start()),
+        vec!["obj-AAA".to_string(), "obj-BBB".to_string()],
+        "the premise: every assembled instrument is listed from the assembly instant"
+    );
+
+    let absorbed = platform.observe(vec![
+        SensedRecord::CorporateAction(Box::new(CorporateAction {
+            object_id: object("BBB"),
+            ex_date: ex,
+            record_date: None,
+            payment_date: None,
+            kind: CorporateActionKind::Delisting {
+                reason: "the product failed".to_string(),
+            },
+            announced_at: start(),
+        })),
+        SensedRecord::CorporateAction(Box::new(CorporateAction {
+            object_id: object("AAA"),
+            ex_date: ex,
+            record_date: None,
+            payment_date: None,
+            kind: CorporateActionKind::Renamed {
+                new_symbol: "AAX".to_string(),
+            },
+            announced_at: start(),
+        })),
+    ]);
+    assert_eq!(absorbed, 2, "the premise: both actions were absorbed");
+    assert_eq!(
+        members_as_of(&platform, ex.saturating_sub(Duration::from_secs(1))),
+        vec!["obj-AAA".to_string(), "obj-BBB".to_string()],
+        "a delisting announced early must not end membership before its ex-date"
+    );
+    assert_eq!(
+        members_as_of(&platform, ex),
+        vec!["obj-AAA".to_string()],
+        "the delisted name is still a member at its ex-date"
+    );
+    assert_eq!(
+        platform
+            .universe_history()
+            .resolve("AAX", ex)
+            .map(|id| id.as_str().to_string()),
+        Some("obj-AAA".to_string()),
+        "the new symbol does not resolve from its ex-date"
+    );
+    assert!(
+        platform
+            .universe_history()
+            .resolve("AAX", start())
+            .is_none(),
+        "the new symbol resolved before it existed"
+    );
+
+    // The venue outage: nothing is out until the desk venue is withdrawn.
+    assert!(
+        platform
+            .universe_history()
+            .outages_overlapping("simulated-venue", start(), Timestamp::MAX)
+            .is_empty(),
+        "the premise: no outage before the withdrawal"
+    );
+    withdraw_the_desk_venue(&mut platform)?;
+    let outages = platform.universe_history().outages_overlapping(
+        "simulated-venue",
+        start(),
+        start().saturating_add(Duration::from_secs(1)),
+    );
+    assert_eq!(
+        outages.len(),
+        1,
+        "the withdrawal did not open an outage: {outages:?}"
+    );
+    assert_eq!(outages[0].from, start());
+    assert_eq!(
+        outages[0].until,
+        Timestamp::MAX,
+        "an outage nobody has reinstated is open"
+    );
+    assert!(
+        outages[0].reason.contains("feasibility evidence"),
+        "{}",
+        outages[0].reason
+    );
+    Ok(())
+}
+
+// --- the fill's participation reaches the twin's calibration (R12-TICK-2080)
+
+/// R12-TICK-2080: the LEARN stage hands the twin's calibration each scored
+/// fill's participation in its bar's volume beside the fill error, so the
+/// twin can tell an impact misfit from a spread misfit; without it every
+/// error was charged to the spread. Mutation: pass `None` for the
+/// participation in `score_filled` — the calibration counts no fill with a
+/// size and the assertion fails.
+#[test]
+fn a_scored_fill_reaches_the_twins_calibration_with_its_participation() -> Result<()> {
+    let mut platform = platform()?;
+    let mut tape = quiet_bars("AAA", 90);
+    let last = tape.pop().expect("ninety bars");
+    let last_at = match &last {
+        SensedRecord::Bar(bar) => bar.open_time,
+        _ => unreachable!("quiet_bars produces bars"),
+    };
+    tape.push(bar("AAA", last_at, 90.0, 90.0));
+    platform.observe(tape);
+    fill_one(&mut platform, "prop-participation", start())?;
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+    let scores = platform.fill_scores();
+    assert_eq!(scores.len(), 1, "premise: the fill was priced");
+    assert!(
+        scores[0].trade_error_bps.is_some(),
+        "premise: the twin priced an entry to compare the fill with"
+    );
+    let venue = platform
+        .fill_calibration()
+        .venue(&scores[0].venue)
+        .expect("the venue was calibrated from the fill");
+    assert_eq!(venue.observations, 1);
+    assert_eq!(
+        venue.participation_observations, 1,
+        "the fill reached the calibration without its participation"
+    );
+    Ok(())
+}
+
+// --- measured decision latency reaches the capacity probe (R12-TICK-2074) --
+
+/// The shortfall against the decision-time mark the SIMULATE stage's
+/// capacity probe reported, in basis points, and the latency it arrived
+/// after, in seconds, read off the stage detail.
+fn probe_shortfall(detail: &str) -> (f64, f64) {
+    let after = detail
+        .split(", arriving ")
+        .nth(1)
+        .expect("the probe reported its arrival");
+    let seconds = after
+        .split("s after the decision at ")
+        .next()
+        .and_then(|figure| figure.trim().parse().ok())
+        .expect("the latency is a number");
+    let bps = after
+        .split("s after the decision at ")
+        .nth(1)
+        .and_then(|rest| rest.split("bps").next())
+        .and_then(|figure| figure.trim().parse().ok())
+        .expect("the shortfall is a number");
+    (seconds, bps)
+}
+
+/// R12-TICK-2074. The platform's own decision latency — SENSE through ACT,
+/// measured every cycle — is a condition the SIMULATE stage's capacity
+/// probe runs under, so a simulated execution arrives as late as this
+/// platform's decisions do. Two platforms on the same tape and seed differ
+/// only in the latency they have measured: the slow one's probe reports the
+/// simulator applied a latency, and its execution costs more.
+///
+/// Mutation: in `capacity_probe`, calibrate from an empty sample set — no
+/// latency condition is applied, the detail does not name one and the two
+/// probes cost the same.
+///
+/// On a tape that moves against the order. A measured latency on a random
+/// walk can as easily land on a better price as a worse one — the first
+/// version of this test, on the noisy tape the other tests use, saw the
+/// slow probe fill 22bps better — so the property is asserted where the
+/// requirement states it: a later execution pays the move it waited through.
+#[test]
+fn a_measured_decision_latency_pushes_the_simulated_execution_later_and_worsens_its_fill()
+-> Result<()> {
+    let run = |latencies: &[Duration]| -> Result<String> {
+        let mut platform = platform()?;
+        // A tape rising one percent a bar and nothing else: the probe's
+        // drift is the trend and its volatility the floor, so a buy that
+        // arrives later pays the move it waited through and no draw of
+        // noise can hand it a better price.
+        let rising: Vec<SensedRecord> = (0..120)
+            .map(|i| {
+                let open = 100.0 * 1.01_f64.powi(i);
+                let at = start().saturating_sub(Duration::from_days(120 - i64::from(i)));
+                bar("AAA", at, open, open * 1.01)
+            })
+            .collect();
+        platform.observe(rising);
+        for latency in latencies {
+            platform.observe_decision_latency(*latency);
+        }
+        let report = platform.run_cycle(start());
+        let simulate = report.stage(Stage::Simulate).expect("simulate ran");
+        assert!(
+            simulate.detail.contains("capacity probe"),
+            "the premise: the probe ran: {}",
+            simulate.detail
+        );
+        Ok(simulate.detail.clone())
+    };
+    let prompt = run(&[])?;
+    let slow = run(&[
+        Duration::from_secs(60),
+        Duration::from_secs(90),
+        Duration::from_secs(120),
+    ])?;
+    assert!(
+        !prompt.contains("latency"),
+        "premise: a platform with no measured latency probes without one: {prompt}"
+    );
+    assert!(
+        slow.contains("latency"),
+        "the simulator did not apply the measured decision latency: {slow}"
+    );
+    let ((prompt_secs, prompt_bps), (slow_secs, slow_bps)) =
+        (probe_shortfall(&prompt), probe_shortfall(&slow));
+    assert!(
+        prompt_secs < 1.0 && slow_secs >= 60.0,
+        "the measured latency pushed the execution later: {prompt_secs}s against {slow_secs}s"
+    );
+    assert!(
+        slow_bps > prompt_bps,
+        "a slower decision did not worsen the fill: {slow_bps} bps against {prompt_bps} bps"
+    );
+    Ok(())
+}
+
+/// A report from a cell that refused one two-leg cycle on `AAA` whole.
+fn report_refusing_a_cycle(cell: &str, at: Timestamp) -> qip_kernel::central::CellReport {
+    report_refusing_a_cycle_on(cell, "AAA", at)
+}
+
+/// The same, on `symbol`.
+fn report_refusing_a_cycle_on(
+    cell: &str,
+    symbol: &str,
+    at: Timestamp,
+) -> qip_kernel::central::CellReport {
+    use qip_contracts::message::BookSide;
+    use qip_contracts::venue::VenueId;
+    use qip_contracts::wire::RefusedLeg;
+    let leg = |side| RefusedLeg {
+        object_id: object(symbol),
+        venue: VenueId::new("XNYS"),
+        side,
+        quantity: dec!("10"),
+        reference_price: dec!("100"),
+    };
+    qip_kernel::central::CellReport::new(cell, at).with_refusals(vec![
+        // A refusal with no legs: counted at the cell, nothing to price.
+        qip_mesh::delta::DeltaRefusal {
+            gate: "arbitrage_cap".to_string(),
+            reason: "past the per-pass cap".to_string(),
+            venue: None,
+            legs: Vec::new(),
+        },
+        qip_mesh::delta::DeltaRefusal {
+            gate: "arbitrage_cycle".to_string(),
+            reason: "cycle c-1 is refused whole: its leg is not admitted".to_string(),
+            venue: None,
+            legs: vec![leg(BookSide::Ask), leg(BookSide::Bid)],
+        },
+    ])
+}
+
+#[test]
+fn a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate() -> Result<()> {
+    // The failure this guards (R12-MESH-5068, blueprint §17.2): a cell's
+    // refusal reached the centre as a gate and a sentence, so a declined
+    // cycle was counted and never priced, and nothing could say whether the
+    // coordination rule that refused it was too conservative.
+    let mut platform = platform()?;
+    // Flat at 100 before the refusal and rising to 105 after it, so the
+    // direction of the move is known and the sign of each leg is checkable.
+    platform.observe(quiet_bars("AAA", 90));
+    platform.ingest_cell_report(report_refusing_a_cycle("cell-a", start()), start())?;
+    // Premise: a replay of the same report queues nothing twice, and nothing
+    // is priced before the horizon has passed.
+    platform.ingest_cell_report(report_refusing_a_cycle("cell-a", start()), start())?;
+    assert_eq!(
+        platform.cell_declined_awaiting_score(),
+        2,
+        "one queued path per leg of the refused cycle, and none for the replay"
+    );
+    // A cycle on an instrument the centre holds no bars for could never fall
+    // due and would hold its window slots for good: counted, not queued.
+    platform.ingest_cell_report(
+        report_refusing_a_cycle_on("cell-b", "ZZZ", start()),
+        start(),
+    )?;
+    assert_eq!(platform.cell_declined_awaiting_score(), 2);
+    assert_eq!(
+        recorded(&platform).counter(
+            names::COUNTERFACTUALS_UNSCORED,
+            &labels([("reason", "unobserved_instrument")])
+        ),
+        2
+    );
+    platform.run_cycle(start());
+    assert!(
+        platform.cell_declined_scores().is_empty(),
+        "a refused leg was priced before its horizon passed"
+    );
+
+    platform.observe(bars_after("AAA", start(), 5));
+    let later = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let learn = later.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn
+            .detail
+            .contains("leg(s) of cells' refused cycles priced"),
+        "LEARN did not report pricing a cell's refusal ({} still waiting): {}",
+        platform.cell_declined_awaiting_score(),
+        learn.detail
+    );
+    let scores = platform.cell_declined_scores();
+    assert_eq!(scores.len(), 2, "one score per leg, once each: {scores:?}");
+    assert!(scores.iter().all(|score| score.gate == "arbitrage_cycle"
+        && score.cell == "cell-a"
+        && score.object_id == object("AAA")));
+    assert_eq!(
+        recorded(&platform).counter(
+            names::COUNTERFACTUALS_SCORED,
+            &labels([("gate", "cell_cycle")])
+        ),
+        2,
+        "the scores are not counted under the one central label"
+    );
+    // The cell's gate string is kept on the score and never minted into a
+    // label: it arrives on a wire that authenticates nobody.
+    assert_eq!(
+        recorded(&platform).counter(
+            names::COUNTERFACTUALS_SCORED,
+            &labels([("gate", "arbitrage_cycle")])
+        ),
+        0
+    );
+    // The direction is the leg's own. The tape sat at 100 and rose to 105
+    // after the refusal, so the leg that would have bought earns more than the leg that
+    // would have sold — and earns something. The wire says `Ask` for a buy
+    // and the twin reads `Bid` as long; a seam that passed the side through
+    // unchanged scored every leg in the direction it did not propose.
+    let earned = |side: &str| {
+        scores
+            .iter()
+            .find(|score| score.order_id.as_str().ends_with(side))
+            .map(|score| score.would_have_earned)
+            .expect("a score for the leg")
+    };
+    let (bought, sold) = (earned("leg-0"), earned("leg-1"));
+    assert!(
+        bought.is_positive() && (bought - sold).is_positive(),
+        "the buy leg earned {bought} and the sell leg {sold} on a rising tape"
+    );
+    // And kept out of the desk's own declined sample, which sizes the desk.
+    assert!(platform.declined_scores().is_empty());
     Ok(())
 }

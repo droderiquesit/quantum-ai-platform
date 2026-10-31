@@ -767,6 +767,10 @@ module "execution_node" {
   # a property of where that cell sits, not of the environment. Empty is every
   # venue at home, which is what every node has run as.
   cross_region_mirror_path = each.value.cross_region_mirror_path
+  # ADR 0116: null for every declared node until a peer has a stable address
+  # (modules/execution-node/README.md, "The peer mesh is declared here and is
+  # null everywhere").
+  peer_mesh = each.value.peer_mesh
 
   # Per node and never defaulted; see the variable's own description.
   region_allocation = each.value.region_allocation

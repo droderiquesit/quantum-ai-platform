@@ -705,7 +705,7 @@ fn run() -> Result<()> {
         "  source alpha:     {}",
         if source_alpha_every == 0 {
             format!(
-                "disabled ({}=0 or unset)",
+                "disabled ({}=0)",
                 qip_deepbrain::source_alpha::SOURCE_ALPHA_EVERY_VARIABLE
             )
         } else {
@@ -995,6 +995,11 @@ fn run() -> Result<()> {
         "  operations:       level shifts in iteration time open an incident; the one runbook \
          may switch off research until restart, and its audit record is journalled first"
     );
+    println!(
+        "  incidents:        each is journalled with its audit records and drafted, with a \
+         replay fixture of its journal window, to the operations outbox; nothing is sent, and \
+         scaling, rollback, restart or drain is left to a person (ADR 0213)"
+    );
 
     // The tick desk (`tick_desk.rs`): the one reader of recorded market
     // history in a shipped binary. Off unless QIP_DEEPBRAIN_TICK_EVERY is
@@ -1031,6 +1036,23 @@ fn run() -> Result<()> {
         println!("    {reference}: {why}");
     }
 
+    // The research backlog (ADR 0214): while the AI platform is lost —
+    // this node's own readiness reporting stalled, persistently failing,
+    // halted or stopping — the search, learning, research and tick rounds
+    // due on a cycle are held here instead of run, journaled in order beside
+    // the event log, and drained when the node is ready again. Always
+    // attached: a broken chain or a journal over its bound stops the process
+    // here rather than running a gate with nowhere to queue.
+    let backlog_destination =
+        qip_deepbrain::cognition::BacklogDestination::beside(&config.event_log);
+    let mut backlog = qip_deepbrain::cognition::ResearchBacklog::open(&backlog_destination)?;
+    println!(
+        "  research backlog: {} ({} held round(s) restored, capacity {})",
+        backlog_destination.describe(),
+        backlog.len(),
+        backlog.capacity()
+    );
+
     let run = node::run_with(
         &mut platform,
         &archive,
@@ -1049,6 +1071,7 @@ fn run() -> Result<()> {
             agency: Some(&mut agency),
             warehouse: warehouse.as_mut(),
             desk: Some(&mut desk_shipper),
+            backlog: Some(&mut backlog),
         },
         |outcome| {
             println!();
@@ -1125,6 +1148,9 @@ fn run() -> Result<()> {
                             .join(", ")
                     );
                 }
+            }
+            if !outcome.cognition.is_quiet() {
+                println!("  {}", outcome.cognition.describe());
             }
             if let Some(round) = &outcome.tick {
                 println!("  {}", round.describe());

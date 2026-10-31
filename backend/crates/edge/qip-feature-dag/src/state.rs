@@ -15,6 +15,7 @@ use qip_contracts::{BookSide, MarketMessage, MessageBody, TradeCondition, VenueS
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_market::book::{BookLevel, OrderBook};
+use qip_sequencing::align::Placed;
 use std::collections::BTreeMap;
 
 /// Observations kept per instrument, per series.
@@ -130,6 +131,15 @@ pub struct InstrumentState {
     status: VenueStatus,
     /// `(grid bucket, mid)` — at most one entry per bucket, latest wins.
     samples: Vec<(i64, Decimal)>,
+    /// Where each mid sample sits in time, one per entry of `samples`
+    /// (R12-TICK-2062): the venue's instant, the clock's doubt about it and
+    /// the instant it arrived here. A cross-instrument feature that compares
+    /// two instruments' samples asks these whether the clocks can support an
+    /// order between them, rather than reading one off the bucket grid.
+    placements: Vec<Placed>,
+    /// The placement of the message being applied, taken before the touch
+    /// is refreshed so the sample it records carries it.
+    applying: Option<Placed>,
     spreads: Vec<Decimal>,
     /// Order-flow imbalance increments, one per touch change.
     flow: Vec<f64>,
@@ -156,6 +166,8 @@ impl InstrumentState {
             orders: BTreeMap::new(),
             status: VenueStatus::Open,
             samples: Vec::new(),
+            placements: Vec::new(),
+            applying: None,
             spreads: Vec::new(),
             flow: Vec::new(),
             trades: Vec::new(),
@@ -181,6 +193,11 @@ impl InstrumentState {
     /// Sampled mid history as `(bucket, mid)`, oldest first.
     pub fn samples(&self) -> &[(i64, Decimal)] {
         &self.samples
+    }
+
+    /// Where each of [`Self::samples`] sits in time, index for index.
+    pub fn placements(&self) -> &[Placed] {
+        &self.placements
     }
 
     /// Observed spreads, one per touch change, oldest first.
@@ -233,8 +250,14 @@ impl InstrumentState {
         as_of.since(self.updated_at) > limit
     }
 
-    fn apply(&mut self, message: &MarketMessage) -> Result<()> {
+    /// Apply `message` whose venue stamp the clock discipline doubts by
+    /// `uncertainty` (a half-width). The cell is the caller that knows the
+    /// bound; [`MarketState::apply`] with no bound records the venue's stamp
+    /// as exact, which is what every caller did before and what a test that
+    /// states no clock still means.
+    fn apply_placed(&mut self, message: &MarketMessage, uncertainty: Duration) -> Result<()> {
         let at = message.venue_time;
+        self.applying = Some(Placed::new(at, uncertainty, message.capture_time)?);
         self.updated_at = at;
         self.book.at = at;
         self.book.sequence = message.origin.sequence;
@@ -339,6 +362,7 @@ impl InstrumentState {
                 self.book.bids.clear();
                 self.book.asks.clear();
                 self.samples.clear();
+                self.placements.clear();
                 self.spreads.clear();
                 self.flow.clear();
                 self.trades.clear();
@@ -452,14 +476,27 @@ impl InstrumentState {
             push_capped(&mut self.spreads, spread, self.history);
         }
         if let Some(mid) = self.book.mid() {
-            // The sample series stays strictly ascending in bucket. A message
-            // that arrives out of venue order refreshes the book but does not
-            // rewrite history, so two instruments' series stay alignable.
             let bucket = bucket_of(at, self.sample_interval);
+            // The placement of the message that set this mid; a sample
+            // revised inside its bucket takes the reviser's placement, as it
+            // takes the reviser's mid. Absent only when the touch is
+            // refreshed outside a message, which keeps the sample where it
+            // was placed.
+            let placed = self.applying;
             match self.samples.last_mut() {
-                Some(slot) if slot.0 == bucket => slot.1 = mid,
+                Some(slot) if slot.0 == bucket => {
+                    slot.1 = mid;
+                    if let (Some(placed), Some(last)) = (placed, self.placements.last_mut()) {
+                        *last = placed;
+                    }
+                }
                 Some(slot) if slot.0 > bucket => {}
-                _ => push_capped(&mut self.samples, (bucket, mid), self.history),
+                _ => {
+                    push_capped(&mut self.samples, (bucket, mid), self.history);
+                    if let Some(placed) = placed {
+                        push_capped(&mut self.placements, placed, self.history);
+                    }
+                }
             }
         }
     }
@@ -555,6 +592,14 @@ impl MarketState {
 
     /// Fold one message into the state.
     pub fn apply(&mut self, message: &MarketMessage) -> Result<()> {
+        self.apply_placed(message, Duration::ZERO)
+    }
+
+    /// Apply `message` with the clock discipline's doubt about its venue
+    /// stamp (R12-TICK-2062), so the mid sample it records can be aligned
+    /// against another instrument's without asserting an order the clocks
+    /// cannot support.
+    pub fn apply_placed(&mut self, message: &MarketMessage, uncertainty: Duration) -> Result<()> {
         let history = self.history;
         let interval = self.sample_interval;
         let entry = self
@@ -569,7 +614,7 @@ impl MarketState {
                     interval,
                 )
             });
-        entry.apply(message)
+        entry.apply_placed(message, uncertainty)
     }
 
     /// What is known about one instrument.

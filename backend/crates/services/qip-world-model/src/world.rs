@@ -444,6 +444,18 @@ impl WorldModel {
     /// [`CausalEdge::validate`] for the whole-platform order stop a blank end
     /// caused three stages downstream, and why refusing here rather than
     /// absorbing it is the smaller failure.
+    /// Apply a measured market reaction to a world event to the causal graph
+    /// (R12-WORLD-6015); see [`crate::granger::apply_reaction`].
+    pub fn apply_reaction(
+        &mut self,
+        reaction: &crate::reaction::ReactionEpisode,
+        event_direction: f64,
+        mechanism: crate::causal::Mechanism,
+        now: Timestamp,
+    ) -> Result<crate::granger::ReactionOutcome> {
+        crate::granger::apply_reaction(&mut self.causal, reaction, event_direction, mechanism, now)
+    }
+
     pub fn claim_causal(&mut self, edge: CausalEdge) -> Result<()> {
         // `validate` refuses an edge citing a quantum result, as `add` and
         // `reestimate` do (R12-QUANT-4044).

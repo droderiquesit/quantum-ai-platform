@@ -1560,6 +1560,7 @@ fn arbitrage_policy(venues: &[&str]) -> ArbitragePolicy {
                     WhitelistedVenue {
                         class: VenueClass::Exchange,
                         taker_cost: dec!("0.0005"),
+                        simulated: true,
                     },
                 )
             })
@@ -1622,6 +1623,7 @@ fn report_with_withdrawn_venue_refusals(cell: &str, venue: &str, count: usize) -
                 gate: qip_contracts::feasibility::GATE_WITHDRAWN_VENUE.to_string(),
                 reason: format!("{venue} is withdrawn on feasibility evidence"),
                 venue: Some(venue.to_string()),
+                legs: Vec::new(),
             })
             .collect(),
     )
@@ -1635,6 +1637,7 @@ fn report_with_lot_refusal_from(cell: &str, venue: &str) -> CellReport {
         gate: "feasibility_lot".to_string(),
         reason: "10.5 is not a whole number of lots".to_string(),
         venue: Some(venue.to_string()),
+        legs: Vec::new(),
     }])
 }
 
@@ -2069,6 +2072,7 @@ fn a_refusal_naming_a_venue_no_grant_permits_is_counted_unknown_and_kept_out_of_
             gate: "halted".to_string(),
             reason: "the cell is halted".to_string(),
             venue: Some(VENUE.to_string()),
+            legs: Vec::new(),
         }]);
     let ingestion = platform.ingest_cell_report(posture, start())?;
     assert!(ingestion.feasibility_refusals.is_empty());
@@ -5627,6 +5631,7 @@ fn report_with_many_lot_refusals(cell: &str, venue: &str, count: usize) -> CellR
                 gate: "feasibility_lot".to_string(),
                 reason: "10.5 is not a whole number of lots".to_string(),
                 venue: Some(venue.to_string()),
+                legs: Vec::new(),
             })
             .collect(),
     )
@@ -9287,5 +9292,189 @@ fn a_twin_that_agrees_with_a_cell_venue_holds_no_strategy_trading_there() -> Res
         "an agreeing twin narrowed the grant: {:?}",
         granted.detail
     );
+    Ok(())
+}
+
+// --- ADR 0154 decision 3: costs required, fill lowered by measurement ----------
+
+/// [`arbitrage_policy`] with `costs` stated on every market, at a venue
+/// stated simulated or not.
+fn arbitrage_policy_with_costs(
+    venues: &[&str],
+    fill_probability: Option<Decimal>,
+    simulated: bool,
+) -> ArbitragePolicy {
+    let mut policy = arbitrage_policy(venues);
+    for terms in policy.venues.values_mut() {
+        terms.simulated = simulated;
+    }
+    for market in &mut policy.markets {
+        market.costs =
+            fill_probability.map(|fill_probability| qip_contracts::policy::WhitelistedCosts {
+                tax_duty_fraction: Decimal::ZERO,
+                logistics_fraction: Decimal::ZERO,
+                settlement_risk_fraction: Decimal::ZERO,
+                fill_probability,
+                borrow_rate_annual: Decimal::ZERO,
+            });
+    }
+    policy
+}
+
+/// Ingest `sent` one-unit orders at [`VENUE`], the first `filled` of them
+/// filled in full, as one report.
+fn ingest_orders(
+    plane: &mut CentralPlane,
+    id: &StrategyId,
+    prefix: &str,
+    sent: usize,
+    filled: usize,
+) -> Result<()> {
+    ingest_orders_at(plane, id, VENUE, prefix, sent, filled)
+}
+
+/// [`ingest_orders`] at a named venue.
+fn ingest_orders_at(
+    plane: &mut CentralPlane,
+    id: &StrategyId,
+    at: &str,
+    prefix: &str,
+    sent: usize,
+    filled: usize,
+) -> Result<()> {
+    let mut orders = Vec::new();
+    let mut fills = Vec::new();
+    for n in 0..sent {
+        let (order, fill) = strategy_order_and_fill(
+            id,
+            &format!("{prefix}-{n}"),
+            qip_contracts::message::BookSide::Ask,
+            dec!("1"),
+            dec!("50"),
+            start(),
+        );
+        let (mut order, mut fill) = (order, fill);
+        order.venue = VenueId::new(at);
+        fill.venue = VenueId::new(at);
+        orders.push(order);
+        if n < filled {
+            fills.push(fill);
+        }
+    }
+    let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
+    plane.ingest(
+        CellReport::new(CELL, start())
+            .with_orders(orders)
+            .with_fills(fills),
+        switch.kill_switch_mut(),
+        start(),
+    )?;
+    Ok(())
+}
+
+/// Every conversion's fill probability in the whitelist issued to [`CELL`].
+fn issued_fill_probabilities(plane: &CentralPlane) -> Result<Vec<Decimal>> {
+    Ok(plane
+        .cycle_whitelist_for(CELL, start())?
+        .whitelist
+        .conversions
+        .iter()
+        .filter_map(|conversion| conversion.costs.as_ref())
+        .map(|costs| costs.fill_probability)
+        .collect())
+}
+
+#[test]
+fn a_measured_fill_rate_lowers_a_stated_fill_probability_and_never_raises_it() -> Result<()> {
+    // The failure this prevents: an operator states 0.9 at a venue that
+    // fills a quarter of what it is sent, and every cycle through it is
+    // priced as near-certain for as long as nobody re-reads the policy.
+    let id = strategy();
+    let minimum = qip_kernel::central::plane::MIN_FILL_SAMPLE as usize;
+
+    // Below the minimum sample the stated figure stands, however poor the
+    // fills so far.
+    let mut plane = plane_with_arbitrage(arbitrage_policy_with_costs(
+        &[VENUE],
+        Some(dec!("0.9")),
+        true,
+    ))?;
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    issue(&mut plane, &id, CELL, start())?;
+    ingest_orders(&mut plane, &id, "few", minimum - 1, 0)?;
+    assert_eq!(plane.measured_fill_bound(VENUE), None);
+    assert_eq!(issued_fill_probabilities(&plane)?, vec![dec!("0.9"); 2]);
+
+    // Past it, a quarter filled lowers 0.9 to the bound, on both of the
+    // book's conversions, and the bound is below the observed rate.
+    ingest_orders(&mut plane, &id, "many", 4 * minimum, minimum)?;
+    let bound = plane
+        .measured_fill_bound(VENUE)
+        .ok_or_else(|| qip_core::Error::not_found("a bound past the minimum sample"))?;
+    assert!(
+        bound.is_positive() && bound < dec!("0.25"),
+        "{minimum} of {} filled at all; the lower bound sits below that rate: {bound}",
+        5 * minimum - 1
+    );
+    assert_eq!(issued_fill_probabilities(&plane)?, vec![bound; 2]);
+
+    // A venue the policy does not name is never tallied, however many
+    // orders a report says went there: the venue is a string off the wire,
+    // and a map keyed by it would grow with whatever a cell sent.
+    ingest_orders_at(&mut plane, &id, "XUNNAMED", "unnamed", 4 * minimum, 0)?;
+    assert_eq!(plane.measured_fill_bound("XUNNAMED"), None);
+
+    // And a venue that fills everything never raises a stated 0.1.
+    let mut plane = plane_with_arbitrage(arbitrage_policy_with_costs(
+        &[VENUE],
+        Some(dec!("0.1")),
+        true,
+    ))?;
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    issue(&mut plane, &id, CELL, start())?;
+    ingest_orders(&mut plane, &id, "all", 2 * minimum, 2 * minimum)?;
+    let bound = plane
+        .measured_fill_bound(VENUE)
+        .ok_or_else(|| qip_core::Error::not_found("a bound past the minimum sample"))?;
+    assert!(
+        bound > dec!("0.1"),
+        "premise: the venue measures well: {bound}"
+    );
+    assert_eq!(issued_fill_probabilities(&plane)?, vec![dec!("0.1"); 2]);
+    Ok(())
+}
+
+#[test]
+fn a_market_at_a_venue_not_stated_simulated_must_state_its_costs() -> Result<()> {
+    // The failure this prevents: `costs: None` at a real venue, which the
+    // cell prices as a certain and free fill.
+    assert!(
+        arbitrage_policy_with_costs(&[VENUE], None, true)
+            .validate()
+            .is_ok(),
+        "premise: the simulator may leave its costs unstated"
+    );
+    assert!(
+        arbitrage_policy_with_costs(&[VENUE], Some(dec!("0.9")), false)
+            .validate()
+            .is_ok(),
+        "premise: a venue not simulated with its costs stated is accepted"
+    );
+    let refused = arbitrage_policy_with_costs(&[VENUE], None, false)
+        .validate()
+        .expect_err("no costs at a venue not stated simulated must be refused");
+    assert!(
+        refused.message().contains("states no costs"),
+        "{}",
+        refused.message()
+    );
+    // And it is the restrictive reading when the field is absent from the
+    // operator's file.
+    let venue: WhitelistedVenue =
+        serde_json::from_str(r#"{"class":"Exchange","taker_cost":"0.0005"}"#)
+            .map_err(|error| qip_core::Error::invalid(error.to_string()))?;
+    assert!(!venue.simulated);
     Ok(())
 }

@@ -295,6 +295,45 @@
     }
   },
   {
+    "topic": "reflex.feature_digested",
+    "version": 1,
+    "type_name": "qip_contracts::replay::FeatureDigest",
+    "schema_id": "df66747175125964760998a58d082203615269bdca70115b077ea9f7d82b8470",
+    "shape": {
+      "Object": {
+        "applied": "Number",
+        "applied_digest": "String",
+        "applied_from_ns": "Number",
+        "applied_to_ns": "Number",
+        "cell": "String",
+        "instruments": {
+          "Array": {
+            "Object": {
+              "features": {
+                "Array": {
+                  "Object": {
+                    "name": "String",
+                    "revision": "Number",
+                    "value": {
+                      "Object": {
+                        "Statistic": "Number"
+                      }
+                    }
+                  }
+                }
+              },
+              "subject": "String"
+            }
+          }
+        },
+        "now_ns": "Number",
+        "pass": "Number",
+        "session": "String",
+        "ticks": "Number"
+      }
+    }
+  },
+  {
     "topic": "reflex.journal_recorded",
     "version": 1,
     "type_name": "qip_contracts::reflex::JournalEntry",

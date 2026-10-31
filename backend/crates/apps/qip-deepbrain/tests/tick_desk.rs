@@ -73,11 +73,18 @@ fn stamped_line(
         at(ms),
     );
     let hash = MarketEvent::hash_payload(&message)?;
+    // Admission refuses an event received before it happened by more than
+    // its doubt (ADR 0132, `qip_contracts::admission`), so a contaminated
+    // line cannot be built through `MarketEvent::new`. The fixture builds
+    // the admitted event and then writes the earlier receipt into its lake
+    // line by hand: the line a producer without admission could have left
+    // on the lake, which is what the replay's own exclusion exists for.
+    let received = at(ms + received_after_ms);
     let event = MarketEvent::new(
         message,
         at(ms),
-        at(ms + received_after_ms),
-        at(ms + received_after_ms),
+        at(ms + received_after_ms.max(0)),
+        at(ms + received_after_ms.max(0)),
         uncertainty,
         hash,
         Licence::Granted {
@@ -86,13 +93,18 @@ fn stamped_line(
             expires_at: Timestamp::MAX,
         },
     )?;
+    let mut event = serde_json::to_value(&event)?;
+    if received_after_ms < 0 {
+        event["receive_time"] = serde_json::to_value(received)?;
+        event["normalized_time"] = serde_json::to_value(received)?;
+    }
     Ok(qip_core::canonical::canonical_json(&serde_json::json!({
         "exchange_time_ns": at(ms).as_nanos(),
-        "capture_time_ns": at(ms + received_after_ms).as_nanos(),
+        "capture_time_ns": received.as_nanos(),
         "feed": "itch-a",
         "partition": 0,
         "sequence": sequence,
-        "event": serde_json::to_value(&event)?,
+        "event": event,
     })))
 }
 
@@ -445,6 +457,7 @@ fn the_run_loop_runs_the_tick_desk_on_its_cadence() -> Result<()> {
             ambient: None,
             agency: None,
             warehouse: None,
+            backlog: None,
         },
         |outcome| {
             assert!(
@@ -949,6 +962,7 @@ fn the_run_loop_hands_the_platforms_own_orders_to_the_tick_desk() -> Result<()> 
             ambient: None,
             agency: None,
             warehouse: None,
+            backlog: None,
         },
         |outcome| {
             assert!(

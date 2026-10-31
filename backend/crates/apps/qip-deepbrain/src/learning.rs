@@ -1389,6 +1389,9 @@ impl LearningDesk {
         let mut best_incumbent: Option<f64> = None;
         let mut baseline_name = "the held-out mean predictor (skill bar)".to_string();
         for incumbent in &incumbents {
+            if let Some(refusal) = self.stressed_claim_refusal(&reference, incumbent) {
+                return not_promoted(refusal);
+            }
             let Some(held) = self.promoted_artifacts.get(incumbent) else {
                 return not_promoted(format!(
                     "incumbent {incumbent} stands in production and this desk holds no \
@@ -1563,6 +1566,9 @@ impl LearningDesk {
             .collect();
         let mut production: Option<(String, f64)> = None;
         for incumbent in &incumbents {
+            if let Some(refusal) = self.stressed_claim_refusal(&reference, incumbent) {
+                return lost(self, refusal);
+            }
             let Some(held) = self.promoted_artifacts.get(incumbent) else {
                 return lost(
                     self,
@@ -1781,6 +1787,32 @@ impl LearningDesk {
     /// Bars a subject needs before a fit is worth attempting.
     pub const fn minimum_bars(&self) -> usize {
         self.config.minimum_bars
+    }
+
+    /// Why `candidate` may not be promoted on beating `incumbent`, when the
+    /// claim is about a stressed regime the incumbent was never validated in
+    /// (ADR 0149 decision 10, R12-MODEL-6074).
+    ///
+    /// The candidate's card names the regime its round was judged in. Where
+    /// that regime is stressed, "it beats the incumbent there" is a claim
+    /// about a regime the incumbent may never have been scored in, and a win
+    /// over a baseline nobody validated under stress is not evidence the
+    /// candidate stays calibrated under it.
+    fn stressed_claim_refusal(&self, candidate: &str, incumbent: &str) -> Option<String> {
+        let claimed = self.registry.get(candidate)?;
+        let baseline = self.registry.get(incumbent);
+        claimed
+            .validated_regimes
+            .iter()
+            .filter(|regime| qip_ai::registry::is_stressed_regime(regime))
+            .find(|regime| baseline.is_none_or(|card| !card.validated_regimes.contains(*regime)))
+            .map(|regime| {
+                format!(
+                    "{candidate} would be promoted on beating {incumbent} in the stressed regime \
+                     {regime}, and {incumbent} was never validated in it; a comparative claim \
+                     about a stressed regime needs a baseline scored there (ADR 0149 decision 10)"
+                )
+            })
     }
 
     /// The cards the restore refused at the registry's cap since the last
@@ -3102,13 +3134,6 @@ mod tests {
         Ok(())
     }
 
-    /// R12-MODEL-9003: a crash just after a rollback record. The reactivated
-    /// predecessor's card on the log is the one written before the record:
-    /// Retired, with its retirement instant. The restore puts it back in
-    /// production from the promotion log, and with it clears the retirement,
-    /// so the model the log says is in production is not read as retired.
-    /// Mutation: keep `retired_at` when the log forces a card to Production —
-    /// the card reads as retired and the assertion fails.
     /// R12-MODEL-9003: a crash just after a promotion that displaced two
     /// production cards restores the rollback parent the live registry
     /// chose — the more recently deployed of the two — not the first
@@ -3217,6 +3242,13 @@ mod tests {
         Ok(())
     }
 
+    /// R12-MODEL-9003: a crash just after a rollback record. The reactivated
+    /// predecessor's card on the log is the one written before the record:
+    /// Retired, with its retirement instant. The restore puts it back in
+    /// production from the promotion log, and with it clears the retirement,
+    /// so the model the log says is in production is not read as retired.
+    /// Mutation: keep `retired_at` when the log forces a card to Production —
+    /// the card reads as retired and the assertion fails.
     #[test]
     fn a_crash_just_after_a_rollback_restores_the_reactivated_model_not_as_retired() -> Result<()> {
         let directory = std::env::temp_dir().join(format!(
@@ -3354,6 +3386,74 @@ mod tests {
         assert_eq!(degraded.retired_at, Some(rollback.at), "v2's retirement");
         assert_eq!(card.deployed_at, Some(rollback.at), "v1's redeployment");
         let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
+    }
+
+    /// R12-MODEL-6074, ADR 0149 decision 10: a candidate is not promoted on
+    /// a claim about a stressed regime its baseline was never validated in.
+    /// The incumbent is fitted and promoted in a calm regime; the candidate's
+    /// round is judged in `crisis/high`, so beating the incumbent there is a
+    /// win over a baseline nobody scored under stress. The control: the same
+    /// candidate against an incumbent whose card lists `crisis/high` is not
+    /// refused for it. Mutation: make `is_stressed_regime` return false — the
+    /// first assertion fails.
+    #[test]
+    fn a_candidate_is_not_promoted_on_a_stressed_regime_claim_its_baseline_was_never_validated_in()
+    -> Result<()> {
+        const STRESSED: &str = "crisis/high";
+        assert!(qip_ai::registry::is_stressed_regime(STRESSED));
+        assert!(
+            !qip_ai::registry::is_stressed_regime(REGIME),
+            "premise: {REGIME} is calm"
+        );
+        let attempt = |incumbent_regimes: &[&str]| -> Result<PromotionOutcome> {
+            let mut desk = learning_desk();
+            let mut platform = serving_platform()?;
+            let bars = super::tests_support::learnable(400);
+            desk.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
+            let incumbent = match through_shadow(&mut desk, &mut platform, &bars, 1, at())? {
+                Some(PromotionOutcome::Promoted { reference, .. }) => reference,
+                other => {
+                    return Err(Error::invalid(format!(
+                        "premise: the incumbent was promoted: {other:?}"
+                    )));
+                }
+            };
+            if let Some(card) = desk.registry.get_mut(&incumbent) {
+                for regime in incumbent_regimes {
+                    card.validated_regimes.insert((*regime).to_string());
+                }
+            }
+            let later = at().saturating_add(qip_core::Duration::from_hours(2));
+            desk.maybe_learn(
+                &subject(),
+                &super::tests_support::learnable(1_200),
+                STRESSED,
+                40,
+                later,
+            )?;
+            desk.promote_candidate(&mut platform, later)?
+                .ok_or_else(|| Error::not_found("a candidate in the stressed round"))
+        };
+
+        let refused = attempt(&[])?;
+        let PromotionOutcome::NotPromoted { reason, .. } = &refused else {
+            return Err(Error::invalid(format!(
+                "a stressed-regime claim against an unvalidated baseline went ahead: {}",
+                refused.describe()
+            )));
+        };
+        assert!(
+            reason.contains("stressed regime crisis/high"),
+            "refused for another reason: {reason}"
+        );
+
+        let control = attempt(&[STRESSED])?;
+        assert!(
+            !control.describe().contains("stressed regime"),
+            "a baseline validated in the stressed regime was still refused for it: {}",
+            control.describe()
+        );
         Ok(())
     }
 

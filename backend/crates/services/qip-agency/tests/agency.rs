@@ -3591,7 +3591,7 @@ fn each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_re
     };
 
     // 1. The first step's evidence is short of the second's: no clean period.
-    let mut evidence = WideningEvidence::attribution(&market);
+    let mut evidence = WideningEvidence::attribution(&market).judged_at(judged());
     refuse(
         &mut policy,
         &evidence,
@@ -3642,7 +3642,7 @@ fn each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_re
 
     // The broad level wants an attribution per class, a compensation per
     // class and a kill path, before it says the level is out of reach.
-    let mut broad = WideningEvidence::attribution(&market);
+    let mut broad = WideningEvidence::attribution(&market).judged_at(judged());
     broad.classes = BTreeSet::from([Method::Market, Method::Research]);
     broad.clean_days = 30;
     let widen_broad = |policy: &mut ActionPolicy, e: &WideningEvidence<'_>| {
@@ -3717,7 +3717,7 @@ fn a_rollback_named_but_never_rehearsed_meets_no_level_of_the_schedule() {
         (|d| d.step = String::new(), "names no step"),
     ];
     for (mutate, why) in cases {
-        let mut evidence = WideningEvidence::attribution(&market);
+        let mut evidence = WideningEvidence::attribution(&market).judged_at(judged());
         evidence.clean_days = 30;
         evidence
             .compensations
@@ -3735,7 +3735,7 @@ fn a_rollback_named_but_never_rehearsed_meets_no_level_of_the_schedule() {
             "{why}: {err}"
         );
 
-        let mut broad = WideningEvidence::attribution(&market);
+        let mut broad = WideningEvidence::attribution(&market).judged_at(judged());
         broad.attributions.push(&research);
         broad.classes = BTreeSet::from([Method::Market, Method::Research]);
         broad.clean_days = 30;
@@ -3759,7 +3759,7 @@ fn a_rollback_named_but_never_rehearsed_meets_no_level_of_the_schedule() {
 
     // The same evidence with every drill rehearsed reaches the grant refusal:
     // the drill check is what refused above, not something else on the row.
-    let mut evidence = WideningEvidence::attribution(&market);
+    let mut evidence = WideningEvidence::attribution(&market).judged_at(judged());
     evidence.clean_days = 30;
     evidence
         .compensations
@@ -3776,6 +3776,95 @@ fn a_rollback_named_but_never_rehearsed_meets_no_level_of_the_schedule() {
 }
 
 /// A rehearsed rollback: it ran, restored the prior state, and left a record.
+/// R12-EXPAND-6071: `Drill.ran_at` is read, against the instant the request
+/// is judged at. A drill dated after that instant has not run; one dated
+/// before the row's clean period began rehearsed a policy state since
+/// changed. Both are refused by name, for a compensating step and for the
+/// kill path alike, and the same drills dated inside the period reach the
+/// grant refusal, so the date check is what refused. Mutation: drop the two
+/// date arms of `Drill::shortfall` -- every dated case below reaches the
+/// grant refusal and its `contains` fails.
+#[test]
+fn a_drill_dated_after_the_request_or_before_the_clean_period_is_not_a_rehearsal() {
+    use qip_agency::autonomy::WideningEvidence;
+    let second = ActingIdentity {
+        name: "second-approver".into(),
+        authorities: BTreeSet::from([WIDEN_AUTHORITY.to_string()]),
+    };
+    let market = identified(Method::Market);
+    let research = identified(Method::Research);
+    let day = |n: i64| judged().saturating_sub(qip_core::Duration::from_days(n));
+    let dated = |at: qip_core::Timestamp| {
+        let mut d = drill("re-widen quotes", "drill-2026-10-01");
+        d.ran_at = at;
+        d
+    };
+    let after = judged().saturating_add(qip_core::Duration::from_days(1));
+    let cases = [
+        (after, "is dated after the request, so it has not run"),
+        (day(31), "ran before the clean period began"),
+    ];
+    for (at, why) in cases {
+        let mut policy = narrow();
+        let mut evidence = WideningEvidence::attribution(&market).judged_at(judged());
+        evidence.clean_days = 30;
+        evidence.compensations.push((Method::Market, dated(at)));
+        let err = policy
+            .widen_to(
+                Authority::NarrowCompensable,
+                &evidence,
+                &[&operator(), &second],
+            )
+            .expect_err("a drill that has not run inside the period is no rehearsal");
+        assert!(err.to_string().contains(why), "{at:?}: {err}");
+        assert_eq!(policy.authority(), Authority::NarrowReversible);
+
+        let mut broad = WideningEvidence::attribution(&market).judged_at(judged());
+        broad.attributions.push(&research);
+        broad.classes = BTreeSet::from([Method::Market, Method::Research]);
+        broad.clean_days = 30;
+        broad
+            .compensations
+            .push((Method::Market, drill("re-widen quotes", "drill-2026-10-01")));
+        broad
+            .compensations
+            .push((Method::Research, drill("retract note", "drill-2026-10-02")));
+        broad.kill_path = Some(dated(at));
+        let err = policy
+            .widen_to(Authority::BroadInternal, &broad, &[&operator(), &second])
+            .expect_err("a kill path that has not run inside the period is no rehearsal");
+        assert!(
+            err.to_string().contains("kill path") && err.to_string().contains(why),
+            "{at:?}: {err}"
+        );
+    }
+
+    // Inside the period: the date arm is silent and the row's grant refuses.
+    let mut policy = narrow();
+    let mut evidence = WideningEvidence::attribution(&market).judged_at(judged());
+    evidence.clean_days = 30;
+    evidence
+        .compensations
+        .push((Method::Market, dated(day(29))));
+    let err = policy
+        .widen_to(
+            Authority::NarrowCompensable,
+            &evidence,
+            &[&operator(), &second],
+        )
+        .expect_err("the level is ungranted");
+    assert!(
+        err.to_string().contains("granted by no record"),
+        "a drill inside the period passes the date check: {err}"
+    );
+}
+
+/// The instant the widening requests below are judged at: five days after
+/// the drills ran, inside every row's clean period.
+fn judged() -> qip_core::Timestamp {
+    qip_core::Timestamp::from_millis(1_790_432_000_000)
+}
+
 fn drill(step: &str, record: &str) -> qip_agency::autonomy::Drill {
     qip_agency::autonomy::Drill {
         step: step.into(),

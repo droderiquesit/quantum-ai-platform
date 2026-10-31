@@ -87,9 +87,13 @@ use std::sync::Arc;
 use qip_contracts::capital::{CapitalEnvelope, Utilisation};
 use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
+use qip_contracts::regional_episode::RegionalEpisode;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
-use qip_contracts::wire::{CrossRecord, FillRecord, MAX_CROSSES_PER_DELTA, MAX_FILLS_PER_DELTA};
+use qip_contracts::wire::{
+    AdvisoryPosition, CrossRecord, FillRecord, MAX_CROSSES_PER_DELTA, MAX_EPISODES_PER_DELTA,
+    MAX_FILLS_PER_DELTA, MAX_POSITIONS_PER_DELTA,
+};
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, CorrelationId, Decimal, Id, Lineage, ObjectId, Timestamp};
 use qip_events::envelope::canonical_json;
@@ -187,6 +191,12 @@ pub struct DeltaRefusal {
     /// one written by a gate that names no venue read the same.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub venue: Option<String>,
+    /// The legs of the cycle refused, for a refusal that refused a whole
+    /// arbitrage cycle, so the centre can price what declining it cost
+    /// (R12-MESH-5068). Empty for every other gate, and absent on the wire
+    /// rather than `[]`, for the reason `venue` gives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legs: Vec<qip_contracts::wire::RefusedLeg>,
 }
 
 /// What one cell tells the centre about itself.
@@ -277,6 +287,39 @@ pub struct CellStateDelta {
     /// Crosses that did not fit in [`MAX_CROSSES_PER_DELTA`].
     #[serde(default)]
     pub crosses_omitted: u32,
+    /// The newest of the regional episodes this cell retains (ADR 0207,
+    /// R12-REFLEX-6012): the anomalies, failures, latency spikes and fill
+    /// slippage it classified, each naming this cell and region. A view like
+    /// the rest of the delta — the cell's ring, not a queue drained on send —
+    /// so a delta rebuilt after a failed attempt carries the same episodes,
+    /// and the centre deduplicates rather than the cell remembering what it
+    /// sent. Defaulted so a delta sealed before the field existed still
+    /// replays, as a cell that reported no episode, which is what it did.
+    #[serde(default)]
+    pub episodes: Vec<RegionalEpisode>,
+    /// Older episodes the cell still retained and did not fit in
+    /// [`MAX_EPISODES_PER_DELTA`].
+    #[serde(default)]
+    pub episodes_omitted: u32,
+    /// The cell's open positions, one per venue and instrument with a
+    /// non-zero signed quantity, from confirmed fills alone (ADR 0208,
+    /// R12-MESH-7143). A view of the cell's book at `positions_as_of`, so a
+    /// delta rebuilt after a failed attempt carries the same positions and
+    /// the centre replaces rather than sums. Advisory: the centre's own
+    /// settled books stay the truth for every balance. Defaulted so a delta
+    /// sealed before the field replays as a cell that stated none.
+    #[serde(default)]
+    pub positions: Vec<AdvisoryPosition>,
+    /// Positions that did not fit in [`MAX_POSITIONS_PER_DELTA`], plus any
+    /// the cell could not state.
+    #[serde(default)]
+    pub positions_omitted: u32,
+    /// The cell's journal sequence the positions were taken at: the last
+    /// entry on its chain, so the centre can tell a newer statement from an
+    /// older one however the deltas arrive, and refuse one that went
+    /// backwards. Zero is a cell with no chain entry yet.
+    #[serde(default)]
+    pub positions_as_of: u64,
 }
 
 impl EventBody for CellStateDelta {
@@ -338,6 +381,24 @@ impl CellStateDelta {
             let omitted = self.crosses.len() - MAX_CROSSES_PER_DELTA;
             self.crosses.truncate(MAX_CROSSES_PER_DELTA);
             self.crosses_omitted = u32::try_from(omitted).unwrap_or(u32::MAX);
+        }
+        // Episodes keep the *newest*, unlike the lists above, which keep the
+        // first: the cell's ring is oldest-first and a delta is the view of
+        // what the cell most recently saw, so the oldest are the ones the
+        // centre has had the most deltas to hear already.
+        if self.episodes.len() > MAX_EPISODES_PER_DELTA {
+            let omitted = self.episodes.len() - MAX_EPISODES_PER_DELTA;
+            self.episodes.drain(..omitted);
+            self.episodes_omitted = u32::try_from(omitted).unwrap_or(u32::MAX);
+        }
+        // Positions keep the first in key order — venue then instrument —
+        // which is the cell's own deterministic order, and count the rest.
+        if self.positions.len() > MAX_POSITIONS_PER_DELTA {
+            let omitted = self.positions.len() - MAX_POSITIONS_PER_DELTA;
+            self.positions.truncate(MAX_POSITIONS_PER_DELTA);
+            self.positions_omitted = self
+                .positions_omitted
+                .saturating_add(u32::try_from(omitted).unwrap_or(u32::MAX));
         }
         // Fills have their own budget for the same reason, and the stakes
         // are higher: a fill evicted by a noisy gate would be a trade the
@@ -1801,6 +1862,7 @@ mod tests {
                     gate: format!("gate-{index}"),
                     reason: "no".to_string(),
                     venue: None,
+                    legs: Vec::new(),
                 })
                 .collect(),
             refusals_omitted: 0,
@@ -1821,6 +1883,11 @@ mod tests {
                 })
                 .collect(),
             crosses_omitted: 0,
+            episodes: Vec::new(),
+            episodes_omitted: 0,
+            positions: Vec::new(),
+            positions_omitted: 0,
+            positions_as_of: 0,
         };
         delta.bound_refusals();
         assert_eq!(delta.refusals.len(), MAX_REFUSALS_PER_DELTA);

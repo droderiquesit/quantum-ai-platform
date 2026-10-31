@@ -216,3 +216,39 @@ run "vpn_gateways_in_regions_with_no_interconnect_are_not_created" {
     error_message = "the gateway must be in us-central1, the region with the Interconnect attachment"
   }
 }
+
+# R12-GCP-10014: a PSC endpoint is planned for Google APIs, and only for them.
+# The forwarding rule's target is a Google API bundle, never a service
+# attachment, so no PSC hop can stand between the execution node and a venue.
+run "private_service_connect_plans_one_endpoint_for_the_restricted_google_apis_and_nothing_else" {
+  command = plan
+
+  variables {
+    enable_private_service_connect  = true
+    private_service_connect_address = "10.200.0.5"
+  }
+
+  assert {
+    condition     = length(google_compute_global_address.google_apis) == 1 && length(google_compute_global_forwarding_rule.google_apis) == 1
+    error_message = "enabling Private Service Connect must plan exactly one endpoint address and one forwarding rule"
+  }
+
+  assert {
+    condition     = google_compute_global_address.google_apis[0].purpose == "PRIVATE_SERVICE_CONNECT" && google_compute_global_address.google_apis[0].address == "10.200.0.5"
+    error_message = "the endpoint address must be the named PSC address, not one Google allocates"
+  }
+
+  assert {
+    condition     = google_compute_global_forwarding_rule.google_apis[0].target == "vpc-sc" && google_compute_global_forwarding_rule.google_apis[0].load_balancing_scheme == ""
+    error_message = "the endpoint must reach the restricted Google API bundle, not a service attachment a venue could sit behind"
+  }
+}
+
+run "private_service_connect_left_off_plans_no_endpoint" {
+  command = plan
+
+  assert {
+    condition     = length(google_compute_global_address.google_apis) == 0 && length(google_compute_global_forwarding_rule.google_apis) == 0
+    error_message = "a PSC endpoint was planned while enable_private_service_connect was false"
+  }
+}

@@ -15,7 +15,7 @@
 
 use qip_agency::estimate::Experiment;
 use qip_agency::journal::{self, AgencyRecord};
-use qip_core::{Duration, Timestamp};
+use qip_core::{Clock, Duration, SystemClock, Timestamp};
 use qip_events::EventLog;
 use qip_twin::futures::{FutureTree, TreeConfig, TwinState, WorldDriver};
 use serde_json::{Value, json};
@@ -694,6 +694,7 @@ fn the_binary_simulates_a_pass_against_the_futures_of_the_twin_the_document_desc
     };
     let drivers = vec![WorldDriver {
         id: "evt-rates".into(),
+        family: None,
         sensitivities: BTreeMap::from([("EURUSD".to_string(), 1.0)]),
         evidence: vec!["doc-1".into()],
     }];
@@ -1197,22 +1198,36 @@ fn a_draft_too_long_to_keep_whole_is_not_released_and_one_at_the_bound_is() {
 /// identified attribution and one approver -- is refused by name, journaled,
 /// and the pass stays shadow. Then each shortfall the row names is refused in
 /// turn: a compensation whose drill did not restore the prior state, a single
-/// approver, and, with everything the row asks, the one-level-at-a-time rule
+/// approver, a drill dated after the pass, a drill older than the clean
+/// period, and, with everything the row asks, the one-level-at-a-time rule
 /// (the policy holds shadow). Nothing in this test widens.
 ///
 /// Mutation: in `Session::widen`, ignore `decl.target` and ask for
-/// narrow-reversible -- the first pass then widens and exits 3.
+/// narrow-reversible -- the first pass then widens and exits 3; in
+/// `Drill::shortfall`, drop the two date checks -- the future and stale
+/// drills reach the from-level refusal instead of their own.
 #[test]
 fn an_operator_pass_asking_narrow_compensable_with_narrow_reversible_evidence_is_refused_by_name() {
     let scratch = Scratch::new("compensable");
     let policy = scratch.write("policy.json", &policy_document());
-    let drill = |restored: bool| {
-        json!({"step": "re-widen quotes", "ran_at": "2026-10-01T00:00:00Z",
+    // The binary judges a drill against its own clock, so the drill is dated
+    // relative to now: `days_ago` negative is a drill still to run.
+    let drill = |restored: bool, days_ago: i64| {
+        let ran_at = if days_ago >= 0 {
+            SystemClock
+                .now()
+                .saturating_sub(Duration::from_days(days_ago))
+        } else {
+            SystemClock
+                .now()
+                .saturating_add(Duration::from_days(-days_ago))
+        };
+        json!({"step": "re-widen quotes", "ran_at": ran_at.to_rfc3339(),
                "restored": restored, "record": "drill-2026-10-01"})
     };
     let second = json!({"name": "second-approver", "authorities": ["agency:widen-autonomy"]});
-    type Shape = fn(&mut Value, &dyn Fn(bool) -> Value, &Value);
-    let cases: [(&str, Shape, &str); 4] = [
+    type Shape = fn(&mut Value, &dyn Fn(bool, i64) -> Value, &Value);
+    let cases: [(&str, Shape, &str); 6] = [
         (
             "lesser",
             |_, _, _| {},
@@ -1222,16 +1237,37 @@ fn an_operator_pass_asking_narrow_compensable_with_narrow_reversible_evidence_is
             "unrehearsed",
             |w, drill, second| {
                 w["clean_days"] = json!(30);
-                w["compensations"] = json!([{"class": "market", "drill": drill(false)}]);
+                w["compensations"] = json!([{"class": "market", "drill": drill(false, 1)}]);
                 w["co_approvers"] = json!([second]);
             },
             "compensating step for Market tested in a drill; the drill offered did not restore",
+        ),
+        // R12-EXPAND-6071: a drill dated after the pass has not run, and one
+        // dated before the clean period began rehearsed a policy state since
+        // changed; each is refused by name against the binary's own clock.
+        (
+            "future-drill",
+            |w, drill, second| {
+                w["clean_days"] = json!(30);
+                w["compensations"] = json!([{"class": "market", "drill": drill(true, -1)}]);
+                w["co_approvers"] = json!([second]);
+            },
+            "the drill offered is dated after the request, so it has not run",
+        ),
+        (
+            "stale-drill",
+            |w, drill, second| {
+                w["clean_days"] = json!(30);
+                w["compensations"] = json!([{"class": "market", "drill": drill(true, 40)}]);
+                w["co_approvers"] = json!([second]);
+            },
+            "the drill offered ran before the clean period began",
         ),
         (
             "one-approver",
             |w, drill, _| {
                 w["clean_days"] = json!(30);
-                w["compensations"] = json!([{"class": "market", "drill": drill(true)}]);
+                w["compensations"] = json!([{"class": "market", "drill": drill(true, 1)}]);
             },
             "NarrowCompensable needs 2 distinct approver(s)",
         ),
@@ -1239,7 +1275,7 @@ fn an_operator_pass_asking_narrow_compensable_with_narrow_reversible_evidence_is
             "from-shadow",
             |w, drill, second| {
                 w["clean_days"] = json!(30);
-                w["compensations"] = json!([{"class": "market", "drill": drill(true)}]);
+                w["compensations"] = json!([{"class": "market", "drill": drill(true, 1)}]);
                 w["co_approvers"] = json!([second]);
             },
             "the policy holds Shadow; NarrowCompensable is reached only from NarrowReversible",

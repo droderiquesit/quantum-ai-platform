@@ -33,6 +33,7 @@ use crate::settlement::{self, GATE_SETTLEMENT, SettlementTerms};
 use crate::telemetry::{AdversaryPostureLabel, CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
+use qip_contracts::FeatureVector;
 use qip_contracts::action::{Ground, Justification};
 use qip_contracts::capital::{CapitalAdmission, Utilisation};
 use qip_contracts::degradation::{Capability, DegradationState, Freshness, StrategyClass};
@@ -46,6 +47,7 @@ use qip_contracts::policy::Dispositions;
 use qip_contracts::regional_episode::{EpisodeKind, RegionalEpisode};
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_contracts::wire::RefusedLeg;
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, Duration, ObjectId, Timestamp};
 // LegGroup imported to make saga coordinators reachable from production cell
@@ -1159,6 +1161,10 @@ impl CellConfig {
 #[derive(Clone, Debug, Default)]
 pub struct WorkReport {
     pub signals: Vec<Signal>,
+    /// The feature vector this pass evaluated and every strategy sized
+    /// against (ADR 0132 decision 4): carried out so the node can digest it
+    /// per pass without a second evaluation that could disagree.
+    pub features: FeatureVector,
     /// Directional signals this pass that stated no edge and so were not
     /// judged by the net-edge gate (ADR 0155 §9). Counted only on a cell that
     /// built the gate, so the desk can see how much trading it does not judge.
@@ -1192,6 +1198,11 @@ pub struct WorkReport {
     /// pair is read by every test and by `refused_under`, and a posture
     /// refusal has no venue to carry.
     pub feasibility_venues: Vec<(usize, VenueId)>,
+    /// The legs of each arbitrage cycle refused whole this pass, keyed by
+    /// the index in `refusals` of the refusal that refused it, for the same
+    /// reason `feasibility_venues` is a side table (R12-MESH-5068). Only
+    /// `admit_cycle` pushes here.
+    pub refused_legs: Vec<(usize, Vec<RefusedLeg>)>,
     /// Every internal cross booked this pass (§27.1). A cross is a trade
     /// between two of the platform's own strategies; it is reported rather
     /// than merely journaled so a caller can see it without replaying the
@@ -4823,7 +4834,17 @@ impl Cell {
                 // not swallowed here.
                 state.apply(message)?;
             }
-            self.features.ingest(message)?;
+            // R12-TICK-2062: the feature engine is told how far the venue's
+            // stamp may be from the truth, so a cross-instrument feature can
+            // decline to order two samples the clocks cannot separate. The
+            // lead is the stamp's distance ahead of receipt, floored at zero
+            // where the stamp trails, as the feed's capture floors it.
+            let lead = message
+                .venue_time
+                .since(message.capture_time)
+                .max(Duration::ZERO);
+            let uncertainty = self.clock_uncertainty(&venue, lead)?;
+            self.features.ingest_placed(message, uncertainty)?;
         }
         // Judged once the whole batch is in, never between two messages of
         // it: a venue moving up publishes the new bid before it withdraws
@@ -5399,6 +5420,7 @@ impl Cell {
         let retired = self.disposition_intents(now, &mut report, &mut intents);
 
         let vector = self.features.evaluate(now)?;
+        report.features = vector.clone();
         let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
         self.signal_sequences.clear();
 
@@ -6733,8 +6755,38 @@ impl Cell {
         now: Timestamp,
     ) -> Result<()> {
         self.replacement_grounded(order_id, now)?;
+        self.replacement_conduct(venue, object_id, side, now)?;
         self.fence_admit(now)?;
         self.risk_admit(Some(order_id), object_id, venue, side, quantity, price, now)
+    }
+
+    /// Refuse under [`GATE_CONDUCT_SPOOFING`] a replacement on a side of a
+    /// book whose recent record is a place-and-cancel pattern (R12-GOV-6126).
+    ///
+    /// A requote is a withdrawal and a placement, so a repricer that
+    /// requoted fast enough was the pattern the pass gate refuses, sent by
+    /// the one path that gate never saw. Journaled and counted here, as
+    /// [`Self::replacement_grounded`] is, because a requote has no report to
+    /// push a refusal onto.
+    fn replacement_conduct(
+        &mut self,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        side: BookSide,
+        now: Timestamp,
+    ) -> Result<()> {
+        let Some(reason) = self.conduct.refusal(venue, object_id, side, now) else {
+            return Ok(());
+        };
+        self.metrics.refusal(GATE_CONDUCT_SPOOFING);
+        self.journal.record(
+            Decision::Refused {
+                gate: GATE_CONDUCT_SPOOFING.to_string(),
+                reason: reason.clone(),
+            },
+            now,
+        );
+        Err(Error::denied(reason))
     }
 
     /// Refuse under [`GATE_JUSTIFICATION`] a replacement for `order_id` when
@@ -9140,6 +9192,35 @@ impl Cell {
         // of them is admitted: §32.1's gate is about the set, and a set
         // cannot be judged one member at a time.
         let proposed: Vec<Intent> = legs.into_iter().map(Into::into).collect();
+        let refused_legs: Vec<RefusedLeg> = proposed.iter().map(refused_leg).collect();
+        let before = report.refusals.len();
+        let admitted = self.admit_cycle_legs(opportunity, cycle_id, proposed, pending, now, report);
+        // R12-MESH-5068: a cycle refused whole carries what was proposed, so
+        // the centre can price what declining it cost. Attached to the last
+        // refusal this attempt recorded, because every refusing path ends
+        // with the whole-cycle refusal (`veto_cycle` or a `refused whole`
+        // line), after any leg-level refusal the gate that found it wrote.
+        // One join point rather than a leg list threaded through each veto,
+        // so a refusal added to the path later cannot ship without its legs.
+        if admitted.is_none()
+            && report.refusals.len() > before
+            && refused_legs.len() <= qip_contracts::wire::MAX_REFUSED_LEGS
+        {
+            let index = report.refusals.len() - 1;
+            report.refused_legs.push((index, refused_legs));
+        }
+        admitted
+    }
+
+    fn admit_cycle_legs(
+        &mut self,
+        opportunity: &Opportunity,
+        cycle_id: &str,
+        proposed: Vec<Intent>,
+        pending: Decimal,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) -> Option<AdmittedCycle> {
         let venues: Vec<VenueId> = proposed.iter().map(|leg| leg.venue.clone()).collect();
         // Before anything else is judged: a cycle with a leg at a venue the
         // cell cannot see, or one that is rejecting orders, is refused whole.
@@ -11679,6 +11760,12 @@ impl Cell {
                         .iter()
                         .find(|(at, _)| *at == index)
                         .map(|(_, venue)| venue.as_str().to_string()),
+                    legs: report
+                        .refused_legs
+                        .iter()
+                        .find(|(at, _)| *at == index)
+                        .map(|(_, legs)| legs.clone())
+                        .unwrap_or_default(),
                 })
                 .collect(),
             // Set by `bound_refusals` below; the caller does not get to claim
@@ -11701,6 +11788,39 @@ impl Cell {
             // Set by `bound_refusals` below, like the refusal counter: the
             // caller does not get to claim a truncation that did not happen.
             crosses_omitted: 0,
+            // The ring as it stands, oldest first; `bound_refusals` keeps the
+            // newest that fit and counts the rest (ADR 0207).
+            episodes: self.episodes.clone(),
+            episodes_omitted: 0,
+            // The book as the venue's confirmed fills built it (ADR 0208):
+            // every non-zero signed quantity, in the map's own venue-then-
+            // instrument order. A key the cell cannot read back into a venue
+            // and an instrument is counted as omitted rather than guessed.
+            positions: self
+                .positions
+                .iter()
+                .filter(|(_, quantity)| !quantity.is_zero())
+                .filter_map(|(key, quantity)| {
+                    let (venue, object) = key.split_once('/')?;
+                    Some(qip_contracts::wire::AdvisoryPosition {
+                        object_id: ObjectId::from_string(object),
+                        venue: VenueId::new(venue),
+                        quantity: *quantity,
+                    })
+                })
+                .collect(),
+            positions_omitted: u32::try_from(
+                self.positions
+                    .iter()
+                    .filter(|(key, quantity)| !quantity.is_zero() && !key.contains('/'))
+                    .count(),
+            )
+            .unwrap_or(u32::MAX),
+            positions_as_of: self
+                .journal
+                .entries()
+                .last()
+                .map_or(0, |entry| entry.sequence),
         };
         delta.bound_refusals();
         delta
@@ -11964,6 +12084,20 @@ impl Cell {
         price: Decimal,
         now: Timestamp,
     ) {
+        // A requote is a withdrawal and a placement on the same side of the
+        // same book (R12-GOV-6126): counted in the conduct window the pass
+        // and `admit_replacement` read, the withdrawal as unfilled when
+        // nothing of the order had traded. Until this was counted, repeated
+        // cancel-and-replace was invisible to that window.
+        if let Some(working) = self.working.get(order_id) {
+            let order = &working.order;
+            let (object_id, side) = (order.object_id.clone(), order.side);
+            if order.filled.is_zero() {
+                self.conduct
+                    .cancelled_unfilled(venue, &object_id, side, now);
+            }
+            self.conduct.placed(venue, &object_id, side, now);
+        }
         if let Some(working) = self.working.get_mut(order_id) {
             working.order.price = price;
         }
@@ -12733,6 +12867,23 @@ fn gap_detail(event: &qip_sequencing::tracker::SequenceEvent) -> Option<(String,
             ),
         )),
         SequenceEvent::StreamStarted { .. } | SequenceEvent::Duplicate { .. } => None,
+    }
+}
+
+/// The leg an intent proposed, as a refusal carries it: a positive size buys
+/// on the ask and a negative one sells on the bid, the convention every
+/// order the cell sends uses.
+fn refused_leg(intent: &Intent) -> RefusedLeg {
+    RefusedLeg {
+        object_id: intent.object_id.clone(),
+        venue: intent.venue.clone(),
+        side: if intent.signed_size.is_negative() {
+            BookSide::Bid
+        } else {
+            BookSide::Ask
+        },
+        quantity: intent.signed_size.abs(),
+        reference_price: intent.reference_price,
     }
 }
 
@@ -13529,6 +13680,107 @@ mod crossing_tests {
                 "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_unfilled_requotes_on_one_side_of_a_book_refuse_the_next_replacement_before_risk()
+    -> Result<()> {
+        // R12-GOV-6126. The repricer's requote is a withdrawal and a new
+        // placement sent outside `Cell::work`, so a desk that requoted an
+        // unfilled order fast enough was the place-and-cancel pattern the
+        // pass refuses, on the one path the conduct window never saw.
+        let price = Decimal::parse("100").expect("a decimal literal");
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+        let mut report = WorkReport::default();
+        cell.place_net(&one_sided_net(price), at(10), &mut gateway, &mut report)?;
+        let order_id = gateway
+            .placed
+            .first()
+            .cloned()
+            .expect("the premise: one order went out");
+        // The side the order rests on, which a requote keeps.
+        let side = cell
+            .working
+            .get(&order_id)
+            .map(|working| working.order.side)
+            .expect("the premise: the order is working");
+        let other = match side {
+            BookSide::Ask => BookSide::Bid,
+            BookSide::Bid => BookSide::Ask,
+        };
+        let requote = |cell: &mut Cell, second: i64| {
+            cell.admit_replacement(
+                &order_id,
+                &object(),
+                &venue(),
+                side,
+                Decimal::from_int(1),
+                price,
+                at(second),
+            )
+        };
+        // Premise: requotes under the policy's minimum are admitted, each
+        // recorded as the venue accepted it.
+        for second in 11..14 {
+            requote(&mut cell, second)?;
+            cell.record_replacement(
+                &order_id,
+                &venue(),
+                "r",
+                Decimal::from_int(1),
+                price,
+                at(second),
+            );
+        }
+        requote(&mut cell, 14)?;
+        cell.record_replacement(
+            &order_id,
+            &venue(),
+            "r",
+            Decimal::from_int(1),
+            price,
+            at(14),
+        );
+        // Four unfilled withdrawals against five placements inside a minute:
+        // past three in four, so the fifth requote is refused, journaled.
+        let before = cell.journal().entries().len();
+        let error = match requote(&mut cell, 15) {
+            Ok(()) => panic!("a requote continuing a place-and-cancel pattern was admitted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "denied", "{error}");
+        let refused = cell
+            .journal()
+            .entries()
+            .iter()
+            .skip(before)
+            .filter(|entry| {
+                matches!(&entry.decision, Decision::Refused { gate, .. } if gate == GATE_CONDUCT_SPOOFING)
+            })
+            .count();
+        assert_eq!(
+            refused, 1,
+            "the refusal was not journaled under {GATE_CONDUCT_SPOOFING}"
+        );
+        // The other side of the same book has no such record.
+        cell.admit_replacement(
+            &order_id,
+            &object(),
+            &venue(),
+            other,
+            Decimal::from_int(1),
+            price,
+            at(15),
+        )?;
         Ok(())
     }
 

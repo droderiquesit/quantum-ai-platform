@@ -46,8 +46,9 @@ use qip_contracts::feasibility::{EDGE_GATES, GATE_WITHDRAWN_VENUE, is_withdrawal
 use qip_contracts::governance::{Approval, Severity};
 use qip_contracts::message::BookSide;
 use qip_contracts::policy::{CycleWhitelist, FeasibilityConstraints};
+use qip_contracts::regional_episode::RegionalEpisode;
 use qip_contracts::signal::StrategyId;
-use qip_contracts::wire::{CrossRecord, FillRecord};
+use qip_contracts::wire::{AdvisoryPosition, CrossRecord, FillRecord, MAX_POSITIONS_PER_DELTA};
 use qip_contracts::{CapitalEnvelope, Utilisation};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
@@ -367,6 +368,27 @@ pub struct CellReport {
     /// Incremental for the same reason.
     #[serde(default)]
     pub crosses: Vec<CrossRecord>,
+    /// The newest regional episodes the cell retains (ADR 0207,
+    /// R12-REFLEX-6012): a view of the cell's ring, repeated on every report,
+    /// which [`CentralPlane::ingest`] merges into its own bounded per-cell
+    /// store without duplicating one it already holds. Defaulted so a report
+    /// journaled before the field replays as reporting none.
+    #[serde(default)]
+    pub episodes: Vec<RegionalEpisode>,
+    /// The cell's open positions as it stated them on the delta (ADR 0208,
+    /// R12-MESH-7143), with the journal sequence they were taken at.
+    /// Advisory: [`CentralPlane::ingest`] keeps them per cell for the Hedge
+    /// Brain's view and nothing else — the plane's own settled books stay
+    /// the truth for every balance, and `positions` above (the typed,
+    /// strategy-attributed book) is what the exposure aggregate reads. A
+    /// report whose sequence is below the one the plane already holds for
+    /// the cell is refused whole. Defaulted so a report journaled before the
+    /// field replays as stating none at sequence zero, which replaces
+    /// nothing.
+    #[serde(default)]
+    pub advisory_positions: Vec<AdvisoryPosition>,
+    #[serde(default)]
+    pub positions_as_of: u64,
     /// Every gate that refused at the cell since its previous report, as the
     /// delta carried them. The centre reads only the feasibility ones that
     /// name a venue it knows, into the window blueprint §12.3's fourth row
@@ -389,6 +411,9 @@ impl CellReport {
             orders: Vec::new(),
             fills: Vec::new(),
             crosses: Vec::new(),
+            episodes: Vec::new(),
+            advisory_positions: Vec::new(),
+            positions_as_of: 0,
             refusals: Vec::new(),
         }
     }
@@ -434,6 +459,19 @@ impl CellReport {
         self
     }
 
+    pub fn with_episodes(mut self, episodes: Vec<RegionalEpisode>) -> Self {
+        self.episodes = episodes;
+        self
+    }
+
+    /// The cell's stated positions and the journal sequence they are as of
+    /// (ADR 0208).
+    pub fn with_advisory_positions(mut self, positions: Vec<AdvisoryPosition>, as_of: u64) -> Self {
+        self.advisory_positions = positions;
+        self.positions_as_of = as_of;
+        self
+    }
+
     pub fn reconciles(&self) -> bool {
         self.reconciliation_breaks.is_empty()
     }
@@ -444,6 +482,10 @@ impl CellReport {
 pub struct CellIngestion {
     pub cell: String,
     pub positions_absorbed: usize,
+    /// ADR 0208: each instrument on which the cell's stated book and the
+    /// centre's settled book for that cell disagree, in words. Empty for a
+    /// report that stated no book, a replay, or agreement.
+    pub advisory_disagreements: Vec<String>,
     /// What the incident response halted, `None` where the report reconciled.
     pub halted: Option<HaltScope>,
     /// Buckets over their share of gross, on any axis.
@@ -788,6 +830,12 @@ pub struct CentralPlane {
     /// since filled — what a fill is matched against before it is billed.
     /// Bounded per cell; see [`SentOrders`].
     sent: BTreeMap<String, SentOrders>,
+    /// Per venue, how many orders cells reported sent there and how many of
+    /// those have since filled at all — the measurement ADR 0154 decision 3
+    /// lowers a stated fill probability by. Counted only for venues the
+    /// arbitrage policy names ([`Self::measures_fills_at`]), so its keys are
+    /// bounded by the operator's file and never by what a report claims.
+    venue_fills: BTreeMap<String, FillTally>,
     /// Per cell, the reports already settled, by instant and digest, so a
     /// replay settles nothing. Bounded per cell; see [`SettledReports`].
     settled_reports: BTreeMap<String, SettledReports>,
@@ -840,6 +888,22 @@ pub struct CentralPlane {
     /// [`Self::dark_regions`] on every call and cached nowhere. Bounded by
     /// the cells that have ever reported.
     last_heard: BTreeMap<String, LastHeard>,
+    /// The regional episodes each cell has reported (ADR 0207,
+    /// R12-REFLEX-6012), oldest first, at most [`MAX_EPISODES_PER_CELL`]
+    /// per cell. Merged, not replaced, on every report: a delta is a view of
+    /// the cell's ring and repeats what it carried before, so an episode
+    /// already held is not held twice and a redelivered report changes
+    /// nothing. Bounded by the cells that have ever reported, like
+    /// `last_heard`. Read by nothing that decides.
+    episodes: BTreeMap<String, Vec<RegionalEpisode>>,
+    /// Each cell's stated book as of its journal sequence (ADR 0208): the
+    /// newest statement replaces the last, a statement whose sequence went
+    /// backwards refuses the whole report, and a statement at sequence zero
+    /// — a cell with no chain entry, or a report from before the field —
+    /// replaces nothing. Advisory and read only by the Hedge Brain's view;
+    /// the plane's settled books are the truth for balances. Bounded by the
+    /// cells that have ever reported times [`MAX_POSITIONS_PER_DELTA`].
+    advisory_positions: BTreeMap<String, AdvisoryBook>,
     /// The regions whose darkness the platform has journaled and not yet
     /// journaled the end of. **Not the derivation and read by nothing that
     /// decides**: `dark_regions` recomputes from `last_heard` every time,
@@ -997,11 +1061,14 @@ impl CentralPlane {
             books: BTreeMap::new(),
             attributor: Attributor::new(),
             sent: BTreeMap::new(),
+            venue_fills: BTreeMap::new(),
             incidents_raised: 0,
             realised: BTreeMap::new(),
             withdrawn_venues: BTreeSet::new(),
             reinstated_venues: BTreeSet::new(),
             last_heard: BTreeMap::new(),
+            episodes: BTreeMap::new(),
+            advisory_positions: BTreeMap::new(),
             settled_reports: BTreeMap::new(),
             announced_dark: BTreeSet::new(),
             lit_share_bounds: BTreeMap::new(),
@@ -1068,6 +1135,18 @@ impl CentralPlane {
         whitelist
             .conversions
             .retain(|conversion| !self.withdrawn_venues.contains(conversion.venue.as_str()));
+        // ADR 0154 decision 3: where the venue's own fills measure lower than
+        // the operator stated, the measurement governs; never the other way.
+        // `min`, so a venue filling better than stated leaves the stated
+        // figure in place rather than raising the edge.
+        for conversion in &mut whitelist.conversions {
+            if let (Some(costs), Some(bound)) = (
+                conversion.costs.as_mut(),
+                self.measured_fill_bound(&conversion.venue),
+            ) {
+                costs.fill_probability = costs.fill_probability.min(bound);
+            }
+        }
         let outcome = if whitelist.conversions.is_empty() && !withdrawn.is_empty() {
             WhitelistOutcome::AllWithdrawn { venues: withdrawn }
         } else {
@@ -1083,6 +1162,46 @@ impl CentralPlane {
             outcome,
             whitelist,
         })
+    }
+
+    /// Whether orders at `venue` are tallied: only a venue the arbitrage
+    /// policy names, because the venue on a report is a string off the wire
+    /// and a map keyed by it would grow with whatever a cell sent.
+    fn measures_fills_at(&self, venue: &str) -> bool {
+        self.config
+            .arbitrage
+            .as_ref()
+            .is_some_and(|policy| policy.venues.contains_key(venue))
+    }
+
+    /// The lower confidence bound of `venue`'s measured fill rate — the share
+    /// of orders cells reported sent there that have filled at all — or
+    /// `None` below [`MIN_FILL_SAMPLE`] orders, where the stated figure
+    /// stands (ADR 0154 decision 3).
+    ///
+    /// Conservative twice over, both times in the direction that only lowers
+    /// an edge: an order still resting counts as unfilled, and the bound is
+    /// the Wilson score interval's lower end at [`FILL_BOUND_Z`], not the
+    /// observed rate. A bound of zero is never returned, because a fill
+    /// probability must stay positive for the cell to take the whitelist; a
+    /// venue that has filled nothing is floored at the smallest positive
+    /// step rather than read as permission.
+    pub fn measured_fill_bound(&self, venue: &str) -> Option<Decimal> {
+        let tally = self.venue_fills.get(venue)?;
+        if tally.sent < MIN_FILL_SAMPLE {
+            return None;
+        }
+        // Statistics in f64 and back to Decimal at the end: the bound is a
+        // probability, not money, and it is only ever compared by `min`
+        // against the operator's stated Decimal.
+        let n = tally.sent as f64;
+        let p = (tally.filled.min(tally.sent) as f64) / n;
+        let z = FILL_BOUND_Z;
+        let centre = p + z * z / (2.0 * n);
+        let margin = z * (p * (1.0 - p) / n + z * z / (4.0 * n * n)).sqrt();
+        let lower = (centre - margin) / (1.0 + z * z / n);
+        let floor = Decimal::from_f64(0.0001)?;
+        Some(Decimal::from_f64(lower.clamp(0.0, 1.0))?.max(floor))
     }
 
     /// Omit `venue` from every whitelist this plane issues until it is
@@ -1171,6 +1290,78 @@ impl CentralPlane {
 
     /// When the centre last heard from each cell, and where the cell said it
     /// was. The input to the derivation, in cell order.
+    /// The book `cell` last stated, with the journal sequence it is as of
+    /// (ADR 0208); `None` for a cell that has stated none.
+    pub fn advisory_book(&self, cell: &str) -> Option<&AdvisoryBook> {
+        self.advisory_positions.get(cell)
+    }
+
+    /// Where `report`'s stated book disagrees with the centre's settled book
+    /// for that cell (ADR 0208), per instrument: the cell's quantity summed
+    /// over its venues against the strategies' lots summed over strategies.
+    /// Both are facts the centre can read; neither is corrected by the other.
+    /// An instrument on only one side is a disagreement too — a position the
+    /// cell states and the centre never settled, or one the centre settled
+    /// that the cell no longer states.
+    fn advisory_disagreements_of(&self, report: &CellReport) -> Vec<String> {
+        let mut stated: BTreeMap<String, Decimal> = BTreeMap::new();
+        for position in &report.advisory_positions {
+            *stated
+                .entry(position.object_id.as_str().to_string())
+                .or_insert(Decimal::ZERO) += position.quantity;
+        }
+        let mut settled: BTreeMap<String, Decimal> = BTreeMap::new();
+        for ((cell, _, instrument), lot) in &self.books {
+            if cell == &report.cell {
+                *settled.entry(instrument.clone()).or_insert(Decimal::ZERO) += lot.quantity;
+            }
+        }
+        let instruments: BTreeSet<&String> = stated.keys().chain(settled.keys()).collect();
+        instruments
+            .into_iter()
+            .filter_map(|instrument| {
+                let claimed = stated.get(instrument).copied().unwrap_or(Decimal::ZERO);
+                let booked = settled.get(instrument).copied().unwrap_or(Decimal::ZERO);
+                (claimed != booked).then(|| {
+                    format!(
+                        "{} states {claimed} of {instrument} as of its journal sequence {} and \
+                         the centre's settled book for that cell holds {booked}; the settled \
+                         book stands and the statement is recorded as the cell's claim",
+                        report.cell, report.positions_as_of
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// The regional episodes `cell` has reported, oldest first (ADR 0207).
+    /// Empty for a cell the centre has not heard an episode from.
+    pub fn episodes(&self, cell: &str) -> &[RegionalEpisode] {
+        self.episodes.get(cell).map_or(&[], Vec::as_slice)
+    }
+
+    /// Merge a report's episodes into the cell's store: each one the store
+    /// does not already hold is appended, and the oldest leave once the
+    /// store is past [`MAX_EPISODES_PER_CELL`]. Equality is the episode's
+    /// own — cell, region, kind, both instants and the detail — which is
+    /// what makes a view repeated on every delta, and a redelivered report,
+    /// idempotent here.
+    fn store_episodes(&mut self, cell: &str, reported: &[RegionalEpisode]) {
+        if reported.is_empty() {
+            return;
+        }
+        let held = self.episodes.entry(cell.to_string()).or_default();
+        for episode in reported {
+            if held.contains(episode) {
+                continue;
+            }
+            held.push(episode.clone());
+            if held.len() > MAX_EPISODES_PER_CELL {
+                held.remove(0);
+            }
+        }
+    }
+
     pub fn last_heard(&self) -> &BTreeMap<String, LastHeard> {
         &self.last_heard
     }
@@ -2192,6 +2383,31 @@ impl CentralPlane {
                 )));
             }
         }
+        // ADR 0208: a stated book whose sequence went backwards is refused
+        // whole, before anything below is written — a cell's chain only
+        // grows, so an older statement arriving as new is a cell that
+        // restarted from an earlier chain or a sender that is not the cell,
+        // and neither is a report to absorb any part of.
+        if let Some(held) = self.advisory_positions.get(&report.cell)
+            && report.positions_as_of != 0
+            && report.positions_as_of < held.as_of
+        {
+            return Err(Error::denied(format!(
+                "the report from {} states its book as of journal sequence {}, and the centre \
+                 already holds that cell's book as of {}; a chain does not run backwards, so \
+                 the whole report is refused",
+                report.cell, report.positions_as_of, held.as_of
+            )));
+        }
+        if report.advisory_positions.len() > MAX_POSITIONS_PER_DELTA {
+            return Err(Error::invalid(format!(
+                "the report from {} states {} positions and the wire carries at most {}; a \
+                 report past the bound did not come off the wire",
+                report.cell,
+                report.advisory_positions.len(),
+                MAX_POSITIONS_PER_DELTA
+            )));
+        }
 
         // The centre heard from this cell, now, in the region it says it is
         // in — written before anything below can halt or refuse the report,
@@ -2225,6 +2441,8 @@ impl CentralPlane {
             self.utilisation
                 .insert((report.cell.clone(), strategy.clone()), utilisation.clone());
         }
+
+        self.store_episodes(&report.cell, &report.episodes);
 
         // The interval's orders and crosses reach the strategy books whether
         // or not the report reconciles: they are what the cell did, and a
@@ -2302,6 +2520,28 @@ impl CentralPlane {
             self.record_halt(&breaks);
         }
 
+        // ADR 0208: the cell's stated book, kept as of its journal sequence
+        // and compared — after this report's fills settled — with what the
+        // centre's own books hold for the cell. A replayed report settled
+        // nothing and restates nothing. A disagreement is recorded, never
+        // resolved by either side: the settled book is the truth for every
+        // balance and the statement is the cell's claim.
+        let advisory_disagreements = if replayed || report.positions_as_of == 0 {
+            Vec::new()
+        } else {
+            let disagreements = self.advisory_disagreements_of(&report);
+            self.advisory_positions.insert(
+                report.cell.clone(),
+                AdvisoryBook {
+                    as_of: report.positions_as_of,
+                    at: report.at,
+                    positions: report.advisory_positions.clone(),
+                    disagreements: disagreements.clone(),
+                },
+            );
+            disagreements
+        };
+
         let concentrations = self.exposure.concentrations(&self.concentration);
         let crowded = self
             .exposure
@@ -2325,6 +2565,7 @@ impl CentralPlane {
             feasibility_refusals,
             feasibility_refusals_unattributed,
             feasibility_refusals_repeated,
+            advisory_disagreements,
         })
     }
 
@@ -2599,11 +2840,22 @@ impl CentralPlane {
                 continue;
             }
             let sent = self.sent.entry(report.cell.clone()).or_default();
-            if let Err(reason) = sent.register(&order.order_id, order.quantity, order.price) {
+            if let Err(reason) = sent.register(
+                &order.order_id,
+                order.venue.as_str(),
+                order.quantity,
+                order.price,
+            ) {
                 self.refuse_settlement(&mut settlement, "order", reason);
                 continue;
             }
             settlement.orders_sent += 1;
+            if self.measures_fills_at(order.venue.as_str()) {
+                self.venue_fills
+                    .entry(order.venue.as_str().to_string())
+                    .or_default()
+                    .sent += 1;
+            }
             if let Some(metrics) = &self.metrics {
                 metrics.count(names::CENTRAL_ORDERS_SENT, labels([]));
             }
@@ -2623,7 +2875,14 @@ impl CentralPlane {
             }
             let sent = self.sent.entry(report.cell.clone()).or_default();
             let reference = match sent.fill(&fill.order_id, fill.quantity) {
-                Ok(reference) => reference,
+                Ok((reference, first_fill_at)) => {
+                    if let Some(venue) = first_fill_at
+                        && self.measures_fills_at(&venue)
+                    {
+                        self.venue_fills.entry(venue).or_default().filled += 1;
+                    }
+                    reference
+                }
                 Err(detail) => {
                     // Not refused: refused is for a record the books cannot take
                     // without guessing. This is a record the platform has no order
@@ -2997,11 +3256,30 @@ impl CentralPlane {
 /// than a register that grows with every order a cell ever sent.
 const MAX_SENT_ORDERS_PER_CELL: usize = 4_096;
 
+/// Orders a venue must have been sent before its measured fill rate may
+/// lower a stated fill probability (ADR 0154 decision 3). Below it the
+/// interval is too wide to say anything the operator did not.
+pub const MIN_FILL_SAMPLE: u64 = 30;
+
+/// The normal quantile of the one-sided bound: 95 per cent confidence that
+/// the venue's true fill rate is at least the bound.
+pub const FILL_BOUND_Z: f64 = 1.645;
+
+/// Orders sent to one venue and how many of them filled at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FillTally {
+    sent: u64,
+    filled: u64,
+}
+
 /// One order the centre saw a cell send, and how much of it has filled.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct SentOrder {
     quantity: Decimal,
     filled: Decimal,
+    /// The venue the order was sent to, so its first fill is counted where
+    /// it was sent (ADR 0154 decision 3).
+    venue: String,
     /// The price the cell sent the order at, kept as the reference every
     /// fill on it is costed against.
     ///
@@ -3034,6 +3312,7 @@ impl SentOrders {
     fn register(
         &mut self,
         order_id: &str,
+        venue: &str,
         quantity: Decimal,
         price: Decimal,
     ) -> std::result::Result<(), String> {
@@ -3048,6 +3327,7 @@ impl SentOrders {
             SentOrder {
                 quantity,
                 filled: Decimal::ZERO,
+                venue: venue.to_string(),
                 price,
             },
         );
@@ -3066,7 +3346,14 @@ impl SentOrders {
     /// An order whose fills now sum to its quantity leaves the register, so
     /// a fill after that is an unsent fill like any other — the venue
     /// reporting more than the platform asked for.
-    fn fill(&mut self, order_id: &str, quantity: Decimal) -> std::result::Result<Decimal, String> {
+    ///
+    /// Returns the order's reference price and, on the order's first fill,
+    /// the venue it was sent to — what the per-venue fill rate counts.
+    fn fill(
+        &mut self,
+        order_id: &str,
+        quantity: Decimal,
+    ) -> std::result::Result<(Decimal, Option<String>), String> {
         let Some(order) = self.by_id.get_mut(order_id) else {
             return Err(format!(
                 "the cell reports a fill of {quantity} on order {order_id} and the centre never \
@@ -3081,6 +3368,7 @@ impl SentOrders {
                 order.quantity
             ));
         }
+        let first_fill_at = order.filled.is_zero().then(|| order.venue.clone());
         order.filled += quantity;
         let reference = order.price;
         if order.filled >= order.quantity {
@@ -3090,7 +3378,7 @@ impl SentOrders {
         // order is gone from the register on the fill that completes it and a
         // second lookup would find nothing exactly on the fills that matter
         // most — the ones that closed an order out.
-        Ok(reference)
+        Ok((reference, first_fill_at))
     }
 }
 
@@ -3098,6 +3386,25 @@ impl SentOrders {
 /// than this many reports settles again; at one report per interval that is
 /// far longer than any retry or spool a cell keeps.
 const MAX_SETTLED_REPORTS_PER_CELL: usize = 4_096;
+
+/// One cell's stated book (ADR 0208): the positions as the cell's confirmed
+/// fills built them, the journal sequence they are as of, and the report
+/// instant they arrived with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdvisoryBook {
+    pub as_of: u64,
+    pub at: Timestamp,
+    pub positions: Vec<AdvisoryPosition>,
+    /// The instruments on which this statement and the centre's settled book
+    /// disagreed when it arrived, in words; empty is agreement.
+    pub disagreements: Vec<String>,
+}
+
+/// The most regional episodes the centre holds per cell (ADR 0207). Twice
+/// the ring a cell keeps (`qip_edge::cell::MAX_RETAINED_EPISODES`, 128), so
+/// the centre remembers what a cell has already let go of; a reader who
+/// wants more than this reads the journal, which has all of them.
+pub const MAX_EPISODES_PER_CELL: usize = 256;
 
 /// The reports one cell has had settled, by instant and content digest,
 /// bounded, oldest evicted first.
@@ -3255,6 +3562,7 @@ mod tests {
         let venue = |cost| WhitelistedVenue {
             class: VenueClass::Exchange,
             taker_cost: cost,
+            simulated: true,
         };
         let market = |venue: &str| WhitelistedMarket {
             venue: venue.to_string(),
@@ -3297,6 +3605,164 @@ mod tests {
             .envelopes
             .insert((CELL.to_string(), desk.clone()), envelope);
         (plane, desk, cell_venues)
+    }
+
+    /// R12-REFLEX-6012 (ADR 0207). An episode a cell reports is held by the
+    /// centre; the same report ingested again — a delta is a view of the
+    /// cell's ring, and the transport is at-least-once — holds it once; and
+    /// the store is bounded per cell, oldest out. Mutations (each run,
+    /// failed, restored): `store_episodes` skipping its `contains` check
+    /// fails the second assertion with two copies; `MAX_EPISODES_PER_CELL`
+    /// enforced as `>=` rather than `>` fails the bound assertion by one.
+    #[test]
+    fn an_episode_a_cell_reports_is_held_once_and_the_store_is_bounded_per_cell() {
+        use qip_contracts::regional_episode::{EpisodeKind, RegionalEpisode};
+        let (mut plane, _desk, _venues) = two_venue_plane();
+        let mut autonomy = AutonomyController::new();
+        assert!(plane.episodes(CELL).is_empty(), "premise: nothing held yet");
+
+        let episode = RegionalEpisode::new(
+            CELL.to_string(),
+            "europe-west2".to_string(),
+            EpisodeKind::LatencySpike,
+            now(),
+            "order london-1-7 completed 140 ms after release".to_string(),
+        );
+        let report = || {
+            CellReport::new(CELL, now())
+                .with_region("europe-west2")
+                .with_episodes(vec![episode.clone()])
+        };
+        plane
+            .ingest(report(), autonomy.kill_switch_mut(), now())
+            .expect("a report carrying one episode ingests");
+        assert_eq!(plane.episodes(CELL), &[episode.clone()][..]);
+
+        // The same view again, as the next delta from the same ring would
+        // carry it: still one.
+        let later = now().saturating_add(Duration::from_secs(1));
+        plane
+            .ingest(report(), autonomy.kill_switch_mut(), later)
+            .expect("the repeated view ingests");
+        assert_eq!(
+            plane.episodes(CELL).len(),
+            1,
+            "an episode repeated on the next delta was stored twice"
+        );
+
+        // The bound: more distinct episodes than the store keeps, oldest out.
+        let flood: Vec<RegionalEpisode> = (0..(MAX_EPISODES_PER_CELL + 10))
+            .map(|n| {
+                RegionalEpisode::new(
+                    CELL.to_string(),
+                    "europe-west2".to_string(),
+                    EpisodeKind::FillSlippage,
+                    now().saturating_add(Duration::from_secs(n as i64 + 2)),
+                    format!("fill {n} slipped"),
+                )
+            })
+            .collect();
+        plane
+            .ingest(
+                CellReport::new(CELL, later)
+                    .with_region("europe-west2")
+                    .with_episodes(flood.clone()),
+                autonomy.kill_switch_mut(),
+                later.saturating_add(Duration::from_secs(1)),
+            )
+            .expect("a flood ingests");
+        let held = plane.episodes(CELL);
+        assert_eq!(
+            held.len(),
+            MAX_EPISODES_PER_CELL,
+            "the store is not bounded"
+        );
+        assert_eq!(
+            held.last(),
+            flood.last(),
+            "the newest episode was the one dropped"
+        );
+        assert!(
+            !held.contains(&episode),
+            "the oldest episode survived a flood past the bound"
+        );
+        assert!(plane.episodes("another-cell").is_empty());
+    }
+
+    /// ADR 0208 (R12-MESH-7143): a cell's stated book is kept as of its
+    /// journal sequence, compared with the centre's settled book for the
+    /// cell, replaced by a newer statement, and a statement whose sequence
+    /// went backwards refuses the whole report before anything is written.
+    /// Mutations (each run, failed, restored): the backwards check dropped —
+    /// the third ingest succeeds and the fourth assertion fails; the
+    /// comparison reading only the stated side — the first disagreement is
+    /// never raised and the second assertion fails.
+    #[test]
+    fn a_cells_stated_book_is_reconciled_replaced_by_a_newer_one_and_refused_when_it_goes_backwards()
+     {
+        use qip_contracts::wire::AdvisoryPosition;
+        let (mut plane, _desk, _venues) = two_venue_plane();
+        let mut autonomy = AutonomyController::new();
+        assert!(plane.advisory_book(CELL).is_none(), "premise: no book held");
+        let stated = |quantity: &str| {
+            vec![AdvisoryPosition {
+                object_id: qip_core::ObjectId::from_string("AAA"),
+                venue: VenueId::new("XNYS"),
+                quantity: Decimal::parse(quantity).expect("a literal"),
+            }]
+        };
+
+        // Sequence 5: the cell states ten of AAA the centre settled none of.
+        let first = plane
+            .ingest(
+                CellReport::new(CELL, now()).with_advisory_positions(stated("10"), 5),
+                autonomy.kill_switch_mut(),
+                now(),
+            )
+            .expect("a stated book ingests");
+        assert_eq!(
+            first.advisory_disagreements.len(),
+            1,
+            "{:?}",
+            first.advisory_disagreements
+        );
+        assert!(first.advisory_disagreements[0].contains("states 10 of AAA"));
+        let held = plane.advisory_book(CELL).expect("the book is held");
+        assert_eq!((held.as_of, held.positions.len()), (5, 1));
+
+        // Sequence 7: flat again. Replaced, and nothing to disagree about.
+        let later = now().saturating_add(Duration::from_secs(1));
+        let second = plane
+            .ingest(
+                CellReport::new(CELL, later).with_advisory_positions(Vec::new(), 7),
+                autonomy.kill_switch_mut(),
+                later,
+            )
+            .expect("a newer statement ingests");
+        assert!(second.advisory_disagreements.is_empty());
+        let held = plane.advisory_book(CELL).expect("the book is held");
+        assert_eq!((held.as_of, held.positions.len()), (7, 0));
+
+        // Sequence 6 arriving as a new report: refused whole, nothing written.
+        let heard_before = plane.last_heard().get(CELL).cloned();
+        let backwards = later.saturating_add(Duration::from_secs(1));
+        let refusal = plane
+            .ingest(
+                CellReport::new(CELL, backwards).with_advisory_positions(stated("3"), 6),
+                autonomy.kill_switch_mut(),
+                backwards,
+            )
+            .expect_err("a statement that went backwards was absorbed");
+        assert!(
+            refusal.message().contains("does not run backwards"),
+            "{refusal}"
+        );
+        assert_eq!(plane.advisory_book(CELL).map(|b| b.as_of), Some(7));
+        assert_eq!(
+            plane.last_heard().get(CELL).cloned(),
+            heard_before,
+            "a refused report was heard"
+        );
     }
 
     /// A replay is recognised by instant and content together: the same
@@ -3436,6 +3902,7 @@ mod tests {
         let venue = |class, cost| WhitelistedVenue {
             class,
             taker_cost: cost,
+            simulated: true,
         };
         let market = |venue: &str| WhitelistedMarket {
             venue: venue.to_string(),
