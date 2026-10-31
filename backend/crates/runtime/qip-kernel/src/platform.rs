@@ -18339,13 +18339,35 @@ impl Platform {
         // `free` is the budget before the governor and the multipliers took
         // anything from it: the reference the leg quantities are reported
         // against, by the constructor in this same pass (ADR 0148 decision 5).
-        let outcome = self.constructor.construct_referenced(
+        // Joint construction (R12-ASSET-4070, ADR 0228): the asset-class
+        // dimension is grouped inside this one optimiser run. No class
+        // budget has a risk record yet, so each class is capped at the
+        // mandate's own gross target, which narrows nothing; a class budget
+        // lands only with its own record, and can then only lower a cap.
+        let target_gross = self.constructor.mandate().target_gross;
+        let mut by_class = qip_portfolio_engine::construction::GroupCaps {
+            dimension: "class".to_string(),
+            ..Default::default()
+        };
+        for thesis in theses {
+            let object = thesis.object_id.as_str();
+            if let Some(class) = self.asset_classes.get(object) {
+                by_class
+                    .group_of
+                    .insert(object.to_string(), class.as_str().to_string());
+                by_class
+                    .caps
+                    .insert(class.as_str().to_string(), target_gross);
+            }
+        }
+        let outcome = self.constructor.construct_grouped(
             theses,
             &covariance,
             &current,
             Money::new(budget, Currency::USD),
             Money::new(free, Currency::USD),
             &caps,
+            std::slice::from_ref(&by_class),
             now,
             now,
             ProposalId::from_string(format!("prop-{}", self.cycle)),

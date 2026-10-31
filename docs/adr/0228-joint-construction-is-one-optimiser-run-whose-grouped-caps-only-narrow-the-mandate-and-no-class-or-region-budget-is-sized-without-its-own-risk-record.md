@@ -1,0 +1,74 @@
+# ADR 0228: Joint construction is one optimiser run whose grouped caps only narrow the mandate, and no class or region budget is sized without its own risk record
+
+- **Status**: **Accepted 2026-10-31 under the owner's delegation** (decision
+  10 of `docs/blueprint/owner-decisions-2026-10-31.md`, the ruling on
+  R12-ASSET-4070). The limits of that delegation hold here: no risk number,
+  limit, threshold or limit set changes, nothing new is sized (decision 7 of
+  the same file), no billed infrastructure, and no paper-trading layer is
+  touched. Tighten-only by construction: a grouped cap above the mandate's
+  gross target is refused, so a group can only narrow what the mandate
+  already allows.
+- **Date**: 2026-10-31
+- **Rows**: R12-ASSET-4070.
+- **Extends**: ADR 0148 (the reference budget beside the sizing budget).
+
+## Context
+
+R12-ASSET-4070 asks that one construction run respect strategy, asset-class,
+region and horizon caps together, rather than sizing each sleeve in its own
+pass and adding the results, which lets two sleeves each within their caps
+sum past a joint one.
+
+`PortfolioConstructor` already solves one mean-variance problem per cycle
+with per-name bounds and a budget equality. It had no way to bound a group
+of names. No class, region, strategy or horizon budget is on record anywhere
+in the platform with a risk argument behind its figure.
+
+## Decision
+
+1. **Grouped caps live inside the one optimiser run.**
+   `PortfolioConstructor::construct_grouped` takes a list of `GroupCaps`,
+   each a dimension name, a name-to-group map and a cap per group. Each
+   capped group becomes one `at_most` constraint on the summed weight of
+   its names, in the same problem as the per-name bounds and the budget.
+   `construct_referenced` is `construct_grouped` with no groups, so every
+   existing caller is unchanged.
+2. **The budget is pinned no higher than the groups allow.** For each
+   dimension the reachable gross is the sum over its groups of the smaller
+   of the group's cap and its names' own bounds, plus the bounds of names in
+   no group. The budget equality is pinned at the minimum of that over every
+   dimension and the gross the per-name caps already allowed, so the run is
+   never asked for a gross a group forbids.
+3. **A cap only narrows.** A grouped cap that is not finite, is zero or
+   less, or exceeds the mandate's gross target is refused, never clamped.
+4. **No figure is invented.** The kernel's DECIDE stage groups the
+   asset-class dimension, from the universe's own asset classes, with every
+   class capped at the mandate's gross target, which narrows nothing. A class
+   or region budget below that is a risk number and lands only with its own
+   risk record. Strategy, region and horizon are not keys an
+   `ApprovedThesis` carries today, so the kernel cannot group them yet; the
+   constructor accepts them when it can.
+
+## Consequences
+
+- One run, one budget: a joint cap cannot be breached by two sleeves each
+  inside their own.
+- On every path today the plan is the plan it was, because no cap below the
+  gross target is on record.
+- A group bounds the *net* summed weight of its names. Under a long-only
+  mandate that is the gross; under a mandate that allows shorts, a long and
+  a short in one group offset. A gross group cap needs split long and short
+  variables in the problem and is not part of this decision.
+
+## What it costs
+
+- One linear constraint per capped group in the problem the router solves.
+- A reader must know that a class cap at the gross target is a placeholder
+  that binds nothing, and that the constraint's presence is not a budget.
+
+## What would make this wrong
+
+- A requirement that caps bind on gross rather than net exposure for a
+  mandate that shorts. That needs the split-variable form above.
+- A class or region budget arriving as configuration with no risk record.
+  That is a new risk number and needs one (decision 7).

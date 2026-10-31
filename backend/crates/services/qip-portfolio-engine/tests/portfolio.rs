@@ -1090,3 +1090,114 @@ fn an_approved_thesis_without_a_return_forecast_is_refused() -> Result<()> {
     );
     Ok(())
 }
+
+// --- ADR 0228: grouped caps narrow one joint run ---------------------------
+
+/// R12-ASSET-4070: one construction run respects per-strategy, per-class,
+/// per-region and per-horizon budgets together. Four names, each cap set
+/// below what the unconstrained run would give its group, and every group's
+/// summed weight comes out at or under its cap, from a single
+/// `construct_grouped` call.
+///
+/// Mutation: pass the groups without the class dimension and the class cap
+/// is exceeded.
+#[test]
+fn one_construction_run_respects_strategy_class_region_and_horizon_caps_together() -> Result<()> {
+    use qip_portfolio_engine::construction::GroupCaps;
+    let theses = [
+        thesis("AAA", 0.9, 0.04),
+        thesis("BBB", 0.8, 0.035),
+        thesis("CCC", 0.7, 0.03),
+        thesis("DDD", 0.6, 0.025),
+    ];
+    let mandate = wide_mandate();
+    let free = build_capped(&theses, mandate, &BTreeMap::new())?;
+    let dimension = |name: &str, pairs: &[(&str, &str)], caps: &[(&str, f64)]| GroupCaps {
+        dimension: name.to_string(),
+        group_of: pairs
+            .iter()
+            .map(|(asset, group)| (object(asset).as_str().to_string(), group.to_string()))
+            .collect(),
+        caps: caps
+            .iter()
+            .map(|(group, cap)| (group.to_string(), *cap))
+            .collect(),
+    };
+    let groups = vec![
+        dimension(
+            "strategy",
+            &[("AAA", "s1"), ("BBB", "s1"), ("CCC", "s2"), ("DDD", "s2")],
+            &[("s1", 0.45), ("s2", 0.45)],
+        ),
+        dimension(
+            "class",
+            &[
+                ("AAA", "equity"),
+                ("CCC", "equity"),
+                ("BBB", "fx"),
+                ("DDD", "fx"),
+            ],
+            &[("equity", 0.30), ("fx", 0.50)],
+        ),
+        dimension(
+            "region",
+            &[("AAA", "na"), ("DDD", "na"), ("BBB", "eu"), ("CCC", "eu")],
+            &[("na", 0.40), ("eu", 0.40)],
+        ),
+        dimension(
+            "horizon",
+            &[
+                ("AAA", "short"),
+                ("BBB", "short"),
+                ("CCC", "long"),
+                ("DDD", "long"),
+            ],
+            &[("short", 0.42), ("long", 0.42)],
+        ),
+    ];
+    let class_free: f64 = ["AAA", "CCC"].iter().map(|s| weight_of(&free, s)).sum();
+    assert!(
+        class_free > 0.30 + 1e-6,
+        "premise: the free run puts {class_free} in the equity class, above its cap"
+    );
+    let grouped = constructor(mandate)?
+        .construct_grouped(
+            &theses,
+            &covariance(theses.len()),
+            &BTreeMap::new(),
+            equity(),
+            equity(),
+            &BTreeMap::new(),
+            &groups,
+            now(),
+            now(),
+            ProposalId::from_string("prop-grouped"),
+        )?
+        .proposal;
+    for dimension in &groups {
+        for (group, cap) in &dimension.caps {
+            let held: f64 = dimension
+                .group_of
+                .iter()
+                .filter(|(_, g)| *g == group)
+                .map(|(asset, _)| {
+                    grouped
+                        .legs
+                        .iter()
+                        .find(|leg| leg.object_id.as_str() == asset)
+                        .map_or(0.0, |leg| leg.target_weight)
+                })
+                .sum();
+            assert!(
+                held <= cap + 1e-6,
+                "{} group {group} holds {held}, above its {cap} cap",
+                dimension.dimension
+            );
+        }
+    }
+    assert!(
+        grouped.legs.iter().any(|leg| leg.target_weight > 0.0),
+        "premise: something is held"
+    );
+    Ok(())
+}
