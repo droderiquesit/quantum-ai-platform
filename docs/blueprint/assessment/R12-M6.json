@@ -1527,7 +1527,7 @@
       "backend/crates/services/qip-expansion/tests/loop.rs:147 a_gate_whose_declines_repeatedly_would_have_earned_becomes_one_learning_objective",
       "backend/crates/services/qip-expansion/tests/loop.rs:173 a_venue_refusing_one_constraint_repeatedly_becomes_an_execution_gap"
     ],
-    "gap": "Adverse selection, failed arbitrage sagas and reconciliation breaks raise no learning objective, and the closure's inputs do not exist to read: CentralPlane::record_halt (qip-kernel central/plane.rs) only counts qip_central_reconciliation_breaks_total and keeps no break history the deep brain could sweep, and no Platform accessor exposes saga outcomes (qip-execution-engine multileg.rs sagas are not composed into the kernel). Closing it needs a bounded break/saga history on the kernel first (outside qip-expansion), then the two detectors and a research.rs call.",
+    "gap": "Decided by ADR 0193 (2026-10-31): reconciliation breaks and failed sagas reach the curriculum as bounded journaled kernel records (ReconciliationBreakRecord at CentralPlane::record_halt; SagaOutcomeRecord once multileg is composed into the kernel), read off the log by the sweep that can see it and crossing processes only over the mesh spine when a frame is designed for a named consumer; one Execution gap per cell or venue naming its origin; adverse selection is named unmeasured and gets no detector (ADR 0151 d12). Code left, in the ADR's order: the two records (kernel), the two detectors (qip-expansion), the sweep call (qip-deepbrain), each mutation-tested. Until the sweep call lands the two triggers raise nothing, so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1538,7 +1538,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Partially covered sources. 2026-10-18 lane L18: gap corrected after reading the kernel; no detector added, because a detector with no producer would read as coverage."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Partially covered sources. 2026-10-18 lane L18: gap corrected after reading the kernel; no detector added, because a detector with no producer would read as coverage. 2026-10-31 L4b-expand: ADR 0193 body written under L4-quant's claim (decision, no code). Stays PARTIAL."
   },
   {
     "id": "R12-EXPAND-6067",
