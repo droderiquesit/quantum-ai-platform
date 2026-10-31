@@ -29138,7 +29138,10 @@ mod decide_tests {
      {
         use crate::world_snapshot::{CAUSAL_GRAPH, KNOWLEDGE_GRAPH, WORLD_SNAPSHOT_ORIGIN};
         use qip_world_model::relationship::{Relationship, RelationshipKind};
-        let directory = std::env::temp_dir().join(format!(
+        // `/tmp` stated directly, not looked up through the environment:
+        // `architecture.rs`'s environment scan reads every `src/` file with
+        // no test exemption (see `dormancy_boot_log_path`).
+        let directory = std::path::PathBuf::from("/tmp").join(format!(
             "qip-kernel-world-snapshot-{}-{}",
             std::process::id(),
             Timestamp::from_secs(1_760_000_000).as_nanos()
