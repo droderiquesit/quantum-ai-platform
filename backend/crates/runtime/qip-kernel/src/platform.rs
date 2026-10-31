@@ -1102,6 +1102,13 @@ pub struct Platform {
     /// version (R12-WORLD-3034): the record that a distilled procedure was
     /// retrieved for reuse, not only stored.
     procedures_briefed: Vec<(String, u32)>,
+    /// (event id, horizon in bars) pairs whose market reaction has been
+    /// measured and applied to the causal graph (R12-WORLD-6015), so each
+    /// is applied once. Pruned to events still held in `market_events`.
+    reactions_applied: BTreeSet<(String, usize)>,
+    /// The contradictions recent reactions found against held causal edges,
+    /// newest last and bounded by [`REACTION_CONTRADICTION_HISTORY`].
+    reaction_contradictions: Vec<qip_world_model::granger::ReactionContradiction>,
     /// The value policy over the episodes `research_memory` holds: which
     /// resolved analyst calls were surprising enough to keep whole and which
     /// are counted into a per-analyst summary (ADR 0152 decision 8,
@@ -2946,6 +2953,11 @@ const PRECEDENT_K: usize = 5;
 /// reader asking "what was the platform's picture of this name" can hold in
 /// their head at once. It is not a threshold and nothing fires on it.
 const CAUSAL_CONTEXT_LIMIT: usize = 5;
+
+/// Reaction contradictions the platform keeps for inspection
+/// (R12-WORLD-6015). A cap, not a forecast: the record of what each did is on
+/// the edges themselves, which cite the reaction that weakened them.
+const REACTION_CONTRADICTION_HISTORY: usize = 256;
 
 /// The most recent correct calls an analyst's procedure is distilled from.
 /// A window, not a lifetime: a way of answering that worked two years ago
@@ -6262,6 +6274,8 @@ impl Platform {
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             procedures_briefed: Vec::new(),
+            reactions_applied: BTreeSet::new(),
+            reaction_contradictions: Vec::new(),
             pending_theses: Vec::new(),
             justified_hypotheses: justification::JustifiedHypotheses::default(),
             outside_priors: BTreeMap::new(),
@@ -12511,6 +12525,134 @@ impl Platform {
     /// what the caller gets back. The refusal is not a stage failing — it is the
     /// argument being wrong — so nothing is journalled, nothing is charged and
     /// no state moves.
+    /// Pair each world event with the market's reaction at each of
+    /// [`qip_world_model::granger::REACTION_HORIZONS_BARS`] once enough bars
+    /// have closed, and apply each reaction to the causal graph
+    /// (R12-WORLD-6015): a reaction with no edge behind it establishes one,
+    /// and one against a held edge lowers that edge's confidence and is kept
+    /// in [`Self::reaction_contradictions`].
+    ///
+    /// The move is the subject's close at the horizon against its last
+    /// close before the event, in basis points. An event whose subject has
+    /// no bar history, or whose weight is not a probability, is skipped with
+    /// a problem on the cycle; one whose horizon has not closed yet waits.
+    fn react_to_world_events(&mut self, now: Timestamp) {
+        use qip_world_model::granger::REACTION_HORIZONS_BARS;
+        use qip_world_model::reaction::ReactionEpisode;
+        let held: BTreeSet<String> = self
+            .market_events
+            .iter()
+            .map(|e| e.event_id.clone())
+            .collect();
+        self.reactions_applied
+            .retain(|(event_id, _)| held.contains(event_id));
+        let mut problems = Vec::new();
+        let mut episodes: Vec<(ReactionEpisode, f64)> = Vec::new();
+        for event in &self.market_events {
+            if event.direction == 0.0 || event.known_at() > now {
+                continue;
+            }
+            let Some(bars) = self.bar_history.get(&event.subject) else {
+                continue;
+            };
+            let Some(first_after) = bars
+                .iter()
+                .position(|bar| bar.open_time >= event.occurred_at())
+            else {
+                continue;
+            };
+            let Some(base) = first_after
+                .checked_sub(1)
+                .and_then(|i| bars.get(i))
+                .map(|bar| bar.close.to_f64())
+                .filter(|c| *c > 0.0)
+            else {
+                continue;
+            };
+            for horizon in REACTION_HORIZONS_BARS {
+                if self
+                    .reactions_applied
+                    .contains(&(event.event_id.clone(), horizon))
+                {
+                    continue;
+                }
+                let Some(bar) = bars.get(first_after + horizon - 1) else {
+                    continue;
+                };
+                if bar.close_time() > now {
+                    continue;
+                }
+                // Statistics from here: a return in basis points.
+                let moved_bps = (bar.close.to_f64() / base - 1.0) * 10_000.0;
+                let sign = if moved_bps > 0.0 {
+                    1.0
+                } else if moved_bps < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                };
+                match ReactionEpisode::new(
+                    format!("{}@{horizon}", event.event_id),
+                    event.class.clone(),
+                    event.occurred_at(),
+                    bar.close_time(),
+                    vec![(event.subject.clone(), moved_bps, sign)],
+                    horizon,
+                    event.weight,
+                    format!("{} over {horizon} bar(s)", event.description),
+                    now,
+                ) {
+                    Ok(episode) => episodes.push((episode, event.direction)),
+                    Err(error) => problems.push(format!(
+                        "the reaction to {} over {horizon} bar(s) was not recorded: {}",
+                        event.event_id,
+                        error.message()
+                    )),
+                }
+            }
+        }
+        let mut contradictions = Vec::new();
+        for (episode, direction) in episodes {
+            let applied = self.world.update(|world| {
+                world.apply_reaction(
+                    &episode,
+                    direction,
+                    qip_world_model::causal::Mechanism::TemporalPrecedence,
+                    now,
+                )
+            });
+            match applied {
+                Ok(outcome) => {
+                    if let Some((event_id, horizon)) = episode.episode_id.rsplit_once('@')
+                        && let Ok(horizon) = horizon.parse::<usize>()
+                    {
+                        self.reactions_applied
+                            .insert((event_id.to_string(), horizon));
+                    }
+                    contradictions.extend(outcome.contradicted);
+                }
+                Err(error) => problems.push(format!(
+                    "the reaction {} was not applied to the causal graph: {}",
+                    episode.episode_id,
+                    error.message()
+                )),
+            }
+        }
+        self.reaction_contradictions.extend(contradictions);
+        let excess = self
+            .reaction_contradictions
+            .len()
+            .saturating_sub(REACTION_CONTRADICTION_HISTORY);
+        self.reaction_contradictions.drain(..excess);
+        self.capture_problems.extend(problems);
+    }
+
+    /// The contradictions recent world-event reactions found against held
+    /// causal edges, newest last (R12-WORLD-6015).
+    pub fn reaction_contradictions(&self) -> &[qip_world_model::granger::ReactionContradiction] {
+        &self.reaction_contradictions
+    }
+
     /// Hand the self-model this cycle's operational health: whether the
     /// global kill switch is tripped, and every §6.2 row the centre reads as
     /// other than fresh (R12-WORLD-3036). Run after LEARN on every cycle,
@@ -12609,6 +12751,7 @@ impl Platform {
         let learned = self.stage_learn(now);
         self.finish_stage(&mut stages, learned, &mut mark);
         self.observe_own_health(now);
+        self.react_to_world_events(now);
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next
@@ -14045,6 +14188,41 @@ impl Platform {
             .collect()
     }
 
+    /// Each instrument's issuer's latest fundamental surprise readable at
+    /// `now` (R12-WORLD-3044): the `<metric>_surprise` company readings,
+    /// newest by availability per entity, carried to every instrument the
+    /// entity issues in the knowledge graph. An instrument whose issuer is not
+    /// in the graph, or has reported no surprise, is absent.
+    fn fundamental_surprises(&self, now: Timestamp) -> BTreeMap<String, f64> {
+        use qip_world_model::relationship::RelationshipKind;
+        let world = self.world.read();
+        let mut latest: BTreeMap<String, (Timestamp, f64)> = BTreeMap::new();
+        for reading in qip_world_model::now::company_features(&world, now) {
+            if !reading.feature.ends_with("_surprise") {
+                continue;
+            }
+            let newer = latest
+                .get(&reading.subject)
+                .is_none_or(|(at, _)| reading.available_at > *at);
+            if newer {
+                latest.insert(
+                    reading.subject.clone(),
+                    (reading.available_at, reading.value),
+                );
+            }
+        }
+        let mut by_instrument = BTreeMap::new();
+        for (entity, (_, surprise)) in latest {
+            for fact in world
+                .graph()
+                .neighbours(&entity, Some(RelationshipKind::Issues), now, now)
+            {
+                by_instrument.insert(fact.relationship.to.clone(), surprise);
+            }
+        }
+        by_instrument
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -14052,6 +14230,7 @@ impl Platform {
         let mut instruments = Vec::new();
         let mut thin_subjects = 0;
         let causal_views = self.causal_views(now);
+        let surprises = self.fundamental_surprises(now);
         for (subject, closes) in &self.price_history {
             let returns = Self::returns_of(closes);
             let (Some(last_close), Some(bar)) = (
@@ -14071,6 +14250,7 @@ impl Platform {
                 observed_through: bar.close_time(),
                 spread_ratio: self.spread_ratio(subject),
                 causal: causal_views.get(subject).copied(),
+                fundamental_surprise: surprises.get(subject).copied(),
             });
         }
         let level = self.autonomy.level();
@@ -27390,6 +27570,107 @@ mod decide_tests {
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
+    }
+
+    /// R12-WORLD-6015: a world event is paired with the market's reaction at
+    /// one, five and twenty bars, and each is applied to the causal graph once.
+    /// A second event of the same class whose direction the market goes
+    /// against lowers the confidence of the edge the first established, and
+    /// the contradiction is kept on the platform.
+    ///
+    /// Mutation: in `react_to_world_events`, measure only the first horizon
+    /// -- the event then yields one reaction, not three.
+    #[test]
+    fn a_news_event_yields_reactions_at_three_horizons_and_a_contradiction_lowers_the_edge_confidence()
+     {
+        use qip_market::bar::{Bar, Interval};
+        use qip_opportunity_engine::catalyst::MarketEvent;
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let mut platform = small_book_platform();
+        // Fifty daily bars: flat to day 4, rising to day 24 (past the first
+        // event's last horizon), then falling.
+        let bars: Vec<Bar> = (0..50)
+            .map(|day| {
+                let close = if day < 5 {
+                    100.0
+                } else if day < 25 {
+                    100.0 + (day - 4) as f64
+                } else {
+                    120.0 - (day - 24) as f64 * 2.0
+                };
+                let px = |v: f64| Decimal::from_f64(v).expect("a price");
+                Bar {
+                    object_id: qip_core::ObjectId::from_string("AAPL"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: t0.saturating_add(Duration::from_days(day)),
+                    open: px(close),
+                    high: px(close),
+                    low: px(close),
+                    close: px(close),
+                    volume: Decimal::from_int(1_000),
+                    vwap: None,
+                    trade_count: 1,
+                    quality: qip_financial::quality::DataQuality::default(),
+                }
+            })
+            .collect();
+        platform.bar_history.insert("AAPL".to_string(), bars);
+        let event = |id: &str, day: i64| {
+            let at = t0
+                .saturating_add(Duration::from_days(day))
+                .saturating_add(Duration::from_hours(1));
+            MarketEvent::new(id, "AAPL", "guidance", at, at)
+                .with_direction(1.0)
+                .with_weight(0.8)
+        };
+        platform.market_events.push(event("ev-up", 4));
+        let after_first = t0.saturating_add(Duration::from_days(60));
+        platform.react_to_world_events(after_first);
+        let applied: Vec<usize> = platform
+            .reactions_applied
+            .iter()
+            .filter(|(id, _)| id == "ev-up")
+            .map(|(_, h)| *h)
+            .collect();
+        assert_eq!(
+            applied,
+            vec![1, 5, 20],
+            "the event did not react at three horizons"
+        );
+        let confidence = |p: &Platform| {
+            p.world
+                .read()
+                .causal()
+                .edges()
+                .iter()
+                .find(|e| e.cause == "guidance" && e.effect == "AAPL")
+                .map(|e| e.confidence)
+                .expect("the reaction established an edge")
+        };
+        let established = confidence(&platform);
+        assert!(platform.reaction_contradictions().is_empty(), "premise");
+        // The same guidance up a second time, after which the market fell.
+        platform.market_events.push(event("ev-down", 25));
+        platform.react_to_world_events(after_first);
+        assert!(
+            !platform.reaction_contradictions().is_empty(),
+            "a reaction against the edge recorded no contradiction"
+        );
+        assert!(
+            confidence(&platform) < established,
+            "the edge's confidence did not fall"
+        );
+        platform.react_to_world_events(after_first);
+        assert_eq!(
+            platform
+                .reactions_applied
+                .iter()
+                .filter(|(id, _)| id == "ev-down")
+                .count(),
+            3,
+            "a reaction was applied twice or not at all"
+        );
     }
 
     /// R12-WORLD-3034: an analyst's distilled procedure is retrieved at its
