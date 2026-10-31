@@ -10931,17 +10931,14 @@ impl Platform {
             "{} refused this leg's cycle under {}; the twin prices what declining it cost",
             path.cell, path.gate
         ));
-        // The wire's convention is `Ask` bought and `Bid` sold (the order
-        // a cell sends takes the ask to buy); the twin's `ActualTrade` reads
-        // `Bid` as long. Crossed here, at the one seam where the two meet,
-        // or every leg would be priced in the direction it did not propose.
-        let twin_side = match path.side {
-            BookSide::Ask => BookSide::Bid,
-            BookSide::Bid => BookSide::Ask,
-        };
+        // The wire's convention is `Ask` bought and `Bid` sold (the order a
+        // cell sends takes the ask to buy), and since 2026-10-31 the twin's
+        // `ActualTrade` reads the same side the same way, so the leg's side
+        // goes through uncrossed; a cross here would price every leg in the
+        // direction it did not propose.
         let actual = ActualTrade::new(
             path.object_id.clone(),
-            twin_side,
+            path.side,
             path.quantity,
             path.venue.clone(),
             HOME_REGION,
@@ -11697,25 +11694,6 @@ impl Platform {
         }
     }
 
-    /// Every instrument the platform has seen trade, with the delistings and
-    /// renames dated (R12-TICK-2090): what a backtest asks who was a member
-    /// on a past date.
-    pub fn universe_history(&self) -> &qip_financial::history::UniverseHistory {
-        &self.universe_history
-    }
-
-    /// The adapter and lifecycle engine `object_id`'s desk position was
-    /// booked through, or `None` where the desk has never held it
-    /// (R12-ASSET-1015).
-    pub fn position_booking(
-        &self,
-        object_id: &str,
-    ) -> Option<(
-        crate::asset_class_registry::ClassAdapter,
-        crate::asset_class_registry::LifecycleEngine,
-    )> {
-        self.position_bookings.get(object_id).copied()
-    }
 
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
     /// it.
