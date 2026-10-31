@@ -27828,7 +27828,11 @@ fn signed_bps(price: f64, reference: f64, side: BookSide) -> Option<f64> {
 ///
 /// A buy lifts the offer and a sell hits the bid, so a buy is recorded against
 /// the ask. Written out rather than assumed, because getting it backwards would
-/// make every counterfactual price the opposite trade.
+/// make every counterfactual price the opposite trade — which is what happened
+/// until 2026-10-31, from the other end: this mapping was right and the twin's
+/// `ActualTrade::direction` read `Bid` as long, so every refused buy scored as
+/// a short. `a_declined_buy_on_a_rising_tape_is_scored_as_the_long_it_was` in
+/// `tests/learning.rs` holds the two ends together.
 const fn book_side(side: Side) -> BookSide {
     match side {
         Side::Buy => BookSide::Ask,
