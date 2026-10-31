@@ -16,7 +16,7 @@
 //! socket or the environment, so a sweep replays from the readings alone.
 
 use crate::gap::{GapTrigger, Observation, Wanting};
-use qip_contracts::expansion::TheoryDelta;
+use qip_contracts::expansion::{CrossDomainHypothesis, TheoryDelta};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,6 +58,9 @@ pub enum Origin {
     /// A rule the symbolic pack refused a thesis on, where the thesis then
     /// resolved as a call the grader credited.
     TheoryContradiction,
+    /// A chain of recorded relationships crossing three or more domains
+    /// that the causal graph does not yet claim end to end.
+    CrossDomainSynthesis,
 }
 
 impl Origin {
@@ -77,6 +80,7 @@ impl Origin {
             Self::ContestedEvidence => "detector:contested_evidence",
             Self::MissingCausalLink => "detector:missing_causal_link",
             Self::TheoryContradiction => "detector:theory_contradiction",
+            Self::CrossDomainSynthesis => "detector:cross_domain_synthesis",
         }
     }
 }
@@ -712,6 +716,47 @@ pub fn theory_contradictions(deltas: &[TheoryDelta]) -> Vec<Observation> {
                 "reasoning",
                 evidence,
                 (deltas.len() as f64 / THEORY_CONTRADICTIONS_FOR_FULL_SEVERITY as f64).min(1.0),
+            )
+        })
+        .collect()
+}
+
+/// Cross-domain hypotheses the world model synthesised, read as causal gaps
+/// (R12-EXPAND-6031): one observation per chain the causal graph does not
+/// claim end to end, citing every node, hop and source so the gap carries
+/// the lineage of the facts it rests on. A chain every hop of which is
+/// already claimed is not raised — the platform believes it, and there is
+/// nothing wanting. Severity is the share of hops unclaimed, so a chain the
+/// graph half believes ranks below one it has only recorded.
+pub fn cross_domain_links(hypotheses: &[CrossDomainHypothesis]) -> Vec<Observation> {
+    hypotheses
+        .iter()
+        .filter(|h| h.unclaimed_hops() > 0 && !h.edges.is_empty())
+        .map(|h| {
+            let mut evidence = vec![
+                format!("path:{}", h.path.join(">")),
+                format!("edges:{}", h.edges.join(",")),
+                format!("domains:{}", h.domains.join(",")),
+            ];
+            evidence.extend(h.sources.iter().map(|s| format!("source:{s}")));
+            observe(
+                Origin::CrossDomainSynthesis,
+                GapTrigger::LowConfidence,
+                Wanting::CausalLink,
+                format!(
+                    "`{}` reaches `{}` across {} domains ({}) in {} hop(s) the graph records, of \
+                     which the causal graph claims {}; a shock at one end may transmit to the \
+                     other and the platform has not said so",
+                    h.subject,
+                    h.path.last().map(String::as_str).unwrap_or(""),
+                    h.domains.len(),
+                    h.domains.join(" -> "),
+                    h.edges.len(),
+                    h.causally_claimed_hops
+                ),
+                "cross-domain",
+                evidence,
+                h.unclaimed_hops() as f64 / h.edges.len() as f64,
             )
         })
         .collect()

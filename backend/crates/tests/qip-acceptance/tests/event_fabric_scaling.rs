@@ -739,22 +739,29 @@ fn srv_discovery_defects(main_tf: &str) -> Vec<String> {
     defects
 }
 
-/// FABRIC-087, the half that exists: the broker module publishes a private
-/// SRV record whose owner name is `_qip-event-fabric._tcp.<zone>`, whose
-/// target is the A record that carries the brokers' addresses, and whose port
-/// is the broker port. The same checker is run on the real module and on two
-/// copies of it with the record broken, so a pass is not the checker saying
-/// yes to everything. **Gap, pinned:** no client resolves it. A Rust client
-/// is handed its endpoint by configuration; no production source in the
-/// transport, broker, ledger or node names the SRV owner or an SRV lookup, so
-/// "clients bootstrap from Cloud DNS SRV" is a record nobody reads. The
-/// earlier version built a `ClientBootstrap` struct with the SRV name in it.
+/// FABRIC-087: the broker module publishes a private SRV record whose owner
+/// name is `_qip-event-fabric._tcp.<zone>`, whose target is the A record
+/// that carries the brokers' addresses, and whose port is the broker port.
+/// The same checker is run on the real module and on two copies of it with
+/// the record broken, so a pass is not the checker saying yes to everything.
+/// Since ADR 0135 a client reads it: `qip_transport::dns` queries the owner
+/// built from `FABRIC_SRV_SERVICE`, and this test holds that constant to the
+/// label the module publishes, so the two cannot drift apart silently. Until
+/// 2026-10-31 this test pinned the opposite — "no client reads it" — and ADR
+/// 0135 decision 6 says it flips in the same commit that makes one read it,
+/// never weakened to assert less. The one production source naming an SRV
+/// lookup is the dns module; a second reader is a finding to look at, not a
+/// pass. That means the commit that wires the bootstrap into a composition
+/// root (the open half of R12-FABRIC-10016) and the cluster-map slice
+/// (R12-FABRIC-8098) each add their reader to the expected list below,
+/// deliberately, rather than the scan quietly admitting whatever appears.
 ///
 /// Mutation: change the SRV record's `type` to `"TXT"` — the type assertion
 /// fires. Mutation: point the SRV target at a name other than the A record —
-/// the target assertion fires.
+/// the target assertion fires. Mutation: change `FABRIC_SRV_SERVICE` to
+/// `_qip-fabric._tcp` — the owner assertion fires.
 #[test]
-fn fabric_087_the_broker_module_publishes_an_srv_record_that_points_at_its_brokers_and_no_client_reads_it()
+fn fabric_087_the_broker_module_publishes_an_srv_record_that_points_at_its_brokers_and_the_client_bootstrap_names_it()
  {
     let main = broker_module("main.tf");
     assert_eq!(srv_discovery_defects(&main), Vec::<String>::new());
@@ -782,7 +789,20 @@ fn fabric_087_the_broker_module_publishes_an_srv_record_that_points_at_its_broke
         "the checker did not notice a target that is not the A record"
     );
 
-    // GAP: nothing that talks to the fabric resolves SRV.
+    // The client's bootstrap names the owner the module publishes.
+    let srv = hcl_block(
+        &main,
+        "resource \"google_dns_record_set\" \"event_fabric_broker_srv_tcp\" {",
+    )
+    .expect("the SRV record is declared");
+    let owner = attribute(&srv, "name").expect("the SRV record has a name");
+    assert!(
+        owner.starts_with(&format!("{}.", qip_transport::dns::FABRIC_SRV_SERVICE)),
+        "the module publishes {owner:?} and the client queries {:?}; a client would ask for a \
+         record nobody publishes",
+        qip_transport::dns::FABRIC_SRV_SERVICE
+    );
+
     let mut scanned = 0;
     let mut readers = Vec::new();
     for root in [
@@ -791,6 +811,9 @@ fn fabric_087_the_broker_module_publishes_an_srv_record_that_points_at_its_broke
         "backend/crates/apps/qip-fabricd/src",
         "backend/crates/apps/qip-ledgerd/src",
         "backend/crates/apps/qip-edge-node/src",
+        "backend/crates/apps/qip-api/src",
+        "backend/crates/apps/qip-fastbrain/src",
+        "backend/crates/apps/qip-deepbrain/src",
     ] {
         for path in qip_acceptance::files_with_extension(root, "rs") {
             let text = qip_acceptance::production_text(
@@ -810,9 +833,13 @@ fn fabric_087_the_broker_module_publishes_an_srv_record_that_points_at_its_broke
         scanned > 30,
         "premise: the client and broker sources were scanned: {scanned}"
     );
-    assert!(
-        readers.is_empty(),
-        "a production source now names an SRV lookup ({readers:?}) — assert the bootstrap"
+    let dns_module =
+        qip_acceptance::repository_root().join("backend/crates/libs/qip-transport/src/dns.rs");
+    assert_eq!(
+        readers,
+        [dns_module.display().to_string()],
+        "the SRV lookup lives in qip_transport::dns and nowhere else; a second reader is a \
+         second bootstrap to account for"
     );
 }
 

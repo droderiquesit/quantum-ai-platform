@@ -184,6 +184,46 @@ struct PendingQuestion {
     /// The aggregate's probability of `up` when the question opened, the
     /// figure a resolution's residual is measured against.
     aggregate_up: Option<f64>,
+    /// The tournament's pooling of `up` at opening with every forecaster
+    /// weighed alike — the equal-weight baseline the aggregate is measured
+    /// against (R12-MODEL-6022, [`Tournament::equal_weight_aggregate`]).
+    #[serde(default)]
+    equal_up: Option<f64>,
+    /// Whether the aggregate's weights were earned when the question opened.
+    /// Only such a question measures influence: where nobody had earned any,
+    /// the aggregate weighs everyone alike and is the baseline itself.
+    #[serde(default)]
+    weights_earned: bool,
+}
+
+/// ADR 0149 decision 13's measurement (R12-MODEL-6022): whether the
+/// influence-weighted aggregate forecast better than the equal-weight mean,
+/// on questions resolved after the weights were fixed.
+///
+/// Out of sample by construction: both figures are taken when the question
+/// opens, before its outcome exists, and scored when it resolves. A record,
+/// and nothing reads it back — the influence weights and the compute
+/// allocation govern nothing until an amendment lets this measurement, once
+/// it shows the aggregate ahead, narrow the deep brain's fit budget.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AggregateMeasurement {
+    /// Questions scored since the process started, each once.
+    pub questions: u64,
+    /// Mean Brier score of the influence-weighted aggregate, summed over the
+    /// question's two outcomes, `2 (p_up - y)^2` — the tournament's own scale,
+    /// so it reads beside the scorecards on the same review.
+    pub weighted_brier: f64,
+    /// Mean Brier score of the equal-weight mean over the same questions.
+    pub equal_brier: f64,
+}
+
+/// Running sums behind [`AggregateMeasurement`]; constant size whatever
+/// the life of the process.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct AggregateTally {
+    questions: u64,
+    weighted: f64,
+    equal: f64,
 }
 
 /// One question opened this cycle, as the record keeps it.
@@ -272,6 +312,10 @@ pub struct TournamentReview {
     /// residual that triggered it and the threshold it exceeded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spawned: Vec<WorldModelBranch>,
+    /// The aggregate's measurement against the equal-weight mean, on every
+    /// cycle that scored a question for it (R12-MODEL-6022).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregate_measurement: Option<AggregateMeasurement>,
 }
 
 /// What every tournament record's idempotency key starts with.
@@ -298,6 +342,7 @@ impl TournamentReview {
             && self.promotions.is_empty()
             && self.retired.is_empty()
             && self.spawned.is_empty()
+            && self.aggregate_measurement.is_none()
     }
 
     /// One clause for the LEARN stage detail.
@@ -412,6 +457,8 @@ pub struct TournamentStage {
     /// the subjects the platform asks questions on, and every entry leaves
     /// at its expiry.
     temporaries: BTreeMap<String, TemporarySpecialist>,
+    /// The aggregate's out-of-sample record against the equal-weight mean.
+    aggregate_tally: AggregateTally,
 }
 
 /// How many past scores a forecaster's vote carries. Bounded, because the
@@ -611,6 +658,28 @@ impl TournamentStage {
 
     pub fn tournament(&self) -> &Tournament {
         &self.tournament
+    }
+
+    /// Score one resolved question for [`AggregateMeasurement`]: both the
+    /// aggregate and the equal-weight mean, as each stood when the question
+    /// opened. A question whose weights were not earned, or that lacks
+    /// either figure, is not a measurement of influence and is skipped.
+    fn measure_aggregate(&mut self, pending: &PendingQuestion, up: bool) -> bool {
+        let (true, Some(weighted), Some(equal)) = (
+            pending.weights_earned,
+            pending.aggregate_up,
+            pending.equal_up,
+        ) else {
+            return false;
+        };
+        if !(weighted.is_finite() && equal.is_finite()) {
+            return false;
+        }
+        let y = if up { 1.0 } else { 0.0 };
+        self.aggregate_tally.questions += 1;
+        self.aggregate_tally.weighted += 2.0 * (weighted - y).powi(2);
+        self.aggregate_tally.equal += 2.0 * (equal - y).powi(2);
+        true
     }
 
     /// A resolution on `pending`'s subject: the live temporary specialist
@@ -898,6 +967,16 @@ impl TournamentStage {
             .ok()
             .flatten()
             .and_then(|p| p.get(UP).copied());
+        let weights_earned = self
+            .tournament
+            .aggregate_weights(&question, &observation.regime)
+            .is_ok_and(|(_, earned)| earned);
+        let equal_up = self
+            .tournament
+            .equal_weight_aggregate(&question)
+            .ok()
+            .flatten()
+            .and_then(|p| p.get(UP).copied());
         if let Some(up) = aggregate_up {
             let formed = self
                 .tournament
@@ -956,6 +1035,8 @@ impl TournamentStage {
                 reference,
                 resolves_at,
                 aggregate_up,
+                equal_up,
+                weights_earned,
             },
         );
         self.review.opened.push(OpenedQuestion {
@@ -1131,6 +1212,7 @@ impl TournamentStage {
             .map(|(id, p)| (id.clone(), p.clone()))
             .collect();
         let mut scored: BTreeSet<String> = BTreeSet::new();
+        let mut measured = false;
         let mut regimes: BTreeSet<String> = self
             .review
             .opened
@@ -1173,6 +1255,7 @@ impl TournamentStage {
                                 self.record_score(&score.forecaster, score.brier, now);
                             }
                             self.observe_outcome(&pending, outcome == UP, cycle, now);
+                            measured |= self.measure_aggregate(&pending, outcome == UP);
                             scored.extend(resolved.scores.iter().map(|s| s.forecaster.clone()));
                             regimes.insert(resolved.regime.clone());
                             self.review.resolved.push(resolved);
@@ -1249,6 +1332,14 @@ impl TournamentStage {
                     self.tournament.compute_allocation(regime, COMPUTE_BUDGET)?,
                 );
             }
+        }
+        if measured && self.aggregate_tally.questions > 0 {
+            let n = self.aggregate_tally.questions as f64;
+            self.review.aggregate_measurement = Some(AggregateMeasurement {
+                questions: self.aggregate_tally.questions,
+                weighted_brier: self.aggregate_tally.weighted / n,
+                equal_brier: self.aggregate_tally.equal / n,
+            });
         }
         self.review.scorecards = scored
             .iter()
@@ -1690,6 +1781,258 @@ mod tests {
                 .contains("tournament refused the question")
         );
         assert_eq!(unapproved.refuted, None);
+    }
+
+    /// R12-MODEL-6022, ADR 0149 decision 13's measurement: each LEARN that
+    /// resolves a question whose weights were earned journals the
+    /// influence-weighted aggregate's Brier score beside the equal-weight
+    /// mean's, both as they stood when the question opened, and the record
+    /// moves no weight, no allocation and no forecast.
+    ///
+    /// The failure this prevents: the influence weights and the compute
+    /// allocation were journaled as if they meant something, and nothing
+    /// measured whether weighing by reputation forecast better than weighing
+    /// everyone alike — a governance record nobody could falsify. Mutation:
+    /// score both aggregates with the same weights (`equal_up = aggregate_up`
+    /// at opening) — the two Briers agree and the figures fail.
+    #[test]
+    fn a_measurement_is_journaled_and_reads_nothing_back() {
+        use qip_core::ids::{EvidenceId, HypothesisId, ObjectId};
+        use qip_market::bar::Interval;
+        use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet};
+        use qip_reasoning_engine::hypothesis::{
+            CausalChain, CausalStep, Claim, HypothesisDraft, UncertaintyType,
+        };
+        use qip_world_model::causal::Mechanism;
+
+        let at = Timestamp::from_secs(1_760_000_000);
+        let hypothesis = |id: &str, formed: Timestamp| {
+            Hypothesis::form(HypothesisDraft {
+                hypothesis_id: HypothesisId::from_string(id),
+                opportunity_id: None,
+                formed_at: formed,
+                as_of: formed,
+                class: "mean-reversion".to_string(),
+                claim: Claim::Undervalued,
+                statement: "AAA fell further than its history explains".to_string(),
+                subjects: vec![ObjectId::from_string("obj-AAA")],
+                chain: CausalChain::new(vec![CausalStep::new(
+                    "order-flow",
+                    "obj-AAA",
+                    Mechanism::CreditConditions,
+                    "the dislocation closes as liquidity returns",
+                    Duration::from_days(2),
+                    0.8,
+                )]),
+                evidence: EvidenceSet::from_items(vec![
+                    Evidence::new(
+                        EvidenceId::from_string("e1"),
+                        EvidenceKind::MarketObservation,
+                        Stance::Supports,
+                        "a nine percent drop on the last bar".to_string(),
+                        "rec-e1".to_string(),
+                        "exchange",
+                        formed,
+                        formed,
+                    )
+                    .with_reliability(0.9)
+                    .with_diagnosticity(0.6),
+                ]),
+                prior: 0.4,
+                uncertainty_type: UncertaintyType::Epistemic,
+                falsifiers: vec!["the price keeps falling for a week".to_string()],
+                leading_alternative: "the drop is news the tape has not finished pricing"
+                    .to_string(),
+                horizon: Duration::from_days(5),
+                contributors: Vec::new(),
+                models: Vec::new(),
+            })
+            .expect("a well-formed draft forms")
+        };
+        let report = OrganisationReport {
+            as_of: at,
+            question: "is AAA undervalued".to_string(),
+            runs: Vec::new(),
+            findings: Vec::new(),
+            deferred: Vec::new(),
+            failed: Vec::new(),
+            missing_inputs: Vec::new(),
+            backlogged: Vec::new(),
+            backlog_refused: Vec::new(),
+        };
+        let closes: Vec<f64> = (0..30).map(|i| 100.0 + f64::from(i % 3)).collect();
+        let reference = closes[closes.len() - 1];
+        let roster: Vec<String> = Vec::new();
+        let observe = |stage: &mut TournamentStage, hypothesis: &Hypothesis, now: Timestamp| {
+            stage
+                .observe_reasoning(
+                    ReasonObservation {
+                        hypothesis,
+                        report: &report,
+                        roster: &roster,
+                        regime: "trend/calm".to_string(),
+                        closes: &closes,
+                        spread_ratio: Some(1.0),
+                        crossed_recently: Some(false),
+                        expected_move_bps: 100.0,
+                        approved: false,
+                        explaining: BTreeSet::new(),
+                    },
+                    now,
+                )
+                .expect("a directional claim on a subject is observed");
+        };
+        let settle = |opened: Timestamp, close: f64| {
+            let px = |v: f64| Decimal::from_f64(v).expect("a price");
+            BTreeMap::from([(
+                "obj-AAA".to_string(),
+                vec![Bar {
+                    object_id: ObjectId::from_string("obj-AAA"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: opened,
+                    open: px(reference),
+                    high: px(reference.max(close)),
+                    low: px(reference.min(close)),
+                    close: px(close),
+                    volume: Decimal::from_int(1_000),
+                    trade_count: 10,
+                    vwap: None,
+                    quality: qip_financial::quality::DataQuality::default(),
+                }],
+            )])
+        };
+        // Ten questions resolved the way the detector leans make it Active,
+        // so its weight is earned; an eleventh resolved against it spawns a
+        // temporary, so the next question carries two forecasts that differ.
+        // Built by one closure so a second, identical stage can be poisoned.
+        let day = Duration::from_days(1);
+        let opened_at = |k: i64| at.saturating_add(Duration::from_days(6 * k));
+        let settled_at = |k: i64| opened_at(k).saturating_add(Duration::from_days(5));
+        let prepared = || {
+            let mut stage = TournamentStage::new();
+            let mut lean_up = None;
+            for k in 0..11 {
+                let id = format!("hyp-{k}-obj-AAA");
+                observe(&mut stage, &hypothesis(&id, opened_at(k)), opened_at(k));
+                let up = stage.review.opened[0]
+                    .aggregate_up
+                    .expect("premise: an aggregate");
+                let leans_up = *lean_up.get_or_insert(up >= 0.5);
+                let hit = k < 10;
+                let close = if leans_up == hit {
+                    reference * 1.1
+                } else {
+                    reference * 0.9
+                };
+                let review = stage
+                    .learn(
+                        &settle(settled_at(k), close),
+                        None,
+                        k as u64,
+                        settled_at(k).saturating_add(day),
+                    )
+                    .expect("learns")
+                    .expect("a resolution is a record");
+                if k == 0 {
+                    assert!(
+                        review.aggregate_measurement.is_none(),
+                        "a question nobody had earned weight on was measured as influence: {:?}",
+                        review.aggregate_measurement
+                    );
+                }
+            }
+            assert!(
+                stage.temporaries.contains_key("obj-AAA"),
+                "premise: the eleventh, a miss, spawned a temporary"
+            );
+            observe(
+                &mut stage,
+                &hypothesis("hyp-11-obj-AAA", opened_at(11)),
+                opened_at(11),
+            );
+            stage
+        };
+        let mut stage = prepared();
+        let opened = stage.review.opened[0].clone();
+        assert_eq!(opened.forecasts.len(), 2, "premise: {:?}", opened.forecasts);
+        let stated: BTreeSet<u32> = opened.forecasts.values().copied().collect();
+        assert_eq!(
+            stated.len(),
+            2,
+            "premise: two distinct clusters, so pooling is the mean"
+        );
+        let pending = stage
+            .pending
+            .get(&opened.question)
+            .expect("pending")
+            .clone();
+        assert!(
+            pending.weights_earned,
+            "premise: the detector's record earned it weight"
+        );
+        let weighted = opened.aggregate_up.expect("premise: an aggregate");
+        let equal = opened
+            .forecasts
+            .values()
+            .map(|bp| f64::from(*bp))
+            .sum::<f64>()
+            / 20_000.0;
+        assert!(
+            (weighted - equal).abs() > 1e-6,
+            "premise: earned weights move the aggregate off the mean ({weighted} vs {equal})"
+        );
+
+        let before = stage.aggregate_tally.clone();
+        let bars = settle(settled_at(11), reference * 1.1);
+        let learned_at = settled_at(11).saturating_add(day);
+        let review = stage
+            .learn(&bars, None, 11, learned_at)
+            .expect("learns")
+            .expect("a resolution is a record");
+        let measured = review
+            .aggregate_measurement
+            .clone()
+            .expect("the cycle that scored an earned question journals the measurement");
+        // This question's two scores join the earlier ones exactly once.
+        let n = (before.questions + 1) as f64;
+        assert_eq!(measured.questions, before.questions + 1);
+        let expect_weighted = (before.weighted + 2.0 * (weighted - 1.0).powi(2)) / n;
+        let expect_equal = (before.equal + 2.0 * (equal - 1.0).powi(2)) / n;
+        assert!(
+            (measured.weighted_brier - expect_weighted).abs() < 1e-12,
+            "{measured:?}"
+        );
+        assert!(
+            (measured.equal_brier - expect_equal).abs() < 1e-12,
+            "{measured:?}"
+        );
+
+        // Reads nothing back: a stage whose tally says something absurd
+        // resolves, weighs and forecasts exactly as this one does.
+        let mut poisoned = prepared();
+        poisoned.aggregate_tally = AggregateTally {
+            questions: 1_000,
+            weighted: 0.0,
+            equal: 1_000.0,
+        };
+        let mut other = poisoned
+            .learn(&bars, None, 11, learned_at)
+            .expect("learns")
+            .expect("a resolution is a record");
+        assert_ne!(
+            other.aggregate_measurement, review.aggregate_measurement,
+            "premise"
+        );
+        other.aggregate_measurement = review.aggregate_measurement.clone();
+        assert_eq!(
+            other, review,
+            "the measurement moved something it only records"
+        );
+        let next = opened_at(12);
+        observe(&mut stage, &hypothesis("hyp-12-obj-AAA", next), next);
+        observe(&mut poisoned, &hypothesis("hyp-12-obj-AAA", next), next);
+        assert_eq!(stage.review.opened, poisoned.review.opened);
     }
 
     /// R12-MODEL-7198: a resolution the standing population badly missed

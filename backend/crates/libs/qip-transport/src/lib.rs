@@ -119,6 +119,7 @@
 pub mod breaker;
 pub mod cas;
 pub mod deadletter;
+pub mod dns;
 pub mod error;
 pub mod event_fabric;
 pub mod http;

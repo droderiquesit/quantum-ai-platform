@@ -93,12 +93,16 @@
   },
   {
     "id": "R12-GOV-10005",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "No cloud_asset resource in Terraform.",
-    "evidence": [],
-    "gap": "Declare an asset feed/export for each project.",
-    "implemented": false,
-    "tested": false,
+    "evidence": [
+      "infrastructure/terraform/audit-logs.tf google_cloud_asset_project_feed.changes (RESOURCE and IAM_POLICY), google_pubsub_topic.asset_changes",
+      "infrastructure/terraform/tests/security.tftest.hcl::the_asset_change_feed_plans_resource_and_iam_policy_changes_to_the_change_topic",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::every_asset_change_feed_publishes_to_the_change_topic"
+    ],
+    "gap": "2026-10-31 (lane L6, owner ruling decision 10): the row's 'no cloud_asset resource' was out of date; audit-logs.tf declares the feed. The plan now asserts both content types (mocked terraform test) and the configuration holds the feed-to-topic link (the topic id is computed and unknown at plan). Completes on an owner-dispatched dev plan quoting the two feeds and an operator reading one change message off the topic. Earlier: Declare an asset feed/export for each project.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -107,7 +111,7 @@
     "verification": "terraform plan shows google_cloud_asset_project_feed",
     "work_item": "",
     "size": "S",
-    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): The feed exists, so the row's 'no cloud_asset resource' is out of date. What is missing is the plan assertion the requirement names, so a lane adds it and corrects the text. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it."
+    "notes": "2026-10-31 lane L6: terraform 1.9.8 test (scratch copy of infrastructure/, mock providers), security.tftest.hcl 14 passed. Mutations: deleting the IAM_POLICY content type failed the new run; repointing the feed's topic failed the acceptance test at 'publishes somewhere other than the asset change topic'. Both restored and checked with cmp.Owner ruling 2026-10-31 (IMPLEMENT): The feed exists, so the row's 'no cloud_asset resource' is out of date. What is missing is the plan assertion the requirement names, so a lane adds it and corrects the text. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it."
   },
   {
     "id": "R12-SEC-10006",
@@ -207,9 +211,11 @@
     "evidence": [
       "infrastructure/terraform/modules/connectivity/main.tf:59 google_compute_router interconnect",
       "infrastructure/terraform/modules/connectivity/main.tf:243 google_compute_router_peer vpn_fallback",
-      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl"
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl",
+      "infrastructure/terraform/modules/connectivity/main.tf google_compute_router.interconnect (local.partner_interconnect_asn = 16550), google_compute_router.vpn (var.cloud_router_asn)",
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (16550 on the partner router, the private ASN on the VPN router and its sessions)"
     ],
-    "gap": "2026-10-24: a partner contract and physical circuit are out of band (modules/connectivity/NOT-ORDERED.md); no BGP session can establish until then.",
+    "gap": "2026-10-31 (lane L6, owner ruling decision 10): the defect the 2026-10-11 apply found is fixed in code: PARTNER attachments get their own per-region Cloud Router at Google's required ASN 16550 (a constant), and the HA VPN fallback has its own router, interfaces and peers on the private cloud_router_asn, whose validation is unchanged. No circuit is ordered (a partner contract is a term and a monthly charge the owner declined); the row waits on the partner circuit in modules/connectivity/NOT-ORDERED.md. Earlier: 2026-10-24: a partner contract and physical circuit are out of band (modules/connectivity/NOT-ORDERED.md); no BGP session can establish until then.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -220,7 +226,7 @@
     "verification": "terraform test modules/connectivity",
     "work_item": "",
     "size": "S",
-    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): No circuit is ordered: a partner contract is a term and a monthly charge for cells that run in shadow in one region, and I am not buying it. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "2026-10-31 lane L6: terraform 1.9.8 fmt -check clean; terraform test in a scratch copy, mock provider, 11 passed. Mutations: the partner router back on var.cloud_router_asn failed two runs; the VPN interfaces and peers moved onto the partner router failed the new session assertion. A tunnel's router is a computed id unknown at plan, so moving the tunnel alone is not caught at plan (stated in the test). Each restored and checked with cmp.Owner ruling 2026-10-31 (IMPLEMENT): No circuit is ordered: a partner contract is a term and a monthly charge for cells that run in shadow in one region, and I am not buying it. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-GCP-10011",
@@ -341,26 +347,26 @@
   {
     "id": "R12-FABRIC-10016",
     "status": "PARTIAL",
-    "current": "Public signed zone and private googleapis zone; SRV records only in un-instantiated event-fabric-broker module; ledgerd now takes a required fabric URL.",
+    "current": "Public signed zone and private googleapis zone; the event-fabric-broker module declares the A and SRV records (`_qip-event-fabric._tcp.<zone>`) and is not instantiated. Since 2026-10-31 a client can read the record: `qip_transport::dns` (ADR 0135 decisions 1, 2 and 4) sends one RFC 1035 query with a QTYPE SRV question over UDP to the resolver it is handed, with an explicit timeout and a bounded number of attempts, and decodes the SRV records plus the additional section's A records; it accepts an answer to any query the call sent (a resolver slower than one timeout answers the first query during the second) and refuses a truncated answer, an ID the call never sent, a question that is not the query's, a compression pointer that points forward or revisits an offset (a loop), an unknown label type, a name over 253, a non-zero RCODE, an answer with no SRV record, and a target of `.`, which RFC 2782 defines as the service being decidedly not available; a label over 63 octets cannot appear on the wire, so that limit is enforced where a query is encoded. `Bootstrap` is the fallback ladder: the fresh answer, then the last good one for TTL x3 capped at an hour, then the configured addresses, which are required; which rung answered is an `AddressSource` label (srv, cached, configured) and the lookup's refusal travels beside it, so a truncated answer or a misconfigured zone is not hidden behind a lower rung. `FABRIC_SRV_SERVICE` is held to the module's record name by `fabric_087`, which flipped from 'no client reads it' to 'the client bootstrap names it' in the same commit (decision 6). No binary calls the resolver yet: ledgerd still takes `QIP_LEDGER_FABRIC_URL`, and the edge node, qip-api, qip-fastbrain and qip-deepbrain take `QIP_FABRIC_URL`.",
     "evidence": [
-      "infrastructure/terraform/modules/dns-zone/main.tf",
-      "infrastructure/terraform/modules/network/main.tf:102 private googleapis zone",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:89 SRV records (module not instantiated)",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:62 hard-coded broker address 127.0.0.1:9090",
-      "backend/crates/apps/qip-ledgerd/src/config.rs::LedgerConfig::fabric_url"
+      "backend/crates/libs/qip-transport/src/dns.rs (encode_query, decode_answer, read_name, SrvResolver, Bootstrap)",
+      "backend/crates/libs/qip-transport/tests/dns.rs (RFC 1035 §4.1.4 compression vector, RFC 2782 example, every refusal, a loopback UDP resolver, the fallback ladder on a manual clock)",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs::fabric_087_the_broker_module_publishes_an_srv_record_that_points_at_its_brokers_and_the_client_bootstrap_names_it",
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:221 SRV record (module not instantiated)",
+      "backend/crates/apps/qip-ledgerd/src/config.rs::LedgerConfig::fabric_url (required, still the only address a deployed client uses)"
     ],
-    "gap": "Decided by ADR 0135 (accepted 2026-10-18): Fabric clients bootstrap from the broker module's SRV record through an in-tree DNS query in qip-transport, keep the last good answer for a bounded staleness and fall back to configured addresses; the cluster map is a broker request arm. Code left: the SRV query and parser in qip-transport with RFC vectors, and the cached/configured fallback with a resolver-loss test.",
+    "gap": "No composition root calls `SrvResolver` or `Bootstrap`: ledgerd is handed one endpoint by `QIP_LEDGER_FABRIC_URL` (qip-ledgerd/src/config.rs), and the edge node (outbox.rs), qip-api (main.rs), qip-fastbrain (node.rs) and qip-deepbrain (main.rs) by `QIP_FABRIC_URL`, so no deployed client bootstraps from the record and the `AddressSource` label reaches no metric. The resolver address is a parameter the root must supply (from configuration or the host's resolv.conf; the library reads neither). The query ID comes from a process-seeded hasher, not a cryptographic source, which ADR 0135 decision 3 accepts because discovery is never trust; decision 3's 'in local SRV is not used' has no enforcement point until there is a caller. A CNAME at the SRV owner is read as 'no SRV record' (the module publishes the record directly, so not reachable today). The wiring commit must add its reader to fabric_087's expected list. Closes with the wiring in one composition root behind a configured resolver and zone, the label recorded on `Telemetry`, and a test that the client starts on the configured address when the resolver is unreachable.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan shows SRV records; ledgerd config test resolving SRV",
+    "verification": "cargo +1.94.1 test -p qip-transport --test dns; cargo +1.94.1 test -p qip-acceptance --test event_fabric_scaling fabric_087",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D11; gap before it: No broker DNS/SRV instantiated; no client resolves SRV (qip-transport connects to literal URL authority)."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D11; gap before it: No broker DNS/SRV instantiated; no client resolves SRV (qip-transport connects to literal URL authority). 2026-10-31 lane L1b-fabric: the SRV query, parser and fallback ladder landed in qip-transport (the one library licensed to own sockets, ADR 0100; the datagram socket is outside `event_fabric/`, which `event_fabric_transport_and_integrity` holds UDP-free). Skeptic (independent, read-only) found four correctness faults before the commit and each was fixed with a test: a late answer to the first query was refused during the second attempt (now any ID the call sent is accepted), `Bootstrap` swallowed the lookup's refusal (now carried as `lookup_failure`), a target of `.` became a `:port` authority (now RFC 2782's 'not available' refusal, and the record is stepped over), and a label-then-pointer loop was caught only by the length limit (now a visited-offset check naming the loop). Seventeen contract tests; nineteen mutations fired and were restored byte-for-byte (cp+cmp): self-pointer admitted, MAX_NAME raised to 320, weight sorted ascending, labels not lower-cased, TC unchecked, ID unchecked, empty answer accepted, resolver decoding under the wrong ID, one attempt too many (caught by the server's query count), cached without the staleness check, cap removed, last good answer not updated, the service label changed to `_qip-fabric._tcp` (fabric_087's owner assertion), the loop check dropped, the `.` arm dropped, the `.` record not stepped over, only the latest ID accepted, `0x80` read as a plain label, and the lookup failure not surfaced. The per-attempt timing assertion was replaced by a query count after the attempts mutation survived a wall-clock bound."
   },
   {
     "id": "R12-API-10017",
@@ -2814,13 +2820,14 @@
     "status": "PARTIAL",
     "current": "LEARN calls calibrate_resolved/learn_from, score_declined/evaluate_alternatives and score_filled; cost-router keeps reputation. Hedges and agents not scored. Since 2026-10-25 LEARN scores each panel agent from the theses it argued, keyed by agent: Platform::keyed_by_agent maps each contributor run id to its roster agent before FeedbackEngine::process, and the cycle journal's CalibrationJournal carries hit_rate_by_agent. Before this, contributors were run ids, unique per run, so every agent rate was withheld below the ten-episode sample and agents were never scored. The same key had let the lesson bar's two distinct contributors be met by one agent run twice.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8901 learn_from",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17136 evaluate_alternatives",
-      "backend/crates/services/qip-cost-router/src/reputation.rs",
       "backend/crates/runtime/qip-kernel/src/platform.rs Platform::agent_of, Platform::keyed_by_agent, CalibrationJournal::of",
-      "backend/crates/runtime/qip-kernel/src/platform.rs self_model_tests::ten_graded_theses_argued_by_one_analyst_score_that_analyst_not_its_runs"
+      "backend/crates/runtime/qip-kernel/src/platform.rs self_model_tests::ten_graded_theses_argued_by_one_analyst_score_that_analyst_not_its_runs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:17136 evaluate_alternatives",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8901 learn_from",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::the_cycle_that_grades_a_thesis_journals_each_agents_hit_rate",
+      "backend/crates/services/qip-cost-router/src/reputation.rs"
     ],
-    "gap": "2026-10-30 (lane L2-INTEL): the in-lane skeptic REFUTED 7bce976f on bar part 1. The default-path write in calibrate_resolved can drop hit_rate_by_agent with every qip-kernel test green, because the unit test calls CalibrationJournal::of directly and never drives stage_learn, calibrate_resolved or journal_cycle. Not re-reviewed (no third round). Behaviour change named by the skeptic: qip-deepbrain research.rs incompetent_specialists reads hit_rate_by_agent and can now fire; it was dead while every key was a run id. Hedges stay unscored: no composition root declares a hedge policy, and owner decision 7 holds one.",
+    "gap": "2026-10-31 (lane L2-INTEL): bar part 1 is closed on the default path. qip-kernel tests/learning.rs::the_cycle_that_grades_a_thesis_journals_each_agents_hit_rate runs the cycle whose LEARN grades a thesis and asserts the journaled calibration carries the same non-empty hit_rate_by_agent the platform computed; emptying the map at the calibrate_resolved write site fails it. The in-lane skeptic HELD parts 1 and 2 (calibrate_resolved is reached from stage_learn in run_cycle on qip-fastbrain, qip-api and qip-deepbrain, and keys are roster agent ids) and REFUTED promotion on part 4: the requirement scores hedges too, and hedges stay unscored because no composition root declares a hedge policy (owner decision 7). Not checked: whether capital decisions are scored per decision class. Behaviour change named by the first skeptic stands: qip-deepbrain incompetent_specialists reads hit_rate_by_agent and can now fire.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3880,12 +3887,14 @@
   {
     "id": "R12-CICD-10168",
     "status": "PARTIAL",
-    "current": "Fleet dispatcher/workers with budgets; CI/GitOps path; no sandbox or reviewer/release/SRE agents in code.",
+    "current": "The requirement's seven roles are the development agents under .claude/agents (planner: product-manager, chief-orchestrator, solution-architect; coder: backend/frontend/data-ai/cloud-platform engineers; test, security, reviewer; release and SRE: sre-release-engineer), each acting only through a pull request that ci and agent boundary gate; a release is a person's dispatch of deploy.yml. ADR 0102's fleet keeps its eight roles with no security, merge or release role; agent-sandbox.yml and the fleet's daily budget ceiling exist; deploy.yml, infra.yml and fleet.yml are refused to agent identities. Phase 9's exit test is named in the phase register.",
     "evidence": [
       "scripts/fleet/dispatch.mjs",
-      "scripts/model-gateway.mjs"
+      "scripts/model-gateway.mjs",
+      "backend/crates/tests/qip-acceptance/tests/development_roles.rs::phase_9_roles_are_development_agents_that_act_only_through_ci",
+      "docs/architecture/phase-register.json phase 9 exit_tests"
     ],
-    "gap": "Sandbox and agent roles.",
+    "gap": "2026-10-31 (lane L6, owner ruling decision 10): ADR 0102 is not amended; the roles are the development agents and the exit test is named. Stays PARTIAL while phase 9 is not_entered (it is entered only after phase 8 exits). Earlier: Sandbox and agent roles.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3899,7 +3908,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): ADR 0102 is not amended. The fleet keeps its eight roles, and security, merge and release stay out of it. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "2026-10-31 lane L6: mutation: adding a 'release' role to scripts/fleet/worker.mjs ROLES failed the test at 'the fleet's roster names a release role'; restored, cmp clean, passed. The ruling's named mutations (dropping deploy.yml from agent-policy.json, removing an agent file) edit protected paths, so they were not run; the test asserts both by name.Owner ruling 2026-10-31 (IMPLEMENT): ADR 0102 is not amended. The fleet keeps its eight roles, and security, merge and release stay out of it. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-QUANT-10169",
@@ -4100,13 +4109,14 @@
   {
     "id": "R12-FABRIC-10177",
     "status": "PARTIAL",
-    "current": "Every cross-process asynchronous path is one of ADR 0128's three — the qip-mesh spine, the fabric producer and the peer link — with request/response through `qip_transport`'s HTTP client the synchronous fourth, and since 2026-10-25 `qip-acceptance` scans every app crate's production source (test modules stripped) and refuses a socket the crate opens itself or the mesh's raw publisher, with the two self-pokes (a process connecting to its own listener to unblock `accept` on shutdown) as the whole allow-list. The admitted seams are enumerated by symbol and the scan asserts each is live in the apps, so the list cannot go stale silently.",
+    "current": "Every cross-process asynchronous path is one of ADR 0128's three — the qip-mesh spine, the fabric producer and the peer link — with request/response through `qip_transport`'s HTTP client the synchronous fourth. Since 2026-10-31 `qip-acceptance` scans the production source (test modules stripped) of every crate under apps/, services/, runtime/ and edge/ and refuses `TcpStream::connect`, `TcpStream::connect_timeout`, `UdpSocket`, `UnixStream`, `tokio::net`, the mesh's raw `MeshPublisher` and qip-streaming's `MeshTransport` wrapper, against an allow-list of eight (file, token) sites each asserted live: the two shutdown self-pokes, the spine's publisher in qip-mesh and the cell's uplink, the peer link's `connect_timeout`, and qip-streaming's mesh wrapper in its own two files. A socket-opening token carries its admitted line count, so a second connect beside an admitted one is a finding. libs/ stays with `only_the_named_libraries_open_sockets`. `production_text` now counts braces outside string, raw-string and character literals and skips comment lines inside a test item, so a fixture like `\"{ this is not a limits file\"` (present in three composition roots) no longer strips the rest of the file.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_architecture.rs::no_app_crate_sends_across_a_process_except_through_the_spine_the_fabric_producer_the_peer_link_or_a_named_synchronous_route",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_architecture.rs::no_crate_outside_the_libraries_sends_across_a_process_except_through_the_spine_the_fabric_producer_the_peer_link_or_a_named_synchronous_route",
+      "backend/crates/tests/qip-acceptance/src/lib.rs::production_text (code_braces) and its four unit tests",
       "backend/crates/libs/qip-events/src/event_fabric/catalogue.rs (the spine frames beside the streams, R12-FABRIC-10077)",
       "backend/crates/apps/qip-ledgerd/src/consumer.rs (the ledger consumer, no longer a placeholder)"
     ],
-    "gap": "Skeptic REFUTED 2026-10-25: bar part 4 as 10077's (the spine is admitted only by ADR 0128's naming, and spine frames in a catalogue section are not declared Fabric streams); and the scan is narrower than the invariant — it covers `apps/` only (a service or runtime crate that sends, such as qip-mesh, qip-streaming's mesh publisher wrapper or qip-kernel's desk fabric, is unchecked), misses `TcpStream::connect_timeout`, an aliased `TcpStream`, `tokio::net::TcpSocket`, a spawned `curl` and `qip_streaming::mesh::MeshTransport`, admits `HttpClient` wholesale without checking the route, and `production_text` can over-strip past a brace in a string literal. Closes with a workspace-wide scan whose allow-list is the three ADR 0128 seams by crate and symbol, and the owner's reading of decision 2.",
+    "gap": "Skeptic HOLDS for PARTIAL 2026-10-31, gap narrowed. Still open: a token scan cannot see an aliased or grouped import (`use std::net::TcpStream as X`, `use tokio::{net}`), a spawned process (`std::process::Command`; qip-edge-node's placement.rs already spawns `taskset`), `UnixDatagram` or `qip_transport::RemoteSubscriber`; `HttpClient` is admitted wholesale without checking the route a request names; type-name tokens are allow-listed by file, not by site. qip-streaming's `MeshTransport` is a dormant fourth path ADR 0128 does not name: no app reaches its registry today, and an app that asked the registry for a transport by a configured name would publish over the raw mesh without naming either type — whether it is deleted or amended into the ADR is the ADR owner's decision. Decision 4 says `qip_events` fabric producer where the seam symbol scanned is `qip_transport::event_fabric`. Bar part 4 as 10077's: the spine is admitted only by ADR 0128's naming. Closes with the owner's reading of decision 2, a decision on `MeshTransport`, and either a route check on `HttpClient` or a statement that the HTTP client is admitted as a seam by design.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4118,10 +4128,10 @@
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "cargo +1.94.1 test -p qip-acceptance --test event_fabric_architecture",
+    "verification": "cargo +1.94.1 test -p qip-acceptance --lib --test event_fabric_architecture",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D04. 2026-10-25 lane L1b-fabric: the scan landed. Limits stated: a token scan over `src/` with `#[cfg(test)]` stripped sees names, not behaviour; `ToSocketAddrs` is deliberately not a refused token because qip-cli resolves `--peer` with it and resolution is not a send; the HTTP client is admitted as a seam and the scan does not check which route a request names. Bar part 4 caveat as 10077's. Mutation fired 2026-10-25 and restored (cp+cmp): `let _ = std::net::TcpStream::connect(\"127.0.0.1:1\");` as the first line of qip-api main — the scan names `apps/qip-api/src/main.rs` and `TcpStream::connect`. Earlier run found the scan blind to its own allow-list (the walked path carries an `apps/` prefix); fixed before the mutation. Independent skeptic: REFUTED (gap). The scan stays as the first guard; its holes are named in the gap rather than papered."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D04. 2026-10-25 lane L1b-fabric: the scan landed. Limits stated: a token scan over `src/` with `#[cfg(test)]` stripped sees names, not behaviour; `ToSocketAddrs` is deliberately not a refused token because qip-cli resolves `--peer` with it and resolution is not a send; the HTTP client is admitted as a seam and the scan does not check which route a request names. Bar part 4 caveat as 10077's. Mutation fired 2026-10-25 and restored (cp+cmp): `let _ = std::net::TcpStream::connect(\"127.0.0.1:1\");` as the first line of qip-api main — the scan names `apps/qip-api/src/main.rs` and `TcpStream::connect`. Earlier run found the scan blind to its own allow-list (the walked path carries an `apps/` prefix); fixed before the mutation. Independent skeptic: REFUTED (gap). The scan stays as the first guard; its holes are named in the gap rather than papered. 2026-10-31 lane L1b-fabric: scan widened to apps/services/runtime/edge, tokens connect_timeout, tokio::net, MeshTransport added, site counts on socket tokens; production_text over-strip fixed (raw strings, char literals, comment lines). Mutations fired and restored byte-for-byte (cp+cmp): raw connect in qip-kernel platform.rs (named); `MeshTransport` named after the test module of qip-api main.rs (named — this mutation survived before the stripper fix and was the proof of the over-strip); peer-link entry dropped (offenders assertion names wire.rs); SCANNED_GROUPS back to apps only (premise names spine.rs); second connect beside ledgerd's self-poke (site count); stripper: naive brace count, state reset per line, raw-string arm deleted, comment skip dropped (each unit test fails). Independent skeptic: HOLDS for PARTIAL with the gap above."
   },
   {
     "id": "R12-FABRIC-10178",

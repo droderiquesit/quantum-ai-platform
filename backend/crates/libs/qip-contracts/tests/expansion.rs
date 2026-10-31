@@ -5,8 +5,8 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_contracts::expansion::{
-    CurriculumItem, EffectAttribution, GapSignal, GoalSpec, InterventionPlan, OntologyPatch,
-    SourceScore, TheoryDelta,
+    CrossDomainHypothesis, CurriculumItem, EffectAttribution, ExperimentPack, GapSignal, GoalSpec,
+    InterventionPlan, OntologyPatch, SourceScore, TheoryDelta,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -91,6 +91,34 @@ fn delta() -> Value {
     })
 }
 
+fn chain() -> Value {
+    json!({
+        "subject": "ent-kestrel",
+        "path": ["ent-kestrel", "ctry-gb", "ccy-gbp"],
+        "edges": ["domiciled_in", "issues_currency"],
+        "domains": ["companies", "economy", "fx"],
+        "strength": 0.81,
+        "sources": ["reference"],
+        "causally_claimed_hops": 0,
+        "synthesised_at": json!(qip_core::Timestamp::from_secs(1_760_000_000))
+    })
+}
+
+fn pack() -> Value {
+    json!({
+        "campaign_id": "campaign-fill-bias-xsim",
+        "hypothesis": "is the twin's fill estimate at XSIM biased",
+        "feature": "fill-bias correction at XSIM: 40.0 bp over 10 fills",
+        "backtest_digest": "b".repeat(64),
+        "backtest_samples": 10,
+        "backtest_improvement_bps": 38.5,
+        "findings": ["calibration: passed — paper mean 1.2 bp corrected"],
+        "experiments": ["campaign-fill-bias-xsim/historical"],
+        "proposal": "install the correction at XSIM",
+        "produced_at": json!(qip_core::Timestamp::from_secs(1_760_000_000))
+    })
+}
+
 fn item() -> Value {
     json!({
         "research_question": "does CPI lead rates", "expected_information_value": 1.5,
@@ -109,6 +137,10 @@ fn decoders() -> Vec<(&'static str, Value, Decode)> {
         ("patch", patch(), |b| OntologyPatch::decode(b).map(|_| ())),
         ("score", score(), |b| SourceScore::decode(b).map(|_| ())),
         ("delta", delta(), |b| TheoryDelta::decode(b).map(|_| ())),
+        ("chain", chain(), |b| {
+            CrossDomainHypothesis::decode(b).map(|_| ())
+        }),
+        ("pack", pack(), |b| ExperimentPack::decode(b).map(|_| ())),
         ("item", item(), |b| CurriculumItem::decode(b).map(|_| ())),
         ("attribution", attribution(), |b| {
             serde_json::from_slice::<EffectAttribution>(b)
@@ -234,6 +266,8 @@ fn a_blank_or_empty_listed_field_is_refused_naming_the_field() {
                 // message, as an enum is.
                 "scored_at",
                 "proposed_at",
+                "synthesised_at",
+                "produced_at",
             ]
             .contains(&key.as_str())
             {
@@ -469,6 +503,13 @@ fn every_decoded_record_encodes_back_to_the_same_document_field_for_field() {
         }),
         ("delta", delta(), |b| {
             serde_json::to_value(TheoryDelta::decode(b).expect("delta decodes")).expect("e")
+        }),
+        ("chain", chain(), |b| {
+            serde_json::to_value(CrossDomainHypothesis::decode(b).expect("chain decodes"))
+                .expect("e")
+        }),
+        ("pack", pack(), |b| {
+            serde_json::to_value(ExperimentPack::decode(b).expect("pack decodes")).expect("e")
         }),
         // CONTRACT-7083's own proof names the round trip beside the refusal,
         // and until 2026-10-24 the attribution was the one record this test

@@ -826,6 +826,26 @@ fn a_reported_event_is_proposed_until_its_dispute_window_closes_and_only_then_fi
             .map(|resolution| resolution.state().as_str().to_string())
     };
     assert_eq!(state(&platform).as_deref(), Some("proposed"));
+    // Since ADR 0151 decision 10 a report is proposed only when the market's
+    // criteria, over what its named source published, agree with it — so the
+    // proposal above stands on observations the plane holds, not on the
+    // oracle's word.
+    {
+        let plane = platform.event_markets().expect("installed");
+        let market = plane.markets().next().expect("listed");
+        let observations = plane
+            .observations(&market.market_id)
+            .expect("the proposal stands on the source's observations");
+        let Some(ResolutionState::Proposed { report, .. }) =
+            plane.resolution(&market.market_id).map(|r| r.state())
+        else {
+            panic!("proposed, as asserted above");
+        };
+        assert_eq!(
+            market.evaluate(observations),
+            qip_prediction::MarketVerdict::Resolved(report.outcome.clone())
+        );
+    }
     platform.run_cycle(resolves.saturating_add(Duration::from_hours(3)));
     assert_eq!(state(&platform).as_deref(), Some("final"));
     let plane = platform.event_markets().expect("installed");
@@ -1031,6 +1051,95 @@ fn commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_c
     assert!(runs.iter().all(|run| !run.decision_grade));
     Ok(())
 }
+/// R12-COMMERCE-5096: the commerce ledger was event-sourced and replayable
+/// on its own and invisible to the platform's books. Every receipt, sale and
+/// return now queues one `PhysicalInventory` operation for the desk ledger,
+/// so the desk ledger's inventory account at each location replays to the
+/// units the commerce ledger holds there.
+///
+/// Mutation: drop the drain in `breadth.rs`, or the receipt's
+/// `record_move` - no operation is queued, or the warehouse replays short of
+/// what the commerce ledger holds.
+#[test]
+fn a_commerce_receipt_books_one_physical_inventory_operation_the_ledger_replays_to_the_same_units()
+-> Result<()> {
+    use qip_contracts::ledger::{Account, Direction};
+    use qip_contracts::ledger_operation::OperationKind;
+    use qip_financial::commerce::UnitState;
+
+    let mut platform = platform()?;
+    platform.install_breadth(
+        &BreadthPlan {
+            commerce: Some(commerce_plan()?),
+            ..BreadthPlan::default()
+        },
+        start(),
+    )?;
+    let mut at = start();
+    for _ in 0..6 {
+        platform.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    let research = platform.commerce_research().expect("installed");
+    let units = research.ledger().units();
+    // Premise: units were received and at least one was sold, so both arms
+    // of the replay are exercised.
+    assert!(!units.is_empty(), "nothing was received");
+    assert!(
+        units
+            .values()
+            .any(|unit| matches!(unit.state, UnitState::Sold { .. })),
+        "nothing was sold: {units:?}"
+    );
+
+    let operations: Vec<_> = platform
+        .pending_desk_operations()
+        .iter()
+        .filter(|operation| matches!(operation.kind, OperationKind::PhysicalInventory { .. }))
+        .collect();
+    let receipts = operations
+        .iter()
+        .filter(|operation| operation.operation_id.contains(":commerce-received:"))
+        .count();
+    assert_eq!(
+        receipts,
+        units.len(),
+        "one receipt operation per unit the commerce ledger received"
+    );
+
+    // The desk ledger's inventory accounts, replayed from the postings,
+    // against what the commerce ledger holds at each location by SKU.
+    let mut replayed: BTreeMap<(String, String), Decimal> = BTreeMap::new();
+    for operation in &operations {
+        for posting in operation.postings() {
+            if let Account::Inventory { location } = &posting.account {
+                let entry = replayed
+                    .entry((location.clone(), posting.unit.clone()))
+                    .or_default();
+                match posting.direction {
+                    Direction::Debit => *entry += posting.amount,
+                    Direction::Credit => *entry -= posting.amount,
+                }
+            }
+        }
+    }
+    replayed.retain(|_, units| !units.is_zero());
+    let mut held: BTreeMap<(String, String), Decimal> = BTreeMap::new();
+    for unit in units.values() {
+        if !matches!(unit.state, UnitState::Sold { .. }) {
+            *held
+                .entry((unit.location.clone(), unit.sku.clone()))
+                .or_default() += Decimal::ONE;
+        }
+    }
+    assert!(!held.is_empty(), "premise: some unit is still held");
+    assert_eq!(
+        replayed, held,
+        "the desk ledger's inventory does not replay to the commerce ledger's units"
+    );
+    Ok(())
+}
+
 /// R12-COMMERCE-5090: the tracked condition, location and inventory state of
 /// a unit are the ledger's, after the unit has moved. They were the literals
 /// "new", the warehouse and "held", written once at receipt, so a unit sold
@@ -1429,5 +1538,95 @@ fn a_revoked_event_permission_withdraws_the_market_at_the_next_cycle() -> Result
             withdrawn[0]
         );
     }
+    Ok(())
+}
+
+/// R12-ASSET-4073: each unit the simulated merchant delivers becomes a
+/// RealAsset position record carrying the purchase's landed cost and the
+/// unit's state as the inventory ledger holds it, and the record stays in
+/// the commerce research output: the desk's book holds none of it.
+///
+/// Mutation: in `CommerceResearch::position_record`, set the inventory
+/// state from a literal `UnitState::Sold` instead of the ledger read, and
+/// the state assertion fails.
+#[test]
+fn a_received_paper_unit_is_a_real_asset_position_carrying_landed_cost_and_ledger_inventory_and_the_book_is_unchanged()
+-> Result<()> {
+    use qip_financial::asset_class::AssetClass;
+    use qip_financial::commerce::UnitState;
+    let mut platform = platform()?;
+    let book_before = platform.positions_at_cost();
+    platform.install_breadth(
+        &BreadthPlan {
+            commerce: Some(commerce_plan()?),
+            ..BreadthPlan::default()
+        },
+        start(),
+    )?;
+    let mut at = start();
+    for _ in 0..6 {
+        platform.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    let mut runs = Vec::new();
+    for event in platform.event_log().by_topic(Topic::ScenarioEvaluated) {
+        if let Ok(decoded) = StreamEnvelope::from_frame(event)?.decode::<CommerceSimulated>() {
+            runs.push(decoded.body);
+        }
+    }
+    let received: Vec<String> = runs
+        .iter()
+        .flat_map(|run| run.purchases.iter())
+        .flat_map(|purchase| purchase.units.iter().cloned())
+        .collect();
+    assert!(
+        !received.is_empty(),
+        "premise: a unit was received: {runs:?}"
+    );
+    let positions: Vec<&qip_financial::position_record::PositionRecord> =
+        runs.iter().flat_map(|run| run.positions.iter()).collect();
+    assert_eq!(
+        positions
+            .iter()
+            .map(|p| p.asset().to_string())
+            .collect::<Vec<_>>(),
+        received,
+        "one position record per received unit"
+    );
+    // The journal carries each assessment's duty apart (R12-COMMERCE-1093),
+    // so a record's landed cost is matched to its purchase by that figure.
+    let duties: Vec<qip_core::Decimal> = runs
+        .iter()
+        .flat_map(|run| run.assessed.iter())
+        .filter(|assessed| assessed.viable)
+        .map(|assessed| assessed.duty)
+        .collect();
+    for record in &positions {
+        assert_eq!(record.class(), AssetClass::RealAsset);
+        let economics = record
+            .product_economics()
+            .expect("a physical unit carries its landed cost");
+        assert!(
+            economics.goods.is_positive() && duties.contains(&economics.duty),
+            "the landed cost is not the purchase's own: {economics:?} against duties {duties:?}"
+        );
+        assert_eq!(
+            record.inventory_state(),
+            Some(&UnitState::Held),
+            "a unit is held in the ledger at receipt"
+        );
+    }
+    assert_eq!(
+        platform.positions_at_cost(),
+        book_before,
+        "a commerce research unit reached the desk's book"
+    );
+    assert!(
+        platform
+            .positions_at_cost()
+            .keys()
+            .all(|instrument| !received.contains(instrument)),
+        "a received unit is a book position"
+    );
     Ok(())
 }

@@ -1073,6 +1073,198 @@ impl SourceScore {
     }
 }
 
+// --- CrossDomainHypothesis (R12-EXPAND-6031) ----------------------------------
+
+/// The artifact cross-domain synthesis produces: a chain of typed
+/// relationships the knowledge graph holds that crosses at least three
+/// domains (a company into an industry into a commodity; a company into its
+/// country into that country's currency), read as a hypothesis that a shock
+/// at one end transmits to the other. It carries the whole path and every
+/// edge's source, so a reader can walk the same facts; `causally_claimed_hops`
+/// says how many of its hops the causal graph already holds a live claim for,
+/// which is what separates a chain the platform believes from one it has
+/// merely recorded. Synthesis proposes; nothing here or downstream claims a
+/// causal edge from one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CrossDomainHypothesis {
+    /// The node the chain starts from.
+    pub subject: String,
+    /// Node ids along the chain, `subject` first; at least three.
+    pub path: Vec<String>,
+    /// The relationship kind of each hop, `path.len() - 1` of them.
+    pub edges: Vec<String>,
+    /// The distinct domains the chain crosses, in path order; at least three.
+    pub domains: Vec<String>,
+    /// The product of each hop's weight and confidence, in `(0, 1]`.
+    pub strength: f64,
+    /// The distinct sources the hops were asserted from; at least one.
+    pub sources: Vec<String>,
+    /// Hops the causal graph already holds a live claim for, at most
+    /// `edges.len()`.
+    pub causally_claimed_hops: usize,
+    pub synthesised_at: Timestamp,
+}
+
+impl CrossDomainHypothesis {
+    /// The fewest domains a chain must cross to be cross-domain synthesis
+    /// rather than a relationship the graph already states.
+    pub const MIN_DOMAINS: usize = 3;
+
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "CrossDomainHypothesis";
+        text(R, "subject", &self.subject)?;
+        list(R, "path", &self.path)?;
+        if self.path.len() < Self::MIN_DOMAINS {
+            return Err(Error::invalid(format!(
+                "{R}.path has {} node(s); a chain across {} domains needs at least {}",
+                self.path.len(),
+                Self::MIN_DOMAINS,
+                Self::MIN_DOMAINS
+            )));
+        }
+        if self.path.first() != Some(&self.subject) {
+            return Err(Error::invalid(format!(
+                "{R}.path must start at {R}.subject; a chain that starts elsewhere is about \
+                 something else"
+            )));
+        }
+        list(R, "edges", &self.edges)?;
+        if self.edges.len() + 1 != self.path.len() {
+            return Err(Error::invalid(format!(
+                "{R}.edges has {} hop(s) for {} node(s); supply one edge per hop",
+                self.edges.len(),
+                self.path.len()
+            )));
+        }
+        list(R, "domains", &self.domains)?;
+        let distinct: std::collections::BTreeSet<&str> =
+            self.domains.iter().map(String::as_str).collect();
+        if distinct.len() != self.domains.len() || distinct.len() < Self::MIN_DOMAINS {
+            return Err(Error::invalid(format!(
+                "{R}.domains must name at least {} distinct domains, found {:?}",
+                Self::MIN_DOMAINS,
+                self.domains
+            )));
+        }
+        finite(R, "strength", self.strength, 0.0, 1.0)?;
+        if self.strength <= 0.0 {
+            return Err(Error::invalid(format!(
+                "{R}.strength must be above zero; a chain with no strength transmits nothing"
+            )));
+        }
+        list(R, "sources", &self.sources)?;
+        if self.causally_claimed_hops > self.edges.len() {
+            return Err(Error::invalid(format!(
+                "{R}.causally_claimed_hops ({}) exceeds the {} hop(s) the chain has",
+                self.causally_claimed_hops,
+                self.edges.len()
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes).map_err(|e| {
+            Error::schema(format!(
+                "not a CrossDomainHypothesis: {e}; supply every field"
+            ))
+        })?;
+        v.validate()?;
+        Ok(v)
+    }
+
+    /// Hops the causal graph holds no live claim for.
+    pub fn unclaimed_hops(&self) -> usize {
+        self.edges.len() - self.causally_claimed_hops
+    }
+}
+
+// --- ExperimentPack (R12-EXPAND-6035) -----------------------------------------
+
+/// The artifact a research campaign leaves beside its verdict: the hypothesis
+/// it researched, the feature it built, the backtest the feature was fitted
+/// and bootstrapped on (its dataset digest, sample count and the forward
+/// improvement it then showed), every criterion's finding, the experiment
+/// references the verdict rests on, and what the campaign proposes. A pack
+/// records; it installs nothing, and a pack whose backtest names no dataset
+/// or no sample is refused because a result nobody can recompute is not a
+/// backtest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentPack {
+    pub campaign_id: String,
+    /// The research question, as the campaign was opened on it.
+    pub hypothesis: String,
+    /// What the campaign built and fitted.
+    pub feature: String,
+    /// SHA-256 of the dataset the feature was fitted on, lower-case hex.
+    pub backtest_digest: String,
+    /// Observations the feature was fitted on; at least one.
+    pub backtest_samples: usize,
+    /// The improvement the fitted feature showed on data it was not fitted
+    /// on, in basis points; finite, and a loss is negative rather than absent.
+    pub backtest_improvement_bps: f64,
+    /// Every criterion's finding, as `<criterion>: passed|failed — <evidence>`;
+    /// one per criterion, so at least one.
+    pub findings: Vec<String>,
+    /// The experiment references the verdict rests on; at least one.
+    pub experiments: Vec<String>,
+    /// What the campaign proposes on this evidence, or that it proposes
+    /// nothing and why.
+    pub proposal: String,
+    pub produced_at: Timestamp,
+}
+
+impl ExperimentPack {
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "ExperimentPack";
+        text(R, "campaign_id", &self.campaign_id)?;
+        text(R, "hypothesis", &self.hypothesis)?;
+        text(R, "feature", &self.feature)?;
+        if self.backtest_digest.len() != 64
+            || !self
+                .backtest_digest
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(Error::invalid(format!(
+                "{R}.backtest_digest must be 64 lower-case hex characters; a digest nobody \
+                 computed names no dataset"
+            )));
+        }
+        if self.backtest_samples == 0 {
+            return Err(Error::invalid(format!(
+                "{R}.backtest_samples must be above zero; a feature fitted on nothing was not \
+                 backtested"
+            )));
+        }
+        if !self.backtest_improvement_bps.is_finite() {
+            return Err(Error::invalid(format!(
+                "{R}.backtest_improvement_bps must be finite, found {}",
+                self.backtest_improvement_bps
+            )));
+        }
+        list(R, "findings", &self.findings)?;
+        list(R, "experiments", &self.experiments)?;
+        text(R, "proposal", &self.proposal)?;
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes).map_err(|e| {
+            Error::schema(format!("not an ExperimentPack: {e}; supply every field"))
+        })?;
+        v.validate()?;
+        Ok(v)
+    }
+
+    /// The findings that failed.
+    pub fn failures(&self) -> impl Iterator<Item = &String> {
+        self.findings.iter().filter(|f| f.contains(": failed"))
+    }
+}
+
 // --- TheoryDelta (R12-EXPAND-6044) --------------------------------------------
 
 /// The artifact symbolic theory growth produces when the world contradicts

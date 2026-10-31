@@ -114,6 +114,7 @@ pub struct PositionRecordBuilder {
     commitments: Option<Declared<Commitment>>,
     exit_plan: Option<ExitPlan>,
     product_economics: Option<LandedCost>,
+    inventory_state: Option<crate::commerce::UnitState>,
 }
 
 macro_rules! setter {
@@ -148,6 +149,7 @@ impl PositionRecordBuilder {
     setter!(commitments, Declared<Commitment>);
     setter!(exit_plan, ExitPlan);
     setter!(product_economics, LandedCost);
+    setter!(inventory_state, crate::commerce::UnitState);
 
     /// Refuses, naming the field, the first of the nine that is absent.
     pub fn build(self) -> Result<PositionRecord> {
@@ -208,6 +210,15 @@ impl PositionRecordBuilder {
             ));
         }
 
+        // A unit's inventory state is a fact about a physical good the
+        // inventory ledger holds (R12-ASSET-4073), and nothing else has one.
+        if self.inventory_state.is_some() && class != AssetClass::RealAsset {
+            return Err(Error::invalid(
+                "an inventory state is only applicable to RealAsset positions; supply it only \
+                 for a physical unit the inventory ledger holds",
+            ));
+        }
+
         Ok(PositionRecord {
             asset,
             class,
@@ -221,6 +232,7 @@ impl PositionRecordBuilder {
             commitments,
             exit_plan,
             product_economics: self.product_economics,
+            inventory_state: self.inventory_state,
         })
     }
 }
@@ -242,6 +254,10 @@ pub struct PositionRecord {
     commitments: Declared<Commitment>,
     exit_plan: ExitPlan,
     product_economics: Option<LandedCost>,
+    /// For a physical unit, its state in the inventory ledger the record was
+    /// built from (held, reserved, sold): read from the ledger, never set by
+    /// the caller's belief. `None` for every non-physical position.
+    inventory_state: Option<crate::commerce::UnitState>,
 }
 
 impl TryFrom<PositionRecordBuilder> for PositionRecord {
@@ -267,6 +283,10 @@ impl PositionRecord {
     pub fn exit_plan(&self) -> &ExitPlan {
         &self.exit_plan
     }
+    pub fn inventory_state(&self) -> Option<&crate::commerce::UnitState> {
+        self.inventory_state.as_ref()
+    }
+
     pub fn product_economics(&self) -> Option<&LandedCost> {
         self.product_economics.as_ref()
     }
