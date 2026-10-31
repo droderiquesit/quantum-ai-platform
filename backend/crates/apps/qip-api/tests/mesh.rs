@@ -314,6 +314,9 @@ fn delta(utilisation_orders_sent: u64) -> CellStateDelta {
         crosses_omitted: 0,
         episodes: Vec::new(),
         episodes_omitted: 0,
+        positions: Vec::new(),
+        positions_omitted: 0,
+        positions_as_of: 0,
     }
 }
 

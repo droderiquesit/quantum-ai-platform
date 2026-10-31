@@ -11792,6 +11792,35 @@ impl Cell {
             // newest that fit and counts the rest (ADR 0207).
             episodes: self.episodes.clone(),
             episodes_omitted: 0,
+            // The book as the venue's confirmed fills built it (ADR 0208):
+            // every non-zero signed quantity, in the map's own venue-then-
+            // instrument order. A key the cell cannot read back into a venue
+            // and an instrument is counted as omitted rather than guessed.
+            positions: self
+                .positions
+                .iter()
+                .filter(|(_, quantity)| !quantity.is_zero())
+                .filter_map(|(key, quantity)| {
+                    let (venue, object) = key.split_once('/')?;
+                    Some(qip_contracts::wire::AdvisoryPosition {
+                        object_id: ObjectId::from_string(object),
+                        venue: VenueId::new(venue),
+                        quantity: *quantity,
+                    })
+                })
+                .collect(),
+            positions_omitted: u32::try_from(
+                self.positions
+                    .iter()
+                    .filter(|(key, quantity)| !quantity.is_zero() && !key.contains('/'))
+                    .count(),
+            )
+            .unwrap_or(u32::MAX),
+            positions_as_of: self
+                .journal
+                .entries()
+                .last()
+                .map_or(0, |entry| entry.sequence),
         };
         delta.bound_refusals();
         delta

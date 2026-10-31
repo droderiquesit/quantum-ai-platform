@@ -1659,6 +1659,10 @@ fn report_from(standing: &CellStanding) -> CellReport {
     // one builder call, which is the point: the wire gained no field.
     let mut report = CellReport::new(standing.cell.clone(), standing.at)
         .with_region(standing.region.clone())
+        // ADR 0208: the cell's stated book, as of its journal sequence, for
+        // the Hedge Brain's view. The plane refuses a sequence that went
+        // backwards, and that refusal halts the drain as any refusal does.
+        .with_advisory_positions(standing.positions.clone(), standing.positions_as_of)
         .with_utilisation(
             standing
                 .utilisation
@@ -1899,6 +1903,9 @@ mod tests {
             }],
             reconciliation_breaks: Vec::new(),
             reconciliation_breaks_omitted: 0,
+            positions: Vec::new(),
+            positions_omitted: 0,
+            positions_as_of: 0,
         }
     }
 
