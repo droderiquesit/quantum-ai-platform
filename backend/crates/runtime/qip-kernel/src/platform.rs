@@ -22113,6 +22113,7 @@ impl Platform {
         // further without that routing. `Router::determine` returns a type that
         // cannot name a model rung, so the limits below are structurally a
         // function of their inputs.
+        self.begin_deliberate_close(&order);
         let subject = order.object_id.as_str().to_string();
         let conditions = self.pretrade_conditions(&subject);
         self.pretrade_routing = Some(
@@ -22207,6 +22208,53 @@ impl Platform {
                     .map(|reason| reason.describe())
                     .unwrap_or_else(|| "refused with no reason recorded".to_string()),
             ))
+        }
+    }
+
+    /// Record a sell that takes the whole long off the book as blueprint
+    /// §35.1's divestment: the position moves to `Unwinding` through
+    /// [`Portfolio::begin_unwind`] (R12-ASSET-1160).
+    ///
+    /// Before this, `begin_unwind` had no production caller, so a book being
+    /// sold down read as `Held` until the last lot closed, and the
+    /// Portfolio/Asset Brain's divestment count was zero on every book. A
+    /// trim is not this: a sell smaller than the long leaves the position
+    /// held, because §35.1 separates being closed deliberately from being
+    /// reduced.
+    ///
+    /// Run before the controls rule and before any fill exists, which is the
+    /// seam `begin_unwind` names. `Unwinding` records the desk's decision to
+    /// divest, so it stands if a control then refuses the order; the
+    /// refusal is on the record beside it. The lifecycle table has no
+    /// `Held -> Unwinding` edge, so the concern that caused the close (a
+    /// sizing that took the position to flat) is raised through
+    /// [`Portfolio::flag_position`] first. A register that will not move is
+    /// said on the cycle; it never stops the order.
+    fn begin_deliberate_close(&mut self, order: &Order) {
+        if !matches!(order.side, Side::Sell) {
+            return;
+        }
+        let long = self
+            .capital
+            .positions
+            .get(order.object_id.as_str())
+            .map_or(Decimal::ZERO, |lot| lot.quantity);
+        if !long.is_positive() || order.quantity < long {
+            return;
+        }
+        let id = ObjectId::from_string(order.object_id.as_str());
+        let moved = self
+            .asset_book
+            .flag_position(&id)
+            .and_then(|_| self.asset_book.begin_unwind(&id));
+        if let Err(error) = moved {
+            self.capture_problems.push(format!(
+                "selling {} of {} takes the position to flat and the lifecycle register could \
+                 not record the unwind: {}",
+                order.quantity,
+                order.object_id.as_str(),
+                error.message()
+            ));
         }
     }
 
