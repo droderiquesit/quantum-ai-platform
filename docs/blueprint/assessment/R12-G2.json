@@ -852,15 +852,18 @@
   {
     "id": "R12-WORLD-9035",
     "status": "PARTIAL",
-    "current": "FutureTree grows, reweights and prunes synthetic future branches bounded by max_branches; Branch projects to WorldBranch.",
+    "current": "FutureTree branches, reweights and prunes bounded by max_branches; every Branch carries a scenario family (driver family, baseline, or a split's parent family). FutureTree::families states each family as a conditional distribution plus its share of live mass. world_branches_by_family projects live branches to WorldBranch records keyed by family and lists contract-refused branches with the reason. Platform::run_cycle calls tend_futures, which grows the tree from the newest 32 directional knowable world events (family = event class) and observes it against later bar closes.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/federation.rs:482 branch, :513 merge",
-      "backend/crates/services/qip-twin/src/futures.rs::FutureTree"
+      "backend/crates/services/qip-twin/src/futures.rs::FutureTree",
+      "backend/crates/services/qip-twin/src/futures.rs::FutureTree::families, ::world_branches_by_family, WorldDriver.family, Branch.family",
+      "backend/crates/services/qip-twin/tests/futures.rs::live_branch_weights_sum_to_one_within_each_family_after_pruning (6 mutants killed)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::tend_futures, test the_cycle_grows_a_future_tree_partitioned_by_event_class_and_the_next_bars_prune_it (3 mutants killed)"
     ],
-    "gap": "No partitioning by scenario family; weights-sum-to-one not asserted; reached only through the off-by-default tick desk.",
+    "gap": "Skeptic 2026-10-31 PARTIAL: WorldBranch records are projected on demand from an in-memory tree and never journaled, so they are neither stored nor replayable. Observation scores the cumulative move since the fork against a fixed 1-day horizon on every new bar, treating overlapping moves as independent and scoring past the horizon. A tree whose mass underflows to zero at its bound is kept dead until the driver set changes, with no problem recorded; pruned branches are never evicted, so splits stop at the bound. No shipped-binary test shows the default feed grows a tree (the kernel test injects bar_history and market_events).",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -868,7 +871,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 L4-quant commit b9728ad6; skeptic verdict PARTIAL."
   },
   {
     "id": "R12-TICK-9036",
