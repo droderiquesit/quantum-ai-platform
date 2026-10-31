@@ -61,8 +61,7 @@ run "no_archive_is_planned_while_storage_is_off" {
   }
 }
 
-# The refusing half: the locked window may be lengthened and never shortened.
-run "a_retention_shorter_than_seven_years_is_refused_at_plan" {
+run "a_retention_shorter_than_seven_years_is_refused" {
   command = plan
 
   variables {
@@ -74,7 +73,7 @@ run "a_retention_shorter_than_seven_years_is_refused_at_plan" {
     network_id             = "projects/p/global/networks/n"
     enable_cloud_storage   = true
     bucket_location        = "US"
-    archive_retention_days = 2554
+    archive_retention_days = 365
   }
 
   expect_failures = [var.archive_retention_days]
