@@ -115,7 +115,7 @@ jobs:
       # are `scripts/agent-policy.json`, checked out from the default branch
       # so the commit being deployed cannot loosen the rule it is judged by.
       - name: no development agent starts this workflow
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: .agent-guard
@@ -445,12 +445,12 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -467,12 +467,12 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -545,7 +545,7 @@ jobs:
             dockerfile: infrastructure/docker/portal.Dockerfile
             context: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
 
@@ -694,12 +694,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: authenticate without a key
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ steps.identity.outputs.provider }}
           service_account: ${{ steps.identity.outputs.account }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
         with:
           install_components: beta
 
@@ -935,15 +935,12 @@ jobs:
       # layer's content; the label and the tag are identical by
       # construction and do not hide a difference.
       #
-      # The workspace binaries only, and the exception is stated rather than
-      # hidden: `qip-portal` is a Next.js build, and Next stamps every build
-      # with a random build id unless `generateBuildId` is pinned, which
-      # `frontend/portal` does not do. Running this against it would fail
-      # every portal build for a known reason and make the console
-      # undeployable; skipping it silently would claim a property nobody
-      # measured. So the portal is built with the commit's epoch like
-      # everything else and its reproducibility is recorded as open work in
-      # infrastructure/gitops/kargo/README.md.
+      # The workspace binaries only. `qip-portal` is measured by the next
+      # step instead, file by file rather than by image id: its
+      # `generateBuildId` follows the commit's epoch, but every `next build`
+      # still writes four fresh per-build secrets, so two builds of one
+      # commit can never share an id and this comparison would fail every
+      # portal build for a known reason.
       - name: a second build of the commit is the same image
         id: reproducibility
         # Not after a pool build: the pool ran this same rebuild and
@@ -1006,11 +1003,74 @@ jobs:
           fi
           echo "two builds of ${DEPLOY_SHA} are the same image: ${first}"
 
+      # The portal's second build, compared file by file (R12-CICD-10117).
+      #
+      # Two `next build`s of one tree with one epoch differ in exactly four
+      # files, and each holds a secret Next generates afresh on every build:
+      # the preview-mode keys in prerender-manifest.json and
+      # server/preview-props.json, and the Server Actions key in
+      # server/server-reference-manifest.{js,json}. Pinning them would
+      # publish them, so they are excluded rather than injected (owner
+      # decision 13). The four image paths are listed in
+      # .github/reproducibility/portal-exceptions.txt, under .github/ so that
+      # only a person can lengthen the list.
+      #
+      # The second build is the first one's recipe with `--no-cache`: same
+      # Dockerfile, same context, same `SOURCE_DATE_EPOCH`, same labels. Both
+      # images' filesystems are exported and handed to
+      # .github/reproducibility/compare-image-trees.sh, the same file the
+      # acceptance suite executes (deploy_provenance.rs). It refuses any
+      # other differing, added or missing file, and refuses a listed path
+      # missing from either image, naming each. Extraction and comparison run
+      # as root because the image holds root-owned files the runner's user
+      # cannot read, and an unreadable file must not read as an equal one.
+      # The trees stay off the artifact the step after this uploads: the
+      # findings are named in the log, and a root-owned filesystem is not
+      # something upload-artifact can read.
+      #
+      # The rest of the row's clauses are met elsewhere and not repeated
+      # here: replay runs in ci.yml's `test` job, step "replay and benchmark
+      # output" (`--test tick_replay --test performance`), and this job needs
+      # `simulation-gate` ("simulation engine and twin acceptance") on the
+      # commit being deployed.
+      #
+      # Runner builds only, like the step above. The private pool builds the
+      # portal with `_REPRODUCIBLE=false` and does not run this comparison;
+      # the build environment's tfvars do not select the pool today.
+      - name: a second build of the portal differs only in its per-build secrets
+        id: portal-reproducibility
+        if: steps.build.outcome == 'success' && matrix.binary == 'qip-portal' && steps.build.outputs.where == 'runner'
+        run: |
+          set -euo pipefail
+          prefix="${{ steps.identity.outputs.registry }}"
+          docker buildx build \
+            --no-cache \
+            --build-arg "SOURCE_DATE_EPOCH=${{ steps.build.outputs.epoch }}" \
+            --file "${{ matrix.dockerfile }}" \
+            --output "type=docker,dest=${RUNNER_TEMP}/${{ matrix.binary }}-rebuild.tar,rewrite-timestamp=true" \
+            --label "org.opencontainers.image.revision=${DEPLOY_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --tag "qip-reproducibility/${{ matrix.binary }}:${DEPLOY_SHA}" \
+            "${{ matrix.context }}"
+          docker load --input "${RUNNER_TEMP}/${{ matrix.binary }}-rebuild.tar"
+          trees="$RUNNER_TEMP/portal-trees"
+          for which in first second; do
+            ref="${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}"
+            [ "$which" = first ] || ref="qip-reproducibility/${{ matrix.binary }}:${DEPLOY_SHA}"
+            mkdir -p "$trees/$which"
+            container="$(docker create "$ref")"
+            docker export "$container" | sudo tar --extract --same-permissions --directory "$trees/$which" --file -
+            docker rm "$container" >/dev/null
+          done
+          sudo bash .github/reproducibility/compare-image-trees.sh \
+            .github/reproducibility/portal-exceptions.txt \
+            "$trees/first" "$trees/second"
+
       # The two builds, kept for a week when they differ, so the bytes can
       # be compared off the runner with tools the runner does not have.
       - name: keep both builds when they differ
         if: failure() && steps.reproducibility.outcome == 'failure'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: reproducibility-${{ matrix.binary }}-${{ env.DEPLOY_SHA }}
           path: ${{ runner.temp }}/reproducibility
@@ -1163,7 +1223,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
 
@@ -1255,12 +1315,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: authenticate without a key
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ steps.identity.outputs.provider }}
           service_account: ${{ steps.identity.outputs.account }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
 
       # The catalogue's workloads, by the names catalogue.tf gives them, and
       # the binary each runs. Read out of the committed catalogue rather than
