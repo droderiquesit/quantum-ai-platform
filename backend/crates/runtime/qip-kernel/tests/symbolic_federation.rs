@@ -149,12 +149,13 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    // Twelve members (the company member, R12-WORLD-3044, and the capital
-    // member, R12-WORLD-3048, among them) plus the one domain member the
+    // Thirteen members (the company member, R12-WORLD-3044, the capital
+    // member, R12-WORLD-3048, and the counterparty member, R12-WORLD-3049,
+    // among them) plus the one domain member the
     // platform now declares for the universe's single asset class
     // (MODEL-4009): the composition names the classes itself, so a deployed
     // cycle carries the member too.
-    assert_eq!(first.population.len(), 13, "{:?}", first.population);
+    assert_eq!(first.population.len(), 14, "{:?}", first.population);
     // The platform hands the capital member its paper book every cycle
     // (ADR 0194): a funded book with positive equity is never silent.
     // Mutation: build `FederationInputs` with `capital: None`.
@@ -163,6 +164,15 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
             .iter()
             .all(|r| !r.silent.contains(&federation_stage::CAPITAL.to_string())),
         "the capital member was fed nothing on the platform's own cycle"
+    );
+    // The desk's broker is always a counterparty, so the counterparty member
+    // is fed on every cycle (R12-WORLD-3049). Mutation: build
+    // `FederationInputs` with `counterparties: Vec::new()`.
+    assert!(
+        reviews.iter().all(|r| !r
+            .silent
+            .contains(&federation_stage::COUNTERPARTY.to_string())),
+        "the counterparty member was fed nothing on the platform's own cycle"
     );
     assert!(
         first

@@ -14996,6 +14996,37 @@ impl Platform {
             .then_some(view)
     }
 
+    /// Each venue the platform routes to, as the counterparty member reads it
+    /// (R12-WORLD-3049): the desk's broker, which is always a counterparty,
+    /// and every venue the feasibility window names, with the refusals the
+    /// window holds at each. The window is only read here; its one writer
+    /// stays `record_feasibility_refusal`.
+    fn counterparty_views(&self) -> Vec<crate::federation_stage::CounterpartyView> {
+        let mut by_venue: BTreeMap<String, Vec<Timestamp>> = BTreeMap::new();
+        by_venue.insert(self.broker.name().to_string(), Vec::new());
+        for refusal in &self.feasibility_refusals {
+            by_venue
+                .entry(refusal.venue.clone())
+                .or_default()
+                .push(refusal.at);
+        }
+        let total = self.feasibility_refusals.len();
+        by_venue
+            .into_iter()
+            .map(
+                |(venue, refused_at)| crate::federation_stage::CounterpartyView {
+                    share: if total == 0 {
+                        0.0
+                    } else {
+                        refused_at.len() as f64 / total as f64
+                    },
+                    venue,
+                    refused_at,
+                },
+            )
+            .collect()
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -15049,6 +15080,7 @@ impl Platform {
                 confirmed_trades: view.state().trades(),
             }),
             capital: self.capital_view(),
+            counterparties: self.counterparty_views(),
         };
         // State what rides on each instrument before the pass (AMBIENT-10093),
         // so a material disagreement on a held name issues the contract
