@@ -1,0 +1,26 @@
+# Files of the qip-portal image allowed to differ between two builds of one
+# commit (R12-CICD-10117, owner decision 13: exclude, not inject).
+#
+# deploy.yml builds the portal twice, the second time with --no-cache and the
+# same SOURCE_DATE_EPOCH, exports both images' filesystems and compares them
+# file by file with .github/reproducibility/compare-image-trees.sh. Every
+# other difference, every added or missing file, and a listed file missing
+# from either build stops the line before anything is pushed.
+#
+# Each line below is a path inside the image, and each file holds a secret
+# Next.js generates afresh on every `next build`. Making two builds agree
+# would mean fixing that secret in this public repository, which publishes
+# it, so the files are excluded instead. Two `next build`s of one tree with
+# one epoch differed in exactly these four files of 2,921.
+#
+# This list lives under .github/ so that only a person can lengthen it:
+# agents may not change .github/**, and CODEOWNERS requires the owner's
+# review. A fifth line excuses a difference nobody has explained. Do not add
+# one to make the check pass; find out what moved.
+#
+# The preview-mode keys:
+/app/portal/.next/prerender-manifest.json
+/app/portal/.next/server/preview-props.json
+# The Server Actions encryption key, in both of the forms Next writes it:
+/app/portal/.next/server/server-reference-manifest.js
+/app/portal/.next/server/server-reference-manifest.json

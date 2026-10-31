@@ -13601,18 +13601,22 @@ fn the_build_epoch_is_the_commit_time_and_never_the_clock() {
     // no `dest`, the runner's graphdriver daemon commits the layers itself
     // and ignores `rewrite-timestamp` — deploy run 266 had byte-identical
     // binaries, configs and histories and two sets of layer digests.
+    //
+    // Three builds, not two, since R12-CICD-10117: the first build, the
+    // workspace binaries' uncached rebuild, and the portal's uncached
+    // rebuild that is compared file by file. All three go the same way.
     assert_eq!(
         deploy.matches(".tar,rewrite-timestamp=true\"").count(),
-        2,
-        "deploy.yml's two builds do not both export through the tarball exporter with \
+        3,
+        "deploy.yml's three builds do not all export through the tarball exporter with \
          rewrite-timestamp; the daemon's own image store ignores it"
     );
     assert_eq!(
         deploy
             .matches("docker load --input \"${RUNNER_TEMP}/${{ matrix.binary }}")
             .count(),
-        2,
-        "deploy.yml's two builds are not both loaded from their tarball"
+        3,
+        "deploy.yml's three builds are not all loaded from their tarball"
     );
     // And on a daemon that can do either: the hosted runner's graphdriver
     // daemon ignores `rewrite-timestamp` and refuses the tarball exporter, so

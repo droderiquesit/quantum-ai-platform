@@ -621,3 +621,279 @@ fn the_portal_build_id_follows_the_commit_epoch_deploy_passes_and_is_never_a_con
          id has nothing to follow"
     );
 }
+
+// --- R12-CICD-10117: the portal's second build, compared file by file ------
+//
+// Two `next build`s of one tree with one epoch differ in four files, each a
+// per-build secret Next generates afresh. Owner decision 13: exclude them,
+// do not inject a shared secret. deploy.yml rebuilds the portal uncached,
+// exports both filesystems and runs `compare-image-trees.sh` over them with
+// the committed exceptions list. The tests below execute that same script on
+// trees they build, because a comparison that reads correctly and exits 0 on
+// every input is the failure only running it can show.
+
+const COMPARE_SCRIPT: &str = ".github/reproducibility/compare-image-trees.sh";
+const PORTAL_EXCEPTIONS: &str = ".github/reproducibility/portal-exceptions.txt";
+const PORTAL_DOCKERFILE: &str = "infrastructure/docker/portal.Dockerfile";
+
+/// The four image paths decision 13 excuses, and nothing else.
+const PER_BUILD_SECRETS: [&str; 4] = [
+    "/app/portal/.next/prerender-manifest.json",
+    "/app/portal/.next/server/preview-props.json",
+    "/app/portal/.next/server/server-reference-manifest.js",
+    "/app/portal/.next/server/server-reference-manifest.json",
+];
+
+/// The exceptions file's paths: every line that is neither blank nor a
+/// comment, trimmed, in file order.
+fn listed_exceptions() -> Vec<String> {
+    read(PORTAL_EXCEPTIONS)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A fresh, empty scratch directory for one test.
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "qip-portal-reproducibility-{}-{name}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path)
+        .unwrap_or_else(|error| panic!("cannot create {}: {error}", path.display()));
+    path
+}
+
+/// Write `contents` at the image path `path` under `root`.
+fn put(root: &std::path::Path, path: &str, contents: &str) {
+    let file = root.join(path.trim_start_matches('/'));
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|error| panic!("cannot create {}: {error}", parent.display()));
+    }
+    std::fs::write(&file, contents)
+        .unwrap_or_else(|error| panic!("cannot write {}: {error}", file.display()));
+}
+
+/// One build's filesystem: an ordinary part every build shares, a symlink,
+/// and the four secret files carrying a value unique to `build`.
+fn portal_tree(root: &std::path::Path, build: &str) {
+    put(
+        root,
+        "/app/portal/server.js",
+        "require('./.next/server');\n",
+    );
+    put(root, "/app/portal/.next/BUILD_ID", "qip-1761868800");
+    put(
+        root,
+        "/app/portal/.next/static/qip-1761868800/_buildManifest.js",
+        "self.__BUILD_MANIFEST={};\n",
+    );
+    put(root, "/etc/alpine-release", "3.22.2\n");
+    for secret in PER_BUILD_SECRETS {
+        put(root, secret, &format!("{{\"key\":\"{build}-{secret}\"}}"));
+    }
+    let link = root.join("usr/bin/node-link");
+    if let Some(parent) = link.parent() {
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|error| panic!("cannot create {}: {error}", parent.display()));
+    }
+    std::os::unix::fs::symlink("/usr/local/bin/node", &link)
+        .unwrap_or_else(|error| panic!("cannot link {}: {error}", link.display()));
+}
+
+/// Two builds of one commit as the measurement found them: identical except
+/// for the four per-build secrets. The premise every case below starts from,
+/// asserted rather than assumed, so a fixture that wrote the same secret
+/// twice cannot make the admitting case pass for the wrong reason.
+fn two_builds(name: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let scratch = scratch_dir(name);
+    let first = scratch.join("first");
+    let second = scratch.join("second");
+    portal_tree(&first, "first");
+    portal_tree(&second, "second");
+    for secret in PER_BUILD_SECRETS {
+        let relative = secret.trim_start_matches('/');
+        let a = std::fs::read(first.join(relative)).unwrap_or_default();
+        let b = std::fs::read(second.join(relative)).unwrap_or_default();
+        assert!(
+            !a.is_empty() && a != b,
+            "premise: the fixture's two builds must differ in {secret}, or the admitting case \
+             proves nothing about the exceptions"
+        );
+    }
+    (scratch, first, second)
+}
+
+/// Run the committed comparison over `first` and `second` with the
+/// committed exceptions list; its exit code and its stderr.
+fn compare(first: &std::path::Path, second: &std::path::Path) -> (i32, String) {
+    let root = qip_acceptance::repository_root();
+    let script = root.join(COMPARE_SCRIPT);
+    assert!(
+        script.is_file(),
+        "{COMPARE_SCRIPT} does not exist; deploy.yml's portal comparison has nothing to run"
+    );
+    let output = Command::new("bash")
+        .arg(&script)
+        .arg(root.join(PORTAL_EXCEPTIONS))
+        .arg(first)
+        .arg(second)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap_or_else(|error| panic!("cannot run bash: {error}"));
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn the_portal_exceptions_list_names_exactly_the_four_per_build_secret_files() {
+    // The list is what makes the check a check. A fifth line excuses a
+    // difference nobody has explained; a list that lost one of the four
+    // fails every portal build for a known reason and invites somebody to
+    // switch the step off.
+    let listed = listed_exceptions();
+    assert_eq!(
+        listed.len(),
+        4,
+        "{PORTAL_EXCEPTIONS} lists {} paths, {listed:?}; decision 13 excuses exactly four",
+        listed.len()
+    );
+    let mut sorted = listed.clone();
+    sorted.sort();
+    let mut expected: Vec<String> = PER_BUILD_SECRETS.iter().map(|p| (*p).to_owned()).collect();
+    expected.sort();
+    assert_eq!(
+        sorted, expected,
+        "{PORTAL_EXCEPTIONS} does not name exactly the four per-build secret files"
+    );
+}
+
+#[test]
+fn deploy_rebuilds_the_portal_uncached_and_compares_it_with_the_committed_script_and_list() {
+    // The script's tests prove nothing about a step that does not run it,
+    // or runs it on a build that is not the portal's recipe.
+    let workflow = read(DEPLOY);
+    let step = step_text(
+        &workflow,
+        "a second build of the portal differs only in its per-build secrets",
+    );
+    for needle in [
+        "if: steps.build.outcome == 'success' && matrix.binary == 'qip-portal' && steps.build.outputs.where == 'runner'",
+        "--no-cache",
+        "--build-arg \"SOURCE_DATE_EPOCH=${{ steps.build.outputs.epoch }}\"",
+        "--file \"${{ matrix.dockerfile }}\"",
+        "\"${{ matrix.context }}\"",
+        "docker export \"$container\"",
+        "sudo bash .github/reproducibility/compare-image-trees.sh",
+        ".github/reproducibility/portal-exceptions.txt",
+        "\"$trees/first\" \"$trees/second\"",
+    ] {
+        assert!(
+            step.contains(needle),
+            "deploy.yml's portal comparison step no longer carries `{needle}`"
+        );
+    }
+    // The existing step no longer claims the portal is unmeasured.
+    assert!(
+        !workflow.contains("its reproducibility is recorded as open work"),
+        "deploy.yml still says the portal's reproducibility is unmeasured"
+    );
+    // And the epoch reaches `next build` inside the image, or the build id
+    // is random and the comparison fails on every page that names it.
+    let dockerfile = read(PORTAL_DOCKERFILE);
+    let declared = dockerfile
+        .find("\nARG SOURCE_DATE_EPOCH\n")
+        .unwrap_or_else(|| panic!("{PORTAL_DOCKERFILE} does not declare SOURCE_DATE_EPOCH"));
+    let builds = dockerfile
+        .find("\nRUN npm run build\n")
+        .unwrap_or_else(|| panic!("{PORTAL_DOCKERFILE} no longer runs `npm run build`"));
+    assert!(
+        declared < builds,
+        "{PORTAL_DOCKERFILE} declares SOURCE_DATE_EPOCH after `next build` has run"
+    );
+}
+
+#[test]
+fn two_portal_builds_differing_only_in_the_four_listed_secrets_are_admitted() {
+    let (scratch, first, second) = two_builds("admitted");
+    let (code, stderr) = compare(&first, &second);
+    assert_eq!(
+        code, 0,
+        "two builds differing only in the listed secrets were refused, so the check refuses \
+         every portal build: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn a_portal_build_differing_in_an_unlisted_file_is_refused_and_the_file_is_named() {
+    let (scratch, first, second) = two_builds("unlisted");
+    put(
+        &second,
+        "/app/portal/server.js",
+        "require('./.next/elsewhere');\n",
+    );
+    let (code, stderr) = compare(&first, &second);
+    assert_eq!(
+        code, 1,
+        "a build differing in server.js was not refused: {stderr}"
+    );
+    assert!(
+        stderr.contains("/app/portal/server.js differs between the two builds"),
+        "the refusal does not name the file that differed: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn a_listed_secret_file_missing_from_either_build_is_refused() {
+    for (which, missing) in [
+        ("first", "/app/portal/.next/server/preview-props.json"),
+        (
+            "second",
+            "/app/portal/.next/server/server-reference-manifest.js",
+        ),
+    ] {
+        let (scratch, first, second) = two_builds(&format!("missing-{which}"));
+        let tree = if which == "first" { &first } else { &second };
+        std::fs::remove_file(tree.join(missing.trim_start_matches('/')))
+            .unwrap_or_else(|error| panic!("cannot remove {missing}: {error}"));
+        let (code, stderr) = compare(&first, &second);
+        assert_eq!(
+            code, 1,
+            "{missing} gone from the {which} build was not refused: {stderr}"
+        );
+        assert!(
+            stderr.contains(&format!(
+                "listed exception {missing} is not a file in the {which} build"
+            )),
+            "the refusal does not name the listed file gone from the {which} build: {stderr}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+}
+
+#[test]
+fn a_file_present_in_only_one_portal_build_is_refused_and_named() {
+    let (scratch, first, second) = two_builds("extra");
+    put(&second, "/app/portal/.next/server/extra-chunk.js", "0\n");
+    let (code, stderr) = compare(&first, &second);
+    assert_eq!(
+        code, 1,
+        "a file only the second build holds was not refused: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "/app/portal/.next/server/extra-chunk.js is in the second build and missing from the first"
+        ),
+        "the refusal does not name the extra file: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}

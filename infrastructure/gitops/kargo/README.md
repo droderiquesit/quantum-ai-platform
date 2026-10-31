@@ -57,11 +57,15 @@ The build's `SOURCE_DATE_EPOCH` is the commit's timestamp
 `rewrite-timestamp=true` clamps every layer's file times to it; the
 Dockerfile refuses a build without it. For the four workspace binaries,
 `deploy.yml` builds the commit a second time with no cache and refuses to
-push unless both builds are the same image id. `qip-portal` is built with
-the same epoch but is **not** checked: Next.js stamps each build with a
-random build id unless `generateBuildId` is pinned, which `frontend/portal`
-does not do, so the check would fail every portal build for a known reason.
-That is open work, not a pass. The builds still run on GitHub-hosted
+push unless both builds are the same image id. `qip-portal` cannot pass
+that check: its `generateBuildId` follows the epoch, but every `next build`
+writes four fresh per-build secrets (the preview-mode keys and the Server
+Actions key). So `deploy.yml` rebuilds it with no cache, exports both
+images' filesystems and compares them file by file, excluding only the four
+paths `.github/reproducibility/portal-exceptions.txt` names, and refuses any
+other difference or a listed file gone (R12-CICD-10117). That runs on the
+runner path only; the private pool does not compare the portal. The
+builds still run on GitHub-hosted
 runners; a Cloud Build private pool (the other half of CICD-9097) is not
 built here.
 
