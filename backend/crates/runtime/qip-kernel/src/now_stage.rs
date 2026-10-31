@@ -107,6 +107,10 @@ pub struct NowInputs {
     pub macro_surprises: Vec<WorldReading>,
     /// Company features readable now, each with its instants.
     pub company_features: Vec<WorldReading>,
+    /// Each instrument's causal parents among the priced instruments, with
+    /// the signed transmission the causal graph holds (R12-WORLD-3078). The
+    /// causal estimator reads the parents' promoted beliefs through these.
+    pub causal_parents: BTreeMap<String, Vec<qip_world_model::now::CausalParent>>,
 }
 
 /// The pass, as the log keeps it. Compact by construction: deltas and
@@ -230,6 +234,7 @@ impl NowStage {
 
     /// One pass.
     pub fn run(&mut self, inputs: NowInputs, now: Timestamp) -> NowReview {
+        self.brain.set_causal_parents(inputs.causal_parents.clone());
         let mut refused = Vec::new();
         for reading in &inputs.company_features {
             if let Err(e) = self
@@ -861,6 +866,7 @@ mod tests {
             blind_spot_share: None,
             macro_surprises,
             company_features: Vec::new(),
+            causal_parents: BTreeMap::new(),
         }
     }
 
