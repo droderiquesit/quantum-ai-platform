@@ -1066,6 +1066,9 @@ pub struct Platform {
     /// The mandates whose subscription is in the log, by the operation id's
     /// mandate part, so a second funding of one mandate queues nothing.
     subscribed_mandates: BTreeSet<String>,
+    /// Physical-inventory operations queued from the commerce plane, for the
+    /// sequence each carries (R12-COMMERCE-5096).
+    commerce_inventory_operations: u64,
     /// Fills declined for want of a ledger record, bounded like the declined
     /// queue and cleared by nobody: the list is the evidence a person works
     /// from.
@@ -6445,6 +6448,7 @@ impl Platform {
             capital_grant_fundings: BTreeMap::new(),
             capital_grant_operations: 0,
             subscribed_mandates: BTreeSet::new(),
+            commerce_inventory_operations: 0,
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
@@ -7978,6 +7982,57 @@ impl Platform {
             now,
         )?;
         self.subscribe_mandate(user, currency, amount, now)
+    }
+
+    /// Queue each physical movement the commerce plane recorded as a
+    /// `PhysicalInventory` operation for the desk ledger (R12-COMMERCE-5096).
+    ///
+    /// The commerce ledger is event-sourced and replayable on its own, and
+    /// until this it was a ledger nothing else could see: its units, their
+    /// location and their sale were invisible to the platform's books. Each
+    /// receipt, sale and return now books one unit between the venue or
+    /// buyer and the warehouse, keyed on the unit and the stage, so the desk
+    /// ledger's inventory account at the warehouse replays to the units the
+    /// commerce ledger holds there. A movement the contract refuses is
+    /// reported and skipped, as a mandate subscription's is.
+    pub(crate) fn queue_inventory_moves(
+        &mut self,
+        moves: Vec<crate::commerce_research::InventoryMove>,
+        now: Timestamp,
+    ) -> Vec<String> {
+        use qip_contracts::ledger_operation::{LedgerOperationFields, OperationKind};
+        let mut problems = Vec::new();
+        let chain = self.desk_ledger.chain().to_string();
+        for movement in moves {
+            let sequence = self.commerce_inventory_operations + 1;
+            let built = qip_contracts::validated::Validated::new(LedgerOperationFields {
+                schema_version: 1,
+                operation_id: format!("{chain}:commerce-{}:{}", movement.stage, movement.unit),
+                origin: chain.clone(),
+                sequence,
+                recorded_at: now,
+                settlement: qip_contracts::ledger::Settlement::Simulated,
+                kind: OperationKind::PhysicalInventory {
+                    from: movement.from,
+                    to: movement.to,
+                    unit: movement.sku,
+                    amount: Decimal::ONE,
+                },
+            });
+            match built {
+                Ok(operation) => {
+                    self.commerce_inventory_operations = sequence;
+                    self.desk_operations.push(operation);
+                }
+                Err(error) => problems.push(format!(
+                    "commerce unit {} {} was not booked at the ledger: {}",
+                    movement.unit,
+                    movement.stage,
+                    error.message()
+                )),
+            }
+        }
+        problems
     }
 
     /// Queue the ledger's record that this user's mandate subscribed capital

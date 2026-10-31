@@ -36,6 +36,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use qip_contracts::governance::Usage;
+use qip_contracts::ledger_operation::InventoryEnd;
 use qip_core::error::{Error, Result};
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, Duration, Timestamp};
@@ -60,6 +61,10 @@ pub const MAX_QUEUED_CANDIDATES: usize = 16;
 
 /// The most candidates one SIMULATE pass assesses.
 pub const CANDIDATES_PER_PASS: usize = 4;
+
+/// The buyer every paper sale is made to: the simulated marketplace has no
+/// buyer of its own to name.
+const PAPER_BUYER: &str = "paper-buyer";
 
 /// The most units one purchase receives into the ledger.
 pub const MAX_UNITS_PER_PURCHASE: u32 = 50;
@@ -334,6 +339,28 @@ pub struct PaperPurchase {
     pub units: Vec<String>,
 }
 
+/// One unit's physical movement, for the platform to book at the ledger as
+/// a [`qip_contracts::ledger_operation::OperationKind::PhysicalInventory`]
+/// operation (R12-COMMERCE-5096): received from the venue it was bought at
+/// into the warehouse, sold out of the warehouse to the buyer, returned by
+/// the buyer into the warehouse. One unit each, because the commerce ledger
+/// holds units one record each.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InventoryMove {
+    /// The commerce ledger's unit id; the operation is keyed on it.
+    pub unit: String,
+    /// What moved, as the ledger books it: the product's SKU.
+    pub sku: String,
+    /// `received`, `sold` or `returned`, for the operation id.
+    pub stage: &'static str,
+    pub from: qip_contracts::ledger_operation::InventoryEnd,
+    pub to: qip_contracts::ledger_operation::InventoryEnd,
+}
+
+/// Moves a plane holds undrained before it refuses to record more: twice
+/// the units it may hold, a receipt and a sale each.
+const MAX_PENDING_MOVES: usize = MAX_LISTED_UNITS * 2;
+
 /// A unit listed or repriced, with where and at what.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PricedUnit {
@@ -398,6 +425,9 @@ pub struct CommerceResearch {
     logistics: Option<LogisticsPlan>,
     day: u32,
     purchases: u32,
+    /// Physical movements not yet drained into the platform's ledger
+    /// operations, bounded by [`MAX_PENDING_MOVES`].
+    inventory_moves: Vec<InventoryMove>,
     cycles: Vec<CycleEvent>,
     /// Sales settled and buyer returns taken, for the plan's return rate.
     sales: i64,
@@ -503,6 +533,7 @@ impl CommerceResearch {
             logistics: Some(logistics),
             day: 0,
             purchases: 0,
+            inventory_moves: Vec::new(),
             cycles: Vec::new(),
             sales: 0,
             returns_taken: 0,
@@ -729,6 +760,18 @@ impl CommerceResearch {
                 cost_basis,
                 owner: self.plan.owner.clone(),
             })?;
+            self.record_move(
+                run,
+                &unit,
+                &candidate.product,
+                "received",
+                InventoryEnd::Counterparty {
+                    counterparty: candidate.venue.clone(),
+                },
+                InventoryEnd::Location {
+                    location: logistics.warehouse.clone(),
+                },
+            );
             self.attributes.insert(
                 unit.clone(),
                 self.unit_attributes(&unit, candidate, &logistics)?,
@@ -873,9 +916,40 @@ impl CommerceResearch {
             if elapsed >= held.days_to_sale {
                 let sale = format!("sale-{unit}");
                 self.plane
-                    .sell(&sale, &unit, "paper-buyer", listed.price, None)?;
+                    .sell(&sale, &unit, PAPER_BUYER, listed.price, None)?;
                 self.plane.settle(&sale)?;
+                let warehouse = self
+                    .logistics
+                    .as_ref()
+                    .map(|plan| plan.warehouse.clone())
+                    .ok_or_else(|| Error::invalid("the logistics plan is missing"))?;
+                self.record_move(
+                    run,
+                    &unit,
+                    &held.sku,
+                    "sold",
+                    InventoryEnd::Location {
+                        location: warehouse.clone(),
+                    },
+                    InventoryEnd::Counterparty {
+                        counterparty: PAPER_BUYER.to_string(),
+                    },
+                );
                 let returned = self.take_return_owed(&sale)?;
+                if returned {
+                    self.record_move(
+                        run,
+                        &unit,
+                        &held.sku,
+                        "returned",
+                        InventoryEnd::Counterparty {
+                            counterparty: PAPER_BUYER.to_string(),
+                        },
+                        InventoryEnd::Location {
+                            location: warehouse,
+                        },
+                    );
+                }
                 self.refresh_attributes(&unit)?;
                 let settlement = self
                     .plane
@@ -942,6 +1016,39 @@ impl CommerceResearch {
             .return_unit(sale, Condition::OpenBox, &warehouse, &self.plan.owner)?;
         self.returns_taken = self.returns_taken.saturating_add(1);
         Ok(true)
+    }
+
+    /// Hold one physical movement for the platform's ledger, or say why it
+    /// was not held: past [`MAX_PENDING_MOVES`] a move is refused and named
+    /// on the run rather than evicting one the ledger has not yet booked.
+    fn record_move(
+        &mut self,
+        run: &mut CommerceSimulated,
+        unit: &str,
+        sku: &str,
+        stage: &'static str,
+        from: InventoryEnd,
+        to: InventoryEnd,
+    ) {
+        if self.inventory_moves.len() >= MAX_PENDING_MOVES {
+            run.problems.push(format!(
+                "unit {unit} {stage}: {MAX_PENDING_MOVES} inventory movements are already \
+                 waiting for the ledger, so this one is not booked there"
+            ));
+            return;
+        }
+        self.inventory_moves.push(InventoryMove {
+            unit: unit.to_string(),
+            sku: sku.to_string(),
+            stage,
+            from,
+            to,
+        });
+    }
+
+    /// The physical movements recorded since the last drain, oldest first.
+    pub fn take_inventory_moves(&mut self) -> Vec<InventoryMove> {
+        std::mem::take(&mut self.inventory_moves)
     }
 
     fn plane_apply(&mut self, event: LedgerEvent) -> Result<()> {
