@@ -234,7 +234,7 @@
     "verification": "cargo test -p qip-mesh; new qip-edge-node two-node test",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31, second pass (IMPLEMENT): The leg bound is proven where it is enforced, and the two-cell exchange is proven at the node, now. Handed to lane L5b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-QUANT-1011",
@@ -295,7 +295,7 @@
       "backend/crates/libs/qip-contracts/tests/ambient.rs:879 allocation tests",
       "backend/crates/services/qip-cost-router/src/router.rs:43 RoutingPolicy (model tiers)"
     ],
-    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. Eligible work is routed only to compute we have, and GPU and TPU are recorded as declined with the reason. I am not funding an accelerator so that the four-way placement can be shown (decision 5). The row stays PARTIAL until an ADR argues a measured need and a monthly ceiling. Closes on: No build now. Correct the evidence line to ambient.rs:1107 and start the gap with this ruling. Once an accelerator ADR states a measured need and a monthly ceiling, route ComputeAllocation through the optimisation router's Substrate verdicts. Test: a_job_lands_only_on_an_eligible_resource_type_with_its_reason_and_an_ineligible_type_is_refused. Mutation: admit an ineligible type and the test fails. Earlier: Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -306,7 +306,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "XL",
-    "notes": "infrastructure/environments/dev/terraform.tfvars:285 enable_vertex_ai = false ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: A hardware router with real GPU/TPU/QPU backends; Vertex AI is disabled (enable_vertex_ai = false)."
+    "notes": "infrastructure/environments/dev/terraform.tfvars:285 enable_vertex_ai = false ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: A hardware router with real GPU/TPU/QPU backends; Vertex AI is disabled (enable_vertex_ai = false). Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Eligible work is routed only to compute we have, and GPU and TPU are recorded as declined with the reason. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXPAND-1014",
@@ -418,7 +418,7 @@
       "backend/crates/services/qip-mesh/src/peer.rs:314 PeerMessage",
       "backend/crates/apps/qip-edge-node/src/mesh.rs:317 exchange with centre only"
     ],
-    "gap": "Corrected 2026-10-24. The node spawns the peer mesh when QIP_PEER_MESH_LISTEN / QIP_PEER_MESH_PEERS are set and announces that it coordinates with no other cell directly when they are unset; a committed deployment cannot set them yet because a peer is another execution node: execution_nodes = {} in test, stage and prod, and dev declares one node (newyork-1) with execution_nodes_enabled = false, so there is no peer address to name and no peer workload certificate to admit. manifest_wiring.rs::THE_PEER_MESH_HAS_NO_DEPLOYED_PEER records exactly this and must change together with the first two-node deployment. Making the mesh default-on would invent a peer, so it is not done.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence, two deployed execution nodes exchanging a bounded edge-state frame, after a priced ADR funds the second node. The peer mesh stays off until a committed environment has a real peer: a second execution node is billed and unpriced, decision 5 does not buy it before dev runs, and a default-on mesh would invent a peer. The bounded frame exchange is proven at library level (libs/qip-peer src/lib.rs PeerMessage, edge/qip-peer-link tests/peer_mesh.rs). Ruling cited manifest_wiring.rs::THE_PEER_MESH_HAS_NO_DEPLOYED_PEER, not found on 2026-10-31: nothing in qip-acceptance pins an environment's peer_mesh to null. infrastructure.rs's module guard keeps the peer-mesh egress rule absent unless a mesh is declared, and it stays unchanged when the owner sets peer_mesh on both nodes in one environment's tfvars (protected). Closes on: the first execution node deployed, a priced ADR funding a second, peer_mesh set on both by the owner, and two deployed nodes exchanging a bounded frame and refusing an over-bound one. (Skeptic's correction; the decider had told the owner to update the infrastructure.rs pin in the same change.) Earlier: Corrected 2026-10-24. The node spawns the peer mesh when QIP_PEER_MESH_LISTEN / QIP_PEER_MESH_PEERS are set and announces that it coordinates with no other cell directly when they are unset; a committed deployment cannot set them yet because a peer is another execution node: execution_nodes = {} in test, stage and prod, and dev declares one node (newyork-1) with execution_nodes_enabled = false, so there is no peer address to name and no peer workload certificate to admit. manifest_wiring.rs::THE_PEER_MESH_HAS_NO_DEPLOYED_PEER records exactly this and must change together with the first two-node deployment. Making the mesh default-on would invent a peer, so it is not done.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -431,7 +431,7 @@
     "verification": "cargo test -p qip-mesh",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). 2026-10-24 lane N3-MODEL-EDGE-INFRA: gap restated with the deployment facts (grep -rn execution_nodes infrastructure/environments/*/terraform.tfvars); no code changed. Held PARTIAL on deployment evidence."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). 2026-10-24 lane N3-MODEL-EDGE-INFRA: gap restated with the deployment facts (grep -rn execution_nodes infrastructure/environments/*/terraform.tfvars); no code changed. Held PARTIAL on deployment evidence. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The peer mesh stays off until a committed environment has a real deployed peer; per the skeptic manifest_wiring.rs::THE_PEER_MESH_HAS_NO_DEPLOYED_PEER is not found, nothing in qip-acceptance pins an environment's peer_mesh to null, and infrastructure.rs's peer-mesh egress guard stays unchanged when the owner sets peer_mesh. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-QUANT-1019",
@@ -778,7 +778,7 @@
       "backend/crates/apps/qip-fastbrain/src/node.rs:131 poll hook calls platform.reference_fetch",
       "backend/crates/apps/qip-api/src/routes.rs:2230 and backend/crates/apps/qip-deepbrain/src/connectors.rs:239 same hook"
     ],
-    "gap": "2026-10-24: The constructor, the event-log round trip and both mutations are sound, but no committed environment configures a connector, so no deployed process fetches an external source and none persists an entitlement or geography. Closing: a committed environment enables a connector so a deployed process records references, or the row is narrowed to the library constructor.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The library half is done and stays tested: every connector door fills entitlement and geography, and the event log keeps both. I do not narrow the row to the constructor, because that would pass it by restating it. It stays PARTIAL until a deployed process records a fetched reference, and the deep brain's cognition zone is not given internet egress to get one. Closes on: Rewrite the gap: 'Library half met (Acquisition::of_admission and acquisition_manifest.rs). Open only on deployment: no committed environment runs a connector arm. The fetch path is ADR 0144's scout (R12-DATA-8112), placed where a reviewed information-source egress route exists; the cognition zone gets none.' Drop the NAT/decision 5 premise from the reason. Close it when a deployed scout or arm records a DataReferenceRecorded whose entitlement and geography are read back from the deployed log. Earlier: 2026-10-24: The constructor, the event-log round trip and both mutations are sound, but no committed environment configures a connector, so no deployed process fetches an external source and none persists an entitlement or geography. Closing: a committed environment enables a connector so a deployed process records references, or the row is narrowed to the library constructor.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -789,7 +789,7 @@
     "verification": "cargo test -p qip-kernel --test references",
     "work_item": "",
     "size": "S",
-    "notes": "The test every_data_reference_carries_and_exposes_etag_cursor_entitlement_geography_expiry_and_re_fetch_instructions asserts only that the fields are None; it would pass with them never populated. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Moved PARTIAL->COMPLETE: populated from the admission on every connector fetch in three binaries; test asserts the values and round-trip. Ran acquisition_manifest: 6 passed. AUDIT-4: 2026-10-24 regraded, references are built only from connector digests and no committed environment enables a connector, so no deployed process persists an entitlement or geography."
+    "notes": "The test every_data_reference_carries_and_exposes_etag_cursor_entitlement_geography_expiry_and_re_fetch_instructions asserts only that the fields are None; it would pass with them never populated. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Moved PARTIAL->COMPLETE: populated from the admission on every connector fetch in three binaries; test asserts the values and round-trip. Ran acquisition_manifest: 6 passed. AUDIT-4: 2026-10-24 regraded, references are built only from connector digests and no committed environment enables a connector, so no deployed process persists an entitlement or geography. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The library half is done and stays tested: every connector door fills entitlement and geography, and the event log keeps both. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-1034",
@@ -884,7 +884,7 @@
     "verification": "cargo test -p qip-kernel --test references",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 (lane T8-RESIDUAL): graded DEPLOY_DEPENDENT; gap corrected, no code change."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 (lane T8-RESIDUAL): graded DEPLOY_DEPENDENT; gap corrected, no code change. Owner ruling 2026-10-31, second pass (IMPLEMENT): A revision a re-fetch finds is recorded at once, through record_reference's revision branch called from ConnectorArm::refetch for every Revised finding; per the skeptic the second part, re-fetching a learning window before a fit, is dropped because no binary builds a connector-backed historical window, and the row stays PARTIAL. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EVID-1038",
@@ -1164,7 +1164,7 @@
     "verification": "cargo test -p qip-acceptance --test temporal_correctness --test truth_loop; cargo test -p qip-training",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (IMPLEMENT): I do not grant the tick desk qip-simulated-depth. Simulator output is not a training source (R12-MODEL-4007, R12-MODEL-4004), and this desk trains fill-probability and volatility models. Handed to lane L3b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-TICK-1050",
@@ -1185,7 +1185,7 @@
     "verification": "cargo test -p qip-acceptance --test temporal_correctness --test truth_loop; cargo test -p qip-training",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (IMPLEMENT): As on R12-TICK-1049: no simulated depth is granted to the tick desk, and it waits for a market dataset admitted under ADR 0157. Handed to lane L3b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-TICK-1051",
@@ -1207,7 +1207,7 @@
     "verification": "cargo test -p qip-acceptance --test temporal_correctness --test truth_loop; cargo test -p qip-training",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (IMPLEMENT): As on R12-TICK-1049: qip-simulated-depth is not granted, and the tick desk's entitlement waits for a licence record under ADR 0157. Handed to lane L3b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-TICK-1052",
@@ -1241,7 +1241,7 @@
       "backend/crates/libs/qip-financial/tests/valuation.rs:138 input knowable after valuation instant refused",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::round"
     ],
-    "gap": "None for the requirement; not deployed (desk off unless configured).",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. The guard stands as built, and the desk stays off. I do not grant it simulated depth (my ruling on R12-TICK-1049), so the row waits for a market dataset admitted under an ADR 0157 licence record. Its verification names two crates that do not hold the guard, and that text is corrected now. Closes on: Replace the verification with 'cargo test -p qip-deepbrain --test tick_desk', and cite tests/tick_desk.rs:549 and learning.rs::audit_features_as_of in the evidence. The gap opens with: a market dataset admitted under an ADR 0157 licence record, and the desk switched on over it in a deployment. Nothing is coded before that. Earlier: None for the requirement; not deployed (desk off unless configured).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1252,7 +1252,7 @@
     "verification": "cargo test -p qip-simulation-engine; cargo test -p qip-execution-engine",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): The guard stands as built, and the desk stays off. I do not grant it simulated depth (my ruling on R12-TICK-1049), so the row waits for a market dataset admitted under an ADR 0157 licence record. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-TICK-1054",
@@ -1643,7 +1643,7 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 section 13: gap restated, PARTIAL kept; no code. Counting requotes would convict ordinary market making, so the measure needs its own bound."
+    "notes": "2026-10-24 ADR 0155 section 13: gap restated, PARTIAL kept; no code. Counting requotes would convict ordinary market making, so the measure needs its own bound. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Requote layering is refused at the cell and at the desk, beside the cancel-before-fill gate and never in its place. Handed to lane L5 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Requote layering is refused beside the cancel-before-fill gate, at the cell and the desk, under that gate's own 60-second, four-withdrawal, three-quarters bound, with an opposite-side fill at any venue of the instrument counted.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-AGENCY-1069",
@@ -1725,7 +1725,7 @@
     "evidence": [
       "backend/crates/services/qip-mesh/src/peer.rs:314 PeerMessage"
     ],
-    "gap": "Peer link on by default or set by committed deployment.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The peer link is not switched on by default, because a default-on mesh names a peer that does not exist. A committed deployment sets it only when a priced record funds a second execution node, which decision 5 does not do before dev runs. The authenticated exchange and the refusal of an unauthenticated peer are proven over mutual TLS at library level, and the row stays PARTIAL. Closes on: No code. Evidence moves from qip-mesh/src/peer.rs:314, which no longer exists, to qip-peer-link tests/mtls.rs and tests/peer_mesh.rs. Trigger: the first execution node is deployed, then a priced ADR funds a second. The owner sets peer_mesh on both dev node entries in tfvars (protected) so the startup template renders QIP_PEER_MESH_*. Then record on the deployment a peer frame exchanged and an unauthenticated peer refused. Earlier: Peer link on by default or set by committed deployment.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1736,7 +1736,7 @@
     "verification": "cargo test -p qip-acceptance --test downward_signed_path; cargo test -p qip-mesh",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The peer link is not switched on by default, because a default-on mesh names a peer that does not exist. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-MESH-1073",
@@ -2499,7 +2499,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L04 (not closed): the closure's 'commit the cadence' half would select a desk with nothing to read until an operator names a connector in a tfvars file, which a lane may not edit. The incumbent the desk scores against now spans every held arm (R12-DATA-2022)."
+    "notes": "Gap corrected 2026-10-18 by lane L04 (not closed): the closure's 'commit the cadence' half would select a desk with nothing to read until an operator names a connector in a tfvars file, which a lane may not edit. The incumbent the desk scores against now spans every held arm (R12-DATA-2022). Owner ruling 2026-10-31, second pass (IMPLEMENT): Add the assertion that a source-alpha desk switched off journals no round where the default desk journals one, reading the off cadence through source_alpha_every with an explicit 0; per the skeptic the mutation maps an explicit 0 to DEFAULT_SOURCE_ALPHA_EVERY, because removing the with_source_alpha guard would survive. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-1106",
@@ -2542,7 +2542,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. Owner ruling 2026-10-31, second pass (IMPLEMENT): The provenance check is proven on the deep brain's arm path; per the skeptic the test shows two arms polled into one Platform leaving each claim linked to its document and source in the world provenance graph, and an impossible-timeline body held inadmissible, because an honest arm's last_withheld cannot rise. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EVID-1108",
@@ -2584,7 +2584,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. Owner ruling 2026-10-31, second pass (IMPLEMENT): Contradiction handling is proven on the deep brain's arm path; per the skeptic a contest is recorded, not withheld: two arms disagreeing on one print leave contested == 1 on the arm's last_evidence(), both claims carry the Contradicts link and both are handed up, and withholding a contested claim would need its own ADR. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EVID-1110",
@@ -2605,7 +2605,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. Owner ruling 2026-10-31, second pass (IMPLEMENT): Source authenticity is proven on the deep brain's arm path: a body whose declared digest does not match is marked spoofed and its record is never handed up. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EVID-1111",
@@ -2625,7 +2625,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. Owner ruling 2026-10-31, second pass (IMPLEMENT): Location consistency is proven on the deep brain's arm path over the NWS station source, and the gap's 'manifest region only' is corrected; per the skeptic the held record's geographic_consistency reads ContradicsLocation and nothing is withheld, because withholding would be a new refusal needing its own ADR. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EVID-1112",
@@ -2647,7 +2647,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. Owner ruling 2026-10-31, second pass (IMPLEMENT): Adversarial-source detection is proven where the deep brain senses; per the skeptic three arms with distinct source ids (min_coordinated_sources is 3) yield a CoordinatedManipulation finding naming all three and a research data gap, and no withholding is asserted, because poisoning detection is a read-only scan. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXPAND-1113",
@@ -3919,12 +3919,17 @@
   {
     "id": "R12-EXEC-1168",
     "status": "PARTIAL",
-    "current": "Quote loop review in the cycle; edge quote budget and requote seams; adverse selection not evidenced.",
+    "current": "Every scope item but continuous quoting maps to built code reached through quote_loop::review in the ACT stage: inventory skew, the adverse-selection bar proxy and toxic-flow withholding in qip-execution-engine src/quoting.rs (module table at :45-51), dynamic spread as SpreadTerms (:439), and portfolio-aware quoting as CorrelatedExposure (:351); rate control is qip-edge src/quoting.rs's QuoteBudget, reached through Cell::spend_requote. ContinuousQuoting stays refused at Cell::send: qip-edge-node src/lib.rs:231-250 enables only OrderTaking and Routing under the paper ModeSupport, and qip-kernel src/quote_loop.rs keeps no path to an order. Earlier text: Quote loop review in the cycle; edge quote budget and requote seams; adverse selection not evidenced.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/quote_loop.rs:309",
-      "backend/crates/tests/qip-acceptance/tests/quote_loop.rs"
+      "backend/crates/tests/qip-acceptance/tests/quote_loop.rs",
+      "backend/crates/tests/qip-acceptance/tests/quote_loop.rs:121 no_production_line_of_the_quoting_arithmetic_can_reach_a_broker_an_order_or_a_venue, :158 the_kernels_quote_loop_composition_reaches_no_broker_and_builds_no_order, :185 a_real_platform_pass_prices_a_quote_and_creates_no_order_and_no_fill",
+      "backend/crates/tests/qip-acceptance/tests/quote_loop.rs:326 the_act_stage_carries_the_quote_loop_so_the_wiring_and_not_only_the_module_is_proven",
+      "backend/crates/services/qip-execution-engine/src/quoting.rs SpreadTerms :439, CorrelatedExposure :351",
+      "backend/crates/edge/qip-edge/src/quoting.rs QuoteBudget; backend/crates/edge/qip-edge/src/cell.rs Cell::spend_requote, Cell::record_replacement",
+      "backend/crates/apps/qip-edge-node/src/lib.rs:231-250 ModeGate enables only OrderTaking and Routing"
     ],
-    "gap": "Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
+    "gap": "2026-10-31 owner ruling, second pass (REGRADE_TEXT): O15 declined 2026-10-31 under the delegation. ContinuousQuoting stays refused at Cell::send (qip-edge-node lib.rs:231-250), and quote_loop.rs keeps no path to an order; lifting either would remove a refusal and rewrite the acceptance tests that pin the boundary, which no delegation may do. The conduct gate, which counts every unfilled requote (Cell::record_replacement), would also refuse a continuous quoter within its first minute under ConductPolicy::default. O15 reopens only by the owner's own ADR, which must also say how the conduct gate's requote count treats a quoter without loosening it. The row stays PARTIAL on continuous quoting. Earlier: Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3935,7 +3940,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: Complete the remaining scope items and integrate them."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: Complete the remaining scope items and integrate them. Owner ruling 2026-10-31, second pass (REGRADE_TEXT): O15 is declined. Quoting stays refused at Cell::send, and quote_loop keeps no path to an order. Corrected on 2026-10-31: current rewritten to map each scope item to its built code (earlier text kept at its end); evidence gains the four acceptance tests, the quoting types and the ModeGate lines; the ruling also asks that O15 be cleared from blocked_by, which this pass leaves to the grader as decision 10 left blocked_by; status unchanged. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXEC-1169",
@@ -4550,7 +4555,7 @@
       "infrastructure/environments/dev/terraform.tfvars:234",
       "infrastructure/terraform/main.tf:676 module execution_node"
     ],
-    "gap": "Provision nodes in three regions.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. ADR 0035 stands: one execution node, newyork-1 in us-east4, in shadow mode. No European or APAC node is declared or funded. The NCC hubs stay parked (decision 4). The record that supersedes ADR 0035 is written from that node's measurements with a named monthly ceiling, and not before. The row keeps its status until three nodes in three regions run passes in a game day. Closes on: No build now. Start the gap with this ruling. After dev's one node runs in shadow and records its RTT and residency figures, an ADR superseding ADR 0035 names three regions and a monthly ceiling (R12-GCP-8035). The owner then declares them in tfvars, which is a protected path, and a plan shows them. The row closes on a three-region game day of passes, with shadow_mode true throughout. Earlier: Provision nodes in three regions.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4561,7 +4566,7 @@
     "verification": "terraform plan with execution_nodes set; game day",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): ADR 0035 stands: one execution node, newyork-1 in us-east4, in shadow mode. No European or APAC node is declared or funded. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-LEDGER-1197",
