@@ -768,17 +768,6 @@ pub fn run_with(
             // poll that referenced it.
             outcome.refetch = engine.maybe_refetch(platform, cycles, now)?;
             outcome.source_alpha = engine.maybe_score_sources(cycles, now);
-            // The source scores of this cycle, on the same journal
-            // (R12-EXPAND-6027): a score printed on a cycle line and written
-            // nowhere is a figure nobody can check against its window.
-            if let (Some(round), Some(journal)) =
-                (outcome.source_alpha.as_ref(), loops.ambient.as_deref_mut())
-                && let Err(error) = journal.record_source_scores(cycles, round, now)
-            {
-                outcome
-                    .side_failures
-                    .push(format!("source-score journal: {}", error.message()));
-            }
         }
         // Research after discovery, so a source catalogued this cycle is
         // licensed for this sweep's admissions. The bounds are the discovery
