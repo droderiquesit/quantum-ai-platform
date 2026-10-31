@@ -1007,9 +1007,12 @@
     "status": "MISSING",
     "current": "No company/fundamental federation member; NOW Brain holds company-scope state from fundamentals, not registered in the federation.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9521 fundamental metric surprise"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9521 fundamental metric surprise",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs COMPANY, REQUIRED_FAMILIES, InstrumentView.fundamental_surprise",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::fundamental_surprises",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::tests::a_fundamental_surprise_on_an_issuer_gives_the_company_member_a_view_and_its_absence_names_the_family_uncovered"
     ],
-    "gap": "Build and register.",
+    "gap": "2026-10-31 (L4, commit 9efe8b29, skeptic REFUTED). Closed: a company/fundamental federation member (COMPANY) is declared, its family is in REQUIRED_FAMILIES, and it gives a view on an instrument from its issuer's latest reported surprise (Platform::fundamental_surprises, joined through RelationshipKind::Issues). Still open: no production code writes an Issues fact, so on a shipped binary the join finds nothing and the member is always silent; the population check counts the family covered while its member is live but silent, though the requirement says it produces state; the member reads one quantity, the latest surprise, and does not model financials as state, management actions, credit or capital structure, and no ADR declines those clauses (ADR 0157 bills credit and capital-structure series); the new test feeds fundamental_surprise directly, so the graph join is untested.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1020,7 +1023,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 (L4), commit 9efe8b29: mutant (drop the company view) killed, restored sha256-identical. Five existing tests updated for the member count and silent/uncovered lists, none weakened (skeptic agreed). Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-WORLD-3045",
