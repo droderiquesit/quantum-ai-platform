@@ -151,6 +151,14 @@ impl RecordedSession {
         Self::from_records(&writer::records(log)?)
     }
 
+    /// Read a session back off the spool directory a node printed at
+    /// start-up, through [`with_spool_copy`]: the directory is copied and the
+    /// copy opened, so a torn tail the writer was mid-way through is
+    /// recovered on the copy and the node's own spool is left as it was.
+    pub fn from_spool_directory(directory: &Path) -> Result<Self> {
+        with_spool_copy(directory, Self::from_spool)
+    }
+
     /// Read a session back off the fabric's indexed archive of the stream the
     /// node's spool was relayed to — the source once the local spool has been
     /// retained away (FABRIC-8079), and the "GCS" of the requirement when the
@@ -1019,31 +1027,45 @@ pub fn run(arguments: &[String]) -> Result<Vec<String>> {
 /// documentation for why the directory must exist and must not be a running
 /// node's.
 pub fn markers_in(directory: &Path) -> Result<Vec<PassMarker>> {
+    with_spool_copy(directory, |log| markers(&writer::records(log)?))
+}
+
+/// Open a copy of the spool at `directory` and hand it to `read`.
+///
+/// Opened on a copy, never in place: `SegmentLog::open` is the writer's open
+/// and truncates a torn tail, which on a running node's spool is the batch
+/// its writer is appending. The copy is the only thing recovery can touch,
+/// and it is removed on the way out whatever the read found. Both readers of
+/// a spool directory — the manifests and the re-drive — come through here, so
+/// neither can be the one that opens in place.
+pub fn with_spool_copy<T>(
+    directory: &Path,
+    read: impl FnOnce(&SegmentLog) -> Result<T>,
+) -> Result<T> {
     if !directory.is_dir() {
         return Err(Error::invalid(format!(
             "{} is not a spool directory; name the directory the node printed as its spool",
             directory.display()
         )));
     }
-    // Opened on a copy, never in place: `SegmentLog::open` is the writer's
-    // open and truncates a torn tail, which on a running node's spool is the
-    // batch its writer is appending. The copy is the only thing recovery can
-    // touch, and it is removed on the way out whatever the read found.
     static COPIES: AtomicU64 = AtomicU64::new(0);
+    // Named for this binary and this purpose, so the copy can collide with
+    // no spool a test or an operator names in the same temporary directory:
+    // a copy that landed on a live spool's path would be removed with it.
     let copy = std::env::temp_dir().join(format!(
-        "qip-replay-spool-{}-{}",
+        "qip-edge-node-replay-copy-{}-{}",
         std::process::id(),
         COPIES.fetch_add(1, Ordering::Relaxed)
     ));
     let _ = std::fs::remove_dir_all(&copy);
-    let read = copy_spool(directory, &copy).and_then(|()| {
+    let outcome = copy_spool(directory, &copy).and_then(|()| {
         // The log's clock only stamps segment rolls, and a read rolls nothing.
         let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(Timestamp::from_secs(0)));
         let log = SegmentLog::open(&copy, SegmentLogConfig::new(clock))?;
-        markers(&writer::records(&log)?)
+        read(&log)
     });
     let _ = std::fs::remove_dir_all(&copy);
-    read
+    outcome
 }
 
 /// Copy the spool's files and directories (its segments and its manifest

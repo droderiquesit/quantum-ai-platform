@@ -27,6 +27,7 @@ use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::Platform;
 use qip_market::bar::{Bar, Interval};
+use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market::quote::Tick;
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
@@ -2160,6 +2161,54 @@ fn one_allocation_yields_at_least_one_alternate_size_and_one_rejected_opportunit
     Ok(())
 }
 
+// --- admission: received before it happened (ADR 0132, R12-TICK-2053) -----
+
+/// The centre holds every sensed record to the one admission rule by the
+/// times the record carries: a tick captured before the instant it says it
+/// happened was knowable before it was true, so it reaches no series and is
+/// reported as a capture problem rather than absorbed. The same tick with
+/// its capture at or after its instant is absorbed. Mutation: drop the
+/// `Admission::check_order` arm in `Platform::absorb_records` and the
+/// contaminated tick is absorbed, moving the close feature.
+#[test]
+fn a_tick_captured_before_it_happened_is_refused_at_admission_and_reported() -> Result<()> {
+    let mut platform = platform()?;
+    let at = start().saturating_add(Duration::from_secs(60));
+
+    let absorbed = platform.observe(vec![late_tick("AAA", at, Duration::from_secs(-5), "123")]);
+    assert_eq!(
+        absorbed, 0,
+        "a tick received before it happened was absorbed"
+    );
+    let report = platform.run_cycle(at);
+    let problems: Vec<&String> = report
+        .stages
+        .iter()
+        .flat_map(|stage| stage.problems.iter())
+        .collect();
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.contains("received before it happened")),
+        "the refusal was not reported as a capture problem: {problems:?}"
+    );
+
+    // The same tick, captured five seconds after it happened: absorbed.
+    let later = at.saturating_add(Duration::from_secs(120));
+    let absorbed = platform.observe(vec![late_tick("AAA", later, Duration::from_secs(5), "123")]);
+    assert_eq!(absorbed, 1, "an ordinary late tick was refused");
+    let report = platform.run_cycle(later.saturating_add(Duration::from_secs(10)));
+    assert!(
+        !report
+            .stages
+            .iter()
+            .flat_map(|stage| stage.problems.iter())
+            .any(|problem| problem.contains("received before it happened")),
+        "an ordinary tick was reported as received before it happened"
+    );
+    Ok(())
+}
+
 // --- publication delay and the decision-time read (R12-TICK-2087) ----------
 
 fn late_tick(symbol: &str, at: Timestamp, late_by: Duration, price: &str) -> SensedRecord {
@@ -2529,6 +2578,122 @@ fn a_resolved_prediction_updates_the_calibration_report() -> Result<()> {
     );
     Ok(())
 }
+
+// --- the historical universe (R12-TICK-2090) --------------------------------
+
+fn members_as_of(platform: &Platform, at: Timestamp) -> Vec<String> {
+    platform
+        .universe_history()
+        .members_as_of(at)
+        .iter()
+        .map(|listing| listing.object_id.as_str().to_string())
+        .collect()
+}
+
+/// R12-TICK-2090: the platform keeps the universe that existed. A delisting
+/// announced on the tape ends the name's membership at its ex-date and not
+/// before, so a backtest as of a date before the ex-date still holds it; a
+/// renaming opens a new symbol era at its ex-date; and a venue the platform
+/// withdraws on feasibility evidence is an outage in the history from the
+/// withdrawal on, which is what a backtest across that window reports.
+///
+/// Mutations: drop the `delist` call in `queue_corporate_action` and the
+/// membership after the ex-date still names BBB; drop the `open_outage` call
+/// in `withdraw_venue` and the outage query comes back empty.
+#[test]
+fn a_delisting_on_the_tape_ends_membership_at_its_ex_date_and_a_withdrawn_venue_is_an_outage()
+-> Result<()> {
+    let mut platform = platform()?;
+    let ex = start().saturating_add(Duration::from_days(3));
+    assert_eq!(
+        members_as_of(&platform, start()),
+        vec!["obj-AAA".to_string(), "obj-BBB".to_string()],
+        "the premise: every assembled instrument is listed from the assembly instant"
+    );
+
+    let absorbed = platform.observe(vec![
+        SensedRecord::CorporateAction(Box::new(CorporateAction {
+            object_id: object("BBB"),
+            ex_date: ex,
+            record_date: None,
+            payment_date: None,
+            kind: CorporateActionKind::Delisting {
+                reason: "the product failed".to_string(),
+            },
+            announced_at: start(),
+        })),
+        SensedRecord::CorporateAction(Box::new(CorporateAction {
+            object_id: object("AAA"),
+            ex_date: ex,
+            record_date: None,
+            payment_date: None,
+            kind: CorporateActionKind::Renamed {
+                new_symbol: "AAX".to_string(),
+            },
+            announced_at: start(),
+        })),
+    ]);
+    assert_eq!(absorbed, 2, "the premise: both actions were absorbed");
+    assert_eq!(
+        members_as_of(&platform, ex.saturating_sub(Duration::from_secs(1))),
+        vec!["obj-AAA".to_string(), "obj-BBB".to_string()],
+        "a delisting announced early must not end membership before its ex-date"
+    );
+    assert_eq!(
+        members_as_of(&platform, ex),
+        vec!["obj-AAA".to_string()],
+        "the delisted name is still a member at its ex-date"
+    );
+    assert_eq!(
+        platform
+            .universe_history()
+            .resolve("AAX", ex)
+            .map(|id| id.as_str().to_string()),
+        Some("obj-AAA".to_string()),
+        "the new symbol does not resolve from its ex-date"
+    );
+    assert!(
+        platform
+            .universe_history()
+            .resolve("AAX", start())
+            .is_none(),
+        "the new symbol resolved before it existed"
+    );
+
+    // The venue outage: nothing is out until the desk venue is withdrawn.
+    assert!(
+        platform
+            .universe_history()
+            .outages_overlapping("simulated-venue", start(), Timestamp::MAX)
+            .is_empty(),
+        "the premise: no outage before the withdrawal"
+    );
+    withdraw_the_desk_venue(&mut platform)?;
+    let outages = platform.universe_history().outages_overlapping(
+        "simulated-venue",
+        start(),
+        start().saturating_add(Duration::from_secs(1)),
+    );
+    assert_eq!(
+        outages.len(),
+        1,
+        "the withdrawal did not open an outage: {outages:?}"
+    );
+    assert_eq!(outages[0].from, start());
+    assert_eq!(
+        outages[0].until,
+        Timestamp::MAX,
+        "an outage nobody has reinstated is open"
+    );
+    assert!(
+        outages[0].reason.contains("feasibility evidence"),
+        "{}",
+        outages[0].reason
+    );
+    Ok(())
+}
+
+// --- measured decision latency reaches the capacity probe (R12-TICK-2074) --
 
 /// The shortfall against the decision-time mark the SIMULATE stage's
 /// capacity probe reported, in basis points, and the latency it arrived

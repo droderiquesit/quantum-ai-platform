@@ -1266,13 +1266,16 @@
   {
     "id": "R12-TICK-2053",
     "status": "PARTIAL",
-    "current": "qip-contracts MarketMessage/MarketEvent is the canonical edge type (orders, levels, trades, status, auction updates); central ingestion uses SensedRecord variants (Bar, Quote, Trade, News, ...). Two canonical schemas coexist.",
+    "current": "ADR 0132's admission header exists as qip_contracts::admission::Admission (event time, receive time, normalized time, uncertainty, source hash, entitlement). MarketEvent::new builds its header through Admission::new, which refuses a negative uncertainty, a lapsed entitlement, an empty source hash and an event received before it happened beyond the uncertainty (Admission::check_order), and exposes it as MarketEvent::admission(). Admissible is implemented for MarketMessage (venue time, capture time) and for SensedRecord (ticks, quotes and trades carry both times; books, bars, corporate actions and news carry the event time; macro, fundamental, alternative and reference records carry none). Admitted<T>::admit refuses a payload whose own times disagree with its header. The kernel's absorb_records refuses a SensedRecord whose own event time follows its own receive time, at zero doubt, and reports it as a capture problem on the cycle report rather than storing it.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/market_event.rs",
-      "backend/crates/libs/qip-contracts/src/message.rs",
-      "backend/crates/services/qip-market-ingestion/src/adapter.rs SensedRecord"
+      "backend/crates/libs/qip-contracts/src/admission.rs Admission::new, Admission::check_order, Admissible, Admitted::admit",
+      "backend/crates/libs/qip-contracts/src/market_event.rs MarketEvent::new builds the header through Admission::new; MarketEvent::admission",
+      "backend/crates/services/qip-market-ingestion/src/adapter.rs impl Admissible for SensedRecord",
+      "backend/crates/runtime/qip-kernel/src/platform.rs absorb_records admission arm (Admission::check_order at Duration::ZERO, capture problem)",
+      "backend/crates/libs/qip-contracts/tests/admission.rs an_admission_whose_event_time_follows_its_receive_time_beyond_uncertainty_is_refused, a_record_whose_own_times_disagree_with_its_header_is_refused, a_market_event_is_admitted_through_the_one_constructor_and_yields_its_header",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_tick_captured_before_it_happened_is_refused_at_admission_and_reported"
     ],
-    "gap": "Decided by ADR 0132 (accepted 2026-10-18): One admission header (three times, uncertainty, source hash, entitlement) shared by MarketEvent and every SensedRecord; SourceManifest v2 is additive and v1 stays readable; ticks reach the fabric only as bounded per-pass feature digests. Code left: qip_contracts::admission::Admission and the Admitted wrappers for MarketMessage and SensedRecord, with refusal tests for disagreeing times.",
+    "gap": "2026-10-31: skeptic REFUTED on the COMPLETE bar: MarketEvent is not literally an Admitted<MarketMessage> (its header fields are filled from the Admission rather than the type holding one), SensedRecord carries no header or entitlement of its own and is checked only on its two own times, Admitted::admit has no production caller (putting it inside MarketEvent::new broke producers that stamp capture time and receive time from two clocks, and the deep brain's leak test needs a contaminated tick on the lake), ADR 0132's verification clause about typed variants is not addressed, and Deserialize bypasses every refusal. Remaining step: a SourceManifest-carried header on each SensedRecord admitted at the adapter seam, and MarketEvent as the Admitted wrapper once producers stamp one clock.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1280,10 +1283,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts --test admission; cargo test -p qip-kernel --test learning a_tick_captured_before",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Unify on one canonical market-event schema across edge and centre."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Unify on one canonical market-event schema across edge and centre. Lane L3b 2026-10-31: mutations, each fired and restored byte-for-byte: drop the order refusal in Admission::check_order; the admission test passes a tick received before it happened and fails. Drop the own-times comparison in Admitted::admit; the disagreeing-record test fails. Skip the kernel's admission arm; the learning test finds the forged tick stored and no capture problem. Fixtures adjusted rather than weakened: the market_event gap test's receive time moved 1 ns after its event (it stamped the event after receipt, which the header now refuses), and tick_desk's leak test forges the lake line after building an admitted event, because the forged line is what the replay exclusion exists for. Gates: cargo test -p qip-contracts 105+ passed across 27 binaries; qip-acceptance event_fabric_schema_lock 6 passed; qip-deepbrain tick_desk 10 passed; qip-kernel 67 binaries 1125 passed; qip-edge-node 48 binaries 320 passed with the 3 pre-existing fabric_envelope provenance failures fixed upstream at 61b7c247."
   },
   {
     "id": "R12-TICK-2054",
@@ -2170,19 +2173,19 @@
   {
     "id": "R12-TICK-2090",
     "status": "PARTIAL",
-    "current": "UniverseHistory keeps listing spans, symbol eras and venue outages with tests; corporate actions (delisting, rename) are modelled and journaled by the kernel. UniverseHistory has no caller outside its tests.",
+    "current": "The kernel holds a UniverseHistory (qip-financial history.rs) on its default path, written by two lanes merged 2026-10-31: Platform::new lists every assembled instrument from the assembly instant and note_listing moves a listing back to the first bar the platform sees dated before it (UniverseHistory::backdate_listing); queue_corporate_action ends a listing at the ex-date of every terminal action (CorporateAction::is_terminal: Delisting, Merger) and opens a new symbol era on Renamed, recorded once at queue time; withdraw_venue opens a venue outage (UniverseHistory::open_outage, until Timestamp::MAX) and reinstate_venue_at_seams closes it; a venue the log says was withdrawn before the process started is an open outage from assembly. Backtester::run_with_history (qip-simulation-engine backtest.rs) refuses an order for a name the history knows that was not a member at the rebalance instant, refuses an order at a venue the history holds out at that instant naming the outage, and reports every outage overlapping the run at the universe's venues in BacktestResult.outages; Backtester::run delegates with no history. EvolutionEngine::maybe_turn (qip-deepbrain) snapshots platform.universe_history() once per round before any candidate is judged and evaluate() backtests through run_with_history, so the deep brain's default search (node::run_with -> maybe_turn, every_cycles 4) judges against the history. Platform::universe_history() exposes it.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/history.rs:63,144",
-      "backend/crates/libs/qip-financial/tests/history.rs:36 a_universe_as_of_a_past_date_includes_an_instrument_delisted_afterwards",
-      "backend/crates/libs/qip-financial/tests/history.rs:69 a_replay_window_across_a_venue_outage_reports_the_outage",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:19350-19360 corporate action kinds",
-      "backend/crates/services/qip-simulation-engine/src/backtest.rs (Backtester::run_with_history, BacktestResult.outages)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs (universe_history, note_listing, apply_corporate_action delist/rename)",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs (maybe_turn snapshot, run_with_history)",
-      "backend/crates/services/qip-simulation-engine/tests/universe_history.rs a_backtest_over_a_past_date_includes_an_instrument_delisted_later_and_reports_the_outage",
-      "backend/crates/runtime/qip-kernel/tests/position_record.rs the_kernels_universe_history_keeps_a_delisted_instrument_for_the_dates_it_traded"
+      "backend/crates/libs/qip-financial/src/history.rs UniverseHistory::{list,backdate_listing,delist,rename,open_outage,close_outage,outages_overlapping,is_member_at}",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::{universe_history,note_listing,queue_corporate_action,withdraw_venue,reinstate_venue_at_seams} (grep -n 'universe_history' backend/crates/runtime/qip-kernel/src/platform.rs)",
+      "backend/crates/services/qip-simulation-engine/src/backtest.rs Backtester::run_with_history, run_inner (membership and outage refusals), BacktestResult::outages",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs EvolutionEngine::maybe_turn (universe_history snapshot), ::evaluate (run_with_history)",
+      "backend/crates/libs/qip-financial/tests/history.rs a_universe_as_of_a_past_date_includes_an_instrument_delisted_afterwards, a_replay_window_across_a_venue_outage_reports_the_outage, an_open_outage_overlaps_every_later_window_until_it_is_closed",
+      "backend/crates/services/qip-simulation-engine/tests/universe_history.rs and tests/simulation.rs a_backtest_over_a_past_date_includes_an_instrument_delisted_later_and_reports_the_outage",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs the_kernels_universe_history_keeps_a_delisted_instrument_for_the_dates_it_traded",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_delisting_on_the_tape_ends_membership_at_its_ex_date_and_a_withdrawn_venue_is_an_outage",
+      "backend/crates/apps/qip-deepbrain/tests/universe_history.rs an_evolution_round_judges_candidates_against_the_platforms_historical_universe"
     ],
-    "gap": "2026-10-30: skeptic REFUTED: the kernel keeps a universe history (listed at first bar, delist/rename dated from corporate actions) and the deep brain's default-path evolution backtests through Backtester::run_with_history, which refuses non-members and reports overlapping outages, but no shipped feed emits Delisting or Renamed actions (tape.rs builds only CashDividend), nothing calls UniverseHistory::record_outage outside tests, and failed products have no state; remaining step is production writers for delistings, renames and venue outages plus a failed-product state.",
+    "gap": "2026-10-30 (lane L3-data) and 2026-10-31 (lane L3b), both skeptic REFUTED on the COMPLETE bar, merged 2026-10-31: no shipped feed emits Delisting or Renamed actions (tape.rs builds only CashDividend; on the default synthetic path no corporate action is sensed), nothing calls UniverseHistory::record_outage outside tests, failed products have no state and spinoff products are never listed; the history describes the past only as far back as the first bar the process saw (the catalogue carries no listing date), membership is in memory and not rebuilt from the event log at resume (a resumed withdrawn venue's outage opens at assembly, not at its logged instant); venue outages come only from the platform's own feasibility withdrawals, so VenueStatus halts and cell halts never reach the history; the deep-brain test pins the snapshot only, not that a round's backtest refused a delisted name. Remaining step: production writers for delistings, renames and venue-status outages, a failed-product state, log-rebuilt membership at resume, and a deep-brain round test over a recorded delisting.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2190,10 +2193,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-simulation-engine --test universe_history; cargo test -p qip-kernel --test position_record",
+    "verification": "cargo test -p qip-financial --test history; cargo test -p qip-simulation-engine --test universe_history --test simulation; cargo test -p qip-kernel --test position_record --test learning a_delisting_on_the_tape; cargo test -p qip-deepbrain --test universe_history",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Corporate-action evidence line stale: corporate_action_class (Delisting, Renamed) now sits near platform.rs:24168; platform.rs:19350 is borrow-availability code. 2026-10-30: UniverseHistory gets its first production caller. Mutations, each failing: drop the membership refusal in rebalance; report no outages; drop the kernel's delist arm. Skeptic (code-reviewer): evolution loop is on the default path (every_cycles 4); REFUTED on the missing writers and failed products."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Corporate-action evidence line stale: corporate_action_class (Delisting, Renamed) now sits near platform.rs:24168; platform.rs:19350 is borrow-availability code. 2026-10-30: UniverseHistory gets its first production caller. Mutations, each failing: drop the membership refusal in rebalance; report no outages; drop the kernel's delist arm. Skeptic (code-reviewer): evolution loop is on the default path (every_cycles 4); REFUTED on the missing writers and failed products. 2026-10-31 lane L3b (wave580): the same row landed in parallel; merged keeping both lanes' behaviour: L3-data's first-bar listing (note_listing) and L3b's assembly listing, reconciled by UniverseHistory::backdate_listing so an assembled name listed at the assembly instant moves back to its first bar; L3-data's apply-time delist/rename arm removed in favour of L3b's queue-time one (a listing delisted twice is refused and would have reported a tape fault that was not one); L3b's venue-outage refusal added beside L3-data's membership refusal in run_inner; L3b's not_a_member_at dropped for UniverseHistory::is_member_at. L3b mutations fired before the merge, each restored by cp + cmp: delist call dropped (kernel test: membership after the ex-date still names BBB); open_outage dropped in withdraw_venue (kernel test: no outage); membership refusal returning none (simulation test: the delisted name filled after its ex-date); outage report dropped (simulation test: outages empty); engine snapshot dropped (deep-brain test: engine history empty); open_outage writing until near from (history test). Skeptic (code-reviewer) verdict for L3b: REFUTED as in the gap; mergers were not delisted (fixed after the review via CorporateAction::is_terminal). Kept PARTIAL."
   },
   {
     "id": "R12-TICK-2091",
