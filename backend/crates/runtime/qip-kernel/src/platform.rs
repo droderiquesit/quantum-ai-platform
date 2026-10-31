@@ -11724,7 +11724,6 @@ impl Platform {
         }
     }
 
-
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
     /// it.
     pub fn desk_book_view(&self) -> Reading<'_, BookView> {

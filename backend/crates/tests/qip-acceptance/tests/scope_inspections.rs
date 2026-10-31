@@ -358,7 +358,6 @@ fn every_arbitrage_scope_item_maps_to_a_seam_a_composition_root_reaches_and_a_na
     }
 }
 
-
 /// The ten items of "Asset management" (R12-ASSET-1160): (item, seam file,
 /// seam symbol, test file, test name). Every seam is on the kernel's cycle
 /// or an operator route the API composes, and every test drives the
