@@ -1488,13 +1488,16 @@
   {
     "id": "R12-TICK-2062",
     "status": "PARTIAL",
-    "current": "qip_sequencing::align orders only beyond combined uncertainty and provides an as-of join; property-style tests; not called outside the crate (feature DAG uses its own aligned_tail).",
+    "current": "The feature DAG now places every mid sample in time: InstrumentState keeps placements: Vec<qip_sequencing::align::Placed> (venue instant, clock doubt as a half-width, arrival) index for index with samples, filled by MarketState::apply_placed / FeatureEngine::ingest_placed(message, uncertainty); ingest/apply delegate with Duration::ZERO. LeadLagCorrelation::compute aligns the two tails through aligned_tail_placed and asks qip_sequencing::align whether the leader's closing sample is Before the follower's lagged one; any pair the clocks cannot order (Unordered or After) leaves the feature Undefined instead of a correlation read off the bucket grid. The cell's apply_batch passes Cell::clock_uncertainty(venue, lead) to ingest_placed, so a venue whose stamps have run ahead of receipt widens the doubt on its samples. RollingCorrelation and CrossVenueSpread still pair samples through the uncertainty-free aligned_tail, and arrival is stored but read by no feature.",
     "evidence": [
-      "backend/crates/edge/qip-sequencing/src/align.rs:51-120",
-      "backend/crates/edge/qip-sequencing/tests/align.rs:187 identical_stamps_are_unordered_rather_than_simultaneous_and_the_bound_itself_is_not_an_order",
-      "backend/crates/edge/qip-feature-dag/src/features.rs:583 aligned_tail (separate, uncertainty-free)"
+      "backend/crates/edge/qip-feature-dag/src/state.rs InstrumentState::placements, apply_placed; MarketState::apply_placed",
+      "backend/crates/edge/qip-feature-dag/src/engine.rs FeatureEngine::ingest_placed",
+      "backend/crates/edge/qip-feature-dag/src/features.rs LeadLagCorrelation::compute (align(...).order != Order::Before -> Undefined), aligned_tail_placed",
+      "backend/crates/edge/qip-edge/src/cell.rs apply_batch: self.features.ingest_placed(message, self.clock_uncertainty(&venue, lead)?)",
+      "backend/crates/edge/qip-sequencing/src/align.rs Placed, align",
+      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs cross_instrument_samples_within_combined_clock_uncertainty_yield_no_aligned_pair"
     ],
-    "gap": "Nothing supplies the uncertainty alignment needs: qip_sequencing::align (align.rs:158) takes Placed stamps whose uncertainty comes from the clock discipline (DisciplinedTime), and nothing outside qip-sequencing calls the discipline, Placed or align. The feature DAG's InstrumentState keeps only (bucket, mid) per sample (state.rs:131), with no per-instrument clock uncertainty or arrival time, so replacing aligned_tail (features.rs:583) with align would order every pair exactly (zero uncertainty), which is the defect, or refuse every cross-venue feature. Needs the clock discipline threaded into MarketState per instrument first.",
+    "gap": "2026-10-31 lane L3b: skeptic REFUTED on the COMPLETE bar: no shipped path computes the changed feature (qip-edge-node registers standard_suite only, which holds no LeadLagCorrelation, RollingCorrelation or CrossVenueSpread); on the default simulated feed venue_time is the gateway's now so Cell::clock_uncertainty is always zero and every pair in distinct buckets orders as Before, the behaviour before the change; the bound passed is the largest observed stamp lead, a floor rather than the clock discipline's published half-width (Placed::from_disciplined has no caller); RollingCorrelation and CrossVenueSpread still treat bucket co-membership as simultaneity and no feature reads arrival; the reset fan-out and snapshot rebuild in cell.rs still ingest with zero doubt; no test pins the cell wiring (passing Duration::ZERO from apply_batch fails nothing). Remaining step: register the cross-instrument features on a shipped path, feed the discipline's half-width, align RollingCorrelation and CrossVenueSpread and read arrival, thread the bound through reset and rebuild, and a cell-level wiring test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1504,10 +1507,10 @@
       "R12-TICK-2051"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-sequencing --test align",
+    "verification": "cargo test -p qip-feature-dag --test feature_dag cross_instrument_samples_within_combined_clock_uncertainty",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure's test two_venues_inside_combined_uncertainty_are_not_ordered_by_a_cross_venue_feature could only pass with an uncertainty the test itself declares, proving the arithmetic of align and not the feed. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's test two_venues_inside_combined_uncertainty_are_not_ordered_by_a_cross_venue_feature could only pass with an uncertainty the test itself declares, proving the arithmetic of align and not the feed. Kept PARTIAL. 2026-10-31 lane L3b (wave580): placements and the uncertainty-aware lead/lag landed; qip-feature-dag gains qip-sequencing as a workspace dependency (in-tree crate, no new third-party package). Mutation fired and restored by cp + cmp: accept every alignment in LeadLagCorrelation::compute; the doubted engine computes Statistic(1.0) and the first assertion fails. The first assertion accepted a missing key until the skeptic noted it; it now requires an evaluated Undefined. Gates: cargo test -p qip-edge -p qip-feature-dag -p qip-sequencing --no-fail-fast 54 binaries all ok (567 passed); qip-acceptance mesh_lane, event_fabric_architecture, paper_boundary ok; fmt and clippy -D warnings clean on qip-feature-dag and qip-edge. Skeptic (code-reviewer) REFUTED as in the gap."
   },
   {
     "id": "R12-TICK-2063",
@@ -1934,13 +1937,14 @@
   {
     "id": "R12-TICK-2080",
     "status": "PARTIAL",
-    "current": "FillCalibration moves a per-venue half-spread bias toward each observed fill error and the twin prices with the calibrated cost model; tested through the cycle.",
+    "current": "FillCalibration (qip-twin calibration.rs) now carries two parameters per venue: the half-spread bias and an impact slope. FillCalibration::observe_with_participation(venue, error_bps, Option<participation>) fits the slope as the exponentially weighted least-squares slope of the fill error on sqrt(participation) over the sized fills (SizeStatistics; held still below SIZE_VARIANCE_FLOOR, a root-participation standard deviation of five percent, so one-size fills cannot fit a size law), and the bias takes the exponentially weighted residual; cost_model moves impact_coefficient_bps by the slope beside half_spread_bps. The kernel's LEARN stage (Platform::score_filled, default path) passes each scored fill's participation from Platform::fill_participation: the desk order's filled quantity or the cell's reported quantity over the volume of the held bar covering the decision instant, None when unknown so the error is charged to the spread alone. Latency and queue models have no calibration input: the simulated venue does not time acknowledgements and the twin's CostModel has no queue term.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:884 the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:935 a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue",
-      "backend/crates/services/qip-twin/src/calibration.rs::FillCalibration"
+      "backend/crates/services/qip-twin/src/calibration.rs FillCalibration::observe_with_participation, SizeStatistics, SIZE_VARIANCE_FLOOR, cost_model (impact_coefficient_bps)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs score_filled (observe_with_participation call) and fill_participation (grep -n 'fill_participation\\|observe_with_participation' backend/crates/runtime/qip-kernel/src/platform.rs)",
+      "backend/crates/services/qip-twin/tests/futures.rs after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficient_moves_toward_the_observed_fills",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_scored_fill_reaches_the_twins_calibration_with_its_participation, the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue, a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue"
     ],
-    "gap": "Only the half-spread moves: Platform::score_filled (LEARN, default path) feeds FillCalibration::observe one aggregate signed fill error per fill, and FillCalibration::cost_model adjusts half_spread_bps alone. Impact cannot be separated from spread without the fill's participation reaching the calibration (the kernel does not pass it; an online two-parameter fit of error on participation would). Latency has no input at all: the simulated venue does not time acknowledgements (the LEARN stage says so), so there is no ack delay to calibrate against. Queue position is not modelled by the twin's CostModel.",
+    "gap": "2026-10-31 lane L3b: skeptic REFUTED on the COMPLETE bar: the error score_filled feeds is the twin's printed mark against the fill (realised slippage), not the twin's charged cost against reality's, so with a base near reality the fitted slope charges impact twice and the fit never closes on the simulator (the same flaw the half-spread already had); the slope is fitted in sqrt(quantity / one bar's volume) while the twin prices impact in sqrt(quantity / twenty-bar mean volume) scaled by volatility, so the units differ by (sigma/sigma_ref)*sqrt(bar_vol/mean_vol); the slope has no upper bound, and a correction past MAX_TRADE_COST_BPS leaves the venue Unpriceable with no further calibration; R12-RES-7104's misfit read uses bias_bps only, so a size-dependent misfit now hides in the slope; queue and latency models remain uncalibrated (no acknowledgement timing, no queue term). Remaining step: fit against the twin's own predicted cost in the twin's units, bound or refuse an unpriceable slope, read the slope in twin_misfit, and a kernel test converging the impact coefficient to the simulator's true value on the default tape.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1950,10 +1954,10 @@
       "R12-TICK-2047"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cargo test -p qip-twin --test futures; cargo test -p qip-kernel --test learning a_scored_fill_reaches",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L22 after reading qip-twin/src/calibration.rs and the score_filled calibration site in qip-kernel/src/platform.rs; no code changed. Closing needs participation passed from score_filled (a platform.rs change in L01's file), a per-venue impact term in FillCalibration, and an acknowledgement-latency measurement from a venue that produces one."
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading qip-twin/src/calibration.rs and the score_filled calibration site in qip-kernel/src/platform.rs; no code changed. Closing needs participation passed from score_filled (a platform.rs change in L01's file), a per-venue impact term in FillCalibration, and an acknowledgement-latency measurement from a venue that produces one. 2026-10-31 lane L3b (wave580): participation passed from score_filled and a per-venue impact term landed; latency still has no input. Mutations fired, each restored by cp + cmp: slope never fitted (twin test: impact coefficient 40 -> 40); cost_model ignores the slope (same failure); kernel passes None (kernel test: participation_observations 0). First draft stepped the slope by a normalised gradient and needed about a thousand fills to reach a size law two fills can state; replaced by the weighted least-squares fit. First floor (1e-9) let one-share fills on bars of slightly different volume fit a slope of thousands of basis points and broke valuation_seam's sizing fixture; raised to a five-percent root-participation standard deviation with a one-size assertion in the twin test. Gates: cargo test -p qip-twin -p qip-kernel --no-fail-fast 73 binaries all ok; fmt and clippy -D warnings clean on both crates. Skeptic (code-reviewer) REFUTED as in the gap."
   },
   {
     "id": "R12-TICK-2081",

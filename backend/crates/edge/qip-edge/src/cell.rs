@@ -4834,7 +4834,17 @@ impl Cell {
                 // not swallowed here.
                 state.apply(message)?;
             }
-            self.features.ingest(message)?;
+            // R12-TICK-2062: the feature engine is told how far the venue's
+            // stamp may be from the truth, so a cross-instrument feature can
+            // decline to order two samples the clocks cannot separate. The
+            // lead is the stamp's distance ahead of receipt, floored at zero
+            // where the stamp trails, as the feed's capture floors it.
+            let lead = message
+                .venue_time
+                .since(message.capture_time)
+                .max(Duration::ZERO);
+            let uncertainty = self.clock_uncertainty(&venue, lead)?;
+            self.features.ingest_placed(message, uncertainty)?;
         }
         // Judged once the whole batch is in, never between two messages of
         // it: a venue moving up publishes the new bid before it withdraws
