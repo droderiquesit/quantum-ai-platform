@@ -53,11 +53,26 @@ pub enum Scope {
     /// volatility or mean has left the band the prior window set
     /// (R12-REASON-3023).
     RegimeBreak,
+    /// Market manipulation in the tape or the book: a crossed or layered
+    /// book, volume with no price (R12-REASON-3023).
+    MarketManipulation,
+    /// Model failure: a forecaster the meta-model expects to fail, a Brier
+    /// score worse than chance, a production model past its drift threshold
+    /// (R12-REASON-3023).
+    ModelFailure,
+    /// Geopolitical exposure: the world model's trade, sanctions, conflict
+    /// and regulatory claims landing on the subject or its economy
+    /// (R12-REASON-3012).
+    GeopoliticalRisk,
+    /// Supply-chain exposure behind a commodity: the world model's logistics
+    /// and weather claims landing on it and the supplier links into it
+    /// (R12-REASON-3016).
+    SupplyChain,
 }
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 7] = [
+    pub const ALL: [Scope; 11] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
@@ -65,6 +80,10 @@ impl Scope {
         Scope::RiskRecommendation,
         Scope::SelfExploitation,
         Scope::RegimeBreak,
+        Scope::MarketManipulation,
+        Scope::ModelFailure,
+        Scope::GeopoliticalRisk,
+        Scope::SupplyChain,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -76,6 +95,10 @@ impl Scope {
             Self::RiskRecommendation => "risk_recommendation",
             Self::SelfExploitation => "self_exploitation",
             Self::RegimeBreak => "regime_break",
+            Self::MarketManipulation => "market_manipulation",
+            Self::ModelFailure => "model_failure",
+            Self::GeopoliticalRisk => "geopolitical_risk",
+            Self::SupplyChain => "supply_chain",
         }
     }
 
@@ -94,6 +117,10 @@ impl Scope {
             Self::RiskRecommendation => &["recommended_gross_reduction"],
             Self::SelfExploitation => &["self_exploitation_findings"],
             Self::RegimeBreak => &["regime_break_findings"],
+            Self::MarketManipulation => &["manipulation_findings"],
+            Self::ModelFailure => &["model_failure_findings"],
+            Self::GeopoliticalRisk => &["geopolitical_risk"],
+            Self::SupplyChain => &["supply_chain_exposure"],
         }
     }
 

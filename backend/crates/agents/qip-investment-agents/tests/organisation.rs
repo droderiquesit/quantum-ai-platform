@@ -35,7 +35,8 @@ use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
 use qip_investment_agents::coverage::Scope;
 use qip_investment_agents::desk::{
-    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, MarketView, RiskView, TradeSide,
+    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth, MarketView,
+    ModelsView, RiskView, TradeSide,
 };
 use qip_investment_agents::{Organisation, ids, manifests};
 use qip_market::bar::{Bar, Interval};
@@ -89,7 +90,7 @@ fn brief() -> AgentBrief {
 #[test]
 fn the_declared_organisation_passes_its_own_governance() {
     let roster = manifests::roster(now());
-    assert_eq!(roster.len(), 22, "the organisation is twenty-two agents");
+    assert_eq!(roster.len(), 24, "the organisation is twenty-four agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -567,8 +568,22 @@ fn desk_holding_causal_claims(claims: Vec<qip_world_model::CausalEdge>) -> Arc<D
             ResearchMemory::new(),
             library,
         )
-        .with_executions(fixture_executions()),
+        .with_executions(fixture_executions())
+        .with_models(fixture_models()),
     )
+}
+
+/// One scored forecaster in good standing and no drift report: a registry
+/// the model-failure probe examines and finds nothing in.
+fn fixture_models() -> ModelsView {
+    ModelsView {
+        forecasters: vec![ForecasterHealth {
+            name: "detector:momentum".to_string(),
+            mean_brier: Some(0.18),
+            predicted_failure: 0.2,
+        }],
+        drifted: Vec::new(),
+    }
 }
 
 /// Four of the platform's own fills, landing on both sides of arrival with
@@ -611,7 +626,7 @@ fn organisation(desk: Arc<Desk>) -> Result<Organisation> {
 #[test]
 fn the_organisation_assembles_and_dispatches() -> Result<()> {
     let mut org = organisation(populated_desk())?;
-    assert_eq!(org.len(), 21);
+    assert_eq!(org.len(), 23);
 
     let report = org.dispatch(&brief(), now(), &lineage());
     assert!(!report.runs.is_empty());
@@ -2719,5 +2734,229 @@ fn removing_the_regime_break_probe_drops_regime_breaks_from_coverage() -> Result
     let (with, without) = scopes_with_and_without(desk, &brief(), ids::REGIME_BREAK)?;
     assert!(with.contains(&Scope::RegimeBreak), "{with:?}");
     assert!(!without.contains(&Scope::RegimeBreak), "{without:?}");
+    Ok(())
+}
+
+/// R12-REASON-3023. The manipulation probe reads each instrument's book and
+/// tape for the shapes spoofing, layering and wash trading leave, and nobody
+/// else does. The fixture book is plain and its tape's noise carries a move
+/// on every bar, so the probe examines the one instrument and finds nothing,
+/// which is still coverage: the book and the tape were examined.
+///
+/// Mutation: rename the `manipulation_findings` fact in
+/// `ManipulationProbe::analyse` — the fact assertion fails first and the
+/// scope is no longer evidenced. Verified and restored.
+#[test]
+fn removing_the_manipulation_probe_drops_market_manipulation_from_coverage() -> Result<()> {
+    let desk = populated_desk();
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::MANIPULATION)
+        .expect("premise: the standard organisation runs the manipulation probe");
+    assert_eq!(fact_value(finding, "instruments_examined"), Some(1.0));
+    assert_eq!(fact_value(finding, "manipulation_findings"), Some(0.0));
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::MANIPULATION)?;
+    assert!(with.contains(&Scope::MarketManipulation), "{with:?}");
+    assert!(!without.contains(&Scope::MarketManipulation), "{without:?}");
+    Ok(())
+}
+
+/// R12-REASON-3023. The model-failure probe reads the tournament's forecaster
+/// records and the drift report, and nobody else does. The fixture holds one
+/// scored forecaster in good standing, so the probe examines one model and
+/// finds nothing.
+///
+/// Mutation: rename the `model_failure_findings` fact in
+/// `ModelFailureProbe::analyse` — the fact assertion fails first and the
+/// scope is no longer evidenced. Verified and restored.
+#[test]
+fn removing_the_model_failure_probe_drops_model_failure_from_coverage() -> Result<()> {
+    let desk = populated_desk();
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::MODEL_FAILURE)
+        .expect("premise: the standard organisation runs the model-failure probe");
+    assert_eq!(fact_value(finding, "models_examined"), Some(1.0));
+    assert_eq!(fact_value(finding, "model_failure_findings"), Some(0.0));
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::MODEL_FAILURE)?;
+    assert!(with.contains(&Scope::ModelFailure), "{with:?}");
+    assert!(!without.contains(&Scope::ModelFailure), "{without:?}");
+    Ok(())
+}
+
+/// R12-REASON-3023. The manipulation probe examines an instrument through
+/// either arm: a tape-only instrument through `probe_tape`, a book-only one
+/// through `probe_book`. On the standard fixture one instrument has both,
+/// so a probe that had lost either arm still counted it examined; here each
+/// arm is the only way its instrument counts.
+///
+/// Mutations, both run: delete the `probe_tape` call in
+/// `ManipulationProbe::analyse` — `instruments_examined` reads 1 and the
+/// assertion fails naming the tape-only instrument; delete the `probe_book`
+/// call — likewise for the book-only one. Each restored byte for byte.
+#[test]
+fn the_manipulation_probe_examines_a_tape_only_and_a_book_only_instrument() -> Result<()> {
+    let mut universe = Universe::new();
+    universe.insert(equity("TAPE", "100")).unwrap();
+    universe.insert(equity("BOOK", "100")).unwrap();
+    let mut snapshot = MarketSnapshot::new(now());
+    for bar in bars("TAPE", 12, 0.0) {
+        snapshot.apply_bar(bar);
+    }
+    snapshot.apply_book(book("BOOK"));
+    let desk = Arc::new(
+        Desk::new(
+            MarketView { snapshot, universe },
+            WorldModel::new(),
+            BookView {
+                portfolio: Portfolio::new(
+                    PortfolioId::from_string("pf-probe"),
+                    "probe",
+                    Currency::USD,
+                    Decimal::from_int(1_000_000),
+                    now(),
+                ),
+                marks: BTreeMap::new(),
+            },
+            RiskView {
+                state: RiskState::default(),
+                limits: LimitSet::conservative_default(),
+            },
+            ComplianceView::default(),
+            ResearchMemory::new(),
+            SearchIndex::new(),
+        )
+        .with_executions(fixture_executions())
+        .with_models(fixture_models()),
+    );
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::MANIPULATION)
+        .expect("premise: the manipulation probe ran");
+    assert_eq!(
+        fact_value(finding, "instruments_examined"),
+        Some(2.0),
+        "one instrument through the tape arm and one through the book arm: {finding:?}"
+    );
+    assert_eq!(fact_value(finding, "manipulation_findings"), Some(0.0));
+    Ok(())
+}
+
+/// R12-REASON-3012. The macro analyst reads the world model's geopolitical
+/// claims as well as the macro series, and nobody else does: without it the
+/// organisation has no view of geopolitical exposure at all. On a desk
+/// holding a sanctions claim landing on ACME the exposure is the claim's
+/// strength weighted by its confidence, so a read of the wrong mechanism or
+/// the wrong subject reads zero here.
+///
+/// Mutation: drop the `edge.mechanism == Mechanism::Geopolitical` filter's
+/// companion read — replace the `geopolitical` vector in
+/// `MacroAnalyst::analyse` with `Vec::new()` — the exposure reads zero and
+/// the first assertion fails; the scope is then absent too. Verified and
+/// restored.
+#[test]
+fn removing_the_macro_analyst_drops_geopolitical_risk_from_coverage() -> Result<()> {
+    use qip_world_model::Mechanism;
+    let desk = desk_holding_causal_claims(vec![
+        causal_claim(
+            "sanctions:EU",
+            object("ACME").as_str(),
+            Mechanism::Geopolitical,
+            0.6,
+            &["ev-sanctions"],
+        )
+        .with_confidence(0.5)
+        .unwrap(),
+        // A supply-chain claim on the same subject is not geopolitical and
+        // must not count.
+        causal_claim(
+            "WTI",
+            object("ACME").as_str(),
+            Mechanism::SupplyChain,
+            0.9,
+            &["ev-oil"],
+        ),
+    ]);
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::MACRO)
+        .expect("premise: the standard organisation runs the macro analyst");
+    let exposure = fact_value(finding, "geopolitical_risk").expect("the fact is stated");
+    assert!(
+        (exposure - 0.3).abs() < 1e-9,
+        "0.6 strength at 0.5 confidence is 0.3 of exposure, not {exposure}"
+    );
+    assert_eq!(fact_value(finding, "geopolitical_claims"), Some(1.0));
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::MACRO)?;
+    assert!(with.contains(&Scope::GeopoliticalRisk), "{with:?}");
+    assert!(!without.contains(&Scope::GeopoliticalRisk), "{without:?}");
+    Ok(())
+}
+
+/// R12-REASON-3016. The commodities analyst reads the world model's
+/// logistics and weather claims and the supplier links behind a commodity,
+/// and nobody else does: without it the organisation has no view of
+/// supply-chain exposure. On a desk holding a freight claim landing on WTI
+/// the exposure is the claim's strength weighted by its confidence; a
+/// demand-linkage claim on the same commodity does not count.
+///
+/// Mutation: replace the `supply_claims` vector in
+/// `CommoditiesAnalyst::analyse` with `Vec::new()` — the exposure reads zero
+/// and the first assertion fails. Verified and restored.
+#[test]
+fn removing_the_commodities_analyst_drops_supply_chain_from_coverage() -> Result<()> {
+    use qip_world_model::Mechanism;
+    let desk = desk_holding_causal_claims(vec![
+        causal_claim(
+            "freight:baltic-dry",
+            object("WTI").as_str(),
+            Mechanism::Logistics,
+            0.5,
+            &["ev-freight"],
+        )
+        .with_confidence(0.8)
+        .unwrap(),
+        causal_claim(
+            "ACME",
+            object("WTI").as_str(),
+            Mechanism::DemandLinkage,
+            0.9,
+            &["ev-demand"],
+        ),
+    ]);
+    let brief = AgentBrief::new("is WTI backwardated", now(), Duration::from_days(30))
+        .about_objects(vec![object("WTI")]);
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief, now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::COMMODITIES)
+        .expect("premise: the standard organisation runs the commodities analyst on a commodity");
+    let exposure = fact_value(finding, "supply_chain_exposure").expect("the fact is stated");
+    assert!(
+        (exposure - 0.4).abs() < 1e-9,
+        "0.5 strength at 0.8 confidence is 0.4 of exposure, not {exposure}"
+    );
+    assert_eq!(fact_value(finding, "supplier_links"), Some(0.0));
+
+    let (with, without) = scopes_with_and_without(desk, &brief, ids::COMMODITIES)?;
+    assert!(with.contains(&Scope::SupplyChain), "{with:?}");
+    assert!(!without.contains(&Scope::SupplyChain), "{without:?}");
     Ok(())
 }

@@ -2018,6 +2018,16 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-deepbrain",
+        "QIP_DEEPBRAIN_ATTENTION_BUDGET_PER_HOUR",
+        "The attention router's hourly budget of raised signals (256 by default, \
+         ResearchConfig::attention_budget_per_hour). The default is the size the \
+         held queue was measured against; a deployment that sets it is choosing \
+         how many signals an hour the desk can absorb, and no deployment has yet \
+         measured that, so it stays at the default rather than a number nobody \
+         derived. Zero is refused at start-up.",
+    ),
+    (
+        "qip-deepbrain",
         "QIP_DEEPBRAIN_EVOLUTION_CANDIDATES",
         THE_PACE_THE_PROBES_ASSUME,
     ),

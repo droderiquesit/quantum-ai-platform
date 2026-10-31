@@ -538,6 +538,14 @@ pub fn standard_agents(
         )),
         Arc::new(adversary::RegimeBreakProbe::new(
             manifests::regime_break_probe(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(adversary::ManipulationProbe::new(
+            manifests::manipulation_probe(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(adversary::ModelFailureProbe::new(
+            manifests::model_failure_probe(reviewed_at),
             desk,
         )),
     ]

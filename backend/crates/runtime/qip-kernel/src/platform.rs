@@ -151,7 +151,8 @@ use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
-    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, MarketView, RiskView, TradeSide,
+    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth, MarketView,
+    ModelsView, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -1081,6 +1082,13 @@ pub struct Platform {
     /// REASON by `brief_the_desk_on_executions`, bounded to the most recent
     /// `EXECUTION_HISTORY_KEPT`.
     executions: Upstream<ExecutionView>,
+    /// The platform's models as the desk's model-failure probe reads them
+    /// (R12-REASON-3023): every forecaster the tournament holds an open
+    /// question from, with its mean Brier score and the meta-model's
+    /// predicted failure, and the production models the deep brain last
+    /// reported past their drift threshold. Rebuilt before every REASON by
+    /// `brief_the_desk_on_models`.
+    models: Upstream<ModelsView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -5885,6 +5893,8 @@ impl Platform {
         desk.risk = risk.gate(desk.risk.required(), desk.risk.label());
         let executions = Upstream::new(ExecutionView::default());
         desk.executions = executions.gate(desk.executions.required(), desk.executions.label());
+        let models = Upstream::new(ModelsView::default());
+        desk.models = models.gate(desk.models.required(), desk.models.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -6300,6 +6310,7 @@ impl Platform {
             market,
             risk,
             executions,
+            models,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -11180,6 +11191,44 @@ impl Platform {
         self.executions.update(|view| view.executions = records);
     }
 
+    /// Write the platform's forecaster records and drift report into the
+    /// slot the desk's model-failure probe reads, before the panel is
+    /// convened (R12-REASON-3023). Forecasters are the ones the tournament
+    /// holds an open question from, each with the mean Brier score of the
+    /// questions it has been scored on and the meta-model's predicted
+    /// failure in that question's regime; drifted models are what the deep
+    /// brain last reported through `observe_model_drift`. Rebuilt each
+    /// time, so the view cannot disagree with the tournament it describes.
+    fn brief_the_desk_on_models(&self) {
+        let tournament = self.tournament.tournament();
+        let mut seen: BTreeMap<String, ForecasterHealth> = BTreeMap::new();
+        for question in tournament.open_questions() {
+            let regime = question.spec().regime.clone();
+            for name in question.forecasts().keys() {
+                // A forecaster answering questions in several regimes is
+                // judged by the regime it is most expected to fail in: the
+                // probe asks whether anything behind a claim is failing,
+                // and the best regime would hide the worst.
+                let predicted = tournament.meta_model().predict(name, &regime);
+                seen.entry(name.clone())
+                    .and_modify(|health| {
+                        health.predicted_failure = health.predicted_failure.max(predicted);
+                    })
+                    .or_insert_with(|| ForecasterHealth {
+                        name: name.clone(),
+                        mean_brier: tournament.mean_brier(name),
+                        predicted_failure: predicted,
+                    });
+            }
+        }
+        let forecasters: Vec<ForecasterHealth> = seen.into_values().collect();
+        let drifted: Vec<String> = self.drifted_models.iter().cloned().collect();
+        self.models.update(|view| {
+            view.forecasters = forecasters;
+            view.drifted = drifted;
+        });
+    }
+
     /// Where liquidity lives, per instrument across venues, as fed from the
     /// books and quotes the platform has observed.
     pub fn liquidity(&self) -> &LiquidityTopology {
@@ -14192,16 +14241,26 @@ impl Platform {
     /// the pass atomic within a cycle: every subject is labelled against the
     /// same graph snapshot.
     fn mark_regime_transitions(&mut self, now: Timestamp) -> usize {
-        let subjects: BTreeSet<String> = {
+        // Every priced subject, and every causal effect: a regime is a
+        // fact about an instrument's own tape, and a tracker that marked
+        // only the effects of causal edges left every other subject's
+        // structural-break critic abstaining for want of a regime
+        // (R12-REASON-3108, F2) — the subject the panel most often reasons
+        // about is the one with a tape, not the one somebody drew an edge
+        // to. The first observation of a subject records its regime and
+        // marks no crossing, so widening the set raises no spurious break.
+        let mut subjects: BTreeSet<String> = self.price_history.keys().cloned().collect();
+        {
             let world = self.world.read();
-            world
-                .causal()
-                .edges()
-                .iter()
-                .filter(|edge| edge.recorded_at <= now)
-                .map(|edge| edge.effect.clone())
-                .collect()
-        };
+            subjects.extend(
+                world
+                    .causal()
+                    .edges()
+                    .iter()
+                    .filter(|edge| edge.recorded_at <= now)
+                    .map(|edge| edge.effect.clone()),
+            );
+        }
         let observed: Vec<(String, String)> = subjects
             .into_iter()
             .map(|subject| {
@@ -15037,6 +15096,7 @@ impl Platform {
         );
         self.brief_the_desk_on_risk();
         self.brief_the_desk_on_executions();
+        self.brief_the_desk_on_models();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
             return outcome;
