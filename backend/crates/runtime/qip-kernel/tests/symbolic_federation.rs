@@ -842,6 +842,38 @@ fn a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refu
     Ok(())
 }
 
+/// R12-REASON-1133: a derivation whose timeline cannot be rebuilt is refused
+/// on replay by name, not passed over. A record with its `TemporalInputs`
+/// stripped — the shape one written before the field existed decodes to —
+/// was skipped by the timeline check, so replay called a derivation
+/// identical when nothing about its ordering had been checked. Mutation:
+/// restore `if let Some(inputs)` around the comparison in `verify` and the
+/// stripped record is accepted.
+#[test]
+fn a_derivation_with_no_timeline_inputs_is_refused_on_replay_by_name() -> Result<()> {
+    let (platform, derivation) = journaled_derivation()?;
+    assert!(
+        derivation.temporal.inputs.is_some(),
+        "premise: the cycle recorded the instants its timeline was built from"
+    );
+    let mut stripped = derivation;
+    stripped.temporal.inputs = None;
+    assert_refused_for(&platform, &stripped, "temporal derivation");
+    // By name: the hypothesis, and the reason — not the mismatch message a
+    // rebuilt timeline that disagreed would give.
+    let refusal = symbolic_stage::verify(&stripped, platform.world().causal())
+        .expect_err("a derivation with no timeline inputs was accepted");
+    assert!(
+        refusal.message().contains(&stripped.hypothesis_id)
+            && refusal
+                .message()
+                .contains("no instants to rebuild its timeline from"),
+        "{}",
+        refusal.message()
+    );
+    Ok(())
+}
+
 #[test]
 fn a_journaled_posterior_that_the_recorded_network_does_not_yield_is_refused_on_replay()
 -> Result<()> {
