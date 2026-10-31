@@ -1715,12 +1715,14 @@
     "status": "PARTIAL",
     "current": "NowStage::run (every cycle, default path) calls NowBrain::world_model_state for each partition a pass moved a belief in and journals the validated WorldModelStateFields in NowReview.world_states on world_model.updated; each re-admits through WorldModelState::new and is stamped with the pass clock.",
     "evidence": [
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_partition_whose_world_state_expired_queues_a_model_drift_gap",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:513 a_world_model_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::run world_states",
       "backend/crates/runtime/qip-kernel/tests/now_state.rs::a_pass_that_moves_a_belief_journals_the_world_model_state_of_the_partition_it_moved",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:513 a_world_model_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/services/qip-world-model/src/now.rs::world_model_state"
+      "backend/crates/services/qip-world-model/src/now.rs::world_model_state",
+      "docs/adr/0227-world-model-states-receiver-is-the-deep-brains-gap-detector-an-expired-partition-queues-re-estimation-and-moves-no-size.md"
     ],
-    "gap": "Produced and journalled, but no brain consumes or decodes WorldModelState: nothing reads NowReview.world_states back as the contract, so the seam between brains has an emitter and no receiver.",
+    "gap": "2026-10-31 (lane L2-INTEL, ADR 0227 under decision 10 of the 2026-10-31 owner rulings): the receiver is built on the deep brain's default sweep. ResearchLoop::expired_world_states reads every NOW review through qip_kernel::now_stage::reviews, re-admits each WorldModelState through WorldModelState::new, keeps the newest per partition, and raises one GapTrigger::ModelDrift observation (evidence world_state:<scope>) for a partition whose newest state passed expires_at with no successor; the state moves no size and chooses no action (qip-deepbrain tests/research.rs::a_partition_whose_world_state_expired_queues_a_model_drift_gap; dropping the read, or never marking an expiry reported, fails it). Not judged here: whether the requirement asks for more than a reader of the contract.",
     "implemented": true,
     "tested": true,
     "integrated": true,

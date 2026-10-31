@@ -2190,3 +2190,134 @@ fn an_uncertain_sized_decision_becomes_an_information_request_at_the_cheapest_ob
         "the launched request names the decision's subject: {round:?}"
     );
 }
+
+/// ADR 0227, R12-CONTRACT-7075: the deep brain's sweep reads the
+/// `WorldModelState` the NOW stage journals for each partition it moved,
+/// and a partition whose state passes its expiry with no newer one raises a
+/// model-drift gap, once. The state moves no size and chooses no action.
+///
+/// The failure this prevents: the NOW stage journaled a state per moved
+/// partition on `world_model.updated` and nothing read it, so a partition
+/// whose model had stopped being refreshed looked, to the curriculum, like
+/// one still described. Mutation: return no partitions from
+/// `ResearchLoop::expired_world_states` (drop the read) — no gap names the
+/// partition and the second assertion fails.
+#[test]
+fn a_partition_whose_world_state_expired_queues_a_model_drift_gap() {
+    use qip_contracts::world_model::WorldModelState;
+    use qip_kernel::now_stage::NowReview;
+    // A universe the NOW stage tracks, thirty calm days, then one jump: the
+    // pass that reads the jump moves a belief and journals its partition.
+    let day = |n: i64| start().saturating_add(Duration::from_days(n));
+    let mut universe = Universe::new();
+    for symbol in ["AAA", "BBB"] {
+        universe
+            .insert(
+                qip_financial::object::FinancialObject::builder(
+                    ObjectId::from_string(symbol.to_string()),
+                    symbol,
+                    qip_financial::asset_class::InstrumentType::CommonStock,
+                    qip_financial::costs::LiquidityProfile::listed(
+                        Decimal::from_int(5_000_000),
+                        3.0,
+                    ),
+                )
+                .venue("XNYS")
+                .geography("US")
+                .sector(qip_financial::asset_class::Sector::InformationTechnology)
+                .price(Decimal::from_int(100))
+                .provenance(qip_financial::quality::Provenance::synthetic(
+                    "test",
+                    start(),
+                ))
+                .build(start())
+                .unwrap_or_else(|e| panic!("{e}")),
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        LimitSet::conservative_default(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let calm: Vec<SensedRecord> = ["AAA", "BBB"]
+        .iter()
+        .flat_map(|symbol| {
+            (0..30_i64)
+                .map(move |i| bar(symbol, day(i - 30), if i % 2 == 0 { 100.2 } else { 99.8 }))
+        })
+        .collect();
+    platform.observe(calm);
+    platform.run_cycle(start());
+    platform.observe(vec![bar("AAA", start(), 130.0), bar("BBB", start(), 100.1)]);
+    platform.run_cycle(day(1));
+    let reviews: Vec<NowReview> = qip_kernel::now_stage::reviews(platform.event_log());
+    let states: Vec<WorldModelState> = reviews
+        .iter()
+        .flat_map(|review| review.world_states.clone())
+        .map(|fields| WorldModelState::new(fields).unwrap_or_else(|e| panic!("{e}")))
+        .collect();
+    assert!(
+        !states.is_empty(),
+        "premise: the NOW stage journaled a world-model state: {:?}",
+        reviews
+            .iter()
+            .map(|r| (r.cycle, r.deltas.len(), r.refused.clone()))
+            .collect::<Vec<_>>()
+    );
+    let latest_expiry = states
+        .iter()
+        .map(|s| s.expires_at)
+        .max()
+        .unwrap_or_else(|| panic!("a state"));
+    let scope = states[0].scope.clone();
+    let evidence = format!("world_state:{scope}");
+    let names_partition = |round: &qip_deepbrain::research::ResearchRound| {
+        round
+            .signals
+            .iter()
+            .filter(|s| s.evidence_ids().iter().any(|e| e == &evidence))
+            .count()
+    };
+
+    let mut loop_ = research(coverage(&[]));
+    // Before expiry, nothing.
+    let before = loop_
+        .sweep(
+            &platform,
+            start().saturating_add(Duration::from_days(1)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(names_partition(&before), 0, "a live state raised a gap");
+    // Past it, one gap names the partition, and only once.
+    let after = latest_expiry.saturating_add(Duration::from_secs(1));
+    let expired = loop_
+        .sweep(&platform, after, &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        names_partition(&expired),
+        1,
+        "an expired world-model state raised no model-drift gap: {:?}",
+        expired
+            .signals
+            .iter()
+            .map(|s| s.evidence_ids().to_vec())
+            .collect::<Vec<_>>()
+    );
+    let again = loop_
+        .sweep(
+            &platform,
+            after.saturating_add(Duration::from_secs(1)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(names_partition(&again), 0, "an expiry was reported twice");
+}

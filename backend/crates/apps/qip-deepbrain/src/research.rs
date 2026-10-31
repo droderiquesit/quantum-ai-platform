@@ -72,7 +72,7 @@ use qip_expansion::detectors::{
     ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
     contested_evidence, contradictions, coverage, incompetent_specialists, low_confidence,
     missing_causal_links, model_drift, model_error_rate, refusal_clusters, repeated_vetoes_priced,
-    split_by_wanting, unexplained_residuals_priced,
+    split_by_wanting, unexplained_residuals_priced, world_state_expired,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -169,6 +169,10 @@ pub fn urgency_bp(now: Timestamp, deadline: Timestamp, horizon: Duration) -> u32
     let span = f64::from(scale - URGENCY_FLOOR_BP);
     URGENCY_FLOOR_BP + (consumed * span).round() as u32
 }
+/// World-model partitions whose latest state the research loop keeps for
+/// expiry (ADR 0227). The partitions are the NOW brain's own, so the bound is
+/// a guard against a log that names more than the brain could hold.
+pub const MAX_WORLD_STATE_PARTITIONS: usize = 4_096;
 /// The cost of the cheapest discriminating observation the loop has: reading
 /// the next sweep's prices again. Basis points of the decision's value.
 pub const RESWEEP_COST_BP: u32 = 500;
@@ -1230,6 +1234,13 @@ pub struct ResearchLoop {
     /// Model references the learning round found past their drift threshold
     /// since the last sweep, consumed by it (R12-EXPAND-6046).
     drifted_models: Vec<String>,
+    /// The latest `WorldModelState` per partition scope the platform's NOW
+    /// stage journaled, re-admitted through its contract, and whether its
+    /// expiry has already raised a gap (ADR 0227). Bounded by
+    /// [`MAX_WORLD_STATE_PARTITIONS`].
+    world_states: BTreeMap<String, (qip_contracts::world_model::WorldModelState, bool)>,
+    /// The last NOW review cycle read, so a sweep reads each review once.
+    world_state_cursor: Option<u64>,
     /// The hosted model's reply tally, where one is installed (6040).
     replies: Option<(String, crate::language::ReplyTally)>,
     /// Assumption health by assumption, bounded by [`RETAINED`]: the entry
@@ -1432,6 +1443,8 @@ impl ResearchLoop {
             packages: VecDeque::new(),
             brains,
             drifted_models: Vec::new(),
+            world_states: BTreeMap::new(),
+            world_state_cursor: None,
             replies: None,
             assumptions: BTreeMap::new(),
             ontology,
@@ -1579,6 +1592,55 @@ impl ResearchLoop {
     pub fn with_package_signer(mut self, signer: Box<dyn PackageSigner + Send>) -> Self {
         self.signer = Some(signer);
         self
+    }
+
+    /// Read every NOW review the platform journaled since the last sweep,
+    /// re-admit each `WorldModelState` it carries, keep the newest per
+    /// partition, and return the partitions whose state has expired with no
+    /// newer one and has not yet raised a gap (ADR 0227, R12-CONTRACT-7075).
+    ///
+    /// A state that does not re-admit is skipped, not believed: it arrived
+    /// through the log, and a projection the contract refuses is not a fact
+    /// about the partition. Each expiry is reported once; a newer state for
+    /// the partition clears it. Read-only on the platform: nothing here
+    /// moves a size or chooses an action.
+    fn expired_world_states(
+        &mut self,
+        platform: &Platform,
+        now: Timestamp,
+    ) -> Vec<(String, String)> {
+        let mut newest = self.world_state_cursor;
+        for review in qip_kernel::now_stage::reviews(platform.event_log()) {
+            if self
+                .world_state_cursor
+                .is_some_and(|read| review.cycle <= read)
+            {
+                continue;
+            }
+            newest = newest.max(Some(review.cycle));
+            for fields in review.world_states {
+                let Ok(state) = qip_contracts::world_model::WorldModelState::new(fields) else {
+                    continue;
+                };
+                let scope = state.scope.clone();
+                match self.world_states.get(&scope) {
+                    Some((held, _)) if held.updated_at >= state.updated_at => continue,
+                    None if self.world_states.len() >= MAX_WORLD_STATE_PARTITIONS => continue,
+                    _ => {
+                        self.world_states.insert(scope, (state, false));
+                    }
+                }
+            }
+        }
+        self.world_state_cursor = newest;
+        self.world_states
+            .iter_mut()
+            .filter(|(_, (state, reported))| !*reported && state.expires_at <= now)
+            .map(|(scope, (state, reported))| {
+                *reported = true;
+                (scope.clone(), state.model.clone())
+            })
+            .collect()
     }
 
     /// Hand the next sweep the models the learning round found drifted, so
@@ -1832,6 +1894,9 @@ impl ResearchLoop {
             RESIDUAL_BPS,
         )?);
         observations.extend(model_drift(&std::mem::take(&mut self.drifted_models)));
+        observations.extend(world_state_expired(
+            &self.expired_world_states(platform, now),
+        ));
         if let Some((model, tally)) = &self.replies
             && let Some(counts) = tally.take_at_least(MODEL_REPLIES_MIN)
         {
