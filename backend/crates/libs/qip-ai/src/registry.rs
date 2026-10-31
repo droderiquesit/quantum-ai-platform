@@ -686,6 +686,25 @@ impl ModelCard {
         self.class.class_eligibility(self)
     }
 
+    /// [`Self::decision_eligibility`] for a decision taken in `regime`, with
+    /// no inputs to check (R12-RISK-4099): a card that names the regimes it
+    /// was validated in is refused in another. For a caller that ranks
+    /// models before any input exists, such as the cost router's reputation
+    /// book, so a model validated only in a calm market is not ranked for a
+    /// crisis decision. [`Self::decision_eligibility_in`] adds the input
+    /// checks once the inputs are known.
+    pub fn regime_eligibility(
+        &self,
+        now: Timestamp,
+        regime: &str,
+    ) -> std::result::Result<(), String> {
+        self.decision_eligibility(now)?;
+        match self.regime_gap(regime) {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        }
+    }
+
     /// [`Self::decision_eligibility`] for a decision taken in `regime` on
     /// `inputs` (R12-MODEL-4020, R12-RISK-4099).
     ///

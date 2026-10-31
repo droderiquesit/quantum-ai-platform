@@ -2265,9 +2265,12 @@
     "evidence": [
       "backend/crates/libs/qip-ai/src/registry.rs ModelCard::decision_eligibility_in, with_training_bounds",
       "backend/crates/apps/qip-deepbrain/src/learning.rs record_validation_scope, and the latest-row check feeding ineligible_in_regime in learn()",
-      "backend/crates/libs/qip-ai/tests/regime_scope.rs an_input_outside_the_range_the_model_was_fitted_on_is_refused, a_non_finite_or_missing_input_is_refused_rather_than_passed_through"
+      "backend/crates/libs/qip-ai/tests/regime_scope.rs an_input_outside_the_range_the_model_was_fitted_on_is_refused, a_non_finite_or_missing_input_is_refused_rather_than_passed_through",
+      "backend/crates/libs/qip-ai/src/registry.rs ModelCard::regime_eligibility",
+      "backend/crates/services/qip-cost-router/src/reputation.rs ReputationBook::rank filters on regime_eligibility in Conditions.regime",
+      "backend/crates/services/qip-cost-router/tests/cost_router.rs a_model_validated_only_in_a_calm_regime_is_not_ranked_for_a_stressed_decision"
     ],
-    "gap": "The input-range and regime refusals reach an operator through the learning round's ineligible list, not a decision: the decision-time admissions (ModelRiskRegister::admit, the cost-router reputation filter) still call the input-free decision_eligibility and a cell's pass supplies no inputs to check.",
+    "gap": "The input-range and regime refusals reach an operator through the learning round's ineligible list, not a decision: the decision-time admissions (ModelRiskRegister::admit, the cost-router reputation filter) still call the input-free decision_eligibility and a cell's pass supplies no inputs to check.\n2026-10-31 (lane L1-MONEY): the cost router's reputation ranking now refuses a model outside the regimes its card was validated in. Remaining: ReputationBook has no production caller, so this guard is on no default path; ModelRiskRegister::evaluate still calls require_for_decision rather than require_for_decision_in, and also has no production caller; and the requirement's six named exposures (drift, calibration, regime mismatch, uncertainty, feature failure, adversarial inputs) have not each been shown with a measurement plus a limit or recorded finding driven by a test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2278,7 +2281,7 @@
     "verification": "cargo test -p qip-ai --test regime_scope && cargo test -p qip-deepbrain --lib a_model_fitted_in_one_regime",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: the range test replaced by false admits the extrapolating input (an_input_outside_... fails); deleting the is_finite branch admits NaN (a_non_finite_... fails). Kept PARTIAL: same remaining half as R12-MODEL-4020."
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: the range test replaced by false admits the extrapolating input (an_input_outside_... fails); deleting the is_finite branch admits NaN (a_non_finite_... fails). Kept PARTIAL: same remaining half as R12-MODEL-4020. 2026-10-31 lane L1-MONEY: mutation (rank reverted to decision_eligibility) fired, restored with cp+cmp. No skeptic was run: the row cannot be promoted without a production caller."
   },
   {
     "id": "R12-RISK-4100",
