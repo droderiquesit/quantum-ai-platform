@@ -35,6 +35,7 @@
 use qip_contracts::capital::Utilisation;
 use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
+use qip_contracts::regional_episode::RegionalEpisode;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_contracts::wire::{CrossRecord, FillRecord};
@@ -130,6 +131,10 @@ struct WireDelta {
     crosses: Vec<CrossRecord>,
     #[serde(default)]
     crosses_omitted: u32,
+    #[serde(default)]
+    episodes: Vec<RegionalEpisode>,
+    #[serde(default)]
+    episodes_omitted: u32,
 }
 
 impl EventBody for WireDelta {
@@ -212,6 +217,13 @@ pub struct CellInterval {
     pub crosses: Vec<CrossRecord>,
     /// Crosses that did not fit the wire bound, counted for the same reason.
     pub crosses_omitted: u32,
+    /// The newest regional episodes the cell retains (ADR 0207): a view of
+    /// its ring, so a redelivered delta repeats them and the centre
+    /// deduplicates. Absent on a delta sealed before the field existed,
+    /// which decodes as none reported.
+    pub episodes: Vec<RegionalEpisode>,
+    /// Older episodes the cell held and did not send.
+    pub episodes_omitted: u32,
 }
 
 /// One decoded delta, halved by arithmetic.
@@ -260,6 +272,8 @@ pub fn decode_cell_delta(frame: &AnyEvent) -> Result<DecodedCellDelta> {
             refusals_omitted: wire.refusals_omitted,
             crosses: wire.crosses,
             crosses_omitted: wire.crosses_omitted,
+            episodes: wire.episodes,
+            episodes_omitted: wire.episodes_omitted,
         },
     })
 }
@@ -500,6 +514,41 @@ mod tests {
         // The order still arrived as *sent*, so the default did not come
         // from the decode quietly dropping the interval.
         assert_eq!(decoded.interval.orders.len(), 1);
+        Ok(())
+    }
+
+    /// R12-REFLEX-6012 (ADR 0207). A delta sealed before episodes rode the
+    /// wire must still decode, and its honest reading is that the cell
+    /// reported none. Premise first: the fixture genuinely lacks the field.
+    #[test]
+    fn a_delta_written_before_episodes_existed_decodes_as_having_reported_none() -> Result<()> {
+        let payload = wire_payload();
+        assert!(
+            payload.get("episodes").is_none(),
+            "the fixture already carries episodes, so this proves nothing"
+        );
+        let decoded = decode_cell_delta(&frame_with(payload)?)?;
+        assert!(decoded.interval.episodes.is_empty());
+        assert_eq!(decoded.interval.episodes_omitted, 0);
+        assert_eq!(decoded.interval.orders.len(), 1);
+
+        // And one that carries an episode delivers it whole: cell, region,
+        // kind and detail, with the omitted count beside it.
+        let mut payload = wire_payload();
+        payload["episodes"] = serde_json::json!([{
+            "cell": "london-1",
+            "region": "europe-west2",
+            "kind": "failure",
+            "recorded_at": 1_700_000_000_000_000_000_i64,
+            "occurred_at": null,
+            "detail": "reconciliation break: the venue reports a fill on an order never sent"
+        }]);
+        payload["episodes_omitted"] = serde_json::json!(3);
+        let decoded = decode_cell_delta(&frame_with(payload)?)?;
+        assert_eq!(decoded.interval.episodes.len(), 1);
+        assert_eq!(decoded.interval.episodes[0].cell, "london-1");
+        assert_eq!(decoded.interval.episodes[0].kind.as_str(), "failure");
+        assert_eq!(decoded.interval.episodes_omitted, 3);
         Ok(())
     }
 

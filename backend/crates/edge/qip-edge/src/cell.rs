@@ -11701,6 +11701,10 @@ impl Cell {
             // Set by `bound_refusals` below, like the refusal counter: the
             // caller does not get to claim a truncation that did not happen.
             crosses_omitted: 0,
+            // The ring as it stands, oldest first; `bound_refusals` keeps the
+            // newest that fit and counts the rest (ADR 0207).
+            episodes: self.episodes.clone(),
+            episodes_omitted: 0,
         };
         delta.bound_refusals();
         delta
