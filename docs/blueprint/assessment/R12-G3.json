@@ -211,9 +211,11 @@
     "evidence": [
       "infrastructure/terraform/modules/connectivity/main.tf:59 google_compute_router interconnect",
       "infrastructure/terraform/modules/connectivity/main.tf:243 google_compute_router_peer vpn_fallback",
-      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl"
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl",
+      "infrastructure/terraform/modules/connectivity/main.tf google_compute_router.interconnect (local.partner_interconnect_asn = 16550), google_compute_router.vpn (var.cloud_router_asn)",
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (16550 on the partner router, the private ASN on the VPN router and its sessions)"
     ],
-    "gap": "2026-10-24: a partner contract and physical circuit are out of band (modules/connectivity/NOT-ORDERED.md); no BGP session can establish until then.",
+    "gap": "2026-10-31 (lane L6, owner ruling decision 10): the defect the 2026-10-11 apply found is fixed in code: PARTNER attachments get their own per-region Cloud Router at Google's required ASN 16550 (a constant), and the HA VPN fallback has its own router, interfaces and peers on the private cloud_router_asn, whose validation is unchanged. No circuit is ordered (a partner contract is a term and a monthly charge the owner declined); the row waits on the partner circuit in modules/connectivity/NOT-ORDERED.md. Earlier: 2026-10-24: a partner contract and physical circuit are out of band (modules/connectivity/NOT-ORDERED.md); no BGP session can establish until then.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -224,7 +226,7 @@
     "verification": "terraform test modules/connectivity",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-31 lane L6: terraform 1.9.8 fmt -check clean; terraform test in a scratch copy, mock provider, 11 passed. Mutations: the partner router back on var.cloud_router_asn failed two runs; the VPN interfaces and peers moved onto the partner router failed the new session assertion. A tunnel's router is a computed id unknown at plan, so moving the tunnel alone is not caught at plan (stated in the test). Each restored and checked with cmp."
   },
   {
     "id": "R12-GCP-10011",
