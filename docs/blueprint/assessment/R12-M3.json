@@ -625,7 +625,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The Brain Registry records a brain; it does not cover a scope. Treating it as the production organisation would redefine the requirement to pass the row. Handed to lane L2b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: an ambient brain covers a scope only through a finding the deep brain composes from its sweep, the brain registry records and does not cover, and the desk's seven scopes keep their test (AMBIENT-3027, AGENCY-3028)."
   },
   {
     "id": "R12-AGENCY-3028",
@@ -647,7 +647,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed. Owner ruling 2026-10-31 (IMPLEMENT): ADR 0146 decision 3 stands: the Causal Agency Brain is registered by its BrainSpec in the deep brain's registry, which refuses to start without it. Handed to lane L2b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-GOV-3029",
@@ -685,7 +685,7 @@
       "backend/crates/apps/qip-cli/tests/agency.rs::a_released_message_that_a_later_policy_prohibits_is_filed_as_a_finding_once",
       "backend/crates/apps/qip-cli/tests/agency.rs::a_draft_too_long_to_keep_whole_is_not_released_and_one_at_the_bound_is"
     ],
-    "gap": "2026-10-24 (lane L5-EDGE, after 288e5887; independent skeptic REFUTED): Any one of: (a) the owner records, in an ADR or a requirement amendment, that a shadow release counts as publication for R12-GOV-3030; or (b) a real publication channel exists and the re-check runs against it. In either case, also: the re-check runs on a scheduled or deployed path rather than only on the next operator CLI run; it uses the gate's full evaluation (not just phrase rules); someone runs the named test and its mutation and quotes the output; and the R12-M3.json record is updated.",
+    "gap": "2026-10-31 owner ruling (REFUSE_LIVE), needs live orders or real capital, or an external action surface ADR 0003 and ADR 0114 D8 refuse: never closable. A shadow release is not a publication, and I will not read it as one. The requirement text decides, for the reason decision 11 of 2026-10-25 gives. A real publication channel is an external action surface: ADR 0114 D8 refuses it and this delegation does not open it. The row stays PARTIAL, and the shadow re-check stays a shadow control. Closes on: Build nothing. Record in the row that its remaining clause needs a publication channel ADR 0114 D8 refuses, and that a shadow release is not publication (ruled 2026-10-31). It reopens only with an ADR amending D8. Earlier: 2026-10-24 (lane L5-EDGE, after 288e5887; independent skeptic REFUTED): Any one of: (a) the owner records, in an ADR or a requirement amendment, that a shadow release counts as publication for R12-GOV-3030; or (b) a real publication channel exists and the re-check runs against it. In either case, also: the re-check runs on a scheduled or deployed path rather than only on the next operator CLI run; it uses the gate's full evaluation (not just phrase rules); someone runs the named test and its mutation and quotes the output; and the R12-M3.json record is updated.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -696,7 +696,7 @@
     "verification": "cargo +1.94.1 test -p qip-agency --test agency the_post_release; cargo +1.94.1 test -p qip-cli --test agency",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L5-EDGE: left MISSING; facts above read from qip-agency guard.rs and journal.rs. 2026-10-24 lane L5-EDGE: built in 288e5887. Mutations fired: recheck skips the fingerprint; the CLI files nothing; the length bound dropped. Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Findings: The mechanism is real, but it re-checks a shadow release, not a publication. Under Part 4 the requirement text decides.  What holds: - `backend/crates/services/qip-agency/src/guard.rs:341-378`: `ActionGuard::recheck_released` re-reads each kept `Voice.content`. It checks the fingerprint, then runs `rule.breach` for every current conduct rule. - `backend/crates/apps/qip-cli/src/agency.rs:392-396`: `Session::open` runs the re-check every time it opens, so it is on the default path of `qip agency shadow` (Part 2 is arguably met). Findings are filed with the next pass and cleared at `:582-588`. - Test: `backend/crates/apps/qip-cli/tests/agency.rs:1086` (`a_released_message_that_a_later_policy_prohibits_is_filed_as_a_finding_once`). Its doc comment states a mutation. I did not run this test or re-run the mutation, so Part 1 is claimed by the commit, not verified by me.  Why REFUTED: 1. The requirement (`docs/blueprint/requirements.md:1372`) says \"Post-publication monitoring of external communications … A published message is re-checked after publication\". The agency is shadow-only: `conduct_brain.rs:33` says \"no live channel anywhere\". Nothing is ever published, so the thing being re-checked is a shadow release. The row's own gap says reading \"published\" as a shadow release is something \"the owner should accept or reject\". No owner acceptance or ADR exists in the tree. 2. \"Monitors\" is weak. The check runs only when an operator next invokes `qip agency shadow`. Per `deploy.yml:468`, `qip-cli` is an operator tool with no deployed or scheduled instance. 3. The re-check applies only the conduct phrase rules (`rule.breach`), not the gate's full `evaluate()` checks (factual support, provenance). So a later evidence failure raises no finding. 4. `docs/blueprint/assessment/R12-M3.j"
+    "notes": "2026-10-24 lane L5-EDGE: left MISSING; facts above read from qip-agency guard.rs and journal.rs. 2026-10-24 lane L5-EDGE: built in 288e5887. Mutations fired: recheck skips the fingerprint; the CLI files nothing; the length bound dropped. Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Findings: The mechanism is real, but it re-checks a shadow release, not a publication. Under Part 4 the requirement text decides.  What holds: - `backend/crates/services/qip-agency/src/guard.rs:341-378`: `ActionGuard::recheck_released` re-reads each kept `Voice.content`. It checks the fingerprint, then runs `rule.breach` for every current conduct rule. - `backend/crates/apps/qip-cli/src/agency.rs:392-396`: `Session::open` runs the re-check every time it opens, so it is on the default path of `qip agency shadow` (Part 2 is arguably met). Findings are filed with the next pass and cleared at `:582-588`. - Test: `backend/crates/apps/qip-cli/tests/agency.rs:1086` (`a_released_message_that_a_later_policy_prohibits_is_filed_as_a_finding_once`). Its doc comment states a mutation. I did not run this test or re-run the mutation, so Part 1 is claimed by the commit, not verified by me.  Why REFUTED: 1. The requirement (`docs/blueprint/requirements.md:1372`) says \"Post-publication monitoring of external communications … A published message is re-checked after publication\". The agency is shadow-only: `conduct_brain.rs:33` says \"no live channel anywhere\". Nothing is ever published, so the thing being re-checked is a shadow release. The row's own gap says reading \"published\" as a shadow release is something \"the owner should accept or reject\". No owner acceptance or ADR exists in the tree. 2. \"Monitors\" is weak. The check runs only when an operator next invokes `qip agency shadow`. Per `deploy.yml:468`, `qip-cli` is an operator tool with no deployed or scheduled instance. 3. The re-check applies only the conduct phrase rules (`rule.breach`), not the gate's full `evaluate()` checks (factual support, provenance). So a later evidence failure raises no finding. 4. `docs/blueprint/assessment/R12-M3.j Owner ruling 2026-10-31 (REFUSE_LIVE): A shadow release is not a publication, and I will not read it as one. The requirement text decides, for the reason decision 11 of 2026-10-25 gives."
   },
   {
     "id": "R12-GOV-3031",
@@ -851,7 +851,7 @@
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review",
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs (first.silent == [ON_CHAIN] on a default cycle)"
     ],
-    "gap": "2026-10-24 (L4): the 'code left' this gap named, the WORLD-1003 narrowing slice, has landed. The requirement's integration clause, 'every member produces state each cycle', still fails on the default composition. qip-kernel tests/symbolic_federation.rs pins the on-chain member as silent on a cycle with no observed chain (assert_eq!(first.silent, vec![ON_CHAIN])), and no committed environment feeds a chain view. Closing it needs a chain view on the default path, or a decision that a member with no input this pass meets 'produces state' by reporting its silence. That decision belongs to an owner or an ADR.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. A member that saw nothing has produced nothing, and a silent member is reported as silent, not counted as state. Redefining the clause to pass the row is what the 2026-10-24 record rules out. Adding a synthetic chain to the default path only to make the on-chain member speak would invent blocks, so the row stays PARTIAL until a real chain node is observed through the egress proxy. Closes on: Once a chain node endpoint and its egress route exist, wire JsonRpcChainAdapter in qip-deepbrain main.rs to feed Platform::observe_chain each cycle. Test: 'a cycle with an observed chain feeds the on-chain member and no member is silent'. Mutation: drop the observe_chain call. Earlier: 2026-10-24 (L4): the 'code left' this gap named, the WORLD-1003 narrowing slice, has landed. The requirement's integration clause, 'every member produces state each cycle', still fails on the default composition. qip-kernel tests/symbolic_federation.rs pins the on-chain member as silent on a cycle with no observed chain (assert_eq!(first.silent, vec![ON_CHAIN])), and no committed environment feeds a chain view. Closing it needs a chain view on the default path, or a decision that a member with no input this pass meets 'produces state' by reporting its silence. That decision belongs to an owner or an ADR.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -862,7 +862,7 @@
     "verification": "cargo test -p qip-world-model --test federation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Federation now built by the kernel; advisory only. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Decisions consume the federation; every member produces state each cycle. 2026-10-24 (L4): gap corrected by reading the code; no code changed."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Federation now built by the kernel; advisory only. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Decisions consume the federation; every member produces state each cycle. 2026-10-24 (L4): gap corrected by reading the code; no code changed. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): A member that saw nothing has produced nothing, and a silent member is reported as silent, not counted as state."
   },
   {
     "id": "R12-WORLD-3038",
@@ -1000,7 +1000,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Build the macro member now on the on-chain member's pattern. It reads the NOW macro partition, forecasts its own series, and is resolved by the next reading, so it speaks the day a catalogued connector is switched on at the deploy and says it is silent until then. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: The macro member forecasts each series' next published level from the catalogued connectors, reads a surprise only where a source states consensus and labels the synthetic tape's surprises simulated, and it may only narrow (amends ADR 0151 decision 10's source clause)."
   },
   {
     "id": "R12-WORLD-3044",
@@ -1033,7 +1033,7 @@
       "backend/crates/services/qip-world-model/src/exposure.rs second_order_exposure",
       "backend/crates/services/qip-world-model/tests/second_order.rs:98"
     ],
-    "gap": "No inventory/logistics/weather model.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. Logistics, shipping and inventory vendors are billed and the owner's under ADR 0157, and none is contracted. A supply-chain member over sources nobody feeds would only add another silent member. The row stays PARTIAL until a licensed source is contracted and the weather connector is switched on at the deploy. Closes on: After a licensed logistics or inventory source has a committed licence record and its egress route is applied, and the NWS connector is enabled at the deploy: add a supply-chain member in federation_stage.rs fed from those records, with a population test that it produces state. Earlier: No inventory/logistics/weather model.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1044,7 +1044,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): Logistics, shipping and inventory vendors are billed and the owner's under ADR 0157, and none is contracted."
   },
   {
     "id": "R12-WORLD-3046",
@@ -1065,7 +1065,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The paper feed already states each trade's aggressor side, and like the simulated depth dataset its terms are the platform's own. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: The simulated tape's aggressor side feeds an order-flow member labelled simulated, which may only narrow, and a licensed tape replaces the source and not the member (amends ADR 0151 decision 6)."
   },
   {
     "id": "R12-WORLD-3047",
@@ -1076,7 +1076,7 @@
       "backend/crates/services/qip-prediction/src/resolution.rs",
       "backend/crates/services/qip-prediction/tests/belief.rs"
     ],
-    "gap": "Not started. The event-market plane (event_markets.rs) belongs to its own paper book and prices markets, not instruments: no belief ties a federation instrument proposition to a pending event resolution, so a member whose view is 'the belief tree's probability for the instrument's pending resolution' has no per-instrument source, and the plane opens only with a licensed source (none is in the catalogue).",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. No event source is licensed, and I am not choosing one now. Vendor choice is billed and stays mine under ADR 0157, and the synthetic venue's outcome stays test-only under ADR 0151 decision 10, which ADR 0182 kept. The row stays PARTIAL until a licence record lands. Then the EventResolution proposition, its resolver and an event member are built, and not before. Closes on: Once a licence record for an event source is committed to qip-data-finder's catalogue under ADR 0157, add three things: an EventResolution proposition, a resolver that reads named observations from that source, and an event member in federation_stage.rs. Add a population check that fails when the member is absent. Earlier: Not started. The event-market plane (event_markets.rs) belongs to its own paper book and prices markets, not instruments: no belief ties a federation instrument proposition to a pending event resolution, so a member whose view is 'the belief tree's probability for the instrument's pending resolution' has no per-instrument source, and the plane opens only with a licensed source (none is in the catalogue).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1087,7 +1087,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): No event source is licensed, and I am not choosing one now. Vendor choice is billed and stays mine under ADR 0157, and the synthetic venue's outcome stays test-only under ADR 0151 decision 10, which ADR 0182 kept."
   },
   {
     "id": "R12-WORLD-3048",
@@ -1138,7 +1138,7 @@
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:72 REGIONAL_PREFIX"
     ],
-    "gap": "Regional scope beyond microstructure.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. The regional member stays microstructure-only. Language, information-ecosystem and logistics inputs need licensed sources that are billed under ADR 0157, and I am not buying any before the deploy. A member widened with in-tree venue and regulation data alone would claim a scope it does not hold, so the row stays PARTIAL. Closes on: After regional news and logistics sources are licensed: extend the regional member's inputs in federation_stage.rs to each scope axis the requirement names, with a population check per axis. Correct the REGIONAL_PREFIX citation to :100 in the meantime. Earlier: Regional scope beyond microstructure.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1149,7 +1149,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): The regional member stays microstructure-only. Language, information-ecosystem and logistics inputs need licensed sources that are billed under ADR 0157, and I am not buying any before the deploy."
   },
   {
     "id": "R12-WORLD-3051",
@@ -1214,7 +1214,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs reason_about_the_queue: reason_symbolically before `let approved`, status set to Rejected on a veto",
       "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs::a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal (now asserts the derivation's input status was approved, the reported status is rejected, the control proposes a leg and the vetoed cycle proposes none)"
     ],
-    "gap": "2026-10-24 (lane L2-INTEL): the skeptic's first finding is closed: the rule pack's verdict is an input to approval (derivation before `approved`, veto demotes to Rejected, with the counters, prediction and tournament reading the rejected status). Still open: (1) 'alongside neural inference' is unmet on any default path: qip-fastbrain's roster forbids a language model and qip-deepbrain's hosted adapter needs a pinned model variable, a terms attestation and a credential that no committed environment sets (DeterministicModel otherwise), so it needs a neural reasoner on a default path or an ADR scoping the clause out; (2) the veto's two reachable stops duplicate ACT's whole-lot gate, so on the default path it changes the record, not the orders. Not re-sent to a skeptic for that reason.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. The society of explicit reasoners is built, and its verdict now decides approval. 'Alongside neural inference' means the deep brain's hosted language model, which stays withheld until a vendor is contracted, attested and credentialed (decision 6); the deterministic default stays, and no in-tree learned model is renamed neural to close the clause. Closes on: Stays PARTIAL until a committed environment constructs the deep brain's hosted adapter (pinned model, terms attestation, credential via qip_core::secret); then re-grade on the banner naming it beside symbolic_stage::derive. Earlier: 2026-10-24 (lane L2-INTEL): the skeptic's first finding is closed: the rule pack's verdict is an input to approval (derivation before `approved`, veto demotes to Rejected, with the counters, prediction and tournament reading the rejected status). Still open: (1) 'alongside neural inference' is unmet on any default path: qip-fastbrain's roster forbids a language model and qip-deepbrain's hosted adapter needs a pinned model variable, a terms attestation and a credential that no committed environment sets (DeterministicModel otherwise), so it needs a neural reasoner on a default path or an ADR scoping the clause out; (2) the veto's two reachable stops duplicate ACT's whole-lot gate, so on the default path it changes the record, not the orders. Not re-sent to a skeptic for that reason.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1225,7 +1225,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test valuation_seam a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Compose at least one symbolic verdict into hypothesis formation, as the verification requires. 2026-10-24 L2-INTEL: mutation re-run: SymbolicDerivation::veto returning None at entry fails the named test at valuation_seam.rs:1528 (the vetoed thesis is queued); restored by copy and cmp, the test passes (1 passed). Skeptic (code-reviewer, read-only, default REFUTED) 2026-10-24: REFUTED as recorded in gap; it confirmed the default path (qip-fastbrain node::run -> run_cycle -> stage_reason -> reason_symbolically) and the mutation. 2026-10-24 L2-INTEL (second pass): mutations fired, each restored by copy and cmp: SymbolicDerivation::veto returning None, and the status demotion disabled (`symbolic_veto.is_some() && false`), each fail the valuation_seam test at the 'hypothesis rejected' assertion."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Compose at least one symbolic verdict into hypothesis formation, as the verification requires. 2026-10-24 L2-INTEL: mutation re-run: SymbolicDerivation::veto returning None at entry fails the named test at valuation_seam.rs:1528 (the vetoed thesis is queued); restored by copy and cmp, the test passes (1 passed). Skeptic (code-reviewer, read-only, default REFUTED) 2026-10-24: REFUTED as recorded in gap; it confirmed the default path (qip-fastbrain node::run -> run_cycle -> stage_reason -> reason_symbolically) and the mutation. 2026-10-24 L2-INTEL (second pass): mutations fired, each restored by copy and cmp: SymbolicDerivation::veto returning None, and the status demotion disabled (`symbolic_veto.is_some() && false`), each fail the valuation_seam test at the 'hypothesis rejected' assertion. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): The society of explicit reasoners is built, and its verdict now decides approval."
   },
   {
     "id": "R12-REASON-3054",
@@ -1330,24 +1330,24 @@
     "status": "PARTIAL",
     "current": "Constraint solver (CSP/SAT/bounded linear integer, minimise, QUBO export) returns an assignment or a minimal unsatisfiable conflict; runs per hypothesis as the acting problem.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:537 derive",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:488 acting() constraint problem",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:16797 reason_symbolically called in REASON for every formed hypothesis",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:1073 derive",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:307 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:1024 acting() constraint problem",
       "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs:598 a_constraint_problem_yields_a_satisfying_assignment_or_a_conflicting_subset_that_is_itself_unsatisfiable"
     ],
-    "gap": "Owner decision O12 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit an SMT/MILP solver crate (Z3 refused by ADR 0099 C5). Enables: SMT theories and MILP in constraint.rs. Costs: A large native dependency or a long in-tree solver.",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): O12 declined: closed by decision (ADR 0150 decision 11, revival decision 12). No SMT or MILP crate is admitted and no long in-tree solver is written, because the cycle poses a few Boolean variables and SMT and MILP are not appropriate there; admission would also need scripts/dependency-allowlist.txt edited under ADR 0109, which is protected and not touched. PARTIAL per bar part 4; reopens only on decision 12's measured, refused, real problem with a deterministic audited crate. constraint.rs:15-16's module doc still cites ADR 0099 C5 for the Z3 refusal, which ADR 0150's Context calls a mis-citation (C5 decided only the research-lane half); correcting that doc comment to cite ADR 0150 decision 11 is a code change outside this register edit and is left for the kernel lane. Earlier: Owner decision O12 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit an SMT/MILP solver crate (Z3 refused by ADR 0099 C5). Enables: SMT theories and MILP in constraint.rs. Costs: A large native dependency or a long in-tree solver.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "owner decision O12 (design-decisions-2026-10-18)",
+    "blocked_by": "",
     "verification": "cargo test -p qip-reasoning-engine --test reasoners",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Now has a production caller; the in-cycle problem is small. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): constraint.rs states 'no SMT theories beyond bounded linear integer'; Z3 refused (ADR 0099 C5); no MILP solver (bounded enumeration only) and no graph solver cited. ADR lane 2026-10-18: gap re-graded against decision O12; gap before it: Only CSP/SAT/bounded-linear-integer and QUBO export exist; SMT, MILP and graph solvers are absent."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Now has a production caller; the in-cycle problem is small. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): constraint.rs states 'no SMT theories beyond bounded linear integer'; Z3 refused (ADR 0099 C5); no MILP solver (bounded enumeration only) and no graph solver cited. ADR lane 2026-10-18: gap re-graded against decision O12; gap before it: Only CSP/SAT/bounded-linear-integer and QUBO export exist; SMT, MILP and graph solvers are absent. Owner ruling 2026-10-31 (REGRADE_TEXT): O12 is declined. No SMT or MILP crate is admitted and no long in-tree solver is written, as ADR 0150 decision 11 already decided: the cycle poses a few Boolean variables, and SMT and MILP are not appropriate there."
   },
   {
     "id": "R12-REASON-3059",
@@ -2096,7 +2096,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "XL",
-    "notes": "Round-2 independent audit, 2026-10-11: Up from MISSING. The registry and scoring are real at scale; the population is not. 2026-10-18 lane L06: not implemented; the grader closure conflates a federation branch with a forecaster. Left PARTIAL with the corrected gap."
+    "notes": "Round-2 independent audit, 2026-10-11: Up from MISSING. The registry and scoring are real at scale; the population is not. 2026-10-18 lane L06: not implemented; the grader closure conflates a federation branch with a forecaster. Left PARTIAL with the corrected gap. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The population is the learning desk's own fitted models. Each decision-eligible card forecasts only its own instrument's question, on the deep brain's existing capacity at no new spend, and a drifted card leaves. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: A fitted model card is a tournament entrant only on its own instrument's question, its probability comes from its own holdout error, and the population is never padded to a count."
   },
   {
     "id": "R12-MODEL-3090",
@@ -2278,7 +2278,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Synthetic worlds may vary what no feed measures. Policy, weather, default and supply drivers get a synthetic-only producer. Handed to lane L3b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: A synthetic world may declare policy, weather, default and supply drivers that no feed produces, every branch they grow stays synthetic, and no such driver reaches UNDERSTAND or REASON (amends 0151 decision 5)."
   },
   {
     "id": "R12-TICK-3098",
@@ -2290,7 +2290,7 @@
       "backend/crates/services/qip-world-model/tests/no_copied_documents.rs",
       "backend/crates/services/qip-twin/src/futures.rs::TwinState"
     ],
-    "gap": "2026-10-24 (re-read against the tree): The unit clause is met (qip-twin tests/futures.rs the_twin_is_a_compact_learned_state_whose_size_does_not_grow_with_history fails if TwinState keeps fitted points). The requirement asks for twins of economically important entities; qip_twin::futures::TwinState holds only per-instrument InstrumentDynamics, no company, macro or other entity twin. TwinState is reached only from qip-deepbrain tick_desk (off) and qip-cli agency shadow when a pass carries an optional twin. Entity twins need entity data under ADR 0157 licence records (owner decision) plus new code.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. The instrument twin meets the constraint and stays as it is. An entity twin, for a company, a central bank or anything else, waits for licensed entity data under an ADR 0157 record and a consumer named under ADR 0151 decision 1. No source and no consumer is invented here, and the row stays PARTIAL. Closes on: First, admit an entity data source under an ADR 0157 licence record and name the decision the twin feeds. Then add an entity twin with compact fitted state in qip-twin. Its test proves the state's size does not grow with history and that it holds no source payload. Earlier: 2026-10-24 (re-read against the tree): The unit clause is met (qip-twin tests/futures.rs the_twin_is_a_compact_learned_state_whose_size_does_not_grow_with_history fails if TwinState keeps fitted points). The requirement asks for twins of economically important entities; qip_twin::futures::TwinState holds only per-instrument InstrumentDynamics, no company, macro or other entity twin. TwinState is reached only from qip-deepbrain tick_desk (off) and qip-cli agency shadow when a pass carries an optional twin. Entity twins need entity data under ADR 0157 licence records (owner decision) plus new code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2301,7 +2301,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): The instrument twin meets the constraint and stays as it is. An entity twin, for a company, a central bank or anything else, waits for licensed entity data under an ADR 0157 record and a consumer named under ADR 0151 decision 1."
   },
   {
     "id": "R12-TICK-3099",
@@ -2391,7 +2391,7 @@
       "backend/crates/runtime/qip-kernel/tests/stress.rs::a_driver_the_understand_stage_established_from_the_tape_is_stressed_through_the_graph",
       "backend/crates/runtime/qip-kernel/src/platform.rs:10798"
     ],
-    "gap": "Third-order propagation: exposure refuses more than two hops (exposure.rs:153). The causal stress may walk four mechanisms, but its only test establishes and walks a single edge. There are no distinct macro, company or supply-chain twins; propagation runs over a generic entity graph and price-tape causal edges, with no supply-chain feed (now_stage.rs:27-29 says supply chain has no feed).",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. The supply-chain twin waits on a supply-chain source licensed under ADR 0157. Port, shipping and commodity-flow data are paid subscriptions, and the choice is mine. Third-order propagation needs no vendor, so it is proved now on the causal stress. Exposure keeps its two-hop ceiling. The row stays PARTIAL until the source exists. Closes on: Now: add the qip-kernel test a_causal_stress_walks_three_established_mechanisms_and_names_the_third_order_instrument; its mutation passes order 2 to propagate. After a supply-chain source is licensed under ADR 0157: its connector, and a supply-chain twin over the entity graph. Earlier: Third-order propagation: exposure refuses more than two hops (exposure.rs:153). The causal stress may walk four mechanisms, but its only test establishes and walks a single edge. There are no distinct macro, company or supply-chain twins; propagation runs over a generic entity graph and price-tape causal edges, with no supply-chain feed (now_stage.rs:27-29 says supply chain has no feed).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2402,7 +2402,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The verification as written (two hops) is met by a test, but the statement's third-order and entity-twin parts are not, so the row is not graded up."
+    "notes": "Round-2 independent audit, 2026-10-11: The verification as written (two hops) is met by a test, but the statement's third-order and entity-twin parts are not, so the row is not graded up. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): The supply-chain twin waits on a supply-chain source licensed under ADR 0157. Port, shipping and commodity-flow data are paid subscriptions, and the choice is mine."
   },
   {
     "id": "R12-RISK-3103",
@@ -2498,7 +2498,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_deferred_gap_admitted_beside_a_fresh_one_ranks_first_through_admit && cargo +1.94.1 test -p qip-contracts --test ambient the_curiosity_rank_is_monotone_in_every_factor_and_zero_when_any_factor_is",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L03: closed. The (1 - cost) form is a register wording note, not a defect. The desk's research queue is still ordered by the curriculum; that is the queue's own ranking, not the acquisition rank this row checks. AUDIT-4: 2026-10-24 regraded, the named test calls urgency_bp directly; replacing ResearchLoop::admit's urgency with the floor leaves it and the whole qip-deepbrain suite green, so the production derivation from the gap's deadline is unproved. 2026-10-24 L2-INTEL: mutations fired, each restored byte-for-byte (cp + cmp): research.rs admit `let urgency = URGENCY_FLOOR_BP;` fails a_deferred_gap_admitted_beside_a_fresh_one_ranks_first_through_admit (rank assertion); ambient.rs net_value_bp `MAX_SEVERITY_BP - self.urgency_bp` and `+ 1` on the quotient each fail the_curiosity_rank_is_monotone_in_every_factor_and_zero_when_any_factor_is. Skeptic (code-reviewer, read-only, default REFUTED) 2026-10-24: REFUTED on bar part 4 (the research queue's own ranking is not the product); default path, formula and both new tests judged to hold. Stale evidence line numbers corrected."
+    "notes": "2026-10-18 lane L03: closed. The (1 - cost) form is a register wording note, not a defect. The desk's research queue is still ordered by the curriculum; that is the queue's own ranking, not the acquisition rank this row checks. AUDIT-4: 2026-10-24 regraded, the named test calls urgency_bp directly; replacing ResearchLoop::admit's urgency with the floor leaves it and the whole qip-deepbrain suite green, so the production derivation from the gap's deadline is unproved. 2026-10-24 L2-INTEL: mutations fired, each restored byte-for-byte (cp + cmp): research.rs admit `let urgency = URGENCY_FLOOR_BP;` fails a_deferred_gap_admitted_beside_a_fresh_one_ranks_first_through_admit (rank assertion); ambient.rs net_value_bp `MAX_SEVERITY_BP - self.urgency_bp` and `+ 1` on the quotient each fail the_curiosity_rank_is_monotone_in_every_factor_and_zero_when_any_factor_is. Skeptic (code-reviewer, read-only, default REFUTED) 2026-10-24: REFUTED on bar part 4 (the research queue's own ranking is not the product); default path, formula and both new tests judged to hold. Stale evidence line numbers corrected. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The Curiosity Engine of §9.10 is the acquisition rank: AcquisitionCriteria::net_value_bp, ordered by rank_acquisitions. Handed to lane L2b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: the curiosity engine is the acquisition rank, the expansion curriculum keeps its own order, and cost enters as the share of the decision's value it leaves (AMBIENT-3106, EXPAND-6063)."
   },
   {
     "id": "R12-AMBIENT-3107",

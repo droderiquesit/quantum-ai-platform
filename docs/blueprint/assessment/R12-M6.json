@@ -188,14 +188,17 @@
   {
     "id": "R12-MODEL-6009",
     "status": "PARTIAL",
-    "current": "Model rollback exists and is tested (predecessor returns at passing digest; refused when no known-good predecessor). Strategies have no artifact rollback: retirement is terminal and a strategy must be re-proposed.",
+    "current": "Model rollback exists, is tested and is reached on the deep brain default path: qip-kernel model_serving.rs:1248 Platform::rollback_model reads the predecessor from the log at its first-promoted digest, refuses a card whose digest differs from the one that passed and refuses when no known-good predecessor exists; qip-deepbrain evolution.rs:737 calls learning.rs:1735 LearningDesk::roll_back_degraded. Strategies have no artifact rollback: retirement is terminal and a strategy must be re-proposed as a new candidate (qip-lifecycle ledger.rs:449 record_promotion refuses a Retired strategy; AuthorisedPromotion at ledger.rs:49).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/tests/serving.rs:518",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs:605",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs:649",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:1248 Platform::rollback_model",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:737 -> learning.rs:1735 LearningDesk::roll_back_degraded",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs:520 a_degraded_model_is_retired_and_the_one_it_displaced_returns_at_the_digest_that_passed",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs:607 a_rollback_refuses_a_predecessor_whose_card_no_longer_carries_the_digest_that_passed",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs:651 a_rollback_with_no_known_good_predecessor_is_refused_and_changes_nothing",
+      "backend/crates/services/qip-lifecycle/src/ledger.rs:449 record_promotion refuses a retired strategy",
       "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:734 retirement terminal, re-proposal required"
     ],
-    "gap": "Strategy rollback is a design decision, not an addition: the lifecycle ledger keys strategies by StrategyId and records stage moves only, so no strategy version or passing digest exists to restore (the model path restores a registered digest, which strategies do not have); and retirement is terminal by test (lifecycle.rs:734), so un-retiring one is a change to a standing decision that needs an ADR. A restore to any rung that holds capital would also have to go through AuthorisedPromotion's dual approval, never around it.",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): strategy rollback is declined. Rollback is to a model artefact, which is what the requirement's own check names ('a degraded model's predecessor returns at the digest that passed; a rollback with no known-good predecessor is refused'), and that is built. A retired strategy is never rolled back; it comes back only as a new candidate up the whole promotion ladder through AuthorisedPromotion, so retirement stays terminal and the one path to capital keeps its one entrance. The strategy reading came from a grader's gap, not the requirement. Nothing changes in code; graded on the three serving.rs tests and LearningDesk::roll_back_degraded. Earlier: Strategy rollback is a design decision, not an addition: the lifecycle ledger keys strategies by StrategyId and records stage moves only, so no strategy version or passing digest exists to restore (the model path restores a registered digest, which strategies do not have); and retirement is terminal by test (lifecycle.rs:734), so un-retiring one is a change to a standing decision that needs an ADR. A restore to any rung that holds capital would also have to go through AuthorisedPromotion's dual approval, never around it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -206,7 +209,7 @@
     "verification": "cargo test -p qip-kernel --test serving",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: a rollback_strategy that re-admitted a retired strategy at a rung without the promotion path would weaken the one-path-to-capital property qip-evolution and the ledger are built around. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: a rollback_strategy that re-admitted a retired strategy at a rung without the promotion path would weaken the one-path-to-capital property qip-evolution and the ledger are built around. Kept PARTIAL. Owner ruling 2026-10-31 (REGRADE_TEXT): Rollback is to a model artefact, which is what the row's own check names, and it is built: a drifted model is retired and its predecessor returns at the digest that passed."
   },
   {
     "id": "R12-EXPAND-6010",
@@ -529,7 +532,7 @@
     "verification": "cargo test -p qip-kernel (new)",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: ReputationBook (qip-cost-router) is separate and unrelated to synthetic capital."
+    "notes": "Round-2 independent audit, 2026-10-11: ReputationBook (qip-cost-router) is separate and unrelated to synthetic capital. Owner ruling 2026-10-31 (IMPLEMENT): ADR 0149 decision 13 stands: the influence weights and the compute allocation stay journaled records that govern nothing. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-EXPAND-6023",
@@ -1522,7 +1525,7 @@
     "verification": "cargo test -p qip-expansion --test loop a_venue_with_no_history_becomes_one_coverage_gap_naming_its_dimension",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: venue and geography added on the deployed path (three of five dimensions); mutations dropping the Venue row from coverage_universe and reading an unknown key prefix as an asset class each fail their test. Status unchanged until languages and causal drivers have a measured source."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: venue and geography added on the deployed path (three of five dimensions); mutations dropping the Venue row from coverage_universe and reading an unknown key prefix as an asset class each fail their test. Status unchanged until languages and causal drivers have a measured source. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): This row needs no capital. Decision 8 filed it with the live-capital rows from the triage's bucket, and I take it out. Handed to lane L4b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Causal-driver coverage is measured on the graph's own drivers against the history of the instruments they reach, and language waits for a source record that states one (amends ADR 0151 decision 12)."
   },
   {
     "id": "R12-EXPAND-6066",
@@ -1563,7 +1566,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 by an independent audit: MISSING->PARTIAL. 2026-10-18 lane L18: gap corrected after reading the calibration and belief-prior types; no code changed."
+    "notes": "Re-graded 2026-10-11 by an independent audit: MISSING->PARTIAL. 2026-10-18 lane L18: gap corrected after reading the calibration and belief-prior types; no code changed. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Beliefs are probabilities, so no belief price level is built. A price/belief discrepancy is the federation's arbitrated probability landing on the wrong side of what the price then did, for the same subject, on PERSIST_SWEEPS consecutive resolutions. Handed to lane L4b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: A price/belief discrepancy is a federation forecast the market keeps resolving against, measured in probability, and no belief price level is built (amends ADR 0151 decision 12)."
   },
   {
     "id": "R12-EXPAND-6068",
@@ -1595,7 +1598,7 @@
       "backend/crates/services/qip-expansion/src/campaigns.rs:46-61",
       "backend/crates/apps/qip-deepbrain/src/research.rs:800-850"
     ],
-    "gap": "The four remaining triggers have no source in the running node: LeadLagState (qip-world-model lead_lag.rs) has no production feeder, so there is no lead/lag anomaly to observe; the platform keeps no queue-position prediction against fill outcome, so QueuePredictionError has no residual; no world-event reaction residual is produced outside the tick desk's fusion; and a paper/replay divergence needs a tick replay of an opened campaign, which needs tick entitlements (the tick desk is off by default). Each trigger's observe call is one line once its residual exists.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. Lead/lag is a millisecond fact between venues, and neither a bar nor a one-venue synthetic book can show one, so no residual is fed from either. The four unfed triggers wait for the tick plane under entitlements and a licensed event source. The row stays PARTIAL with its three measured triggers. Closes on: Once tick entitlements put a multi-venue tick tape on the tick desk, feed LeadLagState from ticks and observe AbnormalLeadLag and PaperReplayDivergence. Once a licensed event source exists, observe WorldEventReaction. Each observe call gets the test 'the trigger yields exactly one queued campaign naming its origin'. Earlier: The four remaining triggers have no source in the running node: LeadLagState (qip-world-model lead_lag.rs) has no production feeder, so there is no lead/lag anomaly to observe; the platform keeps no queue-position prediction against fill outcome, so QueuePredictionError has no residual; no world-event reaction residual is produced outside the tick desk's fusion; and a paper/replay divergence needs a tick replay of an opened campaign, which needs tick entitlements (the tick desk is off by default). Each trigger's observe call is one line once its residual exists.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1606,7 +1609,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "M",
-    "notes": "Checked 2026-10-18: observe_residual accepts all four; the sweep feeds FillPredictionError from fill scores and NewVenue/UnexplainedSlippage from the paper fills. Not wired because a residual with no measurement behind it would be invented."
+    "notes": "Checked 2026-10-18: observe_residual accepts all four; the sweep feeds FillPredictionError from fill scores and NewVenue/UnexplainedSlippage from the paper fills. Not wired because a residual with no measurement behind it would be invented. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): Lead/lag is a millisecond fact between venues, and neither a bar nor a one-venue synthetic book can show one, so no residual is fed from either."
   },
   {
     "id": "R12-EXPAND-6070",
@@ -1824,7 +1827,7 @@
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
       "backend/crates/tests/qip-acceptance/tests/ambient_effect_boundary.rs::a_boundary_suite_pins_that_no_production_code_feeds_an_unidentified_effect_to_the_federation_the_graph_or_the_engine"
     ],
-    "gap": "no causal edge is updated from an ambient result by design: ToolEdge carries declared properties, not a learned strength, and the effect is unidentified (ADR 0145 decision 2). (dated 2026-10-24)",
+    "gap": "2026-10-31 owner ruling (REFUSE_LIVE), needs live orders or real capital, or an external action surface ADR 0003 and ADR 0114 D8 refuse: never closable. The engine turns goals into gated plans and runs them to shadow. It does not turn results back into causal structure, because the only result is an unidentified draft effect, and a learned edge strength for that number is the failure ADR 0145 names. Structure learns only from an identified effect, which needs an action in the world or a hold-out on the desk; neither is opened, and the row stays PARTIAL on that half. Closes on: No code; record the ruling in the row's notes. Revived only by ADR 0145 decision 8 with a named consumer under ADR 0141. Earlier: no causal edge is updated from an ambient result by design: ToolEdge carries declared properties, not a learned strength, and the effect is unidentified (ADR 0145 decision 2). (dated 2026-10-24)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1835,7 +1838,7 @@
     "verification": "cargo +1.94.1 test -p qip-acceptance --test ambient_effect_boundary",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): AffordanceGraph has no operation that takes an attribution and none is added; the boundary is pinned by an acceptance suite."
+    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): AffordanceGraph has no operation that takes an attribution and none is added; the boundary is pinned by an acceptance suite. Owner ruling 2026-10-31 (REFUSE_LIVE): The engine turns goals into gated plans and runs them to shadow. It does not turn results back into causal structure, because the only result is an unidentified draft effect, and a learned edge strength for that number is the failure ADR 0145 names."
   },
   {
     "id": "R12-AGENCY-6079",
@@ -1913,10 +1916,11 @@
       "backend/crates/services/qip-agency/src/affordance.rs:107",
       "backend/crates/services/qip-agency/src/affordance.rs:174",
       "backend/crates/services/qip-agency/src/affordance.rs:219",
-      "backend/crates/services/qip-agency/tests/agency.rs:163",
-      "backend/crates/services/qip-agency/tests/agency.rs:189"
+      "backend/crates/services/qip-agency/tests/agency.rs:165 a_tool_edge_missing_a_declaration_or_on_an_observable_only_variable_is_refused",
+      "backend/crates/services/qip-agency/tests/agency.rs:191 levers_over_generated_graphs_are_only_controllable_variables_with_a_tool_edge",
+      "backend/crates/apps/qip-deepbrain/src/research_plan.rs AffordanceGraph per sweep (research-only, R12-REASON-3061)"
     ],
-    "gap": "Link to the world-model federation's causal graph. Not closable as the grader proposed: the ambient path in qip-deepbrain builds no AffordanceGraph at all (AmbientIntake drafts through the door without one; the only graph is built per request in qip_agency::engine::stages from an operator document), and a federation spec's Scope (domain, region, horizon, abstraction, hypothesis, kind) names no variable, so \"a variable some live world model observes\" has no mapping to check a tool edge against. A gate keyed on an invented mapping would refuse every draft on a node whose federation lacks a spec for the subject. Needs a decision, in an ADR, on how a graph variable is identified with a federation member (for example the FederationStage asset-class map from instrument to domain), then a gate in ambient_agency.rs that builds the graph per draft.",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): no mapping from a graph variable to a federation Scope is invented and no scope gate runs on drafts (ADR 0146 decision 4); the AffordanceGraph stays per request and outside the federation, and a federation link waits for its own record and a consumer that needs it. A federation Scope names no variable, so a gate would refuse every draft on a node with no spec for the subject. The earlier 'builds no AffordanceGraph at all' was older than the code: qip-deepbrain research_plan.rs builds an AffordanceGraph per sweep from registered Research tools (R12-REASON-3061); that graph is research-only, carries no variable mapping and acts on nothing. The row is graded on affordance.rs's tested field and edge refusals. Earlier: Link to the world-model federation's causal graph. Not closable as the grader proposed: the ambient path in qip-deepbrain builds no AffordanceGraph at all (AmbientIntake drafts through the door without one; the only graph is built per request in qip_agency::engine::stages from an operator document), and a federation spec's Scope (domain, region, horizon, abstraction, hypothesis, kind) names no variable, so \"a variable some live world model observes\" has no mapping to check a tool edge against. A gate keyed on an invented mapping would refuse every draft on a node whose federation lacks a spec for the subject. Needs a decision, in an ADR, on how a graph variable is identified with a federation member (for example the FederationStage asset-class map from instrument to domain), then a gate in ambient_agency.rs that builds the graph per draft.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1927,7 +1931,7 @@
     "verification": "cargo test -p qip-agency --test agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-read 2026-10-18 by lane L04; no code changed. The mutated test the closure names (refuse an edge on an unobserved variable) can be written once the mapping exists; Federation::live_specs(now) is the read to use."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed. The mutated test the closure names (refuse an edge on an unobserved variable) can be written once the mapping exists; Federation::live_specs(now) is the read to use. Owner ruling 2026-10-31 (REGRADE_TEXT): No mapping from a graph variable to a federation Scope is invented, and no scope gate runs on drafts (ADR 0146 decision 4)."
   },
   {
     "id": "R12-AGENCY-6083",
@@ -2150,7 +2154,7 @@
       "backend/crates/services/qip-agency/src/engine.rs:187 Adapter trait: nothing implements it outside tests",
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call"
     ],
-    "gap": "Publishing externally is refused; agents may draft for a person through the drafting adapter (ADR 0114 Amendment 1).",
+    "gap": "2026-10-31 owner ruling (REFUSE_LIVE), needs live orders or real capital, or an external action surface ADR 0003 and ADR 0114 D8 refuse: never closable. O16 is declined for publishing: ADR 0114 D8 stands, and no agent publishes to the outside world. Agents draft through the drafting adapter for a person to post under their own credential. This is an external action surface that no delegation opens, so the row stays BLOCKED. Closes on: Nothing is built: blocked_by reads 'ADR 0114 D8, confirmed 2026-10-11 and 2026-10-31 (O16 declined)', and evidence is refreshed to engine.rs:245 Adapter and outbox.rs:140 DraftingAdapter. Earlier: Publishing externally is refused; agents may draft for a person through the drafting adapter (ADR 0114 Amendment 1).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2161,7 +2165,7 @@
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (REFUSE_LIVE): O16 is declined for publishing: ADR 0114 D8 stands, and no agent publishes to the outside world."
   },
   {
     "id": "R12-AGENCY-6093",
@@ -2171,7 +2175,7 @@
       "backend/crates/services/qip-agency/src/engine.rs:187 Adapter trait: nothing implements it outside tests",
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call"
     ],
-    "gap": "Outreach is refused; agents may draft for a person through the drafting adapter (ADR 0114 Amendment 1).",
+    "gap": "2026-10-31 owner ruling (REFUSE_LIVE), needs live orders or real capital, or an external action surface ADR 0003 and ADR 0114 D8 refuse: never closable. O16 is declined for outreach: no agent messages, negotiates with or requests anything of an outside party. A person sends what an agent drafts through the drafting adapter, under their own identity. This is an external action surface that the delegation does not open, and the row stays BLOCKED. Closes on: Nothing is built: blocked_by reads 'ADR 0114 D8, confirmed 2026-10-11 and 2026-10-31 (O16 declined)', and evidence is refreshed to engine.rs:245 Adapter and outbox.rs:140 DraftingAdapter. Earlier: Outreach is refused; agents may draft for a person through the drafting adapter (ADR 0114 Amendment 1).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2182,7 +2186,7 @@
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (REFUSE_LIVE): O16 is declined for outreach: no agent messages, negotiates with or requests anything of an outside party."
   },
   {
     "id": "R12-AGENCY-6094",
@@ -2193,7 +2197,7 @@
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call",
       "backend/crates/services/qip-data-finder/src/decision.rs:464"
     ],
-    "gap": "Owner decision O16 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Reopen ADR 0114 D8 for an outbound channel or external action surface. Enables: A real channel behind ConductGate, surveys, public adapters. Costs: A public channel, its credential and account, and reputational exposure.",
+    "gap": "2026-10-31 owner ruling (REFUSE_LIVE), needs live orders or real capital, or an external action surface ADR 0003 and ADR 0114 D8 refuse: never closable. O16 is declined: ADR 0114 D8 stands, so no survey or experiment is run on the outside world and no public research adapter is built. Lawful acquisition through qip-data-finder and internal simulation are the research surface, and a request for evidence or a commissioned campaign is drafted for a person through the drafting adapter. The row stays PARTIAL against the refused outward clause. Closes on: No outward adapter is built: the gap reads 'O16 declined 2026-10-31: ADR 0114 D8 stands; lawful acquisition (qip-data-finder) and internal simulation exist; outward surveys/experiments refused, drafts only', blocked_by names ADR 0114 D8, and the row stays PARTIAL per bar part 4. Earlier: Owner decision O16 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Reopen ADR 0114 D8 for an outbound channel or external action surface. Enables: A real channel behind ConductGate, surveys, public adapters. Costs: A public channel, its credential and account, and reputational exposure.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2204,7 +2208,7 @@
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O16; gap before it: Survey/experiment actions on the outside world need an ADR."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O16; gap before it: Survey/experiment actions on the outside world need an ADR. Owner ruling 2026-10-31 (REFUSE_LIVE): O16 is declined: ADR 0114 D8 stands, so no survey or experiment is run on the outside world and no public research adapter is built."
   },
   {
     "id": "R12-AGENCY-6095",
@@ -2214,7 +2218,7 @@
       "backend/crates/services/qip-agency/src/engine.rs:187 Adapter trait: nothing implements it outside tests",
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call"
     ],
-    "gap": "Product pricing as an action is refused; a price analysis may be drafted for a person.",
+    "gap": "2026-10-31 owner ruling (REFUSE_LIVE), needs live orders or real capital, or an external action surface ADR 0003 and ADR 0114 D8 refuse: never closable. There is no product to price, and pricing as an agent's action is an external action that ADR 0114 D8 refuses. A price analysis is drafted for a person to act on. The row stays BLOCKED, and a product decision would need its own record before this is even a question. Closes on: Nothing is built: blocked_by reads 'ADR 0114 D8, confirmed 2026-10-11 and 2026-10-31; no product exists to price', and evidence is refreshed to engine.rs:245 Adapter and outbox.rs:140 DraftingAdapter. Earlier: Product pricing as an action is refused; a price analysis may be drafted for a person.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2225,7 +2229,7 @@
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (REFUSE_LIVE): There is no product to price, and pricing as an agent's action is an external action that ADR 0114 D8 refuses."
   },
   {
     "id": "R12-AGENCY-6096",
@@ -2236,7 +2240,7 @@
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call",
       "backend/crates/services/qip-agency/tests/agency.rs:1249 operational tool outside owned registry refused"
     ],
-    "gap": "Operational change by an agent is refused (and change-management rules forbid an agent deploying); a change may be drafted for a person.",
+    "gap": "2026-10-31 owner ruling (REFUSE_LIVE), needs live orders or real capital, or an external action surface ADR 0003 and ADR 0114 D8 refuse: never closable. An agent changes no operational system and deploys nothing. ADR 0114 D8 and the change-management rule both stand, and neither is reopened under the delegation. A change is drafted for a person, and the affordance graph keeps operational edges confined to the owned-system registry. Closes on: Nothing is built: blocked_by reads 'ADR 0114 D8 and .claude/rules/02-change-management.md, confirmed 2026-10-31', and the owned-registry test evidence is refreshed to tests/agency.rs:1439. Earlier: Operational change by an agent is refused (and change-management rules forbid an agent deploying); a change may be drafted for a person.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2247,7 +2251,7 @@
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (REFUSE_LIVE): An agent changes no operational system and deploys nothing. ADR 0114 D8 and the change-management rule both stand, and neither is reopened under the delegation."
   },
   {
     "id": "R12-AGENCY-6097",
@@ -2257,7 +2261,7 @@
       "backend/crates/services/qip-agency/src/engine.rs:187 Adapter trait: nothing implements it outside tests",
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call"
     ],
-    "gap": "Moves real capital and collateral.",
+    "gap": "2026-10-31 owner ruling (REFUSE_LIVE), needs live orders or real capital, or an external action surface ADR 0003 and ADR 0114 D8 refuse: never closable. No agent allocates, hedges, rebalances, reserves liquidity or moves collateral with real capital. ADR 0003 and ADR 0021 stand, and ADR 0108 stays proposed: only the owner can accept it, in writing. Decision 8 of 2026-10-25 keeps this row BLOCKED. Paper allocation and hedging in the kernel are untouched. Closes on: Nothing is built: blocked_by reads 'ADR 0003, ADR 0021; ADR 0108 proposed, not accepted; confirmed 2026-10-31', and the row stays BLOCKED. Earlier: Moves real capital and collateral.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2268,7 +2272,7 @@
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (REFUSE_LIVE): No agent allocates, hedges, rebalances, reserves liquidity or moves collateral with real capital."
   },
   {
     "id": "R12-AGENCY-6098",
@@ -2278,7 +2282,7 @@
       "backend/crates/services/qip-agency/src/engine.rs:187 Adapter trait: nothing implements it outside tests",
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call"
     ],
-    "gap": "Live market actions.",
+    "gap": "2026-10-31 owner ruling (REFUSE_LIVE), needs live orders or real capital, or an external action surface ADR 0003 and ADR 0114 D8 refuse: never closable. Refused. A market action that leaves paper is a live order, ADR 0003 holds until I accept ADR 0108 in writing, and I do not; narrowing the requirement to paper actions would redefine it to pass the row, so the row stays BLOCKED. Closes on: None. The row stays BLOCKED under ADR 0003. Correct the evidence line so it names DraftingAdapter, which only writes drafts, beside Unwired; no code is written. Earlier: Live market actions.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2289,7 +2293,7 @@
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (REFUSE_LIVE): Refused. A market action that leaves paper is a live order, ADR 0003 holds until I accept ADR 0108 in writing, and I do not; narrowing the requirement to paper actions would redefine it to pass the row, so the row stays BLOCKED."
   },
   {
     "id": "R12-AGENCY-6099",
@@ -2416,11 +2420,11 @@
     "status": "PARTIAL",
     "current": "EffectAttribution::validate refuses missing chain, confounders, rivals, side effects, observations, out-of-range identifiability; qip-cli widening refuses such attributions on the journal.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs:466 validate",
-      "backend/crates/services/qip-agency/tests/agency.rs:471 an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused",
+      "backend/crates/libs/qip-contracts/src/expansion.rs:477 EffectAttribution::validate",
+      "backend/crates/services/qip-agency/tests/agency.rs:484 an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::an_attribution_missing_its_chain_confounders_rivals_or_horizons_is_refused_on_the_record"
     ],
-    "gap": "validation admits one horizon by decision (raising it broke 14 tests for a property no producer supplies). The simulator evaluates at the plan's one time_to_effect_secs; the ambient door drops a draft at its first follow-up and a second horizon of an unidentified effect has no consumer (ADR 0145 decision 7). (dated 2026-10-24)",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is restated per ADR 0145 decision 7 as 'at least one distinct horizon; two where a producer observes them'. One distinct horizon stays the minimum; a second is required only when a producer observes one and a record under ADR 0141 consumes it, and no second sweep is built to add a horizon to an unidentified effect. EffectAttribution::validate (qip-contracts expansion.rs:477) refuses empty observations, zero or non-finite horizons and a horizon named twice; raising the minimum to two would refuse every attribution from both producers (the simulator's one time_to_effect_secs and the door's first follow-up), which is what lane L12's probe showed when it broke 14 tests. Graded on validate and its two refusal tests. Earlier: validation admits one horizon by decision (raising it broke 14 tests for a property no producer supplies). The simulator evaluates at the plan's one time_to_effect_secs; the ambient door drops a draft at its first follow-up and a second horizon of an unidentified effect has no consumer (ADR 0145 decision 7). (dated 2026-10-24)",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2431,7 +2435,7 @@
     "verification": "cargo test -p qip-agency -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Probed 2026-10-18 (lane L12): requiring two distinct horizons in qip-contracts EffectAttribution::validate failed 14 tests in five crates, every failure an attribution built by one of the two producers above, so the change was reverted rather than shipped with the producers refused. Kept PARTIAL. Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): EffectAttribution::validate keeps one distinct horizon as the minimum; a second horizon is supplied only by a producer that observes one, and none does."
+    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Probed 2026-10-18 (lane L12): requiring two distinct horizons in qip-contracts EffectAttribution::validate failed 14 tests in five crates, every failure an attribution built by one of the two producers above, so the change was reverted rather than shipped with the producers refused. Kept PARTIAL. Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): EffectAttribution::validate keeps one distinct horizon as the minimum; a second horizon is supplied only by a producer that observes one, and none does. Owner ruling 2026-10-31 (REGRADE_TEXT): One distinct horizon stays the minimum (ADR 0145 decision 7). A second is required only when a producer observes one and a record under ADR 0141 consumes it."
   },
   {
     "id": "R12-AGENCY-6105",
@@ -2440,11 +2444,15 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter (no agency target)",
       "backend/crates/services/qip-agency/src/ambient_intake.rs::AmbientIntake",
-      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs::AmbientAgency::route"
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs::AmbientAgency::route",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::the_run_loop_routes_activated_ambient_signals_through_the_guard_into_the_outbox",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_revoked_drafting_tool_withholds_every_draft_and_leaves_the_platform_log_identical",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::every_draft_the_node_writes_is_executed_under_the_one_registered_identity",
+      "backend/crates/tests/qip-acceptance/tests/ambient_effect_boundary.rs (run_governed and similar calls absent from the ambient door)"
     ],
-    "gap": "the ambient path runs no engine::run by decision; the eight stages before ObserveEffect on a learning record are seated, not run, and the record says so (ADR 0145 decisions 4 and 5). (dated 2026-10-24)",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is restated to the guard path per ADR 0145 decisions 4 and 5: opportunity, promotion, ActionGuard, then the outbox draft. The ambient door runs the guard, not engine::run, and no per-opportunity structural model of what a notice changes is written (it would restate the declaration d4 refuses); running eleven stages over one draft tool would restate standing policy, and writing that model to pass the row is the invented closure the 2026-10-24 record rules out. DesiredOutcome and ActionOpportunity are not built, by decision. tested set from the deepbrain ambient_agency node tests. Earlier: the ambient path runs no engine::run by decision; the eight stages before ObserveEffect on a learning record are seated, not run, and the record says so (ADR 0145 decisions 4 and 5). (dated 2026-10-24)",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -2452,10 +2460,10 @@
       "R12-AGENCY-6079"
     ],
     "blocked_by": "",
-    "verification": "cargo test (new integration)",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency; cargo +1.94.1 test -p qip-acceptance --test ambient_effect_boundary",
     "work_item": "",
     "size": "M",
-    "notes": "Re-read 2026-10-18 (lane L10) against qip-agency ambient_intake.rs::attempt and qip-deepbrain ambient_agency.rs: the sub-goal exists and is journaled; the engine stages do not run. Held PARTIAL with the reason above rather than a one-edge SCM invented to satisfy the check. Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): No per-opportunity structural model of what a notice changes is written; the ambient path declares none and runs the guard, not engine::run."
+    "notes": "Re-read 2026-10-18 (lane L10) against qip-agency ambient_intake.rs::attempt and qip-deepbrain ambient_agency.rs: the sub-goal exists and is journaled; the engine stages do not run. Held PARTIAL with the reason above rather than a one-edge SCM invented to satisfy the check. Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): No per-opportunity structural model of what a notice changes is written; the ambient path declares none and runs the guard, not engine::run. Owner ruling 2026-10-31 (REGRADE_TEXT): The ambient door runs the guard, not engine::run, and no per-opportunity structural model of what a notice changes is written (ADR 0145 decisions 4 and 5)."
   },
   {
     "id": "R12-AGENCY-6106",
@@ -2469,7 +2477,7 @@
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
       "backend/crates/tests/qip-acceptance/tests/ambient_effect_boundary.rs::a_boundary_suite_pins_that_no_production_code_feeds_an_unidentified_effect_to_the_federation_the_graph_or_the_engine"
     ],
-    "gap": "no production pass runs all eleven stages on the ambient door by decision; the CLI shadow binary runs engine::run and shadows Act (ADR 0145 decision 5). (dated 2026-10-24)",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is restated per ADR 0145 decision 5 as an eleven-stage pass on the qip agency shadow path, which runs Observe through Gate, shadows Act and learns through learn_shadowed (engine.rs ORDER :76, StageLog :99, learn_shadowed :801, called from qip-cli agency.rs:607), with seated stages on the deep brain door, which seats eight and runs three and says so in the DraftLearning record. That CLI reading is accepted as the requirement; amending ADR 0145 d5 would need the structural model d4 refuses. Graded on the cited CLI and acceptance tests. Earlier: no production pass runs all eleven stages on the ambient door by decision; the CLI shadow binary runs engine::run and shadows Act (ADR 0145 decision 5). (dated 2026-10-24)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2480,7 +2488,7 @@
     "verification": "cargo +1.94.1 test -p qip-acceptance --test ambient_effect_boundary",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): The deep brain door runs the guard rather than the engine; the first eight stages of a learning record stay documented as seated."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): The deep brain door runs the guard rather than the engine; the first eight stages of a learning record stay documented as seated. Owner ruling 2026-10-31 (REGRADE_TEXT): The eleven-stage pass belongs to the shadow binary. qip agency shadow runs Observe through Gate, shadows Act and learns through learn_shadowed."
   },
   {
     "id": "R12-AGENCY-6107",
@@ -2525,7 +2533,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs::three_measured_outcomes_at_zero_attribution_confidence_recommend_nothing_however_positive_their_mean",
       "backend/crates/services/qip-agency/src/memory.rs ActionOutcomeMemory::recommend_for"
     ],
-    "gap": "2026-10-24: learning which actions work needs a recommendation the memory can return; with production outcomes all at attribution confidence 0 the default node's recommend_for is always empty, and its answer changes no draft; recommend_for is exercised only by tests that seed positive confidence",
+    "gap": "2026-10-31 owner ruling (REFUSE_LIVE), needs live orders or real capital, or an external action surface ADR 0003 and ADR 0114 D8 refuse: never closable. The memory recommends only on identified outcomes. On the default node it holds none, so it answers 'nothing', and that answer gates no draft; that is the truth and it stays. The memory will learn which actions work once an identified outcome exists, which needs an action in the world or a hold-out on the desk, and neither is opened. Closes on: No code; record the ruling in the row's notes. When ADR 0145 decision 8 is met (and R12-AGENCY-6078, 6104 move), a lane lets ask withhold or shape a draft on recommend_for. Earlier: 2026-10-24: learning which actions work needs a recommendation the memory can return; with production outcomes all at attribution confidence 0 the default node's recommend_for is always empty, and its answer changes no draft; recommend_for is exercised only by tests that seed positive confidence",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2536,7 +2544,7 @@
     "verification": "cargo +1.94.1 test -p qip-agency --test agency zero_attribution",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Audience and delay dimensions now present and tested; integration still absent, so still PARTIAL. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): ActionOutcomeMemory::recommend_for counts only records with attribution_confidence above zero; the answer still gates no draft. Mutation: remove the attribution_confidence filter in recommend_for: three Measured outcomes at confidence 0 with a positive mean effect return Some(..) and the test fails, which is the right failure fired. AUDIT-2 2026-10-24: regraded, learning which actions work needs a recommendation the memory can return; with production outcomes all at attribution confidence 0 the default node's recommend_for is always empty, and its answer changes no draft; recommend_for is exercised only by tests that seed positive confidence"
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Audience and delay dimensions now present and tested; integration still absent, so still PARTIAL. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): ActionOutcomeMemory::recommend_for counts only records with attribution_confidence above zero; the answer still gates no draft. Mutation: remove the attribution_confidence filter in recommend_for: three Measured outcomes at confidence 0 with a positive mean effect return Some(..) and the test fails, which is the right failure fired. AUDIT-2 2026-10-24: regraded, learning which actions work needs a recommendation the memory can return; with production outcomes all at attribution confidence 0 the default node's recommend_for is always empty, and its answer changes no draft; recommend_for is exercised only by tests that seed positive confidence Owner ruling 2026-10-31 (REFUSE_LIVE): The memory recommends only on identified outcomes. On the default node it holds none, so it answers 'nothing', and that answer gates no draft; that is the truth and it stays."
   },
   {
     "id": "R12-CONTRACT-6109",
