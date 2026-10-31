@@ -187,6 +187,12 @@ pub struct DeltaRefusal {
     /// one written by a gate that names no venue read the same.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub venue: Option<String>,
+    /// The legs of the cycle refused, for a refusal that refused a whole
+    /// arbitrage cycle, so the centre can price what declining it cost
+    /// (R12-MESH-5068). Empty for every other gate, and absent on the wire
+    /// rather than `[]`, for the reason `venue` gives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legs: Vec<qip_contracts::wire::RefusedLeg>,
 }
 
 /// What one cell tells the centre about itself.
@@ -1801,6 +1807,7 @@ mod tests {
                     gate: format!("gate-{index}"),
                     reason: "no".to_string(),
                     venue: None,
+                    legs: Vec::new(),
                 })
                 .collect(),
             refusals_omitted: 0,

@@ -46,6 +46,7 @@ use qip_contracts::policy::Dispositions;
 use qip_contracts::regional_episode::{EpisodeKind, RegionalEpisode};
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_contracts::wire::RefusedLeg;
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, Duration, ObjectId, Timestamp};
 // LegGroup imported to make saga coordinators reachable from production cell
@@ -1192,6 +1193,11 @@ pub struct WorkReport {
     /// pair is read by every test and by `refused_under`, and a posture
     /// refusal has no venue to carry.
     pub feasibility_venues: Vec<(usize, VenueId)>,
+    /// The legs of each arbitrage cycle refused whole this pass, keyed by
+    /// the index in `refusals` of the refusal that refused it, for the same
+    /// reason `feasibility_venues` is a side table (R12-MESH-5068). Only
+    /// `admit_cycle` pushes here.
+    pub refused_legs: Vec<(usize, Vec<RefusedLeg>)>,
     /// Every internal cross booked this pass (§27.1). A cross is a trade
     /// between two of the platform's own strategies; it is reported rather
     /// than merely journaled so a caller can see it without replaying the
@@ -9140,6 +9146,35 @@ impl Cell {
         // of them is admitted: §32.1's gate is about the set, and a set
         // cannot be judged one member at a time.
         let proposed: Vec<Intent> = legs.into_iter().map(Into::into).collect();
+        let refused_legs: Vec<RefusedLeg> = proposed.iter().map(refused_leg).collect();
+        let before = report.refusals.len();
+        let admitted = self.admit_cycle_legs(opportunity, cycle_id, proposed, pending, now, report);
+        // R12-MESH-5068: a cycle refused whole carries what was proposed, so
+        // the centre can price what declining it cost. Attached to the last
+        // refusal this attempt recorded, because every refusing path ends
+        // with the whole-cycle refusal (`veto_cycle` or a `refused whole`
+        // line), after any leg-level refusal the gate that found it wrote.
+        // One join point rather than a leg list threaded through each veto,
+        // so a refusal added to the path later cannot ship without its legs.
+        if admitted.is_none()
+            && report.refusals.len() > before
+            && refused_legs.len() <= qip_contracts::wire::MAX_REFUSED_LEGS
+        {
+            let index = report.refusals.len() - 1;
+            report.refused_legs.push((index, refused_legs));
+        }
+        admitted
+    }
+
+    fn admit_cycle_legs(
+        &mut self,
+        opportunity: &Opportunity,
+        cycle_id: &str,
+        proposed: Vec<Intent>,
+        pending: Decimal,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) -> Option<AdmittedCycle> {
         let venues: Vec<VenueId> = proposed.iter().map(|leg| leg.venue.clone()).collect();
         // Before anything else is judged: a cycle with a leg at a venue the
         // cell cannot see, or one that is rejecting orders, is refused whole.
@@ -11679,6 +11714,12 @@ impl Cell {
                         .iter()
                         .find(|(at, _)| *at == index)
                         .map(|(_, venue)| venue.as_str().to_string()),
+                    legs: report
+                        .refused_legs
+                        .iter()
+                        .find(|(at, _)| *at == index)
+                        .map(|(_, legs)| legs.clone())
+                        .unwrap_or_default(),
                 })
                 .collect(),
             // Set by `bound_refusals` below; the caller does not get to claim
@@ -12733,6 +12774,23 @@ fn gap_detail(event: &qip_sequencing::tracker::SequenceEvent) -> Option<(String,
             ),
         )),
         SequenceEvent::StreamStarted { .. } | SequenceEvent::Duplicate { .. } => None,
+    }
+}
+
+/// The leg an intent proposed, as a refusal carries it: a positive size buys
+/// on the ask and a negative one sells on the bid, the convention every
+/// order the cell sends uses.
+fn refused_leg(intent: &Intent) -> RefusedLeg {
+    RefusedLeg {
+        object_id: intent.object_id.clone(),
+        venue: intent.venue.clone(),
+        side: if intent.signed_size.is_negative() {
+            BookSide::Bid
+        } else {
+            BookSide::Ask
+        },
+        quantity: intent.signed_size.abs(),
+        reference_price: intent.reference_price,
     }
 }
 

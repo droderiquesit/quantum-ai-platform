@@ -1616,9 +1616,14 @@
     "status": "PARTIAL",
     "current": "Kernel score_declined scores declined central proposals (backend/crates/runtime/qip-kernel/src/platform.rs:17244), not cell/mesh cycles; refused cycles are journaled at the cell (refusals with gate) but nothing scores them.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined (proposals only)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined (proposals only)",
+      "backend/crates/libs/qip-contracts/src/wire.rs::RefusedLeg",
+      "backend/crates/edge/qip-edge/src/cell.rs::admit_cycle (legs attached to the whole-cycle refusal)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::score_cell_declined",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs::a_cycle_refused_whole_carries_its_legs_to_the_centre_and_a_leg_refusal_carries_none",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate"
     ],
-    "gap": "Cell refusals cannot be priced from the centre: a cell's report carries them as DeltaRefusal { gate, reason, venue } only (qip-edge cell.rs refusals: Vec<(String, String)>, mesh.rs DeltaRefusal), with no instrument, side or quantity, and the twin's evaluate_alternatives needs an order to re-price. Closing needs the cell wire to carry the refused intent (a qip-mesh/qip-edge change outside the kernel) or the cell to price locally; then score_declined can queue them beside the desk's own. The desk's own refusals are already captured and priced (tests/learning.rs a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate).",
+    "gap": "2026-10-31 (lane L5-EDGE, skeptic HOLDS-AS-PARTIAL): a cycle refused whole in admit_cycle is carried to the centre with its legs and priced in LEARN, but the centre ingests deltas only under QIP_MESH_CELLS and the node sends them only under QIP_MESH_PEER, both unset in every committed environment; failed and partial cycles (arbitrage_cycle_broken, partial fills) and refusals before admission (arbitrage_cap, arbitrage_legs, autonomy) carry no legs; a delta superseded in the node's slot, or re-offered after a failed pass under a new instant, loses or re-queues its refusals; and regret is judged per leg, not per cycle.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1626,10 +1631,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new kernel/learning test over cycle refusals",
+    "verification": "cargo test -p qip-kernel --test learning -- a_cells_refused_cycle; cargo test -p qip-edge --test arbitrage -- a_cycle_refused_whole",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the wire, not a missing call in score_declined."
+    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the wire, not a missing call in score_declined. 2026-10-31 lane L5-EDGE: RefusedLeg on both DeltaRefusal types (absent on the wire when empty); the cell attaches the cycle's legs to the last refusal admit_cycle recorded; the centre queues them apart from the desk's declined paths (which feed its sizing), keyed for replay, only for instruments it holds bars for, bounded by DECLINED_HISTORY, and prices them after score_filled under what the cap leaves, counted under gate=cell_cycle with the cell's gate kept on the score. The wire's Ask-is-buy side is crossed to the twin's Bid-is-long at evaluate_cell_refusal. Mutations fired (8): drop the queue call; skip the scoring pass; no replay guard; drop the refused_legs push; attach legs to the first refusal; pass the wire side through unchanged; label with the wire gate; queue unobserved instruments. Found by the skeptic and not changed here: the desk's own declined-path pricing passes book_side(Buy)=Ask to the twin, which reads Bid as long, so the desk's declined scores may carry the inverted sign; that path feeds desk sizing and is left for its owner."
   },
   {
     "id": "R12-MESH-5069",
