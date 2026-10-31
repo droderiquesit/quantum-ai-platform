@@ -54,9 +54,11 @@ use qip_market_ingestion::connector::evidence::CheckedEvidence;
 use qip_observability::metrics::labels;
 use qip_world_model::causal::CausalEdge;
 use qip_world_model::fabric::{ClaimKey, JournaledClaim, KeyOutcome};
+use qip_world_model::graph::Node;
 pub use qip_world_model::poisoning::{
     PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning,
 };
+use qip_world_model::relationship::Relationship;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,6 +74,24 @@ pub const EVIDENCE_POISONING_FINDINGS: &str = "qip_evidence_poisoning_findings_t
 /// Refusal reasons kept on one report. The counter carries the total; the
 /// first few reasons are what an operator reads on the cycle line.
 pub const REFUSALS_RETAINED: usize = 8;
+
+/// One relationship handed to [`Platform::absorb_knowledge`]: the typed edge,
+/// the instant it became true, and the confidence it is asserted with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KnowledgeRelation {
+    pub relationship: Relationship,
+    pub valid_from: Timestamp,
+    pub confidence: f64,
+}
+
+/// What one [`Platform::absorb_knowledge`] call wrote.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KnowledgeIntake {
+    pub nodes_added: usize,
+    /// Nodes handed in that the graph already held, left as they were.
+    pub nodes_held: usize,
+    pub relations: usize,
+}
 
 /// The producer on every knowledge-delta record, so a replay picks them out
 /// of the `world_model.updated` topic they share with the NOW, lattice and
@@ -563,6 +583,53 @@ impl Platform {
             .filter(|subject| !world.causal().incoming(subject, now).is_empty())
             .map(str::to_string)
             .collect()
+    }
+
+    /// Record extracted knowledge in the knowledge graph: nodes the graph
+    /// does not yet hold, then typed relationships between nodes it does,
+    /// each holding from its own `valid_from` and known from `now`
+    /// (R12-EXPAND-6031).
+    ///
+    /// The seam the cross-domain synthesis reads behind. `WorldModel::relate`
+    /// existed and, outside `seed_demo_world` and tests, nothing in a deployed
+    /// process called it, so the graph the synthesis walks holds the nodes the
+    /// kernel adds for its own instruments and no entity and no edge. This is
+    /// the one door for what a connector's or reference feed's extraction
+    /// would hand in; it has no production caller yet, and the assessment row
+    /// says so rather than this comment implying otherwise. A node already
+    /// held is left as it was, because its `recorded_at` answers "when did the
+    /// platform first hear of this" and must not be rewritten; a relationship
+    /// the graph refuses — to a node it does not hold, or with a confidence
+    /// outside the unit interval — stops the intake with the refusal, after
+    /// the nodes and the relationships before it have been written, and the
+    /// count on the error path is the caller's to read from the graph.
+    pub fn absorb_knowledge(
+        &mut self,
+        nodes: Vec<Node>,
+        relations: Vec<KnowledgeRelation>,
+        now: Timestamp,
+    ) -> Result<KnowledgeIntake> {
+        self.world.update(|world| {
+            let mut intake = KnowledgeIntake::default();
+            for node in nodes {
+                if world.graph().node(&node.id).is_some() {
+                    intake.nodes_held += 1;
+                    continue;
+                }
+                world.graph_mut().add_node(node)?;
+                intake.nodes_added += 1;
+            }
+            for relation in relations {
+                world.relate(
+                    relation.relationship,
+                    relation.valid_from,
+                    now,
+                    relation.confidence,
+                )?;
+                intake.relations += 1;
+            }
+            Ok(intake)
+        })
     }
 
     /// Admit one causal claim to the world model, on the world model's own

@@ -46,7 +46,7 @@ use crate::plan::{AcquisitionAction, Environment};
 use crate::promotion::{
     Criterion, EvaluationRecord, Finding, Provenance, ResearchCampaign, verb_for,
 };
-use qip_contracts::expansion::CapabilityVerb;
+use qip_contracts::expansion::{CapabilityVerb, ExperimentPack};
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256_hex;
 use qip_core::rng::{Rng, Xoshiro256};
@@ -238,6 +238,75 @@ pub struct CampaignResult {
 /// model at the close of its shadow window (ADR 0142 d5): the proof the ADR
 /// asks for is that no installation falls inside the shadow window and that
 /// every paper fill arrives after this instant.
+impl CampaignResult {
+    /// The campaign's experiment pack (R12-EXPAND-6035): what it researched,
+    /// what it built, the backtest it rests on and what it proposes, as the
+    /// validated contract record. The backtest is the Historical stage — the
+    /// residuals the correction was fitted on, by digest and count — and the
+    /// improvement is the Shadow stage's, the first data the correction did
+    /// not see. A campaign with no Historical stage has no backtest and is
+    /// refused rather than given an empty one.
+    pub fn experiment_pack(&self, now: Timestamp) -> Result<ExperimentPack> {
+        let historical = self
+            .campaign
+            .stages()
+            .iter()
+            .find(|(environment, _)| *environment == Environment::Historical)
+            .map(|(_, provenance)| provenance)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "`{}` ran no Historical stage, so it has no backtest to pack",
+                    self.campaign.question()
+                ))
+            })?;
+        let findings = self
+            .evaluation
+            .findings()
+            .iter()
+            .map(|(criterion, finding)| {
+                format!(
+                    "{}: {} — {}",
+                    format!("{criterion:?}").to_ascii_lowercase(),
+                    if finding.passed { "passed" } else { "failed" },
+                    finding.evidence
+                )
+            })
+            .collect();
+        let proposal = match (&self.installation, &self.withdrawal) {
+            (Some(installation), None) => format!(
+                "install a {:.1} bp entry correction at `{}`; paper improved by {:.2} bp",
+                installation.bias_bps, installation.venue, self.paper_improvement_bps
+            ),
+            (Some(_), Some(withdrawal)) => format!("none: {}", withdrawal.reason),
+            _ => format!(
+                "none: the shadow window improved by {:.2} bp, short of the bar, so the \
+                 correction was never installed",
+                self.shadow_improvement_bps
+            ),
+        };
+        let pack = ExperimentPack {
+            campaign_id: self.campaign.id()?,
+            hypothesis: self.campaign.question().to_string(),
+            feature: format!(
+                "fill-bias correction at `{}`: {:.1} bp over {} fill(s) fitted through {}",
+                self.correction.venue,
+                self.correction.bias_bps,
+                self.correction.fitted_on,
+                self.correction.fitted_through.to_rfc3339()
+            ),
+            backtest_digest: historical.dataset_digest.clone(),
+            backtest_samples: self.correction.fitted_on,
+            backtest_improvement_bps: self.shadow_improvement_bps,
+            findings,
+            experiments: self.campaign.experiment_refs()?,
+            proposal,
+            produced_at: now,
+        };
+        pack.validate()?;
+        Ok(pack)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Installation {
     pub venue: String,

@@ -77,6 +77,13 @@ pub fn files_with_extension(relative: &str, extension: &str) -> Vec<std::path::P
 /// A caller asserts the result is non-empty for a file it expects to hold
 /// production code, because a helper that returned nothing would make every
 /// absence trivially true.
+///
+/// Braces inside string and character literals do not count. Until
+/// 2026-10-31 they did, and a test fixture reading `"{ this is not a limits
+/// file"` in three composition roots left the test module's depth at one
+/// through the end of the file, so anything written below that module would
+/// have been stripped as test code and never scanned. Nothing was below it
+/// then; the point is that nothing could have been found there.
 pub fn production_text(source: &str) -> String {
     let mut kept: Vec<&str> = Vec::new();
     let mut lines = source.lines();
@@ -92,14 +99,152 @@ pub fn production_text(source: &str) -> String {
         // one with a body ends where its braces balance.
         let mut depth = 0usize;
         let mut opened = false;
+        let mut in_string = Text::Code;
         for body in lines.by_ref() {
-            depth += body.matches('{').count();
+            // A comment line inside the item has no code braces, and a
+            // quotation mark in one is prose, not an open string.
+            if in_string == Text::Code && body.trim_start().starts_with("//") {
+                continue;
+            }
+            let (opens, closes) = code_braces(body, &mut in_string);
+            depth += opens;
             opened |= depth > 0;
-            depth = depth.saturating_sub(body.matches('}').count());
+            depth = depth.saturating_sub(closes);
             if (opened && depth == 0) || (!opened && body.trim_end().ends_with(';')) {
                 break;
             }
         }
     }
     kept.join("\n")
+}
+
+/// Where a scan of one line stands between lines: in code, inside an
+/// ordinary `"…"` string, or inside a raw string `r"…"` / `r#"…"#` whose
+/// closing quote must be followed by that many `#`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Text {
+    Code,
+    Quoted,
+    Raw(usize),
+}
+
+/// The braces on one line that are code, not text: `{` and `}` outside every
+/// string and `'…'` character literal. `state` carries an open string
+/// literal across lines and comes back updated. A lifetime (`'a`) is not a
+/// character literal: a `'` is one only when the closing `'` follows within
+/// one character or one escape. A raw string has no escapes and ends only at
+/// `"` followed by its own number of `#`, so a lone `"` or a trailing `\`
+/// inside one is text.
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn code_braces(line: &str, state: &mut Text) -> (usize, usize) {
+    let chars: Vec<char> = line.chars().collect();
+    let (mut opens, mut closes) = (0usize, 0usize);
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match *state {
+            Text::Quoted => match c {
+                '\\' => i += 1,
+                '"' => *state = Text::Code,
+                _ => {}
+            },
+            Text::Raw(hashes) => {
+                if c == '"' && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#')) {
+                    *state = Text::Code;
+                    i += hashes;
+                }
+            }
+            Text::Code => match c {
+                '"' => *state = Text::Quoted,
+                // `r"…"` or `br"…"`, not the `r` inside an identifier.
+                'r' if i == 0 || chars[i - 1] == 'b' || !is_ident_char(chars[i - 1]) => {
+                    let mut hashes = 0;
+                    while chars.get(i + 1 + hashes) == Some(&'#') {
+                        hashes += 1;
+                    }
+                    if chars.get(i + 1 + hashes) == Some(&'"') {
+                        *state = Text::Raw(hashes);
+                        i += 1 + hashes;
+                    }
+                }
+                '\'' => {
+                    let close = if chars.get(i + 1) == Some(&'\\') {
+                        i + 3
+                    } else {
+                        i + 2
+                    };
+                    if chars.get(close) == Some(&'\'') {
+                        i = close;
+                    }
+                }
+                '{' => opens += 1,
+                '}' => closes += 1,
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    (opens, closes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::production_text;
+
+    /// A brace inside a test fixture's string once swallowed everything
+    /// below the test module; a production item written after it was
+    /// unscanned. Mutation: count braces with `matches('{')` again in
+    /// `production_text` — the trailing `fn after_tests` is stripped and
+    /// this fails.
+    #[test]
+    fn a_brace_inside_a_test_strings_literal_does_not_swallow_the_production_code_below_it() {
+        let source = "fn before() {}\n#[cfg(test)]\nmod tests {\n    const BAD: &str = \"{ not json\";\n    const C: char = '{';\n    fn t<'a>() {}\n}\nfn after_tests() {}\n";
+        let kept = production_text(source);
+        assert!(kept.contains("fn before()"));
+        assert!(!kept.contains("not json"), "{kept}");
+        assert!(kept.contains("fn after_tests()"), "{kept}");
+    }
+
+    /// A string literal spanning lines carries its state across them, so a
+    /// brace on its second line is still text. Mutation: reset the state to
+    /// `Text::Code` at the top of each line in `production_text`'s skip loop
+    /// — the `{` on the second line opens a depth nothing closes and
+    /// `fn production` is stripped.
+    #[test]
+    fn a_string_literal_spanning_lines_keeps_its_braces_as_text() {
+        let source = "#[cfg(test)]\nmod tests {\n    const S: &str = \"line one\n{ line two\";\n}\nfn production() {}\n";
+        let kept = production_text(source);
+        assert!(kept.contains("fn production()"), "{kept}");
+        assert!(!kept.contains("line two"), "{kept}");
+    }
+
+    /// A raw string with an odd number of quotes, or one ending in a
+    /// backslash, has no escapes and ends only at its own closing sequence;
+    /// read as an ordinary string either leaves the scanner inside a string
+    /// it never leaves, and everything below the test module is stripped.
+    /// Mutation: in `code_braces`, make `'r'` fall through to the ordinary
+    /// `'"'` arm (delete the `'r'` arm) — `fn production` is stripped.
+    #[test]
+    fn a_raw_string_with_an_odd_quote_or_a_trailing_backslash_does_not_swallow_the_code_below() {
+        let odd = "#[cfg(test)]\nmod tests {\n    const S: &str = r#\"name=\"\"#;\n    const T: &str = r\"C:\\dir\\\";\n    const U: &str = br\"{\";\n}\nfn production() {}\n";
+        let kept = production_text(odd);
+        assert!(kept.contains("fn production()"), "{kept}");
+        assert!(!kept.contains("name="), "{kept}");
+    }
+
+    /// A comment line inside a test module is prose: an unbalanced `"` in
+    /// it opens no string and a `{` in it opens no block. Mutation: feed
+    /// comment lines to `code_braces` (drop the `starts_with("//")` skip in
+    /// the item loop) — the `"` in the doc line opens a string the `}`
+    /// closes nothing in, and `fn production` is stripped.
+    #[test]
+    fn a_comment_inside_a_test_module_opens_no_string_and_no_block() {
+        let source = "#[cfg(test)]\nmod tests {\n    /// matches a lone \" and a stray {\n    fn t() {}\n}\nfn production() {}\n";
+        let kept = production_text(source);
+        assert!(kept.contains("fn production()"), "{kept}");
+        assert!(!kept.contains("fn t()"), "{kept}");
+    }
 }

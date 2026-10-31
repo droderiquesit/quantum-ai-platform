@@ -7,11 +7,17 @@
 //!
 //! * **DISCOVER** polls the source, records each listed market's definition
 //!   into the bitemporal [`DefinitionStore`] at the instant it became
-//!   knowable (5082), keeps each outcome's latest book, advances each
-//!   market's [`MarketResolution`] with whatever the oracle has said —
-//!   resolved is not settled until the dispute window closes (5083) — and
-//!   reports every complete-set arbitrage the books hold, sized against
-//!   their depth.
+//!   knowable (5082), keeps each outcome's latest book and the latest
+//!   observations each market's named resolution source published, advances
+//!   each market's [`MarketResolution`] with an oracle report only when the
+//!   market's own criteria, evaluated over those observations, resolve to the
+//!   outcome the oracle reported — a report contradicting them, or with no
+//!   observation behind it, is refused by name and the market stays pending
+//!   (5083, ADR 0151 decision 10); resolved is not settled until the dispute
+//!   window closes — and reports every complete-set arbitrage the books
+//!   hold, sized against their depth. The row stays partial: the only
+//!   source that delivers observations is the synthetic venue, and the plane
+//!   opens on a real one only once a licensed event source is catalogued.
 //! * **SIMULATE** forms an [`OutcomeDistribution`] from the books' implied
 //!   bands (5084), prices every outcome from it with [`fair_values`] (5085),
 //!   and then — only then, and only through the [`AccessBook`] — takes the
@@ -76,9 +82,9 @@ use qip_market::book::OrderBook;
 use qip_prediction::access::AccessBook;
 use qip_prediction::belief::{OutcomeDistribution, Valuation, fair_values};
 use qip_prediction::{
-    DefinitionStore, EventDefinition, EventMarket, MarketResolution, OracleIdentity, OutcomeId,
-    PredictionAdapter, PredictionSource, PredictionUpdate, Probability, ResolutionState,
-    SetArbitrageKind, implied_band, set_arbitrage,
+    DefinitionStore, EventDefinition, EventMarket, MarketResolution, MarketVerdict, Observations,
+    OracleIdentity, OracleReport, OutcomeId, PredictionAdapter, PredictionSource, PredictionUpdate,
+    Probability, ResolutionState, SetArbitrageKind, implied_band, set_arbitrage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -202,6 +208,11 @@ pub struct EventMarketPlane {
     markets: BTreeMap<ObjectId, EventMarket>,
     books: BTreeMap<ObjectId, BTreeMap<OutcomeId, OrderBook>>,
     resolutions: BTreeMap<ObjectId, MarketResolution>,
+    /// The latest observations each tracked market's own resolution source
+    /// published — the evidence an oracle's report is checked against
+    /// (R12-EVENT-5083). Keyed only by tracked markets, so bounded by
+    /// [`MAX_EVENT_MARKETS`]; a newer publication replaces the older.
+    observations: BTreeMap<ObjectId, Observations>,
     positions: BTreeMap<(ObjectId, OutcomeId), Decimal>,
     cash: Decimal,
     settled: BTreeSet<ObjectId>,
@@ -288,6 +299,7 @@ impl EventMarketPlane {
             markets: BTreeMap::new(),
             books: BTreeMap::new(),
             resolutions: BTreeMap::new(),
+            observations: BTreeMap::new(),
             positions: BTreeMap::new(),
             cash: Decimal::ZERO,
             settled: BTreeSet::new(),
@@ -409,6 +421,124 @@ impl EventMarketPlane {
         self.access = access;
     }
 
+    /// The observations the plane holds for `market`, the evidence its next
+    /// oracle report is checked against.
+    pub fn observations(&self, market: &ObjectId) -> Option<&Observations> {
+        self.observations.get(market)
+    }
+
+    /// Keep `observations` as `market_id`'s latest evidence, refusing what
+    /// cannot be evidence for it.
+    ///
+    /// Refused: a market this plane does not track (keeping it would grow the
+    /// set past [`MAX_EVENT_MARKETS`]); a publisher other than the market's
+    /// named resolution source, because criteria evaluated over somebody
+    /// else's number answer a question the market did not ask; an unstamped
+    /// publication or one stamped after `now`, which would be readable
+    /// before it was knowable; and one older than the publication already
+    /// held, which would roll the evidence back.
+    fn take_observations(
+        &mut self,
+        market_id: &ObjectId,
+        source: &str,
+        observations: Observations,
+        now: Timestamp,
+    ) -> Result<()> {
+        let Some(market) = self.markets.get(market_id) else {
+            return Err(Error::denied(
+                "the plane does not track the market, so it holds nothing these could resolve",
+            ));
+        };
+        let named = &market.proposition.source.name;
+        if source != named {
+            return Err(Error::denied(format!(
+                "the market resolves from {named}, and observations published by {source} cannot \
+                 resolve it; deliver them from {named}"
+            )));
+        }
+        let Some(observed_at) = observations.observed_at() else {
+            return Err(Error::invalid(
+                "the publication carries no instant, so nothing can say when it became knowable; \
+                 stamp it with the instant the source published it",
+            ));
+        };
+        if observed_at > now {
+            return Err(Error::invalid(format!(
+                "the publication is stamped {}, after this pass at {}, and evidence readable \
+                 before it was published is leakage",
+                observed_at.to_rfc3339(),
+                now.to_rfc3339()
+            )));
+        }
+        if let Some(held) = self
+            .observations
+            .get(market_id)
+            .and_then(Observations::observed_at)
+            && observed_at < held
+        {
+            return Err(Error::denied(format!(
+                "the plane already holds a publication from {}, newer than this one from {}",
+                held.to_rfc3339(),
+                observed_at.to_rfc3339()
+            )));
+        }
+        self.observations.insert(market_id.clone(), observations);
+        Ok(())
+    }
+
+    /// Whether `report` agrees with what `market_id`'s own criteria say about
+    /// the observations its named source published.
+    ///
+    /// Only a [`MarketVerdict::Resolved`] naming the reported outcome
+    /// passes. No observation at all, a verdict naming another outcome, and
+    /// a verdict that names no single outcome are each refused by name: an
+    /// oracle's report never resolves a market by itself (ADR 0151
+    /// decision 10).
+    fn corroborate(&self, market_id: &ObjectId, report: &OracleReport) -> Result<()> {
+        let Some(market) = self.markets.get(market_id) else {
+            return Err(Error::denied(
+                "the plane holds no definition of the market to evaluate its criteria with",
+            ));
+        };
+        let source = &market.proposition.source.name;
+        let Some(observations) = self.observations.get(market_id) else {
+            return Err(Error::denied(format!(
+                "{source}, the market's resolution source, has published no observation of {} \
+                 for it, and an oracle's report never resolves a market by itself; the market \
+                 resolves once {source}'s observations evaluate to the reported outcome",
+                market.proposition.criteria.metrics().join(", ")
+            )));
+        };
+        match market.evaluate(observations) {
+            MarketVerdict::Resolved(outcome) if outcome == report.outcome => Ok(()),
+            MarketVerdict::Resolved(outcome) => Err(Error::denied(format!(
+                "it contradicts the market's own criteria, which resolve {source}'s observations \
+                 to {outcome}"
+            ))),
+            MarketVerdict::NoOutcome => Err(Error::denied(format!(
+                "the market's criteria hold for no outcome over {source}'s observations, so \
+                 nothing corroborates {}",
+                report.outcome
+            ))),
+            MarketVerdict::Ambiguous(outcomes) => Err(Error::denied(format!(
+                "the market's criteria hold for more than one outcome over {source}'s \
+                 observations ({}), so they do not single out {}",
+                outcomes
+                    .iter()
+                    .map(OutcomeId::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                report.outcome
+            ))),
+            MarketVerdict::Undetermined { missing } => Err(Error::denied(format!(
+                "{source} has not published {}, which the market's criteria need to decide \
+                 whether {} won",
+                missing.join(", "),
+                report.outcome
+            ))),
+        }
+    }
+
     fn decision_grade(&self) -> bool {
         self.posture.class().allows_production_decisions()
     }
@@ -497,20 +627,50 @@ impl EventMarketPlane {
                         .or_default()
                         .insert(outcome, *book);
                 }
+                PredictionUpdate::Observed {
+                    market_id,
+                    source,
+                    observations,
+                } => {
+                    if let Err(error) =
+                        self.take_observations(&market_id, &source, observations, now)
+                    {
+                        found.problems.push(format!(
+                            "observations for {market_id} from {source} were dropped: {}",
+                            error.message()
+                        ));
+                    }
+                }
                 PredictionUpdate::Report { market_id, report } => {
-                    match self.resolutions.get_mut(&market_id) {
-                        Some(resolution) => {
-                            if let Err(error) = resolution.observe(Some(report), now) {
-                                found.problems.push(format!(
-                                    "the oracle's report on {market_id} was refused: {}",
-                                    error.message()
-                                ));
-                            }
-                        }
-                        None => found.problems.push(format!(
+                    if !self.resolutions.contains_key(&market_id) {
+                        found.problems.push(format!(
                             "a report on {market_id} arrived for a market this plane does not \
                              track"
-                        )),
+                        ));
+                        continue;
+                    }
+                    // The oracle's word is a claim about the source's
+                    // observations, checked against the market's own
+                    // criteria before it can propose anything (R12-EVENT-5083,
+                    // ADR 0151 decision 10). Refused, the market keeps the
+                    // state it had: pending, or overdue once the resolution
+                    // date has passed — never settled on a guess.
+                    if let Err(error) = self.corroborate(&market_id, &report) {
+                        found.problems.push(format!(
+                            "the oracle's report of {} on {market_id} was refused and the market \
+                             was not resolved: {}",
+                            report.outcome,
+                            error.message()
+                        ));
+                        continue;
+                    }
+                    if let Some(resolution) = self.resolutions.get_mut(&market_id)
+                        && let Err(error) = resolution.observe(Some(report), now)
+                    {
+                        found.problems.push(format!(
+                            "the oracle's report on {market_id} was refused: {}",
+                            error.message()
+                        ));
                     }
                 }
             }

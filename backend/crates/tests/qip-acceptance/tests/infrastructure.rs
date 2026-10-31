@@ -15081,3 +15081,35 @@ fn no_file_under_infrastructure_is_terraform_the_text_walkers_cannot_read() {
         unread.join("\n")
     );
 }
+
+/// R12-GOV-10005: every asset change feed publishes to the asset change
+/// topic. The plan harness asserts the two content types, but a feed's
+/// destination is the topic's computed id, unknown at plan, so the link is
+/// held here on the configuration: a feed pointed anywhere else would plan
+/// cleanly and publish its changes where no operator reads them.
+///
+/// Mutation: point `pubsub_destination.topic` at another topic. This fails.
+#[test]
+fn every_asset_change_feed_publishes_to_the_change_topic() {
+    let text = read("infrastructure/terraform/audit-logs.tf");
+    let at = text
+        .find("resource \"google_cloud_asset_project_feed\" \"changes\"")
+        .expect("premise: audit-logs.tf declares the asset change feed");
+    let body = &text[at..];
+    let end = body.find("\n}\n").expect("the feed block closes");
+    let feed = &body[..end];
+    assert!(
+        feed.contains("RESOURCE") && feed.contains("IAM_POLICY"),
+        "premise: the feed names both content types"
+    );
+    let destinations: Vec<&str> = feed
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("topic"))
+        .collect();
+    assert_eq!(
+        destinations,
+        vec!["topic = google_pubsub_topic.asset_changes.id"],
+        "the asset change feed publishes somewhere other than the asset change topic"
+    );
+}

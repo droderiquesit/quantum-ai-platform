@@ -18,11 +18,11 @@ use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_market::book::{BookLevel, OrderBook};
 use serde::{Deserialize, Serialize};
 
-use crate::market::{EventMarket, FeeSchedule, MarketKind, Outcome, OutcomeId};
+use crate::market::{EventMarket, FeeSchedule, MarketKind, MarketVerdict, Outcome, OutcomeId};
 use crate::oracle::OracleReport;
 use crate::resolution::{
-    Comparison, Proposition, ResolutionCriteria, ResolutionSource, SettlementRule, SourceKind,
-    UndeterminedRule,
+    Comparison, Observation, Observations, Proposition, ResolutionCriteria, ResolutionSource,
+    SettlementRule, SourceKind, UndeterminedRule,
 };
 
 /// What an adapter is and what a deployment must supply to make it real.
@@ -50,6 +50,19 @@ pub enum PredictionUpdate {
         outcome: OutcomeId,
         book: Box<OrderBook>,
     },
+    /// What the market's resolution source published, named by that source.
+    ///
+    /// The evidence an oracle's report is checked against (R12-EVENT-5083).
+    /// A report is a claim about these values; without them a consumer has
+    /// only the oracle's word, and an oracle's word alone never resolves a
+    /// market. `source` is the publisher's name as the market's
+    /// [`ResolutionSource`] states it, so a consumer can refuse values
+    /// published by anyone else.
+    Observed {
+        market_id: ObjectId,
+        source: String,
+        observations: Observations,
+    },
     /// The oracle said something.
     Report {
         market_id: ObjectId,
@@ -62,6 +75,7 @@ impl PredictionUpdate {
         match self {
             Self::MarketListed(_) => "market_listed",
             Self::Book { .. } => "book",
+            Self::Observed { .. } => "observed",
             Self::Report { .. } => "report",
         }
     }
@@ -156,6 +170,16 @@ pub const DEMO_OUTCOME_INSTRUMENTS: [&str; 3] = [
     "SYNTH-PREDICT-HIKE",
 ];
 
+/// The one metric [`demo_market`]'s source publishes and its criteria read.
+const DEMO_METRIC: &str = "policy_rate_change_bp";
+
+/// The rate changes, in basis points, the synthetic venue's world is drawn
+/// from — one per outcome of [`demo_market`], in outcome order. The venue
+/// draws one of these and only then asks the market's own criteria which
+/// outcome it settles, so the oracle reports what the criteria say about a
+/// published number rather than an outcome picked with nothing behind it.
+const DEMO_RATE_CHANGES_BP: [i64; 3] = [-25, 0, 25];
+
 /// A three-way categorical market on a policy decision, for tests and demos.
 ///
 /// The criteria are structured: a program decides which outcome won by reading
@@ -168,7 +192,7 @@ pub fn demo_market(
     let source = ResolutionSource::new(
         "central-bank-statistical-release",
         SourceKind::Official,
-        vec!["policy_rate_change_bp".to_string()],
+        vec![DEMO_METRIC.to_string()],
     );
     let outcomes = vec![
         Outcome::new(
@@ -176,7 +200,7 @@ pub fn demo_market(
             "a cut of at least 25bp",
             ObjectId::from_string(DEMO_OUTCOME_INSTRUMENTS[0]),
             ResolutionCriteria::Threshold {
-                metric: "policy_rate_change_bp".to_string(),
+                metric: DEMO_METRIC.to_string(),
                 comparison: Comparison::AtMost,
                 value: Decimal::from_int(-25),
             },
@@ -186,7 +210,7 @@ pub fn demo_market(
             "no change",
             ObjectId::from_string(DEMO_OUTCOME_INSTRUMENTS[1]),
             ResolutionCriteria::Within {
-                metric: "policy_rate_change_bp".to_string(),
+                metric: DEMO_METRIC.to_string(),
                 lower: Some(Decimal::from_int(-24)),
                 upper: Some(Decimal::from_int(25)),
             },
@@ -196,7 +220,7 @@ pub fn demo_market(
             "a hike of at least 25bp",
             ObjectId::from_string(DEMO_OUTCOME_INSTRUMENTS[2]),
             ResolutionCriteria::Threshold {
-                metric: "policy_rate_change_bp".to_string(),
+                metric: DEMO_METRIC.to_string(),
                 comparison: Comparison::AtLeast,
                 value: Decimal::from_int(25),
             },
@@ -344,6 +368,58 @@ impl SyntheticPredictionVenue {
     }
 }
 
+impl SyntheticPredictionVenue {
+    /// The source's publication and the oracle's report on it, in that
+    /// order, so a consumer holds the evidence before it reads the claim.
+    ///
+    /// The venue draws the world — a rate change — and the market's own
+    /// criteria decide the outcome from it; the oracle reports that outcome.
+    /// Until R12-EVENT-5083 the oracle reported an outcome drawn at random
+    /// with no observation behind it, and a consumer had nothing to check the
+    /// claim against. A draw the criteria do not resolve to exactly one
+    /// outcome is refused rather than reported: an oracle naming a winner the
+    /// criteria do not would be the contradiction a consumer must refuse,
+    /// manufactured by the venue meant to exercise the honest path.
+    fn resolution_updates(&mut self) -> Result<Vec<PredictionUpdate>> {
+        let drawn = self.rng.below(DEMO_RATE_CHANGES_BP.len() as u64) as usize;
+        let Some(change) = DEMO_RATE_CHANGES_BP.get(drawn).copied() else {
+            return Err(Error::numeric(format!(
+                "the synthetic venue drew rate change {drawn} of {}; draw within the table",
+                DEMO_RATE_CHANGES_BP.len()
+            )));
+        };
+        let resolves_at = self.market.proposition.resolves_at;
+        let observations = Observations::at(resolves_at)
+            .with(DEMO_METRIC, Observation::Numeric(Decimal::from_int(change)));
+        let outcome = match self.market.evaluate(&observations) {
+            MarketVerdict::Resolved(outcome) => outcome,
+            verdict => {
+                return Err(Error::invalid(format!(
+                    "the synthetic venue drew a rate change of {change}bp and its market's \
+                     criteria do not resolve it to exactly one outcome ({verdict:?}); make \
+                     DEMO_RATE_CHANGES_BP name one value inside each outcome's range"
+                )));
+            }
+        };
+        Ok(vec![
+            PredictionUpdate::Observed {
+                market_id: self.market.market_id.clone(),
+                source: self.market.proposition.source.name.clone(),
+                observations,
+            },
+            PredictionUpdate::Report {
+                market_id: self.market.market_id.clone(),
+                report: OracleReport {
+                    outcome,
+                    confidence: 0.97,
+                    reported_at: resolves_at,
+                    evidence: format!("the published policy rate change of {change}bp"),
+                },
+            },
+        ])
+    }
+}
+
 impl PredictionAdapter for SyntheticPredictionVenue {
     fn descriptor(&self) -> PredictionSource {
         PredictionSource {
@@ -373,17 +449,7 @@ impl PredictionAdapter for SyntheticPredictionVenue {
         }
         if !self.reported && until >= self.market.proposition.resolves_at {
             self.reported = true;
-            let outcomes = self.market.outcomes();
-            let chosen = self.rng.below(outcomes.len() as u64) as usize;
-            updates.push(PredictionUpdate::Report {
-                market_id: self.market.market_id.clone(),
-                report: OracleReport {
-                    outcome: outcomes[chosen.min(outcomes.len() - 1)].id.clone(),
-                    confidence: 0.97,
-                    reported_at: self.market.proposition.resolves_at,
-                    evidence: "the published policy rate change".to_string(),
-                },
-            });
+            updates.extend(self.resolution_updates()?);
         }
         Ok(updates)
     }
