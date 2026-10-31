@@ -52,7 +52,7 @@ jobs:
       # branch so a branch cannot loosen it; the actor and whoever re-ran
       # the run are both judged.
       - name: no development agent starts this workflow
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: .agent-guard
@@ -70,7 +70,7 @@ jobs:
               --actor "$who" --workflow branch-cleanup.yml
           done
           rm -rf .agent-guard
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: delete branches already merged into main

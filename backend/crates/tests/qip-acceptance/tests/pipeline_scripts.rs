@@ -624,7 +624,11 @@ fn the_test_job_uploads_the_replay_and_benchmark_output_as_an_artifact() {
     assert!(
         lines
             .iter()
-            .any(|line| line == "- uses: actions/upload-artifact@v4"),
+            // The ref is a pinned SHA (action_pins.rs holds that); the tag
+            // comment still names the major version, so a downgrade fails.
+            .any(|line| {
+                line.starts_with("- uses: actions/upload-artifact@") && line.ends_with("# v4")
+            }),
         "premise: the `test` job uploads an artifact at all"
     );
     assert!(

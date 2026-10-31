@@ -61,7 +61,7 @@ jobs:
       ENVIRONMENT: dev
     steps:
       - name: no development agent starts this workflow
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: .agent-guard
@@ -80,7 +80,7 @@ jobs:
           done
           rm -rf .agent-guard
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # The identity is derived from the committed tfvars, as infra.yml
       # derives it and for the same reason: a repository variable set from a
@@ -108,12 +108,12 @@ jobs:
             echo "account=qip-infra-${ENVIRONMENT}@$project.iam.gserviceaccount.com"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ steps.identity.outputs.provider }}
           service_account: ${{ steps.identity.outputs.account }}
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: "1.9.8"
           # The wrapper rewrites how the exit status reaches the shell, and
