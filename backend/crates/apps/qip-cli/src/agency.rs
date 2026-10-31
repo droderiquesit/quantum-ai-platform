@@ -229,6 +229,15 @@ pub struct WideningDecl {
     /// The kill path returning every class to shadow, and its drill.
     #[serde(default)]
     pub kill_path: Option<Drill>,
+    /// Further identified attributions, one per class beyond the first, for
+    /// a level whose row wants every class attributed (R12-EXPAND-6071):
+    /// without them the broad level was refused at the attribution step from
+    /// every binary, and its compensation and kill-path rows were unreachable.
+    #[serde(default)]
+    pub attributions: Vec<EffectAttribution>,
+    /// The classes the widened scope covers. Empty means the policy's own.
+    #[serde(default)]
+    pub classes: Vec<Method>,
 }
 
 /// One class's compensating step, as the drill that rehearsed it.
@@ -604,7 +613,7 @@ impl Session {
         )
     }
 
-    fn widen(&mut self, decl: WideningDecl) -> WideningOutcome {
+    fn widen(&mut self, decl: WideningDecl, now: Timestamp) -> WideningOutcome {
         let refused = |reason: String| WideningOutcome::Refused {
             class: decl.class,
             approver: decl.approver.name.clone(),
@@ -620,13 +629,20 @@ impl Session {
             Ok(estimate) => estimate,
             Err(error) => return refused(error.message().to_string()),
         };
-        if let Err(error) = estimate.supports(&decl.attribution) {
-            return refused(error.message().to_string());
+        // Every attribution offered is held to the estimate, the further
+        // ones as much as the first: an attribution the evidence does not
+        // support widens nothing for its class.
+        for attribution in std::iter::once(&decl.attribution).chain(&decl.attributions) {
+            if let Err(error) = estimate.supports(attribution) {
+                return refused(error.message().to_string());
+            }
         }
         let target = decl.target.unwrap_or(Authority::NarrowReversible);
         let evidence = WideningEvidence {
-            attributions: vec![&decl.attribution],
-            classes: BTreeSet::new(),
+            attributions: std::iter::once(&decl.attribution)
+                .chain(&decl.attributions)
+                .collect(),
+            classes: decl.classes.iter().copied().collect(),
             clean_days: decl.clean_days,
             compensations: decl
                 .compensations
@@ -634,6 +650,9 @@ impl Session {
                 .map(|c| (c.class, c.drill.clone()))
                 .collect(),
             kill_path: decl.kill_path.clone(),
+            // The pass's own instant: a drill is read against the clock the
+            // request is judged by, never against one the request supplies.
+            as_of: now,
         };
         let approvers: Vec<&ActingIdentity> = std::iter::once(&decl.approver)
             .chain(&decl.co_approvers)
@@ -684,7 +703,7 @@ impl Session {
             ));
         }
         let number = self.next_pass;
-        let widening = document.widening.map(|decl| self.widen(decl));
+        let widening = document.widening.map(|decl| self.widen(decl, now));
         let policy = document
             .act_as
             .and_then(|class| self.policies.get(&class))

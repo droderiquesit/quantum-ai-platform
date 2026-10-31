@@ -712,3 +712,38 @@ fn the_kernels_universe_history_keeps_a_delisted_instrument_for_the_dates_it_tra
     );
     Ok(())
 }
+
+/// R12-ASSET-1015: a desk position is booked through the adapter and
+/// lifecycle engine its asset class names in the registry — an equity
+/// through the venue order book and the portfolio stages — resolved at the
+/// fill on the cycle's own path. Before this `lifecycle_of` had no caller and
+/// the registry named no adapter at all.
+///
+/// Mutation: drop the `position_bookings.insert` in
+/// `Platform::book_desk_fill` — the position carries no booking and this
+/// fails.
+#[test]
+fn a_position_is_booked_through_the_lifecycle_engine_and_adapter_its_asset_class_names()
+-> Result<()> {
+    use qip_kernel::asset_class_registry::{ClassAdapter, LifecycleEngine};
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("booking"), start())?;
+    assert!(platform.position_booking(aaa.as_str()).is_none());
+    platform.observe(tape("AAA"));
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    assert!(
+        platform.positions_at_cost().contains_key(aaa.as_str()),
+        "premise: the cycle opened a position in obj-AAA: {}",
+        report.summarise()
+    );
+    assert_eq!(
+        platform.position_booking(aaa.as_str()),
+        Some((
+            ClassAdapter::VenueOrderBook,
+            LifecycleEngine::PortfolioStages
+        )),
+        "an equity is booked through the venue order book and the portfolio stages"
+    );
+    Ok(())
+}

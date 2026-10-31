@@ -16,8 +16,8 @@
 //! declaration there.
 
 use crate::action::Method;
-use qip_core::Decimal;
 use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -997,6 +997,79 @@ impl OntologyPatch {
                 self.cited_observations.join(", ")
             ),
         }
+    }
+}
+
+// --- SourceScore (R12-EXPAND-6027) --------------------------------------------
+
+/// The artifact evidence-quality expansion produces: one source scored on one
+/// subject against the platform's own stream and every other arm, over a
+/// stated window of aligned senses, with the digest of the samples the score
+/// was computed from. `incremental_gain` and `realised_contribution` are
+/// `qip_data_finder::source_alpha`'s two figures and are refused outside
+/// `[-1, 1]`; a score over no samples, or one that cannot name its window or
+/// its inputs, is a figure nobody can recompute and is refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceScore {
+    pub source: String,
+    pub subject: String,
+    pub incremental_gain: f64,
+    pub realised_contribution: f64,
+    /// Aligned samples the score was computed over; at least one.
+    pub samples: usize,
+    /// The first and last sense (the platform's own observation counter) in
+    /// the window, inclusive; `window_from <= window_to`.
+    pub window_from: u64,
+    pub window_to: u64,
+    /// SHA-256 of the aligned samples as their bits, lower-case hex.
+    pub dataset_digest: String,
+    pub scored_at: Timestamp,
+}
+
+impl SourceScore {
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "SourceScore";
+        text(R, "source", &self.source)?;
+        text(R, "subject", &self.subject)?;
+        finite(R, "incremental_gain", self.incremental_gain, -1.0, 1.0)?;
+        finite(
+            R,
+            "realised_contribution",
+            self.realised_contribution,
+            -1.0,
+            1.0,
+        )?;
+        if self.samples == 0 {
+            return Err(Error::invalid(format!(
+                "{R}.samples must be above zero; a score over no samples scores nothing"
+            )));
+        }
+        if self.window_from > self.window_to {
+            return Err(Error::invalid(format!(
+                "{R}.window_from ({}) is after window_to ({}); state the window it was scored over",
+                self.window_from, self.window_to
+            )));
+        }
+        if self.dataset_digest.len() != 64
+            || !self
+                .dataset_digest
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(Error::invalid(format!(
+                "{R}.dataset_digest must be 64 lower-case hex characters; a digest nobody \
+                 computed names no inputs"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes)
+            .map_err(|e| Error::schema(format!("not a SourceScore: {e}; supply every field")))?;
+        v.validate()?;
+        Ok(v)
     }
 }
 

@@ -590,6 +590,16 @@ pub struct Platform {
     /// forgotten first; see [`Platform::queue_cell_fills`] for why the key
     /// is this and why the set exists at all.
     cell_fills_queued: CellFillsQueued,
+    /// Legs of cells' refused cycles waiting for the twin (R12-MESH-5068),
+    /// bounded by [`DECLINED_HISTORY`]; see [`CellDeclinedPath`] for why
+    /// this is not `declined`.
+    cell_declined: Vec<CellDeclinedPath>,
+    /// Which refused legs have been queued, so a replayed report queues
+    /// none twice. The same bounded memory the cell fills use.
+    cell_refusals_queued: CellFillsQueued,
+    /// What each priced leg would have done, most recent last, bounded by
+    /// [`DECLINED_HISTORY`].
+    cell_declined_scores: Vec<CellDeclinedScore>,
     /// What the twin found about each priced fill — whether a smaller or a
     /// larger size would have done better, and how far its own entry price
     /// was from the venue's — most recent last, bounded by
@@ -1377,6 +1387,17 @@ pub struct Platform {
     /// runs behind it, so a simulated execution arrives as late as this
     /// platform's own decisions do rather than at the instant it decided.
     decision_latencies: std::collections::VecDeque<Duration>,
+    /// The adapter and lifecycle engine each desk position was booked
+    /// through, by object id, resolved from the asset class registry at the
+    /// fill (R12-ASSET-1015). Bounded by the universe: one entry per
+    /// instrument the desk has held.
+    position_bookings: BTreeMap<
+        String,
+        (
+            crate::asset_class_registry::ClassAdapter,
+            crate::asset_class_registry::LifecycleEngine,
+        ),
+    >,
 }
 
 /// How many cycles of decision latency the platform keeps: enough for a
@@ -1546,6 +1567,12 @@ pub(crate) const VOLATILITY_CLAIM_WINDOW: usize = 20;
 /// stage runs inside the cycle's own latency budget; a backlog is a fact an
 /// operator should see, not a stall the cycle should absorb.
 const COUNTERFACTUALS_PER_CYCLE: usize = 8;
+
+/// The `gate` label a cell's refused cycle is scored under centrally
+/// (R12-MESH-5068). A source literal, because the cell's own gate string
+/// arrives on an unauthenticated wire; the gate itself is kept on
+/// [`CellDeclinedScore`].
+const CELL_CYCLE_GATE: &str = "cell_cycle";
 
 /// How many declined paths wait to be priced, and how many scores are kept.
 ///
@@ -3566,6 +3593,15 @@ pub struct CounterfactualJournal {
     /// field existed replays as having scored no fill.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fill_outcomes: Vec<FillScore>,
+    /// Legs of cells' refused cycles priced this cycle (R12-MESH-5068).
+    /// Defaulted so a journal written before the cell arm ran replays as
+    /// having priced none, which is what it did.
+    #[serde(default)]
+    pub cell_declined_scored: usize,
+    /// The individual leg scores priced this cycle, attributed to the cell's
+    /// gate. Defaulted for the same reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cell_declined_outcomes: Vec<CellDeclinedScore>,
 }
 
 /// Which solver sized the cycle's proposal, and what the classical baseline
@@ -3832,6 +3868,52 @@ pub struct DeclinedScore {
     /// before the field existed reads back as `unrecorded` rather than as
     /// priced by a method it never named.
     #[serde(default)]
+    pub method: EstimationMethod,
+}
+
+/// One leg of an arbitrage cycle a cell refused whole, kept until the twin
+/// can price what declining it cost (R12-MESH-5068, blueprint §17.2).
+///
+/// Its own queue, beside [`DeclinedPath`] and never in it: the desk's
+/// declined paths feed its sizing discount and its rule reviews, and a
+/// cell's refused cycles are evidence about the cell's coordination rule,
+/// not about the desk's limits. Sharing the window would also let a busy
+/// cell fill it and leave the desk's own vetoes unexamined.
+#[derive(Clone, Debug)]
+struct CellDeclinedPath {
+    /// `{cell}/{reported_at}/refusal-{index}/leg-{n}`: a cell's refusals have
+    /// no id of their own, and this one is the same on every replay of the
+    /// same report.
+    order_id: OrderId,
+    cell: String,
+    /// The refusal's gate, as the cell wrote it (a source literal there).
+    gate: String,
+    reason: String,
+    object_id: ObjectId,
+    venue: VenueId,
+    side: BookSide,
+    quantity: Decimal,
+    /// The report's instant: the only one the wire carries for the refusal.
+    declined_at: Timestamp,
+}
+
+/// What one leg of a cell's refused cycle would have done, once the twin has
+/// priced it. Every money figure is [`Simulated`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CellDeclinedScore {
+    pub order_id: OrderId,
+    pub cell: String,
+    /// The cell's gate that refused the cycle — the rule the score is
+    /// attributed to.
+    pub gate: String,
+    pub object_id: ObjectId,
+    pub venue: String,
+    pub declined_at: Timestamp,
+    pub scored_at: Timestamp,
+    /// What the leg as proposed would have earned over the twin's horizon.
+    pub would_have_earned: Simulated<Decimal>,
+    /// Whether taking the leg would have beaten standing aside.
+    pub regret: bool,
     pub method: EstimationMethod,
 }
 
@@ -6201,6 +6283,9 @@ impl Platform {
             declined_scores: Vec::new(),
             filled: Vec::new(),
             cell_fills_queued: CellFillsQueued::default(),
+            cell_declined: Vec::new(),
+            cell_refusals_queued: CellFillsQueued::default(),
+            cell_declined_scores: Vec::new(),
             fill_scores: Vec::new(),
             fill_calibration: qip_twin::calibration::FillCalibration::default(),
             tactical: None,
@@ -6385,6 +6470,7 @@ impl Platform {
             position_exit_plans: BTreeMap::new(),
             universe_history: qip_financial::history::UniverseHistory::new(),
             decision_latencies: std::collections::VecDeque::new(),
+            position_bookings: BTreeMap::new(),
         };
         platform.describe_metrics();
         // Every rule reads as not dormant from assembly, so the series exists
@@ -7430,6 +7516,16 @@ impl Platform {
         // as a passing one.
         let netting = crate::blueprint_objectives::netting_ratio_of(&report.orders);
         let reported_at = report.at;
+        // Taken before the report moves, for the reason the netting ratio
+        // is: the plane keeps no copy of the refusals' legs.
+        let refused_cycles: Vec<(usize, qip_mesh::delta::DeltaRefusal)> = report
+            .refusals
+            .iter()
+            .enumerate()
+            .filter(|(_, refusal)| !refusal.legs.is_empty())
+            .map(|(index, refusal)| (index, refusal.clone()))
+            .collect();
+        let reporting_cell = report.cell.clone();
         // ADR 0079: a region that went dark by the passage of time since the
         // last cycle is recorded *before* this report can clear it, so a
         // region that went dark and spoke again between two cycles leaves
@@ -7541,6 +7637,7 @@ impl Platform {
         }
         self.charge_cell_fills(&ingestion.cell, &ingestion.settlement.absorbed);
         self.queue_cell_fills(&ingestion.cell, reported_at, &ingestion.settlement.absorbed);
+        self.queue_cell_refusals(&reporting_cell, reported_at, &refused_cycles);
         self.book_settlement(&ingestion.settlement, now);
         // The cell's feasibility refusals, into the same window the desk's
         // land in, through the same recording site. What the plane could
@@ -10670,6 +10767,273 @@ impl Platform {
         self.aggregates.mark_cash(self.capital.cash);
     }
 
+    /// Queue the legs of every cycle `cell` refused whole, for the twin to
+    /// price once their horizon has passed (R12-MESH-5068).
+    ///
+    /// Each leg is its own path, keyed by the report and the refusal's
+    /// position in it, so a replayed report queues nothing twice. A full
+    /// window is a refusal to queue, counted, not an eviction, for the
+    /// reason the desk's window gives: dropping the oldest would silently
+    /// choose which refusal goes unexamined.
+    fn queue_cell_refusals(
+        &mut self,
+        cell: &str,
+        reported_at: Timestamp,
+        refused: &[(usize, qip_mesh::delta::DeltaRefusal)],
+    ) {
+        for (index, refusal) in refused {
+            if refusal.legs.len() > qip_contracts::wire::MAX_REFUSED_LEGS {
+                self.telemetry.metrics.count(
+                    names::COUNTERFACTUALS_UNSCORED,
+                    labels([("reason", "cell_cycle_too_long")]),
+                );
+                continue;
+            }
+            for (n, leg) in refusal.legs.iter().enumerate() {
+                let key = (cell.to_string(), reported_at, format!("refusal-{index}"), n);
+                if !self.cell_refusals_queued.admit(key) {
+                    continue;
+                }
+                // A leg on an instrument the centre holds no bars for could
+                // never fall due, and would hold a slot of the window for
+                // good: counted, not queued.
+                if !self.bar_history.contains_key(leg.object_id.as_str()) {
+                    self.telemetry.metrics.count(
+                        names::COUNTERFACTUALS_UNSCORED,
+                        labels([("reason", "unobserved_instrument")]),
+                    );
+                    continue;
+                }
+                if self.cell_declined.len() >= DECLINED_HISTORY {
+                    self.telemetry.metrics.count(
+                        names::COUNTERFACTUALS_UNSCORED,
+                        labels([("reason", "cell_capacity")]),
+                    );
+                    self.capture_problems.push(format!(
+                        "{cell}'s refused cycle under {} will not be priced: {DECLINED_HISTORY} \
+                         refused legs are already waiting to be",
+                        refusal.gate
+                    ));
+                    continue;
+                }
+                self.cell_declined.push(CellDeclinedPath {
+                    order_id: OrderId::from_string(format!(
+                        "{cell}/{}/refusal-{index}/leg-{n}",
+                        reported_at.to_rfc3339()
+                    )),
+                    cell: cell.to_string(),
+                    gate: refusal.gate.clone(),
+                    reason: refusal.reason.clone(),
+                    object_id: leg.object_id.clone(),
+                    venue: leg.venue.clone(),
+                    side: leg.side,
+                    quantity: leg.quantity,
+                    declined_at: reported_at,
+                });
+            }
+        }
+    }
+
+    /// The twin's alternatives to one leg of a cell's refused cycle, priced
+    /// from the queued path itself: the refusal happened at the cell and has
+    /// no entry in this platform's outcome capture. Named deterministically
+    /// from the path, so a replay of the same log prices the same score.
+    fn evaluate_cell_refusal(
+        &self,
+        path: &CellDeclinedPath,
+        market: &mut TwinMarket,
+    ) -> Result<CounterfactualSet> {
+        let decision = Decision::new(
+            qip_core::ids::DecisionId::from_string(format!("cell-refusal:{}", path.order_id)),
+            TraceId::new(format!("trace-cell-refusal-{}", path.order_id)),
+            CorrelationId::from_string(format!("cell-refusal-{}", path.order_id)),
+            path.declined_at,
+            path.object_id.clone(),
+            Action::Rejected {
+                order_id: path.order_id.clone(),
+                gate: path.gate.clone(),
+                reason: path.reason.clone(),
+            },
+        )
+        .because(format!(
+            "{} refused this leg's cycle under {}; the twin prices what declining it cost",
+            path.cell, path.gate
+        ));
+        // The wire's convention is `Ask` bought and `Bid` sold (the order
+        // a cell sends takes the ask to buy); the twin's `ActualTrade` reads
+        // `Bid` as long. Crossed here, at the one seam where the two meet,
+        // or every leg would be priced in the direction it did not propose.
+        let twin_side = match path.side {
+            BookSide::Ask => BookSide::Bid,
+            BookSide::Bid => BookSide::Ask,
+        };
+        let actual = ActualTrade::new(
+            path.object_id.clone(),
+            twin_side,
+            path.quantity,
+            path.venue.clone(),
+            HOME_REGION,
+            path.declined_at,
+        )?;
+        self.counterfactuals.evaluate(
+            market,
+            &decision,
+            &actual,
+            &RealisedOutcome::nothing_happened(path.declined_at),
+        )
+    }
+
+    /// Price the legs of cells' refused cycles whose horizon has passed,
+    /// under what the desk's declined pass left of the one cap
+    /// (R12-MESH-5068). The same due rule and the same refusal handling as
+    /// [`Self::score_declined`]; the third element is how many evaluations
+    /// this pass used, so the fill pass prices under the remainder.
+    fn score_cell_declined(
+        &mut self,
+        now: Timestamp,
+        budget: usize,
+    ) -> (Option<String>, Vec<String>, usize) {
+        let horizon = self.counterfactuals.horizon();
+        let due: Vec<OrderId> = self
+            .cell_declined
+            .iter()
+            .filter(|path| {
+                let marks_at = path.declined_at.saturating_add(horizon);
+                marks_at <= now
+                    && self
+                        .bar_history
+                        .get(path.object_id.as_str())
+                        .and_then(|bars| bars.iter().map(Bar::close_time).max())
+                        .is_some_and(|last_close| last_close >= marks_at)
+            })
+            .map(|path| path.order_id.clone())
+            .collect();
+        if due.is_empty() {
+            return (None, Vec::new(), 0);
+        }
+        let attempted = due.len().min(budget);
+        let deferred = due.len().saturating_sub(budget);
+        if deferred > 0 {
+            self.telemetry.metrics.increment(
+                names::COUNTERFACTUALS_DEFERRED,
+                labels([]),
+                deferred as u64,
+            );
+        }
+        let mut scored = 0usize;
+        let mut regrets = 0usize;
+        let mut problems = Vec::new();
+        for order_id in due.into_iter().take(budget) {
+            let Some(index) = self
+                .cell_declined
+                .iter()
+                .position(|path| path.order_id == order_id)
+            else {
+                continue;
+            };
+            let path = self.cell_declined.remove(index);
+            let priced = self
+                .counterfactual_bars(&path.object_id)
+                .and_then(|bars| {
+                    TwinMarket::new(
+                        bars,
+                        CostModel::liquid_equity(),
+                        COUNTERFACTUAL_IMPACT_WINDOW,
+                    )
+                })
+                .and_then(|mut market| self.evaluate_cell_refusal(&path, &mut market));
+            match priced {
+                Ok(set) => {
+                    let trade = set.by_kind("trade");
+                    let regret = trade.is_some_and(Counterfactual::favours_the_alternative);
+                    let would_have_earned = trade.map_or(Simulated::ZERO, |entry| {
+                        entry.counterfactual_outcome.simulated_pnl()
+                    });
+                    let method = trade.map_or(EstimationMethod::Unrecorded, |entry| {
+                        entry.counterfactual_outcome.method()
+                    });
+                    // One literal label, never the cell's gate: the gate
+                    // arrives on a wire that authenticates nobody, and a
+                    // label minted from it would be unbounded. The gate is
+                    // kept on the score, which is bounded.
+                    self.telemetry.metrics.count(
+                        names::COUNTERFACTUALS_SCORED,
+                        labels([("gate", CELL_CYCLE_GATE)]),
+                    );
+                    if regret {
+                        regrets += 1;
+                        self.telemetry.metrics.count(
+                            names::COUNTERFACTUAL_REGRETS,
+                            labels([("gate", CELL_CYCLE_GATE)]),
+                        );
+                    }
+                    scored += 1;
+                    self.cell_declined_scores.push(CellDeclinedScore {
+                        order_id: path.order_id,
+                        cell: path.cell,
+                        gate: path.gate,
+                        object_id: path.object_id,
+                        venue: path.venue.as_str().to_string(),
+                        declined_at: path.declined_at,
+                        scored_at: now,
+                        would_have_earned,
+                        regret,
+                        method,
+                    });
+                    if self.cell_declined_scores.len() > DECLINED_HISTORY {
+                        let excess = self.cell_declined_scores.len() - DECLINED_HISTORY;
+                        self.cell_declined_scores.drain(..excess);
+                    }
+                }
+                Err(error) => {
+                    self.telemetry.metrics.count(
+                        names::COUNTERFACTUALS_UNSCORED,
+                        labels([("reason", "refused")]),
+                    );
+                    problems.push(format!(
+                        "{}'s refused leg {} could not be priced: {}",
+                        path.cell,
+                        path.order_id,
+                        error.message()
+                    ));
+                }
+            }
+        }
+        let journal = self
+            .cycle_counterfactuals
+            .get_or_insert_with(|| CounterfactualJournal {
+                scored: 0,
+                regrets: 0,
+                deferred: 0,
+                fills_scored: 0,
+                fills_deferred: 0,
+                declined_outcomes: Vec::new(),
+                fill_outcomes: Vec::new(),
+                cell_declined_scored: 0,
+                cell_declined_outcomes: Vec::new(),
+            });
+        journal.cell_declined_scored = scored;
+        journal.cell_declined_outcomes = self.cell_declined_scores.clone();
+        let mut summary =
+            format!("{scored} leg(s) of cells' refused cycles priced, {regrets} regret(s)");
+        if deferred > 0 {
+            summary.push_str(&format!(", {deferred} deferred by the per-cycle cap"));
+        }
+        (Some(summary), problems, attempted)
+    }
+
+    /// What each priced leg of a cell's refused cycle would have done, most
+    /// recent last.
+    pub fn cell_declined_scores(&self) -> &[CellDeclinedScore] {
+        &self.cell_declined_scores
+    }
+
+    /// How many legs of cells' refused cycles are waiting for their horizon
+    /// or their bars.
+    pub fn cell_declined_awaiting_score(&self) -> usize {
+        self.cell_declined.len()
+    }
+
     /// Queue every fill the centre absorbed from a cell for the twin's fill
     /// scoring — the same queue, the same pass and the same
     /// `qip_venue_fill_error_bps` and calibration a desk fill reaches
@@ -11253,6 +11617,19 @@ impl Platform {
     /// on a past date.
     pub fn universe_history(&self) -> &qip_financial::history::UniverseHistory {
         &self.universe_history
+    }
+
+    /// The adapter and lifecycle engine `object_id`'s desk position was
+    /// booked through, or `None` where the desk has never held it
+    /// (R12-ASSET-1015).
+    pub fn position_booking(
+        &self,
+        object_id: &str,
+    ) -> Option<(
+        crate::asset_class_registry::ClassAdapter,
+        crate::asset_class_registry::LifecycleEngine,
+    )> {
+        self.position_bookings.get(object_id).copied()
     }
 
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
@@ -13986,6 +14363,7 @@ impl Platform {
             blind_spot_share: (priced > 0).then(|| thin as f64 / priced as f64),
             macro_surprises,
             company_features,
+            causal_parents: self.now_causal_parents(now),
         };
         let review = self.now_brain.run(inputs, now);
         let mut problems: Vec<String> = Vec::new();
@@ -14243,6 +14621,40 @@ impl Platform {
             }
         }
         by_instrument
+    }
+
+    /// Each priced instrument's causal parents among the priced instruments,
+    /// from the causal graph's live edges known now (R12-WORLD-3078). The
+    /// transmission is the edge's strength, signed by whether its mechanism
+    /// preserves the sign. An edge from a cause the NOW brain holds no state
+    /// for (a factor, an event class) gives the estimator nothing to read and
+    /// is left out.
+    fn now_causal_parents(
+        &self,
+        now: Timestamp,
+    ) -> BTreeMap<String, Vec<qip_world_model::now::CausalParent>> {
+        let world = self.world.read();
+        let mut parents: BTreeMap<String, Vec<qip_world_model::now::CausalParent>> =
+            BTreeMap::new();
+        for effect in self.price_history.keys() {
+            for edge in world.causal().incoming(effect, now) {
+                if !self.price_history.contains_key(&edge.cause) || edge.cause == *effect {
+                    continue;
+                }
+                let sign = if edge.mechanism.preserves_sign() {
+                    1.0
+                } else {
+                    -1.0
+                };
+                parents.entry(effect.clone()).or_default().push(
+                    qip_world_model::now::CausalParent {
+                        cause: edge.cause.clone(),
+                        transmission: sign * edge.strength,
+                    },
+                );
+            }
+        }
+        parents
     }
 
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
@@ -16828,8 +17240,8 @@ impl Platform {
             superseded_at: None,
         };
         let policy = PromotionPolicy::default();
-        let clears = candidate.supporting_episodes.len() >= policy.minimum_support
-            && candidate.smoothed_support() >= policy.minimum_smoothed_support;
+        let clears = candidate.supporting_episodes.len() >= policy.minimum_support()
+            && candidate.smoothed_support() >= policy.minimum_smoothed_support();
         match tally.lesson {
             LessonState::Unpromoted if clears => {
                 let statement = candidate.statement.clone();
@@ -20445,8 +20857,24 @@ impl Platform {
         // two halves and until this call the platform read only the declined
         // one: a fill was captured, attributed and never asked whether half
         // or twice the size would have done better.
-        let (priced, problems) =
+        let (priced, problems, filled_attempted) =
             self.score_filled(now, COUNTERFACTUALS_PER_CYCLE.saturating_sub(attempted));
+        if let Some(priced) = priced {
+            let detail = format!("{}; {priced}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // Then the legs of the cycles cells refused whole, under what the
+        // desk's two passes left of the one cap (R12-MESH-5068): last, so a
+        // busy cell can defer its own scoring and never the desk's.
+        // Blueprint §17.2 asks whether the coordination rule was too
+        // conservative, and a refusal nobody priced cannot say.
+        let (priced, problems, _) = self.score_cell_declined(
+            now,
+            COUNTERFACTUALS_PER_CYCLE.saturating_sub(attempted + filled_attempted),
+        );
         if let Some(priced) = priced {
             let detail = format!("{}; {priced}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };
@@ -21507,6 +21935,7 @@ impl Platform {
             let market = self.market.read();
             crate::hedge::plan(&crate::hedge::HedgeBrainInputs {
                 declarations: &self.config.hedge_candidates,
+                hedge_map: &self.asset_class_registry,
                 universe: &market.universe,
                 snapshot: &market.snapshot,
                 state: &state,
@@ -23094,6 +23523,22 @@ impl Platform {
             .universe
             .get(&ObjectId::from_string(object_id))
             .cloned();
+        // Booked through the adapter and lifecycle engine its class names
+        // (R12-ASSET-1015). A class the registry refuses was refused at
+        // assembly too, so a refusal here is the registry and the universe
+        // disagreeing, said on the cycle rather than booked under a guess.
+        if let Some(object) = &object {
+            match self.asset_class_registry.booking_of(object.asset_class) {
+                Ok(booking) => {
+                    self.position_bookings
+                        .insert(object_id.to_string(), booking);
+                }
+                Err(error) => self.capture_problems.push(format!(
+                    "a desk fill in {object_id} has no adapter or lifecycle engine: {}",
+                    error.message()
+                )),
+            }
+        }
         let mirrored = match object {
             Some(object) => self
                 .asset_book
@@ -24714,6 +25159,8 @@ impl Platform {
             fills_deferred: 0,
             declined_outcomes: self.declined_scores.clone(),
             fill_outcomes: Vec::new(),
+            cell_declined_scored: 0,
+            cell_declined_outcomes: Vec::new(),
         });
         let mut summary = format!("{scored} declined path(s) priced, {regrets} regret(s)");
         if deferred > 0 {
@@ -24747,7 +25194,11 @@ impl Platform {
     /// of the twin and is read by nothing that decides — a venue is
     /// withdrawn on feasibility evidence alone, and a size is narrowed on the
     /// bits, never on the error.
-    fn score_filled(&mut self, now: Timestamp, budget: usize) -> (Option<String>, Vec<String>) {
+    fn score_filled(
+        &mut self,
+        now: Timestamp,
+        budget: usize,
+    ) -> (Option<String>, Vec<String>, usize) {
         let horizon = self.counterfactuals.horizon();
         let due: Vec<OrderId> = self
             .filled
@@ -24764,9 +25215,10 @@ impl Platform {
             .map(|filled| filled.order_id.clone())
             .collect();
         if due.is_empty() {
-            return (None, Vec::new());
+            return (None, Vec::new(), 0);
         }
 
+        let attempted = due.len().min(budget);
         let deferred = due.len().saturating_sub(budget);
         if deferred > 0 {
             self.telemetry.metrics.increment(
@@ -25032,6 +25484,8 @@ impl Platform {
                     fills_deferred: deferred,
                     declined_outcomes: Vec::new(),
                     fill_outcomes: self.fill_scores.clone(),
+                    cell_declined_scored: 0,
+                    cell_declined_outcomes: Vec::new(),
                 });
             }
         }
@@ -25039,7 +25493,7 @@ impl Platform {
         if deferred > 0 {
             summary.push_str(&format!(", {deferred} deferred by the per-cycle cap"));
         }
-        (Some(summary), problems)
+        (Some(summary), problems, attempted)
     }
 
     /// What the twin found about each priced fill, most recent last.
@@ -27663,6 +28117,39 @@ mod decide_tests {
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
+    }
+
+    /// R12-WORLD-3078: the NOW brain is told each priced instrument's causal
+    /// parents among the priced instruments, signed by mechanism. An edge
+    /// from a cause the brain holds no state for is left out.
+    ///
+    /// Mutation: in `now_causal_parents`, drop the sign -- the inverting
+    /// edge's transmission then reads positive.
+    #[test]
+    fn the_now_brain_is_told_each_instruments_causal_parents_signed_by_mechanism() {
+        use qip_world_model::causal::{CausalEdge, Mechanism};
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        let edge = |cause: &str, mechanism: Mechanism| {
+            CausalEdge::new(cause, "MSFT", mechanism, 0.6, Duration::from_hours(1), now)
+                .expect("a valid edge")
+        };
+        platform.world.update(|world| {
+            world
+                .claim_causal(edge("AAPL", Mechanism::CompetitiveSubstitution))
+                .expect("the edge is claimed");
+            world
+                .claim_causal(edge("FACTOR", Mechanism::TemporalPrecedence))
+                .expect("the edge is claimed");
+        });
+        let parents = platform.now_causal_parents(now);
+        let msft = parents.get("MSFT").expect("MSFT has a priced parent");
+        assert_eq!(msft.len(), 1, "an unpriced cause was passed on: {msft:?}");
+        assert_eq!(msft[0].cause, "AAPL");
+        assert!((msft[0].transmission + 0.6).abs() < 1e-12, "{msft:?}");
+        assert!(!parents.contains_key("AAPL"));
     }
 
     /// R12-WORLD-6015: a world event is paired with the market's reaction at
