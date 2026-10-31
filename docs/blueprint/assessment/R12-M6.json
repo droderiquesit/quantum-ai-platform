@@ -333,9 +333,14 @@
     "evidence": [
       "backend/crates/services/qip-world-model/src/reaction.rs:35 ReactionEpisode",
       "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse",
-      "backend/crates/services/qip-world-model/src/granger.rs"
+      "backend/crates/services/qip-world-model/src/granger.rs",
+      "backend/crates/services/qip-world-model/src/granger.rs apply_reaction, REACTION_HORIZONS_BARS, CONTRADICTION_CONFIDENCE_FACTOR",
+      "backend/crates/services/qip-world-model/src/causal.rs CausalGraph::weaken_on_contradiction",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::react_to_world_events",
+      "backend/crates/services/qip-world-model/tests/granger.rs::a_contradicting_reaction_lowers_the_held_edges_confidence_and_keeps_the_edge",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::a_news_event_yields_reactions_at_three_horizons_and_a_contradiction_lowers_the_edge_confidence"
     ],
-    "gap": "Not shown at several horizons or lowering a causal edge confidence on contradiction; fusion runs only in the off-by-default tick desk.",
+    "gap": "2026-10-30 (L4, commit ed8a76c5, skeptic REFUTED). Closed: granger::apply_reaction applies a reaction episode to the causal graph (establishes an edge where none is held; a reaction against what the edge's mechanism expects for the event direction lowers its confidence by CONTRADICTION_CONFIDENCE_FACTOR and is cited on the edge), and Platform::react_to_world_events, called from run_cycle, measures each directional event at 1, 5 and 20 bars. Still open: on a shipped binary's default feed the loop matches nothing (synthetic news yields no MarketEvents because mentions carry no entity_id; fundamentals are keyed by entity id and bars by object id; macro series have no bars), so only the test fixture exercises it; only the event's own subject is measured (not multi-asset) and only from bar closes (not ticks); every directional event is used, with no materiality threshold; reaction episodes are not journaled and reactions_applied is in memory, so a restart re-applies them; an edge is created whatever sign the first reaction showed, and the three overlapping horizons of one event can each halve confidence; agreement never raises confidence; edge.evidence grows without a cap; propagation from a class-named cause is not shown.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -346,7 +351,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-30 (L4), commit ed8a76c5: three mutants killed (skip weaken_on_contradiction; first horizon only; drop the kept contradictions), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-MODEL-6016",

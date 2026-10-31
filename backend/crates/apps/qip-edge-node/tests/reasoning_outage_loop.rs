@@ -24,7 +24,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::capital::CapitalEnvelope;
-use qip_contracts::policy::{GrantManifest, PolicyPayload, Slot};
+use qip_contracts::policy::{GrantManifest, PlanDigest, PolicyPayload, Slot};
 use qip_contracts::reflex::Decision;
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
@@ -39,6 +39,7 @@ use qip_edge::policy::VerifiedPolicy;
 use qip_edge::pressure::JournalPressure;
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::assemble;
+use qip_edge_node::control::{Handoff as ControlHandoff, PlanCompiler};
 use qip_edge_node::event_fabric::inputs::RecordedInputs;
 use qip_edge_node::event_fabric::mirror::FabricMirror;
 use qip_edge_node::event_fabric::pressure::{PressureGauge, Thresholds};
@@ -54,6 +55,7 @@ use qip_edge_node::pass::PassStats;
 use qip_edge_node::scheduler::{
     DecisionLoop, HealthFacts, InstantClock, JournalBound, MarkerFacts, Outbox,
 };
+use qip_edge_node::strategies::{CompiledPlan, StrategyInstaller, StrategyPlan};
 use qip_execution_engine::creation::{
     CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
 };
@@ -330,12 +332,59 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
     gateway.with_listing_permissions(permissions, "paper")
 }
 
+/// How the node's one strategy reaches its cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Deploy {
+    /// `Cell::deploy_with_pricing`, straight from the test.
+    Direct,
+    /// As a package: a signed payload names the plan by digest, the plan file
+    /// digests to it, and `StrategyInstaller` deploys it under the grant —
+    /// then rides on the loop, re-installing at every turn's boundary as
+    /// `main.rs` wires it.
+    Package,
+}
+
+/// The policy that names the package's plan and funds its grant.
+fn package_policy(digest: &str, grants: Vec<String>) -> Result<VerifiedPolicy> {
+    let mut payload = PolicyPayload::unproduced(1, CELL, t(5));
+    payload.compiled_plan = Slot::produced(
+        PlanDigest {
+            digest: digest.to_string(),
+            strategies: 1,
+        },
+        t(5),
+    );
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: grants,
+        },
+        t(5),
+    );
+    VerifiedPolicy::verify(payload.signed(KEY)?, KEY, CELL, t(5))
+}
+
+/// The node's one strategy: always enter, ten at a time.
+fn always_enter() -> StrategySpec {
+    StrategySpec::new(StrategyId::new(STRATEGY), object(), Duration::from_secs(30)).with_rule(
+        Rule::new(
+            "always",
+            SignalKind::Enter,
+            Expr::Flag(true),
+            Expr::Exact(dec!("10")),
+            Expr::Statistic(0.5),
+            10,
+        ),
+    )
+}
+
 /// The node: a decision loop over an assembled cell with the journal wire and
 /// trimming armed, a firing strategy under a funded share, the simulated
 /// venue and its feed, the outbox's writer and relay into `store`, a health
-/// snapshot, and a `MeshWorker` to `centre`.
+/// snapshot, and — when there is a `centre` — a `MeshWorker` to it. With no
+/// centre the node is the default path's: `QIP_MESH_PEER` unset, no worker.
 fn node(
-    centre: &str,
+    centre: Option<&str>,
+    deploy: Deploy,
     store: Arc<dyn KeyValueStore>,
     health: HealthSnapshot,
 ) -> Result<DecisionLoop> {
@@ -353,25 +402,44 @@ fn node(
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
 
-    let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
-    let spec = StrategySpec::new(StrategyId::new(STRATEGY), object(), Duration::from_secs(30))
-        .with_rule(Rule::new(
-            "always",
-            SignalKind::Enter,
-            Expr::Flag(true),
-            Expr::Exact(dec!("10")),
-            Expr::Statistic(0.5),
-            10,
-        ));
-    let compiled = compiler.compile(&spec)?;
-    node.cell.deploy_with_pricing(
-        compiled,
-        compiler.into_program(),
-        grant()?,
-        PricingPolicy::Marketable,
-    )?;
     let named = grant()?.signature().to_string();
-    node.cell.apply_policy(share_policy(vec![named])?, t(5))?;
+    let mut strategies = None;
+    match deploy {
+        Deploy::Direct => {
+            let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
+            let compiled = compiler.compile(&always_enter())?;
+            node.cell.deploy_with_pricing(
+                compiled,
+                compiler.into_program(),
+                grant()?,
+                PricingPolicy::Marketable,
+            )?;
+            node.cell.apply_policy(share_policy(vec![named])?, t(5))?;
+        }
+        Deploy::Package => {
+            let bytes = serde_json::to_vec(&serde_json::json!({ "strategies": [always_enter()] }))?;
+            let path = temp_dir("plan").join("plan.json");
+            std::fs::write(&path, &bytes).map_err(|error| Error::io(error.to_string()))?;
+            let named_plan = PlanDigest {
+                digest: StrategyPlan::digest_of(&bytes),
+                strategies: 1,
+            };
+            node.cell
+                .apply_policy(package_policy(&named_plan.digest, vec![named])?, t(5))?;
+            let mut installer =
+                StrategyInstaller::new(Some(path.clone()), Some(PricingPolicy::Marketable));
+            installer.offer(grant()?)?;
+            installer.activate(CompiledPlan::read_and_compile(&path, &named_plan)?);
+            let installed = installer.install_compiled(&mut node.cell, t(5));
+            assert!(
+                node.cell.deployed_strategies().contains(&STRATEGY),
+                "premise: the installer deployed the package: {}",
+                installed.describe()
+            );
+            let (sender, handoff) = ControlHandoff::bounded(4)?;
+            strategies = Some((installer, PlanCompiler::spawn(path, sender)?, handoff));
+        }
+    }
 
     let metrics = Arc::clone(node.scrape_registry());
     let telemetry = Arc::new(OutboxTelemetry::new(metrics));
@@ -422,24 +490,7 @@ fn node(
         session,
     };
 
-    // The centre link as the binary builds it, on its own thread. The link's
-    // clock is frozen too: a breaker that opens on the outage stays open, so
-    // the stopped run never half-recovers part-way through.
-    let link_clock: Arc<dyn Clock> = Arc::new(ManualClock::new(t(0)));
-    let link = MeshLink::connect_with(
-        &MeshSettings {
-            cell: CELL.to_string(),
-            region: REGION.to_string(),
-            peer: centre.to_string(),
-            seed: 3,
-        },
-        KEY,
-        Arc::clone(&link_clock),
-        Arc::new(RecordingSleeper::new()),
-    )?;
-    let worker = MeshWorker::spawn(link, None, link_clock, MESH_INTERVAL, 16)?;
-
-    Ok(DecisionLoop::new(
+    let mut decisions = DecisionLoop::new(
         node.cell,
         NodeGateway::Simulated(gateway),
         outbox,
@@ -465,8 +516,31 @@ fn node(
             durable: false,
             started_secs: 0,
         },
-    )
-    .with_mesh(worker))
+    );
+    if let Some((installer, compiler, handoff)) = strategies {
+        decisions = decisions.with_strategies(installer, Some((Some(compiler), handoff)));
+    }
+    let Some(centre) = centre else {
+        return Ok(decisions);
+    };
+
+    // The centre link as the binary builds it, on its own thread. The link's
+    // clock is frozen too: a breaker that opens on the outage stays open, so
+    // the stopped run never half-recovers part-way through.
+    let link_clock: Arc<dyn Clock> = Arc::new(ManualClock::new(t(0)));
+    let link = MeshLink::connect_with(
+        &MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: centre.to_string(),
+            seed: 3,
+        },
+        KEY,
+        Arc::clone(&link_clock),
+        Arc::new(RecordingSleeper::new()),
+    )?;
+    let worker = MeshWorker::spawn(link, None, link_clock, MESH_INTERVAL, 16)?;
+    Ok(decisions.with_mesh(worker))
 }
 
 /// A deadline beside the turns. The cell is not `Send`, so turns run on the
@@ -507,6 +581,8 @@ struct TurnRecord {
     /// Orders the venue itself counted, independently of the cell.
     submitted: u64,
     halted: bool,
+    /// The strategies the cell runs after the turn.
+    deployed: Vec<String>,
 }
 
 /// What one pass journaled: `(order id, venue, quantity)` for every order
@@ -541,6 +617,9 @@ enum CentreFate {
     Stops,
     /// It goes on accepting and answers nothing again.
     FallsSilent,
+    /// There is none: no listener and no mesh worker — the default path,
+    /// on which no committed environment sets `QIP_MESH_PEER`.
+    Absent,
 }
 
 impl Run {
@@ -580,25 +659,33 @@ fn instant(turn: usize) -> Timestamp {
 /// Work [`TURNS`] turns. With `centre_stops` the centre's listener is closed
 /// before turn [`CENTRE_STOPS_BEFORE`] and never returns.
 fn run(centre_stops: bool) -> Result<Run> {
-    run_as(if centre_stops {
-        CentreFate::Stops
-    } else {
-        CentreFate::Answers
-    })
+    run_as(
+        if centre_stops {
+            CentreFate::Stops
+        } else {
+            CentreFate::Answers
+        },
+        Deploy::Direct,
+    )
 }
 
-fn run_as(fate: CentreFate) -> Result<Run> {
+fn run_as(fate: CentreFate, deploy: Deploy) -> Result<Run> {
     let centre_stops = fate == CentreFate::Stops;
     let store = Arc::new(MemoryKeyValueStore::new());
     let health = HealthSnapshot::new("{}");
-    let mut centre = Some(Centre::start()?);
-    let url = centre.as_ref().map(Centre::url).unwrap_or_default();
+    let mut centre = if fate == CentreFate::Absent {
+        None
+    } else {
+        Some(Centre::start()?)
+    };
+    let url = centre.as_ref().map(Centre::url);
     let address = centre
         .as_ref()
         .map(|c| c.address.clone())
         .unwrap_or_default();
     let mut decisions = node(
-        &url,
+        url.as_deref(),
+        deploy,
         Arc::clone(&store) as Arc<dyn KeyValueStore>,
         health.clone(),
     )?;
@@ -619,7 +706,7 @@ fn run_as(fate: CentreFate) -> Result<Run> {
             venue.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), now)?;
             venue.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), now)?;
         }
-        if turn == CENTRE_STOPS_BEFORE {
+        if turn == CENTRE_STOPS_BEFORE && fate != CentreFate::Absent {
             // Both runs wait here, the same way, until the centre has
             // answered a poll and taken a delta from this node's worker: the
             // link was live, not merely configured, before one run loses it.
@@ -680,6 +767,12 @@ fn run_as(fate: CentreFate) -> Result<Run> {
             stats: *decisions.stats(),
             submitted: decisions.gateway_mut().submitted_count(),
             halted: decisions.cell().is_halted(),
+            deployed: decisions
+                .cell()
+                .deployed_strategies()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
         });
         std::thread::sleep(PACE);
     }
@@ -847,8 +940,8 @@ fn a_node_driven_by_its_decision_loop_trades_the_same_passes_orders_and_refusals
 #[test]
 fn a_node_driven_by_its_decision_loop_trades_the_same_when_the_centre_accepts_and_never_answers()
 -> Result<()> {
-    let answered = run_as(CentreFate::Answers)?;
-    let silent = run_as(CentreFate::FallsSilent)?;
+    let answered = run_as(CentreFate::Answers, Deploy::Direct)?;
+    let silent = run_as(CentreFate::FallsSilent, Deploy::Direct)?;
 
     // The premise: the link was live before the silence, and the turns on
     // both sides of it decided something.
@@ -883,5 +976,100 @@ fn a_node_driven_by_its_decision_loop_trades_the_same_when_the_centre_accepts_an
     }
     assert_eq!(silent.passes(), passes);
     assert_eq!(silent.journal, answered.journal);
+    Ok(())
+}
+
+/// R12-RES-10130's check, as written: "Node trades identically with the
+/// centre silent" (ADR 0214) — on the default path, with the strategy
+/// installed as a package.
+///
+/// Two nodes, each with the same package deployed through
+/// `StrategyInstaller` (a signed payload naming the plan by digest, the plan
+/// file digesting to it, the grant held and spent) and the installer riding
+/// on the loop as `main.rs` wires it, re-installing at every turn's
+/// boundary. One has a centre that answers every poll and has nothing new to
+/// say; the other has no centre at all — no listener and no mesh worker,
+/// which is what every committed environment runs, since none sets
+/// `QIP_MESH_PEER`. The turns, the orders the venue took, the refusals the
+/// cell journaled and the journal chain itself must be the same, and the
+/// package must be deployed after every turn in both: nothing is withdrawn
+/// because nothing arrives.
+///
+/// The two tests above hold the centre *dropping* part-way; this one holds
+/// the case the requirement names, a node whose centre is silent from the
+/// first turn, against a run whose centre is present.
+///
+/// Mutation: make `DecisionLoop::turn` run its pass only when a mesh worker
+/// is attached — the absent run sends nothing and the turn-for-turn
+/// comparison fails.
+#[test]
+fn the_node_trades_identically_with_the_centre_silent() -> Result<()> {
+    let present = run_as(CentreFate::Answers, Deploy::Package)?;
+    let silent = run_as(CentreFate::Absent, Deploy::Package)?;
+
+    // The premise: the present centre really was there and answered — polls
+    // and deltas, before the midpoint and after it — and the silent run had
+    // no centre to answer anything.
+    let (polls, deltas) = present.answered_before_stop;
+    assert!(
+        polls > 0 && deltas > 0,
+        "premise: the present centre answered {polls} polls and {deltas} deltas"
+    );
+    let (end_polls, _) = present
+        .answered_at_end
+        .expect("the present centre runs to the end");
+    assert!(end_polls > polls, "premise: the centre went on answering");
+    assert_eq!(failed_deltas(&present.mesh), 0, "{}", present.mesh);
+    assert_eq!(silent.answered_before_stop, (0, 0));
+    assert!(silent.answered_at_end.is_none());
+    assert!(
+        silent.mesh.is_null(),
+        "premise: the silent node had a mesh link: {}",
+        silent.mesh
+    );
+
+    // The turns decided something: orders and refusals on both sides of the
+    // midpoint, a pass every turn, and the package deployed after every turn.
+    let passes = present.passes();
+    let midpoint = instant(CENTRE_STOPS_BEFORE);
+    for (side, range) in [
+        ("before", passes.range(..midpoint)),
+        ("after", passes.range(midpoint..)),
+    ] {
+        let range: Vec<_> = range.collect();
+        assert!(
+            range.iter().any(|(_, p)| !p.orders.is_empty()),
+            "premise: no order was sent {side} the midpoint: {range:?}"
+        );
+        assert!(
+            range.iter().any(|(_, p)| !p.refusals.is_empty()),
+            "premise: nothing was refused {side} the midpoint: {range:?}"
+        );
+    }
+    for run in [&present, &silent] {
+        assert_eq!(run.turns.len(), TURNS);
+        assert!(
+            run.turns
+                .iter()
+                .all(|turn| turn.deployed == vec![STRATEGY.to_string()]),
+            "the installed package was not running after every turn: {:?}",
+            run.turns
+        );
+    }
+    assert!(
+        present
+            .turns
+            .iter()
+            .all(|turn| turn.ran_pass && !turn.halted),
+        "premise: every turn ran a pass: {:?}",
+        present.turns
+    );
+
+    // Identical: turn for turn, pass for pass, down to the chain shipped.
+    for (turn, (p, s)) in present.turns.iter().zip(&silent.turns).enumerate() {
+        assert_eq!(s, p, "turn {turn} differs with the centre silent");
+    }
+    assert_eq!(silent.passes(), passes);
+    assert_eq!(silent.journal, present.journal);
     Ok(())
 }

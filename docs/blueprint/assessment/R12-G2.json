@@ -1790,7 +1790,7 @@
     "evidence": [
       "backend/crates/services/qip-evolution/src/promotion.rs"
     ],
-    "gap": "Build the role. Lane L5-EDGE 2026-10-24: the clause is GCP v2.1 §13's autonomous development agent, whose boundary is enforced by agent credentials and configuration (.claude/agents, .claude/settings.json, the guard hook) and the CI promotion gates under .github/**, all protected paths this lane does not edit; strategy promotion in qip-evolution/qip-lifecycle is not this role. Needs a person to define the learning agent's credential scope and the refused promotion run.",
+    "gap": "2026-10-30 (lane L5-EDGE): the boundary is a protected-path change, written as docs/blueprint/lanes/l5-edge-GOV-9075.patch for a person to apply: a learning-agent role in scripts/agent-policy.json and .claude/agents/learning-agent.md whose only grant is docs/proposals/**, and an agent-guard test that admits its proposal and refuses its edit to the deploy workflow, the lifecycle's promotion code and the agent policy. Nothing changes until a person applies it; the role's credential scope is then the guard's role check plus the protected-path approval.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1798,10 +1798,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection / cargo test -p qip-acceptance",
+    "verification": "git apply docs/blueprint/lanes/l5-edge-GOV-9075.patch && node --test scripts/agent-guard.test.mjs",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L5-EDGE: left MISSING; protected paths."
+    "notes": "2026-10-24 lane L5-EDGE: left MISSING; protected paths. 2026-10-30 lane L5-EDGE: the patch applies to a clean copy (git apply --check) and node --test scripts/agent-guard.test.mjs passes 40 of 40 on it, the role-table test included. Mutations run on the patched copy, each restored with cmp: widening learning-agent's may_edit to backend, .github and scripts failed the new test; skipping the role check in judgeChange failed it and five others."
   },
   {
     "id": "R12-CICD-9076",
