@@ -403,8 +403,9 @@ impl ReputationBook {
 
     /// Every model that may drive a decision at `now`, best here first.
     ///
-    /// Eligibility is [`qip_ai::ModelCard::decision_eligibility`] and nothing
-    /// else: a retired or drifted model is absent from this list however strong
+    /// Eligibility is [`qip_ai::ModelCard::regime_eligibility`] in the
+    /// conditions' market regime: a retired or drifted model, or one validated
+    /// only in other regimes, is absent from this list however strong
     /// its record, because the registry has already decided that question and a
     /// second opinion here would be a way around it.
     ///
@@ -420,7 +421,14 @@ impl ReputationBook {
     ) -> Vec<Rated<'a>> {
         let mut rated: Vec<Rated<'a>> = registry
             .iter()
-            .filter(|card| card.decision_eligibility(now).is_ok())
+            // Eligibility in the regime the decision is made in
+            // (R12-RISK-4099): a card validated only in other regimes says
+            // nothing about this one, and ranking it here would route a
+            // crisis decision to a model scored only in a quiet tape.
+            .filter(|card| {
+                card.regime_eligibility(now, conditions.regime.as_str())
+                    .is_ok()
+            })
             .map(|card| Rated {
                 card,
                 competence: self.competence(&card.reference(), conditions),

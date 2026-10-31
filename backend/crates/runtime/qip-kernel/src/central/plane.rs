@@ -46,6 +46,7 @@ use qip_contracts::feasibility::{EDGE_GATES, GATE_WITHDRAWN_VENUE, is_withdrawal
 use qip_contracts::governance::{Approval, Severity};
 use qip_contracts::message::BookSide;
 use qip_contracts::policy::{CycleWhitelist, FeasibilityConstraints};
+use qip_contracts::regional_episode::RegionalEpisode;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::wire::{CrossRecord, FillRecord};
 use qip_contracts::{CapitalEnvelope, Utilisation};
@@ -367,6 +368,13 @@ pub struct CellReport {
     /// Incremental for the same reason.
     #[serde(default)]
     pub crosses: Vec<CrossRecord>,
+    /// The newest regional episodes the cell retains (ADR 0207,
+    /// R12-REFLEX-6012): a view of the cell's ring, repeated on every report,
+    /// which [`CentralPlane::ingest`] merges into its own bounded per-cell
+    /// store without duplicating one it already holds. Defaulted so a report
+    /// journaled before the field replays as reporting none.
+    #[serde(default)]
+    pub episodes: Vec<RegionalEpisode>,
     /// Every gate that refused at the cell since its previous report, as the
     /// delta carried them. The centre reads only the feasibility ones that
     /// name a venue it knows, into the window blueprint §12.3's fourth row
@@ -389,6 +397,7 @@ impl CellReport {
             orders: Vec::new(),
             fills: Vec::new(),
             crosses: Vec::new(),
+            episodes: Vec::new(),
             refusals: Vec::new(),
         }
     }
@@ -431,6 +440,11 @@ impl CellReport {
 
     pub fn with_crosses(mut self, crosses: Vec<CrossRecord>) -> Self {
         self.crosses = crosses;
+        self
+    }
+
+    pub fn with_episodes(mut self, episodes: Vec<RegionalEpisode>) -> Self {
+        self.episodes = episodes;
         self
     }
 
@@ -846,6 +860,14 @@ pub struct CentralPlane {
     /// [`Self::dark_regions`] on every call and cached nowhere. Bounded by
     /// the cells that have ever reported.
     last_heard: BTreeMap<String, LastHeard>,
+    /// The regional episodes each cell has reported (ADR 0207,
+    /// R12-REFLEX-6012), oldest first, at most [`MAX_EPISODES_PER_CELL`]
+    /// per cell. Merged, not replaced, on every report: a delta is a view of
+    /// the cell's ring and repeats what it carried before, so an episode
+    /// already held is not held twice and a redelivered report changes
+    /// nothing. Bounded by the cells that have ever reported, like
+    /// `last_heard`. Read by nothing that decides.
+    episodes: BTreeMap<String, Vec<RegionalEpisode>>,
     /// The regions whose darkness the platform has journaled and not yet
     /// journaled the end of. **Not the derivation and read by nothing that
     /// decides**: `dark_regions` recomputes from `last_heard` every time,
@@ -1009,6 +1031,7 @@ impl CentralPlane {
             withdrawn_venues: BTreeSet::new(),
             reinstated_venues: BTreeSet::new(),
             last_heard: BTreeMap::new(),
+            episodes: BTreeMap::new(),
             settled_reports: BTreeMap::new(),
             announced_dark: BTreeSet::new(),
             lit_share_bounds: BTreeMap::new(),
@@ -1230,6 +1253,34 @@ impl CentralPlane {
 
     /// When the centre last heard from each cell, and where the cell said it
     /// was. The input to the derivation, in cell order.
+    /// The regional episodes `cell` has reported, oldest first (ADR 0207).
+    /// Empty for a cell the centre has not heard an episode from.
+    pub fn episodes(&self, cell: &str) -> &[RegionalEpisode] {
+        self.episodes.get(cell).map_or(&[], Vec::as_slice)
+    }
+
+    /// Merge a report's episodes into the cell's store: each one the store
+    /// does not already hold is appended, and the oldest leave once the
+    /// store is past [`MAX_EPISODES_PER_CELL`]. Equality is the episode's
+    /// own — cell, region, kind, both instants and the detail — which is
+    /// what makes a view repeated on every delta, and a redelivered report,
+    /// idempotent here.
+    fn store_episodes(&mut self, cell: &str, reported: &[RegionalEpisode]) {
+        if reported.is_empty() {
+            return;
+        }
+        let held = self.episodes.entry(cell.to_string()).or_default();
+        for episode in reported {
+            if held.contains(episode) {
+                continue;
+            }
+            held.push(episode.clone());
+            if held.len() > MAX_EPISODES_PER_CELL {
+                held.remove(0);
+            }
+        }
+    }
+
     pub fn last_heard(&self) -> &BTreeMap<String, LastHeard> {
         &self.last_heard
     }
@@ -2285,6 +2336,8 @@ impl CentralPlane {
                 .insert((report.cell.clone(), strategy.clone()), utilisation.clone());
         }
 
+        self.store_episodes(&report.cell, &report.episodes);
+
         // The interval's orders and crosses reach the strategy books whether
         // or not the report reconciles: they are what the cell did, and a
         // halt is about what it may do next. Settled before the halt so a
@@ -3205,6 +3258,12 @@ impl SentOrders {
 /// far longer than any retry or spool a cell keeps.
 const MAX_SETTLED_REPORTS_PER_CELL: usize = 4_096;
 
+/// The most regional episodes the centre holds per cell (ADR 0207). Twice
+/// the ring a cell keeps (`qip_edge::cell::MAX_RETAINED_EPISODES`, 128), so
+/// the centre remembers what a cell has already let go of; a reader who
+/// wants more than this reads the journal, which has all of them.
+pub const MAX_EPISODES_PER_CELL: usize = 256;
+
 /// The reports one cell has had settled, by instant and content digest,
 /// bounded, oldest evicted first.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -3404,6 +3463,88 @@ mod tests {
             .envelopes
             .insert((CELL.to_string(), desk.clone()), envelope);
         (plane, desk, cell_venues)
+    }
+
+    /// R12-REFLEX-6012 (ADR 0207). An episode a cell reports is held by the
+    /// centre; the same report ingested again — a delta is a view of the
+    /// cell's ring, and the transport is at-least-once — holds it once; and
+    /// the store is bounded per cell, oldest out. Mutations (each run,
+    /// failed, restored): `store_episodes` skipping its `contains` check
+    /// fails the second assertion with two copies; `MAX_EPISODES_PER_CELL`
+    /// enforced as `>=` rather than `>` fails the bound assertion by one.
+    #[test]
+    fn an_episode_a_cell_reports_is_held_once_and_the_store_is_bounded_per_cell() {
+        use qip_contracts::regional_episode::{EpisodeKind, RegionalEpisode};
+        let (mut plane, _desk, _venues) = two_venue_plane();
+        let mut autonomy = AutonomyController::new();
+        assert!(plane.episodes(CELL).is_empty(), "premise: nothing held yet");
+
+        let episode = RegionalEpisode::new(
+            CELL.to_string(),
+            "europe-west2".to_string(),
+            EpisodeKind::LatencySpike,
+            now(),
+            "order london-1-7 completed 140 ms after release".to_string(),
+        );
+        let report = || {
+            CellReport::new(CELL, now())
+                .with_region("europe-west2")
+                .with_episodes(vec![episode.clone()])
+        };
+        plane
+            .ingest(report(), autonomy.kill_switch_mut(), now())
+            .expect("a report carrying one episode ingests");
+        assert_eq!(plane.episodes(CELL), &[episode.clone()][..]);
+
+        // The same view again, as the next delta from the same ring would
+        // carry it: still one.
+        let later = now().saturating_add(Duration::from_secs(1));
+        plane
+            .ingest(report(), autonomy.kill_switch_mut(), later)
+            .expect("the repeated view ingests");
+        assert_eq!(
+            plane.episodes(CELL).len(),
+            1,
+            "an episode repeated on the next delta was stored twice"
+        );
+
+        // The bound: more distinct episodes than the store keeps, oldest out.
+        let flood: Vec<RegionalEpisode> = (0..(MAX_EPISODES_PER_CELL + 10))
+            .map(|n| {
+                RegionalEpisode::new(
+                    CELL.to_string(),
+                    "europe-west2".to_string(),
+                    EpisodeKind::FillSlippage,
+                    now().saturating_add(Duration::from_secs(n as i64 + 2)),
+                    format!("fill {n} slipped"),
+                )
+            })
+            .collect();
+        plane
+            .ingest(
+                CellReport::new(CELL, later)
+                    .with_region("europe-west2")
+                    .with_episodes(flood.clone()),
+                autonomy.kill_switch_mut(),
+                later.saturating_add(Duration::from_secs(1)),
+            )
+            .expect("a flood ingests");
+        let held = plane.episodes(CELL);
+        assert_eq!(
+            held.len(),
+            MAX_EPISODES_PER_CELL,
+            "the store is not bounded"
+        );
+        assert_eq!(
+            held.last(),
+            flood.last(),
+            "the newest episode was the one dropped"
+        );
+        assert!(
+            !held.contains(&episode),
+            "the oldest episode survived a flood past the bound"
+        );
+        assert!(plane.episodes("another-cell").is_empty());
     }
 
     /// A replay is recognised by instant and content together: the same

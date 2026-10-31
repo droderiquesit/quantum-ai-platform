@@ -261,24 +261,29 @@
   {
     "id": "R12-REFLEX-6012",
     "status": "PARTIAL",
-    "current": "qip-edge Cell records RegionalEpisode (anomaly, failure, latency spike, fill slippage) into a bounded local buffer; Microstructure and VenueBehaviour kinds are never recorded and nothing ships episodes to the centre.",
+    "current": "qip-edge Cell records RegionalEpisode (anomaly, failure, latency spike, fill slippage) into a bounded local ring; since 2026-10-31 (ADR 0207) the ring rides the mesh delta as a view — CellStateDelta/WireDelta/CellInterval carry `episodes` (newest MAX_EPISODES_PER_DELTA=32) and `episodes_omitted`, defaulted so sealed deltas replay — the API's IngestSink puts them on CellReport, and CentralPlane::ingest merges them into a per-cell store bounded at MAX_EPISODES_PER_CELL=256, deduplicated by the episode's own equality, read through CentralPlane::episodes(cell) by nothing that decides. Microstructure and VenueBehaviour are still never recorded.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:4033 record_episode (private, bounded)",
-      "backend/crates/edge/qip-edge/src/cell.rs:4076 episodes(): four of six kinds recorded",
-      "backend/crates/libs/qip-contracts/src/regional_episode.rs:68 RegionalEpisode"
+      "docs/adr/0207 (accepted 2026-10-31)",
+      "backend/crates/libs/qip-contracts/src/wire.rs MAX_EPISODES_PER_DELTA",
+      "backend/crates/edge/qip-edge/src/cell.rs state_delta: episodes: self.episodes.clone(); record_episode (private, bounded)",
+      "backend/crates/edge/qip-edge/src/mesh.rs CellStateDelta::{episodes, episodes_omitted}, bound_refusals keeps the newest",
+      "backend/crates/services/qip-mesh/src/delta.rs WireDelta/CellInterval episodes; tests::a_delta_written_before_episodes_existed_decodes_as_having_reported_none",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs CellReport::with_episodes, CentralPlane::{episodes, store_episodes}, MAX_EPISODES_PER_CELL; tests::an_episode_a_cell_reports_is_held_once_and_the_store_is_bounded_per_cell",
+      "backend/crates/apps/qip-api/src/mesh.rs IngestSink::absorb .with_episodes; tests/mesh.rs::a_cells_regional_episode_crosses_the_wire_into_the_central_store",
+      "backend/crates/tests/qip-acceptance/tests/regional_episodes.rs::an_episode_recorded_at_a_cell_reaches_the_central_store"
     ],
-    "gap": "Unchanged in substance (corrected 2026-10-24): carrying Cell::episodes to the centre is a mesh delta wire change that needs its own ADR, Microstructure and VenueBehaviour have no recording seam (cell.rs doc at the episodes accessor says so), and the central plane has no episode store.",
+    "gap": "2026-10-31 (lane L5b; independent read-only skeptic REFUTED promotion): episodes recorded at a cell now reach a bounded per-cell store in CentralPlane over the mesh delta (ADR 0207), but the Microstructure and VenueBehaviour kinds the requirement names (microstructure drift, queue behaviour, venue anomalies) are still never recorded, and ADR 0207 declines to add a seam for them (bar part 4). Delivery runs only where QIP_MESH_CELLS binds the API's mesh port, which no committed environment sets (manifest_wiring THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN), and on an execution node that is not deployed (bar part 2).",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge && cargo test -p qip-kernel (new: ingested episode reaches central store)",
+    "verification": "cargo test -p qip-acceptance --test regional_episodes; cargo test -p qip-api --test mesh a_cells_regional_episode; cargo test -p qip-kernel --lib an_episode_a_cell_reports; cargo test -p qip-mesh --lib episodes",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Nothing is deployed (execution_nodes = {} in every tfvars), so nothing is demonstrated end to end. The triage closure (carry Cell::episodes on the report and store them in CentralPlane::ingest) is the wire change in (1). Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Nothing is deployed (execution_nodes = {} in every tfvars), so nothing is demonstrated end to end. The triage closure (carry Cell::episodes on the report and store them in CentralPlane::ingest) is the wire change in (1). Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE. Lane L5b 2026-10-31: the wire change landed under ADR 0207. Mutations fired (5, each restored byte for byte): state_delta ships an empty list (regional_episodes.rs fails at 'the delta is not the cell's view'); ingest never calls store_episodes (fails at the store assertion); store_episodes without its contains check (plane test: two copies); the bound at >= (plane test: one fewer); IngestSink without with_episodes (qip-api mesh test: store empty). Kept PARTIAL on the skeptic's refutation in the gap."
   },
   {
     "id": "R12-WORLD-6013",

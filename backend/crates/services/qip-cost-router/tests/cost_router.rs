@@ -1328,3 +1328,63 @@ fn the_ledger_produces_the_canonical_contract_reputation_with_the_sample_size_pr
     assert!(ledger.snapshot(&under, 10_001).is_err());
     Ok(())
 }
+
+/// R12-RISK-4099: a model whose card names the regimes it was validated in
+/// is not ranked for a decision in another regime, however strong its record
+/// there would be; it is ranked in a regime it was validated in; and a card
+/// that names no regime is ranked everywhere, as before.
+///
+/// Mutation: revert `rank` to filter on `decision_eligibility` alone and the
+/// calm-only model is ranked for the crisis decision.
+#[test]
+fn a_model_validated_only_in_a_calm_regime_is_not_ranked_for_a_stressed_decision() -> Result<()> {
+    let mut registry = ModelRegistry::new();
+    let mut card = ModelCard::new(
+        ModelId::from_string("calm-only"),
+        "calm-only",
+        "1.0",
+        "quant.research",
+        now(),
+    );
+    card.stage = qip_ai::registry::ModelStage::Validation;
+    card.validated_regimes
+        .insert(MarketRegime::Quiet.as_str().to_string());
+    let calm = card.reference();
+    registry.register(card)?;
+    registry.record_evaluation(
+        &calm,
+        EvaluationRecord {
+            evaluated_at: now(),
+            dataset: "held-out".to_string(),
+            metrics: BTreeMap::new(),
+            passed: true,
+        },
+    )?;
+    registry.promote(&calm, now())?;
+    let general = production_model(&mut registry, "general", now())?;
+    let book = ReputationBook::new();
+
+    let quiet: Vec<String> = book
+        .rank(&registry, &conditions(MarketRegime::Quiet), now())
+        .iter()
+        .map(|rated| rated.card.reference())
+        .collect();
+    assert!(
+        quiet.contains(&calm) && quiet.contains(&general),
+        "premise: both models are eligible in the regime the calm one was validated in: {quiet:?}"
+    );
+    let crisis: Vec<String> = book
+        .rank(&registry, &conditions(MarketRegime::Crisis), now())
+        .iter()
+        .map(|rated| rated.card.reference())
+        .collect();
+    assert!(
+        !crisis.contains(&calm),
+        "a model validated only in a quiet market was ranked for a crisis decision: {crisis:?}"
+    );
+    assert!(
+        crisis.contains(&general),
+        "a card naming no regime is ranked everywhere"
+    );
+    Ok(())
+}

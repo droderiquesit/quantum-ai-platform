@@ -273,6 +273,64 @@ impl LifecycleEngine {
     }
 }
 
+/// The adapter a class's positions are booked through (R12-ASSET-1015):
+/// the six product kinds §1.1 names — liquid, event-driven, illiquid,
+/// private, tokenized and physical — each with its own way in and out.
+///
+/// Derived from the class by an exhaustive match, as the lifecycle engine
+/// is, so adding a class without deciding how it is booked does not
+/// compile, and no record can pair a class with another class's adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassAdapter {
+    /// Liquid: an order to a venue's book, filled at the touch.
+    VenueOrderBook,
+    /// Event-driven: a contract that resolves on an outcome.
+    EventContract,
+    /// Illiquid: a holding marked by appraisal, exited by negotiation.
+    IlliquidMark,
+    /// Private: a commitment drawn by capital calls and returned by
+    /// distributions.
+    PrivateCommitment,
+    /// Tokenized: a balance on a ledger, moved by a confirmed transfer.
+    TokenizedLedger,
+    /// Physical: units received, stored and shipped.
+    PhysicalShipment,
+}
+
+impl ClassAdapter {
+    pub const fn for_class(class: AssetClass) -> Self {
+        match class {
+            AssetClass::Equity
+            | AssetClass::FixedIncome
+            | AssetClass::Credit
+            | AssetClass::Rates
+            | AssetClass::ForeignExchange
+            | AssetClass::Commodity
+            | AssetClass::Derivative
+            | AssetClass::Fund
+            | AssetClass::Cash
+            | AssetClass::StructuredProduct => Self::VenueOrderBook,
+            AssetClass::Prediction => Self::EventContract,
+            AssetClass::RealAsset => Self::IlliquidMark,
+            AssetClass::PrivateMarket => Self::PrivateCommitment,
+            AssetClass::DigitalAsset => Self::TokenizedLedger,
+            AssetClass::PhysicalProduct => Self::PhysicalShipment,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::VenueOrderBook => "venue_order_book",
+            Self::EventContract => "event_contract",
+            Self::IlliquidMark => "illiquid_mark",
+            Self::PrivateCommitment => "private_commitment",
+            Self::TokenizedLedger => "tokenized_ledger",
+            Self::PhysicalShipment => "physical_shipment",
+        }
+    }
+}
+
 /// One class's record — §17.7's nine fields.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AssetClassRecord {
@@ -901,6 +959,15 @@ impl AssetClassRegistry {
             })
     }
 
+    /// The adapter and lifecycle engine a position in `class` is booked
+    /// through (R12-ASSET-1015), or a refusal naming the class: a class no
+    /// record registers has neither, and booking it through a guessed pair
+    /// would walk a private commitment through order stages.
+    pub fn booking_of(&self, class: AssetClass) -> Result<(ClassAdapter, LifecycleEngine)> {
+        let lifecycle = self.lifecycle_of(class)?;
+        Ok((ClassAdapter::for_class(class), lifecycle))
+    }
+
     pub fn is_registered(&self, class: AssetClass) -> bool {
         self.records.contains_key(&class)
     }
@@ -1133,6 +1200,77 @@ mod tests {
             AssetClassRegistry::shipped()?
                 .without(AssetClass::Rates)
                 .is_err()
+        );
+        Ok(())
+    }
+
+    /// R12-ASSET-1015: the registry maps each of the six product kinds §1.1
+    /// names — liquid, event-driven, illiquid, private, tokenized, physical —
+    /// to its own adapter and a lifecycle engine, and a class it does not
+    /// register has neither. Fails if two kinds share an adapter, if a
+    /// private or physical class is walked through order stages, or if
+    /// `booking_of` stops consulting the table.
+    #[test]
+    fn each_product_kind_is_booked_through_its_own_adapter_and_an_unregistered_class_is_refused()
+    -> Result<()> {
+        let shipped = AssetClassRegistry::shipped()?;
+        let kinds = [
+            (
+                AssetClass::Equity,
+                ClassAdapter::VenueOrderBook,
+                LifecycleEngine::PortfolioStages,
+            ),
+            (
+                AssetClass::Prediction,
+                ClassAdapter::EventContract,
+                LifecycleEngine::PortfolioStages,
+            ),
+            (
+                AssetClass::RealAsset,
+                ClassAdapter::IlliquidMark,
+                LifecycleEngine::PrivateStages,
+            ),
+            (
+                AssetClass::PrivateMarket,
+                ClassAdapter::PrivateCommitment,
+                LifecycleEngine::PrivateStages,
+            ),
+            (
+                AssetClass::DigitalAsset,
+                ClassAdapter::TokenizedLedger,
+                LifecycleEngine::PortfolioStages,
+            ),
+            (
+                AssetClass::PhysicalProduct,
+                ClassAdapter::PhysicalShipment,
+                LifecycleEngine::CommerceLedger,
+            ),
+        ];
+        let adapters: BTreeSet<ClassAdapter> =
+            kinds.iter().map(|(_, adapter, _)| *adapter).collect();
+        assert_eq!(
+            adapters.len(),
+            6,
+            "premise: six kinds, six distinct adapters"
+        );
+        for (class, adapter, lifecycle) in kinds {
+            assert_eq!(
+                shipped.booking_of(class)?,
+                (adapter, lifecycle),
+                "{} is booked through the wrong adapter or engine",
+                class.as_str()
+            );
+        }
+        let narrowed = shipped.without(AssetClass::DigitalAsset)?;
+        let refused = narrowed
+            .booking_of(AssetClass::DigitalAsset)
+            .expect_err("a withdrawn class was given an adapter");
+        assert!(
+            refused
+                .message()
+                .contains("digital_asset is not a registered asset class"),
+            "{}",
+            refused.message()
         );
         Ok(())
     }

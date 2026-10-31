@@ -605,6 +605,79 @@ fn an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out() -> Result<()> 
     Ok(())
 }
 
+/// R12-MESH-5068: a cycle refused whole tells the centre what it refused.
+/// Until the delta carried the legs, the centre could count a declined cycle
+/// and never price it, so nothing could say whether the coordination rule
+/// was too conservative. Mutation: drop the `refused_legs` push in
+/// `admit_cycle`, or attach the legs to the wrong refusal.
+#[test]
+fn a_cycle_refused_whole_carries_its_legs_to_the_centre_and_a_leg_refusal_carries_none()
+-> Result<()> {
+    let minimum = VenueModel::new(
+        VenueClass::CryptoExchange,
+        Granularity::new(d("0.000000001"), d("0.000000001"), Decimal::ZERO)?,
+        Decimal::ZERO,
+        None,
+    )?
+    .with_minimum_notional(d("1"))?;
+    // What the cycle would have sent, from the same books without the model.
+    let (mut cell, _) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    let sent = cell.work(t(10), &mut RecordingGateway::default())?;
+    assert_eq!(sent.orders.len(), 3, "the premise failed: {sent:?}");
+    let mut expected: Vec<(String, String, Decimal)> = sent
+        .orders
+        .iter()
+        .map(|order| {
+            (
+                order.object_id.as_str().to_string(),
+                format!("{:?}", order.side),
+                order.quantity,
+            )
+        })
+        .collect();
+    expected.sort();
+
+    let (mut cell, _) = cell_with(
+        ethereum_books()?,
+        desk(ethereum_graph()?, 4)?,
+        Some(minimum),
+    )?;
+    let report = cell.work(t(10), &mut RecordingGateway::default())?;
+    let delta = cell.state_delta(&report, t(10));
+    let whole: Vec<_> = delta
+        .refusals
+        .iter()
+        .filter(|refusal| refusal.gate == "arbitrage_cycle")
+        .collect();
+    assert_eq!(whole.len(), 1, "the premise failed: {:?}", delta.refusals);
+    let mut carried: Vec<(String, String, Decimal)> = whole[0]
+        .legs
+        .iter()
+        .map(|leg| {
+            (
+                leg.object_id.as_str().to_string(),
+                format!("{:?}", leg.side),
+                leg.quantity,
+            )
+        })
+        .collect();
+    carried.sort();
+    assert_eq!(
+        carried, expected,
+        "the refusal does not carry the legs the cycle would have sent"
+    );
+    let leg_refusal = delta
+        .refusals
+        .iter()
+        .find(|refusal| refusal.gate == "feasibility_minimum_notional")
+        .ok_or_else(|| Error::not_found("the leg's own refusal"))?;
+    assert!(
+        leg_refusal.legs.is_empty(),
+        "the leg-level refusal carries legs: {leg_refusal:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn the_cap_refuses_the_excess_and_counts_it() -> Result<()> {
     let books = || -> Result<Vec<VenueState>> {

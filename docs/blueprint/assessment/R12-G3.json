@@ -2538,10 +2538,10 @@
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
       "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
       "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
       "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
+    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2554,7 +2554,7 @@
     "verification": "cargo test -p qip-mesh; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
   },
   {
     "id": "R12-MESH-10113",
@@ -2568,10 +2568,10 @@
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
       "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
       "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
       "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
+    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2584,7 +2584,7 @@
     "verification": "cargo test -p qip-edge --test decomposition; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
   },
   {
     "id": "R12-LEDGER-10114",

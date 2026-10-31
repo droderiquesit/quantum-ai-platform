@@ -1623,6 +1623,7 @@ fn report_with_withdrawn_venue_refusals(cell: &str, venue: &str, count: usize) -
                 gate: qip_contracts::feasibility::GATE_WITHDRAWN_VENUE.to_string(),
                 reason: format!("{venue} is withdrawn on feasibility evidence"),
                 venue: Some(venue.to_string()),
+                legs: Vec::new(),
             })
             .collect(),
     )
@@ -1636,6 +1637,7 @@ fn report_with_lot_refusal_from(cell: &str, venue: &str) -> CellReport {
         gate: "feasibility_lot".to_string(),
         reason: "10.5 is not a whole number of lots".to_string(),
         venue: Some(venue.to_string()),
+        legs: Vec::new(),
     }])
 }
 
@@ -2070,6 +2072,7 @@ fn a_refusal_naming_a_venue_no_grant_permits_is_counted_unknown_and_kept_out_of_
             gate: "halted".to_string(),
             reason: "the cell is halted".to_string(),
             venue: Some(VENUE.to_string()),
+            legs: Vec::new(),
         }]);
     let ingestion = platform.ingest_cell_report(posture, start())?;
     assert!(ingestion.feasibility_refusals.is_empty());
@@ -5628,6 +5631,7 @@ fn report_with_many_lot_refusals(cell: &str, venue: &str, count: usize) -> CellR
                 gate: "feasibility_lot".to_string(),
                 reason: "10.5 is not a whole number of lots".to_string(),
                 venue: Some(venue.to_string()),
+                legs: Vec::new(),
             })
             .collect(),
     )
