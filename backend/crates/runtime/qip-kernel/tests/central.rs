@@ -9831,7 +9831,7 @@ fn competing_proposals_never_sum_past_the_grant() -> Result<()> {
     let id = strategy();
     register(&mut plane, &id, CELL)?;
     walk_to(&mut plane, &id, GateStage::Pilot)?;
-    issue(&mut plane, &id, CELL, start())?;
+    let envelope = issue(&mut plane, &id, CELL, start())?.envelope().clone();
     let share = plane.allocate(0.0, start())?.for_cell(CELL);
     assert!(
         share.is_positive(),
@@ -9923,6 +9923,33 @@ fn competing_proposals_never_sum_past_the_grant() -> Result<()> {
     match plane.coordination().get(CELL) {
         Some(Ok(settled)) => assert_eq!(granted_total(settled), Decimal::ZERO),
         other => panic!("the withheld cell's claims were not settled: {other:?}"),
+    }
+
+    // The grant ledger, not the plan: once the cell's envelope has expired
+    // its manifest names no live grant, so there is nothing to pay any claim
+    // from even though the plan still gives the cell a share. An
+    // independent review found the coordinator settling against the plan's
+    // figure here, granting capital no envelope stood behind.
+    let later = envelope.expires_at();
+    let manifests = plane.grant_manifests([CELL], &membership, 0.0, later);
+    let shipped = match manifests.for_cell(CELL) {
+        Some(qip_kernel::central::ManifestDecision::Ship(shipped)) => shipped.clone(),
+        other => panic!("the cell was not shipped a share after its grant expired: {other:?}"),
+    };
+    assert!(
+        shipped.amount().is_positive() && shipped.named_gross() == Decimal::ZERO,
+        "the premise: the plan still shares {} with the cell and its manifest names {} of live \
+         grants",
+        shipped.amount(),
+        shipped.named_gross()
+    );
+    match plane.coordination().get(CELL) {
+        Some(Ok(settled)) => assert_eq!(
+            granted_total(settled),
+            Decimal::ZERO,
+            "claims were paid from a share no live grant stands behind"
+        ),
+        other => panic!("the expired cell's claims were not settled: {other:?}"),
     }
     Ok(())
 }

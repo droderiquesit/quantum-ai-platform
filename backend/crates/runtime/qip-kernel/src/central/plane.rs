@@ -1945,7 +1945,8 @@ impl CentralPlane {
         &self.coordination
     }
 
-    /// Settle each decided cell's claims against its share (ADR 0230): the
+    /// Settle each decided cell's claims against the live grants its
+    /// manifest names (ADR 0230): the
     /// coordinator's claims for the cell, then the plan's allocation lines
     /// for it, in waterfall order. A withheld cell settles against zero, so
     /// every claim on it is cut: a cell with no share has nothing to pay
@@ -1961,7 +1962,13 @@ impl CentralPlane {
             .iter()
             .map(|(cell, decision)| {
                 let grant = match decision {
-                    ManifestDecision::Ship(share) => share.amount(),
+                    // The gross of the live signed grants the cell will sum
+                    // from its manifest, not the plan's figure for it: an
+                    // expired or not-yet-issued envelope leaves the plan's
+                    // share above what the grant ledger holds, and settling
+                    // against the plan would grant capital no envelope
+                    // stands behind. Never above the share, by construction.
+                    ManifestDecision::Ship(share) => share.named_gross(),
                     ManifestDecision::Withhold(_) => Decimal::ZERO,
                 };
                 let mut proposals = self

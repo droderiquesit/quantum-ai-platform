@@ -31,8 +31,13 @@ ledger is the current store; the Spanner deployment is not funded.
 1. **A kernel step, not a binary.** The arithmetic is
    `qip_capital::coordinator::settle`, a pure function of one grant and a
    list of proposals. The kernel composes it in `CentralPlane::grant_manifests`,
-   immediately after the manifests are decided, so the grant it settles
-   against is the share that ships and never a second reading of it.
+   immediately after the manifests are decided. The grant it settles
+   against is the gross of the live signed grants the cell's manifest names
+   (`RegionShare::named_gross`), the figure the cell itself will sum, and
+   not the plan's share: an expired or not-yet-issued envelope leaves the
+   plan's figure above what the grant ledger holds, and settling against the
+   plan would pay claims no envelope stands behind. An independent review
+   found the first version doing exactly that.
 2. **Waterfall order is the type's order.** `Claim` declares liquidity,
    collateral, funding and allocation in that order and the derived `Ord`
    is the settlement order: a book that cannot meet a margin call or an exit
