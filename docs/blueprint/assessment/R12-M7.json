@@ -3436,13 +3436,13 @@
   {
     "id": "R12-EXPAND-7147",
     "status": "PARTIAL",
-    "current": "qip-expansion, registries (brain/memory) exist.",
+    "current": "qip-expansion and the registries (ontology, capability, memory, model, tool, brain) exist and the deep brain runs them; a candidate type is registered from a gap (R12-EXPAND-1021); memory consolidation exists (EpisodeAbstraction) and LEARN admits typed memory entries (R12-EXPAND-6057).",
     "evidence": [
       "backend/crates/services/qip-expansion",
       "backend/crates/libs/qip-contracts/tests/brain_registry.rs",
       "backend/crates/libs/qip-contracts/tests/memory_registry.rs"
     ],
-    "gap": "Sandboxed creation, active learning, consolidation.",
+    "gap": "Sandboxed creation of tools or agents at runtime is not built, and spawning a brain is declined by ADR 0199 confirming ADR 0158 decision 8 (R12-EXPAND-6030). Active learning has no row and no code. Closes only as the umbrella over R12-EXPAND-1021, 6030 and 1173, all PARTIAL or declined.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3453,7 +3453,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-31 L4b-expand: re-read against its three dependencies; stays PARTIAL."
   },
   {
     "id": "R12-AGENCY-7148",

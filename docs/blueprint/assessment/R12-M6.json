@@ -1267,7 +1267,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:14585 stage_learn",
       "backend/crates/runtime/qip-kernel/src/platform.rs:8958"
     ],
-    "gap": "No single test drives one veto through belief, memory and curriculum, and the clause cannot hold for one veto as built: repeated_vetoes raises a curriculum gap only at MIN_REGRETS (3) regretted declines at one gate (research.rs), and Platform::score_declined writes a DeclinedScore read by the precedent join (memory), counterfactual_sizing_multiplier and review_rules, not by a belief. A test needs three regretted refusals at one gate resolved in LEARN plus a ResearchLoop sweep; source-score updates (R12-EXPAND-6027) and cell episodes stay open.",
+    "gap": "No single test drives one veto through belief, memory and curriculum, and the clause cannot hold for one veto as built: repeated_vetoes raises a curriculum gap only at MIN_REGRETS (3) regretted declines at one gate (research.rs), and Platform::score_declined writes a DeclinedScore read by the precedent join (memory), counterfactual_sizing_multiplier and review_rules, not by a belief. A test needs three regretted refusals at one gate resolved in LEARN plus a ResearchLoop sweep; source-score updates (R12-EXPAND-6027) and cell episodes stay open. Decided 2026-10-31 under the delegation (no ADR; nothing is built): the triage's 'Now' clause, routing resolved declined theses into a belief, is declined as specified, because a pre-trade veto is deterministic and carries no probability a calibration could score, so a belief moved by it would be a number nobody computed; the regret a veto's DeclinedScore records already narrows sizing through counterfactual_sizing_multiplier and proposes rule recalibration through review_rules, which are the two beliefs the platform honestly holds about a gate. Source scores now exist (R12-EXPAND-6027, journaled); cell episodes (R12-EXPAND-6038) stay open and are not this lane's.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1280,7 +1280,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "L",
-    "notes": "Gap corrected 2026-10-18 by lane L04 after reading stage_learn, score_declined and repeated_vetoes; not closed. The triage proposed a test-only closure; the threshold of three makes 'a veto' plural."
+    "notes": "Gap corrected 2026-10-18 by lane L04 after reading stage_learn, score_declined and repeated_vetoes; not closed. The triage proposed a test-only closure; the threshold of three makes 'a veto' plural. 2026-10-31 L4b-expand: 'Now' clause declined with the reason in the gap; row unchanged otherwise."
   },
   {
     "id": "R12-EXPAND-6055",
@@ -1309,16 +1309,18 @@
   {
     "id": "R12-EXPAND-6056",
     "status": "PARTIAL",
-    "current": "The registry is built in qip-deepbrain main.rs by research::sweep_ontology_over from the coverage map the detector reads - the five types every detector reads, an Asset type per asset class the universe holds, and the coverage_gap Event type - and handed to ResearchLoop::with_ontology. Every sweep_over consults it: check_ontology stops the sweep if a detector's type is missing and check_coverage_registered stops it, naming the class, if the coverage map holds an asset class the registry does not. Each sweep records the registry counts. OntologyRegistry::extend (qip-agents) versions an existing type only on a passing evaluation it cites, reached through ResearchLoop::extend_ontology.",
+    "current": "The registry is built in qip-deepbrain main.rs by research::sweep_ontology_over from the coverage map the detector reads - the five types every detector reads, an Asset type per asset class the universe holds, and the coverage_gap Event type - and handed to ResearchLoop::with_ontology. Every sweep_over consults it: check_ontology stops the sweep if a detector's type is missing and check_coverage_registered stops it, naming the class, if the coverage map holds an asset class the registry does not. Each sweep records the registry counts. OntologyRegistry::extend (qip-agents) versions an existing type only on a passing evaluation it cites, reached through ResearchLoop::extend_ontology. Since 2026-10-31 sweep_ontology_over also names every venue the coverage map holds as a Market type and every geography as an Entity type (coverage_dimension_type), so a venue or geography coverage gap is a gap in a type the registry holds.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/registries.rs OntologyRegistry::extend",
       "backend/crates/apps/qip-deepbrain/src/research.rs sweep_ontology_over, with_ontology, check_coverage_registered, extend_ontology",
       "backend/crates/apps/qip-deepbrain/src/main.rs sweep_ontology_over, with_ontology",
       "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs an_ontology_extension_without_an_evaluation_is_refused_and_a_cited_one_versions_the_type",
       "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name",
-      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds"
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds",
+      "backend/crates/apps/qip-deepbrain/src/research.rs coverage_dimension_type, sweep_ontology_over",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs the_ontology_a_node_builds_names_every_venue_and_geography_the_coverage_map_holds"
     ],
-    "gap": "Governed extension is not reached by the running binary (2026-10-18): nothing calls extend_ontology outside tests, because the only item the desk concludes is a fill-bias campaign, so no Ontology-class item (GapClass::Ontology, raised from Wanting::Type) ever finishes with a passing EvaluationRecord to cite. The registry is therefore seeded once at start and never versioned in a running process. Only the Asset and coverage-gap Event families are seeded from the coverage map; venue and geography coverage keys are not registered as types, and the Entity, Relationship, Product and CausalDriver families hold nothing the sweep reads.",
+    "gap": "Governed extension is not reached by the running binary (2026-10-18): nothing calls extend_ontology outside tests, because the only item the desk concludes is a fill-bias campaign, so no Ontology-class item (GapClass::Ontology, raised from Wanting::Type) ever finishes with a passing EvaluationRecord to cite. The registry is therefore seeded once at start and never versioned in a running process. The Asset, Market (venues), Entity (geographies) and coverage-gap Event families are seeded from the coverage map; the Relationship, Product and CausalDriver families hold nothing the sweep reads. The triage's second clause (an ExtendOntology executor applying a validated OntologyPatch on a passing EvaluationRecord) is not built: R12-EXPAND-6029's propose_type registers a candidate's version one directly and no Ontology-class item concludes with an EvaluationRecord, so extend_ontology still has no production caller.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1329,7 +1331,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": "Mutations (2026-10-18): deleting the check_coverage_registered call in sweep_over fails a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name; skipping the Asset registration loop in sweep_ontology_over fails the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds and four sweep tests. Earlier: bypassing the passed-evaluation refusal in extend lets a failing evaluation version the type and fails the extension test. The expected ontology_types in a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted rose by two (the Equity Asset type and the coverage-gap Event type the seeded registry now holds). Closing needs a concluded Ontology-class research item that carries a passing EvaluationRecord into extend_ontology."
+    "notes": "Mutations (2026-10-18): deleting the check_coverage_registered call in sweep_over fails a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name; skipping the Asset registration loop in sweep_ontology_over fails the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds and four sweep tests. Earlier: bypassing the passed-evaluation refusal in extend lets a failing evaluation version the type and fails the extension test. The expected ontology_types in a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted rose by two (the Equity Asset type and the coverage-gap Event type the seeded registry now holds). Closing needs a concluded Ontology-class research item that carries a passing EvaluationRecord into extend_ontology. 2026-10-31 L4b-expand: venue and geography types seeded (triage 'Now' clause); mutation skipping the dimension loop fails the new test. Stays PARTIAL: governed extension unreached in a running binary."
   },
   {
     "id": "R12-EXPAND-6057",

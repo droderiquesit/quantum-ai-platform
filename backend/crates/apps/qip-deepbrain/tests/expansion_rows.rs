@@ -1328,6 +1328,49 @@ fn the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds() {
     );
 }
 
+/// R12-EXPAND-6056: the two coverage dimensions that are not asset classes
+/// are named too — a venue as a `Market` type, a geography as an `Entity`
+/// type — so a venue coverage gap is a gap in a type the registry holds, and
+/// a value seen twice is registered once. Mutation: skip the dimension
+/// registration loop in `sweep_ontology_over` — the first assertion fires.
+#[test]
+fn the_ontology_a_node_builds_names_every_venue_and_geography_the_coverage_map_holds() {
+    use qip_contracts::expansion::OntologyTypeFamily::{Asset, Entity, Market};
+    let map = BTreeMap::from([
+        ("Equity".to_string(), BTreeSet::from(["a".to_string()])),
+        ("venue:XSIM".to_string(), BTreeSet::from(["a".to_string()])),
+        ("venue:XNYS".to_string(), BTreeSet::from(["b".to_string()])),
+        (
+            "geography:US".to_string(),
+            BTreeSet::from(["a".to_string(), "b".to_string()]),
+        ),
+    ]);
+    assert_eq!(map.len(), 4, "premise: three dimensions, four keys");
+    let ontology = qip_deepbrain::research::sweep_ontology_over(&map).unwrap();
+    for venue in ["XSIM", "XNYS"] {
+        let latest = ontology
+            .get_latest(Market, venue)
+            .unwrap_or_else(|| panic!("{venue} is not a Market type"));
+        assert_eq!(latest.version, 1);
+        assert_eq!(
+            latest.schema,
+            format!("qip-deepbrain/research:venue:{venue}")
+        );
+    }
+    let us = ontology
+        .get_latest(Entity, "US")
+        .expect("US is an Entity type");
+    assert_eq!(us.schema, "qip-deepbrain/research:geography:US");
+    assert!(
+        ontology.get_latest(Asset, "XSIM").is_none() && ontology.get_latest(Market, "US").is_none(),
+        "a dimension's value landed in another dimension's family"
+    );
+    assert!(
+        ontology.get_latest(Asset, "Equity").is_some(),
+        "the asset class is still named"
+    );
+}
+
 /// R12-EXPAND-6056: the sweep consults the registry for the asset classes the
 /// coverage detector reads. Handed a registry that does not name one, it
 /// stops by name instead of raising a coverage gap about a class nobody

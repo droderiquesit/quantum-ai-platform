@@ -906,15 +906,32 @@ fn coverage_asset_class(key: &str) -> Option<&str> {
     }
 }
 
+/// The ontology family and type name a non-class coverage key seeds
+/// (R12-EXPAND-6056): a venue is a `Market` type and a geography an `Entity`
+/// type, because that is what the detector's two other dimensions are
+/// dimensions *of*. `None` for an asset-class key, which
+/// [`coverage_asset_class`] owns, and for a dimension nothing here names.
+fn coverage_dimension_type(key: &str) -> Option<(OntologyTypeFamily, &str)> {
+    match key.split_once(':') {
+        Some(("venue", value)) => Some((OntologyTypeFamily::Market, value)),
+        Some(("geography", value)) => Some((OntologyTypeFamily::Entity, value)),
+        _ => None,
+    }
+}
+
 /// The event type the coverage detector's observations are filed under: a
 /// universe class with too little history to trade.
 pub const COVERAGE_GAP_EVENT: &str = "coverage_gap";
 
 /// [`sweep_ontology`] plus what the coverage detector reads of `coverage`:
-/// one `Asset` type per asset class the universe holds, and the `Event` type
-/// its observations are. The composition root builds this from the universe
-/// it is about to hand the platform, so an asset class cannot be swept for
-/// coverage that the ontology never named.
+/// one `Asset` type per asset class the universe holds, one `Market` type per
+/// venue and one `Entity` type per geography it covers (R12-EXPAND-6056;
+/// until 2026-10-31 the two other dimensions' values were swept and never
+/// named, so the registry could not say what a venue coverage gap was a gap
+/// in), and the `Event` type its observations are. The composition root
+/// builds this from the universe it is about to hand the platform, so a
+/// class, venue or geography cannot be swept for coverage that the ontology
+/// never named.
 pub fn sweep_ontology_over(
     coverage: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<OntologyRegistry> {
@@ -939,6 +956,25 @@ pub fn sweep_ontology_over(
             version: 1,
             schema: format!("qip-deepbrain/research:asset_class:{class}"),
             description: format!("the {class} asset class the coverage detector measures"),
+        })?;
+    }
+    for (family, value) in coverage
+        .keys()
+        .filter_map(|key| coverage_dimension_type(key))
+    {
+        if registry.get_latest(family, value).is_some() {
+            continue;
+        }
+        let dimension = match family {
+            OntologyTypeFamily::Market => "venue",
+            _ => "geography",
+        };
+        registry.register(OntologyTypeSpec {
+            family,
+            name: value.to_string(),
+            version: 1,
+            schema: format!("qip-deepbrain/research:{dimension}:{value}"),
+            description: format!("the {value} {dimension} the coverage detector measures"),
         })?;
     }
     Ok(registry)

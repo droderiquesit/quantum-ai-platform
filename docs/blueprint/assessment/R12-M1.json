@@ -2782,9 +2782,9 @@
   {
     "id": "R12-EXPAND-1119",
     "status": "MISSING",
-    "current": "No collective-intelligence exchange of episodes/residuals/lessons across brains and cells exists.",
+    "current": "Cross-brain exchange is the KnowledgeDeltaRecord the kernel journals on world_model.updated and the deep brain's sweep decodes (R12-EXPAND-6039), plus the journaled records the deep brain now writes for its own findings (SourceScore, ExperimentPack, TheoryDelta on the kernel log). No episode, residual or lesson exchange across brains and cells exists.",
     "evidence": [],
-    "gap": "Integrate collective intelligence in deepbrain with a named test.",
+    "gap": "ADR 0199 (2026-10-31) confirms ADR 0151 decision 4 and ADR 0158 decision 8: the episode, residual and lesson exchange of R12-EXPAND-1174 is not built and no new brain or cross-process path is minted, so this umbrella cannot close; it is graded against the one exchange record that exists.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2795,7 +2795,7 @@
     "verification": "cargo test -p qip-expansion -p qip-evolution; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-31 L4b-expand: DEPENDS on R12-EXPAND-1174, which ADR 0199 declines; re-read against the delta record, stays MISSING."
   },
   {
     "id": "R12-EXPAND-1120",
@@ -4005,11 +4005,11 @@
   {
     "id": "R12-EXPAND-1173",
     "status": "PARTIAL",
-    "current": "qip-expansion now runs in deepbrain ResearchLoop (gaps, curriculum, campaigns).",
+    "current": "qip-expansion runs in the deep brain's ResearchLoop (gaps, curriculum, campaigns). Ontology expansion from a gap proposes and registers a candidate type's version one (R12-EXPAND-1021/6029, OntologyPatch); tool expansion stays a registry nothing creates into at runtime; memory consolidation exists as EpisodeAbstraction and LEARN admits typed MemoryEntry records (R12-EXPAND-6057); experiment packs, theory deltas and cross-domain hypotheses are produced (R12-EXPAND-6035, 6044, 6031).",
     "evidence": [
       "backend/crates/services/qip-expansion/src/gap.rs:17"
     ],
-    "gap": "Ontology/memory/brains/tools expansion items absent.",
+    "gap": "Brains: ADR 0199 (2026-10-31) confirms ADR 0158 decision 8, no brain is minted from a gap. Sandboxed creation (R12-EXPAND-7147) is not built. Each scope item that exists is PARTIAL on its own row, so the umbrella is PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4020,7 +4020,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 L4b-expand: re-read against 1021 (PARTIAL), 6030 (declined by ADR 0199) and 7147 (PARTIAL)."
   },
   {
     "id": "R12-EXPAND-1174",
